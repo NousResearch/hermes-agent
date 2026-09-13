@@ -11,6 +11,7 @@ import { openSession } from '@/app/open-session'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
 import { OverflowTip, Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
@@ -71,6 +72,8 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   onPin: () => void
   /** Toggle the persisted read-state watermark. */
   onToggleUnread: () => void
+  /** Collapse or expand descendants when this session spawned children. */
+  onToggleTree?: () => void
   onResume: () => void
   reorderable?: boolean
   dragging?: boolean
@@ -79,6 +82,7 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
    *  flat cross-profile lists — Pinned and search results in the All-profiles
    *  view — where no group header communicates ownership (#66003). */
   showProfile?: boolean
+  treeOpen?: boolean
   /** Inbox-style card: workspace header, title + last-message preview, and a
    *  model · size footer. The flat recents list opts in via the filter menu;
    *  dense tree surfaces (projects, messaging, pins) keep the one-line row. */
@@ -138,11 +142,13 @@ function SidebarSessionRowImpl({
   onDelete,
   onPin,
   onToggleUnread,
+  onToggleTree,
   onResume,
   reorderable = false,
   dragging = false,
   dragHandleProps,
   showProfile = false,
+  treeOpen,
   card = false,
   className,
   style,
@@ -318,6 +324,18 @@ function SidebarSessionRowImpl({
       onClick={event => event.stopPropagation()}
       onPointerDown={event => event.stopPropagation()}
     >
+      {onToggleTree && treeOpen !== undefined ? (
+        <Button
+          aria-expanded={treeOpen}
+          aria-label={t.sidebar.projects.toggle(title, !treeOpen)}
+          className="size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
+          onClick={onToggleTree}
+          size="icon"
+          variant="ghost"
+        >
+          <DisclosureCaret open={treeOpen} />
+        </Button>
+      ) : null}
       {trailing.map(({ key, node }, index) => (
         <span
           className={
@@ -703,6 +721,7 @@ function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): bo
     a.reorderable === b.reorderable &&
     a.dragging === b.dragging &&
     a.showProfile === b.showProfile &&
+    a.treeOpen === b.treeOpen &&
     a.card === b.card &&
     a.dragHandleProps === b.dragHandleProps &&
     a.className === b.className &&

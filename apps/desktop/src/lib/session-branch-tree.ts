@@ -3,6 +3,7 @@ import type { SessionInfo } from '@/types/hermes'
 export interface SidebarSessionEntry {
   branchDepth?: number
   branchStem?: string
+  hasChildren?: boolean
   session: SessionInfo
 }
 
@@ -14,6 +15,8 @@ export interface FlattenSessionsOptions {
    * their parent; sibling branches stay ordered by their own recency.
    */
   preserveOrder?: boolean
+  /** Whether to render a session's descendants. Defaults to open. */
+  isOpen?: (session: SessionInfo) => boolean
 }
 
 const recency = (session: SessionInfo): number => session.last_active || session.started_at || 0
@@ -83,6 +86,18 @@ function collapseCompressionLineages(sessions: readonly SessionInfo[]): readonly
   return sessions.filter(session => winners.has(session))
 }
 
+const sessionKey = (session: SessionInfo, id = session.id) => {
+  const connection = session.connection_id?.trim()
+
+  return `${!connection || connection === 'local' ? 'local' : connection}::${session.profile || 'default'}::${id}`
+}
+
+export const sessionTreeNodeId = (session: SessionInfo): string => {
+  const durableId = session._lineage_root_id?.trim() || session.id
+
+  return `session-tree:${sessionKey(session, durableId)}`
+}
+
 /** Flat list with branch and spawned sessions nested visually under their parent. */
 export function flattenSessionsWithBranches(
   input: readonly SessionInfo[],
@@ -92,12 +107,6 @@ export function flattenSessionsWithBranches(
 
   if (sessions.length < 2) {
     return sessions.map(session => ({ session }))
-  }
-
-  const sessionKey = (session: SessionInfo, id = session.id) => {
-    const connection = session.connection_id?.trim()
-
-    return `${!connection || connection === 'local' ? 'local' : connection}::${session.profile || 'default'}::${id}`
   }
 
   const byVisibleId = new Map<string, SessionInfo>()
@@ -183,7 +192,7 @@ export function flattenSessionsWithBranches(
   const out: SidebarSessionEntry[] = []
   const seen = new Set<string>()
 
-  const emit = (session: SessionInfo, branchDepth = 0, branchStem?: string) => {
+  const suppress = (session: SessionInfo) => {
     const key = sessionKey(session)
 
     if (seen.has(key)) {
@@ -191,10 +200,32 @@ export function flattenSessionsWithBranches(
     }
 
     seen.add(key)
-    out.push(branchStem ? { branchDepth, branchStem, session } : { session })
+    childrenByParent.get(key)?.forEach(suppress)
+  }
+
+  const emit = (session: SessionInfo, branchDepth = 0, branchStem?: string) => {
+    const key = sessionKey(session)
+
+    if (seen.has(key)) {
+      return
+    }
 
     const children = childrenByParent.get(key)
-    children?.forEach((child, index) => emit(child, branchDepth + 1, index === children.length - 1 ? '└─ ' : '├─ '))
+    const entry: SidebarSessionEntry = branchStem ? { branchDepth, branchStem, session } : { session }
+
+    seen.add(key)
+
+    if (children?.length) {
+      entry.hasChildren = true
+    }
+
+    out.push(entry)
+
+    if (children?.length && (options.isOpen?.(session) ?? true)) {
+      children.forEach((child, index) => emit(child, branchDepth + 1, index === children.length - 1 ? '└─ ' : '├─ '))
+    } else {
+      children?.forEach(suppress)
+    }
   }
 
   const roots = sessions

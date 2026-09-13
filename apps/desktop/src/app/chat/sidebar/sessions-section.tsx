@@ -10,7 +10,7 @@ import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import type { HermesGitWorktree } from '@/global'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { flattenSessionsWithBranches } from '@/lib/session-branch-tree'
+import { flattenSessionsWithBranches, sessionTreeNodeId } from '@/lib/session-branch-tree'
 import {
   groupEntriesByRecency,
   groupEntriesByStatus,
@@ -251,7 +251,14 @@ export function SidebarSessionsSection({
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
+
   const isListGroupOpen = useCallback((key: string) => nodeOpen[listGroupNodeId(key)] ?? true, [nodeOpen])
+
+  const isSessionTreeOpen = useCallback(
+    (session: SessionInfo) => nodeOpen[sessionTreeNodeId(session)] ?? true,
+    [nodeOpen]
+  )
+
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   // A defined project list is itself content (even an empty project should
@@ -275,12 +282,12 @@ export function SidebarSessionsSection({
   // recency sort — the drag order is layered on per date group below, so the
   // buckets stay truthful and a reorder never costs the list its dividers.
   const displayEntries = useMemo(
-    () => flattenSessionsWithBranches(sessions, { preserveOrder }),
-    [sessions, preserveOrder]
+    () => flattenSessionsWithBranches(sessions, { isOpen: isSessionTreeOpen, preserveOrder }),
+    [sessions, preserveOrder, isSessionTreeOpen]
   )
 
   const renderRow = useCallback(
-    (session: SessionInfo, draggable: boolean, branchStem?: string, branchDepth?: number) => {
+    (session: SessionInfo, draggable: boolean, branchStem?: string, branchDepth?: number, hasChildren?: boolean) => {
       const rowPinned = isSessionPinned?.(session) ?? pinned
 
       const rowProps = {
@@ -297,10 +304,12 @@ export function SidebarSessionsSection({
             ? onTogglePin(sessionPinId(session))
             : onPinUnpinnedSession(sessionPinId(session)),
         onToggleUnread: () => onToggleUnread(session.id),
+        onToggleTree: hasChildren ? () => toggleWorkspaceNodeCollapsed(sessionTreeNodeId(session)) : undefined,
         onResume: () => onResumeSession(session.id, session),
         reorderable: draggable && !branchStem,
         session,
         showProfile: showProfileTags,
+        treeOpen: hasChildren ? isSessionTreeOpen(session) : undefined,
         unread: session.unread === true
       }
 
@@ -317,6 +326,7 @@ export function SidebarSessionsSection({
       activeSessionId,
       card,
       isSessionPinned,
+      isSessionTreeOpen,
       onArchiveSession,
       onBranchSession,
       onDeleteSession,
@@ -365,11 +375,25 @@ export function SidebarSessionsSection({
     [isListGroupOpen, t]
   )
 
+  const sessionTreeToggle = useMemo(
+    () => ({
+      onToggle: (session: SessionInfo) => toggleWorkspaceNodeCollapsed(sessionTreeNodeId(session)),
+      open: isSessionTreeOpen
+    }),
+    [isSessionTreeOpen]
+  )
+
   // A single flat/virtual/lane list row — either a divider or a session.
   const renderListRow = useCallback(
     (row: SidebarListRow, draggable: boolean, action?: React.ReactNode) => {
       if (row.kind === 'session') {
-        return renderRow(row.entry.session, draggable, row.entry.branchStem, row.entry.branchDepth)
+        return renderRow(
+          row.entry.session,
+          draggable,
+          row.entry.branchStem,
+          row.entry.branchDepth,
+          row.entry.hasChildren
+        )
       }
 
       const label = 'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)
@@ -394,10 +418,11 @@ export function SidebarSessionsSection({
   // Sessions inside repos/worktrees are date-ordered and static.
   const renderRows = useCallback(
     (items: SessionInfo[]) =>
-      flattenSessionsWithBranches(items).map(({ branchDepth, branchStem, session }) =>
-        renderRow(session, false, branchStem, branchDepth)
+      flattenSessionsWithBranches(items, { isOpen: isSessionTreeOpen }).map(
+        ({ branchDepth, branchStem, hasChildren, session }) =>
+          renderRow(session, false, branchStem, branchDepth, hasChildren)
       ),
-    [renderRow]
+    [isSessionTreeOpen, renderRow]
   )
 
   // Limit complete groups, not sessions, so a burst and its branches stay
@@ -405,7 +430,7 @@ export function SidebarSessionsSection({
   const renderPreviewRows = useCallback(
     (items: SessionInfo[], projectId: string) => {
       const rows = groupEntriesByRecency(
-        flattenSessionsWithBranches(items),
+        flattenSessionsWithBranches(items, { isOpen: isSessionTreeOpen }),
         undefined,
         undefined,
         showAllSessions ? Infinity : 2
@@ -415,7 +440,7 @@ export function SidebarSessionsSection({
 
       return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
     },
-    [isListGroupOpen, manualOrderIds, renderListRow, showAllSessions]
+    [isListGroupOpen, isSessionTreeOpen, manualOrderIds, renderListRow, showAllSessions]
   )
 
   // Same as `renderRows`, but with date dividers folded in — used for
@@ -423,13 +448,13 @@ export function SidebarSessionsSection({
   // chronologically, matching the flat recents list.
   const renderRowsDated = useCallback(
     (items: SessionInfo[]) => {
-      const entries = flattenSessionsWithBranches(items)
+      const entries = flattenSessionsWithBranches(items, { isOpen: isSessionTreeOpen })
 
       const rows = grouping === 'date' ? groupEntriesByRecency(entries) : toSessionRows(entries)
 
       return hideCollapsedGroupRows(rows, isListGroupOpen).map(row => renderListRow(row, false))
     },
-    [grouping, isListGroupOpen, renderListRow]
+    [grouping, isListGroupOpen, isSessionTreeOpen, renderListRow]
   )
 
   // Flat recents as list rows: grouped by recency when enabled, plain otherwise.
@@ -611,6 +636,7 @@ export function SidebarSessionsSection({
         rows={visibleRows}
         showProfileTags={showProfileTags}
         sortable={sessionsDraggable}
+        treeToggle={sessionTreeToggle}
       />
     )
 

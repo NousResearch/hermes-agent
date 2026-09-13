@@ -27,6 +27,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Delete tool-progress / "⏳ Working" bubbles after a SUCCESSFUL final response where deletion is
     # supported (Telegram); failed runs keep them as breadcrumbs.
     "cleanup_progress": False,
+    # When true, show a single live-editing "thinking bubble" that is updated
+    # in place for each completed interim thought, then deleted when the final
+    # answer lands. Strictly opt-in — default false everywhere. Must be
+    # enabled explicitly per-platform (e.g. display.platforms.mattermost.live_thinking: true).
+    "live_thinking": False,
     # Working-state text on text-rendering indicators (Slack assistant status): "full"/true = verb +
     # argument preview, "verb" = verb only (keeps paths out of shared channels), "off"/false = static.
     "live_status": "full",
@@ -155,6 +160,7 @@ _NORMALISERS: dict[str, Any] = {
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,
+    "live_thinking": _norm_bool,
     "thinking_progress": _norm_bool,
     "cleanup_progress": _norm_cleanup_progress,
     "live_status": _norm_tristate("full", "off", {"full", "verb", "off"}, extra_truthy={"all"}),

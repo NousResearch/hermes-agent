@@ -100,6 +100,10 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
         child._credential_pool.release_lease.assert_not_called()
         with _active_subagents_lock:
             assert _active_subagents[child._subagent_id]["status"] == "quarantined"
+        from run_agent import AIAgent
+        AIAgent._close_active_children(parent, soft=False)
+        assert child in parent._active_children
+        assert not child.closed.is_set()
     finally:
         child.allow_finish.set()
         parent_thread.join(timeout=5)

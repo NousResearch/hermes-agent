@@ -850,6 +850,7 @@ class _ChildRun:
             return
         self.cleanup_done.set()
         child = self.child
+        child._delegate_worker_quarantined = False
         if self.subagent_id:
             _unregister_subagent(self.subagent_id, agent=child)
         if child_pool is not None and leased_cred_id is not None:
@@ -881,6 +882,7 @@ class _ChildRun:
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
         if close_deferred and self.abandoned_future is not None:
+            child._delegate_worker_quarantined = True
             if self.subagent_id:
                 _mark_subagent_quarantined(self.subagent_id, agent=child)
             self.abandoned_future.add_done_callback(

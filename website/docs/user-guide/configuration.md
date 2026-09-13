@@ -2115,11 +2115,11 @@ display:
     fields: ["model", "duration", "total_tokens"]   # visibility only; built-in order is preserved
 ```
 
-Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), and `total_tokens` (session Σ — opt-in only, never shown by default).
+Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `git_branch` (⎇ current git branch of the working directory — opt-in only, never shown by default; detached HEAD shows the abbreviated commit), `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), and `total_tokens` (session Σ — opt-in only, never shown by default).
 
 Notes:
 
-- An empty list (the default) keeps the standard set — everything except `total_tokens`.
+- An empty list (the default) keeps the standard set — everything except `total_tokens` and `git_branch`.
 - The config controls **visibility, not order**; fields render in their built-in positions.
 - Narrow terminals still drop wide-mode-only fields (`context_detail`, `cache_hit`, `latency`, `tps`, `prompt_elapsed`, `idle_since`) regardless of config (`cache_hit` also shows in the medium ≥52-col tier).
 - `latency`/`tps` stay hidden until API calls have been recorded (e.g. the Codex app-server backend reports no latency).

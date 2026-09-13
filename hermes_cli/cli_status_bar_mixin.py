@@ -208,6 +208,7 @@ class CLIStatusBarMixin:
             "battery_label": "",
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
+            "git_branch": "",
             "goal_active": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
@@ -217,6 +218,17 @@ class CLIStatusBarMixin:
 
             snapshot["focus_label"] = focus_statusbar_segment(
                 bool(getattr(self, "_focus_view_enabled", False)))
+        except Exception:
+            pass
+
+        # Git branch (⎇) — opt-in via display.status_bar.fields, so the filesystem probe
+        # (TTL-cached in status_bar_git) only runs when the user asked for the segment.
+        try:
+            _fields = self._get_status_bar_field_set()
+            if _fields is not None and "git_branch" in _fields:
+                from hermes_cli.status_bar_git import current_git_branch
+
+                snapshot["git_branch"] = current_git_branch()
         except Exception:
             pass
 
@@ -955,9 +967,9 @@ class CLIStatusBarMixin:
         ``CLI_CONFIG``; no per-render YAML parse). ``None`` = not customized, show everything.
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
-        bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since,
-        focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is fixed; the
-        config controls visibility only.
+        bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
+        prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
+        (opt-in only). Order is fixed; the config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1043,6 +1055,9 @@ class CLIStatusBarMixin:
             add_count("bg_subagents", "active_background_subagents", "⛓")
         if goal_segment:
             add("goal", _STRONG, goal_segment)
+        git_branch = snapshot.get("git_branch") or ""
+        if git_branch:
+            add("git_branch", _DIM, f"⎇ {git_branch}")
         if not narrow:
             add("duration", _DIM, duration_label)
         if wide:

@@ -74,10 +74,18 @@ class HermesProviderMixin:
         self._coerce_client_secret_post()
         return self._prepare_token_request(await super()._refresh_token())
 
-    async def _store_tokens(self, token_response) -> None:
+    async def _store_tokens(self, token_response, *, is_refresh: bool = False) -> None:
+        """Persist *token_response*. ``is_refresh`` selects storage semantics: a fresh
+        authorization-code grant (``is_refresh=False``, the default) must replace stored state
+        outright, while an actual refresh must carry forward an omitted refresh_token (RFC 6749
+        §6) rather than erase it -- see ``HermesTokenStorage.set_tokens`` vs
+        ``set_refreshed_tokens``."""
         self.context.current_tokens = token_response
         self.context.update_token_expiry(token_response)
-        await self.context.storage.set_tokens(token_response)
+        if is_refresh:
+            await self.context.storage.set_refreshed_tokens(token_response)
+        else:
+            await self.context.storage.set_tokens(token_response)
 
     async def _handle_token_response(self, response):
         """Accept any 2xx token response; never echo the body into errors."""
@@ -117,7 +125,7 @@ class HermesProviderMixin:
                 token_response.refresh_token = prior.refresh_token
             if token_response.scope is None:
                 token_response.scope = prior.scope
-        await self._store_tokens(token_response)
+        await self._store_tokens(token_response, is_refresh=True)
         return True
 
 

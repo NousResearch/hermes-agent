@@ -133,8 +133,13 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 `_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import, so
 every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
-channels (`profile_channels.py` derives the token/allowlist/platform-section key set from the adapter
-registry + `gateway/config_env._ENV_STEPS`, never a hand list; `--clone-channels` opts in). Multiplex
+channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
+adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
+with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
+list). `--clone-channels` opts in and its live-multiplexer refusal lives in `create_profile` (CLI, REST
+and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>` (hidden → invisible to
+`_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;
+symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
 `profiles.py::profiles_to_serve(multiplex=True)` = default + every live (non-tombstoned) dir under
 `profiles/` — there is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).

@@ -111,6 +111,57 @@ def test_missing_parent_rolls_back_readiness_batch_and_refuses_claim(
         assert kb.get_task(conn, child).status == "ready"
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_promote_refuses_missing_parent_without_partial_write(kanban_home, dry_run):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = kb.create_task(
+            conn, title="corrupt child", assignee="worker", parents=(parent,),
+        )
+        conn.commit()
+
+    _delete_parent_keep_link(parent, child)
+
+    with kbc.connect() as conn:
+        before = _logical_snapshot(conn)
+        with pytest.raises(kb.MissingParentError, match=rf"{child}.*{parent}"):
+            kb.promote_task(
+                conn, child, actor="operator", reason="recovery", dry_run=dry_run,
+            )
+        assert _logical_snapshot(conn) == before
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_cli_promote_missing_parent_exits_2_without_success_json(
+    kanban_home, capsys, dry_run,
+):
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = kb.create_task(
+            conn, title="corrupt child", assignee="worker", parents=(parent,),
+        )
+        conn.commit()
+
+    _delete_parent_keep_link(parent, child)
+
+    with kbc.connect() as conn:
+        before = _logical_snapshot(conn)
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    argv = ["kanban", "promote", child, "--json"]
+    if dry_run:
+        argv.append("--dry-run")
+    assert kc.kanban_command(parser.parse_args(argv)) == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert child in output.err
+    assert parent in output.err
+
+    with kbc.connect() as conn:
+        assert _logical_snapshot(conn) == before
+
+
 def test_dispatch_detects_missing_parent_before_reclaim_or_spawn(
     kanban_home, monkeypatch, capsys,
 ):

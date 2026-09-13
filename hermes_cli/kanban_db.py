@@ -3282,37 +3282,38 @@ def promote_task(
     """Operator promotion ``todo``/``blocked`` -> ``ready`` with an audit event.
     Refused while a parent is unfinished; ``dry_run`` only validates.
     Returns ``(ok, reason)``."""
-    cur_status = _task_status(conn, task_id)
-    if cur_status is None:
-        return False, f"task {task_id} not found"
-
-    if cur_status not in ("todo", "blocked"):
-        return False, (
-            f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
-        )
-
-    # No override: claim_task demotes ready -> todo on an undone parent whichever
-    # writer set 'ready', so a forced promotion would only report a success the
-    # first claim silently reverts (#106195). The dependency itself is the knob.
-    parents = conn.execute(
-        "SELECT t.id, t.status FROM tasks t "
-        "JOIN task_links l ON l.parent_id = t.id "
-        "WHERE l.child_id = ?", (task_id,),
-    ).fetchall()
-    unsatisfied = [p["id"] for p in parents if p["status"] not in ("done", "archived")]
-    if unsatisfied:
-        return False, (
-            f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
-            f"(the ready -> running claim re-checks parents, so promotion cannot "
-            f"bypass them; complete the parents or drop the link with "
-            f"`hermes kanban unlink <parent_id> {task_id}`)"
-        )
-
-    if dry_run:
-        return True, None
-
     with write_txn(conn):
+        cur_status = _task_status(conn, task_id)
+        if cur_status is None:
+            return False, f"task {task_id} not found"
+
+        if cur_status not in ("todo", "blocked"):
+            return False, (
+                f"task {task_id} is {cur_status!r}; promote only applies to "
+                f"'todo' or 'blocked'"
+            )
+
+        # No override: claim_task demotes ready -> todo on an undone parent whichever
+        # writer set 'ready', so a forced promotion would only report a success the
+        # first claim silently reverts (#106195). The dependency itself is the knob.
+        if not _parents_satisfied(conn, task_id):
+            parents = conn.execute(
+                "SELECT p.id FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+                "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+                "ORDER BY p.id",
+                (task_id,),
+            ).fetchall()
+            unsatisfied = [p["id"] for p in parents]
+            return False, (
+                f"unsatisfied parent dependencies: {', '.join(unsatisfied)} "
+                f"(the ready -> running claim re-checks parents, so promotion cannot "
+                f"bypass them; complete the parents or drop the link with "
+                f"`hermes kanban unlink <parent_id> {task_id}`)"
+            )
+
+        if dry_run:
+            return True, None
+
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
             "WHERE id = ? AND status IN ('todo', 'blocked')", (task_id,),

@@ -15,7 +15,7 @@ The desktop has **no build/runtime dependency on the dashboard frontend**: it sp
 NOT embed `hermes --tui` — own composer, transcript, slash pipeline.
 
 **One backward-compat fallback:** `serve` is newer, so the spawn (`electron/backend-command.ts` +
-`backendSupportsServe()` in `electron/main.ts`) checks whether the resolved runtime registers `serve`
+`createBackendServeSupportResolver()` in `electron/backend-serve-support.ts`) checks whether the runtime registers `serve`
 and ONLY when it does not (older managed install / PATH `hermes` not yet updated) rewrites argv to
 legacy `dashboard --no-open`. Without it a new app against an un-upgraded runtime crashes on an
 unknown subcommand and bricks every mid-upgrade user. Keep it narrow and tested.

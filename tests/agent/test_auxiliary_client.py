@@ -411,13 +411,15 @@ def test_compression_aggregate_capacity_does_not_bypass_scans(tmp_path, unsafe, 
     assert reason in exc_info.value.decision.reason_codes
 
 
-def test_blocked_remote_aux_call_uses_local_fallback_without_retry(monkeypatch, tmp_path):
+@pytest.mark.parametrize("stream", [False, True])
+def test_blocked_remote_aux_call_uses_local_fallback_without_retry(monkeypatch, tmp_path, stream):
     primary = MagicMock()
     primary.base_url = "https://chatgpt.com/backend-api/codex"
     primary.chat.completions.create.side_effect = _blocked_egress_error()
     fallback = MagicMock()
     fallback.base_url = "http://127.0.0.1:11434/v1"
-    fallback.chat.completions.create.return_value = _aux_egress_response("fallback")
+    expected = iter(["chunk"]) if stream else _aux_egress_response("fallback")
+    fallback.chat.completions.create.return_value = expected
     monkeypatch.setattr("agent.auxiliary_client.get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
         "agent.auxiliary_client._resolve_task_provider_model",
@@ -441,14 +443,17 @@ def test_blocked_remote_aux_call_uses_local_fallback_without_retry(monkeypatch, 
     )
 
     response = call_llm(
-        task="compression",
+        task="compression", stream=stream,
         provider="openai-codex",
         model="gpt-5.4",
         main_runtime={"session_id": "session-fallback"},
         messages=[{"role": "user", "content": "token=super-secret-value"}],
     )
 
-    assert response.choices[0].message.content == "fallback"
+    assert response is expected
+    if stream:
+        assert list(response) == ["chunk"]
+        assert fallback.chat.completions.create.call_args.kwargs["stream"] is True
     primary.chat.completions.create.assert_not_called()
     fallback.chat.completions.create.assert_called_once()
 

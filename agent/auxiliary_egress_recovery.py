@@ -91,3 +91,37 @@ def local_fallback_steps(route, step_factory):
             failed_model = model or destination.model
             failed_base_url = base_url
     return None
+
+
+
+def stream_with_local_recovery(req, retry_kwargs, candidate_kwargs, *, task,
+                               stream_options=None, route_info=None):
+    """Recover a denied stream before returning it to its reassembly owner."""
+    from agent import auxiliary_client as auxiliary
+    from agent.llm_egress_firewall import EgressBlocked
+
+    def send(client, kwargs, provider, api_mode):
+        kwargs = dict(kwargs, stream=True)
+        if stream_options:
+            kwargs["stream_options"] = stream_options
+        if task == "moa_aggregator" and isinstance(client, auxiliary.CodexAuxiliaryClient):
+            return client.chat.completions.create(**kwargs)
+        return auxiliary._relay_sync_stream(client, kwargs, provider=provider, api_mode=api_mode)
+
+    try:
+        return send(req.client, req.kwargs, req.request_provider, req.resolved_api_mode)
+    except EgressBlocked as first_err:
+        def perform(step):
+            client, model, label = step.args
+            destination, kwargs, _ = auxiliary._plan_fallback_candidate(
+                client, model, label, apply_fast_lane=True, **candidate_kwargs)
+            return send(client, kwargs, destination.provider, destination.api_mode)
+
+        result = auxiliary._drive_ladder(
+            auxiliary._start_recovery_ladder(
+                first_err, req, retry_kwargs, task=task, async_mode=False, route_info=route_info),
+            perform,
+        )
+        if result is auxiliary._RERAISE_ORIGINAL:
+            raise
+        return result

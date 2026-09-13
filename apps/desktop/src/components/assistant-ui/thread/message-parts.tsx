@@ -123,6 +123,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   return <ToolFallback {...props} />
 }
 
+// How close to the preview's bottom a scroll must land before the live pin
+// re-engages. Sub-pixel rests and rounding don't count as "reading up".
+const PREVIEW_RELOCK_THRESHOLD_PX = 8
+
 type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
 
 const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
@@ -186,7 +190,10 @@ const ThinkingDisclosure: FC<{
   }
 
   // While the preview is live, pin the scroll container to the bottom on
-  // every content growth so the latest tokens are always visible.
+  // every content growth so the latest tokens are always visible. A reader
+  // who scrolls the preview up pauses the pin until they return to the
+  // bottom — the same escape/re-lock semantics the transcript's stick-to-
+  // bottom gives the outer viewport, applied to the preview scroller.
   useEffect(() => {
     if (!isPreview) {
       return
@@ -197,6 +204,14 @@ const ThinkingDisclosure: FC<{
 
     if (!el || !content) {
       return
+    }
+
+    let pinned = true
+
+    const distanceFromBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight
+
+    const onScroll = () => {
+      pinned = distanceFromBottom() <= PREVIEW_RELOCK_THRESHOLD_PX
     }
 
     // Height-gated: the observer also fires when the container's WIDTH changes
@@ -210,17 +225,22 @@ const ThinkingDisclosure: FC<{
       const grew = height < 0 || height > lastHeight
       lastHeight = height
 
-      if (grew) {
+      if (grew && pinned) {
         el.scrollTop = el.scrollHeight
       }
     }
+
+    el.addEventListener('scroll', onScroll, { passive: true })
 
     // No sync pin(): the observer's guaranteed initial delivery runs it with
     // layout already clean (still before paint), avoiding a forced reflow.
     const observer = new ResizeObserver(pin)
     observer.observe(content)
 
-    return () => observer.disconnect()
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      observer.disconnect()
+    }
     // Re-run when the disclosure toggles so the observer attaches to the new
     // DOM after expand/collapse (refs are conditionally rendered on `open`).
   }, [isPreview, open])
@@ -250,8 +270,12 @@ const ThinkingDisclosure: FC<{
             // Body sits flush with the "Thinking" header — no left indent —
             // and inherits the disclosure-level opacity fade defined in
             // styles.css (~0.67 at rest, 1 on hover/focus). overflow-auto so
-            // the max-h-40 preview is a real scroller, not a clip.
-            'mt-0.5 w-full min-w-0 max-w-full overflow-auto overscroll-contain wrap-anywhere pb-1',
+            // the max-h-40 preview is a real scroller, not a clip. While live,
+            // the body must chain wheel/trackpad to the transcript instead of
+            // swallowing it — the reader hovers the streaming preview to
+            // scroll the conversation, not the capped box.
+            'mt-0.5 w-full min-w-0 max-w-full overflow-auto wrap-anywhere pb-1',
+            !isPreview && 'overscroll-contain',
             isPreview && 'max-h-40'
           )}
           data-slot="aui_thinking-body"

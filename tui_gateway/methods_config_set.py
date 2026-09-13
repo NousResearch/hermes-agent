@@ -274,6 +274,21 @@ def _set_yolo(rid, params, key, value, session):
         skey = session["session_key"]
         enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
         (enable_session_yolo if enable else disable_session_yolo)(skey)
+        # Persist to the session row, same contract as the CLI's /yolo
+        # (cli.py _persist_session_yolo): without this the toggle lives only in
+        # the in-memory session-yolo set, so `--resume` never restores it
+        # (_restore_session_yolo reads model_config.yolo_mode back) and nothing
+        # on disk reflects the toggle. Best-effort — the in-memory flag stays
+        # authoritative for this process either way. Prefer agent.session_id
+        # over session_key: after compression the key can be the ended parent
+        # while session_id is the live continuation (session finalize, #20001).
+        row_id = getattr(session.get("agent"), "session_id", None) or skey
+        try:
+            with _session_db(session) as db:
+                if db is not None and row_id:
+                    db.set_session_yolo(row_id, enable)
+        except Exception:
+            logger.debug("failed to persist session yolo flag", exc_info=True)
         _emit_session_info(params.get("session_id", ""), session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))

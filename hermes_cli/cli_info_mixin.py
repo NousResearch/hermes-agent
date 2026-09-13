@@ -771,17 +771,10 @@ class CLIInfoMixin:
                     days = int(parts[i])
                 i += 1
 
-        try:
-            from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
-            db = SessionDB()
-            try:
-                engine = InsightsEngine(db)
-                print(engine.format_terminal(engine.generate(days=days, source=source)))
-            finally:
-                db.close()
-        except Exception as e:
-            print(f"  Error generating insights: {e}")
+        from types import SimpleNamespace
+        from hermes_cli.main_agent_cmds import cmd_insights
+
+        cmd_insights(SimpleNamespace(days=days, source=source))
 
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml (polled from process_loop every

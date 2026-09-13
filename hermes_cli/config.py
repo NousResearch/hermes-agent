@@ -1871,6 +1871,11 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
 
 
 def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    snapshot = worker_config_snapshot()
+    if snapshot is not None:
+        return snapshot
     with _CONFIG_LOCK:
         try:
             config_path = get_config_path()
@@ -2177,6 +2182,11 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    snapshot = worker_config_snapshot()
+    if snapshot is not None:
+        return _deep_merge(copy.deepcopy(DEFAULT_CONFIG), snapshot)
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
@@ -2361,6 +2371,12 @@ def load_env() -> Dict[str, str]:
     """Load ~/.hermes/.env as a dict (memoised; ``get_env_value()`` runs hundreds of times per
     interactive menu render). Each assignment's value is opaque data for boundary discovery."""
     global _env_cache
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    # A frozen-policy worker never opens the profile's files; its secrets arrive
+    # through the owner-installed scope, so the .env layer is empty here.
+    if worker_config_snapshot() is not None:
+        return {}
     env_path = get_env_path()
 
     try:
@@ -3755,6 +3771,10 @@ _inject_profile_env_vars()
 
 def _platform_plugin_manifests():
     """Yield ``(dir_name, manifest_dict)`` for every bundled ``plugins/platforms/*/plugin.y(a)ml``."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     platforms_dir = get_project_root() / "plugins" / "platforms"
     if not platforms_dir.is_dir():
         return

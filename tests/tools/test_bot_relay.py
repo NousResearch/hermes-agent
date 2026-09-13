@@ -108,7 +108,7 @@ def test_resolve_ambiguous_handle_across_connections(root):
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 
-def test_enqueue_claim_is_atomic_and_single_shot(root):
+def test_enqueue_claim_replays_exact_identity_until_reply(root):
     bot_relay.write_remote_roster(root, _rows())
     roster = bot_relay.read_remote_roster(root)
     target = bot_relay.resolve_remote_target("researcher", roster)
@@ -120,7 +120,9 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert [e["id"] for e in claimed] == [env["id"]]
     assert claimed[0]["target_connection"] == "ssh-vps"
     assert claimed[0]["message"] == "hi"
-    # second drain: nothing (no double delivery)
+    # Reconnect replays the same admission identity, never a fresh turn.
+    assert bot_relay.claim_pending_envelopes(root) == claimed
+    bot_relay.write_reply(root, env['id'], reply='done')
     assert bot_relay.claim_pending_envelopes(root) == []
 
 

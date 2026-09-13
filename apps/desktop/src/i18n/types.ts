@@ -2431,6 +2431,7 @@ export interface Translations {
     openDirective: string
     queueMessage: string
     steer: string
+    redirect: string
     stop: string
     send: string
     speaking: string
@@ -2487,6 +2488,10 @@ export interface Translations {
     queueSend: string
     queueSteer: string
     queueDelete: string
+    queueLostNote: string
+    restoreImageDraft: string
+    queueLostDiscard: string
+    queueLostDiscardTip: string
     queueResume: string
     queueResumeTip: string
     queueStuckTitle: string

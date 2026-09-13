@@ -528,7 +528,7 @@ class TestCronRunBackgroundDispatch:
 
         rc, out = self._run_cmd(capsys)
 
-        assert rc == 0
+        assert rc == 1
         assert "Ran now: failed." in out
 
     def test_delegation_id_alone_counts_as_background(self, monkeypatch, capsys):

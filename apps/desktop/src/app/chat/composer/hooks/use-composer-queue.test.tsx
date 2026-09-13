@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
@@ -10,7 +11,7 @@ import {
   MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
-import { setSessionsLoading } from '@/store/session'
+import { $connection, setSessionsLoading } from '@/store/session'
 
 import type { QueueEditState } from '../composer-utils'
 import type { ChatBarProps } from '../types'
@@ -70,6 +71,53 @@ describe('useComposerQueue park integration', () => {
     setSessionsLoading(true)
   })
 
+  it('admits native Queue through submit and retains an uncertain draft without a local replay', async () => {
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
+    const draftRef = { current: 'durable queue' }
+    const clearDraft = vi.fn(() => { draftRef.current = '' })
+    const onSubmit = vi.fn<ChatBarProps['onSubmit']>().mockResolvedValue(false)
+
+    const hook = renderHook(({ busy }) => useComposerQueue({
+      activeQueueSessionKey: SESSION_KEY, attachments: [], busy, clearDraft, draftRef,
+      focusInput: () => undefined, loadIntoComposer: () => undefined, onCancel: vi.fn(), onSteer: undefined,
+      onSubmit, queueEditRef: { current: null }, queueSessionKey: SESSION_KEY, sessionId: 'rt-session-queue-hook'
+    }), { initialProps: { busy: true } })
+
+    try {
+      await act(async () => { await hook.result.current.queueCurrentDraft() })
+      expect(onSubmit).toHaveBeenCalledWith('durable queue', expect.objectContaining({ fromQueue: true, storedSessionId: SESSION_KEY }))
+      expect(draftRef.current).toBe('durable queue')
+      expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+      onSubmit.mockResolvedValue(true)
+      await act(async () => { await hook.result.current.queueCurrentDraft() })
+      expect(clearDraft).toHaveBeenCalledTimes(1)
+      hook.rerender({ busy: false })
+      await act(async () => { await Promise.resolve() })
+      expect(onSubmit).toHaveBeenCalledTimes(2)
+    } finally { $connection.set(null) }
+  })
+
+  it('does not clear the next session draft when a queue ACK arrives after navigation', async () => {
+    $connection.set({ mode: 'local', wsUrl: 'ws://localhost/api/ws?native_dial=unminted' } as HermesConnection)
+    let accept!: (value: boolean) => void
+    const clearDraft = vi.fn()
+    const draftRef = { current: 'same text' }
+
+    const hook = renderHook(({ key }) => useComposerQueue({
+      activeQueueSessionKey: key, attachments: [], busy: true, clearDraft, draftRef,
+      focusInput: () => undefined, loadIntoComposer: () => undefined, onCancel: vi.fn(), onSteer: undefined,
+      onSubmit: () => new Promise<boolean>(resolve => { accept = resolve }), queueEditRef: { current: null }, queueSessionKey: key, sessionId: key
+    }), { initialProps: { key: 'outgoing' } })
+
+    try {
+      let pending: boolean | Promise<boolean> = false
+      act(() => { pending = hook.result.current.queueCurrentDraft() })
+      hook.rerender({ key: 'incoming' })
+      await act(async () => { accept(true); await pending })
+      expect(clearDraft).not.toHaveBeenCalled()
+    } finally { $connection.set(null) }
+  })
+
   it('reschedules rejected foreground drains to a bounded stop and keeps manual recovery', async () => {
     vi.useFakeTimers()
 
@@ -89,6 +137,11 @@ describe('useComposerQueue park integration', () => {
       }
 
       expect(onSubmit).toHaveBeenCalledTimes(MAX_AUTO_DRAIN_ATTEMPTS)
+
+      for (const [, options] of onSubmit.mock.calls) {
+        expect(options).toMatchObject({ submission_id: entry.id })
+      }
+
       await act(async () => {
         await vi.advanceTimersByTimeAsync(300_000)
       })

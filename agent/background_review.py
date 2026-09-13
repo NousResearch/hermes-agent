@@ -187,6 +187,10 @@ def _review_input_token_budget(task_cfg: Optional[Dict[str, Any]] = None) -> Opt
 def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
     """Single config read -> ``(enabled, task_cfg)``. Fail-open (``enabled=True``) so a broken
     config never silently disables reviews — but WARN so the cost is visible."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return False, {}
     try:
         from hermes_cli.config import load_config_readonly
         from utils import is_truthy_value

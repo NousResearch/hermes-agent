@@ -537,8 +537,9 @@ def _lock_in_submit_turn(
     return None, fields
 
 
-# Per-turn client surfaces that carry a model-bound note (session_notifications._surface_note).
-_CLIENT_SURFACES = frozenset({"hud", "voice-live"})
+# Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
+# the canonical admission path shares the same set (gateway.session_surface).
+from gateway.session_surface import SURFACES as _CLIENT_SURFACES
 
 
 @method("prompt.submit")

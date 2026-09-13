@@ -94,7 +94,12 @@ def _open_child_session_db(parent_agent) -> Any:
     # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
     # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
     # .db_path via __getattr__, so this works through them.
+    from agent.runtime_session_store import RuntimeSessionStore, WorkerPersistenceError, is_worker_process
     parent_session_db = getattr(parent_agent, "_session_db", None)
+    if is_worker_process() or isinstance(parent_session_db, RuntimeSessionStore):
+        # Missing db_path on a scoped store is NOT permission to open the
+        # launch profile. Child identity must first be reserved by the owner.
+        raise WorkerPersistenceError('worker_child_registration_required')
     if parent_session_db is None:
         return None
     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):

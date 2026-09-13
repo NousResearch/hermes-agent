@@ -1,9 +1,11 @@
 /**
  * Wiring coverage for the main.ts gateway download transports. These functions
- * pull in main-process singletons (https/http, electronNet, the OAuth session,
- * the save dialog), so we assert on their source shape — the same approach as
+ * pull in main-process singletons (electronNet, the OAuth session, the save
+ * dialog), so we assert on their source shape — the same approach as
  * oauth-session-request.test.ts — while gateway-file-download.test.ts unit-tests
- * the extracted streaming/decoding logic behaviorally.
+ * the extracted streaming/decoding logic behaviorally. The token transport
+ * lives in gateway-download-transport.ts and is covered behaviorally by
+ * gateway-download-transport.test.ts.
  */
 
 import assert from 'node:assert/strict'
@@ -24,18 +26,6 @@ function extract(startMarker: string, endMarker: string): string {
 
   return source.slice(start, end)
 }
-
-test('token transport streams to disk instead of buffering the whole body', () => {
-  const fn = extract('function downloadViaTokenToFile', '\nfunction ')
-
-  // Delegates byte-moving to the streaming finalizer...
-  assert.match(fn, /finalizeGatewayDownload\(/)
-  // ...and must NOT accumulate the full response before writing.
-  assert.doesNotMatch(fn, /Buffer\.concat/)
-  assert.doesNotMatch(fn, /chunks\.push/)
-  // Idle timeout is dropped once headers arrive so the dialog/stream isn't killed.
-  assert.match(fn, /setTimeout\(0\)/)
-})
 
 test('oauth transport streams to disk instead of buffering the whole body', () => {
   const fn = extract('function downloadViaOauthSessionToFile', '\nasync function finalizeGatewayDownload')

@@ -1,10 +1,26 @@
 import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { $connection } from './session'
+import { knownOwnerForSession } from './session-states'
+
+/** Local owner routes use canonical admission; remote legacy queues stay local. */
+export function serverOwnsComposerQueue(sessionId: string | null | undefined): boolean {
+  const owner = knownOwnerForSession(sessionId)
+
+  if (owner && typeof owner === 'object' && owner.mode) { return owner.mode === 'local' }
+  const connection = $connection.get()
+
+  if (owner && typeof owner === 'object' && owner.connectionId !== connection?.connectionId) { return false }
+
+  return Boolean(connection?.wsUrl && new URL(connection.wsUrl).searchParams.has('native_dial'))
+}
+
 import type { ComposerAttachment } from './composer'
 
 export interface QueuedPromptEntry {
   id: string
+  serverStatus?: string
   text: string
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole
@@ -20,10 +36,10 @@ export interface QueuedPromptEntry {
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
  *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text' | 'serverStatus'>): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  return !entry.serverStatus && Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>
@@ -90,7 +106,7 @@ const setParked = (sid: string, parked: boolean) => {
   $parkedQueueSessions.set(next)
 }
 
-const writeSession = (sid: string, queue: QueuedPromptEntry[]) => {
+export const writeSessionQueue = (sid: string, queue: QueuedPromptEntry[]) => {
   const current = $queuedPromptsBySession.get()
   const next = { ...current }
 
@@ -127,7 +143,7 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
+  payload: { id?: string; text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -136,7 +152,7 @@ export const enqueueQueuedPrompt = (
   }
 
   const entry: QueuedPromptEntry = {
-    id: nextId(),
+    id: payload.id ?? nextId(),
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
     ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
@@ -144,7 +160,7 @@ export const enqueueQueuedPrompt = (
     queuedAt: Date.now()
   }
 
-  writeSession(sid, [...queueFor(sid), entry])
+  writeSessionQueue(sid, [...queueFor(sid), entry])
   // Queueing a new prompt is fresh intent to keep the conversation moving —
   // a park from an earlier Stop must not hold this (or the entries ahead of
   // it) back.
@@ -166,7 +182,7 @@ export const dequeueQueuedPrompt = (key: string | null | undefined): null | Queu
     return null
   }
 
-  writeSession(sid, rest)
+  writeSessionQueue(sid, rest)
 
   return head
 }
@@ -179,13 +195,13 @@ export const removeQueuedPrompt = (key: string | null | undefined, id: string): 
   }
 
   const queue = queueFor(sid)
-  const next = queue.filter(e => e.id !== id)
+  const next = queue.filter(e => e.id !== id || e.serverStatus)
 
   if (next.length === queue.length) {
     return false
   }
 
-  writeSession(sid, next)
+  writeSessionQueue(sid, next)
 
   return true
 }
@@ -205,7 +221,7 @@ export const promoteQueuedPrompt = (key: string | null | undefined, id: string):
   }
 
   const entry = queue[index]!
-  writeSession(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
+  writeSessionQueue(sid, [entry, ...queue.slice(0, index), ...queue.slice(index + 1)])
 
   return true
 }
@@ -249,7 +265,7 @@ export const updateQueuedPrompt = (
     return false
   }
 
-  writeSession(sid, next)
+  writeSessionQueue(sid, next)
 
   return true
 }
@@ -264,7 +280,7 @@ export const clearQueuedPrompts = (key: string | null | undefined) => {
     return
   }
 
-  writeSession(sid, [])
+  writeSessionQueue(sid, [])
 }
 
 /**

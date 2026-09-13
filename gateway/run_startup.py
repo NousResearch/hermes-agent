@@ -525,6 +525,13 @@ class GatewayStartupMixin:
         now = datetime.now()
         scheduled = 0
         for entry in candidates:
+            # Canonical admissions own restart decisions, including unknown pauses.
+            # Legacy synthetic resume must not race their restored FIFO.
+            from gateway.session_authorities import all_authorities
+            if any(authority.db._read_one(
+                    'SELECT 1 FROM session_admissions WHERE target_session_id=? LIMIT 1',
+                    (entry.session_id,)) for authority in all_authorities(self)):
+                continue
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
                 continue
@@ -677,6 +684,9 @@ class GatewayStartupMixin:
         return service
 
     async def _ensure_hosted_room_worker(self):
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.session_hosted_service import ensure_hosted_service
+            return await ensure_hosted_service(self)
         return await asyncio.to_thread(self._start_hosted_room_worker_sync)
 
     async def _hosted_room_worker_watcher(self, interval: float = 1.0) -> None:
@@ -687,6 +697,9 @@ class GatewayStartupMixin:
 
     async def _stop_hosted_room_worker(self, timeout: float = 5.0) -> bool:
         """Pause room execution durably without interrupting accepted turns."""
+        if getattr(self, 'session_authority', None) is not None:
+            from gateway.session_hosted_service import stop_hosted_service
+            return await stop_hosted_service(self, timeout=timeout)
         from tui_gateway import methods_groups
         return await asyncio.to_thread(methods_groups.stop_hosted_room_service, timeout=timeout)
 
@@ -944,6 +957,11 @@ class GatewayStartupMixin:
             recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
+        # The gateway owns delegation state: replay durable completions the previous
+        # process never delivered. Explicit here, never at tools import (clients).
+        with _log_suppressed(logging.WARNING, "Could not restore async delegation completions: %s"):
+            from tools.async_delegation import restore_undelivered_completions
+            restore_undelivered_completions(process_registry.completion_queue)
         # Recover sessions active at last exit (exact turn markers + 120s recency fallback for
         # marker-less older turns). SKIP after a clean exit — the previous process already drained.
         _clean_marker = _hermes_home / ".clean_shutdown"
@@ -1281,6 +1299,8 @@ class GatewayStartupMixin:
         # auto-resume stays visible on the next user message.
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
+        from gateway.run_runtime import recover_gateway_native_sessions
+        await recover_gateway_native_sessions(self)
         # Surface state.db init failures to messaging platforms before the user loses data.
         # See #88235.
         await self._send_session_db_warning_notifications()

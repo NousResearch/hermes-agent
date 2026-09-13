@@ -33,7 +33,7 @@ def _claim_active_session_slot(
         from hermes_cli.active_sessions import try_acquire_active_session
         return try_acquire_active_session(
             session_id=session_key, surface=surface, config=_load_cfg(), registry_home=profile_home,
-            metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True},
+            metadata={"live_session_id": live_session_id},
             track_liveness=str(surface or "").strip().lower() == "desktop")
     except Exception as exc:
         logger.warning("Failed to claim active session slot: %s", exc)
@@ -141,7 +141,7 @@ def _transfer_active_session_slot(sid: str, session: dict, *, new_session_id: st
     try:
         from hermes_cli.active_sessions import transfer_active_session
         if transfer_active_session(lease, session_id=new_session_id, metadata={
-                "live_session_id": sid, "bot_live_delivery_consumer": True}):
+                "live_session_id": sid}):
             return True
     except Exception:
         logger.debug("Failed to transfer active session slot", exc_info=True)

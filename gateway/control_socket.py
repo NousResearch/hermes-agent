@@ -16,6 +16,8 @@ import json
 import logging
 import os
 import socket
+import stat
+import struct
 import sys
 import tempfile
 import time
@@ -52,7 +54,7 @@ def _fallback_socket_path(home: Path) -> Path:
     """Short temp-dir path for homes whose direct socket path exceeds sun_path: ``tempfile.gettempdir()``
     then ``/tmp`` (POSIX); if nothing fits the tempdir candidate is returned anyway — bind fails
     non-fatally and consumers use the scan layer."""
-    name = f"hermes-gw-{_home_hash(home)}.sock"
+    name = f"hermes-gw-{_home_hash(home)}/control.sock"
     candidates = [Path(tempfile.gettempdir()) / name] + ([] if _IS_WINDOWS else [Path("/tmp") / name])
     return next((c for c in candidates if _fits_sun_path(c)), candidates[0])
 
@@ -129,10 +131,13 @@ class GatewayControlServer:
             from gateway.status import _get_process_hermes_home
             home = _get_process_hermes_home()
         self._home = Path(home)
+        self.ticket_store = None
+        self.private_handlers = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._pipe_server: Any = None  # Windows proactor pipe server
         self._bind_path: Optional[Path] = None
         self._pointer_file: Optional[Path] = None
+        self._file_identities = {}
         self._handlers: dict[str, Callable[[], dict[str, Any]]] = {
             "identify": build_identify_payload, "status": build_status_payload, **(verb_handlers or {})}
 
@@ -141,16 +146,26 @@ class GatewayControlServer:
         try:
             return await (self._start_windows() if _IS_WINDOWS else self._start_posix())
         except Exception as exc:
+            await self.stop()
             logger.warning("Gateway control socket failed to start (non-fatal): %s", exc)
             return False
 
     async def _start_posix(self) -> bool:
         bind_path, pointer_file = resolve_server_socket_path(self._home)
+        if pointer_file is not None:
+            bind_path.parent.mkdir(mode=0o700, exist_ok=True)
+            info = bind_path.parent.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()  # windows-footgun: ok — POSIX listener
+                    or info.st_mode & 0o077):
+                raise PermissionError("unsafe fallback control directory")
+        if bind_path.is_symlink():
+            raise PermissionError("control socket cannot be a symlink")
         # We only get here after winning the PID-file O_EXCL race, so any existing
         # file is stale or a collision — never a live sibling.
-        with contextlib.suppress(OSError):
-            if bind_path.exists():
-                bind_path.unlink()
+        if bind_path.exists():
+            if bind_path.lstat().st_uid != os.getuid():  # windows-footgun: ok — POSIX listener
+                raise PermissionError("control socket belongs to another user")
+            bind_path.unlink()
         # Restrictive umask so the socket is never world-connectable, even for the instant before chmod.
         old_umask = os.umask(0o177)
         try:
@@ -160,34 +175,35 @@ class GatewayControlServer:
         with contextlib.suppress(OSError):
             os.chmod(bind_path, 0o600)
         self._bind_path = bind_path
+        info = bind_path.lstat()
+        self._file_identities[bind_path] = (info.st_dev, info.st_ino)
         if pointer_file is not None:
-            pointer_file.write_text(str(bind_path), encoding="utf-8")
+            fd = os.open(pointer_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as pointer:
+                pointer.write(str(bind_path))
             self._pointer_file = pointer_file
+        for path in filter(None, (self._bind_path, self._pointer_file)):
+            info = path.lstat()
+            self._file_identities[path] = (info.st_dev, info.st_ino)
         logger.info("Gateway control socket listening at %s", bind_path)
         return True
 
     async def _start_windows(self) -> bool:
-        loop = asyncio.get_running_loop()
-        start_serving_pipe = getattr(loop, "start_serving_pipe", None)
-        if start_serving_pipe is None:
-            logger.debug("Event loop %s has no start_serving_pipe — control socket "
-                         "disabled (selector loop on Windows).", type(loop).__name__)
-            return False
-        pipe_name = windows_pipe_name(self._home)
-        servers = await start_serving_pipe(lambda: _PipeControlProtocol(self), pipe_name)
-        self._pipe_server = servers[0] if servers else None
-        logger.info("Gateway control pipe listening at %s", pipe_name)
-        return self._pipe_server is not None
-
+        from gateway.runtime_bootstrap_windows import NativeControlServer
+        self._pipe_server = NativeControlServer(self._home, self.handle_request_line)
+        await asyncio.to_thread(self._pipe_server.start)
+        return True
     async def stop(self) -> None:
         """Stop serving and remove the socket/pointer files."""
+        if self.ticket_store is not None:
+            self.ticket_store.revoke()
         if self._server is not None:
             self._server.close()
             with contextlib.suppress(Exception):
                 await self._server.wait_closed()
         if self._pipe_server is not None:
             with contextlib.suppress(Exception):
-                self._pipe_server.close()
+                await asyncio.to_thread(self._pipe_server.close)
         self._server = self._pipe_server = None
         self.cleanup_files()
 
@@ -195,9 +211,12 @@ class GatewayControlServer:
         """Best-effort removal of socket + pointer files (atexit-safe)."""
         for path in filter(None, (self._bind_path, self._pointer_file)):
             with contextlib.suppress(OSError):
-                path.unlink(missing_ok=True)
+                info = path.lstat()
+                if self._file_identities.get(path) == (info.st_dev, info.st_ino):
+                    path.unlink()
+        self._file_identities.clear()
 
-    def handle_request_line(self, raw: bytes) -> bytes:
+    def handle_request_line(self, raw: bytes, peer_subject: Optional[str] = None) -> bytes:
         """One JSON request line -> one JSON response line. Never raises (shared by POSIX + pipe)."""
         request_id: Any = None
         try:
@@ -206,7 +225,17 @@ class GatewayControlServer:
                 raise ValueError("request must be a JSON object")
             request_id, verb = request.get("id"), request.get("verb")
             handler = self._handlers.get(verb) if isinstance(verb, str) else None
-            if handler is None:
+            if isinstance(verb, str) and verb in self.private_handlers:
+                if (not peer_subject or request.get("protocol") != 1
+                        or set(request) - {"protocol", "verb", "id", "params"}
+                        or not isinstance(request.get("params"), dict)):
+                    raise PermissionError("authenticated private request required")
+                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
+                            "result": self.private_handlers[verb](request["params"], peer_subject)}
+            elif verb == "session-ticket":
+                response = {"ok": True, "protocol": CONTROL_PROTOCOL_VERSION,
+                            "result": self._session_ticket(request, peer_subject)}
+            elif handler is None:
                 response: dict[str, Any] = {"ok": False, "error": f"unknown verb: {verb!r}",
                                             "protocol": CONTROL_PROTOCOL_VERSION, "supported_verbs": sorted(self._handlers)}
             else:
@@ -223,6 +252,50 @@ class GatewayControlServer:
             encoded = b'{"ok": false, "error": "response too large"}'
         return encoded + b"\n"
 
+    def _session_ticket(self, request: dict, peer_subject: Optional[str]) -> dict:
+        if not peer_subject or self.ticket_store is None:
+            raise PermissionError("authenticated runtime bootstrap unavailable")
+        if set(request) - {"protocol", "verb", "id", "params"} or request.get("protocol") != 1:
+            raise PermissionError("invalid bootstrap envelope")
+        params = request.get("params")
+        if not isinstance(params, dict) or set(params) != {"profile_id", "instance_id", "purpose"}:
+            raise PermissionError("invalid bootstrap parameters")
+        if params["instance_id"] != self.ticket_store.instance_id:
+            raise PermissionError("stale runtime instance")
+        ticket = self.ticket_store.mint(profile_id=params["profile_id"],
+                                       subject=peer_subject, purpose=params["purpose"])
+        return {"ticket": ticket, "expires_in_seconds": 30,
+                "instance_id": self.ticket_store.instance_id,
+                "profile_id": params["profile_id"], "runtime_protocol": 1}
+
+    def _posix_peer_subject(self, writer) -> Optional[str]:
+        # The legacy diagnostic channel may operate without bootstrap-safe metadata.
+        if os.name == "nt":
+            return None
+        try:
+            home = self._home
+            info = home.lstat()
+            if (home.absolute() != home.resolve() or not stat.S_ISDIR(info.st_mode)
+                    or info.st_uid != os.getuid() or info.st_mode & 0o077):  # windows-footgun: ok — POSIX-only helper
+                return None
+            sock = writer.get_extra_info("socket")
+            if hasattr(socket, "SO_PEERCRED"):
+                _, uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            elif sys.platform == "darwin":
+                import ctypes
+                uid_value, gid_value = ctypes.c_uint(), ctypes.c_uint()
+                getpeereid = ctypes.CDLL(None, use_errno=True).getpeereid
+                getpeereid.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+                getpeereid.restype = ctypes.c_int
+                if getpeereid(sock.fileno(), ctypes.byref(uid_value), ctypes.byref(gid_value)) != 0:
+                    return None
+                uid = uid_value.value
+            else:
+                return None
+            return f"uid:{uid}" if uid == os.getuid() else None  # windows-footgun: ok — POSIX-only helper
+        except OSError:
+            return None
+
     async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             raw = await asyncio.wait_for(reader.readline(), timeout=_DEFAULT_CLIENT_TIMEOUT)
@@ -231,9 +304,9 @@ class GatewayControlServer:
             # Handlers read disk; keep that off the loop that drives every platform
             # adapter so a fast-polling consumer can't stall heartbeats.
             response = await asyncio.get_running_loop().run_in_executor(
-                None, self.handle_request_line, raw.rstrip(b"\n"))
+                None, self.handle_request_line, raw.rstrip(b"\n"), self._posix_peer_subject(writer))
             writer.write(response)
-            await writer.drain()
+            await asyncio.wait_for(writer.drain(), timeout=_DEFAULT_CLIENT_TIMEOUT)
         except (asyncio.TimeoutError, ConnectionError, OSError):
             pass
         except Exception:

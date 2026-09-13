@@ -17,6 +17,7 @@ spirit, different check).
 """
 
 import json
+import pytest
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,6 +27,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import cron.jobs as cron_jobs
 from cron.scheduler import run_job
 import cron.scheduler as sched
+
+pytestmark = pytest.mark.usefixtures("cron_owner")
 
 
 _RUNTIME = {
@@ -45,7 +48,7 @@ def _job(**overrides):
         "state": "scheduled",
         "schedule": {"kind": "interval", "minutes": 5, "display": "every 5m"},
         "deliver": "local",
-        "model": None,
+        "model": "test-model",
         "provider": None,
         "base_url": None,
     }
@@ -67,13 +70,11 @@ def _run_job_patched(job, tmp_path, *, resolve=None, skill_view=None):
 
     Returns (success, output, final_response, error, agent_constructed).
     """
-    fake_db = MagicMock()
     patches = [
         patch("cron.scheduler._hermes_home", tmp_path),
         patch("cron.scheduler_delivery._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
-        patch("hermes_state_registry.acquire", return_value=fake_db),
         patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]),
     ]
     if resolve is None:
@@ -126,27 +127,25 @@ class TestMissingProviderKeyBlocks:
     def test_single_alert_across_two_ticks_and_blocked_status(self, tmp_path):
         """Two ticks of a blocked job through run_one_job deliver exactly ONE
         alert and persist last_status='blocked_config'."""
-        job = _job()
+        job = _job(failure_deliver="slack:alerts")
         deliveries = []
 
-        def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
+        def fake_deliver(execution_id, job, content, **kwargs):
             deliveries.append(content)
-            return None
+            return {"status": "pending"}
 
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            fake_db = MagicMock()
             for _tick in range(2):
                 fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
                 with patch("cron.scheduler._hermes_home", tmp_path), \
                      patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                      patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                     patch("hermes_state_registry.acquire", return_value=fake_db), \
                      patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
-                     patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
+                     patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
                      patch("run_agent.AIAgent") as mock_agent_cls:
                     ok = sched.run_one_job(fresh)
                     assert ok is True
@@ -230,27 +229,25 @@ class TestOptOut:
         (tmp_path / "config.yaml").write_text(
             "cron:\n  preflight: false\n", encoding="utf-8"
         )
-        job = _job()
+        job = _job(failure_deliver="slack:alerts")
         deliveries = []
 
-        def fake_deliver(job, content, adapters=None, loop=None, **kwargs):
+        def fake_deliver(execution_id, job, content, **kwargs):
             deliveries.append(content)
-            return None
+            return {"status": "pending"}
 
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            fake_db = MagicMock()
             for _tick in range(2):
                 fresh = [j for j in cron_jobs.load_jobs() if j["id"] == job["id"]][0]
                 with patch("cron.scheduler._hermes_home", tmp_path), \
                      patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
                      patch("hermes_cli.env_loader.load_hermes_dotenv"), \
                      patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-                     patch("hermes_state_registry.acquire", return_value=fake_db), \
                      patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
                      patch("hermes_cli.runtime_provider.resolve_runtime_provider",
                            side_effect=_AuthErrorFactory()), \
-                     patch.object(sched, "_deliver_result", side_effect=fake_deliver), \
+                     patch("cron.delivery_queue.enqueue", side_effect=fake_deliver), \
                      patch("run_agent.AIAgent") as mock_agent_cls:
                     sched.run_one_job(fresh)
                     assert mock_agent_cls.called is False

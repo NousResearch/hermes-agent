@@ -670,6 +670,9 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
         print(f"  Next run: {result['job']['next_run_at']}")
     if action == "run":
         print(f"  {_run_outcome(result.get('job', {}))}")
+        if (job.get('executed') and job.get('execution_success') is False
+                and not job.get('delegation_id') and job.get('execution_mode') != 'background'):
+            return 1
     return 0
 
 

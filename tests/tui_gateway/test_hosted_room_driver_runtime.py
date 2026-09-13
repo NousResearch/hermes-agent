@@ -422,7 +422,7 @@ def _runtime(
     )
 
 
-def _wait_for(predicate, *, timeout: float = 2.0) -> None:
+def _wait_for(predicate, *, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():

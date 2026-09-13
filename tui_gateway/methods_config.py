@@ -297,35 +297,11 @@ def _(rid, params: dict) -> dict:
     error when the model can't be served, so UIs surface onboarding before a doomed prompt.
     ``profile`` answers for THAT profile's pin and ``.env``; unknown -> ``ok=False``."""
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.auth import has_usable_secret
-        from hermes_cli.main import _has_any_provider_configured
+        from hermes_cli.runtime_readiness import check_runtime_readiness
         requested = str(params.get("provider") or "").strip() or None
 
         def probe(profile, scoped):
-            runtime = resolve_runtime_provider(requested=requested)
-            provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
-            provider = runtime.get("provider") or "provider"
-            source = str(runtime.get("source") or "")
-
-            def fail(error, src):
-                return {"ok": False, "provider": provider, "model": runtime.get("model"),
-                        "source": src, "error": error, **scoped}
-            if (not provider_configured and provider == "bedrock"
-                    and source in {"iam-role", "aws-sdk-default-chain"}):
-                return fail("No Hermes provider is configured.", source)
-            api_key = runtime.get("api_key")
-            api_key_text = "" if callable(api_key) else str(api_key or "").strip()
-            if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
-                    or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
-                return fail(f"No usable credentials found for {provider}.", runtime.get("source"))
-            from hermes_cli.anon_auth import route_is_welcome_host
-            # free_tier is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
-            # on profile state: a paid Nous key beside a free-tier identity must not read as free.
-            return {"ok": True, "provider": runtime.get("provider"), "model": runtime.get("model"),
-                    "source": runtime.get("source"),
-                    "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
-                    **scoped}
+            return {**check_runtime_readiness(requested, strict_profile_scope=bool(profile)), **scoped}
         return _readiness_check(rid, params, probe)
     except Exception as e:
         return _ok(rid, {"ok": False, "error": str(e)})

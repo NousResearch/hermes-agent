@@ -132,6 +132,8 @@ class MCPServerHealthMixin:
     async def _refresh_tools(self):
         """Re-fetch tools on ``tools/list_changed`` and update the registry. The lock serializes rapid-fire
         notifications; after the list_tools ``await`` all mutations are synchronous — atomic on the event loop."""
+        if getattr(self, '_editor_frozen_manifest', None) is not None:
+            return  # Editor tool policy changes apply only to a new canonical session.
         if not self._advertises_tools():
             return  # tools/list would raise MCPError(-32601)
         async with self._refresh_lock:

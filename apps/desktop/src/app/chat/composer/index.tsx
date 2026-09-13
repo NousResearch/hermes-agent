@@ -3,7 +3,9 @@ import { useStore } from '@nanostores/react'
 import { type ClipboardEvent, type FormEvent, type KeyboardEvent, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { useTourMarker } from '@/app/chat/tour-marker'
+import type { GatewayRequester } from '@/app/contrib/types'
 import { useHudComposerDrag } from '@/app/hud/composer-drag'
+import { useBusyInputMode } from '@/app/session/hooks/use-busy-input-mode'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { $chatOnboardingSolo, $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
 import { OnboardingSkip } from '@/components/onboarding-chat/skip'
@@ -24,6 +26,7 @@ import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } f
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
+import { notifyError } from '@/store/notifications'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -45,6 +48,7 @@ import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
+import { discardLostPrompt } from './discard-lost-prompt'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
@@ -69,6 +73,7 @@ import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
+import { PreparedImageRecovery } from './prepared-image-recovery'
 import { QueuePanel } from './queue-panel'
 import {
   beginComposerComposition,
@@ -180,6 +185,17 @@ export function ChatBar({
   // undelivered behind the blocked tool batch). Drives the button affordance.
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   const activeQueueSessionKey = queueSessionKey || sessionId || null
+
+  const requestBusyConfig = useCallback<GatewayRequester>(
+    (method, params) => (gateway ? gateway.request(method, params) : Promise.reject(new Error('Gateway unavailable'))),
+    [gateway]
+  )
+
+  const busyInputMode = useBusyInputMode({
+    sessionId: sessionId ?? null,
+    storedSessionId: queueSessionKey ?? null,
+    requestGateway: requestBusyConfig
+  })
 
   // Status items (subagents, background processes) are keyed by the RUNTIME
   // session id — gateway events and process.list both speak that id. Only the
@@ -356,7 +372,10 @@ export function ChatBar({
   })
 
   const hasComposerPayload = hasText || attachments.length > 0
-  const canSubmit = busy || hasComposerPayload
+
+  const canSubmit =
+    (busy || hasComposerPayload) &&
+    !(busy && isSteerableText && attachments.length === 0 && !compacting && !blockingPrompt && busyInputMode === null)
 
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
@@ -364,10 +383,9 @@ export function ChatBar({
   // is parked on the user, so a steer can't reach the model — text queues.
   const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
 
-  // While busy: text redirects the live turn (Cursor-style stop-and-correct),
-  // attachments queue for the next turn, an empty composer stops.
-  const busyAction: 'steer' | 'queue' | 'stop' = canSteer
-    ? 'steer'
+  // Ordinary busy Send follows backend policy; attachments queue and empty stops.
+  const busyAction: 'interrupt' | 'steer' | 'queue' | 'stop' = canSteer
+    ? (busyInputMode ?? 'interrupt')
     : compacting || hasComposerPayload
       ? 'queue'
       : 'stop'
@@ -375,6 +393,7 @@ export function ChatBar({
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
   const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+    busyInputMode,
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
@@ -1068,6 +1087,7 @@ export function ChatBar({
       minimal={minimal}
       onDictate={dictate}
       onQueue={queueDraft}
+      onSteer={canSteer ? () => steerDraft('steer') : undefined}
       onToggleAutoSpeak={handleToggleAutoSpeak}
       state={state}
       voiceStatus={voiceStatus}
@@ -1228,6 +1248,12 @@ export function ChatBar({
           <div className={cn(composerFloatingStrip, 'px-[5px] pb-1.5 empty:hidden')}>
             <ActionBadges sessionId={statusSessionId} />
             <SuggestionPills sessionId={statusSessionId} />
+            <PreparedImageRecovery
+              occupied={hasText || attachments.length > 0 || busy || disabled}
+              onRestore={loadIntoComposer}
+              request={requestBusyConfig}
+              sessionKey={activeQueueSessionKey}
+            />
             <OnboardingSkip />
             <OnboardingStart />
           </div>
@@ -1248,6 +1274,14 @@ export function ChatBar({
                       exitQueuedEdit('cancel')
                     }
                   }}
+                  onDiscardLost={gateway ? id => {
+                    // Server-owned row: the authority's pending fanout retires it
+                    // from the queue once the acknowledgement commits. Canonical
+                    // local sessions key the queue by their own session id, so the
+                    // stored key stands in when the runtime id is not bound yet.
+                    discardLostPrompt(sessionId, activeQueueSessionKey, id, gateway.request.bind(gateway))
+                      .catch((error: unknown) => notifyError(error, t.composer.queueLostDiscard))
+                  } : undefined}
                   onEdit={beginQueuedEdit}
                   onResume={() => {
                     unparkQueuedPrompts(activeQueueSessionKey)

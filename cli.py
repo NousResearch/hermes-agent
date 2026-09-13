@@ -1093,14 +1093,18 @@ def _run_state_db_auto_maintenance(session_db) -> None:
                 "Finalized %d orphaned compression sessions", "Orphan compression finalize skipped: %s",
             ),
         ):
+            if session_db.get_meta(meta_key):
+                continue
             try:
-                if not session_db.get_meta(meta_key):
-                    count = repair()
-                    session_db.set_meta(meta_key, "1")
-                    if count:
-                        logger.info(done_msg, count)
+                count = repair()
             except Exception as _exc:
-                logger.debug(skip_msg, _exc)
+                # Latched below regardless: a repair this store refuses (live ledger work,
+                # locked file) must surface once, not retry silently on every start.
+                logger.warning(skip_msg, _exc)
+                count = 0
+            session_db.set_meta(meta_key, "1")
+            if count:
+                logger.info(done_msg, count)
 
         cfg = (_load_full_config().get("sessions") or {})
 
@@ -4511,6 +4515,10 @@ def main(
         python cli.py -w                         # Start in isolated git worktree
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
+    if not gateway:
+        from hermes_cli.gateway_chat import launch_from_kwargs
+        sys.exit(launch_from_kwargs(locals()))
+
     # UTF-8 stdio on Windows before any print (Rich box-drawing would UnicodeEncodeError on cp1252).
     with suppress(Exception):
         from hermes_cli.stdio import configure_windows_stdio

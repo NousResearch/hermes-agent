@@ -251,11 +251,12 @@ class SessionGatewayMixin:
             return
         self._write_sql(
             """INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at)
-               VALUES (?, ?, ?, ?)
+               SELECT ?, ?, ?, ? WHERE NOT EXISTS (
+                   SELECT 1 FROM state_meta WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))
                ON CONFLICT(scope, session_key) DO UPDATE SET
                    entry_json = excluded.entry_json,
                    updated_at = excluded.updated_at""",
-            (scope, session_key, entry_json, time.time()),
+            (scope, session_key, entry_json, time.time(), entry_json),
         )
 
     def replace_gateway_routing_entries(self, entries: Dict[str, str], *, scope: str = "") -> None:
@@ -267,8 +268,9 @@ class SessionGatewayMixin:
             if entries:
                 conn.executemany(
                     "INSERT INTO gateway_routing (scope, session_key, entry_json, updated_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    [(scope, k, v, now) for k, v in entries.items() if k and v])
+                    "SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM state_meta "
+                    "WHERE key='gateway.retired_session.v1.' || json_extract(?, '$.session_id'))",
+                    [(scope, k, v, now, v) for k, v in entries.items() if k and v])
         self._execute_write(_do)
 
     def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:

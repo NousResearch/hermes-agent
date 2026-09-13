@@ -278,7 +278,7 @@ def _render_sessions(ctx):
     # pre-migration installs.
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
         try:
             gateway_rows = db.list_gateway_sessions(active_only=True) or []
         finally:

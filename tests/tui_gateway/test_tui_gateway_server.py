@@ -6667,6 +6667,9 @@ def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkey
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+    # This invariant ends at durable truncation; no model turn is requested by
+    # the fixture. Keep its asynchronous continuation inside this test's scope.
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *a, **k: None)
 
     try:
         resp = server.handle_request(
@@ -6688,6 +6691,13 @@ def test_prompt_submit_truncation_falls_back_to_sid_when_session_key_null(monkey
         assert replaced[0][0] == "null-key-trunc-sid"
         assert replaced[0][1] == history[:2]
     finally:
+        # The prompt worker resolves server bindings when it runs. Reap it before
+        # monkeypatch teardown or it can consume the next test's notification.
+        session = server._sessions.get("null-key-trunc-sid")
+        worker = session.get("_run_thread") if session else None
+        if worker is not None:
+            worker.join(timeout=5)
+            assert not worker.is_alive()
         server._sessions.pop("null-key-trunc-sid", None)
 
 
@@ -7236,6 +7246,7 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     def _deliver(_rid, sid, session, text, **_kw):
         delivered["a" if sid == "sid-a-live-handoff" else "b"].append(text)
         session["running"] = False
+        return True  # the execution gate accepted the turn; None would re-queue for redelivery
 
     monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
     server._sessions.update(
@@ -9410,8 +9421,7 @@ def _slash_skill_fixtures(monkeypatch):
     usage = {"work": 297, "research": 84, "clean": 12}
 
     monkeypatch.setattr(
-        server,
-        "_skill_usage_lookup",
+        "tui_gateway.command_discovery._skill_usage_lookup",
         lambda: (
             lambda name: usage.get(name, 0),
             lambda name: "bundled" if name.startswith("unused-") else "local",
@@ -11551,8 +11561,7 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
     opened outranks the one they invoke daily.
     """
     monkeypatch.setattr(
-        server,
-        "_skill_usage_lookup",
+        "tui_gateway.command_discovery._skill_usage_lookup",
         lambda: (
             lambda name: {"research": 60, "work": 172}.get(name, 0),
             lambda name: "bundled" if name == "research-paper-writing" else "local",
@@ -16066,7 +16075,7 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
         def append_messages_batch(self, session_id, messages, **kwargs):
             raise RuntimeError("transcript write failed")
 
-        def delete_session(self, session_id):
+        def discard_unadmitted_session(self, session_id):
             seen["deleted"] = session_id
             return True
 

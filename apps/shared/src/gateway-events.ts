@@ -598,6 +598,10 @@ export interface ClientLocalGatewayEventMap {
   'gateway.reconnecting': { attempt?: number; delay_ms?: number }
   'gateway.start_timeout': { cwd?: string; python?: string; stderr_tail?: string }
   'gateway.stderr': { line: string }
+  /** Synthetic on the client (a reconnect replay could not cover the gap: epoch changed /
+   * ring truncated) AND emitted by canonical gateways on fanout overflow
+   * (`gateway/session_events.py`); consumers re-resume the session for a snapshot. */
+  'session.replay_gap': { latest_seq?: number; replay_epoch?: string }
 }
 
 export interface GatewayEventMap extends BackendGatewayEventMap, ClientLocalGatewayEventMap {}
@@ -609,6 +613,12 @@ export interface GatewayEvent<K extends GatewayEventName = GatewayEventName> {
   /** Registry connection whose socket delivered the event (renderer-side tag;
    * absent for the local/legacy primary path). */
   connectionId?: string
+  /** Owner execution stamp on canonical gateways: the integer runtime epoch and the claimed
+   * generation, spread onto the params beside `type`/`payload` (`gateway/session_events.py`). */
+  authority_epoch?: number
+  execution_generation?: number
+  /** Session-scoped replay generation on canonical gateways. */
+  replay_epoch?: string
   payload?: GatewayEventMap[K]
   /** Renderer-side source tag added by the Desktop gateway registry. */
   profile?: string
@@ -763,5 +773,9 @@ export interface SessionResumeResponse<Info = Record<string, unknown>, Message =
   session_key?: string
   started_at?: number
   status?: string
+  /** Canonical gateways: the durable id of the row this live session projects. */
+  stored_session_id?: string
+  /** Canonical gateways: the actor's subscription token for `session.detach`. */
+  subscription_id?: string
   todo_state?: TodoStatePayload
 }

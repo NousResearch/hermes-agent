@@ -7,10 +7,51 @@ discovering profile's registry overlay, so another profile's job sees the name b
 
 from __future__ import annotations
 
+import asyncio
+import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import cron.jobs as cron_jobs
-from cron.scheduler import run_job
+
+
+def _run_owned_job(job, tmp_path):
+    """Run through the production owner bridge: cron turns execute inside the gateway owner."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_cron import current_execution, execute
+    from hermes_state_registry import acquire, release
+
+    ref = SessionRef("test-profile", "cron-owner-session")
+    admission_id = "cron-owner-admission"
+    request_id = "cron-owner-request"
+    db = acquire(tmp_path / "state.db")
+    db.create_session(ref.session_id, source="cron")
+    authority = SimpleNamespace(
+        db=db,
+        sessions={ref.session_id: SimpleNamespace(source=SimpleNamespace(user_id="cron-owner"))},
+        pending_results={},
+    )
+    row = {"admission_id": admission_id, "request_id": request_id,
+           "principal_id": "cron-owner", "payload": {"text": ""}}
+    policy = SimpleNamespace(request_json=json.dumps({
+        "cron_job": job, "extra_prompt": None, "request_id": request_id}))
+
+    async def run():
+        previous = current_execution()
+        try:
+            await execute(authority, ref, row, policy)
+        except RuntimeError as exc:
+            saved = authority.pending_results.get(admission_id)
+            if saved is None:
+                raise
+            assert str(exc) == saved["result"]["cron_result"][3]
+        assert current_execution() is previous
+        return tuple(authority.pending_results[admission_id]["result"]["cron_result"])
+
+    try:
+        return asyncio.run(run())
+    finally:
+        release(db)
 
 _RUNTIME = {"api_key": "k", "base_url": "https://example.invalid/v1", "provider": "openrouter",
             "api_mode": "chat_completions"}
@@ -34,13 +75,12 @@ def _run(job, tmp_path):
          patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-         patch("hermes_state_registry.acquire", return_value=MagicMock()), \
          patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=dict(_RUNTIME)):
         agent_cls.return_value.run_conversation.return_value = {"final_response": "ok"}
         with cron_jobs.use_cron_store(tmp_path):
             cron_jobs.save_jobs([job])
-            result = run_job(job)
+            result = _run_owned_job(job, tmp_path)
         return result, agent_cls.called
 
 

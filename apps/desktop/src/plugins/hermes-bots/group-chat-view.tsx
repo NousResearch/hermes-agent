@@ -24,6 +24,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  gatewayActivationEpoch,
   host,
   Input,
   queryClient,
@@ -38,6 +39,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import type { GroupExecutionMode } from './canonical-group-capabilities'
+import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -455,7 +461,77 @@ interface GroupChatWorkspaceProps {
   visible?: boolean
 }
 
-export function GroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
+export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
+  const bindings = useValue($canonicalGroupBindings)
+  const binding = bindings[props.group]
+
+  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
+
+  return <GroupExecutionGate {...props} />
+}
+
+function GroupExecutionGate(props: GroupChatWorkspaceProps) {
+  const b = useBots()
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
+  const activationEpoch = gatewayActivationEpoch()
+  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
+  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
+  const mode = capability?.source === source ? capability.mode : 'checking'
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    setCapability(null)
+    setError('')
+
+    if (gateway !== 'open') {
+      setCapability({ source, mode: 'unavailable' })
+
+      return
+    }
+
+    void canonicalGroupRequest<unknown>({ connectionId: connectionId ?? '', profile }, 'groups.capabilities')
+      .then(result => { if (!cancelled) {setCapability({ source, mode: groupExecutionMode(result) })} })
+      .catch(e => {
+        if (!cancelled) {
+          setCapability({ source, mode: 'unavailable' })
+          setError(String(e))
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [connectionId, profile, gateway, source])
+
+  if (mode === 'legacy') {return <LegacyGroupChatWorkspace {...props} />}
+
+  return <div className="grid gap-3 p-3">
+    <h2>{props.group}</h2>
+    <p>{mode === 'canonical' ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.' : mode === 'unavailable' ? b.canonical.driverUnavailable : 'Checking group driver…'}</p>
+    {error && <p role="alert">{error}</p>}
+    <Button disabled={mode !== 'canonical' || busy} onClick={() => {
+      const route = { connectionId: connectionId ?? '', profile }
+
+      const sourceCurrent = groupCreationSource(route, activationEpoch)
+
+      if (mode !== 'canonical' || !sourceCurrent()) {
+        setError(b.canonical.driverUnavailable)
+
+        return
+      }
+
+      setBusy(true)
+      void createCanonicalGroup(route, props.group, props.members)
+        .then(({ room }) => {
+          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
+        })
+        .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
+    }}>Start gateway group</Button>
+  </div>
+}
+
+function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)

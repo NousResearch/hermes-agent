@@ -1,108 +1,147 @@
-"""Durable mailbox invariants, using real disk and exec boundaries."""
-import json
+"""Canonical delivery invariants: stable envelope IDs, authority-only admission,
+immutable receipts. The mailbox is receipt storage, never an execution queue."""
 import os
-import subprocess
-import sys
+from pathlib import Path
 
 import pytest
 
+from tools import bot_live_delivery as mailbox
 
-@pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
-def test_delivery_is_idempotent_fenced_and_permanent(tmp_path, terminal_status):
-    from tools import bot_live_delivery as mailbox
 
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
+class _FakeAuthority:
+    """Stands in for the profile authority's ``bot_relay.deliver`` RPC."""
+
+    def __init__(self):
+        self.calls = []
+        self.records = {}
+
+    def __call__(self, home, params):
+        self.calls.append((Path(home).resolve(), dict(params)))
+        record = self.records.get(params["id"])
+        if record is None:
+            record = self.records[params["id"]] = dict(
+                status="queued", delivery_id=params["id"], profile_home=str(Path(home).resolve()),
+                session_id="local-bot", message=params["message"], admission_id="adm-" + params["id"][:6],
+                reply="", **({"author": params["author"]} if "author" in params else {}))
+            with mailbox._locked(home) as root:
+                mailbox._write(root / f"{params['id']}.json", record)
+        elif (record["message"] != params["message"]
+              or record.get("author") != params.get("author")):
+            raise ValueError("admission_conflict")
+        return {k: record[k] for k in ("status", "delivery_id", "profile_home", "session_id", "reply")}
+
+
+def _owner(home):
+    return dict(profile_home=str(Path(home).resolve()), session_id="local-bot",
+                lease_id="authority-1", live_session_id="local-bot")
+
+
+def test_same_envelope_id_admits_once_and_conflicts_on_changed_payload(tmp_path, monkeypatch):
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
     delivery_id = "a" * 32
-    queued = mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id=delivery_id)
-    assert queued["status"] == "queued"
-    assert mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id=delivery_id) == queued
+    queued = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id=delivery_id)
+    assert queued["status"] == "queued" and queued["delivery_id"] == delivery_id
+    # Exact retry inspects the same admission; it never mints a second envelope.
+    assert mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id=delivery_id) == queued
+    assert [params["id"] for _home, params in authority.calls] == [delivery_id, delivery_id]
+    assert len(authority.records) == 1
     with pytest.raises(ValueError):
-        mailbox.deliver_to_live_owner(tmp_path, owner, "different", delivery_id=delivery_id)
-    assert mailbox.claim_pending_delivery(tmp_path, dict(owner, lease_id="other")) is None
-    assert mailbox.claim_pending_delivery(tmp_path, dict(owner, live_session_id="other")) is None
-    script = (
-        "import json,sys; from tools.bot_live_delivery import claim_pending_delivery; "
-        "print(json.dumps(claim_pending_delivery(sys.argv[1],json.loads(sys.argv[2]))))"
-    )
-    children = [subprocess.Popen([sys.executable, "-c", script, str(tmp_path), json.dumps(owner)],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True) for _ in range(2)]
-    results = []
-    for child in children:
-        out, err = child.communicate(timeout=30)
-        assert child.returncode == 0, err
-        results.append(json.loads(out))
-    claims = [r for r in results if r is not None]
-    assert len(claims) == 1 and claims[0]["message"] == "hello"
-    assert mailbox.read_delivery_result(tmp_path, delivery_id)["status"] == "claimed"
-    assert mailbox.claim_pending_delivery(tmp_path, owner) is None
-    receipt = mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer")
-    assert mailbox.read_delivery_result(tmp_path, delivery_id) == receipt
-    assert mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer") == receipt
-    with pytest.raises(ValueError):
-        mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="rewrite")
-    assert mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id=delivery_id) == receipt
-    assert mailbox.claim_pending_delivery(tmp_path, owner) is None
+        mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "different", delivery_id=delivery_id)
+    # Reading the receipt resolves through the same admission, not a local guess.
+    assert mailbox.read_delivery_result(tmp_path, delivery_id)["status"] == "queued"
+    # The retired UI claim consumer never hands out work.
+    assert mailbox.claim_pending_delivery(tmp_path, _owner(tmp_path)) is None
     if os.name != "nt":
         for path in (tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME).iterdir():
             assert path.stat().st_mode & 0o077 == 0
 
 
-def test_fifo_survives_clock_rollback(tmp_path, monkeypatch):
-    from tools import bot_live_delivery as mailbox
+def test_owner_from_another_home_or_malformed_id_is_refused_before_admission(tmp_path, monkeypatch):
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
+    foreign = dict(_owner(tmp_path), profile_home=str(tmp_path / "elsewhere"))
+    with pytest.raises(ValueError, match="different profile home"):
+        mailbox.deliver_to_live_owner(tmp_path, foreign, "hello", delivery_id="b" * 32)
+    with pytest.raises(ValueError, match="delivery id"):
+        mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id="../evil")
+    assert authority.calls == []
 
-    owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat",
-                 lease_id="lease", live_session_id="live")
-    for timestamp, message in ((100, "first"), (90, "second")):
-        monkeypatch.setattr(mailbox.time, "time_ns", lambda: timestamp)
-        mailbox.deliver_to_live_owner(tmp_path, owner, message)
-    assert mailbox.claim_pending_delivery(tmp_path, owner)["message"] == "first"
-    assert mailbox.claim_pending_delivery(tmp_path, owner)["message"] == "second"
+
+def test_receipt_read_forwards_the_immutable_author(tmp_path, monkeypatch):
+    """F10: an authored admission is re-read with its stored author, so the authority sees the same payload."""
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
+    delivery_id = "d" * 32
+    author = {"kind": "user", "id": "u-1", "display": "Ann"}
+    queued = mailbox.deliver_to_live_owner(tmp_path, _owner(tmp_path), "hello", delivery_id=delivery_id, author=author)
+    assert mailbox.read_delivery_result(tmp_path, delivery_id) == queued
+    assert [params.get("author") for _home, params in authority.calls] == [author, author]
 
 
-@pytest.mark.parametrize("capable", [True, False])
-def test_only_canonical_capable_owner_receives_across_compression(tmp_path, capable):
+@pytest.mark.parametrize("terminal_status", ["settled", "failed", "cancelled"])
+def test_terminal_receipt_is_immutable(tmp_path, terminal_status):
+    delivery_id = "c" * 32
+    with mailbox._locked(tmp_path) as root:
+        mailbox._write(root / f"{delivery_id}.json", dict(delivery_id=delivery_id, status="claimed",
+                                                          message="hello", created_at=1))
+    receipt = mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer")
+    assert mailbox.read_delivery_result(tmp_path, delivery_id) == receipt
+    assert mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="answer") == receipt
+    with pytest.raises(ValueError):
+        mailbox.complete_delivery(tmp_path, delivery_id, status=terminal_status, reply="rewrite")
+    with pytest.raises(ValueError):
+        mailbox.complete_delivery(tmp_path, "d" * 32, status="not-terminal")
+
+
+def _ready(instance_id):
+    from types import SimpleNamespace
+
+    return lambda home, timeout: SimpleNamespace(state="ready", endpoint=SimpleNamespace(instance_id=instance_id))
+
+
+def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monkeypatch):
     from hermes_state import SessionDB
-    from hermes_cli.active_sessions import try_acquire_active_session, transfer_active_session
-    from tools import bot_live_delivery as mailbox
+    import hermes_cli.gateway_runtime as runtime
 
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint",
+                        lambda home, timeout: SimpleNamespace(state="absent", endpoint=None))
+    with pytest.raises(ValueError, match="authority"):
+        mailbox.find_canonical_live_owner(tmp_path)
+
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", _ready("authority-1"))
+    assert mailbox.find_canonical_live_owner(tmp_path) is None  # no state.db yet
     db = SessionDB(db_path=tmp_path / "state.db")
-    db.create_session(session_id="chat", source="cli")
-    db.set_session_title("chat", "Bot Chat")
-    meta = dict(live_session_id="live", bot_live_delivery_consumer=capable)
-    lease, refusal = try_acquire_active_session(session_id="chat", surface="desktop", config={},
-                                               registry_home=tmp_path, metadata=meta)
-    assert refusal is None
     try:
+        db.create_session(session_id="scratch", source="cli")
+        db.set_session_title("scratch", "Scratch")
+        assert mailbox.find_canonical_live_owner(tmp_path) is None  # no Bot Chat
+        db.create_session(session_id="chat", source="cli")
+        db.set_session_title("chat", "Bot Chat")
         owner = mailbox.find_canonical_live_owner(tmp_path)
-        if not capable:
-            assert owner is None
-            return
-        assert owner["lease_id"] == lease.lease_id
-        queued = mailbox.deliver_to_live_owner(tmp_path, owner, "before compression")
+        assert owner["canonical"] is True and owner["lease_id"] == "authority-1"
+        assert owner["session_id"] == owner["live_session_id"] == "chat"
         db.end_session("chat", "compression")
         db.create_session(session_id="tip", source="cli", parent_session_id="chat")
-        assert transfer_active_session(lease, session_id="tip", metadata=meta)
-        current = mailbox.find_canonical_live_owner(tmp_path)
-        assert current["session_id"] == "tip"
-        claim = mailbox.claim_pending_delivery(tmp_path, current)
-        assert claim["delivery_id"] == queued["delivery_id"]
-        assert claim["session_id"] == "chat"
-        assert mailbox.claim_pending_delivery(tmp_path, current) is None
+        assert mailbox.find_canonical_live_owner(tmp_path)["session_id"] == "tip"
     finally:
-        lease.release()
         db.close()
 
 
-def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path):
+def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path, monkeypatch):
     from tools import bot_live_delivery as mailbox
 
+    authority = _FakeAuthority()
+    monkeypatch.setattr(mailbox, "authority_delivery", authority)
     owner = dict(profile_home=str(tmp_path.resolve()), session_id="chat", lease_id="lease", live_session_id="live")
     author = {"id": "bot:coder", "name": "coder", "is_bot": True}
     queued = mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author)
-    assert queued["author"] == author
+    assert authority.calls[-1][1]["author"] == author
+    assert authority.records["b" * 32]["author"] == author
     assert mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author=author) == queued
     with pytest.raises(ValueError):
         mailbox.deliver_to_live_owner(tmp_path, owner, "hello", delivery_id="b" * 32, author={**author, "id": "bot:other"})
-    assert "author" not in mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
+    mailbox.deliver_to_live_owner(tmp_path, owner, "no sender", delivery_id="c" * 32)
+    assert "author" not in authority.calls[-1][1]

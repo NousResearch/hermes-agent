@@ -617,10 +617,9 @@ def _run_full_setup(config: dict, hermes_home, *, is_existing: bool, migration_r
         if not _skip("gateway", "Messaging Platforms"):
             setup_gateway(config)
             return
-        # A skipped (migrated) gateway section still needs its service so imported platforms
-        # and cron jobs become active.
-        from hermes_cli.gateway import ensure_gateway_service
-        ensure_gateway_service(context="setup")
+        # Migration does not imply consent to install a persistent service.
+        from hermes_cli.gateway_setup_service import ensure_gateway_service
+        ensure_gateway_service(context="setup", interactive=True, config=config)
 
     def _step(key: str, label: str, run) -> tuple:
         return label, lambda: None if _skip(key, label) else run()

@@ -53,6 +53,8 @@ When you switch models **inside an active session** (Herm TUI model picker, `her
 
 :::warning Mid-session switches reset the prompt cache
 Prompt caches are keyed to the model serving the request, so any mid-conversation model change — an explicit `/model` switch, an [automatic fallback](./features/fallback-providers.md), or a [credential-pool](./features/credential-pools.md) rotation onto a different account — means the next message re-reads the entire conversation at full input-token price instead of the cached (~75–90% discounted) rate. On a long session this one-time re-read can dwarf the per-token difference between the two models. Switch when you need to, but prefer doing it early in a conversation or right after starting a fresh session.
+
+An explicit `/model` switch also rewrites the `Model:` (and `Provider:`) line inside the system prompt so the agent knows what it is running on. That is a deliberate, one-time change: the first request after the switch misses the cached prefix once, and everything after the system prompt stays byte-identical. Automatic fallbacks rewrite the same line only in memory — the stored session keeps the primary's labels, so a restored primary replays a byte-identical prompt.
 :::
 
 ### Unattended data-training tiers

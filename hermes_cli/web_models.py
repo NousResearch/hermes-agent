@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, StrictBool, field_validator
+from pydantic import BaseModel, Field, SecretStr, StrictBool, StrictInt, field_validator
 
 
 class ConfigUpdate(BaseModel):
@@ -238,16 +238,21 @@ class BulkDeleteSessions(BaseModel):
     profile: Optional[str] = None
 
 class SessionImport(BaseModel):
+    request_id: Optional[str] = None
+    expected_revision: Optional[StrictInt] = Field(None, ge=0)
     sessions: List[Dict[str, Any]]
     profile: Optional[str] = None
 
 class SessionRename(BaseModel):
+    request_id: Optional[str] = None
+    expected_revision: Optional[StrictInt] = Field(None, ge=0)
+    expected_generation: Optional[StrictInt] = Field(None, ge=0)
     title: Optional[str] = None
-    archived: Optional[bool] = None
-    hidden: Optional[bool] = None  # also used by cross-profile reconciliation
-    pinned: Optional[bool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
+    archived: Optional[StrictBool] = None
+    hidden: Optional[StrictBool] = None  # also used by cross-profile reconciliation
+    pinned: Optional[StrictBool] = None  # durable "keep" (Desktop pins); exempt from auto_archive
     # Read-state watermark (sessions.last_read_at): True = unread, False = read now, None = leave.
-    unread: Optional[bool] = None
+    unread: Optional[StrictBool] = None
     profile: Optional[str] = None  # session owned by another profile (opens its state.db)
 
 class SessionOwnerBackfill(BaseModel):

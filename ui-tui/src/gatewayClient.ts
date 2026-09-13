@@ -1,8 +1,8 @@
-import { type ChildProcess, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
-import { delimiter, resolve } from 'node:path'
-import { createInterface } from 'node:readline'
+import { resolve } from 'node:path'
+import { promisify } from 'node:util'
 
 import type { GatewayEvent } from '@hermes/shared/gateway-events'
 import {
@@ -14,6 +14,7 @@ import {
 import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
 import { WebSocket as UndiciWebSocket } from 'undici'
 
+import { canonicalEvent, canonicalRequest, canonicalResult, type CreationContract } from './canonicalGateway.js'
 import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
@@ -45,14 +46,6 @@ const getWebSocketCtor = (): typeof WebSocket =>
 
 const truncateLine = (line: string) =>
   line.length > MAX_LOG_LINE_BYTES ? `${line.slice(0, MAX_LOG_LINE_BYTES)}… [truncated ${line.length} bytes]` : line
-
-const describeChild = (proc: ChildProcess | null) => {
-  if (!proc) {
-    return 'pid=none'
-  }
-
-  return `pid=${proc.pid ?? 'unknown'} killed=${proc.killed} exitCode=${proc.exitCode ?? 'null'} signal=${proc.signalCode ?? 'null'}`
-}
 
 const resolveGatewayAttachUrl = () => {
   const raw = process.env.HERMES_TUI_GATEWAY_URL?.trim()
@@ -119,8 +112,19 @@ const redactUrl = (raw: string): string => {
   }
 }
 
+export interface LocalGatewayGrant { url: string; protocols: string[]; profile_id: string; instance_id: string }
+
+const bootstrapLocalGateway = async (start: boolean): Promise<LocalGatewayGrant> => {
+  const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
+
+  const { stdout } = await promisify(execFile)(resolvePython(root),
+    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : [])],
+    { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
+
+  return JSON.parse(stdout) as LocalGatewayGrant
+}
+
 export class GatewayClient extends EventEmitter {
-  private proc: ChildProcess | null = null
   private ws: WebSocket | null = null
   private wsConnectPromise: Promise<void> | null = null
   private sidecarWs: WebSocket | null = null
@@ -132,7 +136,7 @@ export class GatewayClient extends EventEmitter {
   // only owns the two transports (child stdio, attached socket) and the
   // buffered-event replay that Ink's mount order needs.
   private readonly channel = new JsonRpcRequestChannel({
-    onEvent: ev => this.publish(ev as AnyGatewayEvent),
+    onEvent: ev => this.publishWire(ev as AnyGatewayEvent),
     onHeartbeatFailure: () => this.onHeartbeatFailure(),
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
     unrefTimers: true
@@ -143,18 +147,46 @@ export class GatewayClient extends EventEmitter {
   private readyTimer: ReturnType<typeof setTimeout> | null = null
   private subscribed = false
   private drainGeneration = 0
-  private stdoutRl: ReturnType<typeof createInterface> | null = null
-  private stderrRl: ReturnType<typeof createInterface> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempts = 0
   // Set on kill() so we never auto-reconnect after an intentional shutdown.
   private disposed = false
 
-  constructor() {
+  private bootstrapFlight: Promise<void> | null = null
+  private bootstrapError: Error | null = null
+  private localStarted = false
+  private localGeneration = 0
+  isCanonical = false
+  private creationContract?: CreationContract
+
+  constructor(private bootstrap: (start: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway) {
     super()
     // useInput / createGatewayEventHandler can legitimately attach many
     // listeners. Default 10-cap triggers spurious warnings.
     this.setMaxListeners(0)
+  }
+
+  /** Frames off the socket. On a canonical gateway the owner's execution stamp rides on
+   * the params (`authority_epoch`/`execution_generation`); fold it into the payload the
+   * pre-cutover handlers read, and let this client own readiness (it publishes
+   * `gateway.ready` itself after `runtime.describe`, so the listener's ready would be a
+   * second one) while still negotiating the transport's heartbeat capability. */
+  private publishWire(ev: AnyGatewayEvent) {
+    if (this.isCanonical && ev.type === 'gateway.ready') {
+      if ((ev as GatewayEvent<'gateway.ready'>).payload?.heartbeat && this.ws?.readyState === WS_OPEN) {
+        this.channel.startHeartbeat()
+      }
+
+      return
+    }
+
+    if (this.isCanonical) {
+      const shared = ev as AnyGatewayEvent & { authority_epoch?: number; execution_generation?: number }
+      ev.payload = { ...canonicalEvent(ev).payload, execution_epoch: String(shared.authority_epoch),
+        execution_generation: shared.execution_generation } as never
+    }
+
+    this.publish(ev)
   }
 
   private publish(ev: AnyGatewayEvent) {
@@ -254,6 +286,7 @@ export class GatewayClient extends EventEmitter {
       }
 
       this.start()
+      this.drain()
     }, delay)
     this.reconnectTimer.unref?.()
   }
@@ -271,7 +304,7 @@ export class GatewayClient extends EventEmitter {
     // Reject any in-flight RPCs left over from the previous transport
     // before we swap. Otherwise the old transport's stale exit/close
     // handlers (now identity-gated to ignore unrelated transports)
-    // never fire `rejectPending`, leaving callers hanging on promises
+    // never settle the channel's pending RPCs, leaving callers hanging on promises
     // attached to a discarded child / socket.
     this.channel.detach(new Error('gateway restarting'))
     this.ready = false
@@ -281,10 +314,6 @@ export class GatewayClient extends EventEmitter {
     this.drainGeneration += 1
     this.bufferedEvents.clear()
     this.pendingExit = undefined
-    this.stdoutRl?.close()
-    this.stderrRl?.close()
-    this.stdoutRl = null
-    this.stderrRl = null
     this.clearReadyTimer()
   }
 
@@ -377,6 +406,16 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
+  hydrateSharedPrompts(snapshot: unknown) {
+    if (!this.isCanonical) { return }
+    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>> }
+
+    for (const prompt of result.prompts ?? []) {
+      this.publishLocalEvent({ type: `${prompt.kind}.request`, session_id: result.session_id,
+        payload: { ...prompt, execution_epoch: String(result.authority_epoch) } } as unknown as AnyGatewayEvent)
+    }
+  }
+
   publishLocalEvent(ev: AnyGatewayEvent) {
     const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })
 
@@ -411,85 +450,29 @@ export class GatewayClient extends EventEmitter {
     this.publish({ type: 'gateway.protocol_error', payload: { preview } })
   }
 
-  private startSpawnedGateway(root: string) {
-    const python = resolvePython(root)
-    const cwd = process.env.HERMES_CWD || root
-    const env = { ...process.env }
-    const pyPath = env.PYTHONPATH?.trim()
-
-    env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
-    // Tell the gateway child where the Hermes source root is so its import
-    // guard can force it ahead of any same-named package in the launch cwd.
-    env.HERMES_PYTHON_SRC_ROOT = root
-    this.startReadyTimer(python, cwd)
-    this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
-    this.lifecycle(`[lifecycle] spawned gateway child ${describeChild(this.proc)} python=${python} cwd=${cwd}`)
-
-    const stdin = this.proc.stdin!
-    this.channel.attach({ send: text => void stdin.write(text + '\n') })
-
-    this.stdoutRl = createInterface({ input: this.proc.stdout! })
-    this.stdoutRl.on('line', raw => {
-      if (!this.channel.handleFrame(raw)) {
-        this.protocolError('malformed stdout', raw, '(empty line)')
-      }
-    })
-
-    this.stderrRl = createInterface({ input: this.proc.stderr! })
-    this.stderrRl.on('line', raw => {
-      const line = truncateLine(raw.trim())
-
-      if (!line) {
-        return
-      }
-
-      this.pushLog(line)
-      this.publish({ type: 'gateway.stderr', payload: { line } })
-    })
-
-    const ownedProc = this.proc
-    this.proc.on('error', err => {
-      // Skip stale errors on an already-replaced child.
-      if (this.proc !== ownedProc) {
-        this.pushLog(`[lifecycle] stale child error ignored ${describeChild(ownedProc)} message=${err.message}`)
-
-        return
-      }
-
-      const line = `[spawn] ${err.message}`
-
-      this.lifecycle(`[lifecycle] child error ${describeChild(ownedProc)} message=${err.message}`)
-      this.pushLog(line)
-      this.publish({ type: 'gateway.stderr', payload: { line } })
-      // Detach the reference up front so the late `exit` event for
-      // this same child is identity-skipped (we don't want to emit
-      // 'exit' twice). Then run the full teardown — clears the
-      // startup timer so we don't fire a misleading
-      // `gateway.start_timeout`, rejects pending RPCs, and emits or
-      // queues a single `exit`.
-      this.proc = null
-      this.handleTransportExit(1, `gateway error: ${err.message}`)
-    })
-    this.proc.on('exit', (code, signal) => {
-      // start() can replace `this.proc` while an old child is still
-      // tearing down. Skip stale exits so we don't clear the new
-      // startup timer or reject newly-issued pending requests.
-      if (this.proc !== ownedProc) {
-        this.pushLog(
-          `[lifecycle] stale child exit ignored ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`
-        )
-
-        return
-      }
-
-      this.lifecycle(
-        `[lifecycle] child exit ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`
-      )
-      this.handleTransportExit(code)
+  private startLocalGateway() {
+    const generation = ++this.localGeneration
+    const start = !this.localStarted
+    this.localStarted = true
+    this.bootstrapError = null
+    this.bootstrapFlight = this.bootstrap(start).then(grant => {
+      if (this.disposed || generation !== this.localGeneration) { return }
+      this.attachUrl = grant.url
+      this.isCanonical = true
+      this.startAttachedGateway(grant.url, grant.protocols)
+    }).catch(error => {
+      if (this.disposed || generation !== this.localGeneration) { return }
+      this.bootstrapError = error instanceof Error ? error : new Error(String(error))
+      this.clearReadyTimer()
+      this.publish({ type: 'gateway.start_timeout', payload: {
+        python: 'gateway ensure', cwd: '', stderr_tail: this.bootstrapError.message
+      } })
+      this.channel.detach(this.bootstrapError)
+      this.scheduleReconnect()
     })
   }
 
-  private startAttachedGateway(attachUrl: string) {
+  private startAttachedGateway(attachUrl: string, protocols?: string[]) {
     const safeAttachUrl = redactUrl(attachUrl)
     this.startReadyTimer('websocket', safeAttachUrl)
 
@@ -506,7 +489,7 @@ export class GatewayClient extends EventEmitter {
     }
 
     try {
-      const ws = new WebSocketCtor(attachUrl)
+      const ws = new WebSocketCtor(attachUrl, protocols)
       let settled = false
 
       this.ws = ws
@@ -527,6 +510,18 @@ export class GatewayClient extends EventEmitter {
 
             this.clearReconnect()
             this.connectSidecarMirror()
+
+            if (this.isCanonical) {
+              void this.requestOverWebSocket<{session_create: CreationContract}>('runtime.describe').then(description => {
+                this.creationContract = description.session_create
+
+                if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload: {} }) }
+              }).catch(error => {
+                this.publish({ type: 'gateway.start_timeout', payload: {
+                  python: 'runtime.describe', cwd: '', stderr_tail: String(error)
+                } })
+              })
+            }
           },
           { once: true }
         )
@@ -597,7 +592,6 @@ export class GatewayClient extends EventEmitter {
     this.disposed = false
     this.clearReconnect()
 
-    const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
     const attachUrl = resolveGatewayAttachUrl()
     const sidecarUrl = resolveSidecarUrl()
 
@@ -606,12 +600,6 @@ export class GatewayClient extends EventEmitter {
     this.resetStartupState()
     this.clearReconnect()
 
-    if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-      this.lifecycle(`[lifecycle] replacing live gateway child ${describeChild(this.proc)}`)
-      this.proc.kill()
-    }
-
-    this.proc = null
     this.closeGatewaySocket()
     this.closeSidecarSocket()
 
@@ -621,7 +609,7 @@ export class GatewayClient extends EventEmitter {
       return
     }
 
-    this.startSpawnedGateway(root)
+    this.startLocalGateway()
   }
 
   private pushLog(line: string) {
@@ -693,6 +681,8 @@ export class GatewayClient extends EventEmitter {
 
     if (!this.ws || this.ws.readyState === WS_CLOSED || this.ws.readyState === WS_CLOSING) {
       this.start()
+
+      if (!resolveGatewayAttachUrl()) { await this.bootstrapFlight }
     }
 
     if (this.ws?.readyState === WS_CONNECTING) {
@@ -712,6 +702,11 @@ export class GatewayClient extends EventEmitter {
 
   private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
 
+  private requestOverWebSocket<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+    return this.ensureAttachedWebSocket(method).then(() =>
+      this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method)))
+  }
+
   request<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     const attachUrl = resolveGatewayAttachUrl()
 
@@ -725,31 +720,26 @@ export class GatewayClient extends EventEmitter {
         this.start()
       }
 
-      return this.ensureAttachedWebSocket(method).then(() =>
-        this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method))
-      )
+      return this.requestOverWebSocket<T>(method, params, timeoutMs)
     }
 
-    if (!this.proc?.stdin || this.proc.killed || this.proc.exitCode !== null) {
-      this.start()
-    }
+    if (!this.bootstrapFlight) { this.start() }
 
-    if (!this.proc?.stdin) {
-      return Promise.reject(new Error('gateway not running'))
-    }
+    return this.bootstrapFlight!.then(() => {
+      if (this.bootstrapError) { throw this.bootstrapError }
+      const request = canonicalRequest(method, params, this.creationContract)
 
-    return this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method))
+      return this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)
+        .then(value => canonicalResult(method, value, request.params))
+    })
   }
 
   kill(reason = 'requested') {
     this.disposed = true
+    this.localGeneration++
     this.clearReconnect()
-    const proc = this.proc
-    const killed = proc?.kill()
-
-    this.lifecycle(
-      `[lifecycle] GatewayClient.kill reason=${reason} ${describeChild(proc)} killResult=${killed ?? 'none'}`
-    )
+    this.channel.stopHeartbeat()
+    this.lifecycle(`[lifecycle] GatewayClient.kill reason=${reason} (detach only)`)
     this.closeGatewaySocket()
     this.closeSidecarSocket()
     this.clearReadyTimer()

@@ -170,7 +170,7 @@ def test_no_agent_forwards_cancel_event_to_script_runner(monkeypatch):
     ids=("script-only-job", "pre-agent-script"),
 )
 def test_long_running_script_refreshes_owned_claim_in_profile_store(
-    tmp_path, monkeypatch, no_agent, script_output
+    tmp_path, monkeypatch, no_agent, script_output, cron_owner
 ):
     """Both blocking script paths keep their one-shot claim alive.
 
@@ -186,6 +186,7 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
     default_cron = tmp_path / "default" / "cron"
     default_cron.mkdir(parents=True)
     profile_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
 
     monkeypatch.setattr(jobs, "CRON_DIR", default_cron)
     monkeypatch.setattr(jobs, "JOBS_FILE", default_cron / "jobs.json")
@@ -250,7 +251,6 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
 
     with (
         jobs.use_cron_store(profile_home),
-        patch("hermes_state_registry.acquire", return_value=MagicMock()),
     ):
         success, _doc, _response, error = scheduler.run_job(claimed_job)
         profile_claim = jobs.get_job("long-script")["run_claim"]

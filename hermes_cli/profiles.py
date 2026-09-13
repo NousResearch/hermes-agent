@@ -22,7 +22,6 @@ from hermes_constants import clear_named_profile_deleted, mark_named_profile_del
 logger = logging.getLogger(__name__)
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-_WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials
@@ -52,8 +51,12 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # (+wal/shm, can reach many GB), session dirs, `hermes backup` archives, quick-backup
 # snapshots, checkpoints. Inheriting them is never useful (restoring one inside the
 # clone would resurrect the SOURCE profile's state) and can balloon the copy by tens of GB.
+# ``cron`` is scheduled work bound to the source profile and its origin channel: a clone
+# that inherits jobs.json runs every job twice (two gateways, same job ids, double spend,
+# duplicate deliveries) the moment its gateway starts. The empty dir is recreated below.
 _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "state.db", "state.db-wal", "state.db-shm", "sessions", "backups", "state-snapshots", "checkpoints",
+    "cron",
 })
 
 # Marker written by `hermes profile create --no-skills`. When present at a profile root,
@@ -529,17 +532,11 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     the lock isn't held by *this* reader: dashboard as a separate s6 service, launch-service
     gateways with no live PID file); fallback validates the PID in ``gateway_state.json``
     against the process table, matching ``/api/status``."""
-    try:
-        from gateway.status import get_running_pid, get_runtime_status_running_pid, read_runtime_status
-        if get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None:
-            return True
-    except Exception:
-        pass
-    try:
-        runtime = read_runtime_status(profile_dir / "gateway_state.json")
-        return get_runtime_status_running_pid(runtime, expected_home=profile_dir) is not None
-    except Exception:
-        return False
+    from gateway.status import get_running_pid, resolve_gateway_liveness
+    # cleanup_stale=False: a status probe for ANOTHER profile must never unlink its PID file.
+    return resolve_gateway_liveness(
+        profile_dir=profile_dir, use_cache=False,
+        pid_probe=lambda path: get_running_pid(path, cleanup_stale=False)).running
 
 
 def _served_by_running_multiplexer(profile_name: str) -> bool:
@@ -700,38 +697,19 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool, profile_allowlist: Optional[List[str]] = None) -> List[Tuple[str, Path]]:
+def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
-    ``multiplex=True``: default plus every live named profile, optionally filtered by
-    *profile_allowlist* (invalid entries skipped, missing ones warned once)."""
+    ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
+    profiles skipped). Pure directory read: never creates a profile dir (#94590)."""
     active = get_active_profile_name() or "default"
     if not multiplex:
         return [(active, get_profile_dir(active))]
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
-    allowed: Optional[set[str]] = None
-    if profile_allowlist is not None:
-        allowed = set()
-        for entry in profile_allowlist:
-            if not isinstance(entry, str):
-                continue
-            try:
-                name = _canon_valid(entry)
-            except ValueError:
-                continue
-            if name != "default":
-                allowed.add(name)
-    for entry in _iter_named_profile_dirs():
-        if allowed is None or entry.name in allowed:
-            serve.append((entry.name, entry))
-    if allowed is not None:
-        missing = tuple(sorted(allowed - {name for name, _ in serve}))
-        if missing and missing not in _WARNED_MISSING_ALLOWLIST_ENTRIES:
-            _WARNED_MISSING_ALLOWLIST_ENTRIES.add(missing)
-            logger.warning("Skipping missing gateway.multiplex_profile_allowlist profile(s): %s", ", ".join(missing))
+    serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs())
     return serve
 
 
@@ -776,6 +754,9 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     shutil.copytree(source_dir, profile_dir, symlinks=True, ignore=_clone_all_copytree_ignore(source_dir))
+    # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
+    for subdir in _PROFILE_DIRS:
+        (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
     for stale in _CLONE_ALL_STRIP:
         (profile_dir / stale).unlink(missing_ok=True)
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
@@ -813,11 +794,16 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
+    clone_channels: bool = False,
 ) -> Path:
     """Create a new profile directory and return its path.
 
     ``clone_from`` defaults to the active profile when cloning. ``clone_all`` copies all state;
     ``clone_config`` copies config.yaml/.env/SOUL.md, installed skills, and identity files.
+    Either clone strips the source's messaging channels — bot tokens, allowlists, platform
+    sections, pairing/session state — unless ``clone_channels`` opts in: a copied bot credential
+    makes two gateways fight over one bot (``hermes_cli.profile_channels``; callers list what
+    was left behind with ``channel_platforms_configured(source_dir)``).
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
     re-seeding its skills; it is mutually exclusive with the clone options, which copy skills."""
     if no_skills and (clone_from is not None or clone_config or clone_all):
@@ -845,6 +831,11 @@ def create_profile(
         _clone_all_into(source_dir, profile_dir, canon)
     else:
         _bootstrap_profile_dir(profile_dir, source_dir)
+    if source_dir is not None and not clone_channels:
+        from hermes_cli.profile_channels import strip_channel_settings
+        stripped = strip_channel_settings(profile_dir, include_state=clone_all)
+        if stripped:
+            logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
 
     # Seed an empty .env so the profile owns a credentials file from day one. Without it,
     # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
@@ -881,7 +872,15 @@ def create_profile(
     # `hermes -p <profile> gateway start` supervises via `s6-svc -u` instead of a bare
     # process. No-op on host (systemd/launchd/windows unit generation handles lifecycle).
     _maybe_register_gateway_service(canon)
+    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
+    # rescans periodically, so a missed signal only delays serving).
+    _notify_multiplexer(canon)
     return profile_dir
+
+
+def _notify_multiplexer(canon: str) -> None:
+    from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
+    notify_multiplexer_profiles_changed(canon)
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
@@ -1166,6 +1165,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 
     # Tombstone before rmtree so a stale serve/logging mkdir cannot relist this name live.
     mark_named_profile_deleted(profile_dir)
+    # The multiplexer sees the tombstone, stops this profile's adapters and releases its handles
+    # into the directory before we remove it.
+    _notify_multiplexer(canon)
 
     # Release this process's holographic memory-store connections into the profile. The
     # Desktop's main serve process opens memory_store.db for every profile and is
@@ -1177,6 +1179,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         _released = _MemoryStore.release_all_under(profile_dir)
         if _released:
             print(f"✓ Released {_released} memory-store connection(s) held by this process")
+    with contextlib.suppress(Exception):
+        from hermes_state_registry import close_all_under as _close_session_dbs_under
+        _closed = _close_session_dbs_under(profile_dir)
+        if _closed:
+            print(f"✓ Released {_closed} session database connection(s) held by this process")
 
     # 3. Remove wrapper script
     if has_wrapper and remove_wrapper_script(canon):
@@ -1578,15 +1585,12 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 # Rename
 
 def _atomic_write_json(path: Path, data: dict) -> bool:
-    """Write *data* to *path* via a sibling ``.tmp`` + rename. Returns False (tmp cleaned) on OSError."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    """Atomic rewrite of a third-party JSON config; False on OSError (nothing partially written)."""
+    from utils import atomic_json_write
     try:
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(path)
+        atomic_json_write(path, data)
         return True
     except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
         return False
 
 

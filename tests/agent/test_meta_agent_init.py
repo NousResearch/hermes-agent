@@ -116,7 +116,7 @@ def test_agent_init_anthropic_url_implies_provider_and_api_mode():
 def test_agent_init_anthropic_url_preserves_credential_pool():
     """Anthropic-scoped credential pool must survive provider auto-detection.
 
-    Mirrors tests/run_agent/test_63425_credential_pool_auto_detect.py at the
+    Mirrors tests/agent/test_credential_pool_auto_detect.py at the
     public AIAgent surface (provider=None URL detection).
     """
     from types import SimpleNamespace

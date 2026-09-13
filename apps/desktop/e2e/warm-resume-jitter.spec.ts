@@ -41,7 +41,7 @@ import {
   buildAppEnv,
   launchDesktop,
 } from './fixtures'
-import { startMockServer } from './mock-server'
+import { startMockServer } from '../../../tests-js/scripts/mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 
 const SESSION_TITLE = 'E2E Warm Resume Jitter Test'

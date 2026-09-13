@@ -393,6 +393,19 @@ def advance_notify_cursor(
         )
 
 
+def record_notify_ping(
+    conn: sqlite3.Connection, *, task_id: str, platform: str, chat_id: str,
+    thread_id: Optional[str] = None, event_id: int,
+) -> None:
+    """Checkpoint a sent ping independently of the retryable wake cursor."""
+    with _kb.write_txn(conn):
+        conn.execute(
+            "UPDATE kanban_notify_subs SET last_ping_event_id = MAX(last_ping_event_id, ?) "
+            + _SUB_KEY_WHERE,
+            (int(event_id), *_sub_key(task_id, platform, chat_id, thread_id)),
+        )
+
+
 def rewind_notify_cursor(
     conn: sqlite3.Connection,
     *,

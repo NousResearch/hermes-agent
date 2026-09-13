@@ -57,7 +57,7 @@ def _wings(*glyphs) -> List[List[str]]:
 
 # Branding shared by every Hermes-named built-in (mono/daylight override help_header).
 _HERMES_BRANDING: Dict[str, str] = _branding(
-    "Hermes", "⚕", "Goodbye! ⚕", prompt="❯", help_header="(^_^)? Available Commands")
+    "Hermes", "☤", "Goodbye! ☤", prompt="❯", help_header="(^_^)? Available Commands")
 
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
@@ -342,6 +342,23 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
+# Routed multiplex profiles: (name, skin) per home key. ``display.skin`` and ``<home>/skins/*.yaml``
+# are per profile, and the relay display name / TUI skin payload are read under each profile's
+# override — one module slot would be last-writer-wins across profiles. Unscoped keeps the module slot.
+_active_skin_by_home: Dict[str, Tuple[str, SkinConfig]] = {}
+
+
+def _routed_home_key() -> Optional[str]:
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    return None if get_hermes_home_override() is None else hermes_home_key()
+
+
+def _profile_config() -> dict:
+    try:
+        from hermes_cli.config import load_config_readonly
+        return load_config_readonly() or {}
+    except Exception:
+        return {}
 
 
 def _skins_dir() -> Path:
@@ -414,6 +431,14 @@ def load_skin(name: str) -> SkinConfig:
 def get_active_skin() -> SkinConfig:
     """Currently active skin config (cached)."""
     global _active_skin
+    home_key = _routed_home_key()
+    if home_key is not None:
+        entry = _active_skin_by_home.get(home_key)
+        if entry is None:
+            # Cold routed profile: its own ``display.skin`` (nobody ran init_skin_from_config for it).
+            init_skin_from_config(_profile_config())
+            entry = _active_skin_by_home[home_key]
+        return entry[1]
     if _active_skin is None:
         _active_skin = load_skin(_active_skin_name)
     return _active_skin
@@ -422,12 +447,21 @@ def get_active_skin() -> SkinConfig:
 def set_active_skin(name: str) -> SkinConfig:
     """Switch the active skin. Returns the new SkinConfig."""
     global _active_skin, _active_skin_name
+    skin = load_skin(name)
+    home_key = _routed_home_key()
+    if home_key is not None:
+        _active_skin_by_home[home_key] = (name, skin)
+        return skin
     _active_skin_name = name
-    _active_skin = load_skin(name)
+    _active_skin = skin
     return _active_skin
 
 
 def get_active_skin_name() -> str:
+    home_key = _routed_home_key()
+    if home_key is not None:
+        entry = _active_skin_by_home.get(home_key)
+        return entry[0] if entry else "default"
     return _active_skin_name
 
 
@@ -455,7 +489,7 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
     return _active_branding("help_header", fallback)
 
 
-def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
+def get_active_goodbye(fallback: str = "Goodbye! ☤") -> str:
     return _active_branding("goodbye", fallback)
 
 
@@ -481,9 +515,13 @@ _STYLE_TEMPLATES = {
     "placeholder": "{dim} italic", "prompt": "{prompt}", "prompt-working": "{dim} italic",
     "hint": "{dim} italic",
     "status-bar": "bg:{status_bg} {status_text}", "status-bar-strong": "bg:{status_bg} {status_strong} bold",
+    "status-bar-session-title": "bg:{badge_bg} {badge_fg} bold",
     "status-bar-dim": "bg:{status_bg} {status_dim}", "status-bar-good": "bg:{status_bg} {status_good} bold",
     "status-bar-warn": "bg:{status_bg} {status_warn} bold", "status-bar-bad": "bg:{status_bg} {status_bad} bold",
     "status-bar-critical": "bg:{status_bg} {status_critical} bold",
+    "subagent-dock": "bg:{status_bg} {status_text}",
+    "subagent-dock.heading": "bg:{status_bg} {status_strong} bold",
+    "subagent-dock.selected": "bg:{menu_current_bg} {text} bold",
     "input-rule": "{input_rule}", "image-badge": "{label} bold",
     "completion-menu": "bg:{menu_bg} {text}", "completion-menu.completion": "bg:{menu_bg} {text}",
     "completion-menu.completion.current": "bg:{menu_current_bg} {title}",
@@ -511,4 +549,8 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     palette: Dict[str, str] = {}
     for name, key, fallback in _STYLE_PALETTE:
         palette[name] = skin.get_color(key, palette[fallback[1:]] if fallback.startswith("@") else fallback)
+    # This badge paints both sides; foreground-only light remapping destroys its contrast.
+    palette["badge_bg"] = skin.colors.get(
+        "status_bar_strong", skin.colors.get("banner_title", "#FFD700"))
+    palette["badge_fg"] = skin.colors.get("status_bar_bg", "#1a1a2e")
     return {cls: tpl.format(**palette) for cls, tpl in _STYLE_TEMPLATES.items()}

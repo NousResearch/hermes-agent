@@ -747,6 +747,7 @@ class TestMediaDeliveryDefaultMode:
         hermes_root = fake_home / ".hermes"
         profile_b = hermes_root / "profiles" / "beta"
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_root)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_root)
 

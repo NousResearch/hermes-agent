@@ -638,6 +638,27 @@ def _canonical_participant(source: SessionSource) -> Optional[str]:
     return participant_id
 
 
+_BROADCAST_DM_PLATFORMS = frozenset({"ntfy", "raft", "a2a"})
+
+
+def is_single_principal_session(
+    source: SessionSource,
+    *,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> bool:
+    """Return whether session-scoped security state belongs to one authenticated sender."""
+    chat_type = (getattr(source, "chat_type", None) or "").lower()
+    if chat_type in {"dm", "private"}:
+        platform = str(getattr(source.platform, "value", source.platform)).lower()
+        return bool(source.chat_id) and platform not in _BROADCAST_DM_PLATFORMS
+
+    if not _canonical_participant(source):
+        return False
+    thread_id = source.thread_id or source.prospective_thread_id
+    return bool(group_sessions_per_user and (not thread_id or thread_sessions_per_user))
+
+
 def build_session_key(
     source: SessionSource, group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False, profile: Optional[str] = None,

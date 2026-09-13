@@ -419,6 +419,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
+  const recoveryConnection = useStore($connection)
   // Multi-pane dimming: only the focused surface paints at full strength, so
   // two sessions side by side read as "this one, and that one over there".
   // A selector, not a plain useStore — the focused id changes on click, and a
@@ -562,6 +563,35 @@ const ChatViewContent = memo(function ChatViewContent({
   const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
+  const recovery = useMemo(
+    () => ({
+      connection:
+        modelOptionsOwnerConnectionId ||
+        recoveryConnection?.connectionId ||
+        (recoveryConnection?.mode === 'local' ? 'local' : recoveryConnection?.baseUrl) ||
+        null,
+      profile: modelOptionsProfile || activeGatewayProfile || 'default',
+      session: storedId || activeSessionId,
+      durable: Boolean(storedId),
+      ready: gatewayOpen && Boolean(activeSessionId) && !loadingSession && !resumeExhausted && !routeSessionMismatch,
+      pending: busy || awaitingResponse
+    }),
+    [
+      activeGatewayProfile,
+      gatewayOpen,
+      activeSessionId,
+      awaitingResponse,
+      busy,
+      loadingSession,
+      modelOptionsOwnerConnectionId,
+      modelOptionsProfile,
+      recoveryConnection,
+      resumeExhausted,
+      routeSessionMismatch,
+      storedId
+    ]
+  )
+
   const modelOptionsQuery = useQuery<ModelOptionsResponse>({
     queryKey: modelOptionsQueryKey(
       modelOptionsProfile || activeGatewayProfile,
@@ -699,6 +729,7 @@ const ChatViewContent = memo(function ChatViewContent({
             onCancel={haltRun}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
+            recovery={recovery}
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />

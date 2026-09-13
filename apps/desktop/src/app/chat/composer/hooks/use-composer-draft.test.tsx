@@ -8,9 +8,9 @@ import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
 import type { QueueEditState } from '../composer-utils'
-import { type ComposerTarget, getActiveComposer, markActiveComposer } from '../focus'
+import { type ComposerTarget, getActiveComposer, markActiveComposer, requestComposerInsert } from '../focus'
 import { composerPlainText } from '../rich-editor'
-import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '../scope'
+import { type ComposerScope, ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
 
 import { useComposerDraft } from './use-composer-draft'
 
@@ -440,5 +440,43 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     expect(composerPlainText(getHiddenDraft().editorRef.current!)).toContain('@file:`src/background.ts`')
     expectForegroundSelectionPreserved(foreground)
     foreground.editor.remove()
+  })
+})
+
+describe('recovery draft insertion', () => {
+  afterEach(() => {
+    cleanup()
+    mainComposerScope.clear()
+    clearSessionDraft('recovery-test')
+  })
+  it('appends only to the addressed surface and preserves its draft attachments', () => {
+    const attachment: ComposerAttachment = { id: 'existing', kind: 'url', label: 'existing' }
+    stashSessionDraft('recovery-test', 'Existing draft', [attachment])
+    let draft!: ReturnType<typeof useComposerDraft>
+
+    function Probe() {
+      draft = useComposerDraft({
+        activeQueueSessionKey: 'recovery-test',
+        focusKey: null,
+        inputDisabled: false,
+        queueEditRef: { current: null },
+        sessionId: 'recovery-test'
+      })
+
+      return <div data-composer-surface-id="other" data-composer-target="main" />
+    }
+
+    render(
+      <ComposerSurfaceProvider value="recovery-surface">
+        <div data-composer-surface-id="recovery-surface" data-composer-target="main">
+          <Probe />
+        </div>
+      </ComposerSurfaceProvider>
+    )
+    act(() => requestComposerInsert('wrong', { target: 'main', surfaceId: 'other' }))
+    expect(draft.draftRef.current).toBe('Existing draft')
+    act(() => requestComposerInsert('hello', { target: 'main', surfaceId: 'recovery-surface' }))
+    expect(draft.draftRef.current).toBe('Existing draft\n\nhello')
+    expect(mainComposerScope.$attachments.get()).toEqual([attachment])
   })
 })

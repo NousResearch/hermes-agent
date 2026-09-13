@@ -1056,7 +1056,9 @@ skills:
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill
   # creation always writes to ~/.hermes/skills/.  Local skills take precedence
-  # when names collide.
+  # when names collide.  Foreground skill_manage mutations of these dirs are
+  # refused unless you opt in:
+  # external_dirs_allow_mutations: false
   # external_dirs:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills

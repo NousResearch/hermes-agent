@@ -293,6 +293,50 @@ def _maybe_auto_propose_org_edit(name: str, skill_path: Path) -> Optional[str]:
             f"right now — run `hermes sync propose {name}` to retry.")
 
 
+_EXTERNAL_DIRS_MUTATION_ACTIONS = frozenset(
+    {"patch", "edit", "write_file", "remove_file", "delete"})
+
+
+def _external_dirs_mutations_allowed() -> bool:
+    """``skills.external_dirs_allow_mutations`` (default False). Quoted YAML
+    falsey strings do not enable — same coercion as ``_guard_agent_created_enabled``.
+    Reads the same raw config as ``get_external_skills_dirs`` so test cache
+    clears (``_external_dirs_cache_clear``) apply to both detection and the flag.
+    """
+    try:
+        from agent.skill_utils import _skills_cfg_get
+        from utils import is_truthy_value
+        return is_truthy_value(_skills_cfg_get("external_dirs_allow_mutations"), default=False)
+    except Exception:
+        return False
+
+
+def _external_dirs_write_guard(
+    name: str, skill_dir: Path, action: str) -> Optional[Dict[str, Any]]:
+    """Refuse in-place mutations of ``skills.external_dirs`` unless opted in.
+
+    Runs for foreground AND background callers (not gated on ``_is_background_review``).
+    Project skills are not this helper's concern — detection is
+    ``is_under_external_skills_dirs``, not ``is_external_skill_path``.
+    Empty/missing external dirs or path lookup errors fail open (do not refuse).
+    """
+    if action not in _EXTERNAL_DIRS_MUTATION_ACTIONS:
+        return None
+    try:
+        from agent.skill_utils import is_under_external_skills_dirs
+        if not is_under_external_skills_dirs(skill_dir):
+            return None
+    except Exception:
+        logger.debug("external_dirs write-guard lookup failed for %s", name, exc_info=True)
+        return None
+    if _external_dirs_mutations_allowed():
+        return None
+    return _refusal(
+        f"Cannot {action} '{name}': the skill lives in skills.external_dirs, which are "
+        f"read-only. Set skills.external_dirs_allow_mutations: true to opt in to "
+        f"in-place mutation.")
+
+
 def _org_mirror_write_guard(name: str, skill_path: Path, action: str) -> Optional[Dict[str, Any]]:
     """Org-shared skills are EDITABLE IN PLACE — this only blocks deletion. Edits land in the
     mirror, survive the next org pull (baseline sidecar in skills_sync_client) and reach the org

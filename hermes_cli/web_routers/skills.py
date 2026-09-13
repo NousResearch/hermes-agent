@@ -344,8 +344,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
-    from tools.skill_usage import (
-        _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
+    from tools.skill_usage import activity_count, load_usage, provenance
 
     def _run():
         with _profile_scope(profile):
@@ -353,20 +352,14 @@ async def get_skills(profile: Optional[str] = None):
             disabled = get_disabled_skills(config)
             skills = _find_all_skills(skip_disabled=True)
             usage = load_usage()
-            # Set-based provenance (same classification as skill_usage.provenance,
-            # without a per-skill manifest read): hub > bundled > agent, where
-            # "agent" covers agent-authored AND local hand-made skills — the ones
-            # the user may edit/delete from the UI.
-            bundled_names = _read_bundled_manifest_names()
-            hub_names = _read_hub_installed_names()
-        for s in skills:
-            s["enabled"] = s["name"] not in disabled
-            s["usage"] = activity_count(usage.get(s["name"], {}))
-            s["provenance"] = (
-                "hub" if s["name"] in hub_names
-                else "bundled" if s["name"] in bundled_names
-                else "agent")
-        return skills
+            # Same classification as skill_usage.provenance: hub > bundled >
+            # external > agent. Must run inside the profile scope so
+            # skills.external_dirs is the active profile's config.
+            for s in skills:
+                s["enabled"] = s["name"] not in disabled
+                s["usage"] = activity_count(usage.get(s["name"], {}))
+                s["provenance"] = provenance(s["name"])
+            return skills
 
     return await asyncio.to_thread(_run)
 

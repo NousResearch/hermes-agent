@@ -666,8 +666,25 @@ def curated_report() -> List[Dict[str, Any]]:
 
 
 def provenance(skill_name: str) -> str:
-    """'hub' | 'bundled' | 'agent' (the latter also covers local manually-authored skills)."""
-    return "hub" if is_hub_installed(skill_name) else "bundled" if is_bundled(skill_name) else "agent"
+    """'hub' | 'bundled' | 'external' | 'agent'.
+
+    Priority: hub, then bundled, then external if the winning on-disk copy lives
+    under ``skills.external_dirs``. A local or ``skills.create_dir`` copy wins
+    over an external one (stays ``agent``). Project skills stay ``agent``.
+    Empty/missing external dirs or lookup errors fail open as ``agent``.
+    """
+    if is_hub_installed(skill_name):
+        return "hub"
+    if is_bundled(skill_name):
+        return "bundled"
+    try:
+        from agent.skill_utils import is_under_external_skills_dirs
+        winning = _find_skill_dir(skill_name) or _find_external_skill_dir(skill_name)
+        if winning is not None and is_under_external_skills_dirs(winning):
+            return "external"
+    except Exception:
+        logger.debug("external provenance lookup failed for %s", skill_name, exc_info=True)
+    return "agent"
 
 
 def usage_report() -> List[Dict[str, Any]]:

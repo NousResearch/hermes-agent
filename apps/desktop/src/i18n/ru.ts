@@ -1557,7 +1557,8 @@ export const ru = defineLocale({
     provenance: {
       agent: 'Научен',
       bundled: 'Встроенный',
-      hub: 'Хаб'
+      hub: 'Хаб',
+      external: 'Внешний'
     },
     emptyNoneFound: noun => `Не найдено: ${noun}`,
     emptyNothingMatches: query => `Ничего не подходит под «${query}».`,

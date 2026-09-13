@@ -1399,7 +1399,8 @@ export const zhHant = defineLocale({
     provenance: {
       agent: '已學習',
       bundled: '內建',
-      hub: '技能中心'
+      hub: '技能中心',
+      external: '外部'
     },
     emptyNoneFound: noun => `找不到${noun}`,
     emptyNothingMatches: query => `沒有符合「${query}」的內容。`,

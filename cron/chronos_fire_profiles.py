@@ -1,72 +1,53 @@
 """Bounded job-to-profile hints for authenticated Chronos callbacks."""
 
-import os
-import uuid
+import hashlib
 from pathlib import Path
 from typing import Optional
 
-from cron.jobs import _job_output_dir
 from hermes_constants import get_default_hermes_root
-from utils import atomic_replace
-
-
-def _cron_fire_profile_index_dir() -> Path:
-    """Shared per-job profile hints for public Chronos fire callbacks."""
-    return get_default_hermes_root() / "cron" / "fire_profile_index"
+from utils import atomic_write_text
 
 
 def _cron_fire_profile_hint_path(job_id: str) -> Optional[Path]:
-    clean = str(job_id or "").strip()
-    if not clean:
+    if not isinstance(job_id, str) or not job_id or len(job_id) > 128:
         return None
     try:
-        _job_output_dir(clean)
-    except ValueError:
+        key = hashlib.sha256(job_id.encode("utf-8")).hexdigest()
+    except UnicodeError:
         return None
-    return _cron_fire_profile_index_dir() / f"{clean}.profile"
+    return get_default_hermes_root() / "cron" / "fire_profile_index" / f"{key}.profile"
 
 
 def resolve_cron_fire_profile_hint(job_id: str) -> Optional[str]:
-    """Return a bounded profile hint for a Chronos fire job, if known."""
-    path = _cron_fire_profile_hint_path(job_id)
-    if path is None or not path.is_file():
-        return None
-    try:
-        profile = path.read_text(encoding="utf-8").strip()
-    except Exception:
-        return None
-    return profile or None
+    """Read one bounded hint, never a profile/job scan or an authentication grant."""
+    from hermes_cli.profiles import validate_profile_name
 
-
-def record_cron_fire_profile_hint(job_id: str, profile: str) -> None:
-    """Persist a best-effort profile hint for a Chronos-armed job."""
-    clean_profile = str(profile or "").strip()
-    if not clean_profile or clean_profile == "custom":
-        return
     path = _cron_fire_profile_hint_path(job_id)
     if path is None:
+        return None
+    try:
+        with path.open(encoding="utf-8") as stream:
+            profile = stream.read(66).strip()  # profile ids are at most 64 characters
+        validate_profile_name(profile)
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return profile
+
+
+def record_cron_fire_profile_hint(job_id: str, profile: Optional[str] = None) -> None:
+    """Persist routing before arming, retaining it for authenticated late callbacks.
+
+    A cancelled job still needs to authenticate to receive `gone`; a provision timeout
+    may also have armed NAS successfully. Existence and JWT checks remain with the receiver.
+    """
+    from hermes_cli.profiles import get_active_profile_name, validate_profile_name
+
+    profile = profile or get_active_profile_name()
+    if profile == "custom":
+        return
+    validate_profile_name(profile)
+    path = _cron_fire_profile_hint_path(job_id)
+    if path is None or resolve_cron_fire_profile_hint(job_id) == profile:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    try:
-        tmp_path.write_text(f"{clean_profile}\n", encoding="utf-8")
-        atomic_replace(tmp_path, path)
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-
-
-def forget_cron_fire_profile_hint(job_id: str) -> None:
-    """Remove a Chronos fire profile hint when a job is cancelled or deleted."""
-    path = _cron_fire_profile_hint_path(job_id)
-    if path is None:
-        return
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-
-
+    atomic_write_text(path, f"{profile}\n", create_mode=0o600)

@@ -24,19 +24,34 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged")
+    __slots__ = (
+        "approval_id", "event", "data", "result", "reason",
+        "created_at_ns", "acknowledged", "expires_at",
+    )
 
     def __init__(self, data: dict):
-        self.event = threading.Event()
         self.data = dict(data)
-        self.data.setdefault("request_id", uuid.uuid4().hex)
+        self.approval_id = str(
+            self.data.get("approval_id")
+            or self.data.get("request_id")
+            or uuid.uuid4().hex
+        )
+        self.data["approval_id"] = self.approval_id
+        # Desktop reconnect on main uses request_id; keep both identities aligned.
+        self.data.setdefault("request_id", self.approval_id)
+        self.event = threading.Event()
         self.acknowledged = False
         self.result: str | None = None  # "once"|"session"|"always"|"deny"
-        # Free-text reason from ``/deny <reason>`` so the agent can adapt, not just hear "denied".
+        self.created_at_ns = time.monotonic_ns()
+        self.expires_at = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
+        self.data["expires_at"] = self.expires_at
+        # Optional free-text reason supplied with an explicit deny
+        # (``/deny <reason>``) so the agent can adapt instead of only
+        # hearing "denied". Ported from qwibitai/nanoclaw#2832.
         self.reason: str | None = None
 
 
-def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str) -> str:
+def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str, expires_at: float) -> str:
     """Wait on *event* until it fires, the turn is interrupted, or approvals.timeout
     elapses; returns ``"set"`` | ``"interrupted"`` | ``"timeout"``. Polls in ~1s
     slices so activity heartbeats reach the agent's inactivity tracker every ~10s —
@@ -49,7 +64,7 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
     The per-thread interrupt flag carries no stable machine-checkable cause, so a
     fail-closed deny preserves the historical semantics; changing this needs a
     dedicated interrupt-cause channel, not string matching."""
-    deadline = time.monotonic() + max(_ctx._get_approval_timeout(), 0)
+    deadline = expires_at
     heartbeat = activity_heartbeat("waiting for user approval")
     with human_wait_window(session_key):
         while True:
@@ -85,7 +100,7 @@ def _await_coalesced_leader(session_key: str, leader, payload: dict):
     so the caller must issue a fresh prompt. Hooks fire with ``coalesced=True``
     so observers see the follower's lifecycle without a duplicate prompt."""
     _ctx._fire_approval_hook("pre_approval_request", **payload, coalesced=True)
-    state = _poll_event(leader.event, session_key,
+    state = _poll_event(leader.event, session_key, expires_at=leader.expires_at,
                         interrupt_log="Coalesced approval wait interrupted by user signal — "
                                       "returning deny for session %s")
     if state == "interrupted":
@@ -139,13 +154,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     with _approval._lock:
         _approval._gateway_queues.setdefault(session_key, []).append(entry)
 
-    def _drop_entry() -> None:
+    def _drop_entry(outcome: str | None = None) -> None:
         with _approval._lock:
             queue = _approval._gateway_queues.get(session_key, [])
             if entry in queue:
                 queue.remove(entry)
             if not queue:
                 _approval._gateway_queues.pop(session_key, None)
+            resolution_key = (session_key, entry.approval_id)
+            if outcome and resolution_key not in _approval._gateway_resolution_outcomes:
+                _approval._record_gateway_resolution_locked(session_key, entry, outcome)
 
     # Plugins hear about the request before the gateway does (real-time observers).
     _ctx._fire_approval_hook("pre_approval_request", **payload)
@@ -158,10 +176,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         _ctx._fire_approval_hook("post_approval_response", **payload, choice="notify_failed")
         return {"resolved": False, "choice": None, "notify_failed": True}
 
-    state = _poll_event(entry.event, session_key,
+    state = _poll_event(entry.event, session_key, expires_at=entry.expires_at,
                         interrupt_log="Approval wait interrupted by user signal — returning deny for session %s")
     if state == "interrupted":
         entry.result = "deny"
         entry.event.set()
-    _drop_entry()
+    _drop_entry(entry.result or "expired")
     return _finish(payload, state != "timeout", entry.result, entry.reason)

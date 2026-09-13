@@ -115,7 +115,15 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Free-form dict of structured facts about this "
                 "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                 "\"findings\": [...]}. Surfaced to downstream "
-                "workers alongside ``summary``."
+                "workers alongside ``summary``. Reserved key: "
+                "``follow_ups`` — a list of short strings naming work you "
+                "did NOT do, decisions left to a human, and manual steps "
+                "still required. Unlike the rest of ``metadata`` these are "
+                "rendered into the completion notification under "
+                "\"⚠ Needs you\", so put anything the human must act on "
+                "here rather than burying it in prose. Up to 5, one line "
+                "each; write them as imperatives (\"Merge PR #174 — needs "
+                "your call\"), not as narration."
         )),
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "
@@ -194,6 +202,18 @@ KANBAN_BLOCK_SCHEMA = _schema(
                 "Omit only if none apply."
             ),
         },
+        "metadata": {
+            "type": "object",
+            "description": (
+                "Optional structured facts. Reserved key: ``follow_ups`` — "
+                "a list of short strings naming what a human must decide or "
+                "do to unblock you, and any partial work worth preserving. "
+                "These are rendered into the block notification under "
+                "\"⚠ Needs you\", so the human sees the ask without opening "
+                "the board. Up to 5, one line each."
+            ),
+            "additionalProperties": True,
+        },
     },
     ["reason"],
 )
@@ -225,7 +245,11 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
             "type": "object",
             "description": (
                 "Optional structured handoff facts for the reviewer, such "
-                "as changed_files, tests_run, commit, or decisions."
+                "as changed_files, tests_run, commit, or decisions. "
+                "Reserved key: ``follow_ups`` — short strings naming what "
+                "you deliberately left for the reviewer or the human to "
+                "decide; these render into the review notification under "
+                "\"⚠ Needs you\"."
             ),
             "additionalProperties": True,
         },

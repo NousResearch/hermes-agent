@@ -28,6 +28,25 @@ class TestExtractVideoId:
         assert fetch_transcript.extract_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42") == "dQw4w9WgXcQ"
 
 
+class TestMissingDependency:
+    def test_error_identifies_the_interpreter_without_suggesting_bare_uv_install(self, monkeypatch, capsys):
+        real_import = __import__
+
+        def import_without_youtube(name, *args, **kwargs):
+            if name == "youtube_transcript_api":
+                raise ImportError
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", import_without_youtube)
+
+        with pytest.raises(SystemExit, match="1"):
+            fetch_transcript.fetch_transcript("dQw4w9WgXcQ")
+
+        error = capsys.readouterr().err
+        assert sys.executable in error
+        assert "uv pip install" not in error
+
+
 class TestFormatTimestamp:
     def test_seconds_only(self):
         assert fetch_transcript.format_timestamp(90) == "1:30"

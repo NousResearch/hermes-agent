@@ -1,5 +1,6 @@
 import { normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
 
+import { linkifyGhIssueRefs } from '@/lib/gh-refs'
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { clampHtmlNestingDepth } from '@/lib/markdown-html-depth'
 import { mediaKind, mediaMarkdownHref } from '@/lib/media'
@@ -576,7 +577,8 @@ function collectSourceListIds(text: string): Set<string> {
 }
 
 function rewriteProseSegment(segment: string, sourceListIds: Set<string>): string {
-  return linkifySessionRefs(
+  return linkifyGhIssueRefs(
+    linkifySessionRefs(
     escapeLoneTildes(
       autoLinkRawUrls(
         routeFileLinksToPreview(
@@ -592,7 +594,7 @@ function rewriteProseSegment(segment: string, sourceListIds: Set<string>): strin
 
                 return ids.every(id => sourceListIds.has(id)) ? marker : ''
               })
-          )
+          ))
         )
       )
     )

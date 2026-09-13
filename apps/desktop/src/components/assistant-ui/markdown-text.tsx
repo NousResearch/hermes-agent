@@ -34,6 +34,7 @@ import { useMediaPlaybackSrc } from '@/hooks/use-media-playback-src'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { ExternalLink, normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { ghRefFromMarkdownHref } from '@/lib/gh-refs'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -57,7 +58,7 @@ import { cn } from '@/lib/utils'
 import { useForcedTextDirection } from '@/store/text-direction'
 
 import { ArtifactCard } from './artifact-card'
-import { SessionRefLink } from './directive-text'
+import { GhRefLink, SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 import { ResizableMarkdownTable, ResizableMarkdownTh } from './markdown-table'
 import { ToolMediaSlot } from './tool-media-slot'
@@ -339,6 +340,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   if (sessionRef) {
     return <SessionRefLink value={sessionRef} />
+  }
+
+  const ghRefNumber = ghRefFromMarkdownHref(href)
+
+  if (ghRefNumber !== null) {
+    return <GhRefLink label={childrenToText(children) || `#${ghRefNumber}`} number={ghRefNumber} />
   }
 
   const target = href ? normalizeExternalUrl(href) : href

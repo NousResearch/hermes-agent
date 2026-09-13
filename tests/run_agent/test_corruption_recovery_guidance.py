@@ -15,7 +15,18 @@ The fix adds:
    with the full recovery path (hermes doctor, sqlite3 .recover, backups)
 """
 
+import re
+
 from pytest import fixture
+
+
+def _assert_profile_pinned_commands(message, profile, expected_count):
+    commands = re.findall(
+        r"\bhermes(?:\s+-p\s+\S+)?\s+(?:doctor|sessions)\b",
+        message,
+    )
+    assert len(commands) == expected_count, commands
+    assert all(command.startswith(f"hermes -p {profile} ") for command in commands), commands
 
 
 def test_format_turn_completion_corrupt_includes_recovery_options():
@@ -25,7 +36,7 @@ def test_format_turn_completion_corrupt_includes_recovery_options():
     explanation = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "corrupt"
     )
-    assert "hermes doctor" in explanation
+    assert "hermes -p default doctor" in explanation
     assert ".recover" in explanation
     assert "backups" in explanation
     assert "Freeing disk space will not help" in explanation
@@ -101,7 +112,7 @@ def test_format_turn_completion_corrupt_never_names_the_live_db():
     assert "sessions recover" in explanation
     assert 'sqlite3 ~/.hermes/state.db ".recover"' not in explanation
     # The replacement guidance names the safe command.
-    assert "hermes sessions recover --source" in explanation
+    assert "hermes -p default sessions recover --source" in explanation
 
 
 def test_format_turn_completion_disk_still_advises_space():
@@ -167,3 +178,78 @@ def test_corrupt_guidance_pins_the_failing_profile(tmp_path, monkeypatch):
 
     exhausted = _persistent_repair_exhausted_error(home / "state.db")
     assert "`hermes -p research sessions recover --source" in exhausted
+
+
+def test_corrupt_guidance_explicitly_pins_the_default_profile(tmp_path, monkeypatch):
+    """Default-profile recovery commands must not follow a different sticky active profile."""
+    import asyncio
+
+    import gateway.run as gateway_run
+    from hermes_cli.doctor_report import Finding
+    from hermes_cli.doctor_state import _repair_state_db
+    from hermes_state_repair import _persistent_repair_exhausted_error
+    from run_agent import AIAgent
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    (root / "config.yaml").write_text("")
+    (root / "active_profile").write_text("other\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    explanation = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "corrupt"
+    )
+    _assert_profile_pinned_commands(explanation, "default", 3)
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db_init_error = "database disk image is malformed"
+    sent = []
+    monkeypatch.setattr(
+        runner, "_home_channel_transports", lambda: [("telegram", {}, "home-chat", object())]
+    )
+
+    async def _capture_send(_platform, _home, _transport, message, _log_fmt):
+        sent.append(message)
+
+    monkeypatch.setattr(runner, "_send_home_channel_message", _capture_send)
+    asyncio.run(runner._send_session_db_warning_notifications())
+    _assert_profile_pinned_commands(sent[0], "default", 4)
+
+    exhausted = _persistent_repair_exhausted_error(root / "state.db")
+    _assert_profile_pinned_commands(exhausted, "default", 2)
+
+    finding = Finding()
+    _repair_state_db(finding, True, root / "state.db", "structural")
+    (structural_guidance,) = finding.manual_issues
+    _assert_profile_pinned_commands(structural_guidance, "default", 2)
+
+
+def test_gateway_fts_notice_pins_both_doctor_commands(tmp_path, monkeypatch):
+    """The confirmation command must target the same profile as the FTS repair command."""
+    import asyncio
+
+    import gateway.run as gateway_run
+
+    root = tmp_path / "hermes"
+    home = root / "profiles" / "research"
+    home.mkdir(parents=True)
+    (root / "config.yaml").write_text("")
+    (root / "active_profile").write_text("other\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._session_db_init_error = "malformed inverted index for FTS5 table main.messages_fts"
+    sent = []
+    monkeypatch.setattr(
+        runner, "_home_channel_transports", lambda: [("telegram", {}, "home-chat", object())]
+    )
+
+    async def _capture_send(_platform, _home, _transport, message, _log_fmt):
+        sent.append(message)
+
+    monkeypatch.setattr(runner, "_send_home_channel_message", _capture_send)
+    asyncio.run(runner._send_session_db_warning_notifications())
+
+    assert len(sent) == 1
+    _assert_profile_pinned_commands(sent[0], "research", 2)
+    assert "unless `hermes -p research doctor` confirms damage" in sent[0]

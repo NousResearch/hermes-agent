@@ -43,7 +43,7 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
     for resp in (first, second, third):
         assert resp.status_code == 503
         assert resp.json()["detail"]["error"] == "state_db_corrupt"
-        assert "hermes doctor" in resp.json()["detail"]["message"]
+        assert "hermes -p default doctor" in resp.json()["detail"]["message"]
     # Only the dashboard's own warning counts: hermes_state logs an unrelated
     # once-per-process SQLite-version advisory on some interpreters (CI's 3.50.4).
     warnings = [
@@ -63,3 +63,39 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
         r.levelno >= logging.WARNING and r.name.startswith("hermes_cli.web_server")
         for r in caplog.records
     ) == 1
+
+
+@pytest.mark.parametrize("endpoint", ["usage", "models"])
+def test_corrupt_store_guidance_pins_requested_profile(
+    endpoint, tmp_path, monkeypatch, caplog
+):
+    root = tmp_path / "hermes"
+    profile_home = root / "profiles" / "research"
+    profile_home.mkdir(parents=True)
+    (root / "active_profile").write_text("other\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    db_path = _malformed_state_db(profile_home)
+    monkeypatch.setattr(_common, "_corrupt_store_warned_at", {})
+    app = FastAPI()
+    app.include_router(analytics.router)
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+        response = TestClient(app).get(
+            f"/api/analytics/{endpoint}?days=7&profile=research"
+        )
+
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["path"] == str(db_path)
+    assert detail["message"] == (
+        "state.db corrupt — run `hermes -p research doctor` "
+        "(then `hermes -p research doctor --fix` or "
+        "`hermes -p research sessions repair`)."
+    )
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name.startswith("hermes_cli.web_server")
+        and record.levelno >= logging.WARNING
+    ]
+    assert any("`hermes -p research doctor`" in warning for warning in warnings)

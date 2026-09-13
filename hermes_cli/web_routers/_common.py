@@ -89,8 +89,23 @@ _corrupt_store_warned_at: Dict[str, float] = {}  # {db path: monotonic}
 
 CORRUPT_STORE_DETAIL = {
     "error": "state_db_corrupt",
-    "message": "state.db corrupt — run `hermes doctor` (then `hermes doctor --fix` or `hermes sessions repair`).",
 }
+
+
+def _corrupt_store_detail(db_path):
+    """Return recovery guidance pinned to the profile that owns ``db_path``."""
+    from hermes_constants import profile_name_for_home
+
+    profile = profile_name_for_home(db_path.parent)
+    profile_arg = f"-p {profile} " if profile else ""
+    return {
+        **CORRUPT_STORE_DETAIL,
+        "message": (
+            f"state.db corrupt — run `hermes {profile_arg}doctor` "
+            f"(then `hermes {profile_arg}doctor --fix` or "
+            f"`hermes {profile_arg}sessions repair`)."
+        ),
+    }
 
 
 @contextlib.contextmanager
@@ -106,11 +121,12 @@ def corrupt_store_as_status(db_path):
         if not is_malformed_db_error(exc):
             raise
         key, now = str(db_path), time.monotonic()
+        detail = _corrupt_store_detail(db_path)
         last = _corrupt_store_warned_at.get(key)
         if last is None or now - last >= _CORRUPT_STORE_WARN_INTERVAL_S:
             _corrupt_store_warned_at[key] = now
             log.warning("state.db at %s is corrupt (%s); dashboard reads return a status payload until it is "
-                        "repaired — run `hermes doctor`", db_path, exc)
+                        "repaired; %s", db_path, exc, detail["message"])
         else:
             log.debug("state.db at %s still corrupt: %s", db_path, exc)
-        raise HTTPException(status_code=503, detail={**CORRUPT_STORE_DETAIL, "path": key}) from exc
+        raise HTTPException(status_code=503, detail={**detail, "path": key}) from exc

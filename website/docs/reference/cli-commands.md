@@ -1252,6 +1252,9 @@ Subcommands:
 | `install` | Install a skill. |
 | `inspect` | Preview a skill without installing it. |
 | `list` | List installed skills. |
+| `enable <name...> [--platform X]` | Enable disabled skills without the interactive picker (takes effect next session). |
+| `disable <name...> [--platform X]` | Disable skills while keeping them installed. Essential skills (e.g. `hermes-agent`) cannot be disabled. |
+| `disabled` | Show currently disabled skills. |
 | `check` | Check installed hub skills for upstream updates. |
 | `update` | Reinstall hub skills with upstream changes when available. |
 | `audit` | Re-scan installed hub skills. |

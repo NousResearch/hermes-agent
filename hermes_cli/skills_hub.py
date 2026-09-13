@@ -1317,6 +1317,14 @@ def _tap_cli(args) -> None:
     do_tap(tap_action, repo=getattr(args, "repo", "") or getattr(args, "name", ""))
 
 
+def _toggle_cli(action: str, args) -> None:
+    """`hermes skills enable|disable <name...> [--platform X]`."""
+    from hermes_cli.skills_config import toggle_skills
+    for line in toggle_skills(action, list(getattr(args, "names", []) or []),
+                              platform=getattr(args, "platform", None)):
+        _console.print(line)
+
+
 # `hermes skills <action>` -> handler(args). Lambdas late-bind the do_* names so
 # tests that patch("hermes_cli.skills_hub.do_install") still intercept.
 _CLI_ACTIONS = {
@@ -1340,6 +1348,8 @@ _CLI_ACTIONS = {
     "opt-out": lambda a: do_opt_out(remove=getattr(a, "remove", False),
                                     skip_confirm=getattr(a, "yes", False)),
     "opt-in": lambda a: do_opt_in(sync=getattr(a, "sync", False)),
+    **{act: (lambda a, _act=act: _toggle_cli(_act, a)) for act in ("enable", "disable")},
+    "disabled": lambda a: _slash_list_disabled(_console),
     "repair-official": lambda a: do_repair_official(a.name, restore=getattr(a, "restore", False),
                                                     skip_confirm=getattr(a, "yes", False)),
     "publish": lambda a: do_publish(a.skill_path, target=getattr(a, "to", "github"),
@@ -1351,7 +1361,7 @@ def skills_command(args) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
     handler = _CLI_ACTIONS.get(getattr(args, "skills_action", None))
     if handler is None:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|enable|disable|disabled|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
         return
     handler(args)
@@ -1404,6 +1414,26 @@ def _slash_snapshot(args, c):
         c.print("[bold red]Usage:[/] /skills snapshot export <file> | /skills snapshot import <file>\n")
 
 
+def _slash_toggle_action(action, args, c):
+    """`/skills enable|disable <name...>` — non-interactive toggle via skills_config."""
+    from hermes_cli.skills_config import toggle_skills
+    names = [a for a in args if not a.startswith("--")]
+    for line in toggle_skills(action, names):
+        c.print(line)
+
+
+def _slash_list_disabled(c):
+    from hermes_cli.config import load_config
+    from hermes_cli.skills_config import get_disabled_skills
+    disabled = sorted(get_disabled_skills(load_config()))
+    if not disabled:
+        c.print("[dim]No skills are currently disabled.[/]")
+        return
+    c.print(f"[bold]Disabled skills ({len(disabled)}):[/]")
+    for name in disabled:
+        c.print(f"  • {name}")
+
+
 def _first_positional(args):
     """First argument unless it is a flag (audit's historical parse)."""
     return args[0] if args and not args[0].startswith("--") else None
@@ -1445,6 +1475,8 @@ _SLASH_ACTIONS = {
     "snapshot": _slash_snapshot,
     "tap": lambda args, c: (do_tap(args[0], repo=args[1] if len(args) > 1 else "", console=c)
                             if args else do_tap("list", console=c)),
+    **{a: (lambda args, c, _a=a: _slash_toggle_action(_a, args, c)) for a in ("enable", "disable")},
+    "disabled": lambda args, c: _slash_list_disabled(c),
     **dict.fromkeys(("help", "--help", "-h"), lambda args, c: _print_skills_help(c))}
 
 # Actions that need at least one argument -> usage lines printed when called bare.
@@ -1459,6 +1491,8 @@ _SLASH_USAGE = {
         "[dim]Pass --restore to also replace the current copy with the bundled version.[/]\n"),
     "diff": ("[bold red]Usage:[/] /skills diff <name>\n",),
     "publish": ("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n",),
+    "enable": ("[bold red]Usage:[/] /skills enable <name> [name ...]\n",),
+    "disable": ("[bold red]Usage:[/] /skills disable <name> [name ...]\n",),
 }
 
 
@@ -1494,6 +1528,9 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
+        "  [cyan]enable[/] <name> [name ...]    Enable one or more disabled skills\n"
+        "  [cyan]disable[/] <name> [name ...]   Disable one or more skills (new sessions)\n"
+        "  [cyan]disabled[/]                    Show currently disabled skills\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"

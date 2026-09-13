@@ -163,6 +163,18 @@ def test_stale_symbol_scenario_end_to_end():
             sys.modules[name] = real
 
 
+def test_dashboard_module_imports_with_pre_update_cli_output(monkeypatch):
+    """Post-pull dashboard cleanup must not import a symbol from old process state."""
+    stale = types.ModuleType("hermes_cli.cli_output")
+    monkeypatch.setitem(sys.modules, "hermes_cli.cli_output", stale)
+    monkeypatch.delitem(sys.modules, "hermes_cli.main_dashboard", raising=False)
+
+    import hermes_cli
+
+    monkeypatch.delattr(hermes_cli, "main_dashboard", raising=False)
+    importlib.import_module("hermes_cli.main_dashboard")
+
+
 def test_purge_keeps_plan_record_class_identity():
     # The pre-update plan is built BEFORE the purge; reconciliation after it filters with
     # ``isinstance(r, RuntimeRecord)``. An evicted ``update_inventory`` yields a fresh class,

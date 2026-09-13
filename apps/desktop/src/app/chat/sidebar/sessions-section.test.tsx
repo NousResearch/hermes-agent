@@ -1,13 +1,18 @@
-import { cleanup, render } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
+import { sessionTreeNodeId } from '@/lib/session-branch-tree'
+import { $sidebarWorkspaceNodeOpen } from '@/store/layout'
 
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $sidebarWorkspaceNodeOpen.set({})
+})
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -60,6 +65,44 @@ function generateSessions(count: number): SessionInfo[] {
 const noop = () => {}
 
 describe('SidebarSessionsSection memoization & virtualizer stability', () => {
+  it('keeps collapsible tree behavior in virtualized Recents', () => {
+    mockVirtualListPropsHistory.length = 0
+
+    const sessions = generateSessions(VIRTUALIZE_THRESHOLD + 1)
+    const parent = sessions[0]
+    const child = { ...sessions[1], spawned_by_session_id: parent.id }
+
+    render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        label="Sessions"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open={true}
+        pinned={false}
+        sessions={[parent, child, ...sessions.slice(2)]}
+      />
+    )
+
+    const initialProps = mockVirtualListPropsHistory.at(-1)
+    const parentRow = initialProps?.rows.find(row => row.kind === 'session' && row.entry.session.id === parent.id)
+
+    expect(parentRow).toMatchObject({ entry: { hasChildren: true } })
+    expect(initialProps?.treeToggle?.open(parent)).toBe(true)
+
+    act(() => initialProps?.treeToggle?.onToggle(parent))
+
+    const collapsedProps = mockVirtualListPropsHistory.at(-1)
+    expect(collapsedProps?.treeToggle?.open(parent)).toBe(false)
+    expect(collapsedProps?.rows.some(row => row.kind === 'session' && row.entry.session.id === child.id)).toBe(false)
+    expect($sidebarWorkspaceNodeOpen.get()[sessionTreeNodeId(parent)]).toBe(false)
+  })
+
   it('memoizes flatRows and passes the exact same rows array reference across parent re-renders', () => {
     mockVirtualListPropsHistory.length = 0
 

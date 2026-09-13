@@ -28,10 +28,12 @@ interface SessionRowCommonProps {
   onBranch?: () => void
   onDelete: () => void
   onPin: () => void
+  onToggleTree?: () => void
   onToggleUnread: () => void
   onResume: () => void
   reorderable?: boolean
   showProfile?: boolean
+  treeOpen?: boolean
 }
 
 export interface VirtualSessionListProps {
@@ -57,6 +59,10 @@ export interface VirtualSessionListProps {
   pinned: boolean
   showProfileTags?: boolean
   sortable: boolean
+  treeToggle?: {
+    onToggle: (session: SessionInfo) => void
+    open: (session: SessionInfo) => boolean
+  }
 }
 
 // Matches the card's typical rendered height (four lines when a preview
@@ -81,7 +87,8 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onToggleUnread,
   pinned,
   showProfileTags = false,
-  sortable
+  sortable,
+  treeToggle
 }) => {
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
@@ -156,7 +163,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       )
     }
 
-    const { branchDepth, branchStem, session } = row.entry
+    const { branchDepth, branchStem, hasChildren, session } = row.entry
     const reorderable = sortable && !branchStem
 
     const commonProps: SessionRowCommonProps = {
@@ -169,10 +176,12 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
+      onToggleTree: hasChildren && treeToggle ? () => treeToggle.onToggle(session) : undefined,
       onToggleUnread: () => onToggleUnread(session.id),
       onResume: () => onResumeSession(session.id, session),
       reorderable,
       showProfile: showProfileTags,
+      treeOpen: hasChildren && treeToggle ? treeToggle.open(session) : undefined,
       unread: session.unread === true
     }
 

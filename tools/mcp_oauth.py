@@ -330,6 +330,23 @@ class HermesTokenStorage:
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)
+        # RFC 6749 §6: a refresh response may omit refresh_token when the authorization server
+        # does not rotate it; the omitted field means "unchanged", not "revoked". #62333 fixed
+        # this by having HermesProviderMixin._handle_refresh_response merge the prior token
+        # in-memory before calling set_tokens() -- but that only defends the ONE caller Hermes
+        # controls and keeps current. set_tokens() is the actual choke point every write for
+        # this server passes through (that provider, tools/mcp_oauth_device.py's login_device,
+        # and -- per #109932's own evidence of a `hermes update` that "pulled new code but did
+        # not restart running gateways" -- a stale pre-fix process still resident in a
+        # long-lived gateway's sys.modules). Any of those calling set_tokens() with a payload
+        # that merely omits refresh_token must not be able to erase a good one already on disk;
+        # enforcing the carry-forward here, once, closes that regardless of which/whose code
+        # constructed the payload. A caller that means to actually clear credentials uses
+        # remove() (deletes the file), never set_tokens() with a bare omission.
+        if not payload.get("refresh_token"):
+            existing = _read_json(self._tokens_path())
+            if existing and existing.get("refresh_token"):
+                payload["refresh_token"] = existing["refresh_token"]
         # Absolute ``expires_at``: see _rebase_expires_in.
         if payload.get("expires_in") is not None:
             with contextlib.suppress(TypeError, ValueError):  # mock tokens / odd shapes: skip, don't fail persistence

@@ -879,6 +879,12 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
+#     # no_progress_timeout: 60   # Codex/Responses-only: seconds a stream may go without a
+#                                 # substantive event before it fails fast (default: 60).
+#                                 # Independent of "timeout" above (the overall request
+#                                 # budget) — raising "timeout" alone does not widen this
+#                                 # window. Each substantive event re-arms it; a slow but
+#                                 # progressing reasoning/summary stream is not affected.
 #
 #   # Post-turn memory/skill self-improvement review fork. Runs after a turn
 #   # when the nudge intervals fire; writes skills/memories in a daemon thread.

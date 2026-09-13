@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 _THIS_DIR = Path(__file__).resolve().parent
-_WORKTREE_ROOT = _THIS_DIR.parent
+_WORKTREE_ROOT = _THIS_DIR.parents[1]
 sys.path.insert(0, str(_WORKTREE_ROOT))
 sys.path.insert(0, str(_THIS_DIR))
 

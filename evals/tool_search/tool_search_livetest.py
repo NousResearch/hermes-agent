@@ -37,7 +37,7 @@ ORIGINAL_HOME = os.environ.get("HERMES_HOME")
 ORIGINAL_AUTH = Path.home() / ".hermes" / "auth.json"
 
 _THIS_DIR = Path(__file__).resolve().parent
-_WORKTREE_ROOT = _THIS_DIR.parent
+_WORKTREE_ROOT = _THIS_DIR.parents[1]
 sys.path.insert(0, str(_WORKTREE_ROOT))
 
 # ---------------------------------------------------------------------------

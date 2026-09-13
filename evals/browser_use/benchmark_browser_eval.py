@@ -4,7 +4,7 @@ Runs both paths against the same live Chrome and prints a comparison table.
 Not a pytest — a script you run manually for the PR description.
 
 Usage:
-    .venv/bin/python scripts/benchmark_browser_eval.py [--iterations N]
+    .venv/bin/python evals/browser_use/benchmark_browser_eval.py [--iterations N]
 """
 from __future__ import annotations
 

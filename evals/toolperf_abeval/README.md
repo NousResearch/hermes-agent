@@ -55,7 +55,7 @@ in real production traffic.
 ## Run
 
 ```bash
-cd scripts/toolperf_abeval
+cd evals/toolperf_abeval
 export ABEVAL_ROOT=/tmp/abeval-workspace   # results + sandboxes land here
 export ABEVAL_HOME=/tmp/abeval-home
 ./run_all.sh /tmp/abeval-baseline /path/to/fixes-tree 3 \

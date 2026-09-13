@@ -2,14 +2,14 @@
 
 Runs five scenarios against a real model (Claude Haiku 4.5 via OpenRouter) to
 verify that the bridge tools work end-to-end. Records transcripts in
-`scripts/out/`.
+`evals/tool_search/out/`.
 
 ## Running
 
 ```bash
 cd <repo root>
-python3 scripts/tool_search_livetest.py        # runs all 5 scenarios x 2 modes
-python3 scripts/analyze_livetest.py            # side-by-side report
+python3 evals/tool_search/tool_search_livetest.py        # runs all 5 scenarios x 2 modes
+python3 evals/tool_search/analyze_livetest.py            # side-by-side report
 ```
 
 Requires `OPENROUTER_API_KEY` set or present in `~/.hermes/.env`.
@@ -34,7 +34,7 @@ A/B baseline. The harness records:
 ## Output structure
 
 ```
-scripts/out/
+evals/tool_search/out/
   <scenario>__enabled.json    # tool_search ON
   <scenario>__disabled.json   # tool_search OFF
   _summary.json               # one-line summary across all runs

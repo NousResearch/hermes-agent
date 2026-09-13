@@ -360,9 +360,9 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
     drivers causing 'Invalid argument'). Returns ``False`` when a Desktop rebuild ran and failed."""
     from hermes_cli.update_cmd import (
         _finish_dashboard_update_cleanup, _m, _print_bundled_skills_sync_report, _print_curator_first_run_notice,
-        _print_curator_recent_run_notice, _print_update_summary, _read_project_version, _rebuild_desktop_after_update,
-        _sweep_bytecode_after_update, _update_node_dependencies, _validate_critical_modules_import,
-        _verify_and_restore_state_dbs_post_update,
+        _print_curator_recent_run_notice, _print_update_summary, _purge_stale_hermes_modules, _read_project_version,
+        _rebuild_desktop_after_update, _sweep_bytecode_after_update, _update_node_dependencies,
+        _validate_critical_modules_import, _verify_and_restore_state_dbs_post_update,
     )
     active_tool_dependencies = _m()._capture_active_tool_dependencies()
     pre_update_version = _read_project_version()  # snapshot before files are replaced, for the completion line
@@ -425,6 +425,11 @@ def _update_via_zip(args, *, had_desktop_app_before_update: bool = False) -> boo
         _print_curator_first_run_notice()
     with _best_effort('Curator recent-run notice failed: %s'):
         _print_curator_recent_run_notice()
+    # Purge stale cached Hermes modules before the cleanup imports gateway source into this
+    # PRE-update interpreter: a cached OLD module missing a symbol the new source expects would
+    # ImportError the cleanup after the update already succeeded (#88371). The git path guards
+    # the same way ahead of its fleet restart; the ZIP fallback lacked the guard.
+    _purge_stale_hermes_modules()
     # Don't stop a working dashboard when the Node refresh failed — see the git-update path for rationale.
     # See #30271.
     _finish_dashboard_update_cleanup(node_failures)

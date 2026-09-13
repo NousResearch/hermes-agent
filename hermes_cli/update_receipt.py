@@ -141,6 +141,27 @@ def current_update_id() -> str | None:
     return str(update_id) if update_id else None
 
 
+def checkpoint_update_receipt(expected_sha: str) -> bool:
+    """Durably bind the active receipt and plan to the post-pull SHA before marker creation."""
+    if _current is None or not expected_sha:
+        return False
+    try:
+        directory = _receipt_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = {**_current.data, "post_update": {"sha": expected_sha}}
+        body = json.dumps(payload, indent=2, default=str)
+        update_id = str(payload["update_id"])
+        path = directory / f"update_{update_id}.json"
+        for target in (path, directory / "latest.json"):
+            tmp = target.with_suffix(target.suffix + f".tmp{os.getpid()}")
+            tmp.write_text(body, encoding="utf-8")
+            os.replace(tmp, target)
+        return True
+    except Exception as exc:
+        logger.debug("Could not checkpoint update receipt: %s", exc)
+        return False
+
+
 def _record(method: str, what: str, *args: Any, **kwargs: Any) -> None:
     """Invoke ``method`` on the active receipt; no-op when none, never raises."""
     try:

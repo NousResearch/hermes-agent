@@ -201,7 +201,7 @@ def _collect_gateway_runtimes(plan: UpdatePlan, profile_homes: list, seen: set[i
     with _probe("PID-file gateway inventory", plan):
         from hermes_cli.gateway import find_profile_gateway_processes
 
-        for proc in find_profile_gateway_processes():
+        for proc in find_profile_gateway_processes(strict=True):
             if proc.pid not in seen:
                 seen.add(proc.pid)
                 plan.runtimes.append(_runtime("gateway", proc.profile, proc.pid, supervisor(proc.pid)))
@@ -215,7 +215,7 @@ def _collect_ledger_runtimes(plan: UpdatePlan, seen: set[int]) -> None:
     with _probe("Serve/dashboard ledger inventory", plan):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
-        for entry in ledger_entries():
+        for entry in ledger_entries(strict=True):
             purpose, pid = entry.get("purpose"), entry.get("pid")
             if purpose not in _SERVE_KINDS or not isinstance(pid, int) or pid in seen:
                 continue

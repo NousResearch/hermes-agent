@@ -58,11 +58,11 @@ def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> None:
         logger.debug("Skipping fleet-restart-pending marker under pytest (live checkout)")
         return
     try:
-        from hermes_cli.update_receipt import current_update_id
+        from hermes_cli.update_receipt import checkpoint_update_receipt, current_update_id
 
         lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
         update_id = current_update_id()
-        if update_id:
+        if update_id and checkpoint_update_receipt(expected_sha):
             lines.append(f"update_id={update_id}")
         if expected_sha:
             lines.append(f"expected_sha={expected_sha}")
@@ -84,14 +84,16 @@ def _parse_fleet_restart_marker(body: bytes) -> dict | None:
         started = float(fields["started"])
         pid = int(fields["pid"])
         expected_sha = fields["expected_sha"].strip()
-        update_id = fields["update_id"].strip()
+        update_id = fields.get("update_id", "").strip() or None
     except (KeyError, TypeError, ValueError, UnicodeDecodeError):
         return None
-    try:
-        valid_update_id = uuid.UUID(update_id).hex == update_id
-    except (ValueError, AttributeError):
-        valid_update_id = False
-    if not math.isfinite(started) or started <= 0 or pid <= 0 or not expected_sha or not valid_update_id:
+    if update_id is not None:
+        try:
+            if uuid.UUID(update_id).hex != update_id:
+                return None
+        except (ValueError, AttributeError):
+            return None
+    if not math.isfinite(started) or started <= 0 or pid <= 0 or not expected_sha:
         return None
     return {"started": started, "pid": pid, "expected_sha": expected_sha, "update_id": update_id}
 
@@ -116,6 +118,8 @@ def _matching_marker_receipt(marker: dict) -> tuple[dict, Path] | None:
     """Newest receipt from the updater process that reached the marker's target SHA."""
     from hermes_cli.update_receipt import _receipt_dir
 
+    if marker["update_id"] is None:
+        return None
     directory = _receipt_dir()
     try:
         paths = sorted(directory.glob("update_*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
@@ -163,6 +167,20 @@ def _sha_includes(loaded_sha: object, expected_sha: str) -> bool:
         return False
 
 
+def _recorded_incarnation_is_gone(runtime: dict) -> bool:
+    """Whether a recorded serve/dashboard process generation provably no longer exists."""
+    try:
+        import psutil
+
+        pid = int(runtime["pid"])
+        started = float((runtime.get("detail") or {})["create_time"])
+        return abs(psutil.Process(pid).create_time() - started) >= 2.0
+    except psutil.NoSuchProcess:
+        return True
+    except Exception:
+        return False
+
+
 def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
     """Prove every recorded runtime was replaced and no live runtime escaped the plan."""
     from hermes_cli.update_receipt import _profile_homes, _socket_identity
@@ -178,7 +196,14 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
     owed: dict[str, int] = {}
     recorded_pids: set[int] = set()
     for runtime in runtimes:
-        if not isinstance(runtime, dict) or runtime.get("kind") != "gateway":
+        if not isinstance(runtime, dict):
+            return False
+        if runtime.get("kind") in {"serve", "dashboard"}:
+            if not _recorded_incarnation_is_gone(runtime):
+                return False
+            recorded_pids.add(int(runtime["pid"]))
+            continue
+        if runtime.get("kind") != "gateway":
             return False
         profile = runtime.get("profile")
         try:
@@ -217,7 +242,7 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
         # unidentified process cannot safely be treated as current.
         from hermes_cli.gateway import find_gateway_pids
 
-        scanned_pids = {int(pid) for pid in find_gateway_pids(all_profiles=True)}
+        scanned_pids = {int(pid) for pid in find_gateway_pids(all_profiles=True, strict=True)}
         if not scanned_pids <= {pid for pid, _identity in live_sockets.values()}:
             return False
 
@@ -227,7 +252,7 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
 
         if any(
             int(entry.get("pid", 0)) not in recorded_pids
-            for entry in ledger_entries()
+            for entry in ledger_entries(strict=True)
             if entry.get("purpose") in {"serve", "dashboard"}
         ):
             return False
@@ -248,8 +273,14 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
         try:
             import psutil
 
-            if psutil.Process(successor_pid).create_time() <= marker["started"]:
-                return False
+            successor_started = psutil.Process(successor_pid).create_time()
+        except psutil.NoSuchProcess:
+            return False
+        except Exception:
+            return False
+        if successor_started <= marker["started"]:
+            return False
+        try:
             psutil.Process(old_pid)
         except psutil.NoSuchProcess:
             continue
@@ -259,7 +290,7 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
     return True
 
 
-def _record_fleet_restart_completion(marker_body: bytes, marker: dict, receipt_path: Path) -> bool:
+def _record_fleet_restart_completion(marker_body: bytes, marker: dict, receipt_path: Path | None) -> bool:
     """Persist proof for this exact marker generation without consuming the marker."""
     marker_path = _fleet_restart_pending_marker_path()
     completion_path = _fleet_restart_completion_path()
@@ -272,7 +303,7 @@ def _record_fleet_restart_completion(marker_body: bytes, marker: dict, receipt_p
             "expected_sha": marker["expected_sha"],
             "updater_pid": marker["pid"],
             "update_id": marker["update_id"],
-            "source_receipt": receipt_path.name,
+            "source_receipt": receipt_path.name if receipt_path is not None else None,
             "completed_at": _time.time(),
         }
         tmp = completion_path.with_suffix(completion_path.suffix + f".tmp{os.getpid()}")
@@ -421,7 +452,12 @@ def _pending_fleet_restart_needed() -> bool:
                 return True
         matched = _matching_marker_receipt(marker)
         if matched is None:
-            return True
+            if marker["update_id"] is not None:
+                return True
+            legacy = {"plan": {"inventory_complete": True, "runtimes": []}}
+            if not _marker_obligation_is_fulfilled(marker, legacy):
+                return True
+            return not _record_fleet_restart_completion(marker_body, marker, None)
         receipt, receipt_path = matched
         if not _marker_obligation_is_fulfilled(marker, receipt):
             return True
@@ -539,6 +575,8 @@ def _run_pending_fleet_restart(*, receipt: dict | None = None) -> bool:
             for runtime in runtimes:
                 if not isinstance(runtime, dict):
                     failed.append("recorded fleet runtime (invalid)")
+                    continue
+                if runtime.get("kind") in {"serve", "dashboard"} and _recorded_incarnation_is_gone(runtime):
                     continue
                 if runtime.get("kind") != "gateway":
                     failed.append(

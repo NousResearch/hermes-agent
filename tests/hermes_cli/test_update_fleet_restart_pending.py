@@ -178,6 +178,7 @@ def test_marker_round_trip_under_hermes_home(monkeypatch):
     assert not path.exists()
 
     monkeypatch.setattr(update_receipt, "current_update_id", lambda: _UPDATE_ID)
+    monkeypatch.setattr(update_receipt, "checkpoint_update_receipt", lambda _sha: True)
     update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123")
     assert path.is_file()
     body = path.read_text(encoding="utf-8")

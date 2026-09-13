@@ -813,7 +813,13 @@ class TurnController {
     this.publishToolState()
   }
 
-  recordInlineDiffToolComplete(diffText: string, toolId: string, fallbackName?: string, duration?: number, resultText?: string) {
+  recordInlineDiffToolComplete(
+    diffText: string,
+    toolId: string,
+    fallbackName?: string,
+    duration?: number,
+    resultText?: string
+  ) {
     if (this.interrupted) {
       return
     }
@@ -825,7 +831,13 @@ class TurnController {
 
   // `tool.complete` carries no error flag on the wire (tui_gateway/tool_progress.py::_on_tool_complete);
   // a failed tool surfaces through its result text, so every trail line renders as non-error.
-  private completeTool(toolId: string, fallbackName?: string, summary?: string, duration?: number, resultText?: string) {
+  private completeTool(
+    toolId: string,
+    fallbackName?: string,
+    summary?: string,
+    duration?: number,
+    resultText?: string
+  ) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)

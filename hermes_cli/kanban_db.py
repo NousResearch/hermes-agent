@@ -2752,6 +2752,28 @@ def _resolve_refs_across_boards(
     return remaining, cross_board
 
 
+def other_board_task_ids(conn: sqlite3.Connection) -> set[str]:
+    """Every task id that exists on ANOTHER board (not the one ``conn`` is on).
+
+    One read-only ``SELECT id`` per other board. The diagnostics layer uses it so
+    a citation to a task on a shared/sibling board is not reported as a phantom
+    reference. Returns an empty set when there are no other boards or none is
+    readable — callers then fall back to this board only."""
+    ids: set[str] = set()
+    for _slug, path in _other_board_db_paths(conn):
+        other: Optional[sqlite3.Connection] = None
+        try:
+            other = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            ids.update(str(r[0]) for r in other.execute("SELECT id FROM tasks"))
+        except Exception:
+            continue
+        finally:
+            if other is not None:
+                with contextlib.suppress(Exception):
+                    other.close()
+    return ids
+
+
 def _flag_phantom_prose_refs(
     conn: sqlite3.Connection, task_id: str, run_id: Optional[int],
     summary: Optional[str], result: Optional[str], verified_cards: list[str],

@@ -220,11 +220,20 @@ def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[
     events_by_task = _rows_by_task("task_events")
     runs_by_task = _rows_by_task("task_runs")
     graph_by_task = kanban_db.task_graph_contexts(conn, row_ids)
+    # Cross-board citations are legitimate, not phantom references. Only pay for
+    # the other-board id scan when some task actually carries a phantom event.
+    has_phantom = conn.execute(
+        f"SELECT 1 FROM task_events WHERE task_id IN ({_placeholders(row_ids)}) "
+        "AND kind = 'suspected_hallucinated_references' LIMIT 1",
+        tuple(row_ids),
+    ).fetchone()
+    resolved_elsewhere = kanban_db.other_board_task_ids(conn) if has_phantom else set()
     out: dict[str, list[dict]] = {}
     for r in rows:
         tid = r["id"]
         diags = kd.compute_task_diagnostics(
-            r, events_by_task[tid], runs_by_task[tid], config=diag_config, graph=graph_by_task.get(tid))
+            r, events_by_task[tid], runs_by_task[tid], config=diag_config,
+            graph=graph_by_task.get(tid), resolved_elsewhere=resolved_elsewhere)
         if diags:
             out[tid] = [d.to_dict() for d in diags]
     return out

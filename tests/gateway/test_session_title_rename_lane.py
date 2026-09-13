@@ -102,3 +102,56 @@ async def test_native_thread_rename_passes_only_the_initial_name_guard():
     )
 
     assert calls == [("999", "Semantic Session Title", "Initial words")]
+
+
+@pytest.mark.asyncio
+async def test_rename_skipped_for_degenerate_title():
+    """A degenerate auto-title (lone '{', bare code fence) must NOT clobber a real
+    thread name. Regression for the 429→fallback title bug that renamed threads to
+    garbage like '{' or '```'."""
+
+    class StrictNativeAdapter:
+        def __init__(self):
+            self.calls = []
+
+        async def rename_thread(
+            self,
+            thread_id: str,
+            name: str,
+            *,
+            only_if_current_name: str | None = None,
+        ) -> bool:
+            self.calls.append((thread_id, name, only_if_current_name))
+            return True
+
+    class NativeRenameRunner:
+        _is_discord_auto_thread_lane = GatewayRunner._is_discord_auto_thread_lane
+        _sanitize_discord_thread_title = GatewayRunner._sanitize_discord_thread_title
+        _rename_discord_auto_thread_for_session_title = (
+            GatewayRunner._rename_discord_auto_thread_for_session_title
+        )
+
+        def __init__(self, adapter):
+            self.adapters = {Platform.DISCORD: adapter}
+
+        def _adapter_for_source(self, source):
+            return self.adapters[source.platform]
+
+    source = types.SimpleNamespace(
+        platform=Platform.DISCORD,
+        chat_id="999",
+        chat_type="thread",
+        thread_id="999",
+        auto_thread_created=True,
+        auto_thread_initial_name="Initial words",
+    )
+
+    adapter = StrictNativeAdapter()
+    runner = NativeRenameRunner(adapter)
+    await runner._rename_discord_auto_thread_for_session_title(
+        source,
+        "session-1",
+        "{",
+    )
+
+    assert adapter.calls == []

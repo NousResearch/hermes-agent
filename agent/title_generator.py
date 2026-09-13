@@ -209,6 +209,13 @@ def _clean_title(text: str) -> Optional[str]:
     title = _strip_title_prefix(" ".join((text or "").split()).strip("\"'").strip()).rstrip(".!,;:")
     if len(title) > 80:
         title = title[:77].rstrip() + "..."
+    # Reject degenerate titles with no alphanumeric content (a lone '{', a bare code
+    # fence '```', '--', etc.). These slip through the length/word-count guards and,
+    # once persisted, corrupt session names and Discord auto-thread titles. Returning
+    # None lets the caller retry on the next exchange. Unicode-aware: keeps CJK/Vietnamese
+    # titles (letters match [^\W_] even though \w is ASCII-only by default).
+    if not re.search(r"[^\W_]", title, re.UNICODE):
+        return None
     return title or None
 
 

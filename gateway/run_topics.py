@@ -301,10 +301,14 @@ class GatewayTopicThreadsMixin:
         cleaned = _collapse_title(title)
         return cleaned if len(cleaned) <= 120 else cleaned[:117].rstrip() + "..."
 
-    def _sanitize_discord_thread_title(self, title: str) -> str:
+    def _sanitize_discord_thread_title(self, title: str) -> Optional[str]:
         """Discord-safe thread title: the 100-char cap is measured in UTF-16 code units (emoji count
-        double), so truncate with the UTF-16 helpers rather than Python code-point slices."""
+        double), so truncate with the UTF-16 helpers rather than Python code-point slices. Returns
+        None when the title carries no alphanumeric content (a degenerate '{', bare code fence, etc.)
+        so the caller refuses to clobber a real thread name with garbage."""
         cleaned = _collapse_title(title)
+        if not re.search(r"[^\W_]", cleaned, re.UNICODE):
+            return None
         return cleaned if utf16_len(cleaned) <= 80 else _prefix_within_utf16_limit(cleaned, 77).rstrip() + "..."
 
     # ── Discord auto-thread lanes ───────────────────────────────────────────────────────────
@@ -396,6 +400,13 @@ class GatewayTopicThreadsMixin:
         relay = relay_info is not None
         target_thread_id = relay_info[0] if relay else str(source.thread_id)
         thread_name = self._sanitize_discord_thread_title(title)
+        if thread_name is None:
+            # Degenerate title (no alphanumeric content): refuse to clobber a real thread name.
+            logger.info(
+                "discord auto-thread rename skipped: thread=%s title=%r carries no alphanumeric content",
+                target_thread_id, title,
+            )
+            return
         # Relay: ask the CONNECTOR to enforce the no-clobber guard from its own created-name memory —
         # the gateway can't reproduce the initial name byte-for-byte (normalization drift silently
         # declined every rename). Its egress guard resolves the tenant from caches keyed by the PARENT

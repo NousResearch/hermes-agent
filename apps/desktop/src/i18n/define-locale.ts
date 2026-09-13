@@ -5,4 +5,5 @@ import type { Translations } from './types'
 
 export type TranslationOverrides = TranslationOverride<Translations>
 
-export const defineLocale = (overrides: TranslationOverrides): Translations => mergeTranslations<Translations>(en, overrides)
+export const defineLocale = (overrides: TranslationOverrides): Translations =>
+  mergeTranslations<Translations>(en, overrides)

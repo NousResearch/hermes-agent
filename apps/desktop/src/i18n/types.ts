@@ -258,6 +258,9 @@ export interface Translations {
       errorMessage: (name: string) => string
       signIn: string
       view: string
+      disable: string
+      disabledMessage: (name: string) => string
+      disableFailed: (name: string) => string
     }
     errors: {
       elevenLabsNeedsKey: string

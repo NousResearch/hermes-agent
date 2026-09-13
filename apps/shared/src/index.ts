@@ -168,6 +168,12 @@ export {
   SLASH_COMMAND_RE
 } from './slash'
 export {
+  THEME_PRESET_PALETTES,
+  type ThemePresetColors,
+  type ThemePresetName,
+  type ThemePresetPalette
+} from './theme-presets'
+export {
   backgroundMaterialFor,
   clampIntensity,
   DEFAULT_GLASS_MATERIAL,

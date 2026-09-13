@@ -133,8 +133,16 @@ def _adapter_for_subscription(runner: Any, platform: Any, sub: dict, owner_profi
             from gateway.run import _multiplex_profile_homes
             served = {name for name, _home in _multiplex_profile_homes(config)}
             return primary if profile in served else None
-        if route.matches(platform.value, guild_id=guild or route.guild_id, chat_id=chat,
-                         thread_id=thread, parent_chat_id=parent or (route.chat_id if thread_like else None)):
+        # Only Discord uses a thread/post id as ``chat_id`` and therefore needs
+        # the fail-closed unknown-parent probe. Telegram and Slack keep the
+        # containing chat/channel in ``chat_id``; synthesizing each candidate
+        # route's own chat as their parent made an unrelated DM/channel route
+        # shadow the real Telegram topic route before it could be considered.
+        parent_unknown = platform.value == "discord" and parent is None and thread_like
+        if parent_unknown and route.matches(
+            platform.value, guild_id=guild or route.guild_id, chat_id=chat,
+            thread_id=thread, parent_chat_id=route.chat_id,
+        ):
             return None
     return primary if profile == primary_profile else None
 
@@ -546,8 +554,12 @@ class _KanbanNotification:
         # "no exception == delivered" contract.
         if getattr(_send_res, "success", True) is False:
             raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
-        logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
-                     ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
+        logger.info(
+            "kanban notifier: delivered %s event %s for %s to %s/%s thread=%s message_id=%s continuations=%s board=%s",
+            ev.kind, ev.id, self.task_id, self.platform_str, sub["chat_id"], sub.get("thread_id") or "-",
+            getattr(_send_res, "message_id", None), getattr(_send_res, "continuation_message_ids", ()) or (),
+            self.board_slug,
+        )
         # Upload artifact paths from the completion payload / legacy result as
         # native files. Only on ``completed`` so retries never spam attachments.
         if ev.kind == "completed":

@@ -3866,6 +3866,36 @@
     );
   }
 
+  function OriginMeta(props) {
+    const origin = props.origin;
+    if (!origin) return null;
+    const sessionLabel = [origin.profile, origin.session_id].filter(Boolean).join(" / ");
+    const safeSessionLink = typeof origin.session_link === "string" && origin.session_link.startsWith("/chat?")
+      ? origin.session_link
+      : null;
+    const sessionValue = safeSessionLink
+      ? h("a", { href: safeSessionLink }, sessionLabel || safeSessionLink)
+      : sessionLabel;
+    const messageValue = origin.message_id || (origin.message_row_id != null
+      ? "session row " + origin.message_row_id
+      : null);
+    const route = [origin.platform, origin.chat_id, origin.thread_id].filter(Boolean).join(" / ");
+    return h(React.Fragment, null,
+      sessionValue ? h(MetaRow, {
+        label: tx(props.i18n, "originSession", "Origin session"), value: sessionValue,
+      }) : null,
+      messageValue ? h(MetaRow, {
+        label: tx(props.i18n, "originMessage", "Origin message"), value: messageValue,
+      }) : null,
+      route ? h(MetaRow, {
+        label: tx(props.i18n, "originRoute", "Origin route"), value: route,
+      }) : null,
+      origin.prompt_excerpt ? h(MetaRow, {
+        label: tx(props.i18n, "originPrompt", "Origin prompt"), value: origin.prompt_excerpt,
+      }) : null,
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
@@ -3913,6 +3943,7 @@
             : "on",
         }) : null,
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
+        h(OriginMeta, { origin: t.origin, i18n: i18n }),
       ),
       h(StatusActions, {
         task: t,

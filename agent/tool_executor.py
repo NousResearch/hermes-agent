@@ -1532,6 +1532,26 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     def _execute(next_args: dict) -> Any:
         import model_tools
 
+        tool_origin = None
+        if function_name == "kanban_create":
+            # Persist the triggering user turn before the card side effect so its
+            # stable SessionDB row id can be stored as a direct provenance anchor.
+            with contextlib.suppress(Exception):
+                agent._flush_messages_to_session_db(messages)
+            user_message = next((m for m in reversed(messages)
+                                 if isinstance(m, dict) and m.get("role") == "user"), None)
+            if user_message is not None:
+                prompt = getattr(agent, "_persist_user_message_override", None)
+                if prompt is None:
+                    prompt = user_message.get("content")
+                if isinstance(prompt, list):
+                    prompt = " ".join(str(part.get("text", "")) for part in prompt
+                                      if isinstance(part, dict) and part.get("type") == "text")
+                tool_origin = {
+                    "message_row_id": user_message.get("_row_id"),
+                    "prompt": prompt if isinstance(prompt, str) else str(prompt or ""),
+                }
+
         with model_tools.suppress_post_tool_call_hook():
             return model_tools.handle_function_call(
                 function_name,
@@ -1539,6 +1559,8 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
                 effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=agent.session_id or "",
+                platform=getattr(agent, "platform", "") or "",
+                tool_origin=tool_origin,
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,

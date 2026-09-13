@@ -16,8 +16,9 @@ def inherit_creator_origin(
 
     conn.execute(
         "UPDATE tasks SET session_id = COALESCE(session_id, "
-        "(SELECT session_id FROM tasks WHERE id = ?)) WHERE id = ?",
-        (creator_task_id, task_id),
+        "(SELECT session_id FROM tasks WHERE id = ?)), origin = COALESCE(origin, "
+        "(SELECT origin FROM tasks WHERE id = ?)) WHERE id = ?",
+        (creator_task_id, creator_task_id, task_id),
     )
     _inherit_notify_subs(conn, task_id, (creator_task_id,), created_at=created_at)
 

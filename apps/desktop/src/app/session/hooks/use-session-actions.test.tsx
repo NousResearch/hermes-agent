@@ -117,6 +117,7 @@ type HarnessHandle = Pick<
   | 'createBackendSessionForSend'
   | 'openNewSessionTile'
   | 'removeSession'
+  | 'resetCurrentSession'
   | 'selectSidebarItem'
   | 'startFreshSessionDraft'
 >
@@ -358,6 +359,95 @@ describe('connection-qualified session deletion', () => {
       session_id: 'runtime-shared'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('session.close', expect.anything())
+  })
+
+  it('replaces a chat only after its persisted successor exists, preserving owner, title, cwd, and pin order', async () => {
+    const requestGateway = vi.fn(async () => ({} as never))
+    const navigate = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-original' }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'original' }
+    let actions: HarnessHandle | null = null
+
+    setSessions([
+      storedSession({
+        connection_id: 'source-a',
+        cwd: '/remote/worktree',
+        id: 'original',
+        profile: 'worker',
+        title: 'Keep me'
+      })
+    ])
+    $pinnedSessionIds.set(['before', 'original', 'after'])
+    vi.mocked(requestGatewayForAgent).mockImplementation((async (_connection: string, _profile: string, method: string) => {
+      if (method === 'session.create') {
+        return {
+          info: { cwd: '/remote/worktree' },
+          session_id: 'runtime-replacement',
+          stored_session_id: 'replacement'
+        } as never
+      }
+
+      return {} as never
+    }) as never)
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    render(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        navigate={navigate}
+        onReady={value => (actions = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await expect(actions!.resetCurrentSession()).resolves.toBe(true)
+    })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'worker',
+      'session.create',
+      expect.objectContaining({ cwd: '/remote/worktree', persist: true, profile: 'worker', title: 'Keep me' })
+    )
+    expect(deleteSession).toHaveBeenCalledWith('original', { connectionId: 'source-a', profile: 'worker' })
+    expect($sessions.get()).toEqual([
+      expect.objectContaining({ cwd: '/remote/worktree', id: 'replacement', title: 'Keep me' })
+    ])
+    expect($pinnedSessionIds.get()).toEqual(['before', 'replacement', 'after'])
+    expect($selectedStoredSessionId.get()).toBe('replacement')
+    expect(activeSessionIdRef.current).toBe('runtime-replacement')
+    expect(navigate).toHaveBeenCalledWith(sessionRoute('replacement'), { replace: true })
+  })
+
+  it('keeps the original selected, listed, and pinned when replacement persistence fails', async () => {
+    const requestGateway = vi.fn(async () => ({} as never))
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'original' }
+    let actions: HarnessHandle | null = null
+
+    setSessions([storedSession({ id: 'original', profile: 'worker', title: 'Keep me' })])
+    $pinnedSessionIds.set(['before', 'original', 'after'])
+    vi.mocked(requestGatewayForProfile).mockRejectedValueOnce(new Error('disk unavailable'))
+
+    render(
+      <Harness
+        onReady={value => (actions = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+      />
+    )
+    await waitFor(() => expect(actions).not.toBeNull())
+
+    await act(async () => {
+      await expect(actions!.resetCurrentSession()).resolves.toBe(false)
+    })
+
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect($sessions.get()).toEqual([expect.objectContaining({ id: 'original', title: 'Keep me' })])
+    expect($pinnedSessionIds.get()).toEqual(['before', 'original', 'after'])
+    expect($selectedStoredSessionId.get()).toBe('original')
   })
 
   it('tears down the selected session from synchronous refs when render state is stale', async () => {

@@ -237,6 +237,7 @@ interface PromptActionsOptions {
   openMemoryGraph: () => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  resetCurrentSession?: () => Promise<boolean>
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
@@ -269,6 +270,7 @@ export function usePromptActions({
   openMemoryGraph,
   refreshSessions,
   requestGateway,
+  resetCurrentSession,
   resumeStoredSession,
   runtimeIdByStoredSessionIdRef,
   selectedStoredSessionIdRef,
@@ -597,6 +599,7 @@ export function usePromptActions({
     openMemoryGraph,
     refreshSessions,
     requestGateway,
+    resetCurrentSession,
     resumeStoredSession,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,

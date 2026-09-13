@@ -56,6 +56,7 @@ export type DesktopActionId =
   | 'branch'
   | 'browser'
   | 'btw'
+  | 'clear'
   | 'compress'
   | 'handoff'
   | 'hatch'
@@ -174,6 +175,7 @@ const rpc = (
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
   { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
+  { name: '/clear', description: 'Reset this chat and keep its title, workspace, and pin', surface: action('clear') },
   {
     name: '/stop',
     description: 'Stop the active turn and background processes',
@@ -285,7 +287,6 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
 const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
   terminal: [
     '/busy',
-    '/clear',
     '/config',
     '/copy',
     '/cron',

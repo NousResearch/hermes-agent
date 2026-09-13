@@ -1044,29 +1044,19 @@ class LocalEnvironment(BaseEnvironment):
     _passwordless_sudo_probe_supported = True
     _profile_scoped_passthrough = True
 
-    def _wrap_command(self, command: str, cwd: str) -> str:
-        from tools.terminal_tool_sudo import (
-            _nnp_sudo_unit_from_command,
-            _wrap_local_command_for_no_new_privs,
-        )
-
-        script = super()._wrap_command(command, cwd)
-        wrapped = _wrap_local_command_for_no_new_privs(script, cwd=cwd)
-        self._nnp_sudo_unit = _nnp_sudo_unit_from_command(wrapped)
-        return wrapped
-
     def _sudo_nopasswd_works(self) -> bool:
         """Probe ``sudo -n`` outside Electron's NoNewPrivs tree when latched."""
-        from tools.terminal_tool_sudo import _wrap_local_command_for_no_new_privs
-
         if not self._sudo_nopasswd_probe_supported:
             return False
+        proc = None
         try:
-            probe = _wrap_local_command_for_no_new_privs("sudo -n true", cwd=self.cwd or None)
-            proc = self._run_bash(probe, timeout=self._SUDO_PROBE_TIMEOUT_S)
+            proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)
             return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
         except Exception:
             return False
+        finally:
+            if proc is not None:
+                self._kill_process(proc)
 
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.
@@ -1157,6 +1147,12 @@ class LocalEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
+        from tools.terminal_tool_sudo import (
+            _nnp_sudo_unit_from_command,
+            _wrap_local_command_for_no_new_privs,
+            _write_nnp_env_file,
+        )
+
         bash = _find_bash()
         run_env = _make_run_env(self.env)
         # Login invocations (init_session's env snapshot) source the user's rc /
@@ -1165,6 +1161,14 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
+        run_env = _make_run_env(self.env)
+        env_file = None
+        wrapped = _wrap_local_command_for_no_new_privs(cmd_string, cwd=self.cwd or None)
+        if wrapped != cmd_string:
+            env_file = _write_nnp_env_file(run_env)
+            cmd_string = _wrap_local_command_for_no_new_privs(
+                cmd_string, cwd=self.cwd or None, env_file=env_file
+            )
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
         # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
@@ -1176,6 +1180,11 @@ class LocalEnvironment(BaseEnvironment):
             # detached-spawn: ok — owned via own_process_groups right below
             start_new_session=True, cwd=self.cwd,
             **({"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}))
+        unit = _nnp_sudo_unit_from_command(cmd_string)
+        if unit:
+            proc._nnp_sudo_unit = unit
+        if env_file:
+            proc._nnp_sudo_env_file = env_file
         if not _IS_WINDOWS:
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
             # running `npm run dev` or `sleep` on init. Released once the wait returns (see below).
@@ -1207,17 +1216,24 @@ class LocalEnvironment(BaseEnvironment):
 
     def _kill_process(self, proc):
         """Kill the entire process group (all children) and any NNP sudo unit."""
-        from tools.terminal_tool_sudo import _stop_nnp_sudo_unit
+        from tools.terminal_tool_sudo import _nnp_sudo_unit_from_proc, _stop_nnp_sudo_unit
 
         try:
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
         except OSError:  # ProcessLookupError / PermissionError included
             with contextlib.suppress(Exception):
                 proc.kill()
-        unit = getattr(self, "_nnp_sudo_unit", None)
+        unit = _nnp_sudo_unit_from_proc(proc)
         if unit:
             _stop_nnp_sudo_unit(unit)
-            self._nnp_sudo_unit = None
+            with contextlib.suppress(AttributeError):
+                proc._nnp_sudo_unit = None
+        env_file = getattr(proc, "_nnp_sudo_env_file", None)
+        if env_file:
+            with contextlib.suppress(OSError):
+                os.unlink(env_file)
+            with contextlib.suppress(AttributeError):
+                proc._nnp_sudo_env_file = None
 
     def _force_kill_process(self, proc):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""

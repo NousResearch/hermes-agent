@@ -2797,7 +2797,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 fallback_ips = list(SEED_FALLBACK_IPS)
             else:
                 logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
-        proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips])
+        proxy_url = resolve_proxy_url(
+            "TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips],
+            configured=self.config.extra.get("proxy_url"))
 
         def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
             return (HTTPXRequest(**request_kwargs, **extra, httpx_kwargs=general_httpx),
@@ -6563,6 +6565,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         _bridge_gate(key, env, telegram_cfg.get(key), seed_extra=seed)
     _bridge_lower("reactions", "TELEGRAM_REACTIONS")
     if "proxy_url" in telegram_cfg:
+        # Seeded into extra so ``_build_ptb_requests`` keeps a secondary's route without the env bridge.
+        extras.setdefault("proxy_url", str(telegram_cfg["proxy_url"]).strip())
         _set_env("TELEGRAM_PROXY", str(telegram_cfg["proxy_url"]).strip())
     _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
     _telegram_rtm = telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg else _telegram_extra.get("reply_to_mode")

@@ -203,6 +203,13 @@ SCHEMA_HISTORY: dict[str, _TableHistory] = {
             ('+', 'compression_recovery_deadline', 'compression_ineffective_count'),
         )),
         ('26 2026-09-02T14:22Z 8e4366d358', (('+', 'tool_names', 'last_read_at'),)),
+        ('27 unreleased', (
+            ('+', 'handoff_target_ref', 'handoff_platform'),
+            ('+', 'handoff_scope_id', 'handoff_target_ref'),
+            ('+', 'handoff_chat_type', 'handoff_scope_id'),
+            ('+', 'handoff_require_thread', 'handoff_chat_type'),
+            ('+', 'handoff_kickoff_text', 'handoff_require_thread'),
+        )),
         ),
     ),
     "messages": _TableHistory(

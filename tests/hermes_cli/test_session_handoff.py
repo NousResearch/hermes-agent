@@ -108,6 +108,26 @@ class TestHandoffStateDB:
         assert db.get_handoff_state(sid)["state"] == "completed"
         assert db.list_pending_handoffs() == []
 
+    def test_structured_request_preserves_explicit_target_and_policy(self, db):
+        sid = "sess-explicit"
+        self._make_session(db, sid)
+
+        assert db.request_handoff(
+            sid,
+            "slack",
+            target_ref="C012MixedCase",
+            require_thread=True,
+            kickoff_text="Continue the deployment",
+        ) is True
+        pending = db.list_pending_handoffs()[0]
+        assert pending["handoff_platform"] == "slack"
+        assert pending["handoff_target_ref"] == "C012MixedCase"
+        assert pending["handoff_require_thread"] == 1
+        assert pending["handoff_kickoff_text"] == "Continue the deployment"
+        state = db.get_handoff_state(sid)
+        assert state["target_ref"] == "C012MixedCase"
+        assert state["require_thread"] is True
+
     def test_handoff_reads_use_read_context_during_reconnect(self, db, monkeypatch):
         """Handoff polling must not borrow the reconnectable writer handle."""
         sid = "sess-read-path"

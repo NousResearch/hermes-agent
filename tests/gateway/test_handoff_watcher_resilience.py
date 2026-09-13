@@ -19,6 +19,8 @@ work, both fixed here and pinned by these tests.
 import asyncio
 import types
 from pathlib import Path
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -155,6 +157,224 @@ async def test_inflight_row_is_not_claimed_twice(monkeypatch):
     await asyncio.wait_for(coro, timeout=5)
 
     assert calls == ["slow-row"], f"dispatched more than once: {calls}"
+
+
+@pytest.mark.asyncio
+async def test_programmatic_handoff_waits_for_active_turn(monkeypatch):
+    """A handoff queued by the current turn must be claimed only after that turn is idle."""
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: [(None, None)])
+    real_sleep = asyncio.sleep
+
+    async def _yield_sleep(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(run.asyncio, "sleep", _yield_sleep)
+    db = _SlowDB()
+    calls = []
+    busy = iter([True, False, False])
+
+    async def _process_handoff(row, profile_name=None):
+        calls.append(row["id"])
+
+    fake = types.SimpleNamespace()
+    fake._session_db = db
+    fake._running = _running_flag(3)
+    fake._process_handoff = _process_handoff
+    fake.session_store = types.SimpleNamespace(
+        lookup_by_session_id=lambda _sid: types.SimpleNamespace(session_key="active-key")
+    )
+    fake._is_session_running = lambda _key: next(busy, False)
+
+    await asyncio.wait_for(
+        run.GatewayRunner._handoff_watcher(
+            fake, interval=0.0, drain_timeout=1.0  # type: ignore[arg-type]
+        ),
+        timeout=5,
+    )
+
+    assert db.polls >= 2
+    assert db.claimed == ["slow-row"]
+    assert calls == ["slow-row"]
+
+
+@pytest.mark.asyncio
+async def test_handoff_reserves_source_before_blocking_db_claim(monkeypatch):
+    """A successor turn cannot enter while the watcher awaits its durable claim."""
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: [(None, None)])
+    real_sleep = asyncio.sleep
+
+    async def _yield_sleep(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(run.asyncio, "sleep", _yield_sleep)
+
+    class GateDB(_SlowDB):
+        def __init__(self):
+            super().__init__()
+            self.claim_started = asyncio.Event()
+            self.allow_claim = asyncio.Event()
+
+        async def claim_handoff(self, sid):
+            self.claim_started.set()
+            await self.allow_claim.wait()
+            return await super().claim_handoff(sid)
+
+    db = GateDB()
+    reserved = False
+    released = []
+    processed = []
+
+    def reserve(_sid):
+        nonlocal reserved
+        if reserved:
+            return ("source-key", 0)
+        reserved = True
+        return ("source-key", 7)
+
+    async def process(row, profile_name=None):
+        processed.append(row["id"])
+
+    fake = types.SimpleNamespace(
+        _session_db=db,
+        _running=_running_flag(1),
+        _process_handoff=process,
+        _reserve_handoff_source=reserve,
+        _release_handoff_source_reservation=lambda value: released.append(value),
+    )
+
+    watcher = asyncio.create_task(
+        run.GatewayRunner._handoff_watcher(
+            fake, interval=0.0, drain_timeout=1.0  # type: ignore[arg-type]
+        )
+    )
+    await asyncio.wait_for(db.claim_started.wait(), timeout=5)
+    assert reserved is True
+    assert reserve("slow-row") == ("source-key", 0)
+    assert processed == []
+    db.allow_claim.set()
+    await asyncio.wait_for(watcher, timeout=5)
+
+    assert processed == ["slow-row"]
+    assert ("source-key", 7) in released
+
+
+@pytest.mark.asyncio
+async def test_claim_error_releases_source_reservation(monkeypatch):
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: [(None, None)])
+    monkeypatch.setattr(run.asyncio, "sleep", AsyncMock())
+
+    class RaisingDB(_ReclaimDB):
+        async def list_pending_handoffs(self):
+            return [{"id": "row"}]
+
+        async def claim_handoff(self, _sid):
+            raise RuntimeError("locked")
+
+    released = []
+    fake = types.SimpleNamespace(
+        _session_db=RaisingDB(stale_ids=[]),
+        _running=_running_flag(1),
+        _process_handoff=AsyncMock(),
+        _reserve_handoff_source=lambda _sid: ("source-key", 8),
+        _release_handoff_source_reservation=lambda value: released.append(value),
+    )
+
+    await run.GatewayRunner._handoff_watcher(
+        cast(Any, fake), interval=0.0, drain_timeout=0.01
+    )
+
+    assert released == [("source-key", 8)]
+
+
+@pytest.mark.asyncio
+async def test_watcher_waits_for_durable_local_turn_lease(monkeypatch):
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: [(None, None)])
+    monkeypatch.setattr(run.asyncio, "sleep", AsyncMock())
+
+    class LeaseDB(_ReclaimDB):
+        def __init__(self):
+            super().__init__(stale_ids=[])
+            self.acquire_results = iter([False, True])
+            self.claimed = []
+            self.released = []
+
+        async def list_pending_handoffs(self):
+            return [{"id": "local-session"}]
+
+        async def try_acquire_session_turn_lease(self, *_args, **_kwargs):
+            return next(self.acquire_results)
+
+        async def release_session_turn_lease(self, sid, holder):
+            self.released.append((sid, holder))
+
+        async def claim_handoff(self, sid):
+            self.claimed.append(sid)
+            return True
+
+        async def complete_handoff(self, _sid):
+            return None
+
+    db = LeaseDB()
+    processed = []
+
+    async def process(row):
+        processed.append(row["id"])
+
+    fake = types.SimpleNamespace(
+        _session_db=db,
+        _running=_running_flag(2),
+        _process_handoff=process,
+        _reserve_handoff_source=lambda _sid: None,
+        _release_handoff_source_reservation=lambda _value: None,
+    )
+
+    await run.GatewayRunner._handoff_watcher(
+        cast(Any, fake), interval=0.0, drain_timeout=1.0
+    )
+
+    assert db.claimed == ["local-session"]
+    assert processed == ["local-session"]
+    assert len(db.released) == 1
+
+
+@pytest.mark.asyncio
+async def test_task_spawn_error_fails_row_and_releases_reservation(monkeypatch):
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: [(None, None)])
+    monkeypatch.setattr(run.asyncio, "sleep", AsyncMock())
+
+    class SpawnDB(_ReclaimDB):
+        def __init__(self):
+            super().__init__(stale_ids=[])
+            self.failed = []
+
+        async def list_pending_handoffs(self):
+            return [{"id": "row"}]
+
+        async def claim_handoff(self, _sid):
+            return True
+
+        async def fail_handoff(self, sid, error):
+            self.failed.append((sid, error))
+
+    db = SpawnDB()
+    released = []
+    fake = types.SimpleNamespace(
+        _session_db=db,
+        _running=_running_flag(1),
+        _process_handoff=AsyncMock(),
+        _reserve_handoff_source=lambda _sid: ("source-key", 9),
+        _release_handoff_source_reservation=lambda value: released.append(value),
+    )
+    monkeypatch.setattr(
+        run.asyncio, "ensure_future", MagicMock(side_effect=RuntimeError("spawn"))
+    )
+
+    await run.GatewayRunner._handoff_watcher(
+        cast(Any, fake), interval=0.0, drain_timeout=0.01
+    )
+
+    assert released == [("source-key", 9)]
+    assert db.failed and db.failed[0][0] == "row"
 
 
 class _ReclaimDB:

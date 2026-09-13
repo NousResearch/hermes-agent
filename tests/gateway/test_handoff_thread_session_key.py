@@ -21,7 +21,7 @@ messages with ``chat_id = parent_channel``, so the parent channel is correct
 for those platforms and the guard must NOT apply to them.
 """
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 
 
@@ -138,3 +138,59 @@ def test_slack_handoff_key_uses_parent_channel_not_thread_id():
         f"handoff key {handoff!r} lost the parent channel id — "
         "the Discord-specific guard leaked into Slack"
     )
+
+
+def test_slack_adapter_handoff_source_matches_organic_thread_key_with_scope():
+    import pytest
+    pytest.importorskip("aiohttp")
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    adapter = SlackAdapter(PlatformConfig(enabled=True))
+    adapter._channel_team["C12345678"] = "T_WORKSPACE"
+    handoff_source = adapter.build_handoff_source(
+        "C12345678", "1690000000.123456", "Hermes — task"
+    )
+    organic_source = adapter._thread_session_source(
+        "C12345678", "1690000000.123456", "U123456", "T_WORKSPACE", "group"
+    )
+
+    assert handoff_source is not None
+    assert handoff_source.scope_id == "T_WORKSPACE"
+    assert handoff_source.chat_type == "group"
+    assert build_session_key(
+        handoff_source, thread_sessions_per_user=False
+    ) == build_session_key(organic_source, thread_sessions_per_user=False)
+
+
+def test_slack_mpim_handoff_source_matches_organic_dm_thread_key():
+    import pytest
+    pytest.importorskip("aiohttp")
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    adapter = SlackAdapter(PlatformConfig(enabled=True))
+    adapter._handoff_chat_type = {"G_MPIM": "dm"}
+    handoff_source = adapter.build_handoff_source(
+        "G_MPIM", "1690000000.123456", "Hermes — task", "T_WORKSPACE"
+    )
+    organic_source = adapter._thread_session_source(
+        "G_MPIM", "1690000000.123456", "U123456", "T_WORKSPACE", "dm"
+    )
+
+    assert handoff_source is not None
+    assert handoff_source.chat_type == "dm"
+    assert build_session_key(
+        handoff_source, thread_sessions_per_user=False
+    ) == build_session_key(organic_source, thread_sessions_per_user=False)
+
+
+def test_slack_scope_resolution_fails_closed_when_workspace_is_ambiguous():
+    import pytest
+    pytest.importorskip("aiohttp")
+    from plugins.platforms.slack.adapter import SlackAdapter
+
+    adapter = SlackAdapter(PlatformConfig(enabled=True))
+    adapter._team_clients = {"T_ONE": object(), "T_TWO": object()}
+
+    assert adapter.resolve_handoff_scope("C_UNKNOWN") is None
+    assert adapter.resolve_handoff_scope("C_UNKNOWN", "T_TWO") == "T_TWO"
+    assert adapter.resolve_handoff_scope("C_UNKNOWN", "T_OTHER") is None

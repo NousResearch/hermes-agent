@@ -272,14 +272,21 @@ class HomeChannel:
     # Authenticated logical-target provenance (relay egress re-attaches; connector stays the authz boundary).
     user_id: Optional[str] = None
     scope_id: Optional[str] = None
+    chat_type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        optional = {k: v for k in ("thread_id", "user_id", "scope_id") if (v := getattr(self, k))}
+        optional = {
+            k: v for k in ("thread_id", "user_id", "scope_id", "chat_type")
+            if (v := getattr(self, k))
+        }
         return {"platform": self.platform.value, "chat_id": self.chat_id, "name": self.name, **optional}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HomeChannel":
-        optional = {k: str(data[k]) if data.get(k) else None for k in ("thread_id", "user_id", "scope_id")}
+        optional = {
+            k: str(data[k]) if data.get(k) else None
+            for k in ("thread_id", "user_id", "scope_id", "chat_type")
+        }
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
 

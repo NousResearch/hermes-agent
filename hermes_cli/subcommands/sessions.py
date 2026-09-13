@@ -101,6 +101,28 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_delete.add_argument("session_id", help="Session ID to delete")
     add_yes_flag(sessions_delete, "Skip confirmation")
 
+    sessions_handoff = sessions_subparsers.add_parser(
+        "handoff", help="Hand a session off to a messaging destination")
+    sessions_handoff.add_argument(
+        "session_id", help="Session ID, unique prefix, or exact title to hand off")
+    sessions_handoff.add_argument(
+        "--to", required=True, metavar="PLATFORM[:CHAT_ID]",
+        help="Destination platform home or an explicit chat/channel ID")
+    sessions_handoff.add_argument(
+        "--scope", metavar="TENANT_ID",
+        help="Authenticated workspace/tenant for an explicit multi-tenant destination")
+    sessions_handoff.add_argument(
+        "--chat-type", choices=("dm", "group"),
+        help="Trusted conversation kind (required for Relay-fronted Slack)")
+    sessions_handoff.add_argument(
+        "--message-file", type=Path,
+        help="Use file contents as the synthetic kickoff user turn")
+    _flag(sessions_handoff, "--require-thread",
+        help="Fail instead of falling back when a fresh destination thread cannot be created")
+    _flag(sessions_handoff, "--wait",
+        help="Wait for the gateway's synthetic agent turn and delivery to finish")
+    add_json_flag(sessions_handoff, "Emit one machine-readable result object")
+
     sessions_prune = sessions_subparsers.add_parser(
         "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
     _add_session_filter_args(

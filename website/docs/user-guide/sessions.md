@@ -216,40 +216,57 @@ Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a
 
 ## Cross-Platform Handoff
 
-Use `/handoff <platform>` from a CLI session to transfer the live conversation to a messaging platform's home channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.
+Use `/handoff <platform[:chat_id]>` from a CLI session to transfer the live conversation to a messaging platform. A bare platform uses its home channel; `platform:chat_id` sends it to that explicit chat or channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.
 
 ```bash
 # Inside a CLI session
 /handoff telegram
+
+# Or target a specific Slack channel without changing the home channel
+/handoff slack:C01234567
 ```
+
+Automation can queue the same operation without opening an interactive CLI:
+
+```bash
+hermes sessions handoff <session-id-or-title> --to slack:C01234567
+
+# Supply the kickoff task, require a real thread, wait, and return JSON
+hermes sessions handoff <session-id-or-title> \
+  --to slack:C01234567 \
+  --scope T01234567 \
+  --chat-type group \
+  --message-file task.md \
+  --require-thread \
+  --wait \
+  --json
+```
+
+The source session must be idle when this command is queued. If it still owns a durable turn lease—for example, because the command was launched by that session's own terminal tool—the command fails instead of racing transcript persistence.
+
+`--scope` identifies the authenticated workspace or tenant for multi-tenant destinations. It is optional when the gateway can resolve exactly one native workspace, but required for a Relay-fronted Slack target and whenever a native Slack channel is ambiguous across connected workspaces. Relay-fronted Slack also requires a trusted `--chat-type dm|group`; `/sethome` records both values from an authenticated inbound source. Explicit chat IDs are restricted to local CLI surfaces; the shared TUI/Desktop JSON-RPC method accepts only a bare platform and its configured home channel.
 
 What happens:
 
-1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
-2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
-3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
+1. The request stores the logical platform, optional explicit chat ID, thread requirement, and optional kickoff text in the session's durable handoff row. A bare-platform target requires a configured home channel; an explicit `platform:chat_id` target does not change it.
+2. The gateway waits until the source route is idle, reserves it before claiming the row, and resolves the destination under the session's owning profile. `--wait` polls this state; without it the command returns as soon as the request is queued.
+3. The gateway asks the resolved native or Relay transport for a fresh thread:
    - **Telegram** — opens a new forum topic (DM topics if Bot API 9.4+ Topics mode is enabled in the chat, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
-   - **WhatsApp / Signal / Matrix / SMS** — no native threads, falls back to the home channel directly.
-4. The gateway re-binds the destination key to your existing CLI session id, then forges a synthetic user turn asking the agent to confirm and summarize. The reply lands in the new thread.
-5. When the gateway acknowledges success, the CLI prints a `/resume` hint and exits cleanly:
-
-   ```
-   ↻ Handoff complete. The session is now active on telegram.
-     Resume it on this CLI later with: /resume my-session-title
-   ```
-
-6. From that point, the conversation lives on the platform. Reply in the new thread — anyone authorized in that channel shares the same session, and any later real user message in the thread joins seamlessly because thread sessions key without `user_id`.
+   - **WhatsApp / Signal / Matrix / SMS** — no native threads; the request falls back to the target chat unless `--require-thread` was supplied.
+4. The gateway re-binds the destination key to the existing session id, dispatches exactly one synthetic user turn (the message file when supplied, otherwise the standard confirmation prompt), and delivers the response in the new thread.
+5. The interactive `/handoff` form prints a `/resume` hint and exits after success. `hermes sessions handoff --wait --json` returns one machine-readable terminal result instead.
+6. From that point, reply in the new thread. Authorized participants continue the same session because the handoff source uses the destination adapter's inbound routing identity.
 
 **Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
 
 **Failure modes:**
-- No home channel configured → CLI refuses with a `/sethome` hint.
-- Gateway not running (nothing ever claims the request) → CLI times out at 60s with a clear message and your CLI session stays intact.
-- Slow transfer: once the gateway claims the handoff it replays your full session through a real agent turn, which can take a few minutes on long sessions. The CLI shows "Still transferring..." heartbeats and waits up to 15 minutes — it never misreports a slow transfer as "gateway not running".
-- Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
-- `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
+- No home channel configured for a bare-platform target → the request fails with a `/sethome` hint. Use an explicit `platform:chat_id` instead when the destination ID is known.
+- Gateway not running (nothing claims the request) → `--wait` times out after 60 seconds; the non-waiting form leaves the durable request pending.
+- Slow transfer: after the gateway claims the handoff, `--wait` allows up to 15 minutes for the real agent turn before returning a non-success result without cancelling the gateway-owned work.
+- Thread creation fails (permissions, topics mode off) → falls back to the target chat unless `--require-thread` was supplied.
+- Transport delivery fails (rate limit, transient API error) → the handoff is marked failed with the reason so it can be retried.
 
 **Limitation worth knowing:** for non-thread-capable platforms with multi-user group home channels, the synthetic turn keys as a DM-style session. This works for self-DM home channels (the typical setup) but isn't ideal for genuinely shared group chats. Threading covers Telegram / Discord / Slack — by far the common case — so most setups never hit this.
 

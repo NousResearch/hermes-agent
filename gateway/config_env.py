@@ -289,6 +289,7 @@ def _slack_home(config: GatewayConfig) -> None:
         name=getenv("SLACK_HOME_CHANNEL_NAME"), thread_id=getenv("SLACK_HOME_CHANNEL_THREAD_ID") or None,
         user_id=existing_home.user_id if same_home else None,
         scope_id=existing_home.scope_id if same_home else None,
+        chat_type=existing_home.chat_type if same_home else None,
     )
 
 

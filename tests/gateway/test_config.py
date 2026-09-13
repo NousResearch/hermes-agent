@@ -34,6 +34,7 @@ class TestHomeChannelRoundtrip:
             name="general",
             user_id="user-123",
             scope_id="guild-456",
+            chat_type="group",
         )
         d = hc.to_dict()
         restored = HomeChannel.from_dict(d)
@@ -43,6 +44,7 @@ class TestHomeChannelRoundtrip:
         assert restored.name == "general"
         assert restored.user_id == "user-123"
         assert restored.scope_id == "guild-456"
+        assert restored.chat_type == "group"
 
 
 class TestPlatformConfigRoundtrip:

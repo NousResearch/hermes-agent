@@ -1754,22 +1754,62 @@ class SlackAdapter(BasePlatformAdapter):
                 "Without these, bot events are silently dropped upstream of the allow_bots "
                 "gate.", _allow_bots_cfg)
 
-    async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
+    def resolve_handoff_scope(self, chat_id: str, requested_scope: Optional[str] = None) -> Optional[str]:
+        """Resolve a Slack channel to exactly one connected workspace, or fail closed."""
+        clients = getattr(self, "_team_clients", {}) or {}
+        if requested_scope:
+            return requested_scope if not clients or requested_scope in clients else None
+        known = self.scope_id_for_chat(chat_id)
+        if known:
+            return known
+        return next(iter(clients)) if len(clients) == 1 else None
+
+    async def create_handoff_thread(
+        self, parent_chat_id: str, name: str, *, scope_id: Optional[str] = None
+    ) -> Optional[str]:
         """Post a seed message and return its ``ts`` as the handoff ``thread_id``. Slack threads
         anchor to a parent message, not a channel-level object. Returns ``None`` on failure."""
         if not self._app:
             return None
         try:
-            client = self._get_client(parent_chat_id)
+            resolved_scope = self.resolve_handoff_scope(parent_chat_id, scope_id)
+            if getattr(self, "_team_clients", {}) and not resolved_scope:
+                logger.warning(
+                    "[%s] Handoff thread: channel %s is not scoped to exactly one workspace",
+                    "Slack", parent_chat_id,
+                )
+                return None
+            client = self._get_client(parent_chat_id, team_id=resolved_scope)
             if client is None:
                 return None
+            chat_type = None
+            try:
+                info = _slack_response_payload(
+                    await client.conversations_info(channel=parent_chat_id)
+                ).get("channel", {})
+                if isinstance(info, dict):
+                    chat_type = "dm" if info.get("is_im") or info.get("is_mpim") else "group"
+            except Exception:
+                logger.debug("[Slack] Could not resolve handoff channel type", exc_info=True)
+            if not chat_type and str(parent_chat_id).startswith("G"):
+                logger.warning(
+                    "[%s] Handoff thread: refusing ambiguous G-prefixed Slack conversation %s",
+                    "Slack", parent_chat_id,
+                )
+                return None
+            if chat_type:
+                if not hasattr(self, "_handoff_chat_type"):
+                    self._handoff_chat_type = {}
+                self._handoff_chat_type[str(parent_chat_id)] = chat_type
+            if resolved_scope:
+                self._remember_channel_team(parent_chat_id, resolved_scope)
             seed_text = f":thread: Hermes handoff — *{(name or 'session').strip()[:80]}*"
             result = await client.chat_postMessage(channel=parent_chat_id, text=seed_text)
             ts = _slack_response_payload(result).get("ts")
             return str(ts) if ts else None
         except Exception as exc:
             logger.warning(
-                "[%s] Handoff thread: seed-post failed for channel %s: %s", self.name,
+                "[Slack] Handoff thread: seed-post failed for channel %s: %s",
                 parent_chat_id, exc)
         return None
 
@@ -1790,7 +1830,7 @@ class SlackAdapter(BasePlatformAdapter):
         await self._close_workspace_clients()
         self._app = self._app_token = self._proxy_url = self._bot_user_id = None
         self._team_clients, self._team_bot_user_ids = {}, {}
-        self._channel_team, self._dm_conversation_cache = {}, {}
+        self._channel_team, self._dm_conversation_cache, self._handoff_chat_type = {}, {}, {}
         self._release_platform_lock()
         logger.info("[Slack] Disconnected")
 
@@ -1830,6 +1870,26 @@ class SlackAdapter(BasePlatformAdapter):
         the map) — no scope beats a wrong one."""
         team_id = chat_id and (getattr(self, "_channel_team", None) or {}).get(str(chat_id))
         return str(team_id) if team_id else None
+
+    def build_handoff_source(
+        self, parent_chat_id: str, thread_id: Optional[str], chat_name: Optional[str],
+        scope_id: Optional[str] = None,
+    ) -> Optional[Any]:
+        """Build the same route identity an organic Slack thread reply will produce."""
+        if not thread_id:
+            return None
+        chat_id = str(parent_chat_id)
+        team_id = scope_id or self.scope_id_for_chat(chat_id)
+        if not team_id and len(getattr(self, "_team_clients", {})) == 1:
+            team_id = next(iter(self._team_clients))
+        return self._thread_session_source(
+            chat_id,
+            str(thread_id),
+            "system:handoff",
+            team_id or "",
+            (getattr(self, "_handoff_chat_type", {}) or {}).get(chat_id)
+            or ("dm" if chat_id.startswith("D") else "group"),
+        )
 
     def _get_client(self, chat_id: str, team_id: Optional[str] = None) -> Any:
         """Return the workspace-specific WebClient for a channel."""
@@ -4296,6 +4356,10 @@ class SlackAdapter(BasePlatformAdapter):
             self._remember_channel_team(channel_id, team_id)
         channel_type = event.get("channel_type", "") or ("im" if channel_id.startswith("D") else "")
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
+        if channel_id:
+            if not hasattr(self, "_handoff_chat_type"):
+                self._handoff_chat_type = {}
+            self._handoff_chat_type[str(channel_id)] = "dm" if is_dm else "group"
         if is_dm and self._slack_disable_dms():
             logger.info(
                 "[Slack] Ignoring DM because Slack DMs are disabled: channel=%s user=%s",

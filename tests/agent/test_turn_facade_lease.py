@@ -22,6 +22,10 @@ class _Db:
         self.events.append(("acquire", session_id, holder))
         return self.acquired
 
+    def try_acquire_session_turn_lease(self, session_id, holder, **kwargs):
+        self.events.append(("adopt", session_id, holder))
+        return self.acquired
+
     def refresh_session_turn_lease(self, session_id, holder, **kwargs):
         return True
 
@@ -93,6 +97,21 @@ def test_admission_sets_holder_attrs_and_release_clears_them(monkeypatch):
     assert db.events == [("acquire", "s1", lease.holder), ("release", "s1", lease.holder)]
     assert agent._active_session_turn_lease_holder is None
     assert agent._active_session_turn_lease_ttl_seconds is None
+
+
+def test_admission_adopts_preacquired_handoff_lease(monkeypatch):
+    monkeypatch.setattr(
+        "agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)
+    )
+    db = _Db()
+    agent = _agent(db, _preacquired_session_turn_lease_holder="pid=1:handoff=s1")
+
+    admission = _admit(agent)
+
+    assert isinstance(admission.lease, DurableTurnLease)
+    assert admission.lease.holder == "pid=1:handoff=s1"
+    assert db.events == [("adopt", "s1", "pid=1:handoff=s1")]
+    admission.lease.release()
 
 
 def test_timeout_and_interrupt_early_results():

@@ -1112,40 +1112,46 @@ class CLICommandsMixin:
         return True
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
-        """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
+        """Handle ``/handoff <platform[:chat_id]>`` — transfer this CLI session to a gateway target.
 
         Validate target → prepare session row → mark pending → block-poll (see ``_handoff_wait``).
         Returns False only on ``completed`` (caller exits like /quit); True keeps the session."""
-        platform_name = _command_arg(cmd_original).lower()
-        if not platform_name:
+        target_spec = _command_arg(cmd_original)
+        if not target_spec:
             return self._handoff_keep(
-                "  Usage: /handoff <platform>",
-                "  Hands the current session off to that platform's home channel.",
+                "  Usage: /handoff <platform[:chat_id]>",
+                "  Uses the platform's home channel unless an explicit chat_id is provided.",
                 "  The CLI session ends here; resume it later with /resume.")
-        home = self._handoff_validate_target(platform_name)
-        if home is None:
+        target_info = self._handoff_validate_target(target_spec)
+        if target_info is None:
             return True
+        target, destination_name = target_info
+        platform_name = target.platform.value
         session_title = self._handoff_prepare_session()
         if session_title is None:
             return True
-        if not self._session_db.request_handoff(self.session_id, platform_name):
+        if not self._session_db.request_handoff(
+            self.session_id, platform_name, target_ref=target.chat_id
+        ):
             return self._handoff_keep(
                 "  Session is already in flight for handoff. Wait for it to settle, then retry.")
-        _cp(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).",
+        _cp(f"  Queued handoff of '{session_title}' → {destination_name}.",
             "  Waiting for the gateway to pick it up...")
         return self._handoff_wait(platform_name, session_title)
 
-    def _handoff_validate_target(self, platform_name: str):
-        """Resolve the destination home channel via the live gateway config; None (after printing
-        the reason) when the platform is unknown, disabled, or has no home channel."""
+    def _handoff_validate_target(self, target_spec: str):
+        """Validate a home or explicit destination; return ``(target, display_name)``."""
         try:
             from gateway.config import load_gateway_config, Platform
+            from gateway.delivery import parse_handoff_target
         except Exception as exc:  # pragma: no cover — gateway pkg always shipped
             return _cp(f"  Could not load gateway config: {exc}")
         try:
-            platform = Platform(platform_name)
-        except (ValueError, KeyError):
-            return _cp(f"  Unknown platform '{platform_name}'.")
+            target = parse_handoff_target(target_spec)
+        except ValueError as exc:
+            return _cp(f"  {exc}.")
+        platform = target.platform
+        platform_name = platform.value
         try:
             gw_config = load_gateway_config()
         except Exception as exc:
@@ -1163,11 +1169,13 @@ class CLICommandsMixin:
             if not relay_fronts:
                 return _cp(f"  Platform '{platform_name}' is not configured/enabled in the "
                            "gateway.")
+        if target.chat_id:
+            return target, target.to_string()
         home = gw_config.get_home_channel(platform)
         if not home or not home.chat_id:
             return _cp(f"  No home channel configured for {platform_name}.",
                        "  Set one with /sethome on the destination chat first.")
-        return home
+        return target, home.name or f"{platform_name}:{home.chat_id}"
 
     def _handoff_prepare_session(self):
         """Refuse mid-turn, make sure a SessionDB handle + session row exist, and return the
@@ -1232,7 +1240,32 @@ class CLICommandsMixin:
             now = time.time()
             if current == "pending":
                 if now >= pending_deadline:
-                    break
+                    try:
+                        failed_pending = self._session_db.fail_handoff(
+                            self.session_id,
+                            "timed out waiting for gateway",
+                            only_states=("pending",),
+                        )
+                    except Exception as exc:
+                        import logging
+                        logging.getLogger(__name__).debug(
+                            "Could not safely cancel timed-out handoff: %s", exc, exc_info=True
+                        )
+                        return self._handoff_keep(
+                            "  The gateway did not pick up the handoff in time, and Hermes could not "
+                            "safely cancel it.",
+                            f"  Check {platform_name} — the session may still arrive there.",
+                            "  Avoid continuing this session here; retry only after checking its "
+                            "handoff state.",
+                        )
+                    if failed_pending:
+                        return self._handoff_keep(
+                            "  Timed out waiting for the gateway. Is `hermes gateway` running?",
+                            "  Your CLI session is intact.",
+                        )
+                    # The gateway won pending → running between our read and CAS.
+                    # Re-read and enter the running phase instead of claiming the CLI is safe.
+                    continue
             else:  # running
                 if next_heartbeat is not None and now >= next_heartbeat:
                     _cp("  Still transferring (the agent is replaying your session on the destination)...")
@@ -1245,18 +1278,6 @@ class CLICommandsMixin:
                         "  This CLI is no longer waiting. Avoid continuing this session here;",
                         "  if nothing arrives, retry /handoff once the state settles.")
             time.sleep(0.5)
-        try:  # pending timed out: CAS-clear so the user can retry
-            self._session_db.fail_handoff(
-                self.session_id, "timed out waiting for gateway", only_states=("pending",))
-        except TypeError:
-            # Older SessionDB without only_states (mixed installs): legacy unconditional fail.
-            with suppress(Exception):
-                self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
-        except Exception:
-            pass
-        return self._handoff_keep(
-            "  Timed out waiting for the gateway. Is `hermes gateway` running?",
-            "  Your CLI session is intact.")
 
     # ---- /resume, /sessions, /branch ------------------------------------------------------
     def _handle_resume_command(self, cmd_original: str) -> None:

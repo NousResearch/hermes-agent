@@ -1094,22 +1094,38 @@ def _(rid, params: dict, session: dict) -> dict:
     """Queue a handoff (desktop /handoff): only writes ``pending``; the gateway watcher claims and re-binds."""
     if session.get("running"):
         return _err(rid, 4009, "session busy — wait for the current turn to finish, then retry the handoff")
-    if not (platform_name := (params.get("platform", "") or "").strip().lower()):
+    if params.get("target"):
+        return _err(
+            rid, 4024,
+            "explicit handoff targets are restricted to the local CLI; use a bare platform home here",
+        )
+    if not (target_spec := (params.get("platform", "") or "").strip()):
         return _err(rid, 4023, "platform required")
+    if ":" in target_spec:
+        return _err(rid, 4024, "this surface accepts only a bare platform home")
     # Validate up front: an unconfigured platform / missing home channel pends forever.
     from gateway.config import Platform, load_gateway_config
+    from gateway.delivery import parse_handoff_target
     try:
-        platform = Platform(platform_name)
-    except (ValueError, KeyError):
-        return _err(rid, 4024, f"unknown platform '{platform_name}'")
+        target = parse_handoff_target(target_spec)
+    except ValueError as exc:
+        return _err(rid, 4024, str(exc))
+    platform = target.platform
+    platform_name = platform.value
     try:
         with _session_profile_runtime_scope(session):
             gw_config = load_gateway_config()
     except Exception as e:
         return _err(rid, 5021, f"could not load gateway config: {e}")
-    if not getattr(gw_config.platforms.get(platform), "enabled", False):
-        return _err(rid, 4025, f"platform '{platform_name}' is not configured/enabled in the gateway")
-    if not (home := gw_config.get_home_channel(platform)) or not home.chat_id:
+    platform_enabled = getattr(gw_config.platforms.get(platform), "enabled", False)
+    relay_enabled = getattr(gw_config.platforms.get(Platform.RELAY), "enabled", False)
+    if not platform_enabled and not relay_enabled:
+        return _err(
+            rid, 4025,
+            f"platform '{platform_name}' has no configured native or Relay transport in the gateway",
+        )
+    home = gw_config.get_home_channel(platform)
+    if not target.chat_id and (not home or not home.chat_id):
         return _err(rid, 4026, f"no home channel configured for {platform_name} — set one with "
                     "/sethome on the destination chat first")
     # The watcher transfers a persisted row, so make sure one exists for an empty chat.
@@ -1125,7 +1141,14 @@ def _(rid, params: dict, session: dict) -> dict:
                 return _err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
         except Exception as e:
             return _err(rid, 5007, str(e))
-    return _ok(rid, {"queued": True, "session_key": key, "platform": platform_name, "home_name": home.name})
+    destination_name = home.name
+    return _ok(rid, {
+        "queued": True,
+        "session_key": key,
+        "platform": platform_name,
+        "target": platform_name,
+        "home_name": destination_name,
+    })
 
 
 @method("handoff.state")
@@ -1133,7 +1156,9 @@ def _(rid, params: dict, session: dict) -> dict:
 def _(rid, params: dict, session: dict, db) -> dict:
     """Poll ``{state, platform, error}``; ``state`` is pending|running|completed|failed or empty."""
     record = db.get_handoff_state(session["session_key"]) or {}
-    return _ok(rid, {field: record.get(field) or "" for field in ("state", "platform", "error")})
+    result = {field: record.get(field) or "" for field in ("state", "platform", "target_ref", "error")}
+    result["require_thread"] = bool(record.get("require_thread"))
+    return _ok(rid, result)
 
 
 @method("handoff.fail")

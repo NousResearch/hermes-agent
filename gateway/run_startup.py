@@ -1437,15 +1437,19 @@ class GatewayStartupMixin:
         self, row: Dict[str, Any], profile_name: Optional[str]
     ) -> "GatewayStartupMixin._HandoffDestination":
         """Resolve platform, transport, home channel, thread and destination source for a row."""
-        from gateway.delivery import resolve_delivery_transport
+        from gateway.delivery import parse_handoff_target, resolve_delivery_transport
         cli_session_id = row["id"]
-        platform_name = (row.get("handoff_platform") or "").strip().lower()
+        platform_name = (row.get("handoff_platform") or "").strip()
         if not platform_name:
             raise RuntimeError("handoff_platform is empty")
+        target_ref = row.get("handoff_target_ref")
+        target_spec = f"{platform_name}:{target_ref}" if target_ref else platform_name
         try:
-            platform = Platform(platform_name)
-        except (ValueError, KeyError):
-            raise RuntimeError(f"unknown platform '{platform_name}'")
+            target = parse_handoff_target(target_spec)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+        platform = target.platform
+        platform_name = platform.value
         handoff_config, handoff_adapters = self._handoff_resolve_scope(profile_name)
         # Alias-aware transport: a relay-fronted gateway registers ONE Platform.RELAY adapter fronting
         # N logical platforms, so a literal adapters.get() would miss a deliverable one.
@@ -1453,21 +1457,70 @@ class GatewayStartupMixin:
         if not transport:
             raise RuntimeError(f"platform '{platform_name}' is not active in this gateway")
         home = handoff_config.get_home_channel(platform)
-        if not home or not home.chat_id:
+        if target.chat_id:
+            from gateway.config import HomeChannel
+            home = HomeChannel(
+                platform=platform,
+                chat_id=str(target.chat_id),
+                name=target.to_string(),
+                scope_id=row.get("handoff_scope_id"),
+                chat_type=row.get("handoff_chat_type"),
+            )
+        elif not home or not home.chat_id:
             raise RuntimeError(
                 f"no home channel configured for {platform_name}; run /sethome on the desired chat first"
             )
         home_chat_id = str(home.chat_id)
+        requested_scope_raw = row.get("handoff_scope_id") or home.scope_id
+        requested_scope = str(requested_scope_raw) if requested_scope_raw else None
+        requested_chat_type_raw = row.get("handoff_chat_type") or home.chat_type
+        requested_chat_type = (
+            str(requested_chat_type_raw) if requested_chat_type_raw else None
+        )
+        if platform == Platform.SLACK:
+            if transport.is_relay:
+                if not requested_scope:
+                    raise RuntimeError(
+                        "a Relay-fronted Slack handoff requires a scoped home or --scope WORKSPACE_ID"
+                    )
+                if requested_chat_type not in {"dm", "group"}:
+                    raise RuntimeError(
+                        "a Relay-fronted Slack handoff requires a typed home or --chat-type dm|group"
+                    )
+                resolved_scope = requested_scope
+            else:
+                resolver = getattr(transport.adapter, "resolve_handoff_scope", None)
+                resolved_scope_raw = (
+                    resolver(home_chat_id, requested_scope) if callable(resolver) else requested_scope
+                )
+                resolved_scope = str(resolved_scope_raw) if resolved_scope_raw else None
+                if getattr(transport.adapter, "_team_clients", {}) and not resolved_scope:
+                    raise RuntimeError(
+                        "Slack target is ambiguous across connected workspaces; pass --scope WORKSPACE_ID"
+                    )
+            home.scope_id = resolved_scope
+            if resolved_scope and resolved_scope != row.get("handoff_scope_id"):
+                persisted = await getattr(self, "_session_db").set_handoff_scope_id(
+                    cli_session_id, resolved_scope
+                )
+                if not persisted:
+                    raise RuntimeError("could not persist resolved Slack workspace for handoff")
         # Fresh thread for the handoff's own scrollback; None when unsupported or creation failed.
         cli_title = row.get("title") or cli_session_id[:8]
         try:
-            new_thread_id = await transport.adapter.create_handoff_thread(
-                home_chat_id, f"Hermes — {cli_title}",
+            new_thread_id = await transport.create_handoff_thread(
+                platform, home_chat_id, f"Hermes — {cli_title}", scope_id=home.scope_id,
             )
         except Exception as exc:
             logger.debug("Handoff: create_handoff_thread raised on %s: %s", platform_name, exc, exc_info=True)
             new_thread_id = None
+        if row.get("handoff_require_thread") and not new_thread_id:
+            raise RuntimeError(f"platform '{platform_name}' did not create the required fresh thread")
         effective_thread_id = new_thread_id or (str(home.thread_id) if home.thread_id else None)
+        source_builder = getattr(transport.adapter, "build_handoff_source", None)
+        adapter_source = source_builder(
+            home_chat_id, effective_thread_id, home.name, home.scope_id
+        ) if callable(source_builder) else None
         # Telegram private-chat DM topics use the DM-topic source shape (user_id == chat_id) so the
         # synthetic turn binds the same key later inbound turns arrive on (`dm`, not `thread`).
         is_telegram_private_chat = (
@@ -1475,15 +1528,20 @@ class GatewayStartupMixin:
         )
         is_thread = bool(new_thread_id) and not is_telegram_private_chat
         # Discord builds in-thread messages with ``chat_id == thread id``: key on the thread's OWN id.
-        dest_source = SessionSource(
+        dest_source = adapter_source if isinstance(adapter_source, SessionSource) else SessionSource(
             platform=platform,
             chat_id=str(effective_thread_id) if (
                 is_thread and platform == Platform.DISCORD and effective_thread_id
             ) else home_chat_id,
             chat_name=home.name,
-            chat_type="thread" if is_thread else "dm",
+            chat_type=(
+                requested_chat_type if getattr(transport, "is_relay", False)
+                and platform == Platform.SLACK
+                else "thread" if is_thread else "dm"
+            ),
             user_id=home_chat_id if is_telegram_private_chat else "system:handoff",
             user_name="Handoff", thread_id=effective_thread_id, profile=profile_name,
+            scope_id=home.scope_id,
         )
         return self._HandoffDestination(
             platform=platform, platform_name=platform_name, transport=transport, home=home,
@@ -1530,20 +1588,23 @@ class GatewayStartupMixin:
         switched = await self.async_session_store.switch_session(session_key, cli_session_id)
         if switched is None:
             raise RuntimeError(f"could not switch session key {session_key} → {cli_session_id}")
-        # Evict the cached AIAgent (rebuild against the CLI session_id, like /resume) and clear stale
-        # running-agent state so the synthetic turn isn't queued behind it.
+        # Evict the cached AIAgent so the synthetic turn rebuilds against the
+        # CLI session id, like /resume.
         self._evict_cached_agent(session_key)
-        self._release_running_agent_state(session_key)
         cli_title = row.get("title") or cli_session_id[:8]
-        synthetic_event = MessageEvent(
-            text=(
+        kickoff_text = row.get("handoff_kickoff_text") or (
                 f"[Session was just handed off from CLI (\"{cli_title}\") to this "
                 f"channel. The full prior conversation history is loaded above. "
                 f"Briefly confirm you're working here and summarize what we were "
                 f"working on, so the user can continue from this device.]"
-            ),
+            )
+        synthetic_event = MessageEvent(
+            text=kickoff_text,
             source=dest.source,
             internal=True,
+        )
+        synthetic_event._preacquired_turn_lease_holder = row.get(
+            "_handoff_turn_lease_holder"
         )
         logger.info(
             "Handoff: dispatching synthetic turn for CLI session %s → %s "
@@ -1557,7 +1618,10 @@ class GatewayStartupMixin:
             return
         # Reply into the new thread (else the home channel) via the resolved transport, so a relay-fronted
         # logical platform is stamped on the outbound frame.
-        send_metadata = {"thread_id": dest.effective_thread_id} if dest.effective_thread_id else None
+        send_metadata = {
+            **({"thread_id": dest.effective_thread_id} if dest.effective_thread_id else {}),
+            **({"scope_id": dest.home.scope_id} if dest.home.scope_id else {}),
+        } or None
         try:
             result = await dest.transport.send(
                 dest.platform, str(dest.home.chat_id), response_text, send_metadata,

@@ -133,6 +133,49 @@ def _run_handoff(db, session_id, monkeypatch, time_budget=30.0):
 
 
 class TestCLIWaitLoop:
+    def test_explicit_target_does_not_require_home_channel(self, db):
+        """A trusted ``platform:chat_id`` target bypasses home-channel lookup."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        db.ensure_session("cli-explicit", "cli")
+
+        class Host(CLICommandsMixin):
+            def __init__(self):
+                self.session_id = "cli-explicit"
+                self._session_db = db
+                self._agent_running = False
+                self._should_exit = False
+
+        host = Host.__new__(Host)
+        Host.__init__(host)
+        cfg = MagicMock()
+        cfg.platforms = {}
+        cfg.get_home_channel.return_value = None
+
+        import gateway.config as gwc
+
+        cfg.platforms[gwc.Platform.SLACK] = types.SimpleNamespace(enabled=True, extra={})
+
+        real_get = db.get_handoff_state
+
+        def complete_on_poll(session_id):
+            row = real_get(session_id)
+            if row and row.get("state") == "pending":
+                db.claim_handoff(session_id)
+                db.complete_handoff(session_id)
+            return real_get(session_id)
+
+        printed = []
+        with patch.object(gwc, "load_gateway_config", return_value=cfg), \
+             patch.object(db, "get_handoff_state", side_effect=complete_on_poll), \
+             patch("cli._cprint", side_effect=lambda s="": printed.append(s)):
+            keep_going = host._handle_handoff_command("/handoff slack:C01234567")
+
+        assert keep_going is False
+        row = db.get_session("cli-explicit")
+        assert row["handoff_platform"] == "slack"
+        assert row["handoff_target_ref"] == "C01234567"
+
     def test_pending_timeout_still_reports_gateway_down(self, db, monkeypatch):
         """No watcher ever claims the row -> 60s pending timeout, row failed."""
         db.ensure_session("cli-sess-a", "cli")
@@ -141,6 +184,55 @@ class TestCLIWaitLoop:
         assert keep is True
         assert "Timed out waiting for the gateway" in out
         assert db.get_handoff_state("cli-sess-a")["state"] == "failed"
+
+    def test_pending_timeout_cas_loss_continues_to_gateway_completion(self, db, monkeypatch):
+        db.ensure_session("cli-sess-race", "cli")
+        proxy = MagicMock(wraps=db)
+        real_fail = db.fail_handoff
+        polls = {"running": 0}
+
+        def race_fail(session_id, error, *, only_states=None):
+            assert db.claim_handoff(session_id) is True
+            return real_fail(session_id, error, only_states=only_states)
+
+        def complete_after_claim(session_id):
+            row = db.get_handoff_state(session_id)
+            if row and row["state"] == "running":
+                polls["running"] += 1
+                if polls["running"] >= 2:
+                    db.complete_handoff(session_id)
+                    row = db.get_handoff_state(session_id)
+            return row
+
+        proxy.fail_handoff.side_effect = race_fail
+        proxy.get_handoff_state.side_effect = complete_after_claim
+        proxy.request_handoff.side_effect = db.request_handoff
+
+        keep, printed, host = _run_handoff(proxy, "cli-sess-race", monkeypatch)
+
+        out = "\n".join(printed)
+        assert keep is False
+        assert host._should_exit is True
+        assert "Handoff complete" in out
+        assert "Your CLI session is intact" not in out
+
+    def test_pending_timeout_cas_error_reports_indeterminate_state(self, db, monkeypatch):
+        db.ensure_session("cli-sess-cas-error", "cli")
+        proxy = MagicMock(wraps=db)
+        proxy.request_handoff.side_effect = db.request_handoff
+        proxy.get_handoff_state.side_effect = db.get_handoff_state
+        proxy.fail_handoff.side_effect = RuntimeError("database unavailable")
+
+        keep, printed, _host = _run_handoff(
+            proxy, "cli-sess-cas-error", monkeypatch
+        )
+
+        out = "\n".join(printed)
+        assert keep is True
+        assert "could not safely cancel" in out
+        assert "Avoid continuing" in out
+        assert "Your CLI session is intact" not in out
+        assert db.get_handoff_state("cli-sess-cas-error")["state"] == "pending"
 
     def test_running_row_is_never_failed_by_cli(self, db, monkeypatch):
         """Row claimed (running) and never finishing: CLI gives up eventually

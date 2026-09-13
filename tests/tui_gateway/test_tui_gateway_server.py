@@ -15395,8 +15395,8 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
         def get_session(self, _key):
             return {"id": _key}
 
-        def request_handoff(self, _key, platform):
-            return platform == "discord"
+        def request_handoff(self, _key, platform, **kwargs):
+            return platform == "discord" and kwargs.get("target_ref") is None
 
     @contextlib.contextmanager
     def profile_db(_session):
@@ -15428,6 +15428,31 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
     assert resp["result"]["queued"] is True
     assert seen_homes == [profile_home]
     assert get_hermes_home() != profile_home
+
+
+def test_handoff_request_rejects_explicit_target(monkeypatch):
+    """Shared JSON-RPC clients cannot post session content to arbitrary chat ids."""
+    from tui_gateway import methods_session
+
+    methods_session.register(server)
+    server._sessions["handoff-explicit"] = {
+        "running": False,
+        "session_key": "desktop-explicit-session",
+    }
+    try:
+        resp = server.handle_request({
+            "id": "1",
+            "method": "handoff.request",
+            "params": {
+                "session_id": "handoff-explicit",
+                "target": "slack:C012MixedCase",
+            },
+        })
+    finally:
+        server._sessions.pop("handoff-explicit", None)
+
+    assert resp["error"]["code"] == 4024
+    assert "local CLI" in resp["error"]["message"]
 
 
 def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):

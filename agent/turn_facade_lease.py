@@ -269,10 +269,19 @@ def admit_durable_turn_lease(
             f"⏳ Still waiting for the other Hermes process on this session ({int(elapsed)}s)..."
         )
 
-    if not db.acquire_session_turn_lease(
-        session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
-        on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
-    ):
+    preacquired_holder = getattr(agent, "_preacquired_session_turn_lease_holder", None)
+    if preacquired_holder:
+        holder = str(preacquired_holder)
+        agent._preacquired_session_turn_lease_holder = None
+        acquired = db.try_acquire_session_turn_lease(
+            session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, patience_s=0.0
+        )
+    else:
+        acquired = db.acquire_session_turn_lease(
+            session_id, holder, ttl_seconds=LEASE_TTL_SECONDS, wait_seconds=LEASE_WAIT_SECONDS,
+            on_wait=_on_wait, should_abort=lambda: getattr(agent, "_interrupt_requested", False),
+        )
+    if not acquired:
         admission.early_result = _lease_not_acquired_result(agent, session_id, conversation_history)
         return admission
 

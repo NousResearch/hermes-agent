@@ -613,27 +613,55 @@ class SessionGatewayMixin:
             " ORDER BY last_heartbeat DESC")
         return [dict(r) for r in rows]
 
-    def request_handoff(self, session_id: str, platform: str) -> bool:
-        """Mark a session pending handoff to *platform*; False if a handoff is already in flight."""
+    def request_handoff(
+        self,
+        session_id: str,
+        platform: str,
+        *,
+        target_ref: Optional[str] = None,
+        scope_id: Optional[str] = None,
+        chat_type: Optional[str] = None,
+        require_thread: bool = False,
+        kickoff_text: Optional[str] = None,
+    ) -> bool:
+        """Mark a session pending handoff; False if another handoff is already in flight."""
+        if kickoff_text is not None and len(kickoff_text) > 65_536:
+            raise ValueError("handoff kickoff text exceeds 65536 characters")
         return self._write_rowcount(
             "UPDATE sessions SET handoff_state = 'pending',     handoff_platform = ?, "
+            "    handoff_target_ref = ?, handoff_scope_id = ?, handoff_chat_type = ?, "
+            "    handoff_require_thread = ?, "
+            "    handoff_kickoff_text = ?, "
             "    handoff_error = NULL WHERE id = ? AND (handoff_state IS NULL "
             "                  OR handoff_state IN ('completed', 'failed'))",
-            (platform, session_id),
+            (platform, target_ref, scope_id, chat_type, int(require_thread), kickoff_text, session_id),
         ) > 0
 
     def get_handoff_state(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Return ``{"state", "platform", "error"}`` or None if the session has no handoff record."""
+        """Return the persisted handoff request/state or None when no session row exists."""
         try:
             row = self._read_one(
-                "SELECT handoff_state, handoff_platform, handoff_error FROM sessions WHERE id = ?",
+                "SELECT handoff_state, handoff_platform, handoff_target_ref, handoff_scope_id, "
+                "handoff_chat_type, "
+                "handoff_require_thread, handoff_error FROM sessions WHERE id = ?",
                 (session_id,))
             if not row:
                 return None
             return {"state": row["handoff_state"], "platform": row["handoff_platform"],
+                    "target_ref": row["handoff_target_ref"],
+                    "scope_id": row["handoff_scope_id"],
+                    "chat_type": row["handoff_chat_type"],
+                    "require_thread": bool(row["handoff_require_thread"]),
                     "error": row["handoff_error"]}
         except Exception:
             return None
+
+    def set_handoff_scope_id(self, session_id: str, scope_id: str) -> bool:
+        """Persist the authenticated destination tenant after profile-scoped resolution."""
+        return self._write_rowcount(
+            "UPDATE sessions SET handoff_scope_id = ? WHERE id = ? AND handoff_state = 'running'",
+            (scope_id, session_id),
+        ) > 0
 
     def list_pending_handoffs(self) -> List[Dict[str, Any]]:
         """All sessions in handoff_state='pending', oldest first (gateway handoff watcher)."""

@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from functools import partial
 from pathlib import Path
 
@@ -794,6 +795,141 @@ def _cmd_browse(db, args):
     relaunch(["--resume", selected_id])  # won't return after execvp
 
 
+def _resolve_session_ref(db, value: str):
+    """Resolve the same exact-id, unique-prefix, or title references accepted by resume."""
+    session_id = db.resolve_session_id(value)
+    if session_id:
+        return session_id
+    with_title = getattr(db, "resolve_session_by_title", None)
+    return with_title(value) if callable(with_title) else None
+
+
+def _cmd_handoff(db, args):
+    """Queue a gateway handoff without opening an interactive CLI session."""
+    from gateway.delivery import parse_handoff_target
+
+    json_output = bool(getattr(args, "json", False))
+    session_id = _resolve_session_ref(db, args.session_id)
+    if not session_id:
+        if json_output:
+            print(json.dumps({"ok": False, "error": f"session '{args.session_id}' not found"}))
+            return 1
+        return _not_found(args.session_id)
+    try:
+        target = parse_handoff_target(args.to)
+    except ValueError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}) if json_output else f"Error: {exc}")
+        return 2
+    # This command may itself be launched by a terminal tool inside the source
+    # agent turn. Refuse that case: moving the session while its current writer
+    # owns the durable lease would race transcript persistence.
+    admission_holder = f"handoff-cli:{os.getpid()}:{os.urandom(8).hex()}"
+    try:
+        source_idle = db.try_acquire_session_turn_lease(
+            session_id, admission_holder, ttl_seconds=5.0, patience_s=0.5
+        )
+    except Exception as exc:
+        payload = {"ok": False, "error": f"could not verify source session is idle: {exc}"}
+        print(json.dumps(payload) if json_output else f"Error: {payload['error']}")
+        return 1
+    finally:
+        # Idempotent and holder-fenced; harmless when acquisition failed.
+        db.release_session_turn_lease(session_id, admission_holder)
+    if not source_idle:
+        payload = {
+            "ok": False,
+            "session_id": session_id,
+            "error": "source session has an active turn; run the handoff after it finishes",
+        }
+        print(json.dumps(payload) if json_output else f"Error: {payload['error']}")
+        return 1
+    target_spec = target.to_string()
+    message_file = getattr(args, "message_file", None)
+    try:
+        kickoff_text = message_file.read_text(encoding="utf-8") if message_file else None
+    except OSError as exc:
+        payload = {"ok": False, "error": f"could not read message file: {exc}"}
+        print(json.dumps(payload) if json_output else f"Error: {payload['error']}")
+        return 2
+    try:
+        queued = db.request_handoff(
+            session_id,
+            target.platform.value,
+            target_ref=target.chat_id,
+            scope_id=getattr(args, "scope", None),
+            chat_type=getattr(args, "chat_type", None),
+            require_thread=bool(getattr(args, "require_thread", False)),
+            kickoff_text=kickoff_text,
+        )
+    except ValueError as exc:
+        payload = {"ok": False, "error": str(exc)}
+        print(json.dumps(payload) if json_output else f"Error: {exc}")
+        return 2
+    if not queued:
+        payload = {"ok": False, "session_id": session_id, "target": target_spec,
+                   "error": "handoff already in flight"}
+        print(json.dumps(payload) if json_output else
+              f"Session '{session_id}' already has a handoff in flight.")
+        return 1
+    if not getattr(args, "wait", False):
+        payload = {"ok": True, "state": "pending", "session_id": session_id,
+                   "target": target_spec}
+        if json_output:
+            print(json.dumps(payload))
+        else:
+            print(f"Queued handoff: {session_id} -> {target_spec}")
+            print("The gateway will run it after the session's active turn finishes.")
+        return 0
+
+    if not json_output:
+        print(f"Queued handoff: {session_id} -> {target_spec}")
+
+    pending_deadline = time.monotonic() + 60.0
+    running_deadline = None
+    last_state = "pending"
+    while True:
+        row = db.get_handoff_state(session_id) or {}
+        state = row.get("state") or "pending"
+        if state != last_state and not json_output:
+            print(f"Handoff state: {state}")
+            last_state = state
+        if state == "completed":
+            payload = {"ok": True, "state": state, "session_id": session_id,
+                       "target": target_spec}
+            print(json.dumps(payload) if json_output else
+                  f"Handoff complete: {session_id} -> {target_spec}")
+            return 0
+        if state == "failed":
+            payload = {"ok": False, "state": state, "session_id": session_id,
+                       "target": target_spec, "error": row.get("error") or "unknown error"}
+            print(json.dumps(payload) if json_output else f"Handoff failed: {payload['error']}")
+            return 1
+        now = time.monotonic()
+        if state == "pending" and now >= pending_deadline:
+            timeout_error = "gateway claim timed out"
+            if db.fail_handoff(
+                session_id, timeout_error, only_states=("pending",)
+            ):
+                payload = {"ok": False, "state": "failed", "session_id": session_id,
+                           "target": target_spec, "error": timeout_error}
+                print(json.dumps(payload) if json_output else
+                      "Timed out waiting for the gateway to claim the handoff.")
+                return 1
+            # The gateway won the CAS. Continue waiting under the running
+            # deadline instead of reporting failure for live work.
+            continue
+        if state == "running":
+            if running_deadline is None:
+                running_deadline = now + 900.0
+            elif now >= running_deadline:
+                payload = {"ok": False, "state": state, "session_id": session_id,
+                           "target": target_spec, "error": "gateway handoff still running"}
+                print(json.dumps(payload) if json_output else
+                      "The gateway is still running the handoff; check the destination later.")
+                return 1
+        time.sleep(0.5)
+
+
 # -- storage maintenance -----------------------------------------------------
 
 def _print_size_change(db, before_mb, prefix=""):
@@ -943,7 +1079,7 @@ _DB_HANDLERS = {
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,
     "clean-markers": _cmd_clean_markers, "optimize-storage": _cmd_optimize_storage,
-    "repair-routing": _cmd_repair_routing, "stats": _cmd_stats,
+    "repair-routing": _cmd_repair_routing, "stats": _cmd_stats, "handoff": _cmd_handoff,
 }
 
 

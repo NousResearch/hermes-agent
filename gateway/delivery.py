@@ -54,6 +54,33 @@ class DeliveryTransport:
         return await (self.adapter.send_for_platform(logical_platform, chat_id, content, metadata=metadata)
                       if self.is_relay else self.adapter.send(chat_id, content, metadata=metadata))
 
+    async def create_handoff_thread(
+        self, logical_platform: Platform, chat_id: str, name: str,
+        scope_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Create a thread while preserving the logical platform and tenant scope."""
+        if self.is_relay:
+            return await self.adapter.create_handoff_thread(
+                chat_id, name, platform=logical_platform.value, scope_id=scope_id
+            )
+        if logical_platform == Platform.SLACK:
+            import inspect
+            method = self.adapter.create_handoff_thread
+            try:
+                params = inspect.signature(method).parameters.values()
+                accepts_scope = any(
+                    p.name == "scope_id" or p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in params
+                )
+            except (TypeError, ValueError):
+                accepts_scope = False
+            if accepts_scope:
+                return await method(chat_id, name, scope_id=scope_id)
+            # Preserve the established two-argument plugin contract. A scoped
+            # multi-tenant handoff cannot safely downgrade to it.
+            return None if scope_id else await method(chat_id, name)
+        return await self.adapter.create_handoff_thread(chat_id, name)
+
 
 def resolve_delivery_transport(platform: Platform, config: GatewayConfig,
                                adapters: Optional[Dict[Platform, Any]]) -> Optional[DeliveryTransport]:
@@ -140,6 +167,33 @@ class DeliveryTarget:
             return "local"
         parts = [self.platform.value, self.chat_id, self.thread_id if self.chat_id else None]
         return ":".join(p for p in parts if p)
+
+
+def parse_handoff_target(value: str) -> DeliveryTarget:
+    """Parse a bare-platform home or an explicit ``platform:chat_id`` handoff target.
+
+    Handoffs create a fresh destination thread, so an existing thread id is not
+    a valid target.
+    """
+    platform_name, separator, chat_id = value.strip().partition(":")
+    try:
+        platform = Platform(platform_name.lower())
+    except ValueError as exc:
+        raise ValueError(f"unknown platform '{platform_name.lower()}'") from exc
+    if platform == Platform.LOCAL:
+        raise ValueError(f"unknown platform '{platform_name.lower()}'")
+    if separator and not chat_id:
+        raise ValueError("explicit handoff target requires a chat_id")
+    # Matrix room ids contain ':' intrinsically. Other built-in platform ids do
+    # not, so a second separator there is an existing-thread target, which the
+    # handoff transaction intentionally refuses in favor of creating a fresh one.
+    if separator and platform != Platform.MATRIX and ":" in chat_id:
+        raise ValueError("handoff target must not include a thread_id; a fresh thread is created")
+    return DeliveryTarget(
+        platform=platform,
+        chat_id=chat_id if separator else None,
+        is_explicit=bool(separator),
+    )
 
 
 async def _ensure_named_dm_topic(adapter: Any, chat_id: str, name: str, *, refresh: bool) -> str:

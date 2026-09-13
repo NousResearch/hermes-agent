@@ -45,7 +45,7 @@ import { host } from '@hermes/plugin-sdk'
 import { emitGatewayEvent } from '../../contrib/events'
 
 import { $lastRoster } from './data'
-import { type DisplayStatus, VIEWER_ID } from './screen-connection'
+import type { DisplayStatus } from './screen-connection'
 import { ScreenHero } from './screen-hero'
 import { openBotScreen } from './screen-open'
 import { ProfileGroupScreenPortal, useScreenPortalState } from './screen-portal'
@@ -85,7 +85,7 @@ afterEach(() => {
 it('applies lease events only from the owning host even when profile paths match', () => {
   setScreenStatus(botA, status)
   const view = renderHook(() => useScreenPortalState(botA))
-  const human = { ...status.lease, holder: 'human' as const, viewer_id: VIEWER_ID }
+  const human = { ...status.lease, holder: 'human' as const, viewer_id: 'this-viewer' }
 
   const emit = (connectionId: string, profileKey = status.profile_key) =>
     act(() =>

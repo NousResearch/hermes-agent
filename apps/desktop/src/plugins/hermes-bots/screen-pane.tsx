@@ -15,9 +15,9 @@ import type { RpcEvent } from '@hermes/plugin-sdk'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
-import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isEventForBotScreen, resolveScreenWsUrl, VIEWER_ID } from './screen-connection'
+import { type DisplayLease, type DisplayObserveResult, displayRequest, type DisplayStatus, isEventForBotScreen, leaseHeldBy, resolveScreenWsUrl, viewerHash } from './screen-connection'
 import { ScreenInstallCard } from './screen-install'
-import { $screenState, screenStateFor, setScreenLease, setScreenStatus } from './screen-state'
+import { $screenState, screenStateFor, setScreenLease, setScreenStatus, setScreenViewer } from './screen-state'
 import type { RosterRow } from './types'
 
 type RfbLike = {
@@ -46,7 +46,10 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const state = screenStateFor(screen, bot)
   const status = state?.status ?? null
   const lease = state?.lease ?? status?.lease ?? null
-  const iHold = lease?.holder === 'human' && lease.viewer_id === VIEWER_ID
+  // The server mints this window's viewer id per attach (`display.observe`); the lease
+  // names its holder by hash, so a reload can never inherit a stale holder's authority.
+  const viewer = state?.viewer ?? null
+  const iHold = leaseHeldBy(lease, viewer)
 
   const canvasHost = useRef<HTMLDivElement | null>(null)
   const rfb = useRef<RfbLike | null>(null)
@@ -107,7 +110,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       // Load the client BEFORE dialing: noVNC's Websock installs its own `onopen`, so a socket that
       // opened while the dynamic import was still in flight never hands it the open event.
       const Rfb = await loadRfb()
-      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe', { viewer_id: VIEWER_ID })
+      const observe = await displayRequest<DisplayObserveResult>(bot, 'display.observe')
+      const minted = { id: observe.viewer_id, hash: await viewerHash(observe.viewer_id) }
       setScreenStatus(bot, observe)
       const url = await resolveScreenWsUrl(bot, observe.ticket)
 
@@ -115,6 +119,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         return
       }
 
+      setScreenViewer(bot, minted)
       const ws = new WebSocket(url)
       ws.binaryType = 'arraybuffer'
       socket.current = ws
@@ -124,7 +129,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
       client.focusOnClick = true
       client.background = 'transparent'
       client.qualityLevel = 7
-      client.viewOnly = !(observe.lease.holder === 'human' && observe.lease.viewer_id === VIEWER_ID)
+      client.viewOnly = !leaseHeldBy(observe.lease, minted)
       client.addEventListener('connect', () => {
         if (generation === attachGeneration.current) {
           setConn('live')
@@ -201,7 +206,7 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: VIEWER_ID })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.acquire', { viewer_id: viewer?.id })
       setScreenLease(bot, result.lease)
 
       if (conn !== 'live') {
@@ -212,20 +217,20 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     } finally {
       setBusy(false)
     }
-  }, [attach, bot, conn])
+  }, [attach, bot, conn, viewer?.id])
 
   const handBack = useCallback(async () => {
     setBusy(true)
 
     try {
-      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.release', { viewer_id: VIEWER_ID })
+      const result = await displayRequest<{ lease: DisplayLease }>(bot, 'display.lease.release', { viewer_id: viewer?.id })
       setScreenLease(bot, result.lease)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
-  }, [bot])
+  }, [bot, viewer?.id])
 
   if (status && !status.supported) {
     return <EmptyState description={t.screen.unsupportedBody} title={t.screen.unsupportedTitle} />

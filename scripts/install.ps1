@@ -712,34 +712,25 @@ function Install-AgentBrowser {
 # Dependency checks
 # ============================================================================
 
-# Resolve the PowerShell host executable used to spawn child PowerShell
-# processes (the astral uv installer below).  We must NOT hardcode the bare
-# name `powershell`: it names *Windows PowerShell* and only resolves when its
-# System32 directory is on PATH.  When install.ps1 is run under PowerShell 7+
-# (`pwsh`) -- or any session where `powershell` isn't on PATH -- a bare
-# `powershell` spawn dies with "The term 'powershell' is not recognized",
-# aborting uv installation (field report: Windows install stuck, uv install
-# failed with exactly that message).  Prefer the absolute path of the host we
-# are already running in (PATH-independent), then fall back to whichever of
-# powershell/pwsh is resolvable, and only then to the bare name.
-function Get-PowerShellHostExe {
+# Run a uv installer script URL without spawning a nested PowerShell process.
+# A nested `powershell.exe` spawn is blocked on some machines (AppLocker/EDR
+# rules surface it as "Access is denied"), which aborted the whole install at
+# the uv stage (issue #103291) -- and a spawn-level throw also skipped the
+# mirror/salvage fallbacks in Install-Uv.  A child *runspace* needs no new
+# process, inherits $env:UV_INSTALL_DIR from this process, and -- unlike a
+# plain `iex` -- contains the installer script's `exit 1` failure path
+# instead of terminating this session with it.
+function Invoke-UvInstallerSource {
+    param([string]$Url)
+    $scriptText = Invoke-RestMethod -Uri $Url -UseBasicParsing
+    $ps = [powershell]::Create()
     try {
-        $hostExe = (Get-Process -Id $PID).Path
-        if ($hostExe -and (Test-Path $hostExe)) {
-            $leaf = Split-Path $hostExe -Leaf
-            # Only trust the current host when it is a real PowerShell CLI
-            # (not e.g. powershell_ise.exe or an embedded host that can't take
-            # `-ExecutionPolicy`/`-Command`).
-            if ($leaf -match '^(?i:powershell|pwsh)\.exe$') { return $hostExe }
-        }
-    } catch { }
-    foreach ($candidate in @("powershell", "pwsh")) {
-        $cmd = Get-Command $candidate -CommandType Application -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if ($cmd -and $cmd.Source) { return $cmd.Source }
+        [void]$ps.AddScript($scriptText)
+        $output = $ps.Invoke()
+        return @($output | ForEach-Object { "$_" }) + @($ps.Streams.Error | ForEach-Object { "ERROR: $_" })
+    } finally {
+        $ps.Dispose()
     }
-    # Last-ditch: hand back the bare name so the spawn surfaces its own error.
-    return "powershell"
 }
 
 function Install-Uv {
@@ -765,23 +756,26 @@ function Install-Uv {
     try {
         $ErrorActionPreference = "Continue"
         $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
-        # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
-        # than a bare `powershell`, which isn't guaranteed to be on PATH under
-        # PowerShell 7 / pwsh-only setups.
-        $psHostExe = Get-PowerShellHostExe
 
         # Rungs 1 + 2: run the uv installer -- astral.sh first, then the
         # byte-identical copy published on GitHub releases.  Corporate
         # proxies and AV products frequently block astral.sh while
         # github.com is reachable (issue #69216), so a second source turns
-        # a hard failure into a working install.  Capture the installer
-        # output (Tee-Object) instead of discarding it: when every source
-        # fails, the real error (download blocked, AV quarantine,
-        # permissions) must reach the user instead of only the generic
-        # "installed but not found" message.
+        # a hard failure into a working install.  Each rung runs in-process
+        # (see Invoke-UvInstallerSource) and a rung-level throw is recorded
+        # and falls through to the next rung -- previously a spawn-level
+        # throw jumped straight to the outer catch and skipped every
+        # fallback (issue #103291).  Capture the installer output instead
+        # of discarding it: when every source fails, the real error
+        # (download blocked, AV quarantine, permissions) must reach the
+        # user instead of only the generic "installed but not found" message.
         $installerOutput = @()
         $astralOut = @()
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
+        try {
+            $astralOut = @(Invoke-UvInstallerSource -Url "https://astral.sh/uv/install.ps1")
+        } catch {
+            $astralOut = @("uv installer source astral.sh failed: $_")
+        }
         $installerOutput += "--- uv installer source: astral.sh ---"
         $installerOutput += @($astralOut | ForEach-Object { "$_" })
         if (Test-Path $managedUv) {
@@ -789,7 +783,11 @@ function Install-Uv {
         } else {
             Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
             $ghOut = @()
-            & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
+            try {
+                $ghOut = @(Invoke-UvInstallerSource -Url "https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1")
+            } catch {
+                $ghOut = @("uv installer source GitHub releases failed: $_")
+            }
             $installerOutput += "--- uv installer source: GitHub releases ---"
             $installerOutput += @($ghOut | ForEach-Object { "$_" })
             if (Test-Path $managedUv) {

@@ -196,7 +196,10 @@ _EXPIRED_CONFIRMATION_SENTINEL = (
 
 def is_dangerous_confirmation(content: Any) -> bool:
     """True if user-message text contains a known dangerous confirmation phrase."""
-    return isinstance(content, str) and any(pattern in content.strip().lower() for pattern in _DANGEROUS_CONFIRMATION_PATTERNS)
+    if not isinstance(content, str):
+        return False
+    lowered = content.strip().lower()
+    return any(pattern in lowered for pattern in _DANGEROUS_CONFIRMATION_PATTERNS)
 
 
 def strip_stale_dangerous_confirmations(

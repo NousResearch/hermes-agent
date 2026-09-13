@@ -510,7 +510,8 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
         _reset_consol()
     # Expiry clock for build_api_messages: admission time (not the input's platform-event
     # stamp, which can predate admission by minutes), frozen so every request this turn
-    # sends identical bytes.
+    # sends identical bytes. Distinct from note_turn_start's _inflight_turn_started, a
+    # tripwire slot cleared at persist.
     agent._current_turn_timestamp = time.time()
 
     # Pre-turn connection health check: clean up dead TCP connections.
@@ -1062,8 +1063,10 @@ def build_api_messages(
     # calls/results) are live and must never be rewritten between iterations. The
     # expiry clock is the turn's admission time, frozen in _reset_per_turn_agent_state.
     # Without an anchor (compaction found no surviving user row) there is no provable
-    # persisted prefix, so nothing is canonicalized.
-    turn_now = getattr(agent, "_current_turn_timestamp", None) or time.time()
+    # persisted prefix, so nothing is canonicalized. The clock is stamped once per turn in
+    # _reset_per_turn_agent_state; a caller that skipped the prologue fails loudly here
+    # rather than silently un-freezing it.
+    turn_now = agent._current_turn_timestamp
     split = current_turn_user_idx if has_current else 0
     canonical_messages = canonicalize_replay_history(messages[:split], now=turn_now) + messages[split:]
 

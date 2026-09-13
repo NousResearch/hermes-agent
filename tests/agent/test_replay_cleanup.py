@@ -125,10 +125,10 @@ def _wire(messages):
     return json.dumps(ChatCompletionsTransport().convert_messages(list(messages)), sort_keys=True)
 
 
-def _send(agent, history):
+def _send(agent, history, idx=None):
     request, _ = build_api_messages(
-        agent, history, current_turn_user_idx=len(history) - 1, ext_prefetch_cache="",
-        plugin_user_context="", moa_config=None, active_system_prompt="",
+        agent, history, current_turn_user_idx=len(history) - 1 if idx is None else idx,
+        ext_prefetch_cache="", plugin_user_context="", moa_config=None, active_system_prompt="",
     )
     return request
 
@@ -177,17 +177,14 @@ def test_send_wire_matches_replay_wire_after_db_round_trip(tmp_path):
             {"id": "c4", "type": "function", "function": {"name": "search_files", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "c4", "content": "[Command interrupted]"},
     ]
-    request2 = build_api_messages(
-        _SendAgent(), live, current_turn_user_idx=len(persisted), ext_prefetch_cache="",
-        plugin_user_context="", moa_config=None, active_system_prompt="",
-    )[0]
+    request2 = _send(_SendAgent(), live, idx=len(persisted))
     assert _wire(request2[: len(request)]) == _wire(request)
     assert request2[-1]["content"] == "[Command interrupted]"
 
 
-def test_confirmation_expiry_uses_frozen_admission_clock_and_fails_closed(monkeypatch):
+def test_confirmation_expiry_uses_frozen_admission_clock(monkeypatch):
     """Expiry is judged once per turn at admission (not the input's event stamp, not
-    per-request wall time); a present-but-corrupt stamp is treated as expired."""
+    per-request wall time)."""
     from agent.turn_context import _reset_per_turn_agent_state
 
     agent = _SendAgent()
@@ -211,11 +208,13 @@ def test_confirmation_expiry_uses_frozen_admission_clock_and_fails_closed(monkey
         {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "c1", "content": "ready"}]
     monkeypatch.setattr("agent.turn_context.time.time", lambda: 10_500.0)  # ...however long the tools take
-    late = build_api_messages(agent, history, current_turn_user_idx=2, ext_prefetch_cache="",
-                              plugin_user_context="", moa_config=None, active_system_prompt="")[0]
-    assert late[0]["content"] == "confirm reboot"
+    assert _send(agent, history, idx=2)[0]["content"] == "confirm reboot"
 
-    for untrusted in ("nan", 96_400.0, 4_000_000_000.0):  # corrupt, or issued in the future
+
+def test_untrustworthy_confirmation_stamp_fails_closed():
+    """A corrupt or future stamp on a dangerous confirmation cannot vouch for its age: the
+    text and its sidecar expire. A missing stamp (legacy row) is still left alone."""
+    for untrusted in ("nan", 96_400.0, 4_000_000_000.0):
         row = [{"role": "user", "content": "confirm reboot", "timestamp": untrusted, "api_content": "confirm reboot"}]
         out = canonicalize_replay_history(row, now=10_000.0)
         assert "EXPIRED" in out[0]["content"] and "api_content" not in out[0], untrusted

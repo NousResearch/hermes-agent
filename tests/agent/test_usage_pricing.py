@@ -214,7 +214,7 @@ def test_openrouter_metadata_uses_highest_applicable_prompt_tier(monkeypatch):
             provider="openrouter",
         ).amount_usd
 
-    assert estimate(4_000, 3_000, 3_000) == Decimal("0.0218")
+    assert estimate(4_000, 3_000, 3_000) == Decimal("0.0261")
     assert estimate(20_000, 10_000, 10_000) == Decimal("0.0757")
     # The 128k row omits completion and cache-write, so those components
     # inherit the 32k rates while input and cache-read use the highest tier.

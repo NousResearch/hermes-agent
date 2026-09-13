@@ -1,0 +1,264 @@
+title: "harness - Hermes Agent fork diff overview"
+footer: |
+  Fork-diff overview of [`harness`](https://github.com/ethenotethan/harness), a fork of
+  [`hermes-agent`](https://github.com/NousResearch/hermes-agent) that backs the
+  [Portal](https://github.com/ethenotethan/portal) desktop/mobile client &middot; created with
+  [Forkdiff](https://github.com/protolambda/forkdiff)
+base:
+  name: hermes-agent
+  url: https://github.com/NousResearch/hermes-agent
+  # The upstream commit this fork is rebased onto. CI (`scripts/check_forkdiff.py`)
+  # requires this to equal `git merge-base HEAD upstream/main`, so a rebase onto
+  # newer upstream fails the gate until the hash — and the sections below — are
+  # brought up to date. Upstream main as of 2026-08-12.
+  hash: a871948d8d4b0f774d4ec40467bab1078a9f28d5
+fork:
+  name: harness
+  url: https://github.com/ethenotethan/harness
+  ref: refs/heads/main
+def:
+  title: "harness"
+  description: |
+    This is an overview of the changes in [`harness`](https://github.com/ethenotethan/harness),
+    a fork of [`hermes-agent`](https://github.com/NousResearch/hermes-agent).
+
+    The fork exists to give the [Portal](https://github.com/ethenotethan/portal) native client a
+    richer gateway than upstream ships: a JSON-RPC surface the app can render as live views
+    (a wiki graph with an edit history, a cron *dataflow* graph, living artifacts, a learning
+    surface, a file browser), plus the agent-side tools that produce data for those views.
+    Upstream behaviour is otherwise kept intact — every change is meant to be additive and
+    rebasable.
+
+    Conventions the fork keeps to:
+
+    - New gateway methods live in their own `tui_gateway/methods_*.py` modules and are installed
+      onto the server at import time; `server.py` itself is touched as little as possible.
+    - Anything the client renders as a graph is described by **declared metadata** (dataflow
+      refs, source files, service declarations), cross-checked against what the mechanism can
+      derive, rather than inferred from prose.
+    - Every RPC has a contract doc under `docs/api/`.
+  sub:
+    - title: "Gateway RPC surface"
+      description: |
+        The WebSocket JSON-RPC gateway (`tui_gateway`) is what Portal talks to. The fork splits
+        the harness-specific handlers out of `server.py` into `methods_*.py` modules registered
+        through a `HandlerRegistry`, so the upstream server file stays close to upstream and each
+        feature area owns its own handler file.
+      sub:
+        - title: "Handler split and registration"
+          description: |
+            `methods_harness.py` holds the Portal-facing handlers (wiki, feed, files, push,
+            artifacts); `server.py` installs each registry onto its method table at the end of
+            import, and `entry.py` loads user plugin handlers before the first RPC can arrive.
+          globs:
+            - "tui_gateway/methods_harness.py"
+            - "tui_gateway/server.py"
+            - "tui_gateway/entry.py"
+            - "tests/gateway/test_methods_harness_imports.py"
+            - "tests/test_tui_gateway_server.py"
+        - title: "Tool-adjacent RPCs (`cron.*`, skills, learning frames)"
+          description: |
+            `methods_tools.py` gains `cron.graph`, the person-facing `cron.manage` actions
+            (`describe` / `update` / `history`), and the `learning.frames` pre-renderer, each
+            attributing writes to a human actor rather than the agent.
+          globs:
+            - "tui_gateway/methods_tools.py"
+    - title: "Wiki API and changesets"
+      description: |
+        Portal renders the LLM Wiki as a live graph with a timeline. Upstream only had a
+        skill-driven wiki; the fork adds a native API on the gateway with multi-wiki resolution,
+        an edit history, provenance, and a glossary.
+      sub:
+        - title: "Native wiki RPCs"
+          description: |
+            `wiki.list` / `wiki.scan` / `wiki.page` / `wiki.update` (optimistic concurrency via
+            `if_match`) / `wiki.taxonomy` / `wiki.expand_links`, with a multi-wiki registry and
+            root-level pages (`log.md`, `index.md`) included in the scan.
+          globs:
+            - "tui_gateway/wiki_api.py"
+            - "tests/tui_gateway/test_wiki.py"
+            - "tests/tui_gateway/test_wiki_nested_scan.py"
+        - title: "Changeset log, provenance and ingestion events"
+          description: |
+            Every page write is recorded as a changeset (with a git-style unified diff on demand),
+            attributed to whoever made it, and ingestion emits events at write time so the
+            timeline is an event log rather than a re-derivation of the raw scan.
+          globs:
+            - "tui_gateway/wiki_watch.py"
+            - "scripts/wiki_changeset.py"
+            - "tests/gateway/test_wiki_watch.py"
+            - "tests/tui_gateway/test_changeset_diff.py"
+            - "tests/tui_gateway/test_wiki_changeset_loader.py"
+            - "tests/tui_gateway/test_wiki_provenance.py"
+            - "docs/api/wiki-changesets.md"
+        - title: "Glossary"
+          description: Per-wiki glossary RPCs behind a capability gate, for Portal's glossary editor.
+          globs:
+            - "tui_gateway/wiki_glossary.py"
+            - "tests/tui_gateway/test_wiki_glossary.py"
+            - "docs/api/wiki-glossary.md"
+        - title: "`llm-wiki-native` skill"
+          description: |
+            An API-native variant of the LLM Wiki skill that goes through the gateway RPCs above,
+            so changesets are captured for the app's graph and timeline.
+          globs:
+            - "skills/research/llm-wiki-native/**"
+    - title: "Cron dataflow graph"
+      description: |
+        Crons never dispatch to each other — they communicate through data. The fork lets each
+        job *declare* what it reads, writes and delivers, infers cron→cron edges from shared
+        refs, and serves the result as `cron.graph` for Portal's interflow view. Long-running
+        services (tracked processes, Docker, launchd, Nomad) join the same graph as nodes.
+      sub:
+        - title: "Job metadata: dataflow refs, source files, describe/update/history"
+          description: |
+            `inputs` / `outputs` / `side_effects` as typed `scheme:value` lists with hard
+            structural invariants (enum, referential integrity, acyclicity) and advisory
+            cross-checks; `source_files` naming the code behind a job, resolved onto file-browser
+            roots; `build_cron_graph` and `validate_store` (`hermes cron doctor`). The
+            `cronjob` tool schema asks the agent to declare all of it, and the CLI attributes
+            interactive changes to the person.
+          globs:
+            - "cron/jobs.py"
+            - "tools/cronjob_tools.py"
+            - "hermes_cli/cron.py"
+            - "hermes_cli/subcommands/cron.py"
+            - "hermes_cli/cli_commands_mixin.py"
+            - "tests/cron/test_cron_dataflow.py"
+            - "tests/cron/test_cronjob_schema.py"
+            - "tests/cron/test_jobs_file_ownership.py"
+            - "tests/tui_gateway/test_cron_graph_contract.py"
+            - "docs/api/cron-manage.md"
+        - title: "Changeset log for the dataflow"
+          description: |
+            A content-addressed commitment over the graph *as configured* (mirrored bit-for-bit
+            by Portal's `CronGraphDigest`) and a log of who changed the wiring, and when.
+          globs:
+            - "cron/changesets.py"
+            - "tests/cron/test_cron_changesets.py"
+        - title: "Services as graph nodes"
+          description: |
+            A background process started through the terminal tool can declare itself a service
+            with its own dataflow, relationships and health probe; Docker containers, launchd
+            jobs and Nomad allocations are discovered from labels/plists/meta. Health is probed
+            atomically under a lease, and code control (repository / revision / release PR) is
+            verified before it is drawn.
+          globs:
+            - "tools/terminal_tool.py"
+            - "tools/process_registry.py"
+            - "tools/docker_services.py"
+            - "tools/launchd_services.py"
+            - "tools/nomad_services.py"
+            - "tools/service_health.py"
+            - "tools/service_code_control.py"
+            - "tests/tools/test_docker_services.py"
+            - "tests/tools/test_launchd_services.py"
+            - "tests/tools/test_nomad_services.py"
+            - "tests/tools/test_process_registry_service_persistence.py"
+            - "tests/tools/test_service_code_control.py"
+            - "tests/tools/test_service_health.py"
+            - "tests/tools/test_notify_on_complete.py"
+            - "tests/tools/test_code_execution.py"
+    - title: "Living artifacts"
+      description: |
+        Revisioned models that any writer maintains and clients render live: dataset, model,
+        sankey, timeline, kanban and self-contained HTML kinds with server-side, tombstone-aware
+        merge; plus *intents* — actions a rendered artifact can invoke on the backend.
+      sub:
+        - title: "Artifact store and tool"
+          globs:
+            - "tui_gateway/artifact_store.py"
+            - "tools/artifact_tool.py"
+            - "tests/gateway/test_artifact_store.py"
+        - title: "Intents: action registry, plugin loader, invocation ledger"
+          description: |
+            An action registry with invoke/confirm RPCs advertised through `gateway.capabilities`,
+            user action plugins loaded from `~/.hermes/plugins/actions/*.py`, and a durable
+            idempotency ledger exposed as `artifact.action.log`.
+          globs:
+            - "tui_gateway/artifact_actions.py"
+            - "tui_gateway/artifact_plugin_loader.py"
+            - "tui_gateway/artifact_invocation_ledger.py"
+            - "tests/gateway/test_artifact_actions.py"
+            - "tests/gateway/test_artifact_plugin_loader.py"
+            - "tests/gateway/test_artifact_invocation_ledger.py"
+            - "docs/plugins/actions.md"
+    - title: "Learning surface"
+      description: |
+        Courses, flashcard decks and progress as gateway state (`learning.*` RPCs) with a
+        `learning` tool the agent uses to build them, and a pre-rendered journey timeline for
+        the TUI.
+      globs:
+        - "tui_gateway/learning_store.py"
+        - "tui_gateway/methods_learning.py"
+        - "tools/learning_tool.py"
+        - "toolsets.py"
+        - "tests/gateway/test_learning_store.py"
+        - "tests/gateway/test_learning_tool.py"
+    - title: "News feed"
+      description: |
+        A producer/consumer feed for Portal: `feed_publish` lets a cron write articles, `feed.get`
+        / `feed.sources` read them; the news-digest blueprint publishes to it.
+      globs:
+        - "tools/feed_tool.py"
+        - "tui_gateway/digest_store.py"
+        - "cron/blueprint_catalog.py"
+        - "tests/tui_gateway/test_feed_store.py"
+    - title: "Read-only file browser"
+      description: |
+        `files.list` / `files.read` over two containment-checked roots (the repo checkout and
+        `~/.hermes`), so the client can click through scripts and source in-app; `file_serve`
+        streams staged files.
+      globs:
+        - "tui_gateway/files_browse.py"
+        - "tui_gateway/file_serve.py"
+        - "tests/gateway/test_files_browse.py"
+        - "docs/api/files-browse.md"
+    - title: "Push notifications (APNs)"
+      description: Device registration and APNs delivery for HermesNative clients.
+      globs:
+        - "tui_gateway/apns_sender.py"
+        - "tui_gateway/push_store.py"
+        - "tests/tui_gateway/test_push_store.py"
+        - "docs/api/apns-push.md"
+    - title: "HTTP API server: media and WebSocket routes"
+      description: |
+        `/v1/upload`, `/v1/files` and the `/v1/ws` WebSocket endpoint the native media pipeline
+        uses.
+      globs:
+        - "gateway/platforms/api_server.py"
+    - title: "Agent guidance and prompt assembly"
+      description: |
+        Native-primitive guidance (prefer the gateway's own artifacts / wiki / cron over ad-hoc
+        files), the self-update restart loop, and a Bedrock output-cap fix that mirrors the
+        Anthropic branch's ephemeral max-tokens boost.
+      globs:
+        - "agent/native_guidance.py"
+        - "agent/prompt_builder.py"
+        - "agent/system_prompt.py"
+        - "agent/chat_completion_helpers.py"
+        - "tests/agent/test_system_prompt.py"
+        - "tests/test_ctx_halving_fix.py"
+    - title: "Smart approvals policy file"
+      description: |
+        An optional markdown policy loaded from disk and appended to the smart-approval
+        guardian's trusted system prompt (`approvals.policy_file`).
+      globs:
+        - "tools/approval.py"
+        - "hermes_cli/config_defaults.py"
+    - title: "Fork tooling"
+      description: |
+        The gate that keeps this page honest: `check_forkdiff.py` fails CI when `base.hash`
+        is not the merge-base with upstream, or when a file the fork changes is not described
+        by a section above.
+      globs:
+        - "scripts/check_forkdiff.py"
+        - "tests/scripts/test_check_forkdiff.py"
+        - "docs/forkdiff.md"
+        - "README.md"
+
+# ignored globally, does not count towards line count
+ignore:
+  - "fork.yaml"
+  - ".github/**"
+  - "contributors/**"

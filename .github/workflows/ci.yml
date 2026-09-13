@@ -134,6 +134,12 @@ jobs:
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
 
+  forkdiff-check:
+    name: Fork diff analysis
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request'
+    uses: ./.github/workflows/forkdiff-check.yml
+
   contributor-check:
     name: Check contributors
     needs: detect
@@ -209,6 +215,7 @@ jobs:
       - e2e-desktop
       - docs-site
       - history-check
+      - forkdiff-check
       - contributor-check
       - uv-lockfile
       - lockfile-diff

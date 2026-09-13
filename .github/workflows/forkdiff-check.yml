@@ -1,0 +1,100 @@
+name: Fork Diff Check
+
+# Fails a PR whose `fork.yaml` no longer describes this fork.
+#
+# The fork-diff page (https://ethenotethan.github.io/harness/, rendered by
+# protolambda/forkdiff from `fork.yaml`, deployed by forkdiff-pages.yml) is
+# only useful while it is true, and two things make it go stale silently:
+#
+#   1. A rebase onto newer upstream. `base.hash` keeps pointing at the old
+#      upstream commit, so the page shows upstream's own changes as the fork's.
+#      `scripts/check_forkdiff.py` requires base.hash == merge-base(HEAD,
+#      upstream/main); a rebase moves the merge-base and the gate stays red
+#      until the hash — and the sections — are brought up to date.
+#   2. A fork change nobody described. Every file in the base..HEAD diff must
+#      match a section glob (or a global ignore), and every glob must still
+#      match something.
+#
+# The page is also rendered here so a fork.yaml that forkdiff itself rejects
+# cannot merge. Called from ci.yml so it is part of "All required checks pass".
+
+on:
+  workflow_call:
+    outputs:
+      review_status:
+        description: "JSON array of review_status objects for the synthesizer."
+        value: ${{ jobs.analysis-up-to-date.outputs.review_status }}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analysis-up-to-date:
+    name: fork.yaml describes the fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      review_status: ${{ steps.check.outputs.review_status }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # full history: merge-base with upstream, and forkdiff diffs against base.hash
+
+      - name: Fetch upstream main
+        run: |
+          git fetch --no-tags --quiet https://github.com/NousResearch/hermes-agent.git \
+            main:refs/remotes/upstream/main
+          echo "upstream/main = $(git rev-parse --short refs/remotes/upstream/main)"
+          echo "merge-base    = $(git merge-base HEAD refs/remotes/upstream/main | cut -c1-12)"
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify fork.yaml against the real diff
+        id: check
+        run: |
+          python3 -m pip install --quiet pyyaml
+          set +e
+          python3 scripts/check_forkdiff.py \
+            --upstream-ref refs/remotes/upstream/main \
+            --review-status-out review-status.json
+          rc=$?
+          set -e
+          STATUS=$(cat review-status.json)
+          echo "review_status=${STATUS}" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Upload review status artifact
+        if: always() && steps.check.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: review-status-forkdiff
+          path: review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version: "1.24"
+          cache: false
+
+      - name: Render the fork-diff page
+        # fork.yaml names refs/heads/main; on a PR the checkout is a detached
+        # merge commit, so point the local branch at what we are checking.
+        run: |
+          git update-ref refs/heads/main HEAD
+          mkdir -p tmp/pages
+          go run github.com/protolambda/forkdiff@v0.1.1 \
+            -repo . -fork fork.yaml -out tmp/pages/index.html
+          echo "rendered $(wc -c < tmp/pages/index.html) bytes"
+
+      - name: Upload rendered page
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: forkdiff-page
+          path: tmp/pages/index.html
+          retention-days: 7

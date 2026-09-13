@@ -301,7 +301,10 @@ def _resolve_review_runtime(agent: Any, task_cfg: Optional[Dict[str, Any]] = Non
         str(task.get(key, "")).strip() or None for key in ("provider", "model", "base_url", "api_key")
     )
     if not (task_provider and task_provider != "auto" and task_model) or (
-        task_provider == effective_provider and task_model == effective_model  # same as effective parent
+        task_provider == effective_provider
+        and task_model == effective_model
+        and task_base_url is None
+        and task_api_key is None
     ):
         return parent
     try:
@@ -1100,7 +1103,10 @@ def _select_review_pool_credential(review_agent: Any) -> None:
     entry = pool.select()
     if entry is None:
         raise RuntimeError("Background review credential pool has no available entry")
-    review_agent._swap_credential(entry)
+    if review_agent._swap_credential(entry) is False:
+        raise RuntimeError(
+            "Background review credential cannot serve the selected model"
+        )
 
 
 def _run_review_fork(

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from agent.background_review import (
     _BackgroundReviewRun,
     _ReviewForkState,
@@ -248,6 +250,36 @@ def test_same_model_different_endpoint_is_routed():
     assert rt["routed"] is True
 
 
+def test_explicit_same_model_route_still_uses_auxiliary_resolver():
+    """An explicit route can share labels with primary but use a different endpoint/key."""
+    agent = _FakeAgent(
+        provider="anthropic", model="claude-fallback",
+        _fallback_activated=True, _provider_fallback_active=True,
+        _primary_runtime=PRIMARY_SNAPSHOT,
+        _fallback_runtime=FALLBACK_RUNTIME,
+    )
+    auxiliary = {
+        "provider": "openai", "model": "gpt-primary",
+        "api_key": "sk-aux", "base_url": "https://aux.invalid/v1",
+        "api_mode": "openai", "request_overrides": {}, "args": [],
+    }
+    with patch("agent.credential_pool.load_pool", return_value=None), patch(
+        "hermes_cli.runtime_provider.resolve_runtime_provider", return_value=auxiliary,
+    ) as resolve:
+        rt = _resolve_review_runtime(
+            agent,
+            task_cfg={
+                "provider": "openai", "model": "gpt-primary",
+                "api_key": "sk-aux", "base_url": "https://aux.invalid/v1",
+            },
+        )
+
+    resolve.assert_called_once()
+    assert rt["api_key"] == "sk-aux"
+    assert rt["base_url"] == "https://aux.invalid/v1"
+    assert rt["routed"] is True
+
+
 def test_active_primary_cooldown_keeps_live_fallback():
     """A review must not bypass the same primary cooldown respected by turn restoration."""
     import time
@@ -316,6 +348,20 @@ def test_pool_selection_is_deferred_until_request_admission():
     assert pool.peek_calls == 0
     assert pool.select_calls == 1
     assert review_agent.swapped is pool.selected
+
+
+def test_pool_selection_rejects_entry_that_cannot_serve_model():
+    pool = _FakePool("openai", _FakeEntry())
+
+    class _ReviewAgent:
+        _credential_pool = pool
+
+        def _swap_credential(self, entry):
+            return False
+
+    with pytest.raises(RuntimeError, match="credential cannot serve the selected model"):
+        _select_review_pool_credential(_ReviewAgent())
+    assert pool.select_calls == 1
 
 
 def test_cancelled_after_fork_build_does_not_select_pool_or_call_provider():

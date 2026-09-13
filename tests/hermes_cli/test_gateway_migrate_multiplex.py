@@ -277,6 +277,107 @@ def test_update_hook_never_touches_single_profile_or_already_multiplexed(fleet, 
     assert capsys.readouterr().out == "" and _config_flag(fleet.root) is None
 
 
+def test_update_hook_refuses_a_secondary_on_a_different_service_manager(fleet, capsys):
+    """Automatic migration must not replace a secondary from a different service domain."""
+    fleet.services["default"] = ("systemd", False)
+    fleet.services["ops"] = ("launchd", False)
+
+    gm.maybe_auto_migrate_after_update()
+
+    out = capsys.readouterr().out
+    assert "different service manager or scope" in out
+    assert gm.MIGRATE_COMMAND in out
+    assert fleet.ops == []
+    assert fleet.services == {
+        "default": ("systemd", False), "coder": ("systemd", False), "ops": ("launchd", False),
+    }
+    assert _config_flag(fleet.root) is None
+
+
+@pytest.mark.parametrize(
+    ("secondary_service", "secondary_user", "secondary_home", "expected"),
+    [
+        (("systemd", True), "uid:1000", "profiles/coder", "different service manager or scope"),
+        (("systemd", False), "uid:2000", "profiles/coder", "align the UNIX user"),
+        (("systemd", False), "uid:1000", "external", "HERMES_HOME outside"),
+    ],
+)
+def test_auto_migration_guard_detects_service_scope_user_and_home_boundaries(
+    tmp_path, secondary_service, secondary_user, secondary_home, expected,
+):
+    root = tmp_path / "hermes"
+    secondary = tmp_path / "external-hermes" if secondary_home == "external" else root / secondary_home
+    plan = gm.MigrationPlan(
+        default_home=root,
+        profiles=[
+            gm.ProfileGateway("default", root, service=("systemd", False), unix_user="uid:1000"),
+            gm.ProfileGateway("coder", secondary, service=secondary_service, unix_user=secondary_user),
+        ],
+        multiplex_flag_on=False,
+        live_served=None,
+    )
+
+    blockers = gm._auto_migration_blockers(plan)
+
+    assert any(expected in blocker for blocker in blockers)
+    assert all(gm.MIGRATE_COMMAND in blocker for blocker in blockers)
+
+
+def test_auto_migration_guard_allows_a_same_scope_same_user_profile_tree(tmp_path):
+    root = tmp_path / "hermes"
+    plan = gm.MigrationPlan(
+        default_home=root,
+        profiles=[
+            gm.ProfileGateway("default", root, service=("systemd", False), unix_user="uid:1000"),
+            gm.ProfileGateway(
+                "coder", root / "profiles/coder", service=("systemd", False), unix_user="uid:1000",
+            ),
+        ],
+        multiplex_flag_on=False,
+        live_served=None,
+    )
+
+    assert gm._auto_migration_blockers(plan) == []
+
+
+def test_auto_migration_guard_blocks_service_managed_secondary_when_default_is_detached(tmp_path):
+    root = tmp_path / "hermes"
+    plan = gm.MigrationPlan(
+        default_home=root,
+        profiles=[
+            gm.ProfileGateway("default", root, unix_user="uid:1000"),
+            gm.ProfileGateway(
+                "coder", root / "profiles/coder", service=("systemd", False), unix_user="uid:1000",
+            ),
+            gm.ProfileGateway(
+                "ops", root / "profiles/ops", service=("launchd", False), unix_user="uid:1000",
+            ),
+        ],
+        multiplex_flag_on=False,
+        live_served=None,
+    )
+
+    blockers = gm._auto_migration_blockers(plan)
+
+    assert len(blockers) == 2
+    assert all("different service manager or scope" in blocker for blocker in blockers)
+
+
+def test_auto_migration_guard_allows_detached_default_and_secondary_in_same_scope(tmp_path):
+    root = tmp_path / "hermes"
+    plan = gm.MigrationPlan(
+        default_home=root,
+        profiles=[
+            gm.ProfileGateway("default", root, unix_user="uid:1000"),
+            gm.ProfileGateway("coder", root / "profiles/coder", unix_user="uid:1000"),
+        ],
+        multiplex_flag_on=False,
+        live_served=None,
+    )
+
+    assert gm._auto_migration_blockers(plan) == []
+
+
 def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_restarts_default(fleet, capsys, monkeypatch):
     """The user typed --multiplex: 'nothing to migrate' + flag left off was a no-op the user did not ask
     for. The update hook keeps its no-op (previous test); the explicit command proceeds."""

@@ -69,9 +69,39 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
     ])
 
     expect(resolveOauthPartition('https://gw-a.example.com/api/status', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
-    expect(resolveOauthPartition('https://gw-b.example.com/api/status', { registry: reg })).not.toBe(
+    // conn-b is on a different HOST than the primary — no cookie-jar collision
+    // is possible, so it rides the legacy jar too rather than an isolated
+    // partition that would never persist its cookies to disk (#100373).
+    expect(resolveOauthPartition('https://gw-b.example.com/api/status', { registry: reg })).toBe(
       LEGACY_OAUTH_PARTITION
     )
+  })
+
+  it('isolates a non-primary connection that shares the PRIMARY connection\'s hostname (#100373)', () => {
+    const reg = registry('conn-a', [
+      remote('conn-a', 'https://10.0.0.20:9119'),
+      remote('conn-b', 'https://10.0.0.20:9220')
+    ])
+
+    expect(resolveOauthPartition('https://10.0.0.20:9119/api/status', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
+    expect(resolveOauthPartition('https://10.0.0.20:9220/api/status', { registry: reg })).not.toBe(
+      LEGACY_OAUTH_PARTITION
+    )
+  })
+
+  it('rides the legacy jar for two non-colliding remotes on different hosts (#100373 repro)', () => {
+    // The exact reported topology: primary is the local device, two remote
+    // gateways registered on different LAN hosts. Neither can evict the
+    // other's cookie in a shared jar, so isolating either one only trades a
+    // real bug (per-connection partitions never persisted cookies) for a
+    // problem that could not occur.
+    const reg = registry('local', [
+      remote('hp', 'http://10.0.0.20:9119'),
+      remote('asus', 'http://10.0.0.30:9119')
+    ])
+
+    expect(resolveOauthPartition('http://10.0.0.20:9119/api/status', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
+    expect(resolveOauthPartition('http://10.0.0.30:9119/api/status', { registry: reg })).toBe(LEGACY_OAUTH_PARTITION)
   })
 
   it('keeps cloud connections on the legacy partition (silent portal cascade needs the shared jar)', () => {
@@ -113,7 +143,12 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
   })
 
   it('normalizes trailing slashes and default ports when matching entry URLs', () => {
-    const reg = registry('local', [remote('conn-a', 'https://gw-a.example.com:443/')])
+    const reg = registry('local', [
+      remote('conn-a', 'https://gw-a.example.com:443/'),
+      // A colliding same-host sibling so conn-a actually needs isolation —
+      // otherwise there is nothing to normalize into a match against.
+      remote('conn-a-2', 'https://gw-a.example.com:8443/')
+    ])
 
     const got = resolveOauthPartition('https://gw-a.example.com/api/auth/ws-ticket', { registry: reg })
 
@@ -122,7 +157,11 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
   })
 
   it('produces a deterministic, partition-safe name from hostile connection ids', () => {
-    const reg = registry('local', [remote('we ird/id:€', 'https://gw-a.example.com')])
+    const reg = registry('local', [
+      remote('we ird/id:€', 'https://gw-a.example.com'),
+      // A colliding same-host sibling so the hostile id actually gets isolated.
+      remote('other', 'https://gw-a.example.com:8443')
+    ])
 
     const got = resolveOauthPartition('https://gw-a.example.com', { registry: reg })
 

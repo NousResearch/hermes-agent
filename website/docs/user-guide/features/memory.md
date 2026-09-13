@@ -79,6 +79,21 @@ memory(action="replace", target="memory",
 
 If the substring matches multiple entries, an error is returned asking for a more specific match.
 
+### Reversible Mutations (Eviction Archive)
+
+`replace` and `remove` (single or inside `apply_batch`) append evicted content to `~/.hermes/memories/ARCHIVE.jsonl` **before** the main file rewrite when archiving is enabled and succeeds. Each line is a JSON record — `id`, `ts`, `store`, `action` (`"removed"` or `"superseded"`), and the evicted `entry` text.
+
+Writers share a per-profile archive lock, including rollback, so one failing process cannot truncate another writer's records. Rollback is best-effort, not a crash-atomic transaction: a crash or failed rollback can leave partial records, and power-loss durability is not guaranteed. Retries reuse IDs, allowing complete duplicate records to be reconciled by `id`.
+
+The tool result carries the archive id and the evicted entry itself (`"archived": [...]`), so the model sees exactly what was captured at the moment of the mutation — no system-prompt addition, prompt cache untouched.
+
+Privacy defaults differ by store:
+
+- **`memory` (MEMORY.md)** — archived by default.
+- **`user` (USER.md)** — **not** archived by default (`memory.archive_user: false`); set it to `true` to opt in. This is a data-minimization default for profile data, not a correctness gap.
+
+If the archive write itself fails, the mutation still proceeds by default and the result carries `"archive_status": "degraded"` — a failed archive must never block a memory-full consolidation. Set `memory.archive_on_failure: abort` to refuse memory-tool mutations instead (the memory file is left untouched; archive rollback remains best-effort). **Exception:** `/journey delete|edit` always proceeds with a warning if archiving fails, even when `abort` is configured. See [Configuration](#configuration) below.
+
 ## Two Targets Explained
 
 ### `memory` — Agent's Personal Notes
@@ -223,7 +238,7 @@ Beyond viewing, the journey is also where you **prune and correct** what Hermes 
 | Command | What it does |
 |---------|--------------|
 | `hermes journey list` | List node ids — skill names and `memory:<source>:<index>` ids for memory chunks. |
-| `hermes journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable), memory chunks are removed. `-y` skips the confirmation. |
+| `hermes journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable). Memory chunks are also archived to `ARCHIVE.jsonl` before removal (MEMORY.md by default; USER.md only when `memory.archive_user` is set). `-y` skips the confirmation. |
 | `hermes journey edit <node>` | Open the node's content (a skill's `SKILL.md` or the memory chunk) in `$EDITOR`. |
 
 The same `list` / `delete <id>` / `edit <id>` subcommands work from the in-chat `/journey` command on the CLI, and the desktop panel offers edit/delete on nodes directly.
@@ -238,6 +253,8 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  archive_user: false       # true = also archive USER.md evictions (default: MEMORY.md only)
+  archive_on_failure: warn  # warn (default, mutation proceeds) | abort (mutation refused)
 ```
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the

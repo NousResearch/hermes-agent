@@ -1218,6 +1218,21 @@ DEFAULT_CONFIG = {
         # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
         # "mem0", "hindsight", "holographic", "retaindb", "byterover".
         "provider": "",
+        # Reversible memory mutations (#76883): evicted entries (remove/replace,
+        # apply_batch, and `/journey delete|edit` on memory nodes) are appended to
+        # ~/.hermes/memories/ARCHIVE.jsonl before the main file rewrite when
+        # archiving succeeds; rollback is best-effort, not crash-atomic.
+        #   archive_user: false (default) -- USER.md evictions are NOT archived
+        #                 (data minimization for profile data). MEMORY.md is
+        #                 always archived. Set true to archive both stores.
+        #   archive_on_failure: "warn" (default) -- an archive write failure lets
+        #                 the mutation proceed and the tool result carries
+        #                 "archive_status": "degraded". "abort" restores strict
+        #                 behavior (mutation refused, file untouched) but can
+        #                 deadlock the memory-full consolidation path, hence the
+        #                 default. /journey always degrades, even with "abort".
+        "archive_user": False,
+        "archive_on_failure": "warn",
     },
     # Subagent delegation — override the provider:model used by delegate_task so children run on a
     # cheaper/faster model. Uses the same runtime provider resolution as CLI/gateway startup, so

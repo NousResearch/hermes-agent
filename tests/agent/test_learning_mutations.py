@@ -91,3 +91,112 @@ def test_memory_writes_match_memory_tool_format(home):
 
     assert entries == ["alpha rewritten", "beta note"]
     assert path.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(entries)
+
+
+# =========================================================================
+# Reversible deletion/edit — eviction archive (ARCHIVE.jsonl, #76883)
+#
+# `/journey delete`|`edit` on a memory node bypasses MemoryStore.remove()/
+# replace() entirely (it edits the raw §-delimited chunks directly), so it
+# needs its OWN archive-before-rewrite call through the same shared
+# ARCHIVE.jsonl and the same MEMORY.md/USER.md privacy gate (#77154 review:
+# journey `profile` nodes map to USER.md and must never be mislabeled as the
+# `memory` archive target, which would silently bypass `archive_user: false`).
+# =========================================================================
+
+def test_delete_memory_archives_evicted_chunk(home):
+    """/journey delete on a memory node archives the evicted chunk to
+    ARCHIVE.jsonl before the rewrite — the same reversible-delete semantics
+    as the memory tool's remove() (#76883)."""
+    import json
+
+    res = lm.delete_node("memory:memory:0")
+    assert res["ok"]
+    assert "ARCHIVE.jsonl" in res["message"]
+
+    archive = home / "memories" / "ARCHIVE.jsonl"
+    assert archive.exists()
+    records = [json.loads(line) for line in archive.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(records) == 1
+    assert records[0]["store"] == "memory"
+    assert records[0]["action"] == "removed"
+    assert records[0]["entry"] == "alpha note\nline two"
+
+    # The delete itself still happened.
+    assert (home / "memories" / "MEMORY.md").read_text(encoding="utf-8") == "beta note"
+
+
+def test_delete_profile_memory_not_archived_by_default(home):
+    """Journey profile nodes map to USER.md — archiving must honor the
+    ``memory.archive_user: false`` privacy default (#77154 review), never
+    silently archiving profile data as if it were plain `memory`."""
+    res = lm.delete_node("memory:profile:2")
+    assert res["ok"]
+    assert "ARCHIVE.jsonl" not in res["message"]
+    assert not (home / "memories" / "ARCHIVE.jsonl").exists()
+    # The delete itself still happened.
+    assert (home / "memories" / "USER.md").read_text(encoding="utf-8").strip() == ""
+
+
+def test_delete_profile_memory_archived_when_configured(home):
+    """With ``memory.archive_user: true``, profile deletes archive as the
+    ``user`` store — never mislabeled as ``memory`` (#77154 review's core
+    complaint about the original, unpatched attempt)."""
+    import json
+
+    (home / "config.yaml").write_text("memory:\n  archive_user: true\n", encoding="utf-8")
+
+    res = lm.delete_node("memory:profile:2")
+    assert res["ok"]
+    assert "ARCHIVE.jsonl" in res["message"]
+    archive = home / "memories" / "ARCHIVE.jsonl"
+    records = [json.loads(line) for line in archive.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(records) == 1
+    assert records[0]["store"] == "user"
+    assert records[0]["action"] == "removed"
+    assert records[0]["entry"] == "user profile note"
+
+
+def test_edit_memory_archives_superseded(home):
+    """/journey edit archives the superseded chunk (reversible edits, same
+    ARCHIVE.jsonl) instead of destroying it (#77154 review's third defect:
+    the sibling _edit_memory path stayed irreversible)."""
+    import json
+
+    res = lm.edit_node("memory:memory:0", "alpha rewritten")
+    assert res["ok"]
+    assert "ARCHIVE.jsonl" in res["message"]
+    archive = home / "memories" / "ARCHIVE.jsonl"
+    records = [json.loads(line) for line in archive.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(records) == 1
+    assert records[0]["store"] == "memory"
+    assert records[0]["action"] == "superseded"
+    assert records[0]["entry"] == "alpha note\nline two"
+    # The edit itself landed.
+    assert (home / "memories" / "MEMORY.md").read_text(encoding="utf-8").startswith("alpha rewritten")
+
+
+def test_edit_profile_memory_not_archived_by_default(home):
+    """Profile edits honor the same privacy gate as profile deletes — nothing
+    archived by default."""
+    res = lm.edit_node("memory:profile:2", "rewritten profile")
+    assert res["ok"]
+    assert "ARCHIVE.jsonl" not in res["message"]
+    assert not (home / "memories" / "ARCHIVE.jsonl").exists()
+    assert (home / "memories" / "USER.md").read_text(encoding="utf-8").strip() == "rewritten profile"
+
+
+def test_delete_memory_degrades_when_archive_write_fails(home, monkeypatch):
+    """A journey delete is a deliberate, foreground user action: it must never
+    block on an archive-write failure (unlike a background consolidation
+    batch, which can honor ``archive_on_failure: abort``) — it degrades with
+    a note instead."""
+    monkeypatch.setattr("tools.memory_tool.archive_entries", lambda *a, **k: ([], "disk full"))
+
+    res = lm.delete_node("memory:memory:0")
+
+    assert res["ok"]
+    assert "archive write failed" in res["message"]
+    assert not (home / "memories" / "ARCHIVE.jsonl").exists()
+    # The delete itself still happened -- never blocked.
+    assert (home / "memories" / "MEMORY.md").read_text(encoding="utf-8") == "beta note"

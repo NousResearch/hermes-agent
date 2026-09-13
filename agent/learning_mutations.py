@@ -5,7 +5,9 @@ Node ids (from ``agent.learning_graph``): skills → the skill name; memories �
 for USER.md; ``index`` = position in the combined card list, MEMORY.md first).
 Shared by CLI ``hermes journey``, the TUI ``/journey`` overlay and the desktop.
 Deleting a skill *archives* it (``hermes curator restore`` recovers it);
-deleting a memory rewrites its file.
+deleting or editing a memory also archives the evicted/superseded chunk to
+``ARCHIVE.jsonl`` before rewriting its file (#76883), same as the memory tool's
+own ``remove``/``replace``.
 """
 
 from __future__ import annotations
@@ -14,6 +16,35 @@ from pathlib import Path
 from typing import Any, Callable
 
 _MEMORY_FILES = {"memory": "MEMORY.md", "profile": "USER.md"}
+
+
+def _archive_target_for_source(source: str) -> str:
+    """Journey ``source`` -> memory-tool archive target. ``profile`` nodes live in
+    USER.md, so they must archive (when configured in) as ``user`` and honor the
+    same privacy gate (``memory.archive_user``) as direct USER.md mutations --
+    never as ``memory``, which would both mislabel the archive record and bypass
+    the opt-in default (#76883)."""
+    return "user" if source == "profile" else "memory"
+
+
+def _archive_evicted(target: str, action: str, entry: str) -> tuple[str | None, str | None]:
+    """Archive one evicted memory chunk through the memory tool's shared
+    ARCHIVE.jsonl, gated the same way as ``MemoryStore.remove()``/``replace()``
+    (MEMORY.md by default, USER.md only when ``memory.archive_user`` is set).
+
+    Returns ``(record_id, None)`` when archived, ``(None, None)`` when the
+    store's privacy default skips archiving, ``(None, error)`` when the write
+    failed. This path never aborts on a failure -- unlike a background
+    consolidation batch, a journey delete/edit is a deliberate, foreground,
+    user-initiated action, so a degraded archive note is surfaced but the
+    mutation still proceeds (#76883)."""
+    try:
+        from tools.memory_tool import _should_archive_target, archive_entry
+        if not _should_archive_target(target):
+            return None, None
+        return archive_entry(target, action, entry)
+    except Exception as exc:  # pragma: no cover - import/IO edge; never block a user-initiated delete
+        return None, str(exc)
 
 
 def parse_node_kind(node_id: str) -> str:
@@ -125,10 +156,26 @@ def _delete_skill(name: str) -> dict[str, Any]:
 
 
 def _delete_memory(node_id: str) -> dict[str, Any]:
+    source, _ = _parse_memory_id(node_id)
     path, chunks, local = _locate_memory(node_id)
+    evicted = chunks[local]
+
+    # Reversible deletion: archive the evicted chunk before the rewrite, same
+    # ARCHIVE.jsonl as the memory tool's remove/replace. Profile nodes archive
+    # as `user` and honor the `archive_user` gate -- never mislabeled as
+    # `memory` (#76883). Failure degrades (mutation proceeds + note) rather
+    # than blocking a user-initiated delete.
+    archived_id, archived_error = _archive_evicted(_archive_target_for_source(source), "removed", evicted)
+
     del chunks[local]
     _write_memory(path, chunks)
-    return {"ok": True, "message": f"deleted memory from {path.name}"}
+
+    message = f"deleted memory from {path.name}"
+    if archived_id:
+        message += f" — evicted content archived to ARCHIVE.jsonl#{archived_id} (reversible)"
+    elif archived_error:
+        message += f" — note: archive write failed ({archived_error}), content is gone"
+    return {"ok": True, "message": message}
 
 
 # ── Edit ────────────────────────────────────────────────────────────────────
@@ -147,11 +194,23 @@ def _edit_skill(name: str, content: str) -> dict[str, Any]:
 
 
 def _edit_memory(node_id: str, content: str) -> dict[str, Any]:
-    _parse_memory_id(node_id)  # id errors win over the empty-body message
+    source, _ = _parse_memory_id(node_id)  # id errors win over the empty-body message
     body = content.strip()
     if not body:
         return {"ok": False, "message": "empty memory — use delete to remove it"}
     path, chunks, local = _locate_memory(node_id)
+    evicted = chunks[local]
+
+    # Reversible edit: the superseded chunk is archived before the rewrite,
+    # same gate as delete (profile -> user store, honor archive_user) (#76883).
+    archived_id, archived_error = _archive_evicted(_archive_target_for_source(source), "superseded", evicted)
+
     chunks[local] = body
     _write_memory(path, chunks)
-    return {"ok": True, "message": f"updated memory in {path.name}"}
+
+    message = f"updated memory in {path.name}"
+    if archived_id:
+        message += f" — superseded content archived to ARCHIVE.jsonl#{archived_id} (reversible)"
+    elif archived_error:
+        message += f" — note: archive write failed ({archived_error})"
+    return {"ok": True, "message": message}

@@ -24,6 +24,7 @@ is the slim redo on the decomposed web server.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
@@ -64,6 +65,64 @@ class IdleClientTracker:
     def idle_for(self) -> float:
         with self._lock:
             return 0.0 if self._live else self._now() - self._last_client_at
+
+
+class CronAdmissionGate:
+    """Serialize Desktop cron admission with an idle-exit drain decision.
+
+    The gate covers the interval from a ticker deciding to dispatch through the
+    submission of that tick's work. Idle-exit can therefore close admission
+    only after no dispatch is in that interval; existing jobs remain owned by
+    the scheduler and are observed by the normal in-flight probe.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._draining = False
+        self._closed = False
+        self._dispatches = 0
+
+    @property
+    def is_closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    def can_dispatch(self) -> bool:
+        with self._lock:
+            return not self._draining and not self._closed
+
+    @contextlib.contextmanager
+    def dispatch_guard(self):
+        with self._lock:
+            admitted = not self._draining and not self._closed
+            if admitted:
+                self._dispatches += 1
+        try:
+            yield admitted
+        finally:
+            if admitted:
+                with self._lock:
+                    self._dispatches -= 1
+
+    def try_begin_drain(self) -> bool:
+        """Close admission iff no ticker dispatch is currently in flight."""
+        with self._lock:
+            if self._closed or self._dispatches:
+                return False
+            self._draining = True
+            return True
+
+    def cancel_drain(self) -> None:
+        """Reopen admission after an aborted idle-exit check, unless permanently closed."""
+        with self._lock:
+            if not self._closed:
+                self._draining = False
+
+    def close(self) -> None:
+        """Permanently and unconditionally close admission for terminal teardown."""
+        with self._lock:
+            self._closed = True
+            self._draining = True
 
 
 def wrap_asgi_with_ws_tracking(app, tracker: IdleClientTracker):
@@ -126,7 +185,8 @@ def should_exit_idle(tracker: IdleClientTracker, grace_s: float,
 
 
 def start_idle_watchdog(server, tracker: IdleClientTracker, *, grace_s: float = DEFAULT_IDLE_GRACE_S,
-                        poll_s: float = 15.0, probe: Callable[[], Optional[bool]] = turn_in_flight) -> threading.Thread:
+                        poll_s: float = 15.0, probe: Callable[[], Optional[bool]] = turn_in_flight,
+                        admission_gate: Optional[CronAdmissionGate] = None) -> threading.Thread:
     """Daemon thread that sets ``server.should_exit`` once :func:`should_exit_idle` holds."""
 
     poll_s = min(poll_s, max(0.5, grace_s / 4))
@@ -134,6 +194,17 @@ def start_idle_watchdog(server, tracker: IdleClientTracker, *, grace_s: float = 
     def _loop() -> None:
         while not getattr(server, "should_exit", False):
             if should_exit_idle(tracker, grace_s, probe):
+                if admission_gate is not None:
+                    if not admission_gate.try_begin_drain():
+                        time.sleep(poll_s)
+                        continue
+                    # Admission is now closed. Re-read both client idleness and
+                    # turn liveness so activity that changed between the first
+                    # probe and the drain decision cannot make shutdown stale.
+                    if tracker.idle_for() < grace_s or probe() is not False:
+                        admission_gate.cancel_drain()
+                        time.sleep(poll_s)
+                        continue
                 _log.warning("SSH-isolated backend idle for %.0fs with no client and no running turn; exiting.",
                              tracker.idle_for())
                 server.should_exit = True

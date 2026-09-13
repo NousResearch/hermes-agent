@@ -95,6 +95,16 @@ def _profile_cron_scope(home):
         reset_hermes_home_override(home_token)
 
 
+def _run_tick_with_dispatch_guard(dispatch_guard, tick, **kwargs):
+    """Run one tick only while its optional admission lease is held."""
+    if dispatch_guard is None:
+        return tick(**kwargs)
+    with dispatch_guard() as admitted:
+        if not admitted:
+            return 0
+        return tick(**kwargs)
+
+
 class CronScheduler(ABC):
     """Decides WHEN a due cron job fires. Only ``name`` + ``start`` are required; keep every other
     hook NON-abstract with a safe default (``test_abc_growth_stays_additive``)."""
@@ -387,7 +397,8 @@ class InProcessCronScheduler(CronScheduler):
 
     def start(
         self, stop_event, *, adapters=None, loop=None, interval=60, can_dispatch=None,
-        profile_homes=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        dispatch_guard=None, profile_homes=None, profile_adapters=None, default_profile=None,
+        profile_gate=None,
     ):
         from cron.scheduler import CronTickYielded
         from cron.scheduler import tick as cron_tick
@@ -404,8 +415,9 @@ class InProcessCronScheduler(CronScheduler):
         if profile_homes is not None and (callable(profile_homes) or profile_homes):
             self._start_multiplex(
                 stop_event, profile_homes=profile_homes, adapters=adapters, loop=loop,
-                interval=interval, can_dispatch=can_dispatch, profile_adapters=profile_adapters,
-                default_profile=default_profile, profile_gate=profile_gate,
+                interval=interval, can_dispatch=can_dispatch, dispatch_guard=dispatch_guard,
+                profile_adapters=profile_adapters, default_profile=default_profile,
+                profile_gate=profile_gate,
             )
             return
 
@@ -424,7 +436,7 @@ class InProcessCronScheduler(CronScheduler):
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
-                    cron_tick(
+                    _run_tick_with_dispatch_guard(dispatch_guard, cron_tick,
                         verbose=False, adapters=adapters, loop=loop, sync=False,
                         can_dispatch=can_dispatch,
                     )
@@ -458,7 +470,8 @@ class InProcessCronScheduler(CronScheduler):
 
     def _start_multiplex(
         self, stop_event, *, profile_homes, adapters=None, loop=None, interval=60,
-        can_dispatch=None, profile_adapters=None, default_profile=None, profile_gate=None,
+        can_dispatch=None, dispatch_guard=None, profile_adapters=None, default_profile=None,
+        profile_gate=None,
     ):
         """Tick every profile's store, each scoped via ``_profile_cron_scope``. ``profile_gate(name,
         home)``, when given, is consulted every cycle; a rejected profile is neither ticked nor
@@ -526,9 +539,11 @@ class InProcessCronScheduler(CronScheduler):
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     for _pname, home in cycle_homes:
+                        if stop_event.is_set():
+                            break
                         try:
                             with _profile_cron_scope(home):
-                                cron_tick(
+                                _run_tick_with_dispatch_guard(dispatch_guard, cron_tick,
                                     verbose=False, adapters=tick_adapters_for(_pname), loop=loop,
                                     sync=False, can_dispatch=can_dispatch,
                                 )

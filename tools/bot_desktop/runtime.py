@@ -316,8 +316,12 @@ def _spawn_and_wait(sd: Path, num: int, wait_seconds: float) -> DesktopStatus:
     env_file = sd / "env"
     env_file.unlink(missing_ok=True)
 
-    child_env = {k: v for k, v in os.environ.items() if k not in {
-        "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"}}
+    # Xfce, its terminal, and browser extensions are untrusted subprocess surfaces. Keep benign host
+    # settings, but do not expose provider, plugin, gateway, or internal Hermes credentials to them.
+    from tools.environments.local import hermes_subprocess_env
+    child_env = hermes_subprocess_env(inherit_credentials=False)
+    for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
+        child_env.pop(key, None)
     child_env.update({
         "HERMES_BD_PROFILE": _profile_name(),
         "HERMES_BD_DISPLAY_NUM": str(num),

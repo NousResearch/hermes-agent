@@ -61,6 +61,45 @@ def test_recorded_display_held_by_a_live_server_is_not_reused(tmp_path, monkeypa
     assert runtime._allocate_display() == 37, "a free recorded number is reclaimed"
 
 
+def test_desktop_launcher_does_not_inherit_credentials(tmp_path, monkeypatch):
+    """The graphical session keeps benign host settings but never receives Hermes credentials."""
+    import os
+
+    from tools.bot_desktop import browser
+
+    captured: dict[str, str] = {}
+
+    class FakeProcess:
+        pid = os.getpid()
+        returncode = None
+
+        @staticmethod
+        def poll():
+            return None
+
+    def fake_popen(*_args, **kwargs):
+        captured.update(kwargs["env"])
+        Path(captured["HERMES_BD_ENV_FILE"]).write_text("DISPLAY=:44\n", encoding="utf-8")
+        Path(captured["HERMES_BD_SOCKET"]).touch()
+        return FakeProcess()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+    monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
+    monkeypatch.setenv("BOT_DESKTOP_BENIGN", "keep-me")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(runtime.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runtime, "geometry", lambda: "800x600")
+    monkeypatch.setattr(runtime, "status", lambda: "ready")
+    monkeypatch.setattr(browser, "dock_launch", lambda: None)
+
+    assert runtime._spawn_and_wait(tmp_path, 44, 0.1) == "ready"
+    assert captured["BOT_DESKTOP_BENIGN"] == "keep-me"
+    assert "DISPLAY" not in captured
+    assert "OPENAI_API_KEY" not in captured
+    assert "ANTHROPIC_API_KEY" not in captured
+    assert "GITHUB_TOKEN" not in captured
+
 
 _FAKE_LAUNCHER = """#!/usr/bin/env bash
 # Stands in for launcher.sh + Xvnc: the X lock appears only after a delay (the TOCTOU window), then the

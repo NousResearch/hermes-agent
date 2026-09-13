@@ -208,11 +208,21 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             from agent.conversation_compression import _extract_steer_text_from_message
             content_text = _extract_steer_text_from_message(m) or content_text
         if role == "tool":
-            tc_name, tc_args = tool_call_args.get(m.get("tool_call_id") or "", (None, None))
+            tc_id = m.get("tool_call_id", "")
+            tc_name, tc_args = tool_call_args.get(tc_id, (None, None))
             name = tc_name or m.get("tool_name") or "tool"
             args = tc_args or {}
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
-            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args), **({"args": args} if args else {})})
+            # Carry the original ``tool_call_id`` forward so the desktop resume
+            # payload can pair the tool result with the call that produced it.
+            # The raw result payload is deliberately NOT forwarded: tool output
+            # can contain secrets, and the desktop transcript stays redacted.
+            tool_msg = {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
+            if args:
+                tool_msg["args"] = args
+            if tc_id:
+                tool_msg["tool_call_id"] = tc_id
+            messages.append(tool_msg)
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
         has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)

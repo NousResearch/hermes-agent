@@ -24,7 +24,7 @@ def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch)
     seen = {}
     done = threading.Event()
 
-    def fake_install(*, ask_password, on_line, timeout_seconds=900.0):
+    def fake_install(*, ask_password, on_line, timeout_seconds=900.0, claimed=False):
         seen["home"] = str(get_hermes_home())
         done.set()
         return 0

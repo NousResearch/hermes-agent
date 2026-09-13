@@ -330,7 +330,9 @@ def approve_permanent(pattern_key: str):
 def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
-        _permanent_set().update(patterns)
+        governing = _permanent_set()
+        governing.clear()
+        governing.update(patterns)
 
 
 def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> None:
@@ -373,13 +375,28 @@ def _read_permanent_allowlist() -> set:
     return set(raw)
 
 
+# What ``command_allowlist`` held the last time this process synchronised with the
+# file, per profile home ("" = the unscoped launch profile). Everything in the
+# governing permanent set beyond it is an approval THIS process made, and is the
+# only thing a save is entitled to add: the difference separates "the operator
+# granted this here" from "this was on disk when we started, and may since have
+# been revoked".
+_permanent_baseline_by_home: dict[str, set] = {}
+
+
+def _baseline_key() -> str:
+    from hermes_constants import get_hermes_home_override, hermes_home_key
+    return "" if get_hermes_home_override() is None else hermes_home_key()
+
+
 def load_permanent_allowlist() -> set:
     """Load ``command_allowlist`` from config and sync it into the approval state
     so is_approved() honors 'always' choices from previous sessions."""
     try:
         patterns = _read_permanent_allowlist()
-        if patterns:
-            load_permanent(patterns)
+        load_permanent(patterns)
+        with _lock:
+            _permanent_baseline_by_home[_baseline_key()] = set(patterns)
         return patterns
     except Exception as e:
         logger.warning("Failed to load permanent allowlist: %s", e)
@@ -387,12 +404,35 @@ def load_permanent_allowlist() -> set:
 
 
 def save_permanent_allowlist(patterns: set):
-    """Save permanently allowed command patterns to config."""
+    """Save permanently allowed command patterns to config, reconciling with the file.
+
+    ``command_allowlist`` is a file an operator edits by hand; removing an entry
+    there is the documented way to withdraw a standing approval. This process read
+    it once at import and ``load_permanent`` only ever unions, so writing the
+    in-memory set straight back deleted entries added on disk since import and
+    resurrected the ones removed. The result written is ``what is on disk now``
+    plus ``what this process approved since its own baseline``; revoked entries are
+    also dropped from the governing permanent set so ``is_approved()`` stops
+    honouring them. Nothing re-reads the file on the approval hot path.
+
+    ``patterns`` may only ADD: an entry left out of it is not removed, because the
+    on-disk list wins for anything this process did not approve itself. Remove
+    entries by editing ``command_allowlist`` in config.yaml.
+    """
     try:
         from hermes_cli.config import load_config, save_config
         config = load_config()
-        config["command_allowlist"] = list(patterns)
-        save_config(config)
+        on_disk = set(config.get("command_allowlist", []) or [])
+        with _lock:
+            key = _baseline_key()
+            baseline = _permanent_baseline_by_home.get(key, set())
+            merged = on_disk | (set(patterns) - baseline)
+            config["command_allowlist"] = sorted(merged)
+            save_config(config)
+            _permanent_baseline_by_home[key] = set(merged)
+            governing = _permanent_set()
+            governing.clear()
+            governing.update(merged)
     except Exception as e:
         logger.warning("Could not save allowlist: %s", e)
 

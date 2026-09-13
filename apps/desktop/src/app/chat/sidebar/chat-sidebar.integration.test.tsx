@@ -1,17 +1,21 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { group, split } from '@/components/pane-shell/tree/model'
 import { $layoutTree, noteActiveTreeGroup } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { registry } from '@/contrib/registry'
+import { $sidebarProjectFilter, setSidebarGrouping, setSidebarRecentsOpen } from '@/store/layout'
+import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import { $selectedStoredSessionId, $sessions } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
+
+import type { SidebarProjectTree } from './projects'
 
 import { ChatSidebar } from './index'
 
@@ -24,7 +28,7 @@ const sessionRows = [
   makeSessionInfo({ id: 'tile-two', last_active: 2, profile: 'default', started_at: 1, title: 'Tile two' })
 ]
 
-const renderSidebar = (pathname: string, currentView: AppView) =>
+const renderSidebar = (pathname: string, currentView: AppView, onNewSessionInWorkspace = noop) =>
   render(
     <MemoryRouter initialEntries={[pathname]}>
       <SidebarProvider>
@@ -36,7 +40,7 @@ const renderSidebar = (pathname: string, currentView: AppView) =>
           onLoadMoreSessions={noop}
           onManageCronJob={noop}
           onNavigate={noop}
-          onNewSessionInWorkspace={noop}
+          onNewSessionInWorkspace={onNewSessionInWorkspace}
           onNewSessionSplit={noop}
           onResumeSession={noop}
           onTriggerCronJob={noopAsync}
@@ -79,6 +83,29 @@ describe('ChatSidebar navigation activity', () => {
     ])
     $selectedStoredSessionId.set('tile-one')
     $sessions.set(sessionRows)
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([
+      {
+        id: '__no_project__',
+        isNoProject: true,
+        label: 'Home',
+        path: null,
+        previewSessions: [],
+        repos: [],
+        sessionCount: 0
+      } as SidebarProjectTree,
+      {
+        id: 'p_project',
+        label: 'Project One',
+        path: '/repos/project-one',
+        previewSessions: [],
+        repos: [],
+        sessionCount: 0
+      } as SidebarProjectTree
+    ])
+    setSidebarGrouping('date')
+    setSidebarRecentsOpen(true)
+    $sidebarProjectFilter.set([])
     $removedSessionIds.set(new Set())
     $layoutTree.set(
       split('row', [
@@ -95,6 +122,11 @@ describe('ChatSidebar navigation activity', () => {
     disposeContributions()
     $selectedStoredSessionId.set(null)
     $sessions.set([])
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    setSidebarGrouping('date')
+    setSidebarRecentsOpen(true)
+    $sidebarProjectFilter.set([])
     $removedSessionIds.set(new Set())
     $layoutTree.set(null)
     noteActiveTreeGroup(null)
@@ -160,5 +192,49 @@ describe('ChatSidebar navigation activity', () => {
     expect(screen.queryByRole('button', { name: 'Kanban' })).toBeNull()
     expectOnlyCurrent(null)
     expectOnlySelectedSession(null)
+  })
+
+  it('keeps Home first-class across grouping and collapsed-session states', () => {
+    const onNewSessionInWorkspace = vi.fn()
+    const { container } = renderSidebar('/', 'chat', onNewSessionInWorkspace)
+
+    expect(screen.getByRole('button', { name: 'Open Home' })).toBeTruthy()
+    expect(container.querySelectorAll('[data-sidebar-home]')).toHaveLength(1)
+
+    act(() => setSidebarRecentsOpen(false))
+    expect(screen.getByRole('button', { name: 'Open Home' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'New session in Home' }))
+    expect(onNewSessionInWorkspace).toHaveBeenCalledWith(null)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Home' }))
+    expect($projectScope.get()).toBe('__no_project__')
+    expect(container.querySelectorAll('[data-sidebar-home]')).toHaveLength(1)
+  })
+
+  it('keeps backend Home outside a project filter in project grouping', () => {
+    act(() => {
+      setSidebarGrouping('project')
+      $sidebarProjectFilter.set(['p_project'])
+    })
+
+    const { container } = renderSidebar('/', 'chat')
+
+    expect(screen.getByRole('button', { name: 'Open Home' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Open Project One' })).toBeTruthy()
+    expect(container.querySelectorAll('[data-sidebar-home="__no_project__"]')).toHaveLength(1)
+  })
+
+  it('synthesizes Home when an empty backend has no sessions and Recents is collapsed', () => {
+    act(() => {
+      $projectTree.set([])
+      $sessions.set([])
+      setSidebarRecentsOpen(false)
+    })
+
+    const { container } = renderSidebar('/', 'chat')
+
+    expect(screen.getByRole('button', { name: 'Open Home' })).toBeTruthy()
+    expect(container.querySelectorAll('[data-sidebar-home="__no_project__"]')).toHaveLength(1)
   })
 })

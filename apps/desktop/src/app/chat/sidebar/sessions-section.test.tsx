@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo } from '@/hermes'
 
+import { NO_PROJECT_ID, type SidebarProjectTree } from './projects'
 import { SidebarSessionsSection, VIRTUALIZE_THRESHOLD } from './sessions-section'
 import type { VirtualSessionListProps } from './virtual-session-list'
 
@@ -40,6 +41,29 @@ vi.mock('./session-row', () => ({
   SidebarSessionRow: ({ session }: { session: SessionInfo }) => (
     <div data-testid={`session-row-${session.id}`}>{session.id}</div>
   )
+}))
+
+vi.mock('./projects', async importOriginal => {
+  const actual = (await importOriginal()) as Record<string, unknown>
+
+  return {
+    ...actual,
+    ProjectOverviewRow: ({ project }: { project: SidebarProjectTree }) => (
+      <div data-testid={`project-row-${project.id}`}>{project.label}</div>
+    )
+  }
+})
+
+vi.mock('./reorderable-list', () => ({
+  ReorderableList: ({ children, ids }: { children: React.ReactNode; ids: string[] }) => (
+    <div data-sortable-project-ids={ids.join(',')}>{children}</div>
+  ),
+  useSortableBindings: () => ({
+    dragHandleProps: {},
+    ref: undefined,
+    reorderable: true,
+    style: undefined
+  })
 }))
 
 function makeSession(id: string, startedAt = 1000): SessionInfo {
@@ -180,5 +204,44 @@ describe('SidebarSessionsSection memoization & virtualizer stability', () => {
 
     const thirdRowsRef = mockVirtualListPropsHistory[2].rows
     expect(thirdRowsRef).not.toBe(secondRowsRef)
+  })
+
+  it('keeps the Home sentinel out of the sortable project rows', () => {
+    const project = (id: string, label: string, isNoProject = false): SidebarProjectTree => ({
+      id,
+      isNoProject,
+      label,
+      path: null,
+      repos: [],
+      sessionCount: 0
+    })
+
+    const { container } = render(
+      <SidebarSessionsSection
+        activeSessionId={null}
+        emptyState={<div>Empty</div>}
+        label="Projects"
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onEnterProject={noop}
+        onReorderProjects={noop}
+        onResumeSession={noop}
+        onToggle={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        open={true}
+        pinned={false}
+        projectOverview={[
+          project('p_one', 'One'),
+          project(NO_PROJECT_ID, 'Home', true),
+          project('p_two', 'Two')
+        ]}
+        sessions={[]}
+      />
+    )
+
+    expect(container.querySelector('[data-sortable-project-ids]')?.getAttribute('data-sortable-project-ids')).toBe(
+      'p_one,p_two'
+    )
   })
 })

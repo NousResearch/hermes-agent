@@ -3,10 +3,12 @@
 Hooks live in ~/.hermes/hooks/<name>/ with HOOK.yaml (name, description, events) and
 handler.py (``def handle(event_type, context)``, sync or async); errors never block
 the pipeline.  Events: gateway:startup, session:start/end/reset, agent:start,
-agent:step (each tool-loop turn), agent:end, command:* (wildcard).  agent:* context:
+agent:step (each tool-loop turn), agent:end, agent:post_delivery (confirmed final delivery),
+command:* (wildcard).  agent:* context:
 platform, user_id, chat_id, thread_id ("" outside a thread), chat_type
 ("dm"|"group"|"forum"|""), session_id, message (500 chars); agent:end adds response,
-model, provider.  Forum follow-ups pass ``message_thread_id=int(thread_id)``.
+model, provider. ``agent:post_delivery`` adds ``message_id`` when available and
+``delivery_confirmed=True``. Forum follow-ups pass ``message_thread_id=int(thread_id)``.
 """
 
 import asyncio

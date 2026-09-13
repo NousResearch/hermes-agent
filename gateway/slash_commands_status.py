@@ -274,6 +274,12 @@ class GatewayStatusCommandsMixin:
         state = t("gateway.status.state_yes") if fields["agent_running"] else t("gateway.status.state_no")
         lines += [t("gateway.status.tokens", tokens=fields["tokens"]),
                   t("gateway.status.agent_running", state=state)]
+        # Active profile's execute_code trust state (#44993) — never breaks /status.
+        try:
+            from tools.approval_context import trusted_execute_code_status_line
+            lines.append(trusted_execute_code_status_line())
+        except Exception:
+            pass
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
         if source.platform == Platform.MATRIX:

@@ -1,4 +1,6 @@
 from types import SimpleNamespace
+
+import pytest
 from typing import Any
 
 from agent.turn_finalizer import finalize_turn
@@ -447,3 +449,68 @@ def test_delivery_only_reasoning_excerpt_does_not_fill_blank_assistant(monkeypat
         for m in result["messages"]
     )
 
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_composed_output_is_canonical_in_sqlite_and_observers(tmp_path, monkeypatch, interrupted):
+    from hermes_cli.plugins import PluginManager
+    from hermes_state import SessionDB
+    from tests.test_transform_llm_output_hook import _make_enabled_plugin
+
+    home = tmp_path / "home"
+    home.mkdir()
+    _make_enabled_plugin(home, "formatter",
+        'ctx.register_hook("transform_llm_output", lambda **kw: kw["response_text"] + " formatted")')
+    _make_enabled_plugin(home, "guard",
+        'ctx.register_hook("transform_llm_output", lambda **kw: kw["response_text"].replace("secret", "safe"))')
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    manager = PluginManager()
+    manager.discover_and_load()
+    monkeypatch.setattr("hermes_cli.plugins._plugin_manager", manager)
+    observed = []
+    def capture_hook(name, _logger, **kw):
+        if name == "transform_llm_output":
+            return manager.invoke_hook(name, **kw)
+        observed.append((name, kw))
+        return []
+    monkeypatch.setattr("agent.turn_finalizer._invoke_hook_safely", capture_hook)
+    db = SessionDB(db_path=home / "state.db")
+    db.create_session("sess-test", source="cli")
+    from agent.session_persistence import SessionPersistenceMixin
+    agent = FakeAgent()
+    agent._session_db = db
+    agent._session_db_created = True
+    agent._last_flushed_db_idx = 0
+    flush = lambda messages, history: SessionPersistenceMixin._flush_messages_to_session_db_unlocked(
+        agent, messages, history)
+    agent._persist_session = flush
+    previous = {"role": "assistant", "content": "secret"}
+    messages = [{"role": "user", "content": "earlier"}, previous,
+        {"role": "user", "content": "now"}, {"role": "assistant", "content": "secret"}]
+    # The production text-response phase flushes before finalization. Exercise
+    # append-only dedup and row-ID repair, not replace_messages.
+    assert flush(messages, [])
+    original_ids = [row["id"] for row in db.get_messages(agent.session_id)]
+    try:
+        result = finalize_turn(agent, final_response="secret", api_call_count=1,
+            interrupted=interrupted, failed=False, messages=messages,
+            conversation_history=messages[:2], effective_task_id="task", turn_id="turn",
+            user_message="now", original_user_message="now", _should_review_memory=False,
+            _turn_exit_reason="text_response(stop)")
+        assert result["response_transformed"] is True
+        assert "secret" not in result["final_response"]
+        assert "formatted" in result["final_response"]
+        stored = db.get_messages_as_conversation(agent.session_id)
+        assert stored[-1]["content"] == result["final_response"] == messages[-1]["content"]
+        assert stored[1]["content"] == previous["content"] == "secret"
+        assert [row["id"] for row in db.get_messages(agent.session_id)] == original_ids
+        assert flush(messages, messages[:2])
+        assert [row["id"] for row in db.get_messages(agent.session_id)] == original_ids
+        post = [kw for name, kw in observed if name == "post_llm_call"]
+        if interrupted:
+            assert not post
+        else:
+            assert post[0]["assistant_response"] == result["final_response"]
+            assert post[0]["conversation_history"][-1]["content"] == result["final_response"]
+    finally:
+        db.close()

@@ -169,6 +169,52 @@ class PluginDispatchMixin:
             if name in parameters and parameters[name].kind in keyword_kinds
         }))
 
+    def transform_llm_output(self, response_text: str, **kwargs: Any) -> tuple[str, bool]:
+        """Apply output transforms in registration order.
+
+        Unlike observer-style ``invoke_hook``, output transforms are a
+        pipeline: each callback receives the current text. Callback failures
+        and invalid return values are isolated so later hard guards still run.
+        ``None`` and the empty string retain the current text for compatibility;
+        callbacks cannot intentionally clear a response through this hook.
+        """
+        from hermes_cli.plugins import _resolve_hook_callback_timeout
+
+        timeout = _resolve_hook_callback_timeout()
+        current = response_text
+        transformed = False
+        hook_kwargs = dict(kwargs)
+        for cb in self._hooks.get("transform_llm_output", []):
+            try:
+                payload = {**hook_kwargs, "response_text": current,
+                           "telemetry_schema_version": OBSERVER_SCHEMA_VERSION}
+                if _hook_uses_callback_timeout("transform_llm_output", timeout):
+                    ret = self._run_hook_callback_bounded("transform_llm_output", cb, payload, timeout)
+                    if ret is _HOOK_SKIPPED:
+                        continue
+                else:
+                    ret = self._invoke_hook_callback(cb, payload)
+            except Exception as exc:
+                logger.warning(
+                    "Hook 'transform_llm_output' callback %s raised: %s",
+                    getattr(cb, "__name__", repr(cb)),
+                    exc,
+                )
+                continue
+            if ret is None or ret == "":
+                continue
+            if not isinstance(ret, str):
+                logger.warning(
+                    "Hook 'transform_llm_output' callback %s returned %s; ignoring",
+                    getattr(cb, "__name__", repr(cb)),
+                    type(ret).__name__,
+                )
+                continue
+            if ret != current:
+                transformed = True
+                current = ret
+        return current, transformed
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
 

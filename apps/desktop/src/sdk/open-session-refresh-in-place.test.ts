@@ -47,6 +47,7 @@ vi.mock('@/store/session', async () => {
     $currentCwd: atom(''),
     $currentModel: atom(''),
     $gatewayState: atom('open'),
+    $kanbanSessions: atom([]),
     $messages: atom([]),
     $messagingSessions: atom([]),
     $selectedStoredSessionId: atom(null),

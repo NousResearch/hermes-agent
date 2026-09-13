@@ -2160,6 +2160,7 @@ export const ar = defineLocale({
     review: 'المراجعة',
     logs: 'السجلات',
     cronJobs: 'المهام المجدولة',
+    kanbanSessions: 'كانبان',
     groupAriaGrouped: 'الجلسات مجمعة حسب مساحة العمل',
     groupAriaUngrouped: 'الجلسات غير مجمعة',
     showProjects: 'عرض المشاريع',

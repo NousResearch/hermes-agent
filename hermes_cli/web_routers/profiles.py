@@ -359,8 +359,11 @@ def _profile_heal_exhausted(home) -> bool:
     return str(_profile_state_db(home)) in _session_db_heal_exhausted
 
 
+_SIDEBAR_SLICES = ("recents", "cron", "messaging", "kanban")
+
+
 def _slice_has_rows(slices: Dict[str, Any]) -> bool:
-    return any(slices.get(key) for key in ("recents", "cron", "messaging"))
+    return any(slices.get(key) for key in _SIDEBAR_SLICES)
 
 
 def _retryable_profile_errors(errors: List[Dict[str, str]], scanned) -> List[Dict[str, str]]:
@@ -511,10 +514,11 @@ def get_profiles_sessions(
 @_sidebar_singleflight_cache
 def get_profiles_sessions_sidebar(
     recents_profile: str = "all", recents_limit: int = 20, recents_exclude: str = None,
-    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str = None):
-    """Batched sidebar session slices (recents / cron / messaging) — one profile-DB open per
-    refresh instead of three ``/api/profiles/sessions`` calls. Same row projection and 300s
-    active heuristic as the per-slice endpoint; all slices use ``min_messages=1`` /
+    cron_limit: int = 50, messaging_limit: int = 100, messaging_exclude: str = None,
+    kanban_limit: int = 50):
+    """Batched sidebar session slices (recents / cron / messaging / kanban) — one profile-DB
+    open per refresh instead of four ``/api/profiles/sessions`` calls. Same row projection
+    and 300s active heuristic as the per-slice endpoint; all slices use ``min_messages=1`` /
     ``archived=exclude`` / recency order.
 
     ``recents_profile`` scopes the WHOLE payload, not just recents — the sidebar has one
@@ -530,9 +534,11 @@ def get_profiles_sessions_sidebar(
     messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
     # (source, exclude) per slice; ``source=cron`` is the implicit cron taxonomy.
     slice_scope = {"recents": (None, recents_exclude_list), "cron": ("cron", None),
-                   "messaging": (None, messaging_exclude_list)}
+                   "messaging": (None, messaging_exclude_list),
+                   # kanban dispatcher workers: their own slice, never recents (#85219).
+                   "kanban": ("kanban", None)}
     cap = {"recents": min(max(recents_limit, 1), 500), "cron": min(max(cron_limit, 1), 500),
-           "messaging": min(max(messaging_limit, 1), 500)}
+           "messaging": min(max(messaging_limit, 1), 500), "kanban": min(max(kanban_limit, 1), 500)}
     rows: Dict[str, List[Dict[str, Any]]] = {k: [] for k in slice_scope}
     recents_truncated: Dict[str, bool] = {}
     profile_totals: Dict[str, Dict[str, float]] = {}
@@ -555,7 +561,8 @@ def get_profiles_sessions_sidebar(
         # ``usage`` is aggregated in SQL rather than over the recents window: the window is a
         # page, and a total that shrank when you scrolled would be worse than no total at all.
         slices = {"recents": _slice(db, "recents", recents_subagents), "usage": db.usage_totals(),
-                  "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging")}
+                  "cron": _slice(db, "cron"), "messaging": _slice(db, "messaging"),
+                  "kanban": _slice(db, "kanban")}
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
 
@@ -571,7 +578,7 @@ def get_profiles_sessions_sidebar(
         recents_subagents = subagent_listing_scope(home, exclude_sources=recents_exclude_list or None)
         profile_cache_key = (str(db_path), _sidebar_db_fingerprint(db_path), cap["recents"],
                              tuple(recents_exclude_list), cap["cron"], cap["messaging"],
-                             tuple(messaging_exclude_list), recents_subagents[0])
+                             tuple(messaging_exclude_list), cap["kanban"], recents_subagents[0])
         slices = _sidebar_profile_cache_get(profile_cache_key)
         if slices is None:
             slices = _read_profile_db(
@@ -631,6 +638,7 @@ def get_profiles_sessions_sidebar(
                 retryable, profiles_truncated={}, profiles_usage={}),
             "cron": _failed_load_slice(retryable),
             "messaging": _failed_load_slice(retryable, total=0),
+            "kanban": _failed_load_slice(retryable),
             "errors": errors, "storage": storage}
 
     body = {
@@ -638,13 +646,14 @@ def get_profiles_sessions_sidebar(
                     "profiles_usage": profile_totals},
         "cron": {"sessions": _window("cron")},
         "messaging": {"sessions": _window("messaging"), "total": len(rows["messaging"])},
+        "kanban": {"sessions": _window("kanban")},
         "errors": errors, "storage": storage}
     # A sibling profile still listed does not make the failed profile's absence
     # a successful empty slice. Stamp that profile as a failed load with Retry.
     failed = _profiles_failed(retryable)
     if failed:
         body["profiles_failed"] = failed
-        for key in ("recents", "cron", "messaging"):
+        for key in _SIDEBAR_SLICES:
             body[key]["profiles_failed"] = failed
             body[key]["errors"] = [dict(err) for err in retryable]
     return body

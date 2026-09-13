@@ -25,12 +25,14 @@ import {
   $sessions,
   carryForwardFailedProfileSessions,
   CRON_SECTION_LIMIT,
+  KANBAN_SECTION_LIMIT,
   keepFailedProfileMeta,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   messagingListServerForFetch,
   setCorruptSessionStores,
   setCronSessions,
+  setKanbanSessions,
   setMessagingListServer,
   setMessagingPlatformTotals,
   setMessagingSessions,
@@ -53,16 +55,16 @@ import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from 
 
 import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
 
-// The recents list is local-only: cron rows have their own section, kanban
-// dispatcher workers are read on the board, finite one-shot runs (`hermes -z`,
-// `chat -q`) are not conversations, and each messaging platform
-// (telegram, discord, …) is fetched separately into its own self-managed
-// sidebar section (refreshMessagingSessions). Excluding them here keeps
-// "Load more" paging through interactive local chats instead of
-// interleaving gateway threads that bury them. ACP rows are editor-driven
-// conversations: every editor wake mints an auto-titled row, so they would
-// bury local chats — and they were never ended before #118216, which also
-// kept prune/archive away from them.
+// The recents list is local-only: cron and kanban rows each have their own
+// section (kanban dispatcher workers are read on the board too), finite
+// one-shot runs (`hermes -z`, `chat -q`) are not conversations, and each
+// messaging platform (telegram, discord, …) is fetched separately into its
+// own self-managed sidebar section (refreshMessagingSessions). Excluding
+// them here keeps "Load more" paging through interactive local chats
+// instead of interleaving gateway threads that bury them. ACP rows are
+// editor-driven conversations: every editor wake mints an auto-titled row,
+// so they would bury local chats — and they were never ended before #118216,
+// which also kept prune/archive away from them.
 const SIDEBAR_EXCLUDED_SOURCES = [
   'acp',
   'cron',
@@ -376,7 +378,8 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             recentsExclude: SIDEBAR_EXCLUDED_SOURCES,
             cronLimit: CRON_SECTION_LIMIT,
             messagingLimit: MESSAGING_SECTION_LIMIT,
-            messagingExclude: MESSAGING_EXCLUDED_SOURCES
+            messagingExclude: MESSAGING_EXCLUDED_SOURCES,
+            kanbanLimit: KANBAN_SECTION_LIMIT
           })
 
         let activationEpoch = gatewayActivationEpoch()
@@ -496,6 +499,21 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           setMessagingTruncated(prev =>
             messagingErrors?.length ? prev : result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT
           )
+
+          // Kanban section: latest N dispatcher worker sessions, signature-gated
+          // and tombstone-filtered like the cron slice above. A missing `kanban`
+          // key (older backend) is an empty slice — the same response, not an
+          // error path.
+          const kanbanErrors = result.kanban?.errors ?? result.errors
+          setKanbanSessions(prev => {
+            const incoming = carryForwardFailedProfileSessions(
+              prev,
+              dropRemovalRaced(dropTombstoned(result.kanban?.sessions ?? []), removalSnapshot),
+              kanbanErrors
+            )
+
+            return sameCronSignature(prev, incoming) ? prev : incoming
+          })
         }
       } catch (error) {
         if (owns() && showLoading) {

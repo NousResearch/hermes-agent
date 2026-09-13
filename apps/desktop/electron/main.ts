@@ -164,6 +164,7 @@ import {
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { resolveDashboardWebDist } from './dashboard-web-dist'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
@@ -12561,7 +12562,11 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
   backend.args = getBackendArgsForRuntime(backend)
   const hermesCwd = resolveHermesCwd()
-  const webDist = resolveWebDist()
+  const webDist = resolveDashboardWebDist({
+    activeHermesRoot: ACTIVE_HERMES_ROOT,
+    appRoot: APP_ROOT,
+    env: process.env
+  })
   const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
   // Guard BEFORE the "Starting" line: a profile that only exists on a remote
@@ -13012,7 +13017,11 @@ async function runHermesStart() {
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
     backend.args = getBackendArgsForRuntime(backend)
     const hermesCwd = resolveHermesCwd()
-    const webDist = resolveWebDist()
+    const webDist = resolveDashboardWebDist({
+      activeHermesRoot: ACTIVE_HERMES_ROOT,
+      appRoot: APP_ROOT,
+      env: process.env
+    })
     const readyFile = backend.readyFile ? makeDashboardReadyFile() : null
 
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)

@@ -1023,6 +1023,9 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     const webview = document.createElement('webview') as PreviewWebview
     webview.className = 'flex h-full w-full flex-1 bg-transparent'
     webview.setAttribute('partition', 'persist:hermes-preview')
+    // Without allowpopups, Electron returns null from guest window.open() and
+    // OAuth SDKs (Google Sign-In, etc.) fail silently. See #100996.
+    webview.setAttribute('allowpopups', '')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 

@@ -1032,6 +1032,9 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     last_ping_event_id INTEGER NOT NULL DEFAULT 0,
+    legacy_ping_after_event_id INTEGER,
+    legacy_ping_through_event_id INTEGER,
+    legacy_ping_admission_kind TEXT,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 

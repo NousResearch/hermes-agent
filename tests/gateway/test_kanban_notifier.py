@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+import time
 from pathlib import Path
 
 
@@ -13,6 +14,10 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from gateway.platforms.base import SendResult
+from tests.hermes_cli.test_kanban_legacy_ping_admission import (
+    _insert_required,
+    _legacy_db,
+)
 
 
 class RecordingAdapter:
@@ -1292,13 +1297,20 @@ def test_out_of_order_retry_does_not_use_subscription_high_water_as_ping_receipt
     try:
         sub = kbn.list_notify_subs(conn, tid)[0]
         assert sub["last_ping_event_id"] == 3
-        states = {
-            row["event_id"]: row["state"]
+        rows = {
+            row["event_id"]: dict(row)
             for row in conn.execute(
-                "SELECT event_id, state FROM kanban_delivery_outbox WHERE task_id=?", (tid,)
+                "SELECT event_id,state,ping_acceptance_provenance,ping_delivered_at "
+                "FROM kanban_delivery_outbox WHERE task_id=?", (tid,)
             )
         }
-        assert states == {2: "retry_wait", 3: "delivered"}
+        assert {event_id: row["state"] for event_id, row in rows.items()} == {
+            2: "retry_wait", 3: "delivered",
+        }
+        assert rows[2]["ping_acceptance_provenance"] is None
+        assert rows[2]["ping_delivered_at"] is None
+        assert rows[3]["ping_acceptance_provenance"] is None
+        assert rows[3]["ping_delivered_at"] is not None
         conn.execute(
             "UPDATE kanban_delivery_outbox SET next_attempt_at=0 WHERE task_id=? AND event_id=2",
             (tid,),
@@ -1307,7 +1319,7 @@ def test_out_of_order_retry_does_not_use_subscription_high_water_as_ping_receipt
     finally:
         conn.close()
 
-    runner._running = True
+    runner = _make_runner(adapter)
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert sum("blocked" in text for text in adapter.attempted) == 2
@@ -1453,3 +1465,160 @@ def test_retention_then_unknown_reconciliation_retries_through_notifier(tmp_path
         ).fetchone()["state"] == "delivered"
     finally:
         conn.close()
+
+
+
+def test_raw_legacy_checkpoint_skips_passive_but_retries_wake_across_restart(
+    tmp_path, monkeypatch,
+):
+    """Upgrade proof is row-local passive acceptance, never wake acceptance."""
+    db_path = tmp_path / "legacy-wake-retry.db"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    _legacy_db(db_path)
+    raw = sqlite3.connect(db_path)
+    try:
+        now = int(time.time())
+        raw.execute(
+            "UPDATE tasks SET session_id=?,created_at=? WHERE id='legacy-task'",
+            ("agent:main:telegram:dm:chat", now),
+        )
+        raw.execute("UPDATE task_events SET created_at=?", (now,))
+        raw.execute("UPDATE kanban_notify_subs SET created_at=?", (now,))
+        raw.commit()
+    finally:
+        raw.close()
+
+    kb.init_db(db_path)
+    conn = kbc.connect(db_path)
+    try:
+        sub = dict(conn.execute("SELECT * FROM kanban_notify_subs").fetchone())
+        assert sub["delivery_mode"] == "notify+wake"
+        assert sub["legacy_ping_admission_kind"] == "legacy_checkpoint_v1"
+        expected_owner = {
+            key: sub[key] for key in ("incarnation_id", "notifier_profile")
+        }
+    finally:
+        conn.close()
+
+    class RejectWakeOnce(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.wake_attempts = 0
+
+        async def handle_message(self, event):
+            from gateway.wake import WakeNotAccepted
+
+            self.wake_attempts += 1
+            if self.wake_attempts == 1:
+                raise WakeNotAccepted("queue full before admission")
+            await super().handle_message(event)
+
+    adapter = RejectWakeOnce()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert adapter.wake_attempts == 1
+    assert adapter.handled == []
+    first = _outbox_rows("legacy-task")
+    assert len(first) == 1
+    first_row = first[0]
+    delivery_key = first_row["delivery_key"]
+    assert first_row["event_id"] == 7
+    assert first_row["state"] == "retry_wait"
+    assert first_row["ping_acceptance_provenance"] == "legacy_checkpoint_v1"
+    assert first_row["ping_delivered_at"] is None
+    assert first_row["ping_receipt"] is None
+    assert first_row["transport_receipt"] is None
+    assert {
+        key: first_row[key] for key in ("incarnation_id", "notifier_profile")
+    } == expected_owner
+
+    conn = kbc.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE kanban_delivery_outbox SET next_attempt_at=0 WHERE delivery_key=?",
+            (delivery_key,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert adapter.wake_attempts == 2
+    assert len(adapter.handled) == 1
+    delivered = _outbox_rows("legacy-task")
+    assert len(delivered) == 1
+    assert delivered[0]["delivery_key"] == delivery_key
+    assert delivered[0]["state"] == "delivered"
+    assert delivered[0]["ping_acceptance_provenance"] == "legacy_checkpoint_v1"
+    assert delivered[0]["ping_delivered_at"] is None
+    assert delivered[0]["ping_receipt"] is None
+    assert delivered[0]["transport_receipt"] == "wake-accepted"
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert adapter.sent == []
+    assert adapter.wake_attempts == 2
+    assert len(adapter.handled) == 1
+
+
+def test_uncertain_legacy_cohort_has_no_automatic_gateway_effect(
+    tmp_path, monkeypatch,
+):
+    """An incomplete pre-outbox audit trail is quarantined without rebinding."""
+    db_path = tmp_path / "legacy-uncertain-gateway.db"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    _legacy_db(db_path)
+    raw = sqlite3.connect(db_path)
+    try:
+        now = int(time.time())
+        raw.execute("UPDATE tasks SET created_at=?", (now,))
+        raw.execute("UPDATE task_events SET created_at=?", (now,))
+        raw.execute("UPDATE kanban_notify_subs SET created_at=?", (now,))
+        raw.executescript(kbc._DELIVERY_OUTBOX_SQL)
+        _insert_required(raw, "task_events", {
+            "id": 8, "task_id": "legacy-task", "kind": "completed",
+            "created_at": 3, "payload": '{"summary":"later"}', "actor": "worker",
+        })
+        raw.execute("UPDATE kanban_notify_subs SET last_ping_event_id=8")
+        _insert_required(raw, "kanban_delivery_outbox", {
+            "delivery_key": "legacy-existing-unknown", "task_id": "legacy-task", "event_id": 7,
+            "platform": "telegram", "chat_id": "chat", "thread_id": "topic",
+            "incarnation_id": None, "notifier_profile": None, "payload_digest": "legacy-digest",
+            "payload_json": '{"legacy":true}', "state": "delivery_unknown",
+            "created_at": 3, "updated_at": 4,
+        })
+        raw.commit()
+    finally:
+        raw.close()
+
+    kb.init_db(db_path)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert adapter.handled == []
+    conn = kbc.connect(db_path)
+    try:
+        sub = dict(conn.execute("SELECT * FROM kanban_notify_subs").fetchone())
+        assert sub["last_event_id"] == 8
+        rows = [dict(row) for row in conn.execute(
+            "SELECT * FROM kanban_delivery_outbox ORDER BY event_id",
+        )]
+    finally:
+        conn.close()
+    assert len(rows) == 2
+    assert rows[0]["delivery_key"] == "legacy-existing-unknown"
+    assert rows[0]["incarnation_id"] is None
+    assert rows[0]["payload_json"] == '{"legacy":true}'
+    missing = rows[1]
+    assert missing["event_id"] == 8
+    assert missing["state"] == "delivery_unknown"
+    assert missing["incarnation_id"] is None
+    assert missing["notifier_profile"] is None
+    assert missing["ping_acceptance_provenance"] == "legacy_checkpoint_uncertain_v1"
+    assert missing["ping_delivered_at"] is None
+    assert missing["ping_receipt"] is None
+    assert missing["transport_receipt"] is None

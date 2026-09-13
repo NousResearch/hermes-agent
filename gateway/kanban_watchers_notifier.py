@@ -666,6 +666,8 @@ class _KanbanNotification:
                 if self.outbox.get("ping_receipt"):
                     self.transport_receipts.append(str(self.outbox["ping_receipt"]))
                 continue
+            if self.outbox.get("ping_acceptance_provenance") == "legacy_checkpoint_v1":
+                continue
             if not await self.authorize_effect():
                 return False
             try:

@@ -726,8 +726,11 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             # Idempotent; runs under _INIT_LOCK so same-process dispatcher
             # threads can't race the ALTER TABLE pass with stale PRAGMA snapshots.
             if resolved not in _INITIALIZED_PATHS:
+                source_had_outbox = _table_exists(conn, "kanban_delivery_outbox")
+                source_had_notify = _table_exists(conn, "kanban_notify_subs")
+                source_had_last_ping = source_had_notify and "last_ping_event_id" in _column_names(conn, "kanban_notify_subs")
                 conn.executescript(_kb.SCHEMA_SQL)
-                _migrate_add_optional_columns(conn)
+                _migrate_add_optional_columns(conn, source_had_outbox=source_had_outbox, source_had_last_ping=source_had_last_ping)
                 _INITIALIZED_PATHS.add(resolved)
 
         conn, _ = _open_configured(path, _init_if_needed)
@@ -818,6 +821,9 @@ _LATER_TASK_COLUMNS = (
 
 _NOTIFY_SUB_COLUMNS = (
     ("last_ping_event_id", "last_ping_event_id INTEGER NOT NULL DEFAULT 0"),
+    ("legacy_ping_after_event_id", "legacy_ping_after_event_id INTEGER"),
+    ("legacy_ping_through_event_id", "legacy_ping_through_event_id INTEGER"),
+    ("legacy_ping_admission_kind", "legacy_ping_admission_kind TEXT"),
     ("incarnation_id", "incarnation_id TEXT"),
     ("notifier_profile", "notifier_profile TEXT"),
     ("delivery_mode", "delivery_mode TEXT NOT NULL DEFAULT 'notify'"),
@@ -852,6 +858,7 @@ CREATE TABLE IF NOT EXISTS kanban_delivery_outbox (
     transport_receipt TEXT,
     ping_delivered_at INTEGER,
     ping_receipt TEXT,
+    ping_acceptance_provenance TEXT,
     revoked_at INTEGER,
     exception_recorded INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
@@ -868,6 +875,7 @@ CREATE INDEX IF NOT EXISTS idx_delivery_outbox_task
 _DELIVERY_OUTBOX_COLUMNS = (
     ("ping_delivered_at", "ping_delivered_at INTEGER"),
     ("ping_receipt", "ping_receipt TEXT"),
+    ("ping_acceptance_provenance", "ping_acceptance_provenance TEXT"),
     ("incarnation_id", "incarnation_id TEXT"),
     ("revoked_at", "revoked_at INTEGER"),
 )
@@ -883,8 +891,20 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     ).fetchone() is not None
 
 
-def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
+def _migrate_add_optional_columns(
+    conn: sqlite3.Connection, *, source_had_outbox: Optional[bool] = None,
+    source_had_last_ping: Optional[bool] = None,
+) -> None:
     """Add columns introduced after v1 to legacy DBs (called via ``init_db``)."""
+    # Snapshot provenance before this helper creates tables or columns. connect()
+    # passes pre-SCHEMA_SQL values explicitly; direct callers infer safely here.
+    if source_had_outbox is None:
+        source_had_outbox = _table_exists(conn, "kanban_delivery_outbox")
+    if source_had_last_ping is None:
+        source_had_last_ping = (
+            _table_exists(conn, "kanban_notify_subs")
+            and "last_ping_event_id" in _column_names(conn, "kanban_notify_subs")
+        )
     cols = _column_names(conn, "tasks")
     for name, ddl in _EARLY_TASK_COLUMNS:
         if name not in cols:
@@ -929,28 +949,50 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON task_events(run_id, id)")
 
     if _table_exists(conn, "kanban_notify_subs"):
-        notify_cols = _column_names(conn, "kanban_notify_subs")
-        for name, ddl in _NOTIFY_SUB_COLUMNS:
-            if name in notify_cols:
-                continue
-            _add_column_if_missing(conn, "kanban_notify_subs", name, ddl)
-            if name == "delivery_mode":
-                # Backfill ONLY on first-add: pre-column gateway subscriptions
-                # had de facto active wake; defaulting them to 'notify' would
-                # silently disable that on upgrade. TUI/CLI rows keep 'notify'
-                # (matches _maybe_auto_subscribe). A later explicit downgrade
-                # is never overwritten.
+        # Column presence is not a completion marker: an interruption after the
+        # marker DDL but before the interval seed would otherwise make the only
+        # legacy acceptance evidence unrecoverable. A SAVEPOINT makes the DDL
+        # and seed one retryable step and remains safe for direct callers that
+        # already own a transaction.
+        conn.execute("SAVEPOINT migrate_notify_provenance")
+        try:
+            notify_cols = _column_names(conn, "kanban_notify_subs")
+            marker_was_absent = "legacy_ping_admission_kind" not in notify_cols
+            for name, ddl in _NOTIFY_SUB_COLUMNS:
+                if name in notify_cols:
+                    continue
+                _add_column_if_missing(conn, "kanban_notify_subs", name, ddl)
+                if name == "delivery_mode":
+                    # Backfill ONLY on first-add: pre-column gateway subscriptions
+                    # had de facto active wake; defaulting them to 'notify' would
+                    # silently disable that on upgrade. TUI/CLI rows keep 'notify'
+                    # (matches _maybe_auto_subscribe). A later explicit downgrade
+                    # is never overwritten.
+                    conn.execute(
+                        "UPDATE kanban_notify_subs SET delivery_mode = 'notify+wake' "
+                        "WHERE platform != 'tui'"
+                    )
+
+            if marker_was_absent and source_had_last_ping:
+                admission_kind = ("legacy_checkpoint_uncertain_v1" if source_had_outbox else "legacy_checkpoint_v1")
                 conn.execute(
-                    "UPDATE kanban_notify_subs SET delivery_mode = 'notify+wake' "
-                    "WHERE platform != 'tui'"
+                    "UPDATE kanban_notify_subs SET legacy_ping_after_event_id=last_event_id, "
+                    "legacy_ping_through_event_id=last_ping_event_id, legacy_ping_admission_kind=? "
+                    "WHERE last_ping_event_id > last_event_id", (admission_kind,),
                 )
 
-        # Existing subscriptions gain an identity, but old outbox rows remain
-        # unowned: today's matching route/profile cannot prove old authority.
-        conn.execute(
-            "UPDATE kanban_notify_subs SET incarnation_id=lower(hex(randomblob(16))) "
-            "WHERE incarnation_id IS NULL OR incarnation_id=''"
-        )
+            # Existing subscriptions gain an identity, but old outbox rows remain
+            # unowned: today's matching route/profile cannot prove old authority.
+            conn.execute(
+                "UPDATE kanban_notify_subs SET incarnation_id=lower(hex(randomblob(16))) "
+                "WHERE incarnation_id IS NULL OR incarnation_id=''"
+            )
+        except BaseException:
+            conn.execute("ROLLBACK TO migrate_notify_provenance")
+            conn.execute("RELEASE migrate_notify_provenance")
+            raise
+        else:
+            conn.execute("RELEASE migrate_notify_provenance")
 
     if _table_exists(conn, "task_runs"):
         _backfill_legacy_inflight_runs(conn)

@@ -464,7 +464,8 @@ def add_notify_sub(
     key = _sub_key(task_id, platform, chat_id, thread_id)
     with _kb.write_txn(conn):
         existing = conn.execute(
-            "SELECT incarnation_id,notifier_profile,delivery_mode FROM kanban_notify_subs " + _SUB_KEY_WHERE,
+            "SELECT incarnation_id,notifier_profile,delivery_mode,legacy_ping_after_event_id,"
+            "legacy_ping_through_event_id,legacy_ping_admission_kind FROM kanban_notify_subs " + _SUB_KEY_WHERE,
             key,
         ).fetchone()
         new_incarnation = secrets.token_hex(16)
@@ -494,7 +495,9 @@ def add_notify_sub(
                     (stamp, stamp, *key, existing["incarnation_id"]),
                 )
                 conn.execute(
-                    "UPDATE kanban_notify_subs SET incarnation_id=?,notifier_profile=?,delivery_mode=? "
+                    "UPDATE kanban_notify_subs SET incarnation_id=?,notifier_profile=?,delivery_mode=?, "
+                    "legacy_ping_after_event_id=NULL,legacy_ping_through_event_id=NULL, "
+                    "legacy_ping_admission_kind=NULL "
                     + _SUB_KEY_WHERE,
                     (new_incarnation, next_profile, next_mode, *key),
                 )
@@ -841,25 +844,56 @@ def claim_unseen_events_for_sub(
             "thread_id": thread_id or "",
         }
         stored = conn.execute(
-            "SELECT incarnation_id,notifier_profile,delivery_mode FROM kanban_notify_subs "
+            "SELECT incarnation_id,notifier_profile,delivery_mode,legacy_ping_after_event_id,"
+            "legacy_ping_through_event_id,legacy_ping_admission_kind FROM kanban_notify_subs "
             + _SUB_KEY_WHERE + (" AND incarnation_id=?" if incarnation_id is not None else ""),
             (*_sub_key(task_id, platform, chat_id, thread_id),
              *((incarnation_id,) if incarnation_id is not None else ())),
         ).fetchone()
         if stored:
             sub.update(dict(stored))
+        legacy_after = sub.get("legacy_ping_after_event_id")
+        legacy_through = sub.get("legacy_ping_through_event_id")
+        legacy_kind = sub.get("legacy_ping_admission_kind")
         for event in events:
             key, digest, encoded = _delivery_payload(event, sub)
+            covered = (
+                legacy_after is not None
+                and legacy_through is not None
+                and int(legacy_after) < int(event.id) <= int(legacy_through)
+                and legacy_kind in {
+                    "legacy_checkpoint_v1", "legacy_checkpoint_uncertain_v1",
+                }
+            )
+            provenance = legacy_kind if covered else None
+            if covered:
+                represented = conn.execute(
+                    "SELECT 1 FROM kanban_delivery_outbox WHERE task_id=? AND event_id=? "
+                    "AND platform=? AND chat_id=? AND thread_id=? LIMIT 1",
+                    (task_id, int(event.id), platform, chat_id, thread_id or ""),
+                ).fetchone()
+                if represented:
+                    continue
+            uncertain = provenance == "legacy_checkpoint_uncertain_v1"
             conn.execute(
                 """INSERT OR IGNORE INTO kanban_delivery_outbox
                    (delivery_key,task_id,event_id,platform,chat_id,thread_id,incarnation_id,notifier_profile,
-                    payload_digest,payload_json,state,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
+                    payload_digest,payload_json,state,ping_acceptance_provenance,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (key, task_id, int(event.id), platform, chat_id, thread_id or "",
-                 sub.get("incarnation_id"), sub.get("notifier_profile"), digest, encoded, now, now),
+                 None if uncertain else sub.get("incarnation_id"), sub.get("notifier_profile"), digest, encoded,
+                 "delivery_unknown" if uncertain else "pending", provenance, now, now),
             )
         _cas_cursor(conn, _sub_key(task_id, platform, chat_id, thread_id), new_cursor, old_cursor,
                     incarnation_id)
+        if legacy_kind is not None and legacy_through is not None and new_cursor >= int(legacy_through):
+            conn.execute(
+                "UPDATE kanban_notify_subs SET legacy_ping_after_event_id=NULL,"
+                "legacy_ping_through_event_id=NULL,legacy_ping_admission_kind=NULL " + _SUB_KEY_WHERE
+                + (" AND incarnation_id=?" if incarnation_id is not None else ""),
+                (*_sub_key(task_id, platform, chat_id, thread_id),
+                 *((incarnation_id,) if incarnation_id is not None else ())),
+            )
         return old_cursor, new_cursor, events
 
 

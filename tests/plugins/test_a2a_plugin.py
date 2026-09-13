@@ -1727,3 +1727,19 @@ class TestMultiplexConstructionScope:
         assert adapter.port == 9111
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
+
+
+def test_orphan_timeout_respects_env_vars(monkeypatch):
+    """_orphan_timeout must respect A2A_ORPHAN_TIMEOUT, fallback to A2A_REPLY_TIMEOUT, or default to 300."""
+    from plugins.platforms.a2a.adapter import _orphan_timeout
+
+    monkeypatch.delenv("A2A_ORPHAN_TIMEOUT", raising=False)
+    monkeypatch.delenv("A2A_REPLY_TIMEOUT", raising=False)
+    assert _orphan_timeout() == 300
+
+    monkeypatch.setenv("A2A_REPLY_TIMEOUT", "600")
+    assert _orphan_timeout() == 600
+
+    monkeypatch.setenv("A2A_ORPHAN_TIMEOUT", "900")
+    assert _orphan_timeout() == 900
+

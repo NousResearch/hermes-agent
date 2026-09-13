@@ -295,14 +295,22 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
         provider=agent.provider, model=agent.model, base_url=agent.base_url,
         custom_providers=custom_providers,
     )
-    if not extra_body:
-        return
     overrides = dict(getattr(agent, "request_overrides", {}) or {})
-    merged_extra_body = dict(extra_body)
-    existing_extra_body = overrides.get("extra_body")
-    if isinstance(existing_extra_body, dict):
-        merged_extra_body.update(existing_extra_body)
-    overrides["extra_body"] = merged_extra_body
+    route_scoped = overrides.get("extra_body_route_scoped")
+    if isinstance(route_scoped, dict):
+        existing_extra_body = dict(overrides.get("extra_body") or {})
+        existing_extra_body.update(route_scoped)
+        overrides["extra_body"] = existing_extra_body
+        overrides["extra_body_route_scoped"] = set(route_scoped.keys())
+    elif isinstance(route_scoped, (set, list, tuple)):
+        overrides["extra_body_route_scoped"] = set(route_scoped)
+
+    if extra_body:
+        merged_extra_body = dict(extra_body)
+        existing_extra_body = overrides.get("extra_body")
+        if isinstance(existing_extra_body, dict):
+            merged_extra_body.update(existing_extra_body)
+        overrides["extra_body"] = merged_extra_body
     agent.request_overrides = overrides
 
 

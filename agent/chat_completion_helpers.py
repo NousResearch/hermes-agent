@@ -1800,6 +1800,13 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
         custom_providers = getattr(agent, "_custom_providers", None) or []
         old_provider_eb = _custom_provider_extra_body_for_agent(provider=old_provider, model=old_model, base_url=old_base_url, custom_providers=custom_providers) or {}
         overrides = dict(getattr(agent, "request_overrides", {}) or {})
+        route_scoped = overrides.pop("extra_body_route_scoped", None)
+        if route_scoped and isinstance(overrides.get("extra_body"), dict):
+            keys_to_remove = set(route_scoped.keys()) if isinstance(route_scoped, dict) else set(route_scoped)
+            for k in keys_to_remove:
+                overrides["extra_body"].pop(k, None)
+            if not overrides["extra_body"]:
+                overrides.pop("extra_body", None)
         existing_eb = overrides.get("extra_body")
         if isinstance(existing_eb, dict) and old_provider_eb:
             scrubbed = {k: v for k, v in existing_eb.items() if not (k in old_provider_eb and v == old_provider_eb[k])}
@@ -1807,7 +1814,7 @@ def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_b
                 overrides["extra_body"] = scrubbed
             else:
                 overrides.pop("extra_body", None)
-            agent.request_overrides = overrides
+        agent.request_overrides = overrides
         _merge_custom_provider_extra_body(agent, custom_providers)
         logger.info("Fallback %s: extra_body resolved: %s", agent.model, (getattr(agent, "request_overrides", {}) or {}).get("extra_body"))
     except Exception as _eb_err:

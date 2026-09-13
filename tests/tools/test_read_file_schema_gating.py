@@ -1,5 +1,5 @@
 """read_file schema diet (#95681): static unconditional format list
-(anydoc bundled in core) + PDF-coverage teaching moved to the
+(anydoc opt-in via the doc-extract extra) + PDF-coverage teaching moved to the
 response-time warning.
 
 Maintainer-directed: the schema advertised anydoc-gated formats
@@ -19,10 +19,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 class TestReadFileSchemaStatic(unittest.TestCase):
-    """Gate DROPPED by maintainer decision: anydoc is a core dependency
-    (bundled), so format support is stated unconditionally — a missing
-    converter is a broken install handled by read_extract's teaching
-    error, not a schema variant."""
+    """Gate DROPPED by maintainer decision: format support is stated
+    unconditionally — a missing converter is an opt-in extra not yet
+    installed, handled by read_extract's teaching error, not a schema
+    variant."""
 
     def test_formats_stated_unconditionally(self):
         from tools.file_tools import READ_FILE_SCHEMA

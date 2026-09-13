@@ -49,14 +49,12 @@ dependencies = [
   "requests==2.33.0",  # CVE-2026-25645
   "jinja2==3.1.6",
   # Document-to-Markdown extraction for read_file (PDF, legacy Office,
-  # OpenDocument, RTF, EPUB) + typed NeedsOcrError for scanned pages.
-  # Bundled in core by maintainer decision (read_file is a core tool and
-  # PDF reads are a common first-session action; the previous lazy-only
-  # arrangement dated to the package's uv exclude-newer quarantine, which
-  # has long expired). tools/lazy_deps.py `tool.doc_extract` remains the
-  # self-heal path for lean/broken installs — keep the pin below and the
-  # lazy pin in lockstep.
-  "firecrawl-anydoc==0.2.4",
+  # OpenDocument, RTF, EPUB) lives in the `doc-extract` extra, NOT core:
+  # firecrawl-anydoc ships no armv7 wheel, so a core pin forces a Rust
+  # from-source build that OOMs mid-update on armv7 SBCs (#103003). Core
+  # keeps the stdlib extractors (.ipynb/.docx/.xlsx); anydoc formats
+  # lazy-install via tools/lazy_deps.py `tool.doc_extract` at first use —
+  # keep the extra pin and the lazy pin in lockstep.
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
   # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's
   # Responses API resource is exercised from a non-main thread, which is the
@@ -248,6 +246,13 @@ mem0 = ["mem0ai==2.0.10"]
 # CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
 # alias so existing requests for the `vision` extra resolve.
 vision = []
+# Document extraction (PDF, legacy Office, OpenDocument, RTF, EPUB) for
+# read_file. Opt-in, deliberately NOT in [all]: firecrawl-anydoc ships no
+# armv7 wheel, so eager installs OOM mid-update on armv7 SBCs (#103003).
+# It lazy-installs via tools/lazy_deps.py `tool.doc_extract` at first use.
+# Keep this pin and the lazy pin in lockstep (test_pin_lockstep in
+# tests/tools/test_read_file_schema_gating.py).
+doc-extract = ["firecrawl-anydoc==0.2.4"]
 # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now
 # in the main `dependencies` list (with the same platform markers), so
 # any existing requests for the `pty` extra resolve cleanly

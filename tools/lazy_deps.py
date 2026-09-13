@@ -177,7 +177,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "starlette==1.3.1",
         "python-multipart==0.0.32",  # FastAPI UploadFile/Form streaming uploads
     ),
-    # Pillow and firecrawl-anydoc are CORE deps; these entries self-heal lean/partial installs.
+    # Pillow is a CORE dep; firecrawl-anydoc is OPT-IN via the `doc-extract`
+    # extra (no armv7 wheel — a core pin OOMed SBC updates, #103003). These
+    # entries self-heal lean/partial installs.
     # Call sites use prompt=False so read_file / vision never block on input() mid-session.
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency (pyproject `dependencies`), so
     # this entry is a belt-and-suspenders fallback for stripped/source-build installs that somehow dropped

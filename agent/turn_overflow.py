@@ -222,6 +222,22 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = st.agent
+
+    # Vision payloads first: a 413 is a byte-size rejection and text
+    # summarization cannot shrink base64, so a compaction pass spent while
+    # screenshots still ride the request reduces neither the message count nor
+    # the payload — the session then re-fires 413 -> compress -> 413 until the
+    # attempt cap is burned. Stripping is instant and targets exactly the bytes
+    # the provider rejected, so it runs BEFORE count_attempt(). Text-only 413s
+    # fall through unchanged. remember_model=False: this body was too large,
+    # which is not evidence the model rejects list-type tool content in general.
+    if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False):
+        agent._buffer_status(
+            "🖼️  Request payload too large (413) — dropped retained vision "
+            "payloads and retrying before compressing..."
+        )
+        return st.done("continue")
+
     exhausted = st.count_attempt(payload_too_large=True)
     if exhausted is not None:
         return exhausted
@@ -260,12 +276,11 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
         _retry.restart_with_compressed_messages = True
         return st.done("break")
 
-    if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False):
-        agent._buffer_status(
-            "📐 Compression could not reduce the request further — "
-            "removed retained vision payloads and retrying..."
-        )
-        return st.done("continue")
+    # NOTE: the post-compression vision strip that used to live here is gone —
+    # it is unreachable now that the same call runs before count_attempt()
+    # above. Reaching this point means that earlier call already returned False
+    # (no image parts in any tool message), so a second identical call cannot
+    # succeed.
 
     return st.fail_turn(
         "Request payload too large (413). Cannot compress further.",

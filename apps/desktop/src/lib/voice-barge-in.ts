@@ -19,18 +19,20 @@
 // - Detection is a windowed majority (>=80% of the last SUSTAINED_MS above
 //   trigger) so intra-word energy dips don't reset progress.
 
+import { AdaptiveAcousticThreshold } from './voice-acoustics'
+
 const CALIBRATION_MS = 400
 const SUSTAINED_MS = 300
 const SUSTAINED_MAJORITY = 0.8
 const MIN_TRIGGER_LEVEL = 0.075 // matches the voice loop's silenceLevel
-const FLOOR_MULTIPLIER = 3.5
+
 // Playback clamps, scaled from the Python constants (int16 RMS 1500 / 4000
 // ≈ byte-domain level 0.14 / 0.37 with the /42 normalization below).
 const PLAYBACK_MIN_TRIGGER_LEVEL = 0.14
 const TRIGGER_CEILING_LEVEL = 0.37
 const PLAYBACK_GRACE_MS = 500
 const PLAYBACK_GAP_FOR_GRACE_MS = 1_000
-const FLOOR_SAMPLE_CAP = 200 // ~3s of quiet-phase levels at rAF cadence
+
 const PRE_ROLL_RESTART_MS = 5_000 // cap pre-roll: restart the recorder while quiet
 const UTTERANCE_SILENCE_MS = 1_250 // matches the voice loop's silenceMs
 const UTTERANCE_MAX_MS = 30_000
@@ -175,11 +177,11 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
       context.createMediaStreamSource(stream).connect(analyser)
 
       const data = new Uint8Array(analyser.fftSize)
-      const floorSamples: number[] = []
+      const acoustics = new AdaptiveAcousticThreshold()
       const recentAbove: { above: boolean; at: number }[] = []
       let calibratedSince: number | null = null
       let floorLocked = false
-      let quietFloor = 0
+
       let segmentStartedAt = Date.now()
       let wasPlaying = false
       let playbackSeen = false
@@ -188,16 +190,6 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
       let tripped = false
       let trippedAt = 0
       let quietSince: number | null = null
-
-      const pushFloorSample = (level: number) => {
-        floorSamples.push(level)
-
-        if (floorSamples.length > FLOOR_SAMPLE_CAP) {
-          floorSamples.shift()
-        }
-
-        quietFloor = [...floorSamples].sort((a, b) => a - b)[floorSamples.length >> 1] ?? 0
-      }
 
       const tick = () => {
         if (disposed) {
@@ -223,7 +215,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
           if (!floorLocked) {
             if (!playing) {
               calibratedSince ??= now
-              pushFloorSample(level)
+              acoustics.observeQuiet(level)
             }
 
             if (playing || (calibratedSince !== null && now - calibratedSince >= CALIBRATION_MS)) {
@@ -250,7 +242,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
           // Phase-aware trigger: quiet baseline x multiplier; playback clamps
           // it up (bleed alone can't trip) but a ceiling keeps speech
           // reachable even over loud playback.
-          let trigger = Math.max(MIN_TRIGGER_LEVEL, quietFloor * FLOOR_MULTIPLIER)
+          let trigger = Math.max(MIN_TRIGGER_LEVEL, acoustics.startThreshold)
 
           if (playing) {
             trigger = Math.min(Math.max(trigger, PLAYBACK_MIN_TRIGGER_LEVEL), TRIGGER_CEILING_LEVEL)
@@ -258,7 +250,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
 
           // Track ambient drift while quiet and below trigger.
           if (floorLocked && !playing && level < trigger) {
-            pushFloorSample(level)
+            acoustics.observeQuiet(level)
           }
 
           const above = floorLocked && level >= trigger && now >= graceUntil

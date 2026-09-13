@@ -27,10 +27,15 @@ vi.mock('@/lib/voice-barge-in', () => ({
 const markVoicePlaybackInterrupted = vi.fn()
 const stopVoicePlayback = vi.fn()
 
+const playbackMocks = vi.hoisted(() => ({
+  playSpeechText: vi.fn(async () => true),
+  startSpeechStream: vi.fn(async () => null)
+}))
+
 vi.mock('@/lib/voice-playback', () => ({
   markVoicePlaybackInterrupted: () => markVoicePlaybackInterrupted(),
-  playSpeechText: vi.fn(async () => true),
-  startSpeechStream: vi.fn(async () => null),
+  playSpeechText: playbackMocks.playSpeechText,
+  startSpeechStream: playbackMocks.startSpeechStream,
   stopVoicePlayback: () => stopVoicePlayback()
 }))
 
@@ -74,6 +79,8 @@ vi.mock('@/store/notifications', () => ({
 interface HookProps {
   busy: boolean
 }
+
+type SettleCancellation = 'end' | 'mute' | 'supersede' | 'unmount'
 
 function renderConversation(overrides: { onInterrupt?: () => void; transcript?: string } = {}) {
   const onInterrupt = overrides.onInterrupt ?? vi.fn()
@@ -144,6 +151,26 @@ describe('useVoiceConversation full-duplex barge-in', () => {
 
   afterEach(cleanup)
 
+  it('enters listening after StrictMode effect replay', async () => {
+    const hook = renderHook(
+      () =>
+        useVoiceConversation({
+          busy: false,
+          consumePendingResponse: vi.fn(),
+          enabled: true,
+          onSubmit: vi.fn(),
+          onTranscribeAudio: vi.fn(async () => 'hello'),
+          pendingResponse: () => null
+        }),
+      { reactStrictMode: true }
+    )
+
+    await act(async () => hook.result.current.start())
+
+    await waitFor(() => expect(hook.result.current.status).toBe('listening'))
+    expect(micHandle.start).toHaveBeenCalledTimes(1)
+  })
+
   it('arms the barge monitor during generation (before any reply audio exists)', async () => {
     const { hook } = renderConversation()
 
@@ -199,6 +226,78 @@ describe('useVoiceConversation full-duplex barge-in', () => {
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('no, do it differently'))
   })
+
+  it.each<SettleCancellation>(['end', 'mute', 'supersede', 'unmount'])(
+    'abandons a captured interruption when %s invalidates its busy-settle wait',
+    async cancellation => {
+      const { hook, onSubmit, onTranscribeAudio } = renderConversation({ transcript: 'stale interruption' })
+
+      await enterThinking(hook)
+      await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+      const monitor = monitorCalls.at(-1)
+      vi.useFakeTimers()
+
+      act(() => monitor?.onSpeech())
+      act(() => monitor?.onUtterance?.(new Blob(['stale'], { type: 'audio/webm' })))
+      await act(async () => Promise.resolve())
+      expect(onTranscribeAudio).toHaveBeenCalledTimes(2)
+      expect(hook.result.current.status).toBe('transcribing')
+
+      if (cancellation === 'end') {
+        await act(async () => hook.result.current.end())
+      } else if (cancellation === 'mute') {
+        act(() => hook.result.current.toggleMute())
+      } else if (cancellation === 'supersede') {
+        await act(async () => hook.result.current.end())
+      } else {
+        hook.unmount()
+      }
+
+      // Cancellation is allowed to perform its own cleanup. Nothing owned by
+      // the stale capture may run after this point when busy settles.
+      const callsAfterCancellation = {
+        micCancel: micHandle.cancel.mock.calls.length,
+        micStart: micHandle.start.mock.calls.length,
+        playback: playbackMocks.playSpeechText.mock.calls.length,
+        stopPlayback: stopVoicePlayback.mock.calls.length,
+        stream: playbackMocks.startSpeechStream.mock.calls.length,
+        stopMonitor: stopMonitor.mock.calls.length
+      }
+
+      if (cancellation !== 'unmount') {
+        hook.rerender({ busy: false })
+      }
+
+      if (cancellation === 'supersede') {
+        await act(async () => hook.result.current.start())
+      }
+
+      await act(async () => vi.advanceTimersByTimeAsync(5_100))
+      vi.useRealTimers()
+
+      // The kickoff is the sole submit; the stale interruption never submits.
+      expect(onSubmit).toHaveBeenCalledTimes(1)
+      expect(onSubmit).not.toHaveBeenCalledWith('stale interruption')
+
+      const callsAfterSettle = {
+        micCancel: micHandle.cancel.mock.calls.length,
+        micStart: micHandle.start.mock.calls.length,
+        playback: playbackMocks.playSpeechText.mock.calls.length,
+        stopPlayback: stopVoicePlayback.mock.calls.length,
+        stream: playbackMocks.startSpeechStream.mock.calls.length,
+        stopMonitor: stopMonitor.mock.calls.length
+      }
+
+      if (cancellation === 'supersede') {
+        // The replacement conversation may open its own mic once busy clears;
+        // the stale capture must neither cancel nor otherwise clean it up.
+        expect(callsAfterSettle).toEqual({ ...callsAfterCancellation, micStart: callsAfterCancellation.micStart + 1 })
+        expect(hook.result.current.status).toBe('listening')
+      } else {
+        expect(callsAfterSettle).toEqual(callsAfterCancellation)
+      }
+    }
+  )
 
   it('does not interrupt when speech trips during playback (turn already done)', async () => {
     const { hook, onInterrupt } = renderConversation()
@@ -262,5 +361,44 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     hook.rerender({ busy: true })
 
     expect(monitorCalls.length).toBe(armed)
+  })
+
+  it('rejects late STT completion after the conversation ends', async () => {
+    let resolveTranscript!: (value: string) => void
+
+    const onTranscribeAudio = vi.fn(
+      () =>
+        new Promise<string>(resolve => {
+          resolveTranscript = resolve
+        })
+    )
+
+    const onSubmit = vi.fn()
+
+    const hook = renderHook(() =>
+      useVoiceConversation({
+        busy: false,
+        consumePendingResponse: vi.fn(),
+        enabled: true,
+        onSubmit,
+        onTranscribeAudio,
+        pendingResponse: () => null
+      })
+    )
+
+    await act(async () => hook.result.current.start())
+    micHandle.stop.mockResolvedValueOnce({
+      audio: new Blob(['late'], { type: 'audio/webm' }),
+      durationMs: 200,
+      heardSpeech: true
+    })
+    act(() => hook.result.current.stopTurn())
+    await waitFor(() => expect(onTranscribeAudio).toHaveBeenCalledTimes(1))
+
+    await act(async () => hook.result.current.end())
+    await act(async () => resolveTranscript('must not submit'))
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(hook.result.current.status).toBe('idle')
   })
 })

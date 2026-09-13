@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
+import { AdaptiveAcousticThreshold } from '@/lib/voice-acoustics'
+
 type BrowserAudioContext = typeof AudioContext
 
 export interface MicRecorderOptions {
@@ -77,6 +79,8 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
   const silenceTriggeredRef = useRef(false)
   const silenceStartedAtRef = useRef<number | null>(null)
   const stopResolverRef = useRef<((recording: MicRecording | null) => void) | null>(null)
+  const startSequenceRef = useRef(0)
+  const mountedRef = useRef(true)
 
   const cleanup = () => {
     if (animationRef.current) {
@@ -89,12 +93,25 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     streamRef.current?.getTracks().forEach(track => track.stop())
     streamRef.current = null
     recorderRef.current = null
-    setLevel(0)
-    setRecording(false)
+
+    if (mountedRef.current) {
+      setLevel(0)
+      setRecording(false)
+    }
+
     silenceTriggeredRef.current = false
   }
 
-  useEffect(() => () => cleanup(), [])
+  // eslint-disable-next-line no-restricted-syntax -- imperative mount lifetime, not mirrored reactive state
+  useEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+      startSequenceRef.current += 1
+      cleanup()
+    }
+  }, [])
 
   const startMeter = (stream: MediaStream, options: MicRecorderOptions) => {
     const audioWindow = window as Window & { webkitAudioContext?: BrowserAudioContext }
@@ -111,6 +128,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
 
       analyser.fftSize = 256
       const data = new Uint8Array(analyser.fftSize)
+      const acoustics = new AdaptiveAcousticThreshold()
 
       source.connect(analyser)
       audioContextRef.current = audioContext
@@ -132,7 +150,9 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
         setLevel(normalized)
         options.onLevel?.(normalized)
 
-        const speechThreshold = options.silenceLevel ?? 0
+        const configuredThreshold = options.silenceLevel ?? 0
+        const speechThreshold = Math.max(configuredThreshold, acoustics.startThreshold)
+        const endThreshold = Math.max(configuredThreshold, acoustics.endThreshold)
         const silenceMs = options.silenceMs ?? 0
         const idleSilenceMs = options.idleSilenceMs ?? 0
 
@@ -140,7 +160,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
           if (normalized >= speechThreshold) {
             heardSpeechRef.current = true
             silenceStartedAtRef.current = null
-          } else if (heardSpeechRef.current && silenceMs > 0) {
+          } else if (heardSpeechRef.current && normalized < endThreshold && silenceMs > 0) {
             silenceStartedAtRef.current ??= now
 
             if (now - silenceStartedAtRef.current >= silenceMs) {
@@ -154,6 +174,10 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
             options.onSilence()
 
             return
+          }
+
+          if (!heardSpeechRef.current && normalized < speechThreshold) {
+            acoustics.observeQuiet(normalized)
           }
         }
 
@@ -175,7 +199,12 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       throw new Error(copy.microphoneUnsupported)
     }
 
+    const startSequence = ++startSequenceRef.current
     const permitted = await window.hermesDesktop?.requestMicrophoneAccess?.()
+
+    if (!mountedRef.current || startSequence !== startSequenceRef.current) {
+      return
+    }
 
     if (permitted === false) {
       throw new Error(copy.microphoneAccessDenied)
@@ -189,6 +218,15 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
       })
     } catch (error) {
       throw micError(error, copy)
+    }
+
+    // cancel(), mute, or unmount may land while getUserMedia is pending. The
+    // browser still resolves with live tracks; reject the stale acquisition
+    // and stop every track before it can become an unowned microphone.
+    if (!mountedRef.current || startSequence !== startSequenceRef.current) {
+      stream.getTracks().forEach(track => track.stop())
+
+      return
     }
 
     const mimeType =
@@ -274,6 +312,7 @@ export function useMicRecorder(copy: MicRecorderErrorCopy): {
     })
 
   const cancel: MicRecorderHandle['cancel'] = () => {
+    startSequenceRef.current += 1
     const recorder = recorderRef.current
     const resolver = stopResolverRef.current
     stopResolverRef.current = null

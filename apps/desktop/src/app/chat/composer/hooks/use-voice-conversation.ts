@@ -64,7 +64,9 @@ export function useVoiceConversation({
   const [muted, setMuted] = useState(false)
   const turnTimeoutRef = useRef<number | null>(null)
   const pendingStartRef = useRef(false)
-  const turnClosingRef = useRef(false)
+  const turnClosingRef = useRef<number | null>(null)
+  const lifetimeRef = useRef(0)
+  const mountedRef = useRef(true)
   const awaitingSpokenResponseRef = useRef(false)
   const responseIdRef = useRef<string | null>(null)
   const spokenSourceLengthRef = useRef(0)
@@ -137,16 +139,23 @@ export function useVoiceConversation({
 
   const handleTurn = useCallback(
     async (forceTranscribe = false) => {
-      if (turnClosingRef.current) {
+      if (turnClosingRef.current !== null) {
         return
       }
 
-      turnClosingRef.current = true
+      // Closing capture commits a new conversational turn. Advancing here
+      // invalidates every async stage and owned callback from the prior turn.
+      const lifetime = ++lifetimeRef.current
+      turnClosingRef.current = lifetime
       clearTurnTimeout()
       setStatus('transcribing')
 
       try {
         const result = await handle.stop()
+
+        if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+          return
+        }
 
         if (!result || (!result.heardSpeech && !forceTranscribe) || !onTranscribeAudio) {
           if (enabledRef.current && !mutedRef.current && !busyRef.current && statusRef.current !== 'speaking') {
@@ -160,6 +169,10 @@ export function useVoiceConversation({
 
         try {
           const transcript = (await onTranscribeAudio(result.audio)).trim()
+
+          if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+            return
+          }
 
           if (!transcript) {
             if (enabledRef.current) {
@@ -186,6 +199,11 @@ export function useVoiceConversation({
           awaitingSpokenResponseRef.current = true
           dropSpeechSession()
           await onSubmit(transcript)
+
+          if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+            return
+          }
+
           setStatus('thinking')
         } catch (error) {
           notifyError(error, voiceCopy.transcriptionFailed)
@@ -197,13 +215,16 @@ export function useVoiceConversation({
           setStatus('idle')
         }
       } finally {
-        turnClosingRef.current = false
+        if (turnClosingRef.current === lifetime) {
+          turnClosingRef.current = null
+        }
       }
     },
     [handle, onSubmit, onTranscribeAudio, voiceCopy.transcriptionFailed]
   )
 
   const startListening = useCallback(async () => {
+    const lifetime = lifetimeRef.current
     pendingStartRef.current = false
 
     if (!enabledRef.current || mutedRef.current || busyRef.current) {
@@ -227,6 +248,10 @@ export function useVoiceConversation({
       // A pause failure shouldn't block the user's explicit start.
     }
 
+    if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+      return
+    }
+
     // enabled/muted/busy or an interleaved turn may have changed while we waited.
     if (!enabledRef.current || mutedRef.current || busyRef.current || statusRef.current !== 'idle') {
       return
@@ -245,6 +270,13 @@ export function useVoiceConversation({
         },
         onSilence: () => void handleTurn()
       })
+
+      if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+        handle.cancel()
+
+        return
+      }
+
       setStatus('listening')
       // Clear any prior turn-timeout before arming a fresh one. Each listen
       // cycle reassigns turnTimeoutRef; without clearing first, a stale 60s
@@ -307,7 +339,13 @@ export function useVoiceConversation({
    */
   const submitCapturedUtterance = useCallback(
     async (audio: Blob | null) => {
+      const lifetime = lifetimeRef.current
+
       const resumeListening = () => {
+        if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+          return
+        }
+
         if (enabledRef.current && !mutedRef.current) {
           pendingStartRef.current = true
         }
@@ -325,6 +363,10 @@ export function useVoiceConversation({
 
       try {
         const transcript = (await onTranscribeAudio(audio)).trim()
+
+        if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+          return
+        }
 
         if (!transcript) {
           resumeListening()
@@ -351,10 +393,22 @@ export function useVoiceConversation({
           await new Promise(resolve => window.setTimeout(resolve, 100))
         }
 
+        // The settle wait belongs to the same captured turn as STT. Ending,
+        // muting, unmounting, or starting a newer turn while it waited must
+        // invalidate the capture before it can submit or mutate shared state.
+        if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+          return
+        }
+
         awaitingSpokenResponseRef.current = true
         dropSpeechSession()
         consumePendingResponse()
         await onSubmit(transcript)
+
+        if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+          return
+        }
+
         setStatus('thinking')
       } catch (error) {
         notifyError(error, voiceCopy.transcriptionFailed)
@@ -383,9 +437,14 @@ export function useVoiceConversation({
       return
     }
 
+    const lifetime = lifetimeRef.current
     stopBargeMonitorRef.current = monitorSpeechDuringPlayback({
       isPlaying: () => $voicePlayback.get().status === 'speaking',
       onSpeech: () => {
+        if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+          return
+        }
+
         bargeCapturePendingRef.current = true
         bargedRef.current = true
         markVoicePlaybackInterrupted()
@@ -398,6 +457,10 @@ export function useVoiceConversation({
         }
       },
       onUtterance: audio => {
+        if (!mountedRef.current || lifetime !== lifetimeRef.current) {
+          return
+        }
+
         bargeCapturePendingRef.current = false
         stopBargeMonitorRef.current = null
         void submitCapturedUtterance(audio)
@@ -487,6 +550,7 @@ export function useVoiceConversation({
    */
   const openLiveSpeech = useCallback(
     (responseId: string) => {
+      const lifetime = lifetimeRef.current
       const sequenceBeforeStart = $voicePlayback.get().sequence
 
       responseIdRef.current = responseId
@@ -503,7 +567,7 @@ export function useVoiceConversation({
         const session = await startSpeechStream({ source: 'voice-conversation' })
 
         // The session may resolve after the loop moved on (barge, disable).
-        if (responseIdRef.current !== responseId) {
+        if (!mountedRef.current || lifetime !== lifetimeRef.current || responseIdRef.current !== responseId) {
           if (session) {
             stopVoicePlayback()
           }
@@ -584,6 +648,7 @@ export function useVoiceConversation({
       return
     }
 
+    lifetimeRef.current += 1
     setMuted(false)
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
@@ -600,11 +665,12 @@ export function useVoiceConversation({
   ])
 
   const end = useCallback(async () => {
+    lifetimeRef.current += 1
     pendingStartRef.current = false
     clearTurnTimeout()
     stopVoicePlayback()
     handle.cancel()
-    turnClosingRef.current = false
+    turnClosingRef.current = null
     awaitingSpokenResponseRef.current = false
     dropSpeechSession()
     consumePendingResponse()
@@ -623,6 +689,7 @@ export function useVoiceConversation({
       const next = !value
 
       if (next) {
+        lifetimeRef.current += 1
         clearTurnTimeout()
         handle.cancel()
         setStatus('idle')
@@ -731,6 +798,23 @@ export function useVoiceConversation({
 
     wasEnabledRef.current = enabled
   }, [enabled, end, start])
+
+  // Unmount-only: `handle` is recreated by the recorder hook on every render,
+  // so depending on it would tear down the active turn during normal updates.
+  // eslint-disable-next-line no-restricted-syntax -- imperative mount lifetime, not mirrored reactive state
+  useEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+      lifetimeRef.current += 1
+      pendingStartRef.current = false
+      clearTurnTimeout()
+      stopVoicePlayback()
+      handle.cancel()
+      dropSpeechSession()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return { end, level, muted, start, status, stopTurn, toggleMute }
 }

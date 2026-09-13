@@ -3269,6 +3269,7 @@ export const zhHant = defineLocale({
         actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `${action}「${value}」`,
         actionTarget: (action, target) => `${action} ${target}`,
+        additionalFiles: count => `+${count} 個檔案`,
         prefixedDone: (prefix, action) => `${prefix}${action}`,
         runningPrefixedTool: (prefix, action) => `正在執行${prefix}${action}`,
         runningTool: action => `正在執行 ${action}`

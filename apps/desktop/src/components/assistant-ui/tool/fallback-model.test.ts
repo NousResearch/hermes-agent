@@ -216,6 +216,143 @@ describe('buildToolView file edit diffs', () => {
     expect(view.subtitle).toBe('src/demo.ts')
     expect(view.detail).toBe('')
   })
+
+  it('extracts the filename from a pending single-file V4A patch', () => {
+    const patch = [
+      '\x2a\x2a\x2a Begin Patch',
+      '\x2a\x2a\x2a Update File: src/components/demo.ts',
+      '@@',
+      '-old',
+      '+new',
+      '\x2a\x2a\x2a End Patch'
+    ].join('\n')
+
+    const view = buildToolView(
+      part({ args: { mode: 'patch', patch }, result: undefined, toolName: 'patch' }),
+      patchDiff
+    )
+
+    expect(view.title).toBe('demo.ts')
+    expect(view.subtitle).toBe('src/components/demo.ts')
+  })
+
+  it('summarizes all files represented by a multi-file V4A patch', () => {
+    const patch = [
+      '\x2a\x2a\x2a Begin Patch',
+      '\x2a\x2a\x2a Update File: src/demo.ts',
+      '@@',
+      '-old',
+      '+new',
+      '\x2a\x2a\x2a Add File: tests/demo.test.ts',
+      '+test',
+      '\x2a\x2a\x2a End Patch'
+    ].join('\n')
+
+    const view = buildToolView(
+      part({ args: { mode: 'patch', patch }, result: undefined, toolName: 'patch' }),
+      patchDiff
+    )
+
+    expect(view.title).toBe('demo.ts +1 file')
+    expect(view.subtitle).toBe('src/demo.ts')
+  })
+
+  it('combines legacy completed patch result path categories', () => {
+    const view = buildToolView(
+      part({
+        args: { mode: 'patch' },
+        result: {
+          files_created: ['tests/demo.test.ts'],
+          files_deleted: ['src/legacy.ts'],
+          files_modified: ['src/demo.ts'],
+          success: true
+        },
+        toolName: 'patch'
+      }),
+      patchDiff
+    )
+
+    expect(view.title).toBe('demo.ts +2 files')
+    expect(view.subtitle).toBe('src/demo.ts')
+  })
+
+  it('localizes multi-file V4A patch counts', () => {
+    const patch = [
+      '\x2a\x2a\x2a Begin Patch',
+      '\x2a\x2a\x2a Update File: src/demo.ts',
+      '\x2a\x2a\x2a Add File: tests/demo.test.ts',
+      '+test',
+      '\x2a\x2a\x2a End Patch'
+    ].join('\n')
+
+    const title = (locale: 'ar' | 'en' | 'ja' | 'zh' | 'zh-hant') => {
+      setRuntimeI18nLocale(locale)
+
+      return buildToolView(part({ args: { mode: 'patch', patch }, result: undefined, toolName: 'patch' }), '').title
+    }
+
+    expect(title('en')).toBe('demo.ts +1 file')
+    expect(title('ar')).toBe('demo.ts +ملف واحد')
+    expect(title('ja')).toBe('demo.ts +1 ファイル')
+    expect(title('zh')).toBe('demo.ts +1 个文件')
+    expect(title('zh-hant')).toBe('demo.ts +1 個檔案')
+  })
+
+  it('ignores V4A-looking headers outside patch boundaries', () => {
+    const patch = [
+      '\x2a\x2a\x2a Update File: before.ts',
+      '\x2a\x2a\x2a Begin Patch',
+      '\x2a\x2a\x2a Update File: src/actual.ts',
+      '@@',
+      '-old',
+      '+new',
+      '\x2a\x2a\x2a End Patch',
+      '\x2a\x2a\x2a Add File: after.ts'
+    ].join('\n')
+
+    const view = buildToolView(part({ args: { mode: 'patch', patch }, result: undefined, toolName: 'patch' }), '')
+
+    expect(view.title).toBe('actual.ts')
+    expect(view.subtitle).toBe('src/actual.ts')
+  })
+
+  it('does not parse V4A-looking headers without a begin marker', () => {
+    const patch = '\x2a\x2a\x2a Update File: not-a-patch.ts'
+    const view = buildToolView(part({ args: { mode: 'patch', patch }, result: undefined, toolName: 'patch' }), '')
+
+    expect(view.title).not.toContain('not-a-patch.ts')
+    expect(view.subtitle).toBe('')
+  })
+
+  it('requires whole-line V4A boundaries', () => {
+    const prose = [
+      'Example prose: \x2a\x2a\x2a Begin Patch',
+      '\x2a\x2a\x2a Update File: decoy.ts'
+    ].join('\n')
+
+    const proseView = buildToolView(
+      part({ args: { mode: 'patch', patch: prose }, result: undefined, toolName: 'patch' }),
+      ''
+    )
+
+    const patch = [
+      '\x2a\x2a\x2a Begin Patch',
+      '\x2a\x2a\x2a Update File: docs/guide.md',
+      '+\x2a\x2a\x2a End Patch',
+      '\x2a\x2a\x2a Add File: tests/guide.test.ts',
+      '+test',
+      '\x2a\x2a\x2a End Patch'
+    ].join('\n')
+
+    const patchView = buildToolView(
+      part({ args: { mode: 'patch', patch }, result: undefined, toolName: 'patch' }),
+      ''
+    )
+
+    expect(proseView.title).not.toContain('decoy.ts')
+    expect(proseView.subtitle).toBe('')
+    expect(patchView.title).toBe('guide.md +1 file')
+  })
 })
 
 describe('buildToolView title actions', () => {

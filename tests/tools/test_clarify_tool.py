@@ -676,3 +676,34 @@ class TestRegistryBatchPassThrough:
         ))
         assert seen["questions"][0]["question"] == "Go?"
         assert result["responses"][0]["user_response"] == "yes"
+
+
+class TestAuthorizationSemanticHeuristic:
+    """#107068: the consent-text detector behind the headless clarify guard."""
+
+    def test_consent_verbs_detected(self):
+        from tools.clarify_tool import is_authorization_semantic
+
+        for text in [
+            "authorize me to compute these 9 rows directly (Recommended)",
+            "authorise me to proceed",
+            "allow me to continue",
+            "consent to self-compute",
+            "grant me permission",
+            "approve this exception",
+            "let me bypass the guard",
+            "授权我直接计算",
+        ]:
+            assert is_authorization_semantic(text), text
+
+    def test_innocuous_options_not_detected(self):
+        from tools.clarify_tool import is_authorization_semantic
+
+        for text in [
+            "json",
+            "configure A2A peer then hand off",
+            "no aggregation, layout only",
+            "Rebase",
+            "Improve performance",
+        ]:
+            assert not is_authorization_semantic(text), text

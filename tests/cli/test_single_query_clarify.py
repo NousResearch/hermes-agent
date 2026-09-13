@@ -75,3 +75,54 @@ def test_agent_construction_gates_clarify_callback_on_single_query_mode():
         "the clarify_callback wiring no longer consults _single_query_mode — "
         "-q turns would hang on the interactive modal again (#94943)"
     )
+
+
+class TestSingleQueryConsentGuard:
+    """#107068: headless auto-decide must never pick authorization-semantic
+    options — a Recommended "authorize me" row is a silent self-authorization
+    vector when no human is present to answer."""
+
+    _REPRO = [
+        "authorize me to compute these 9 rows directly (Recommended)",
+        "configure A2A peer then hand off",
+        "no aggregation, layout only",
+    ]
+
+    def test_recommended_authorize_option_is_declined_not_picked(self):
+        from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
+
+        result = _single_query_clarify_callback("How to proceed?", choices=list(self._REPRO))
+        assert "authorize me to compute these 9 rows directly" in result  # explicitly marked...
+        assert "DECLINED" in result  # ...as declined without a human...
+        assert "Pick the best option from ['authorize me" not in result  # ...never offered for auto-pick
+        assert "configure A2A peer then hand off" in result  # safe options stay pickable
+
+    def test_all_consent_options_means_stop_not_pick(self):
+        from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
+
+        result = _single_query_clarify_callback(
+            "May I?", choices=["authorize me to proceed (Recommended)", "allow me to continue"]
+        )
+        assert "DECLINED" in result
+        assert "Pick the best" not in result
+        assert "human input is needed" in result
+
+    def test_innocuous_options_keep_exact_legacy_guidance(self):
+        """Non-consent options must keep the byte-identical #94943 guidance."""
+        from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
+
+        result = _single_query_clarify_callback("Format?", choices=["json", "yaml"])
+        assert result.startswith("[single-query mode: no user available")
+        assert "Pick the best option from ['json', 'yaml']" in result
+        assert "DECLINED" not in result
+
+    def test_oneshot_callback_shares_the_guard(self):
+        """The -z path has the same auto-pick shape; the sibling must not stay open."""
+        from hermes_cli.oneshot import _oneshot_clarify_callback
+
+        result = _oneshot_clarify_callback("How to proceed?", choices=list(self._REPRO))
+        assert "DECLINED" in result
+        assert "Pick the best option from ['authorize me" not in result
+        legacy = _oneshot_clarify_callback("Format?", choices=["json", "yaml"])
+        assert "Pick the best option from ['json', 'yaml']" in legacy
+        assert "DECLINED" not in legacy

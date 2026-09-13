@@ -815,20 +815,6 @@ class CLIModalMixin:
             choices.append("view")
         return choices
 
-    def _computer_use_approval_callback(self, action: str, args: dict, summary: str) -> str:
-        """Adapt the generic approval UI (once/session/always/deny) to the computer_use verdicts
-        (approve_once/approve_session/always_approve/deny)."""
-        verdict = self._approval_callback(
-            command=f"computer_use: {summary}",
-            description=f"Allow computer_use to perform `{action}`?")
-        return {
-            "once": "approve_once",
-            "session": "approve_session",
-            "always": "always_approve",
-            "deny": "deny",
-            "timeout": "timeout",
-        }.get(verdict, "deny")
-
     def _handle_approval_selection(self) -> None:
         """Process the currently selected dangerous-command approval choice."""
         state = self._approval_state

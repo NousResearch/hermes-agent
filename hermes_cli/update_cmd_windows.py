@@ -1200,12 +1200,44 @@ def _in_handoff_without_live_shim(args) -> bool:
         return False
 
 
+def _respawnable_dashboard_holder_pids(holders: list[tuple[int, str, str]]) -> list[int]:
+    """PIDs of the dashboard's own respawnable venv holders: its chat backend and tool kernels.
+
+    ``hermes dashboard`` hosts its embedded chat through ``python -m tui_gateway.entry`` and its tool
+    kernel through ``<tmpdir>/hermes_kernel``, both on this venv's interpreter. Neither is a user
+    session anyone can "close": the Status page that starts the update lives in the same app that
+    owns them, and both are re-created on demand (the chat pane reconnects on reload, the next tool
+    call spawns a fresh kernel). Without this rung the dashboard's own Update button can never
+    succeed while its chat pane is open, and the refusal tells the user to close the app they are
+    updating from. Related: #90778 (that refusal used to mislabel these holders as Desktop backends).
+
+    Classified on the LIVE argv, like the sibling rungs: a holder that exited is skipped, and no
+    psutil -> ``[]``, so the refusal stands. Never raises.
+    """
+    psutil = _psutil()
+    if psutil is None:
+        return []
+    pids: list[int] = []
+    for pid, _name, cmdline in holders:
+        low = _live_argv_low(psutil, pid, cmdline)
+        if low is None:
+            continue  # exited — nothing to reap
+        if "tui_gateway" not in low and "hermes_kernel" not in low:
+            continue
+        try:
+            pids.append(int(pid))
+        except (TypeError, ValueError):
+            continue
+    return pids
+
+
 def _clear_windows_venv_holders_or_exit(args, gateway_mode: bool, _windows_gateway_resume):
     """Windows: stop every venv-python holder we can positively identify, else resume paused gateways and exit 2.
 
     Rungs in order: leftover pausable gateways -> ledger orphaned backends -> orphaned Desktop backends ->
-    ledger manual serve (relaunched at exit on the same bind) -> GUI hand-off leaks. Remaining holders are
-    refused (the sync would corrupt against a locked .pyd)."""
+    ledger manual serve (relaunched at exit on the same bind) -> GUI hand-off leaks -> the dashboard's own
+    chat backend / tool kernels (both re-created on demand). Remaining holders are refused (the sync would
+    corrupt against a locked .pyd)."""
     from hermes_cli.update_cmd import _m, _record_update_step, _refuse_gateway_ancestor_tree_kill
 
     def _resume_and_exit():
@@ -1252,6 +1284,16 @@ def _clear_windows_venv_holders_or_exit(args, gateway_mode: bool, _windows_gatew
         holders = _reap_and_rescan(
             f"  ⚠ {len(handoff_backends)} Hermes backend process(es) "
             "still hold the venv after the Desktop hand-off; stopping their trees", handoff_backends,
+        )
+    # Dashboard rung: `hermes dashboard` hosts its chat through `tui_gateway.entry` and its tool kernel
+    # through `hermes_kernel`, both from this venv. The Status page that starts an update lives in the
+    # same app, so "close Hermes Desktop / other Hermes terminals" is not actionable from there — and
+    # both processes are re-created on demand. Stop them (the chat pane reconnects on reload) instead
+    # of refusing the update the dashboard itself asked for.
+    if holders and (dashboard_holders := _respawnable_dashboard_holder_pids(holders)):
+        holders = _reap_and_rescan(
+            f"  ⚠ {len(dashboard_holders)} dashboard chat/kernel process(es) hold the venv; stopping them "
+            "(the dashboard restores them on demand)", dashboard_holders,
         )
     if holders:
         print(_format_venv_python_holders_message(holders))

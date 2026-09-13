@@ -15,24 +15,33 @@ from pathlib import Path
 import pytest
 
 _SKEW_SCRIPT = """
-import sys, types
+import importlib, sys
 import hermes_cli.sqlite_util as sqlite_util
 import cron.jobs as jobs
+import cron.executions
 
 # The pre-upgrade sqlite_util only had add_column_if_missing / write_txn.
 for name in ("open_db", "transaction"):
     delattr(sqlite_util, name)
 sys.modules.pop("cron.{store}", None)
 
-import cron.{store}
+store = importlib.import_module("cron.{store}")
+{operation}
 """
 
+_STORE_OPERATIONS = {
+    "notepad": "store.set_note('job', 'cursor', '1'); assert store.get_note('job', 'cursor') == '1'",
+    "incidents": "incident_id, _ = store.upsert_incident('job', 'boom'); assert store.get_incident(incident_id)",
+    "executions": "record = store.create_execution('job', source='cron'); assert record['status'] == 'claimed'",
+    "delivery_queue": "store.enqueue('execution', {'id': 'job'}, 'done'); assert store.get_status('execution')",
+}
 
-@pytest.mark.parametrize("store", ["notepad", "incidents", "executions", "delivery_queue"])
+
+@pytest.mark.parametrize("store", _STORE_OPERATIONS)
 def test_lazy_cron_stores_import_against_pre_upgrade_sqlite_util(store):
     repo_root = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        [sys.executable, "-c", _SKEW_SCRIPT.format(store=store)],
+        [sys.executable, "-c", _SKEW_SCRIPT.format(store=store, operation=_STORE_OPERATIONS[store])],
         cwd=repo_root,
         capture_output=True,
         text=True,

@@ -22,6 +22,7 @@ from typing import Any, Callable, Iterator, Optional
 
 from agent.redact import redact_sensitive_text
 from cron.executions import _owner_is_live, _process_start_time
+from cron.ledger import open_ledger, prepare_ledger
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 
@@ -110,17 +111,18 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 def _connect() -> sqlite3.Connection:
-    # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
-    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
-    # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
-    from hermes_cli.sqlite_util import open_db
-
     path = _path()
-    conn = open_db(path, db_label="cron/deliveries.db", synchronous_full=True, initialize=_initialize_schema)
+    conn = open_ledger(path)
     try:
         path.chmod(0o600)
     except OSError:
         pass
+    try:
+        prepare_ledger(conn, db_label="cron/deliveries.db")
+        _initialize_schema(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -129,10 +131,13 @@ def _transaction() -> Iterator[sqlite3.Connection]:
     # Pruning is done explicitly by the paths that create terminal
     # rows (_finish / recover_abandoned / _terminalize_wait_timeout);
     # read-only polls must not pay for a full-table UPDATE + COUNT.
-    from hermes_cli.sqlite_util import transaction
-
-    with _lock, transaction(_connect()) as conn:
-        yield conn
+    with _lock:
+        conn = _connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
 
 def enqueue(

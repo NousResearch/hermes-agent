@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 import uuid
@@ -138,6 +139,7 @@ class HostedRoomRuntime:
             else (lambda bindings=tuple(rooms): bindings))
         self._stop, self._wake = threading.Event(), threading.Event()
         self._thread = self._last_error = None
+        self._wal_keeper_state = None
         self._room_threads: dict[str, threading.Thread] = {}
         self._rooms_needing_reschedule: set[str] = set()
         self._leases: dict[str, state.DriverLease] = {}
@@ -148,6 +150,13 @@ class HostedRoomRuntime:
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
         self._room_schedule_cursor, self._cycles = 0, 0
+        # Persistent WAL keeper. The poll loop (and every other reader in this
+        # process) opens + closes the DB per call; on each close SQLite believes
+        # it is the last connection and unlinks -wal/-shm, which once stranded a
+        # peer process's long-lived connections on a deleted shm generation.
+        # While this keeper stays open, SQLite never deletes the sidecars on any
+        # other close.
+        self._wal_keeper: sqlite3.Connection | None = None
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -196,7 +205,8 @@ class HostedRoomRuntime:
                 "current_task": current_tasks[0] if current_tasks else None,
                 "current_tasks": current_tasks, "leased_rooms": tuple(sorted(self._leases)),
                 "blocked_rooms": tuple(sorted(self._blocked_rooms)),
-                "last_error": self._last_error, "cycles": self._cycles}
+                "last_error": self._last_error, "cycles": self._cycles,
+                "wal_keeper_state": self._wal_keeper_state}
 
     # ------------------------------------------------------------------ public ops
     def cancel(self, identity: state.TaskIdentity, *, cancel_id: str) -> dict[str, Any]:
@@ -424,6 +434,13 @@ class HostedRoomRuntime:
             while not self._stop.is_set():
                 # Clear before work so a write racing the cycle forces a follow-up pass.
                 self._wake.clear()
+                # Keeper acquire is here, not in start(): a transient failure at
+                # startup must not silently defeat sidecar protection for the
+                # runtime's whole life — the next cycle retries. Only this
+                # thread (and its finally) touches the keeper, so no lock is
+                # taken around the sqlite I/O.
+                if self._wal_keeper is None:
+                    self._acquire_wal_keeper()
                 try:
                     self._run_cycle()
                 except Exception as exc:  # keep independent rooms serviceable
@@ -439,7 +456,114 @@ class HostedRoomRuntime:
                     break
                 for room_thread in room_threads:
                     room_thread.join(self.active_poll_interval_seconds)
-            self._release_idle_leases()
+            # The keeper close must survive a lease-cleanup failure: a stray
+            # OperationalError out of _release_idle_leases would otherwise skip
+            # it — leaving _wal_keeper referenced so a later restart skips
+            # re-acquire. Nested finally guarantees both sides run; record the
+            # cleanup failure so status()["last_error"] stays the diagnostic
+            # channel instead of the error escaping the supervisor thread.
+            try:
+                self._release_idle_leases()
+            except Exception as exc:  # lease cleanup is best-effort at shutdown
+                self._record_error(f"lease cleanup failed during shutdown: {exc}")
+            finally:
+                self._release_wal_keeper()
+
+    def _acquire_wal_keeper(self) -> None:
+        """Open (once) the persistent connection that keeps the WAL sidecars alive.
+
+        The acquire goes through the canonical journal policy
+        (:func:`hermes_state_wal.apply_wal_with_fallback`) — never a raw
+        ``sqlite3.connect``: on a fresh database the keeper otherwise opens
+        while the file is still in DELETE mode, a later store connection flips
+        the header to WAL, and the stale keeper connection never joins the WAL
+        shared-memory index. From then on every ephemeral close is still a
+        "last WAL member" close and deletes ``-wal``/``-shm`` with the keeper
+        held (review-reproduced on PR #103665). Applying the policy here makes
+        the keeper the *first* WAL connection, honoring ``database.journal_mode``
+        and the WAL-reset-vulnerable-runtime gate exactly like
+        :mod:`gateway.hosted_rooms_common`. When the policy leaves (or cannot
+        prove) the file in WAL — configured DELETE, a vulnerable runtime, or
+        an indeterminate probe — the acquire verifies the on-disk header and
+        drops the keeper rather than holding false protection (below); a
+        transient indeterminacy re-probes on the next cycle.
+
+        Failure is non-fatal (old behaviour: no sidecar protection) and the
+        acquire is retried on the next worker cycle — a transient failure must
+        not silently defeat the keeper for the process's remaining lifetime.
+        """
+        if self._wal_keeper is not None:
+            return
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=10)
+            # Apply the shared journal policy before anything else so a fresh
+            # database is in its configured mode from the first connection
+            # (see docstring for the DELETE-mode-keeper failure this avoids).
+            from hermes_state_wal import apply_wal_with_fallback
+            mode = apply_wal_with_fallback(conn, db_label=self.db_path.name)
+            # Trust the file, not the verdict: the WAL-reset gate reports "wal"
+            # untouched when the on-disk probe is indeterminate, which would
+            # keep a DELETE-mode keeper held (false protection — a later flip
+            # orphans it exactly as the defect-1 shape). Verify the header.
+            from hermes_state_wal import _on_disk_journal_mode
+            actual = _on_disk_journal_mode(conn)
+            if actual != "wal":
+                # The keeper only guards WAL sidecars. When the policy leaves
+                # (or cannot prove) the file in WAL — an explicit
+                # database.journal_mode=delete, a WAL-reset-vulnerable runtime,
+                # or an indeterminate probe — holding this connection is at
+                # best useless and at worst harmful: if a later connection
+                # flips the file to WAL anyway, a DELETE-mode keeper never
+                # joins the WAL index and every ephemeral close remains a
+                # last-member close, deleting the sidecars with _wal_keeper
+                # non-null (would mask the churn behind a false sense of
+                # protection). Drop it; the next worker cycle re-probes, so a
+                # genuinely transient indeterminacy self-heals into coverage.
+                conn.close()
+                conn = None
+                if actual is None:
+                    # "Could not verify" is not "not WAL": a locked or
+                    # unreadable header means the mode is unknown, not DELETE.
+                    detail = (f"could not verify the on-disk journal mode of "
+                              f"{self.db_path.name} (probe returned no result; "
+                              f"policy reported {mode!r})")
+                else:
+                    detail = (f"journal policy left {self.db_path.name} "
+                              f"in {actual!r} (policy reported {mode!r})")
+                # Status fact, not an error: on a configured-DELETE or
+                # vulnerable-runtime deployment the drop fires every cycle,
+                # and writing the shared room-error channel each time would
+                # overwrite a genuine room error within seconds. Record the
+                # state for status() instead, once per transition.
+                self._record_wal_keeper_state(
+                    f"inapplicable: {detail}; will re-probe next cycle")
+                return
+            # Touch the content: merely opening an fd does not join the WAL
+            # shared-memory index — SQLite registers a connection only on first
+            # content access, and an untouched keeper would be invisible to
+            # other connections, which would still unlink the sidecars on
+            # their own close.
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+            self._wal_keeper = conn
+            with self._status_lock:
+                self._wal_keeper_state = None  # acquired: supersede any prior drop state
+        except Exception as exc:  # best-effort: no failure may kill the loop
+            if conn is not None:  # do not leak the half-opened connection
+                with suppress(Exception):
+                    conn.close()
+            # The worker loop calls this with no _status_lock held, so the
+            # serialized _record_error path is safe. Leave _wal_keeper None
+            # so the next worker cycle retries the acquire.
+            self._record_error(f"wal keeper unavailable: {exc}")
+
+    def _release_wal_keeper(self) -> None:
+        conn, self._wal_keeper = self._wal_keeper, None
+        with self._status_lock:
+            self._wal_keeper_state = None  # stopped: no re-probe pending
+        if conn is not None:
+            with suppress(Exception):
+                conn.close()
 
     def _run_cycle(self) -> None:
         with self._status_lock:
@@ -900,6 +1024,16 @@ class HostedRoomRuntime:
     def _record_error(self, message: str) -> None:
         with self._status_lock:
             self._last_error = message
+
+    def _record_wal_keeper_state(self, message: str) -> None:
+        """Record keeper-health state without touching the room-error channel.
+
+        The inapplicable drop recurs every cycle on DELETE-mode /
+        vulnerable-runtime deployments; writing ``_last_error`` each time
+        would mask a genuine room error within seconds. Status surface only.
+        """
+        with self._status_lock:
+            self._wal_keeper_state = message
 
 
 def room_session_title(room_id: str) -> str:

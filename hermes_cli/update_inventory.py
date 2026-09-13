@@ -329,11 +329,12 @@ def _gateway_named_in(r: RuntimeRecord, names: set) -> bool:
         str(service).removesuffix(".service").rsplit("/", 1)[-1]
         for service in r.detail.get("service_names", [])
     }
-    return any(
-        str(name).removesuffix(".service").rsplit("/", 1)[-1] in expected
-        or _gateway_service_matches_profile(r.profile, name)
-        for name in names
-    )
+    if expected:
+        return any(
+            str(name).removesuffix(".service").rsplit("/", 1)[-1] in expected
+            for name in names
+        )
+    return any(_gateway_service_matches_profile(r.profile, name) for name in names)
 
 
 def match_runtime_outcomes(

@@ -85,9 +85,18 @@ class TestCollectInventory:
         unmatched = ui.match_runtime_outcomes(
             restarted_services=[f"hermes-gateway-{other_hash}.service"], **common,
         )
+        bare_restarted = ui.match_runtime_outcomes(
+            restarted_services=["hermes-gateway.service"], **common,
+        )
+        bare_failed = ui.match_runtime_outcomes(
+            restarted_services=[], failed_units=["hermes-gateway.service"],
+            **{key: value for key, value in common.items() if key != "failed_units"},
+        )
 
         assert matched[0]["outcome"] == "restarted"
         assert unmatched[0]["outcome"] == "unaccounted"
+        assert bare_restarted[0]["outcome"] == "unaccounted"
+        assert bare_failed[0]["outcome"] == "unaccounted"
 
     def test_docker_install_not_updatable_in_place(self, fleet, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.detect_install_method", lambda *a, **k: "docker")

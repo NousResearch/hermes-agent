@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   $composerSuggestionsBySession,
+  clearDraftSuggestions,
   type ComposerSuggestion,
   markSuggestionInvoked,
   offerSuggestions,
+  registerDraftProvider,
+  sampleComposerDraft,
   suggestionKey
 } from './composer-suggestions'
 
@@ -122,5 +125,34 @@ describe('composer suggestion bus', () => {
     expect($composerSuggestionsBySession.get().s9).toBe(first)
 
     offerSuggestions('s9', 'test', [])
+  })
+
+  it.each([false, true])('keeps the replacement after stale cleanup (same callback: %s)', async reuseCallback => {
+    vi.useFakeTimers()
+
+    const sessionId = `hot-session-${reuseCallback}`
+    const replacement = async () => [suggestion('fresh', 'hot-provider')]
+    const unregisterOld = registerDraftProvider('hot-provider', reuseCallback ? replacement : async () => [])
+    const unregisterNew = registerDraftProvider('hot-provider', replacement)
+
+    try {
+      unregisterOld()
+      unregisterOld()
+      sampleComposerDraft(sessionId, 'install linear')
+      await vi.runAllTimersAsync()
+
+      expect(pillsFor(sessionId)).toEqual(['fresh'])
+
+      unregisterNew()
+      sampleComposerDraft(sessionId, 'install linear again')
+      await vi.runAllTimersAsync()
+
+      expect(pillsFor(sessionId)).toEqual([])
+    } finally {
+      unregisterOld()
+      unregisterNew()
+      clearDraftSuggestions(sessionId)
+      vi.useRealTimers()
+    }
   })
 })

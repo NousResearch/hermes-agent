@@ -1605,11 +1605,15 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     probe, fleet version matrix, plan-vs-execution reconciliation, receipt finalize.
 
     Exits 1 (leaving ``fleet_restart_pending`` for the next catch-up) when any gateway
-    may still be stale; otherwise clears the marker.
+    may still be stale; otherwise records completion for the exact observed marker.
     """
     from hermes_cli.update_cmd import (
         _finish_dashboard_update_cleanup, _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
     )
+    try:
+        successful_marker_body = _fleet_restart_pending_marker_path().read_bytes()
+    except OSError:
+        successful_marker_body = None
     with _best_effort('Legacy unit check during update failed: %s'):
         _print_legacy_units_warning()
 
@@ -1703,6 +1707,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _ur._current is not None:
                     _ur._current.data["runtime_outcomes"] = _runtime_outcomes
 
+    _receipt_path = None
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         _receipt_path = finalize_update_receipt(
@@ -1716,9 +1721,14 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # Code updated but a gateway may still run stale modules: fail so automation
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
-    # Settle the exact marker generation instead of unlinking after verification: a separate
-    # compare/delete step could consume a newer updater's marker.
-    if _pending_fleet_restart_needed():
+    # Bind completion to the marker observed before verification. The recorder compares those
+    # exact bytes before and after its atomic write, so a newer updater's marker cannot inherit
+    # this run's verification or be deleted by it.
+    marker = _parse_fleet_restart_marker(successful_marker_body) if successful_marker_body is not None else None
+    if (
+        marker is None
+        or not _record_fleet_restart_completion(successful_marker_body, marker, _receipt_path)
+    ):
         sys.exit(1)
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.

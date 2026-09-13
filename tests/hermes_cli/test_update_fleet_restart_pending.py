@@ -865,7 +865,7 @@ def test_pending_restart_fails_when_one_supervisor_scope_fails(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_marker_written_after_pull_cleared_after_successful_restart(
+def test_marker_written_after_pull_settled_after_successful_restart(
     monkeypatch, tmp_path, capsys
 ):
     args = _update_args()
@@ -883,7 +883,8 @@ def test_marker_written_after_pull_cleared_after_successful_restart(
     hermes_main.cmd_update(args)
 
     assert wrote == [True], "marker must exist immediately after HEAD advances"
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    assert update_cmd._pending_fleet_restart_needed() is False
     out = capsys.readouterr().out
     assert "✓ Code updated!" in out
 

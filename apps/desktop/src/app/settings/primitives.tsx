@@ -178,13 +178,15 @@ export function ToggleRow({
   description,
   disabled,
   label,
-  onChange
+  onChange,
+  below
 }: {
   checked: boolean
   description?: string
   disabled?: boolean
   label: string
   onChange: (on: boolean) => void
+  below?: ReactNode
 }) {
   return (
     <ListRow
@@ -199,6 +201,7 @@ export function ToggleRow({
           }}
         />
       }
+      below={below}
       description={description}
       title={label}
     />

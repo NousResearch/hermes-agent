@@ -198,23 +198,30 @@ class _FileLock:
     # process (e.g. a registry snapshot nested inside a liveness guard) self-deadlock
     # with "Resource deadlock avoided" (errno 36) once LK_LOCK's ~10s retry loop
     # gives up, taking down every registry reader with it. Two mitigations:
-    # (a) thread-local reentrancy — the first acquisition holds the msvcrt byte lock;
-    #     nested acquisitions in the same thread return immediately;
+    # (a) per-path thread-local reentrancy — the first acquisition of a given path
+    #     in a thread holds the msvcrt byte lock; nested acquisitions of the SAME
+    #     path in that thread return immediately (keyed by resolved path so a
+    #     nested pair of DIFFERENT lock files can never skip each other's lock);
     # (b) non-blocking acquisition with bounded retry, so a stuck holder surfaces
     #     promptly instead of blocking every caller for ~10s per attempt.
     _tls = threading.local()
-    _depth = 0
 
     def __init__(self, path: Path):
         self.path = path
         self._fh = None
 
+    def _key(self) -> str:
+        return str(self.path.resolve())
+
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        held = getattr(_FileLock._tls, "depth", 0)
-        if held:
-            # Reentrant: this thread already owns the msvcrt lock on its first handle.
-            _FileLock._tls.depth = held + 1
+        key = self._key()
+        held = getattr(_FileLock._tls, "held", None)
+        if held is None:
+            held = _FileLock._tls.held = {}
+        if held.get(key):
+            # Reentrant: this thread already owns the msvcrt lock on this path.
+            held[key] += 1
             return self
         self._fh = open(self.path, "a+b")
         try:
@@ -236,15 +243,18 @@ class _FileLock:
             self._fh.close()
             self._fh = None
             raise RuntimeError("active session file lock unavailable") from exc
-        _FileLock._tls.depth = 1
+        held[key] = 1
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        held = getattr(_FileLock._tls, "depth", 0)
-        if held > 1:
-            _FileLock._tls.depth = held - 1
+        held = getattr(_FileLock._tls, "held", None)
+        key = self._key()
+        depth = (held or {}).get(key, 0)
+        if depth > 1:
+            held[key] = depth - 1
             return
-        _FileLock._tls.depth = 0
+        if held is not None:
+            held.pop(key, None)
         fh, self._fh = self._fh, None
         if fh is not None:
             with suppress(Exception):

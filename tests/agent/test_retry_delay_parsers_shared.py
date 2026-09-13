@@ -57,6 +57,9 @@ class TestResetDelayOneTable:
         ("Limit hit; resets in 45s", 45.0),
         ('"quotaResetDelay": "1500ms"', 1.5),
         ("please retry after 12 seconds", 12.0),
+        # Both grammars in one body: the explicit retry-after wins (pool precedence), not the
+        # multi-hour quota window.
+        ("Rate limited. Retry after 30s; resets in 4hr", 30.0),
     ])
     def test_credential_pool_and_error_context_agree(self, message, seconds):
         """The pooled-credential cooldown and the UI's error context read the same table, so the

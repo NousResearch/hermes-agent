@@ -88,10 +88,13 @@ def _resets_in_seconds(m: "re.Match[str]") -> Optional[float]:
     return float(m.group(1) or 0) * 3600 + float(m.group(2) or 0) * 60 + float(m.group(3) or 0)
 
 
+# An explicit "retry after N s" wins over "resets in ..." (the credential pool's precedence):
+# a body carrying both describes a short throttle inside a long quota window, and the
+# shorter explicit wait is the one the provider actually asks for.
 RETRY_DELAY_PATTERNS = (
     (_QUOTA_RESET_DELAY_RE, _quota_reset_seconds),
-    (_RESETS_IN_RE, _resets_in_seconds),
     (_RETRY_AFTER_SECONDS_RE, lambda m: float(m.group(1))),
+    (_RESETS_IN_RE, _resets_in_seconds),
 )
 
 

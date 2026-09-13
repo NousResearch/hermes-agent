@@ -375,6 +375,7 @@ class SessionManager:
         from run_agent import AIAgent
         from hermes_cli.config import load_config
         from hermes_cli.runtime_provider import resolve_runtime_provider
+        from agent.skill_utils import parse_config_string_list
 
         config = load_config()
         model_cfg = config.get("model")
@@ -391,6 +392,9 @@ class SessionManager:
         kwargs = {
             "platform": "acp", "quiet_mode": True, "session_id": session_id, "session_db": self._get_db(),
             "enabled_toolsets": _expand_acp_enabled_toolsets(["hermes-acp"], mcp_server_names=configured_mcp_servers),
+            # ``agent.disabled_toolsets`` is a hard suppression the operator configured; an ACP
+            # session has to honour it too, or the config silently does nothing on this platform.
+            "disabled_toolsets": parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None,
             "model": model or default_model,
         }
         try:

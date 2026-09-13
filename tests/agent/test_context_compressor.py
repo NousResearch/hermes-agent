@@ -1972,6 +1972,75 @@ class TestTokenBudgetTailProtection:
         assert messages[cut]["content"] == "middle answer 2"
         assert messages[-1]["content"] == "latest ask"
 
+    def test_configurable_max_tail_message_floor(self):
+        """max_tail_message_floor raises the tail floor above the default 8.
+
+        With max_tail_message_floor=20 and protect_last_n=20, the tail floor
+        should be 20 (not capped at 8), keeping more recent messages verbatim.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=1,
+                protect_last_n=20,
+                max_tail_message_floor=20,
+                quiet_mode=True,
+            )
+        c.tail_token_budget = 10  # tiny budget -> floor is the binding constraint
+        messages = [{"role": "system", "content": "sys"}]
+        for i in range(30):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({"role": role, "content": f"msg {i}"})
+        cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+        tail_size = len(messages) - cut
+        # Floor should be min(protect_last_n=20, max_tail_message_floor=20) = 20
+        assert tail_size >= 20, f"Expected >=20 tail messages with floor=20, got {tail_size}"
+
+    def test_max_tail_message_floor_default_is_8(self, budget_compressor):
+        """When max_tail_message_floor=0 (default), the cap falls back to 8."""
+        c = budget_compressor
+        assert c.max_tail_message_floor == 0
+        assert c._effective_max_tail_message_floor == 8  # module default
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Tail floor has no token bound (#108647): on a lean window a raised "
+            "floor keeps 20 messages / 70,190 tokens = 7.0x the 10,000 lean budget. "
+            "Remove this marker in the same PR that lands a token bound."
+        ),
+    )
+    def test_tail_floor_token_bound_pending_108647(self):
+        """The message-count floor clamps the tail cut in token-blind count space
+        (``min(cut_idx, fallback_cut)``) and the anchors only walk backward, so on a
+        lean window a raised floor keeps N messages of whatever size the run
+        produced — no token bound.  #108647 tracks the missing bound; when a bound
+        lands, remove the xfail marker in the same PR.
+        """
+        from agent.context_compressor import LEAN_TAIL_FLOOR_TOKENS
+        from agent.model_metadata import estimate_messages_tokens_rough
+
+        c = ContextCompressor(
+            "test-model",
+            threshold_percent=0.85,
+            protect_first_n=3,
+            protect_last_n=20,
+            max_tail_message_floor=20,
+        )
+        # Any window <= 400K pins the lean tail budget at LEAN_TAIL_FLOOR_TOKENS.
+        c.context_length = 160000
+        budget = c.tail_token_budget
+        assert budget == LEAN_TAIL_FLOOR_TOKENS
+        msgs = []
+        for p in range(15):
+            msgs.append({"role": "user", "content": f"task {p}"})
+            msgs.append({"role": "assistant", "content": "y" * 28_000})
+        cut = c._find_tail_cut_by_tokens(msgs, head_end=0, token_budget=budget)
+        tail_tokens = estimate_messages_tokens_rough(msgs[cut:])
+        # Desired invariant (today: 20 messages / 70,190 tokens = 7.0x the budget).
+        assert tail_tokens <= int(budget * 1.5)
+
 
     def test_small_conversation_still_compresses(self, budget_compressor):
         """With the new min of 8 messages (head=2 + 3 + 1 guard + 2 middle),
@@ -3362,7 +3431,7 @@ class TestMinTailUserMessages:
 
     def test_n_guarantee_wins_over_tail_token_budget_and_floor(self):
         """Interaction contract: the N-user guarantee WINS over both
-        tail_token_budget and _MAX_TAIL_MESSAGE_FLOOR.
+        tail_token_budget and _DEFAULT_MAX_TAIL_MESSAGE_FLOOR.
 
         The budget walk (and its bounded message floor) computes the initial
         cut; the N-anchor then only ever pulls the cut BACKWARD (tail can

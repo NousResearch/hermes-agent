@@ -106,6 +106,78 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
 
 
+class TestToolsetValidationWarning:
+    """Constructor-time validation must not false-positive on plugin toolsets
+    that discover_plugins() would register moments later (#91757).
+
+    ``_make_cli`` reloads ``cli``, so the patches target the underlying
+    modules (``toolsets``, ``hermes_cli.plugins``) whose attributes the CLI's
+    thin wrappers resolve on every call — patching ``cli`` itself would be
+    wiped by the reload.
+    """
+
+    def test_plugin_toolset_false_positive_suppressed(self, capsys):
+        import toolsets as toolsets_mod
+        import hermes_cli.plugins as plugins_mod
+
+        discovered = {"ran": False}
+
+        def _fake_validate(name):
+            if name == "hermes-cli":
+                return True
+            return discovered["ran"]  # plugin toolset known only after discovery
+
+        with patch.object(toolsets_mod, "validate_toolset", side_effect=_fake_validate), \
+             patch.object(plugins_mod, "discover_plugins", side_effect=lambda: discovered.__setitem__("ran", True)):
+            _make_cli(toolsets=["hermes-cli", "cad_compare"])
+
+        assert "Unknown toolsets" not in capsys.readouterr().out
+
+    def test_genuinely_unknown_toolset_still_warns(self, capsys):
+        import toolsets as toolsets_mod
+        import hermes_cli.plugins as plugins_mod
+
+        def _fake_validate(name):
+            return name == "hermes-cli"
+
+        with patch.object(toolsets_mod, "validate_toolset", side_effect=_fake_validate), \
+             patch.object(plugins_mod, "discover_plugins", side_effect=lambda: None):
+            _make_cli(toolsets=["hermes-cli", "ghost_set"])
+
+        assert "Unknown toolsets: ghost_set" in capsys.readouterr().out
+
+    def test_discovery_crash_does_not_propagate_and_still_warns(self, capsys):
+        """A plugin raising during discovery must not escape the constructor;
+        the toolset warning still prints so the failure stays user-visible."""
+        import toolsets as toolsets_mod
+        import hermes_cli.plugins as plugins_mod
+
+        def _fake_validate(name):
+            return name == "hermes-cli"
+
+        with patch.object(toolsets_mod, "validate_toolset", side_effect=_fake_validate), \
+             patch.object(plugins_mod, "discover_plugins", side_effect=RuntimeError("boom")):
+            _make_cli(toolsets=["hermes-cli", "ghost_set"])  # must not raise
+
+        assert "Unknown toolsets: ghost_set" in capsys.readouterr().out
+
+    def test_multiple_invalid_names_trigger_single_discovery_pass(self, capsys):
+        """Discovery runs once for the whole invalid list, not once per name."""
+        import toolsets as toolsets_mod
+        import hermes_cli.plugins as plugins_mod
+
+        def _fake_validate(name):
+            return name == "hermes-cli"
+
+        with patch.object(toolsets_mod, "validate_toolset", side_effect=_fake_validate), \
+             patch.object(plugins_mod, "discover_plugins", side_effect=lambda: None) as discover:
+            _make_cli(toolsets=["hermes-cli", "ghost_set", "phantom_set"])
+
+        discover.assert_called_once()
+        out = capsys.readouterr().out
+        assert "Unknown toolsets: ghost_set, phantom_set" in out
+
+
 class TestFallbackChainInit:
     def test_merges_new_and_legacy_fallback_config(self):
         cli = _make_cli(config_overrides={

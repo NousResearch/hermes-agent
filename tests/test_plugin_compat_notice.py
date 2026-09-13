@@ -146,11 +146,69 @@ def test_scan_root_never_falls_back_to_cwd(tmp_path, monkeypatch):
     (tmp_path / "stray.py").write_text("from tools.web_tools import prefers_gateway\n")
     assert pc.plugin_hits(SimpleNamespace(source="directory", path=r"C:\Users\alice\plugin", name="w")) == []
     assert pc.plugin_hits(SimpleNamespace(source="entrypoint", path="no_such_pkg_xyz:register", name="e")) == []
+    namespace = tmp_path / "site" / "namespace_plugin"
+    namespace.mkdir(parents=True)
+    (namespace / "child.py").write_text("from tools.web_tools import prefers_gateway\n")
     pkg = tmp_path / "site" / "vendor_plugin"; pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("from tools.web_tools import prefers_gateway\n")
     monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    assert pc.plugin_hits(SimpleNamespace(source="entrypoint", path="namespace_plugin:register", name="n")) == []
+    assert pc.plugin_hits(SimpleNamespace(source="entrypoint", path="builtins:register", name="b")) == []
     hits = pc.plugin_hits(SimpleNamespace(source="entrypoint", path="vendor_plugin:register", name="v"))
     assert [h.file for h in hits] == ["__init__.py"]
+
+
+def test_entrypoint_scan_detects_single_file_module(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "single_plugin.py").write_text("from tools.web_tools import prefers_gateway\n")
+    monkeypatch.syspath_prepend(str(site))
+
+    hits = pc.plugin_hits(SimpleNamespace(
+        source="entrypoint", path="single_plugin:register", name="single",
+    ))
+
+    assert [(hit.file, hit.old) for hit in hits] == [
+        ("single_plugin.py", "tools.web_tools.prefers_gateway"),
+    ]
+
+
+def test_entrypoint_scan_resolves_dotted_module_without_importing_parent(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    parent = site / "compat_entrypoint_parent"
+    parent.mkdir(parents=True)
+    marker = tmp_path / "parent-imported"
+    (parent / "__init__.py").write_text(f"open({str(marker)!r}, 'w').write('executed')\n")
+    (parent / "child.py").write_text("from tools.web_tools import prefers_gateway\n")
+    monkeypatch.syspath_prepend(str(site))
+
+    hits = pc.plugin_hits(SimpleNamespace(
+        source="entrypoint", path="compat_entrypoint_parent.child:register", name="dotted",
+    ))
+
+    assert not marker.exists()
+    assert [(hit.file, hit.old) for hit in hits] == [
+        ("child.py", "tools.web_tools.prefers_gateway"),
+    ]
+
+
+def test_entrypoint_scan_rejects_path_shaped_module_segments(tmp_path, monkeypatch):
+    site = tmp_path / "site"
+    package = site / "legit"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    outside = tmp_path / "not-the-plugin.py"
+    outside.write_text("from tools.web_tools import prefers_gateway\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(site))
+
+    manifest = SimpleNamespace(
+        source="entrypoint",
+        path=f"legit.{outside}:register",
+        name="malformed",
+    )
+
+    assert pc._scan_root(manifest) is None
+    assert pc.plugin_hits(manifest) == []
 
 
 def test_allow_override_requires_literal_true_and_notice_reports_it(monkeypatch):

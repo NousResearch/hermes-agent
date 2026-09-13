@@ -381,10 +381,25 @@ async function listBranches(repoPath, gitBin) {
   }
 
   try {
-    const [localOut, remoteOut] = await Promise.all([
+    // allSettled, not all: `all` rejects on the first failure and leaves the
+    // other git still running. On Windows a live child holds a handle on its
+    // `cwd`, so the caller can observe the directory as busy after this
+    // function has already returned. Wait for both, then apply the rejection.
+    const [localSettled, remoteSettled] = await Promise.allSettled([
       runGit(gitBin, ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/heads'], resolved),
       runGit(gitBin, ['for-each-ref', '--format=%(refname:short)', '--sort=-committerdate', 'refs/remotes'], resolved)
     ])
+
+    if (localSettled.status === 'rejected') {
+      throw localSettled.reason
+    }
+
+    if (remoteSettled.status === 'rejected') {
+      throw remoteSettled.reason
+    }
+
+    const localOut = localSettled.value
+    const remoteOut = remoteSettled.value
 
     const trees = await listWorktrees(resolved, gitBin)
     const pathByBranch = new Map(trees.filter(tree => tree.branch).map(tree => [tree.branch, tree.path]))

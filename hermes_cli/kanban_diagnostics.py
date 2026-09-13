@@ -97,6 +97,29 @@ def _event_kind(ev) -> str:
     return _task_field(ev, "kind", "") or ""
 
 
+def _run_handed_off_for_input(run, events) -> bool:
+    """Return whether a run ended in an explicit ``needs_input`` handoff.
+
+    A worker that reaches a human-input gate has run far enough to prove that
+    the prior crash loop is no longer the active failure mode. The block kind
+    lives on the associated ``blocked`` event rather than on ``task_runs``.
+    Keep other block kinds unchanged: capability, transient, and legacy
+    blocks may still be useful boundaries for the crash diagnostic.
+    """
+    run_id = _task_field(run, "id", None)
+    if run_id is None:
+        return False
+    for ev in reversed(events):
+        event_run_id = _task_field(ev, "run_id", None)
+        if event_run_id is None or str(event_run_id) != str(run_id):
+            continue
+        if _event_kind(ev) not in {"blocked", "block_loop_detected"}:
+            continue
+        block_kind = _parse_payload(ev).get("kind")
+        return str(block_kind or "").strip().lower() == "needs_input"
+    return False
+
+
 def _event_ts(ev) -> int:
     return int(_task_field(ev, "created_at", 0) or 0)
 
@@ -451,6 +474,11 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
             consecutive += 1
             if last_err is None:
                 last_err = _task_field(r, "error")
+        elif outcome == "blocked" and _run_handed_off_for_input(r, events):
+            # An explicit human-input handoff is a clean worker boundary. It
+            # must clear stale crash history without treating every kind of
+            # blocked run as success.
+            break
         elif outcome in {"completed", "reclaimed"}:
             break
     if consecutive < threshold:

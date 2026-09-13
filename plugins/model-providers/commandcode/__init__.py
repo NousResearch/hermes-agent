@@ -79,6 +79,7 @@ commandcode = CommandCodeProfile(
         "xiaomi/mimo-v2.5-pro", "google/gemini-3.5-flash", "gpt-5.5",
     ),
     default_aux_model="deepseek/deepseek-v4-flash",
+    supports_vision_tool_messages=False,  # 400 "Invalid input" on list-type tool content
 )
 
 commandcode_anthropic = CommandCodeAnthropicProfile(

@@ -201,6 +201,41 @@ class TestCommandCodeRegistryIntegrity:
         assert providers.get_provider_profile("commandcode-nonexistent") is None
 
 
+# ── Vision tool-result veto (#107476) ─────────────────────────────────────────
+
+class TestCommandCodeVisionToolMessagesVeto:
+    """chat_completions CommandCode 400s on list-type tool content.
+
+    User-message images still work via ``model.supports_vision: true``.
+    The Anthropic profile has no wire evidence of the same 400, so it
+    must keep the inherited ``supports_vision_tool_messages=True``.
+    Neither profile should flip ``supports_vision`` (default False).
+    """
+
+    def test_chat_profile_rejects_vision_tool_messages(self, commandcode_profile):
+        assert commandcode_profile.supports_vision_tool_messages is False
+
+    def test_anthropic_profile_keeps_inherited_tool_messages(
+        self, commandcode_anthropic_profile
+    ):
+        assert commandcode_anthropic_profile.supports_vision_tool_messages is True
+
+    def test_supports_vision_stays_default_false(
+        self, commandcode_profile, commandcode_anthropic_profile
+    ):
+        assert commandcode_profile.supports_vision is False
+        assert commandcode_anthropic_profile.supports_vision is False
+
+    def test_chat_alias_inherits_the_same_veto(self):
+        import model_tools  # noqa: F401
+        import providers
+
+        chat = providers.get_provider_profile("commandcode")
+        alias = providers.get_provider_profile("commandcode-chat")
+        assert alias is chat
+        assert alias.supports_vision_tool_messages is False
+
+
 # ── Model list filtering ──────────────────────────────────────────────────────
 
 class TestCommandCodeModelFiltering:

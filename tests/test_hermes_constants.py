@@ -55,6 +55,17 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 
+    def test_expanded_custom_profile_returns_custom_root(self, tmp_path, monkeypatch):
+        custom_root = tmp_path / "deployment"
+        home_token = "$" + "HOME"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv(
+            "HERMES_HOME", f"{home_token}/deployment/profiles/research"
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "native-home")
+
+        assert get_default_hermes_root() == custom_root
+
     @pytest.mark.windows_only
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
@@ -152,6 +163,26 @@ class TestGetProcessHermesHome:
         home = tmp_path / "launch-home"
         monkeypatch.setenv("HERMES_HOME", str(home))
         assert get_process_hermes_home() == home
+
+    def test_process_and_context_homes_expand_environment_and_user_syntax(
+        self, tmp_path, monkeypatch
+    ):
+        home_token = "$" + "HOME"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        for syntax in (home_token, "~"):
+            process_home = tmp_path / "process-home"
+            monkeypatch.setenv("HERMES_HOME", f"{syntax}/process-home")
+            assert get_process_hermes_home() == process_home
+
+            override_home = tmp_path / "override-home"
+            token = set_hermes_home_override(f"{syntax}/override-home")
+            try:
+                assert get_hermes_home() == override_home
+                assert get_process_hermes_home() == process_home
+            finally:
+                reset_hermes_home_override(token)
 
 
 

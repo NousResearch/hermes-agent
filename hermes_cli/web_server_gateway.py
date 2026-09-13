@@ -262,6 +262,7 @@ _ACTION_LOG_FILES: Dict[str, str] = {
     "gateway-restart": "gateway-restart.log",
     "gateway-start": "gateway-start.log",
     "gateway-stop": "gateway-stop.log",
+    "gateway-migrate": "gateway-migrate.log",
     "hermes-update": "hermes-update.log",
     **{name: f"action-{name}.log" for name in (
         "doctor", "security-audit", "backup", "import", "checkpoints-prune", "skills-install",
@@ -322,6 +323,78 @@ def _dashboard_spawn_executable() -> str:
     return sys.executable
 
 
+def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
+    """Return the named-profile selector that :func:`_profile_cli_args` puts in front of an action.
+
+    Deliberately inspects only the leading selector: values after the real subcommand may
+    legitimately contain ``-p`` / ``--profile`` for a nested process (``mcp add --args ...``).
+    """
+    if len(subcommand) >= 2 and subcommand[0] in {"-p", "--profile"}:
+        return str(subcommand[1]).strip() or None
+    if subcommand and str(subcommand[0]).startswith("--profile="):
+        return str(subcommand[0]).split("=", 1)[1].strip() or None
+    return None
+
+
+def _profile_action_environment(
+    subcommand: List[str], env_overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Environment for a detached ``hermes <subcommand>`` action.
+
+    The dashboard loads its own profile's ``.env`` into process-global ``os.environ``. Copying
+    that mapping verbatim into ``hermes -p <other> ...`` lets the named child see the dashboard
+    profile's platform credentials and ports *before* its own dotenv loads (``load_hermes_dotenv``
+    does not override keys already present): a supposedly A2A-only profile then claims the default
+    Discord token and binds the default API/BlueBubbles ports.
+
+    Named-profile actions therefore start from Hermes' standard scrubbed subprocess env, then drop
+    the profile-managed keys plus every key declared by the dashboard/default profile dotenv files
+    and their hydrated secret sources, and pin ``HERMES_HOME`` to the target profile. The child's
+    normal startup then loads that profile's own ``.env``. Actions without a profile selector keep
+    the historical environment exactly.
+    """
+    profile = _named_profile_from_action(subcommand)
+    if profile is None:
+        action_env = dict(os.environ)
+    else:
+        from hermes_cli.env_loader import (
+            _PROFILE_MANAGED_ENV_KEYS, _env_keys_defined_in_dotenv, get_secret_source_values,
+        )
+        from hermes_cli.web_server_profiles import _resolve_profile_dir
+        from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
+        from tools.environments.local import build_subprocess_env
+
+        target_home = _resolve_profile_dir(profile)
+        action_env = build_subprocess_env(base=os.environ, scrub_secrets=True)
+
+        profile_keys = set(_PROFILE_MANAGED_ENV_KEYS)
+        try:
+            source_homes = {str(get_default_hermes_root()), str(get_hermes_home())}
+        except Exception:
+            source_homes = set()
+        for source_home in source_homes:
+            profile_keys.update(_env_keys_defined_in_dotenv(Path(source_home) / ".env"))
+            # Secret managers contribute locally named credentials that never appear in .env;
+            # the dashboard already hydrated its own sources, so their key names are a boundary too.
+            profile_keys.update(get_secret_source_values(source_home).keys())
+        for key in profile_keys:
+            action_env.pop(key, None)
+
+        # Pin the child before import-time startup runs; the explicit -p flag stays authoritative
+        # and resolves to the same validated directory.
+        action_env["HERMES_HOME"] = str(target_home)
+        apply_subprocess_home_env(action_env)
+
+    action_env["HERMES_NONINTERACTIVE"] = "1"
+    # The dashboard runs inside the gateway process, so os.environ carries _HERMES_GATEWAY=1;
+    # inheriting it trips the child's in-process restart-loop guard (exit 1). Drop it, like
+    # the gateway's own restart watcher does (gateway/run.py, #52470).
+    action_env.pop("_HERMES_GATEWAY", None)
+    if env_overrides:
+        action_env.update(env_overrides)
+    return action_env
+
+
 def _spawn_hermes_action(
     subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None
 ) -> subprocess.Popen:
@@ -332,16 +405,13 @@ def _spawn_hermes_action(
     log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
 
     cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
-    # The dashboard runs inside the gateway process, so os.environ carries _HERMES_GATEWAY=1;
-    # inheriting it trips the child's in-process restart-loop guard (exit 1). Drop it, like
-    # the gateway's own restart watcher does.
-    # The gateway's own restart watcher already drops it (gateway/run.py); mirror that here (#52470).
-    action_env = {**os.environ, "HERMES_NONINTERACTIVE": "1"}
-    action_env.pop("_HERMES_GATEWAY", None)
+    # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
+    # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
+    action_env = _profile_action_environment(subcommand, env_overrides)
     detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
     proc = subprocess.Popen(
         cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env={**action_env, **(env_overrides or {})}, **detach,
+        env=action_env, **detach,
     )
     log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
     _ACTION_RESULTS.pop(name, None)
@@ -355,9 +425,53 @@ def _spawn_hermes_action(
     return proc
 
 
+def _own_profile_selector(profile: Optional[str]) -> Optional[str]:
+    """The profile a lifecycle verb addresses: the explicit selector, else the process's own named
+    profile (a pooled Desktop ``hermes --profile X serve`` answers ``/api/gateway/*`` without
+    ``?profile=``; an unscoped verb there is about X, not about the default home)."""
+    requested = (profile or "").strip()
+    if requested:
+        return requested
+    from hermes_constants import get_process_hermes_home, profile_name_for_home
+    own = profile_name_for_home(get_process_hermes_home())
+    return own if own and own != "default" else None
+
+
 def _gateway_subcommand(profile: Optional[str], verb: str) -> List[str]:
+    """``hermes [-p X] gateway <verb>`` argv for a dashboard lifecycle action. A profile served by the
+    live default multiplexer has no gateway of its own: ``restart`` targets the multiplexer (the process
+    that actually serves X — a ``-p X gateway restart`` child only exits 78 into the action log while the
+    UI reports "restarted"); ``start``/``stop`` are refused by the caller (``multiplexed_profile_refusal``).
+    The multiplexer is addressed as ``-p default`` explicitly: a bare ``gateway restart`` spawned from a
+    pooled ``--profile X serve`` would inherit X's ``HERMES_HOME`` and hit the same exit-78 refusal."""
     from hermes_cli.web_server_profiles import _profile_cli_args
-    return _profile_cli_args(profile) + ["gateway", verb]
+    profile = _own_profile_selector(profile)
+    args = _profile_cli_args(profile)
+    if profile and verb == "restart" and multiplexed_profile_refusal(profile, verb) is not None:
+        from hermes_constants import get_process_hermes_home, profile_name_for_home
+        args = [] if profile_name_for_home(get_process_hermes_home()) == "default" else ["-p", "default"]
+    return args + ["gateway", verb]
+
+
+def _profile_is_multiplexed(profile: str) -> bool:
+    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    return named_profile_served_by_running_multiplexer(profile)
+
+
+def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[str]:
+    """Refusal text for ``gateway start``/``stop`` on a profile the live default multiplexer serves and
+    that has no gateway of its own (a ``--force``-started separate one is managed normally), else None.
+    The spawned ``hermes -p X gateway <verb>`` would only print exit-78 / "no gateway running for this
+    profile" into an action log nobody reads while the UI shows the verb as done."""
+    requested = _own_profile_selector(profile) or ""
+    if not requested or requested.lower() in {"current", "default"} or not _profile_is_multiplexed(requested):
+        return None
+    from hermes_cli.profiles import _check_gateway_running
+    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    if _check_gateway_running(_resolve_profile_dir(requested)):
+        return None
+    return (f"The default gateway already serves profile '{requested}' as a multiplexer; "
+            f"{verb} it from the default profile instead of a separate gateway for this profile.")
 
 
 def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> dict[str, Any]:

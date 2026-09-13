@@ -359,26 +359,31 @@ def _db_unavailable_line() -> str:
     return f"  {format_session_db_unavailable()}"
 
 
-def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note) -> None:
-    """Print a worker-thread result (/bg, /btw) into the scrollback: accent rules around
+def _print_side_result_panel(cli, *, header_lines, body, title_suffix, empty_note, console=None) -> None:
+    """Print a worker-thread result (/bg, /btw, /login) into the scrollback: accent rules around
     ``header_lines``, then ``body`` in a skinned Rich panel (or ``empty_note``).
     Forces a TUI refresh first so the spinner/status bar don't overlap the output."""
     from cli import ChatConsole, _accent_hex, _maybe_remap_for_light_mode, _render_final_assistant_content
     _refresh_tui_before_print(cli)
-    ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
-    _cp(*header_lines)
-    ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+    rich_console = console or ChatConsole()
+    rich_console.print(f"[{_accent_hex()}]{'─' * 40}[/]")
+    if console is None:
+        _cp(*header_lines)
+    else:
+        for line in header_lines:
+            console.print(line)
+    rich_console.print(f"[{_accent_hex()}]{'─' * 40}[/]")
     if not body:
-        return _cp(empty_note)
+        return _cp(empty_note) if console is None else console.print(empty_note)
     try:
         from hermes_cli.skin_engine import get_active_skin
         _skin = get_active_skin()
-        label = _skin.get_branding("response_label", "⚕ Hermes")
+        label = _skin.get_branding("response_label", "☤ Hermes")
         _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
         _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
     except Exception:
-        label, _resp_color, _resp_text = "⚕ Hermes", "#CD7F32", "#FFF8DC"
-    ChatConsole().print(Panel(
+        label, _resp_color, _resp_text = "☤ Hermes", "#CD7F32", "#FFF8DC"
+    rich_console.print(Panel(
         _render_final_assistant_content(body, mode=cli.final_response_markdown),
         title=f"[{_resp_color} bold]{label} {title_suffix}[/]", title_align="left",
         border_style=_resp_color, style=_resp_text, box=rich_box.HORIZONTALS, padding=(1, 4),
@@ -1171,8 +1176,8 @@ class CLICommandsMixin:
             return _cp("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
         if not self._session_db:
             with suppress(Exception):
-                from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                from hermes_state_registry import acquire
+                self._session_db = acquire()
         if not self._session_db:
             return _cp(_db_unavailable_line())
         # Ensure the session row exists (an empty session has flushed nothing yet): the gateway
@@ -1372,7 +1377,8 @@ class CLICommandsMixin:
         branch_title = branch_name or self._session_db.get_next_title_in_lineage(
             self._session_db.get_session_title(self.session_id) or "branch")
         parent_session_id = self.session_id
-        _end_current_session(self, "branched")
+        # Create the child BEFORE ending the parent: a failed create_session must leave the session the
+        # user is still on open, not ended with end_reason="branched" and no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions
         # even after the parent is re-ended with a different end_reason.
         try:
@@ -1383,6 +1389,7 @@ class CLICommandsMixin:
                               "_branched_from": parent_session_id})
         except Exception as e:
             return _cp(f"  Failed to create branch session: {e}")
+        _end_current_session(self, "branched")
         # Best-effort chunked copy (a failed copy still yields a usable branch); the api_content
         # sidecar lets the branch's first turn replay the parent's exact wire bytes (warm cache).
         with suppress(Exception):
@@ -1921,8 +1928,12 @@ class CLICommandsMixin:
         runtime = turn_route["runtime"]
 
         def produce():
+            from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
             set_sudo_password_callback(self._sudo_password_callback)
             set_approval_callback(self._approval_callback)
+            set_unlock_prompt_callback(self._vault_unlock_callback)
+            set_save_login_prompt_callback(self._vault_save_login_callback)
+            set_code_prompt_callback(self._vault_code_callback)
             with suppress(Exception):
                 set_secret_capture_callback(self._secret_capture_callback)
             try:
@@ -1960,6 +1971,9 @@ class CLICommandsMixin:
                     set_sudo_password_callback(None)
                     set_approval_callback(None)
                     set_secret_capture_callback(None)
+                    set_unlock_prompt_callback(None)
+                    set_save_login_prompt_callback(None)
+                    set_code_prompt_callback(None)
 
         def done():
             self._background_tasks.pop(task_id, None)
@@ -1975,20 +1989,26 @@ class CLICommandsMixin:
         thread.start()
 
     def _side_worker(self, produce, *, name, fail_label, header_lines, title_suffix, empty_note,
-                     bell=False, on_done=None) -> threading.Thread:
-        """Daemon thread for /bg and /btw: ``produce()`` returns the body to print in a side-result
+                     bell=False, on_done=None, console=None) -> threading.Thread:
+        """Daemon thread for /bg, /btw and /login: ``produce()`` returns the body to print in a side-result
         panel; failures print ``fail_label`` failed; the TUI is always re-invalidated afterwards."""
         def run():
             try:
                 body = produce()
                 _print_side_result_panel(self, header_lines=header_lines, body=body,
-                                         title_suffix=title_suffix, empty_note=empty_note)
+                                         title_suffix=title_suffix, empty_note=empty_note,
+                                         console=console)
                 if bell and self.bell_on_complete:
                     sys.stdout.write("\a")
                     sys.stdout.flush()
             except Exception as e:
                 _refresh_tui_before_print(self)
-                _cp(f"  ❌ {fail_label} failed: {e}")
+                line = f"  ❌ {fail_label} failed: {e}"
+                # Same console the caller captured, so a late failure can't splice into a later command.
+                if console is not None:
+                    console.print(line, markup=False)
+                else:
+                    _cp(line)
             finally:
                 if on_done is not None:
                     on_done()
@@ -1996,6 +2016,49 @@ class CLICommandsMixin:
                     self._invalidate(min_interval=0)
 
         return threading.Thread(target=run, daemon=True, name=name)
+
+    def _handle_login_command(self, cmd_original: str) -> None:
+        """Start an in-chat sign-in without blocking the input loop while approval is pending."""
+        from hermes_cli import anon_auth
+        # Pin the output target now. Under the live TUI ``self.console`` writes straight to
+        # patch_stdout's StdoutProxy, which mangles Rich's escapes — there ``None`` keeps the
+        # panel on the ``_cprint`` path. Only the slash worker (``_app`` is None) swaps the console.
+        console = None if getattr(self, "_app", None) else getattr(self, "console", None)
+        _cp(f"  {anon_auth.LOGIN_STARTING}")
+        gen = anon_auth.run_sign_in(timeout_seconds=8.0)
+        try:
+            first = next(gen, None)
+        except KeyboardInterrupt:
+            with suppress(Exception):
+                gen.close()
+            return _cp(anon_auth.UPGRADE_CANCELLED)
+        if first is None:
+            return
+        if first.terminal:
+            return _cp(f"  {first.copy}")
+        anon_auth.render_sign_in_cli_code(first, chat=True, printer=_cp)
+
+        def _settle_session_model(state) -> None:
+            """A completed sign-in moved this profile onto the account: the welcome host is gone and
+            the portal serves ``nous/welcome`` as a paid model, so a session still carrying it must
+            move too — the CLI counterpart of the gateway's on-``Completed`` sweep. Only the free
+            tier's own model is replaced; a model the user picked while the sign-in was pending
+            stands. Writing ``self.model`` is enough: ``chat()`` compares the turn-route signature
+            and rebuilds the agent on the next turn, so a turn already in flight keeps the agent it
+            started with. ``getattr``: tests drive this handler with minimal shells.
+            """
+            if state.kind != "completed" or not getattr(state, "model_changed", False):
+                return
+            if str(getattr(self, "model", "") or "") == anon_auth.GUEST_MODEL:
+                # "" when the settle cleared the default: _ensure_runtime_credentials then applies
+                # the provider's silent default, which is what settle_after_upgrade documents.
+                self.model = state.model or ""
+
+        thread = self._side_worker(
+            lambda: anon_auth.drain_sign_in_copy(gen, chat=True, on_terminal=_settle_session_model),
+            name="login", fail_label="Sign-in", header_lines=["  Sign-in"],
+            title_suffix="(sign-in)", empty_note="  (No result)", console=console)
+        thread.start()
 
     def _handle_btw_command(self, cmd: str):
         """Handle /btw <question> — answer a side question about this conversation from a
@@ -2593,12 +2656,12 @@ class CLICommandsMixin:
         choices = [("once", "Update Now", "exit the current session and update Hermes Agent"),
                    ("cancel", "Cancel", "keep the current session")]
         raw = self._prompt_text_input_modal(
-            title="⚕  Update Hermes Agent",
+            title="☤  Update Hermes Agent",
             detail="This will exit the current session and run `hermes update`.", choices=choices)
         if raw is None or self._normalize_slash_confirm_choice(raw, choices) != "once":
             print("  🟡 /update cancelled.")
             return False
-        _say_block("  ⚕ Launching update...")
+        _say_block("  ☤ Launching update...")
         # run() execs this on the main thread after prompt_toolkit restores terminal modes;
         # relaunching from this daemon thread would skip cleanup (POSIX) / only end the thread (Windows).
         self._pending_relaunch = ["update"]

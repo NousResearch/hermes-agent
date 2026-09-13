@@ -108,6 +108,35 @@ class TestGetTimezone:
         monkeypatch.setenv("HERMES_HOME", str(first_home))
         assert str(hermes_time.get_timezone()) == "Asia/Tokyo"
 
+    def test_multiplex_prefers_routed_profile_config_over_env(self, tmp_path, monkeypatch):
+        """Under the multiplexed gateway HERMES_TIMEZONE holds only the DEFAULT profile's value
+        (bridged at startup), so a routed profile must resolve from its own config.yaml."""
+        from agent.secret_scope import set_multiplex_active
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        default_home, routed_home = tmp_path / "default", tmp_path / "routed"
+        default_home.mkdir()
+        routed_home.mkdir()
+        (default_home / "config.yaml").write_text("timezone: America/New_York\n", encoding="utf-8")
+        (routed_home / "config.yaml").write_text("timezone: Asia/Tokyo\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setenv("HERMES_TIMEZONE", "America/New_York")
+
+        # Single-profile process: env stays authoritative.
+        assert hermes_time.get_timezone_name() == "America/New_York"
+
+        set_multiplex_active(True)
+        try:
+            assert hermes_time.get_timezone_name() == "America/New_York"  # default profile turn
+            token = set_hermes_home_override(str(routed_home))
+            try:
+                assert hermes_time.get_timezone_name() == "Asia/Tokyo"
+                assert str(hermes_time.get_timezone()) == "Asia/Tokyo"
+            finally:
+                reset_hermes_home_override(token)
+        finally:
+            set_multiplex_active(False)
+
     def test_concurrent_profile_resolution_never_mixes_zones(
         self, tmp_path, monkeypatch
     ):

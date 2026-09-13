@@ -1318,6 +1318,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'vault.unlock.request':
+        patchOverlayState({
+          vaultUnlock: {
+            backend: ev.payload.backend,
+            displayName: ev.payload.display_name,
+            requestId: ev.payload.request_id
+          }
+        })
+        setStatus(`unlock ${ev.payload.display_name}`)
+        ringPromptBell()
+
+        return
+
+      case 'vault.unlock.expire':
+        patchOverlayState(prev =>
+          prev.vaultUnlock?.requestId === ev.payload.request_id ? { ...prev, vaultUnlock: null } : prev
+        )
+
+        return
+
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)

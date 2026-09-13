@@ -337,7 +337,7 @@ class TestResolveToolsetMemo:
             f"got {get_toolset_calls['n']} calls"
         )
         assert (
-            "hermes-cli", True, registry_id, generation
+            "hermes-cli", True, registry_id, generation, registry.current_scope_key()
         ) in toolsets_mod._resolve_toolset_memo
 
     def test_generation_bump_invalidates_memo(self, monkeypatch):

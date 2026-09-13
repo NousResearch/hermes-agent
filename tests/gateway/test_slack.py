@@ -99,6 +99,22 @@ _slack_mod.SLACK_AVAILABLE = True
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _pin_legacy_assistant_threads_api():
+    """Pin the SDK capability probe to the legacy assistant.threads API.
+
+    The mocked slack_sdk module would make the class-attribute probe in
+    ``_sdk_supports_agent_sessions`` return a MagicMock auto-attribute
+    (always truthy), silently flipping every typing/title test onto the
+    Agent Sessions path. Tests that exercise the new path set the cached
+    flag to True explicitly.
+    """
+    prev = _slack_mod._AGENT_SESSIONS_SUPPORTED
+    _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+    yield
+    _slack_mod._AGENT_SESSIONS_SUPPORTED = prev
+
+
 def _rich_text_blocks(*elements):
     return [{"type": "rich_text", "elements": list(elements)}]
 
@@ -3334,6 +3350,9 @@ class TestAssistantThreadLifecycle:
             # connector's chat.startStream recipient fields.
             "scope_id": "T_OTHER",
             "user_id": "U_USER",
+            # Triggering ts: lets the reply_in_thread=false path tell this synthetic
+            # thread key (thread_id == own ts) from a real thread.
+            "message_id": "171.111",
         }
 
     @pytest.mark.asyncio
@@ -3806,6 +3825,10 @@ class TestProgressMessageThread:
         assert msg_event.message_id == "1234567890.000001", (
             "message_id must equal the event ts so _run_agent can use it as "
             "the fallback thread anchor for progress messages"
+        )
+        assert source.message_id == "1234567890.000001", (
+            "source.message_id must carry the authenticated triggering Slack ts "
+            "into session-bound tools"
         )
 
         # Verify that the Slack send() method correctly threads a message
@@ -5911,3 +5934,89 @@ class TestSlackAuthoredTextDeduplication:
         assert "Deploy failed" in payload
         assert "rollback" in payload
         assert "Roll back" in payload
+
+
+class TestAgentSessionsApiRouting:
+    """slack-sdk 3.44.0 Agent Sessions API (assistant_view deprecation Feb 2027).
+
+    When the installed slack-sdk ships agents.sessions.* typed methods, status
+    and title calls route through them; older SDKs keep using the legacy
+    assistant.threads.* methods (compat bridge on Slack's side).
+    """
+
+    def _adapter(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        return a
+
+    @pytest.mark.asyncio
+    async def test_typing_uses_agent_sessions_when_supported(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is thinking...",
+        )
+        a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_typing_falls_back_to_legacy_without_sdk_support(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+        a = self._adapter()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is thinking...",
+        )
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_clears_via_agent_sessions(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.reset_mock()
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+        a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_title_uses_agents_sessions_rename(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a.config.extra["assistant_thread_titles"] = True
+        a._app.client.agents_sessions_rename = AsyncMock()
+        a._app.client.assistant_threads_setTitle = AsyncMock()
+        await a._set_assistant_thread_title("D123", "171234.0001", "Summarize the incident")
+        a._app.client.agents_sessions_rename.assert_called_once_with(
+            channel_id="D123",
+            thread_ts="171234.0001",
+            title="Summarize the incident",
+        )
+        a._app.client.assistant_threads_setTitle.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_title_legacy_without_sdk_support(self):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+        a = self._adapter()
+        a.config.extra["assistant_thread_titles"] = True
+        a._app.client.assistant_threads_setTitle = AsyncMock()
+        await a._set_assistant_thread_title("D123", "171234.0001", "Summarize the incident")
+        a._app.client.assistant_threads_setTitle.assert_called_once_with(
+            channel_id="D123",
+            thread_ts="171234.0001",
+            title="Summarize the incident",
+        )

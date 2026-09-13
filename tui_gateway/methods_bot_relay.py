@@ -10,6 +10,9 @@ import os
 import subprocess
 from pathlib import Path
 
+# Defined beside the sender-side waiter budget so the two Python sides cannot drift (#93911).
+from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
+
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
@@ -22,18 +25,11 @@ def _relay_root() -> Path:
     return home.parent.parent if home.parent.name == "profiles" else home
 
 
-# Per-attempt turn timeout and attempt ceiling for bot_relay.deliver. The Desktop client mirrors
-# both (apps/desktop/src/plugins/hermes-bots/relay.ts: RELAY_TURN_ATTEMPT_MS / RELAY_TURN_MAX_ATTEMPTS)
-# and its relay-deliver-budget test reads these two lines, so a change here must be deliberate (#93911).
-TURN_ATTEMPT_TIMEOUT_SECONDS = 600
-TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
-
-
-def _run_delivery(profile: str, tmp: str) -> subprocess.CompletedProcess:
+def _run_delivery(profile: str, tmp: str, env: dict | None = None) -> subprocess.CompletedProcess:
     from tools.bot_relay import local_delivery_command
     return subprocess.run(
         local_delivery_command(profile, tmp), capture_output=True, text=True, encoding="utf-8",
-        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS)
+        errors="replace", timeout=TURN_ATTEMPT_TIMEOUT_SECONDS, env=env)
 
 
 @method("bot_relay.roster.sync")
@@ -94,10 +90,22 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
             and _session_live_title(
                 record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
+        # The sender fields are whatever the relaying client says. The author labels memory only and grants nothing.
+        from tools.bot_relay import DeliveryAuthor, delivery_env, delivery_turn_author
+        from tui_gateway.methods_browser_control import _is_authenticated_identity
+        sender_fields = ("from_profile", "from_handle", "from_connection")
+        # A logged-in browser never relays for another connection; only the Desktop and server-internal callers do.
+        if (any(params.get(k) for k in sender_fields)
+                and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
+            return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
+        author = delivery_turn_author(*(params.get(k) for k in sender_fields))
         if live_sid:
             # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
             # turn in flight (the default busy mode does); arrivals queue in order.
-            submitted = _methods["prompt.submit"](rid, {"session_id": live_sid, "text": message, "queued": True})
+            submit_params: dict = {"session_id": live_sid, "text": message, "queued": True}
+            if author:
+                submit_params["_turn_author"] = DeliveryAuthor(author)
+            submitted = _methods["prompt.submit"](rid, submit_params)
             if "error" in submitted:
                 return submitted
             reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
@@ -105,6 +113,8 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
 
         def _detail(p) -> str:
             return (p.stderr or p.stdout or "").strip()[-500:]
+
+        turn_env = delivery_env(author)
 
         fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
         try:
@@ -117,7 +127,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             # turn timeout below — doubled when the retry policy grants one bounded re-run — so clients
             # calling bot_relay.deliver must tolerate ~1320s before assuming failure. See #93091.
             with acquire_turn_lock(root, resolved):
-                proc = _run(resolved, tmp)
+                proc = _run(resolved, tmp, turn_env)
                 if proc.returncode != 0:
                     # Retry policy: transient classes re-run the SAME session once; context_overflow
                     # too — the retried turn's pre-API compaction pass compacts the over-threshold
@@ -126,7 +136,7 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
                     from tools.bot_failure_reasons import (
                         RETRY_NONE, classify_agent_error, retry_action)
                     if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
-                        proc = _run(resolved, tmp)
+                        proc = _run(resolved, tmp, turn_env)
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)

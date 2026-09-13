@@ -67,7 +67,7 @@ def _derive_finish_reason(agent: Any, response: Any, messages: Any) -> str:
         return _codex_finish_reason(response)
     transport = agent._get_transport()
     if agent.api_mode == "anthropic_messages":
-        return transport.map_finish_reason(response.stop_reason)
+        return transport.response_finish_reason(response)
     normalized = transport.normalize_response(response)  # Bedrock already normalized at dispatch
     finish_reason = normalized.finish_reason
     if agent.api_mode != "bedrock_converse" and agent._should_treat_stop_as_truncated(

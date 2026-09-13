@@ -414,5 +414,5 @@ class MCPServerRunMixin:
         """Drop this server's tools from the registry (idempotent); on shutdown AND budget
         exhaustion, so a dead server never leaves phantom tools in the prompt."""
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
-            _registration._deregister_mcp_tool_all_scopes(self.name, tool_name)
+            _registration._deregister_mcp_tool_all_scopes(self, tool_name)
         self._registered_tool_names = []

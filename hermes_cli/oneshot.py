@@ -169,6 +169,7 @@ def run_oneshot(
     skills: object = None,
     usage_file: Optional[str] = None,
     resume: Optional[str] = None,
+    reasoning: object = None,
     ignore_rules: bool = False,
 ) -> int:
     """Execute a single prompt and print only the final content block.
@@ -227,6 +228,7 @@ def run_oneshot(
                 skills=skills,
                 ignore_rules=effective_ignore_rules,
                 resume=resume,
+                reasoning=reasoning,
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -426,6 +428,7 @@ def _run_agent(
     use_config_toolsets: bool = True,
     skills: object = None,
     resume: Optional[str] = None,
+    reasoning: object = None,
     ignore_rules: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
@@ -451,6 +454,16 @@ def _run_agent(
     )
     if choice.api_mode:
         runtime["api_mode"] = choice.api_mode
+
+    from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+
+    reasoning_config = resolve_reasoning_config(cfg, choice.model)
+    if reasoning is not None and str(reasoning).strip():
+        parsed_reasoning = parse_reasoning_effort(reasoning)
+        if parsed_reasoning is None:
+            logging.warning("Unknown --reasoning '%s', keeping the configured level", reasoning)
+        else:
+            reasoning_config = parsed_reasoning
 
     # sorted() gives stable ordering for config-derived sets; explicit values preserve user order.
     toolsets_list = _normalize_toolsets(toolsets)
@@ -491,6 +504,7 @@ def _run_agent(
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,
+            reasoning_config=reasoning_config,
             # The only interactive callback wired: no user sits at a terminal. Sudo prompts gate on
             # HERMES_INTERACTIVE (never set), hook approval via HERMES_ACCEPT_HOOKS=1, dangerous
             # commands via HERMES_YOLO_MODE=1, skill secret capture degrades gracefully.

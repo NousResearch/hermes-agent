@@ -180,20 +180,23 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
             return _open_probed()
 
 
-def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
-    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
-
-    Access-mode semantics: see :func:`_open_session_db_at_path`.
-    """
+def _session_db_path_for_profile(profile: Optional[str]) -> Path:
+    """state.db path for ``profile`` (None/empty = this process's own)."""
     from hermes_cli.web_server_cron import _cron_profile_home
     from hermes_state import _default_db_path
 
     if profile:
         _name, home = _cron_profile_home(profile)
-        db_path = Path(home) / "state.db"
-    else:
-        db_path = Path(_default_db_path())
-    return _open_session_db_at_path(db_path, read_only=read_only)
+        return Path(home) / "state.db"
+    return Path(_default_db_path())
+
+
+def _open_session_db_for_profile(profile: Optional[str], *, read_only: bool):
+    """Open a SessionDB for ``profile`` (None/empty = this process's own state.db).
+
+    Access-mode semantics: see :func:`_open_session_db_at_path`.
+    """
+    return _open_session_db_at_path(_session_db_path_for_profile(profile), read_only=read_only)
 
 
 # In-process throttle for the opportunistic auto-archive trigger, keyed by

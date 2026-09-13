@@ -161,3 +161,23 @@ def test_delivery_lock_recognizes_resolved_cli_paths(tmp_path, monkeypatch):
     with bot_mode_dm._delivery_lock(["python", "-m", "whatever"], stdin_file=False):
         pass
     assert acquired == ["locked", "locked", "locked"]
+
+
+def test_local_delivery_scopes_in_to_profile_home(tmp_path, monkeypatch):
+    """``--in`` must point at the target profile's OWN home, not the shared home.
+
+    ``--in ~`` scoped the ``-c "Bot Chat"`` lookup to the real home dir, which for a
+    named profile resolves to the DEFAULT profile's workspace and its live Bot Chat
+    session (held by the desktop surface) — delivery then failed with "already has a
+    live owner" → target_busy.
+    """
+    root = tmp_path / ".hermes"
+    (root / "profiles").mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    argv = bot_relay.local_delivery_command("ops", "query.json")
+    assert argv[argv.index("--in") + 1] == str(root / "profiles" / "ops")
+
+    # The default profile still scopes to the root itself, never to a subdir.
+    argv_default = bot_relay.local_delivery_command("default", "query.json")
+    assert argv_default[argv_default.index("--in") + 1] == str(root)

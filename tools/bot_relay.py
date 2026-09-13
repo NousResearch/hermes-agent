@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root
+from tools.bot_mode_probe import _default_home, _hermes_root, profile_home_dir
 
 logger = logging.getLogger(__name__)
 
@@ -74,9 +74,18 @@ class EnvelopeRefusedError(RuntimeError):
 # ``message_agent`` target grammar in ``tools/bot_mode_dm.py``).
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
-# One turn in a profile's canonical Bot Chat: ``hermes -p <profile> *BOT_CHAT_TURN_ARGS``.
+# One turn in a profile's canonical Bot Chat: ``hermes -p <profile> *_bot_chat_turn_args(...)``.
 # ``-c "Bot Chat"`` must match ``bot_mode_probe.BOT_CHAT_TITLE``.
-BOT_CHAT_TURN_ARGS = ("chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing", "-Q")
+def _bot_chat_turn_args(profile: str, root: Path) -> tuple[str, ...]:
+    """Turn args scoping the ``-c "Bot Chat"`` lookup to the profile's OWN home.
+
+    ``--in ~`` scoped the session lookup to the real home directory, which for a named
+    profile resolves to the DEFAULT profile's workspace and its live Bot Chat session
+    (held by the desktop surface) — delivery then failed with "already has a live
+    owner" → target_busy. Scope to the profile's home instead.
+    """
+    home = str(profile_home_dir(root, profile))
+    return ("chat", "--in", home, "-c", "Bot Chat", "--create-if-missing", "-Q")
 
 
 def relay_root(root: Path | str) -> Path:
@@ -381,7 +390,8 @@ def _hermes_cli() -> str:
 
 def local_delivery_command(profile: str, query_file: str) -> list[str]:
     """argv that delivers a DM into ``profile``'s Bot Chat on THIS gateway."""
-    return [_hermes_cli(), "-p", profile, *BOT_CHAT_TURN_ARGS, "--query-file", query_file]
+    root = _hermes_root(Path(_default_home()))
+    return [_hermes_cli(), "-p", profile, *_bot_chat_turn_args(profile, root), "--query-file", query_file]
 
 
 class DeliveryAuthor:

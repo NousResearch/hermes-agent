@@ -284,6 +284,21 @@ class TestCaptureLogSnapshotRedaction:
         assert snap.full_text is not None
         assert _REDACT_FIXTURE_TOKEN not in snap.full_text
 
+    def test_redacts_google_oauth_client_secret_json_for_public_share(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        secret = "GOCSPX-UNIQUELEAKPAYLOAD1234567890"
+        log_path = hermes_home_with_secret / "logs" / "agent.log"
+        log_path.write_text(f'{{"client_secret":"{secret}"}}\n')
+
+        snap = _capture_log_snapshot("agent", tail_lines=10)
+
+        assert "UNIQUELEAKPAYLOAD" not in snap.tail_text
+        assert snap.full_text is not None
+        assert "UNIQUELEAKPAYLOAD" not in snap.full_text
+
     def test_default_redacts_email_addresses_for_public_share(
         self, hermes_home_with_secret
     ):

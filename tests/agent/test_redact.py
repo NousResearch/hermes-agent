@@ -71,6 +71,12 @@ class TestKnownPrefixes:
         result = redact_sensitive_text(token)
         assert "a" * 14 not in result
 
+    def test_google_oauth_client_secret_prefix(self):
+        token = "GOCSPX-" + "A" * 24
+        result = redact_sensitive_text(f"client_secret={token}")
+        assert token not in result
+        assert "A" * 24 not in result
+
 
 
 

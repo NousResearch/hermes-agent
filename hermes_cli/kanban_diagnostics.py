@@ -352,7 +352,8 @@ def _failure_threshold(cfg: dict) -> Any:
     return cfg.get("failure_threshold", cfg.get("spawn_failure_threshold", 3))
 
 
-_OUTCOME_LABELS = {"spawn_failed": "spawn", "timed_out": "timeout", "crashed": "crash"}
+_OUTCOME_LABELS = {"spawn_failed": "spawn", "timed_out": "timeout", "crashed": "crash",
+                   "unreported": "no reporting"}
 
 
 def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
@@ -377,7 +378,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     # Most recent failure outcome makes the title/action specific.
     most_recent_outcome = next(
         (oc for oc in (_task_field(r, "outcome") for r in _runs_newest_first(runs))
-         if oc in {"spawn_failed", "timed_out", "crashed"}),
+         if oc in {"spawn_failed", "timed_out", "crashed", "unreported"}),
         None,
     )
 
@@ -387,7 +388,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
         doctor, auth = f"hermes -p {assignee} doctor", f"hermes -p {assignee} auth"
         actions.append(_cli_hint(f"Verify profile: {doctor}", doctor, suggested=True))
         actions.append(_cli_hint(f"Fix profile auth: {auth}", auth))
-    elif most_recent_outcome in {"timed_out", "crashed"}:
+    elif most_recent_outcome in {"timed_out", "crashed", "unreported"}:
         # Worker got off the ground but died: logs diagnose, reclaim/reassign recover.
         task_id = _task_field(task, "id")
         if task_id:

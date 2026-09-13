@@ -112,6 +112,11 @@ class DispatchResult:
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
+    unreported: list[str] = field(default_factory=list)
+    """Task ids whose worker exited cleanly (rc=0) with no terminal kanban call
+    but DID leave observable state behind: the dispatcher parked them (``blocked``,
+    ``block_kind='transient'``) carrying that state rather than re-running them
+    from scratch. Never ``completed`` — an unreported run is not a finished one."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
@@ -675,8 +680,15 @@ def _error_fingerprint(error_text: str) -> str:
     return fp.lower().strip()
 
 
-# ~96% of "clean exit without a terminal tool call" tasks complete on a later
-# run, so a protocol violation gets a bounded retry before the breaker trips.
+# Historically ~96% of "clean exit without a terminal tool call" tasks
+# completed on a later run — that is what a bounded retry is for. The same
+# measurement is also why this was the board's dominant crash mode: most of
+# those runs had heartbeated for minutes first (some had already pushed a commit
+# or opened a PR), and re-running them from scratch threw that state away. So
+# this ladder is now the fallback for a clean exit that recorded NOTHING
+# observable, and a run that left state behind is parked with that state instead
+# (see ``_run_observable_state`` / ``_unreported_park_reason``) — those runs
+# never reach this ladder.
 # The budget is a violation-only STREAK (``_protocol_violation_streak``),
 # independent of ``consecutive_failures``: other failure kinds neither consume
 # nor extend it. Per-task ``max_retries`` overrides it.
@@ -695,6 +707,10 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     the budget counts ONLY protocol violations. Violations are recognized by the
     ``protocol_violation`` run-metadata marker, with the error text as fallback
     for runs recorded before the marker existed.
+
+    A run the dispatcher PARKED with the state it left behind (``parked`` in the
+    metadata) breaks the streak instead of extending it: a human already
+    intervened between the two runs, so the retry ladder restarts from there.
     """
     streak = 0
     rows = conn.execute(
@@ -707,8 +723,14 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
         outcome = row["outcome"] or ""
         if outcome == "rate_limited":
             continue
-        if outcome == "crashed" and (
-            _kb._json_dict(row["metadata"]).get("protocol_violation")
+        meta = _kb._json_dict(row["metadata"])
+        if meta.get("parked"):
+            break
+        # ``unreported`` is the outcome clean exits are booked under (it is not
+        # a crash); the legacy ``crashed`` form stays for runs recorded before
+        # the outcome existed.
+        if outcome in ("crashed", UNREPORTED_RUN_OUTCOME) and (
+            meta.get("protocol_violation")
             or "protocol violation" in (row["error"] or "")
         ):
             streak += 1
@@ -730,6 +752,185 @@ _PROTOCOL_VIOLATION_ERROR = (
     "matter what it did."
 )
 
+# --- Clean exits with no terminal kanban call --------------------------------
+#
+# A worker that exits 0 while its task is still ``running`` never reached a
+# terminal kanban tool. Booking that as a crash is what made it the board's
+# dominant failure mode: such a run has usually spent minutes calling tools, so
+# re-running the card from scratch duplicates work the previous run already did,
+# and asking the NEXT worker to work out whether the previous one finished puts
+# a human-shaped judgement inside a retry loop.
+#
+# So the dispatcher performs the terminal transition the worker skipped: it
+# parks the card through ``kanban_block(kind="transient")`` carrying the run's
+# OWN last-known observable state, and the board reads "the worker stopped
+# without reporting" — actionable — instead of a bare crash. A run that left
+# NOTHING observable (no checkpoint, no heartbeat, no attachment) is the one
+# case with nothing to salvage, and keeps the bounded violation-only retry.
+UNREPORTED_RUN_OUTCOME = "unreported"
+"""Run outcome for a worker that exited 0 with its task still ``running``.
+
+Distinct from ``crashed`` on purpose — the board must not read "the run ended"
+as "the work failed" — and never ``completed``: an unreported run is not a
+finished one.
+"""
+
+_UNREPORTED_EXIT_EVENT = "unreported_exit"
+# Comment excerpt kept in the park reason; the full state rides the event payload.
+_UNREPORTED_EXCERPT_CHARS = 160
+_UNREPORTED_REASON_CHARS = 500
+# Run-scoped event kinds that describe the run's own bookkeeping, not observable
+# work by the worker.
+_RUN_BOOKKEEPING_EVENT_KINDS = frozenset({
+    "claimed", "spawned", "reclaimed", "protocol_violation", "unreported_exit",
+    "status", "unblocked", "budget_summary",
+})
+
+
+def _run_observable_state(
+    conn: sqlite3.Connection, task_id: str, *, run_id: Optional[int],
+    started_at: Optional[int], now: Optional[int] = None,
+) -> dict:
+    """The run's last-known observable state, bound to THIS task and THIS run.
+
+    Every field is keyed by ``task_id`` and scoped to the run — ``run_id`` for
+    events, the run's own window (``started_at`` .. ``now``) for comments and
+    attachments. Deliberately NOT "something changed in the repo while the run
+    was open": a branch or a PR is not evidence that *this* task produced it, and
+    cross-lane contamination would be worse than the crash this replaces.
+    Liveness (``heartbeats``) is recorded separately from checkpoints so an
+    operator can tell "it was working and stopped talking" from "it left a
+    checkpoint naming a commit".
+    """
+    now = int(now if now is not None else time.time())
+    window_start = int(started_at or 0)
+    state: dict = {
+        "run_id": int(run_id) if run_id is not None else None,
+        "runtime_seconds": max(0, now - window_start) if window_start else None,
+        "checkpoints": [],
+        "attachments": [],
+        "heartbeats": 0,
+        "last_heartbeat_note": None,
+        "events": {},
+    }
+    for row in conn.execute(
+        "SELECT id, author, body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? AND created_at <= ? "
+        "ORDER BY id DESC LIMIT 5",
+        (task_id, window_start, now),
+    ).fetchall():
+        state["checkpoints"].append({
+            "comment_id": int(row["id"]),
+            "author": row["author"],
+            "at": int(row["created_at"]),
+            "excerpt": " ".join(str(row["body"] or "").split())[:_UNREPORTED_EXCERPT_CHARS],
+        })
+    for row in conn.execute(
+        "SELECT id, filename, created_at FROM task_attachments "
+        "WHERE task_id = ? AND created_at >= ? AND created_at <= ? "
+        "ORDER BY id DESC LIMIT 5",
+        (task_id, window_start, now),
+    ).fetchall():
+        state["attachments"].append({
+            "id": int(row["id"]), "filename": row["filename"], "at": int(row["created_at"]),
+        })
+    if run_id is not None:
+        for row in conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? AND run_id = ? "
+            "ORDER BY id ASC",
+            (task_id, int(run_id)),
+        ).fetchall():
+            kind = row["kind"]
+            if kind in _RUN_BOOKKEEPING_EVENT_KINDS:
+                continue
+            state["events"][kind] = state["events"].get(kind, 0) + 1
+            if kind == "heartbeat":
+                state["heartbeats"] += 1
+                note = (_kb._json_dict(row["payload"]) or {}).get("note")
+                if note:
+                    state["last_heartbeat_note"] = str(note)[:_UNREPORTED_EXCERPT_CHARS]
+    return state
+
+
+def _state_has_observable_work(state: Optional[dict]) -> bool:
+    """True when the run left anything observable about itself.
+
+    A heartbeat counts: it is task- and run-bound proof the worker was alive and
+    driving tools, so a blind re-run restarts work that was already under way.
+    Only a run that recorded nothing at all falls back to the retry ladder.
+    """
+    if not state:
+        return False
+    return bool(
+        state.get("checkpoints") or state.get("attachments")
+        or state.get("heartbeats") or state.get("events")
+    )
+
+
+def _describe_observable_state(state: dict) -> str:
+    """One-line human description of ``state`` for the park reason."""
+    parts: list[str] = []
+    for cp in state.get("checkpoints") or []:
+        parts.append(
+            f"checkpoint comment {cp['comment_id']} by {cp['author']} at {cp['at']}: "
+            f"\"{cp['excerpt']}\""
+        )
+    for att in state.get("attachments") or []:
+        parts.append(f"attachment {att['id']} ({att['filename']}) at {att['at']}")
+    if state.get("heartbeats"):
+        note = state.get("last_heartbeat_note")
+        parts.append(
+            f"{state['heartbeats']} heartbeat(s)"
+            + (f", last note: \"{note}\"" if note else "")
+        )
+    for kind, count in sorted((state.get("events") or {}).items()):
+        if kind != "heartbeat":
+            parts.append(f"{count} {kind} event(s)")
+    return "; ".join(parts) or "nothing observable"
+
+
+def _unreported_park_reason(state: dict) -> str:
+    """The park reason: what the worker failed to do + the state it left behind."""
+    runtime = state.get("runtime_seconds")
+    reason = (
+        "worker exited cleanly (rc=0) without calling kanban_complete or "
+        "kanban_block — it stopped without reporting, so this run is parked "
+        "instead of re-run from scratch. Last recorded state (run "
+        f"{state.get('run_id') if state.get('run_id') is not None else 'n/a'}"
+        + (f", {runtime}s" if runtime else "")
+        + f"): {_describe_observable_state(state)}. Verify that state and finish "
+        "the card from it — do not redo the work it already recorded."
+    )
+    return reason[:_UNREPORTED_REASON_CHARS]
+
+
+def _unreported_park_comment(state: dict) -> str:
+    """Comment the dispatcher leaves on the parked card (it seeds the next worker)."""
+    lines = [
+        "dispatcher: the worker for this run exited cleanly (rc=0) without a "
+        "terminal kanban call, so this card was PARKED (kind=transient) instead "
+        "of being re-run from scratch.",
+        "",
+        f"Last recorded state (run {state.get('run_id')}, "
+        f"{state.get('runtime_seconds')}s of work):",
+    ]
+    for cp in state.get("checkpoints") or []:
+        lines.append(f"- checkpoint comment {cp['comment_id']} by {cp['author']} at {cp['at']}: {cp['excerpt']}")
+    for att in state.get("attachments") or []:
+        lines.append(f"- attachment {att['id']} ({att['filename']}) at {att['at']}")
+    if state.get("heartbeats"):
+        note = state.get("last_heartbeat_note")
+        lines.append(f"- {state['heartbeats']} heartbeat(s)" + (f", last note: {note}" if note else ""))
+    for kind, count in sorted((state.get("events") or {}).items()):
+        if kind != "heartbeat":
+            lines.append(f"- {count} {kind} event(s)")
+    lines += [
+        "",
+        "Resume from that state: the work above already exists. Nothing here is "
+        "verifiable as complete, which is why the card is parked rather than done.",
+    ]
+    return "\n".join(lines)
+
 
 @dataclass
 class _DeadWorker:
@@ -742,28 +943,40 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    unreported: bool = False
 
     @property
     def run_outcome(self) -> str:
         # A rate-limited requeue is recorded as ``rate_limited`` so board history
         # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        if self.rate_limited:
+            return "rate_limited"
+        if self.unreported:
+            # NOT ``crashed``: "the run ended" is not "the work failed". The
+            # parked/unreported split rides the metadata (``parked``) and the
+            # task's own status.
+            return UNREPORTED_RUN_OUTCOME
+        return "crashed"
 
 
 def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
     """Map a dead worker's reaped exit status to its reclaim bookkeeping."""
     kind, code = _classify_worker_exit(pid)
     if kind == "clean_exit":
-        # rc=0 while still ``running``: usually the work succeeded and only the
-        # paperwork was skipped; the corrective sentence reaches the retry
-        # worker via ``build_worker_context``.
+        # rc=0 while still ``running``: the worker never made a terminal call.
+        # Whether that run is parked-with-state or retried is decided in
+        # ``_reclaim_dead_workers``, which is the only place with the conn to
+        # read what the run left behind. The event kind says what happened (the
+        # worker stopped without reporting) rather than ``crashed``: no code
+        # consumes a ``protocol_violation`` event kind, and the durable marker
+        # that bounds retries rides the run metadata below.
         return _DeadWorker(
-            kind, code, _PROTOCOL_VIOLATION_ERROR, "protocol_violation",
+            kind, code, _PROTOCOL_VIOLATION_ERROR, _UNREPORTED_EXIT_EVENT,
             # ``protocol_violation`` is the durable marker for
             # _protocol_violation_streak: _end_run copies this payload into the
             # run metadata.
             {"pid": pid, "claimer": claimer, "exit_code": code, "protocol_violation": True},
-            protocol_violation=True,
+            protocol_violation=True, unreported=True,
         )
     if kind == "rate_limited":
         # Quota wall — NOT a task failure. Release to the source phase and do
@@ -794,6 +1007,11 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    # Clean exits the dispatcher parked with the state they left behind. NOT
+    # crashes: no breaker accounting, and ``DispatchResult.unreported`` surfaces
+    # them separately so "stopped without reporting" is a visible anomaly rather
+    # than one more crash count.
+    unreported_parked: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
     # after the txn via ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
@@ -807,9 +1025,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
     sweep = _CrashSweep()
     with _kb.write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at, assignee "
-            "FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "SELECT t.id, t.worker_pid, t.claim_lock, t.started_at, t.assignee, "
+            "       t.block_kind, t.block_recurrences, t.current_run_id, "
+            "       r.started_at AS run_started_at "
+            "FROM tasks t LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
         for row in rows:
@@ -827,13 +1047,50 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             pid = int(row["worker_pid"])
             dead = _classify_dead_worker(pid, row["claim_lock"])
             retry_status = _kb._retry_status_for_run(conn, row["id"])
+            new_status = retry_status
+            set_sql, block_params = "", ()
+            route_event_kind, route_payload = None, {}
+            park_state: Optional[dict] = None
+            if dead.unreported:
+                # Read what THIS run left behind, while the run window is still
+                # open, and let that decide park vs retry.
+                park_state = _run_observable_state(
+                    conn, row["id"],
+                    run_id=_kb._row_get(row, "current_run_id"),
+                    started_at=_kb._row_get(row, "run_started_at") or started_at,
+                )
+                if _state_has_observable_work(park_state):
+                    # The worker skipped the terminal call; the dispatcher makes
+                    # it, through the same typed block a worker would have used.
+                    reason = _unreported_park_reason(park_state)
+                    new_status, route_event_kind, set_sql, block_params, route_payload = (
+                        _kb._route_block(
+                            "transient", reason, retry_status,
+                            prev_kind=_kb._row_get(row, "block_kind"),
+                            prev_recurrences=int(_kb._row_get(row, "block_recurrences") or 0),
+                        )
+                    )
+                    dead.error_text = reason
+                    dead.event_kind = _UNREPORTED_EXIT_EVENT
+                    dead.event_payload.update(route_payload)
+                    dead.event_payload.update({
+                        "unreported_exit": True,
+                        "parked": True,
+                        "salvaged": True,
+                        "state": park_state,
+                    })
+                else:
+                    # Nothing observable to salvage: keep the bounded
+                    # violation-only retry, unchanged.
+                    dead.event_payload["unreported_exit"] = True
             dead.event_payload["retry_status"] = retry_status
             cur = conn.execute(
                 "UPDATE tasks SET status = ?, claim_lock = NULL, "
-                "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running' "
+                "claim_expires = NULL, worker_pid = NULL"
+                + (", " + set_sql if set_sql else "")
+                + " WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, row["id"], pid, row["claim_lock"]),
+                (new_status, *block_params, row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -844,6 +1101,15 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 metadata=dict(dead.event_payload),
             )
             _kb._append_event(conn, row["id"], dead.event_kind, dead.event_payload, run_id=run_id)
+            if route_event_kind:
+                # The board's watchers/dashboards already understand a park:
+                # emit the routing event ``block_task`` would have emitted, and
+                # leave a comment so the state reaches the next worker's context.
+                _kb._append_event(conn, row["id"], route_event_kind, route_payload, run_id=run_id)
+                _kb._insert_comment(
+                    conn, row["id"], "dispatcher",
+                    _unreported_park_comment(park_state or {}), int(time.time()),
+                )
             sweep.exited_hook_payloads.append({
                 "task_id": row["id"],
                 "assignee": row["assignee"],
@@ -866,6 +1132,13 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+            elif route_event_kind:
+                sweep.unreported_parked.append(row["id"])
+                _kb._log.info(
+                    "kanban unreported exit: parked %s (run %s) with its last "
+                    "recorded state instead of re-running it from scratch",
+                    row["id"], run_id,
+                )
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append(
@@ -939,19 +1212,26 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
 
     Restores the source phase immediately (no waiting for the claim TTL), for
     tasks claimed by *this host* only — other hosts' PIDs are meaningless.
-    Clean exit while ``running`` is a protocol violation with a bounded
-    violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
-    wall, released WITHOUT counting a failure and surfaced via the
-    ``_last_rate_limited`` attribute (the return stays crashed-only).
+    Clean exit while ``running`` means the worker never made a terminal call:
+    when the run left observable state behind it is PARKED with that state
+    (``blocked``, ``block_kind='transient'``, surfaced via
+    ``_last_unreported_parked``) instead of being re-run from scratch; a run
+    that left nothing observable keeps the bounded violation-only retry budget.
+    ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota wall, released WITHOUT counting a
+    failure and surfaced via the ``_last_rate_limited`` attribute (the return
+    stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
-    # requeues did NOT count a failure and are NOT crashes.
+    # requeues did NOT count a failure and are NOT crashes; unreported exits that
+    # were parked are not crashes either — they end in a visible block, not a
+    # retry ladder.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_unreported_parked = sweep.unreported_parked  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -1643,6 +1923,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.unreported.extend(getattr(detect_crashed_workers, "_last_unreported_parked", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 

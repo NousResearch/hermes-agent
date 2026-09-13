@@ -280,7 +280,21 @@ def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
             and not getattr(agent, "_persist_disabled", False)
         ):
             _before = len(messages)
-            _compacted = _compressor._micro_compact(messages)
+            # A fallback or model switch may have changed the session's reasoning effort
+            # since turn_context published the turn's runtime snapshot; micro-compaction
+            # must summarize under the CURRENT runtime, not the entry snapshot. Best-effort:
+            # a stand-in agent without the facade method keeps baseline (unscoped) behavior.
+            _current_runtime = getattr(agent, "_current_main_runtime", None)
+            if callable(_current_runtime):
+                from agent.auxiliary_client import scoped_runtime_main
+                from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+
+                micro_runtime = _current_runtime()
+                micro_runtime["cache_scope"] = resolve_prompt_cache_scope_safe(agent) or ""
+                with scoped_runtime_main(micro_runtime):
+                    _compacted = _compressor._micro_compact(messages)
+            else:
+                _compacted = _compressor._micro_compact(messages)
             # Defrag rewrites the newest MICRO marker in place and pops _db_persisted;
             # the compressor flags us to invalidate the flush-scan cursor, else the
             # rewritten row is identity-skipped (stale).

@@ -126,10 +126,10 @@ class MicroCompactionMixin:
         if self.summary_model:
             call_kwargs["model"] = self.summary_model
         if self.model:
-            call_kwargs.setdefault("main_runtime", {
-                "model": self.model, "provider": self.provider or "", "base_url": self.base_url or "",
-                "api_key": self.api_key or "", "api_mode": getattr(self, "api_mode", "") or "",
-            })
+            # Session-scoped snapshot (fresh effort, frozen for this pass) — see
+            # ContextCompressor._summary_main_runtime; never a bare route dict that
+            # silently drops the owning session's reasoning effort.
+            call_kwargs["main_runtime"] = self._summary_main_runtime()
 
         try:
             with aux_interrupt_protection():

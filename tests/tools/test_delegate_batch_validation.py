@@ -22,6 +22,7 @@ from tools.delegate_tool import delegate_task
 
 def _make_mock_parent(depth=0):
     parent = MagicMock()
+    parent.reasoning_config = None
     parent.base_url = "https://openrouter.ai/api/v1"
     parent.api_key = "test-key"
     parent.provider = "openrouter"

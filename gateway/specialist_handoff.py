@@ -217,6 +217,14 @@ def create_specialist_handoff(
                     # terminal candidate; otherwise the task keeps the old
                     # candidate in its body while the new ledger row is orphaned.
                     return HandoffResult(True, task_id=row["id"], created=False)
+            selected_profile = (
+                "task-orchestrator"
+                if effective_resolution is not None
+                and effective_resolution.status in {"no_match", "ambiguous"}
+                else effective_decision.profile
+            )
+            if signature is not None and not profile_exists(selected_profile):
+                return HandoffResult(False, reason="profile_unavailable")
             with kb.write_txn(conn):
                 effective_decision, candidate_result = _candidate_fallback(
                     decision=effective_decision,
@@ -227,12 +235,6 @@ def create_specialist_handoff(
                     candidate_requests=candidate_requests,
                     connection=conn,
                 )
-                # Preserve the established handoff contract for fixed routes while
-                # requiring the new registry-backed path to target a real profile.
-                # The orchestrator is checked only after candidate resolution has
-                # actually selected it as the fallback owner.
-                if signature is not None and not profile_exists(effective_decision.profile):
-                    return HandoffResult(False, reason="profile_unavailable")
                 task_id = kb.create_task(
                     conn, title=effective_decision.title,
                     body=_body(

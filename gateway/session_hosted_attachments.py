@@ -73,6 +73,8 @@ def submission_payload(rpc, prompt, attachments=None):
         return {'text': prompt}
     from gateway.hosted_room_driver import validate_bound_task_manifest
     from gateway.session_ingress_media import capture_native_media, restore_native_media, validate_media_batch_size
+    from gateway.session_ingress_media import _ATTACHMENT_MIMES
+    from gateway.hosted_room_input_custody import retain_document
     manifest = validate_bound_task_manifest(attachments)
     # Each bound file is captured on its own, so the admission-wide cap is enforced here,
     # before any member is materialized.
@@ -93,17 +95,17 @@ def submission_payload(rpc, prompt, attachments=None):
             data = transferred[index][1]
         if len(data) != item['size']:
             raise RuntimeStoreError('permission_denied')
-        # Retained native-inputs are excluded from age-only document cleanup. The
-        # content-addressed destination is stable on retry and refuses corruption.
-        with tempfile.TemporaryDirectory(prefix='hermes-room-input-') as directory:
-            path = Path(directory) / item['name']
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, 'wb') as output:
-                output.write(data)
-            reference = capture_native_media([path])[0]
+        if item['mime'] not in _ATTACHMENT_MIMES:
+            reference = retain_document(store, item['name'], data)
+        else:
+            with tempfile.TemporaryDirectory(prefix='hermes-room-input-') as directory:
+                path = Path(directory) / item['name']
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, 'wb') as output:
+                    output.write(data)
+                reference = capture_native_media([path])[0]
         references.append(reference)
     paths = restore_native_media(references)
-    from gateway.session_ingress_media import _ATTACHMENT_MIMES
     from gateway.platforms.base import get_image_cache_dir
     import hashlib
     images, documents = [], []

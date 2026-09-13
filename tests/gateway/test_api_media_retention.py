@@ -29,6 +29,8 @@ def settled_native(owner, paths):
 
 @pytest.mark.parametrize('settled', [False, True], ids=['queued-holder', 'terminal-holder'])
 def test_api_image_survives_native_cleanup_while_unique_native_bytes_are_collected(api, owner, settled):
+    from gateway.hosted_room_input_custody import initialize_input_custody
+    initialize_input_custody(owner.db)
     _, _, row = admit_api_turn(api, session_id='image-holder', request_id='api-image',
         user_message=[{'type': 'image_url', 'image_url': {
             'url': 'data:image/png;base64,' + base64.b64encode(PNG).decode()}}], conversation_history=[])
@@ -52,6 +54,10 @@ def test_api_image_survives_native_cleanup_while_unique_native_bytes_are_collect
 def test_hosted_batch_total_is_rejected_before_any_capture(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     db_path = tmp_path / 'state.db'
+    from gateway.hosted_room_input_custody import initialize_input_custody
+    from hermes_state import SessionDB
+    with SessionDB(db_path) as db:
+        initialize_input_custody(db)
     hosted_rooms.create_room(db_path, room_id='room', name='Room', authority_gateway_id='home',
         members=[dict(member_id='member', profile='default', handle='member')])
     store = HostedRoomAttachmentStore(db_path)

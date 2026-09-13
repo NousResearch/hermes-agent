@@ -39,11 +39,10 @@ def test_operator_decision_clears_only_one_explicit_intent_review() -> None:
     assert pending_intent_comment_ids(items, owner_login="operator") == frozenset({"2"})
 
 
-def test_owner_named_bot_cannot_clear_multiple_reviews_without_comment_id() -> None:
+def test_owner_named_bot_cannot_clear_a_pending_review() -> None:
     items = (
         feedback("Rather use the local implementation instead."),
-        feedback("I disagree; use the bounded retry instead.", offset=1),
         feedback("dismiss", login="operator", offset=2, bot=True),
     )
 
-    assert pending_intent_comment_ids(items, owner_login="operator") == frozenset({"1", "2"})
+    assert pending_intent_comment_ids(items, owner_login="operator") == frozenset({"1"})

@@ -58,7 +58,7 @@ def classify_feedback(
 def operator_decision(feedback: Feedback, *, owner_login: str) -> str | None:
     """Read an operator-only decision; bot comments never clear intent review."""
 
-    if feedback.reviewer.login.casefold() != owner_login.casefold():
+    if feedback.is_bot or feedback.reviewer.login.casefold() != owner_login.casefold():
         return None
     match = _OPERATOR_COMMAND.search(" ".join(str(feedback.body or "").split()))
     return match.group("command").casefold() if match else None

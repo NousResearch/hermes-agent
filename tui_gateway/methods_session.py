@@ -379,8 +379,10 @@ def _(rid, params: dict) -> dict:
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
     elif history:
         _seed_row(_sessions[sid])
-    # Return immediately so Ink can paint; the AIAgent builds right after the flush.
-    _schedule_agent_build(sid)
+    # Return immediately so Ink can paint; the AIAgent builds right after the flush
+    # — unless turn isolation owns this session (in-process pre-warm would defeat the host gate).
+    if not _arm_isolated_compute_host_session(_sessions[sid]):
+        _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
@@ -740,6 +742,7 @@ def _resume_deferred(ctx: _Resume) -> dict:
                   resume_message_count=int(ctx.found.get("message_count") or 0))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
+    _arm_isolated_compute_host_session(record)
     _schedule_resume_hydration(sid, ctx.target, ctx.db, close_db=ctx.owns_db)
     ctx.owns_db = False  # the hydration worker now owns (and closes) the profile-scoped handle
     _schedule_session_cap_enforcement()
@@ -761,7 +764,8 @@ def _resume_cold(ctx: _Resume) -> dict:
                         todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
-    _schedule_agent_build(sid)
+    if not _arm_isolated_compute_host_session(record):
+        _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), display=display_history,
                             count_source=raw_history,

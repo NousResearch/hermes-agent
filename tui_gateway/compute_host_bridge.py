@@ -29,9 +29,45 @@ def _turn_isolation_enabled(cfg: dict | None = None) -> bool:
 def _session_uses_compute_host(session: dict, cfg: dict | None = None) -> bool:
     # Routes lazy sessions whose AIAgent was never built in-process; already-built
     # sessions keep the in-process path unless a prior isolated turn marked host ownership.
-    return _turn_isolation_enabled(cfg) and (
+    return not session.get("_compute_host_released") and _turn_isolation_enabled(cfg) and (
         bool(session.get("_compute_host_active"))
         or (session.get("agent") is None and session.get("agent_ready") is not None))
+
+
+def _arm_isolated_compute_host_session(session: dict) -> bool:
+    """Claim compute-host ownership at create / cold-resume time.
+
+    When turn isolation is on, skip the in-process AIAgent pre-warm so the first
+    prompt still routes to HostSupervisor. Returns True when the caller should
+    skip ``_schedule_agent_build`` / hydration ``_start_agent_build``.
+
+    Leaves ``agent_ready`` unset so a later compute-host dispatch failure can
+    still start an in-process build. The host gate stays True via
+    ``_compute_host_active`` even if an incidental ``_sess_building`` attaches
+    an agent.
+
+    Lazy-watch / child-run spectators and already-built in-process sessions stay
+    on the historical in-process path (do not set ``_compute_host_active``).
+    """
+    if session.get("lazy"):
+        return False
+    # A prompt.submit dispatch failure committed this live session to the
+    # in-process fallback. Deferred-resume hydration may finish afterward and
+    # call this arm point again; it must not reclaim ownership mid-build.
+    if session.get("_compute_host_released"):
+        return False
+    key = str(session.get("session_key") or "")
+    if key and _child_run_active(key):
+        return False
+    if session.get("agent") is not None and not session.get("_compute_host_active"):
+        return False
+    if not _turn_isolation_enabled():
+        return False
+    # Do not set agent_ready: dispatch-failure fallback still has to start an
+    # in-process AIAgent via ``_start_agent_build`` (which no-ops when ready is set).
+    session.pop("_compute_host_released", None)
+    session["_compute_host_active"] = True
+    return True
 
 
 def _get_compute_host_supervisor(cfg: dict | None = None):
@@ -180,7 +216,7 @@ def _respond_compute_host_clarify(rid: str, params: dict) -> dict | None:
 def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> None:
     """Mirror host-owned session metadata: under turn isolation the host is the only
     writer of live agent/history state, and UI reads must not build a second agent."""
-    if not isinstance(frame, dict):
+    if not isinstance(frame, dict) or session.get("_compute_host_released"):
         return
     with _history_lock(session):
         _compute_host_adopt_frame_meta(session, frame)
@@ -243,6 +279,7 @@ def _submit_prompt_to_compute_host(
                 session.pop("_compute_host_activity_ns", None)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
+        session.pop("_compute_host_released", None)
         session["_compute_host_active"] = True
         if image_paths is None:
             session["attached_images"] = []

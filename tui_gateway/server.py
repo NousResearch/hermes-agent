@@ -2563,7 +2563,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             _emit("session.resume_progress", sid,
                   {"message_count": len(display_history), "phase": "history", "status": "complete"})
             _maybe_schedule_auto_continue(sid, session, stored_id)
-            _start_agent_build(sid, session)
+            if not _arm_isolated_compute_host_session(session):
+                _start_agent_build(sid, session)
         except Exception as exc:
             if _sessions.get(sid) is not session:
                 return

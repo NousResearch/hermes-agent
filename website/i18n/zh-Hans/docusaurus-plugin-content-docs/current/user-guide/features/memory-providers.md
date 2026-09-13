@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory"
+description: "外部记忆提供者插件 — Honcho、OpenViking、Mem0、Hindsight、Holographic、RetainDB、ByteRover、Supermemory、Memori、PLUR"
 ---
 
 # Memory Providers
 
-Hermes Agent 内置 8 个外部记忆提供者插件，为 Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。同一时间只能激活**一个**外部提供者——内置记忆始终与其并行工作。
+Hermes Agent 内置 9 个外部记忆提供者插件，为 Agent 提供跨会话的持久化知识，超越内置的 MEMORY.md 和 USER.md。同一时间只能激活**一个**外部提供者——内置记忆始终与其并行工作。
 
 ## 快速开始
 
@@ -22,7 +22,7 @@ hermes memory off        # 禁用外部提供者
 
 ```yaml
 memory:
-  provider: openviking   # 或 honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # 或 honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memori, plur
 ```
 
 ## 工作原理
@@ -543,6 +543,40 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 
 ---
 
+### PLUR
+
+本地存储、本地检索的持久化记忆，具备 BM25 + BGE-small 嵌入混合搜索、互惠排名融合（RRF）重排序、ACT-R 激活衰减机制，以及跨会话、跨工具、跨机器的 CLI 桥接。PLUR 由社区维护，通过 pip 安装；Hermes 通过 `hermes_agent.memory_providers` 入口点加载。
+
+| | |
+|---|---|
+| **适合场景** | 需要跨会话持久化纠正和偏好的 Agent |
+| **依赖** | `pip install plur-hermes>=0.19.3` |
+| **数据存储** | 本地 YAML 文件（`~/.plur/`） |
+| **费用** | 免费 / 自托管 |
+
+**工具（22 个）：** `plur_learn`、`plur_recall`、`plur_inject`、`plur_list`、`plur_forget`、`plur_feedback`、`plur_capture`、`plur_timeline`、`plur_status`、`plur_sync`、`plur_packs_list`、`plur_packs_install`、`plur_packs_export`、`plur_extract_meta`、`plur_meta_submit_analysis`、`plur_meta_engrams`、`plur_validate_meta`、`plur_ingest`、`plur_promote`、`plur_similarity_search`、`plur_stores_add`、`plur_stores_list`
+
+**安装：**
+```bash
+pip install "plur-hermes>=0.19.3"
+hermes config set memory.provider plur
+hermes memory setup
+```
+
+**配置（环境变量）：**
+
+| 变量 | 默认值 | 描述 |
+|----------|---------|-------------|
+| `PLUR_PATH` | `~/.plur` | 本地 engram 存储路径 |
+| `PLUR_INJECT_MODE` | `fast` | `fast`（仅 BM25）或 `hybrid`（BM25 + 嵌入，约 2 秒） |
+| `PLUR_INJECTION_FEEDBACK` | `true` | 每轮自动发送相关性反馈 |
+
+**核心特性：** BM25+嵌入混合搜索（RRF） · ACT-R 激活衰减 · `prefetch()` 在 LLM 调用前注入上下文 · `sync_turn()` 自动学习纠正 · 通过 git 跨设备同步 · engram 包（可共享知识包） · 零 Python 运行时依赖
+
+**支持：** [GitHub](https://github.com/plur-ai/plur) · [PyPI](https://pypi.org/project/plur-hermes/)
+
+---
+
 ## 提供者对比
 
 | 提供者 | 存储 | 费用 | 工具数 | 依赖 | 独特特性 |
@@ -555,6 +589,10 @@ Base URL 优先级为 `supermemory.json` → `SUPERMEMORY_BASE_URL` → `https:/
 | **RetainDB** | 云端 | $20/月 | 5 | `requests` | 增量压缩 |
 | **ByteRover** | 本地/云端 | 免费/付费 | 3 | `brv` CLI | 预压缩提取 |
 | **Supermemory** | 云端/自托管 | 免费/付费 | 4 | `supermemory` | 上下文隔离 + 会话图谱导入 + 多容器 |
+| **Memori** | 云端 | 免费/付费 | 5 | `hermes-memori` | 工具感知记忆 + 结构化召回 |
+| **PLUR** ⁺ | 本地（YAML） | 免费 | 22 | `plur-hermes` | ACT-R 激活衰减 + BM25/嵌入混合召回 + 跨设备同步 |
+
+⁺ 社区维护的 pip 包，通过 `hermes_agent.memory_providers` 入口点加载。
 
 ## Profile 隔离
 

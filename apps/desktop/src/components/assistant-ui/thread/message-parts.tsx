@@ -135,6 +135,9 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   return <ToolFallback {...props} />
 }
 
+// Match the compact terminal/log viewers rather than the full thread's slack.
+const PREVIEW_RELOCK_THRESHOLD_PX = 24
+
 type TimelineTextPartProps = TextMessagePartProps & { completedAt?: number; timestamp?: number }
 
 const TimelineMarkdownText: FC<TimelineTextPartProps> = ({ completedAt, timestamp }) => (
@@ -218,7 +221,7 @@ const ThinkingDisclosure: FC<{
     let following = true
 
     const trackScroll = () => {
-      following = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+      following = el.scrollHeight - el.scrollTop - el.clientHeight < PREVIEW_RELOCK_THRESHOLD_PX
     }
 
     const pin = (entries: readonly ResizeObserverEntry[]) => {

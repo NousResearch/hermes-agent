@@ -44,9 +44,10 @@ class TestResizeObserver {
     this.callback(
       [
         {
+          borderBoxSize: [{ blockSize: height, inlineSize: 800 }],
           contentRect: { height } as DOMRectReadOnly,
           target: this.target
-        } as ResizeObserverEntry
+        } as unknown as ResizeObserverEntry
       ],
       this as unknown as ResizeObserver
     )
@@ -687,7 +688,7 @@ describe('assistant-ui streaming renderer', () => {
     deliverGrowth()
     expect(body.scrollTop).toBe(100)
 
-    body.scrollTop = height - body.clientHeight
+    body.scrollTop = height - body.clientHeight - 0.5
     fireEvent.scroll(body)
     rerender(
       <RunningMessageHarness message={assistantReasoningMessage('First thought. More reasoning. Latest thought.', true)} />

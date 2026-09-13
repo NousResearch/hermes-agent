@@ -468,8 +468,19 @@ class TestHermesHomeHardline:
         assert detect_hardline_command("find . -delete", cwd=str(home))[0] is True
         assert detect_hardline_command("cmd.exe /c del state.db", cwd=str(home))[0] is True
         assert detect_hardline_command("powershell Remove-Item state.db", cwd=str(home))[0] is True
+        assert detect_hardline_command(
+            "target=$HERMES_HOME/state.db; rm \"$target\"", cwd=str(tmp_path),
+        )[0] is True
+        assert detect_hardline_command("printf 'state.db\\n' | xargs rm", cwd=str(home))[0] is True
+        assert detect_hardline_command(
+            "find $HERMES_HOME -exec echo {} \\; -exec rm {} \\;",
+        )[0] is True
         assert detect_hardline_command("rm ../state.db", cwd=str(home / "sub"))[0] is True
         assert detect_hardline_command("cd /missing || rm state.db", cwd=str(home))[0] is True
+
+        linked_home = tmp_path / "linked-profile"
+        linked_home.symlink_to(home, target_is_directory=True)
+        assert detect_hardline_command("rm state.db", cwd=str(linked_home))[0] is True
 
     def test_terminal_replay_uses_the_executed_session_cwd(self, monkeypatch, tmp_path):
         home = tmp_path / "profile"

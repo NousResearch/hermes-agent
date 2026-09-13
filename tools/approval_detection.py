@@ -1244,7 +1244,40 @@ def _is_hermes_managed_path(word: str) -> bool:
     )
 
 
-def _resolved_hermes_operand(word: str, cwd: str | None) -> str | None:
+_SHELL_ASSIGNMENT_RE = re.compile(
+    r"(?:^|[;&|\n])\s*([A-Za-z_][A-Za-z0-9_]*)="
+    r"(?:\"([^\"]*)\"|'([^']*)'|([^\s;&|]+))(?=\s*(?:[;&|\n]|$))"
+)
+
+
+def _assignments_before(command: str, start: int) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    for match in _SHELL_ASSIGNMENT_RE.finditer(command[:start]):
+        assignments[match.group(1)] = next(
+            value for value in match.groups()[1:] if value is not None
+        )
+    return assignments
+
+
+def _expand_shell_assignments(word: str, assignments: dict[str, str] | None) -> str:
+    if not assignments:
+        return word
+    expanded = word
+    for _ in range(8):
+        updated = re.sub(
+            r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))",
+            lambda match: assignments.get(match.group(1) or match.group(2), match.group(0)),
+            expanded,
+        )
+        if updated == expanded:
+            break
+        expanded = updated
+    return expanded
+
+
+def _resolved_hermes_operand(
+    word: str, cwd: str | None, assignments: dict[str, str] | None = None,
+) -> str | None:
     """Resolve a shell path spelling enough to compare it with HERMES_HOME."""
     if not word:
         return None
@@ -1253,7 +1286,7 @@ def _resolved_hermes_operand(word: str, cwd: str | None) -> str | None:
         home = os.path.abspath(str(get_hermes_home().expanduser()))
     except Exception:
         return None
-    path = word.replace("\\", "/")
+    path = _expand_shell_assignments(word, assignments).replace("\\", "/")
     lowered = path.lower()
     for root in _HERMES_HOME_ROOTS:
         if lowered == root or lowered.startswith(root + "/"):
@@ -1272,18 +1305,21 @@ def _resolved_path_is_managed(path: str | None) -> bool:
         return False
     try:
         from hermes_constants import get_hermes_home
-        home = os.path.normcase(os.path.abspath(str(get_hermes_home().expanduser())))
-        candidate = os.path.normcase(os.path.abspath(path))
+        home = os.path.normcase(os.path.realpath(os.path.abspath(str(get_hermes_home().expanduser()))))
+        candidate = os.path.normcase(os.path.realpath(os.path.abspath(path)))
         return os.path.commonpath((home, candidate)) == home
     except (OSError, ValueError):
         return False
 
 
-def _operand_is_managed(word: str, cwd_candidates: set[str | None]) -> bool:
-    if _is_hermes_managed_path(word):
+def _operand_is_managed(
+    word: str, cwd_candidates: set[str | None], assignments: dict[str, str] | None = None,
+) -> bool:
+    expanded = _expand_shell_assignments(word, assignments)
+    if _is_hermes_managed_path(expanded):
         return True
     return any(
-        _resolved_path_is_managed(_resolved_hermes_operand(word, candidate))
+        _resolved_path_is_managed(_resolved_hermes_operand(expanded, candidate))
         for candidate in cwd_candidates
     )
 
@@ -1321,8 +1357,9 @@ def _cwd_candidates_before(command: str, start: int, cwd: str | None) -> set[str
             continue
         if len(argv) < 2 or argv[1] == "-":
             continue
+        assignments = _assignments_before(command, command_start)
         resolved = {
-            _resolved_hermes_operand(argv[1], candidate)
+            _resolved_hermes_operand(argv[1], candidate, assignments)
             for candidate in candidates
         }
         connector = _connector_after(command, command_start, start)
@@ -1392,7 +1429,10 @@ def _has_hermes_redirect(command: str, cwd: str | None = None) -> bool:
         target = _deobfuscate_shell_word_for_detection(target)
         if descriptor_form and (target == "-" or target.isdigit()):
             continue
-        if _operand_is_managed(target, _cwd_candidates_before(command, index, cwd)):
+        if _operand_is_managed(
+            target, _cwd_candidates_before(command, index, cwd),
+            _assignments_before(command, index),
+        ):
             return True
     return False
 
@@ -1416,7 +1456,8 @@ def _detect_hermes_home_destruction(command: str, cwd: str | None = None) -> boo
         except ValueError:
             continue
         operands, option_values = _command_operands(argv, name)
-        is_managed = lambda arg: _operand_is_managed(arg, cwd_candidates)
+        assignments = _assignments_before(command, word_start)
+        is_managed = lambda arg: _operand_is_managed(arg, cwd_candidates, assignments)
         if name in {"rm", "truncate", "shred", "unlink", "tee"}:
             if any(is_managed(arg) for arg in operands):
                 return True
@@ -1495,26 +1536,41 @@ def _dispatcher_targets_hermes(
         payload = _xargs_payload(argv)
         if not payload:
             return False
-        return any(
+        if any(
             _detect_hermes_home_destruction(
                 " ".join(shlex.quote(arg) for arg in payload), cwd=candidate,
             )
             for candidate in cwd_candidates
-        )
+        ):
+            return True
+        return _xargs_has_unresolved_destructive_input(payload)
     if dispatcher == "find":
-        roots_managed = any(
-            _operand_is_managed(arg, cwd_candidates) for arg in argv[1:]
-            if not arg.startswith("-")
+        expression_start = next(
+            (index for index, arg in enumerate(argv[1:], start=1) if arg.startswith("-")),
+            len(argv),
         )
+        roots_managed = any(_operand_is_managed(arg, cwd_candidates) for arg in argv[1:expression_start])
         if roots_managed and "-delete" in argv:
             return True
-        for marker in ("-exec", "-execdir"):
-            if marker not in argv:
+        for index, arg in enumerate(argv):
+            if arg not in {"-exec", "-execdir"}:
                 continue
-            payload = ["$HERMES_HOME" if arg == "{}" else arg for arg in argv[argv.index(marker) + 1:]]
-            return roots_managed and _detect_hermes_home_destruction(
-                " ".join(shlex.quote(arg) for arg in payload if arg not in {";", "+"})
+            end = next(
+                (payload_index for payload_index in range(index + 1, len(argv))
+                 if argv[payload_index] in {";", "+"}),
+                len(argv),
             )
+            payload = [
+                "$HERMES_HOME" if roots_managed and word == "{}" else word
+                for word in argv[index + 1:end]
+            ]
+            if any(
+                _detect_hermes_home_destruction(
+                    " ".join(shlex.quote(word) for word in payload), cwd=candidate,
+                )
+                for candidate in cwd_candidates
+            ):
+                return True
         return False
     destructive_names = (
         {"del", "erase", "rd", "rmdir"}
@@ -1557,6 +1613,25 @@ def _xargs_payload(argv: list[str]) -> list[str]:
         else:
             index += 1
     return argv[index:]
+
+
+def _xargs_has_unresolved_destructive_input(payload: list[str]) -> bool:
+    """Fail closed when xargs supplies unknown operands to a mutating command."""
+    if not payload:
+        return False
+    if _hermes_destructive_executable_name(payload[0]) == "busybox":
+        payload = payload[1:]
+        if not payload:
+            return False
+    name = _hermes_destructive_executable_name(payload[0])
+    if name not in _HERMES_DESTRUCTIVE_NAMES:
+        return False
+    if name in {"cp", "install"}:
+        _, option_values = _command_operands(payload, name)
+        return not (
+            option_values.get("-t") or option_values.get("--target-directory")
+        )
+    return True
 
 
 _SQLITE_READ_ONLY_PREFIXES = frozenset({"select", "explain", "values"})

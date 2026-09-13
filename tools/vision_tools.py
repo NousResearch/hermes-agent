@@ -655,7 +655,9 @@ def _with_route_notice(analysis: str, route_info: Dict[str, str], debug_call_dat
         return analysis
     debug_call_data["vision_fallback_notice"] = notice
     logger.warning("%s", notice)
-    return f"[{notice}]\n{analysis}"
+    # Single space, matching the ``[{scale_note}] {analysis}`` prefix style so the
+    # both-notice result reads ``[scale_note] [fallback_notice] <analysis>`` on one line.
+    return f"[{notice}] {analysis}"
 
 
 def _media_messages(user_prompt: str, part_type: str, data_url: str) -> list:

@@ -143,6 +143,22 @@ def test_with_route_notice_prefixes_analysis():
     assert "openrouter" in debug_call_data["vision_fallback_notice"]
 
 
+def test_with_route_notice_stays_single_line_beside_scale_note():
+    """When both notices apply, the result must read
+    ``[scale_note] [fallback_notice] <analysis>`` on one line, matching the existing
+    ``[{scale_note}] {analysis}`` prefix style in ``_run_analysis``."""
+    debug_call_data: dict = {}
+    out = _with_route_notice(
+        "the analysis", {"fallback_notice": "Configured vision provider 'openrouter' is unavailable"},
+        debug_call_data)
+    assert "\n" not in out
+    scale_note = "image auto-resized to fit the provider limit"
+    combined = f"[{scale_note}] {out}" if scale_note else out
+    assert combined == (
+        "[image auto-resized to fit the provider limit] "
+        "[Configured vision provider 'openrouter' is unavailable] the analysis")
+
+
 def test_with_route_notice_passthrough_without_notice():
     debug_call_data: dict = {}
     out = _with_route_notice("the analysis", {}, debug_call_data)

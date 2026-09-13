@@ -27,7 +27,7 @@ def searchable_tree(tmp_path):
     # Visible files
     visible_dir = tmp_path / "skills" / "my-skill"
     visible_dir.mkdir(parents=True)
-    (visible_dir / "SKILL.md").write_text("# My Skill\nThis is a real skill.")
+    (visible_dir / "SKILL.md").write_text("# My Skill\nThis is a visible document.")
 
     # Hidden directory mimicking .hub/index-cache
     hub_dir = tmp_path / "skills" / ".hub" / "index-cache"
@@ -87,7 +87,7 @@ class TestGrepExcludesHiddenDirs:
     def test_grep_fallback_finds_visible_content(self, searchable_tree, monkeypatch):
         """Searching ``.`` must not exclude the search root itself."""
         result = self._grep_ops(searchable_tree, monkeypatch).search(
-            "real skill",
+            "visible document",
             path=".",
             target="content",
         )
@@ -101,7 +101,7 @@ class TestGrepExcludesHiddenDirs:
     ):
         """An explicit ``./directory`` root must remain searchable too."""
         result = self._grep_ops(searchable_tree, monkeypatch).search(
-            "real skill",
+            "visible document",
             path="./my-skill",
             target="content",
         )
@@ -160,7 +160,7 @@ class TestRipgrepAlreadyExcludesHidden:
     def test_rg_finds_visible_content(self, searchable_tree):
         """rg should find content in visible directories."""
         result = subprocess.run(
-            ["rg", "--no-heading", "real skill", str(searchable_tree)],
+            ["rg", "--no-heading", "visible document", str(searchable_tree)],
             capture_output=True, text=True,
         )
         assert "SKILL.md" in result.stdout

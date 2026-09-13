@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import mcp_field
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
+from tools.tool_output_truncate import truncate_head_tail
 
 logger = logging.getLogger("tools.mcp_tool")
 
@@ -28,18 +29,8 @@ _MCP_RESOURCE_MAX_B64_CHARS = _MCP_RESOURCE_MAX_BYTES * 4 // 3 + 4
 
 
 def _truncate_mcp_text_result(text: str, max_chars: int = _MCP_HARD_RESULT_CAP_CHARS) -> str:
-    """Pass text at or under ``max_chars`` unchanged; otherwise keep a 40% head / 60% tail
-    split with an omission notice between.
-
-    Bound pathological MCP text before it propagates (#56059).
-    """
-    if len(text) <= max_chars:
-        return text
-    head_chars = int(max_chars * 0.4)
-    tail_chars = max_chars - head_chars
-    omitted = len(text) - head_chars - tail_chars
-    return (text[:head_chars] + f"\n\n... [MCP RESULT TRUNCATED - {omitted:,} chars omitted "
-            f"out of {len(text):,} total] ...\n\n" + text[-tail_chars:])
+    """Bound pathological MCP text before it propagates (#56059)."""
+    return truncate_head_tail(text, max_chars, label="MCP RESULT")
 
 
 def _is_reserved_mcp_meta_key(key: str) -> bool:

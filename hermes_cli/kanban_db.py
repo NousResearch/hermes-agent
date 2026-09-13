@@ -305,11 +305,76 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
 
 
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
+# The budget is deterministic: every section is tail-capped with an explicit
+# omitted-count note plus a retrieval pointer, and the total render is hard-
+# bounded by ``_CTX_MAX_TOTAL_BYTES`` (a reduced-budget rebuild kicks in when
+# the full render would exceed it). Historical DB records are NEVER deleted
+# or mutated to fit — the worker retrieves the full history on demand
+# (``hermes kanban show/runs <id>`` or ``kanban_show``).
 _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full
 _CTX_MAX_COMMENTS       = 30      # most recent N comments shown in full
 _CTX_MAX_FIELD_BYTES    = 4 * 1024   # per summary/error/metadata/result
-_CTX_MAX_BODY_BYTES     = 8 * 1024   # per task.body (opening post)
+# task.body is the worker's spec and renders in full; the cap is only a
+# fail-closed guard against a pathological body blowing the prompt. Head
+# truncation keeps the leading mandatory markers (e.g. ``task_type:``) and the
+# ellipsis note carries a retrieval pointer to the full text.
+_CTX_MAX_BODY_BYTES     = 32 * 1024  # per task.body (opening post)
 _CTX_MAX_COMMENT_BYTES  = 2 * 1024   # per comment
+_CTX_MAX_PARENT_HANDOFFS = 8      # done parents rendered with full handoff
+_CTX_MAX_ATTACHMENTS    = 20      # attachment rows shown in full
+_CTX_MAX_TOTAL_BYTES    = 96 * 1024  # hard ceiling for the rendered context
+
+
+class _CtxBudget:
+    """One immutable set of render knobs for ``build_worker_context``.
+
+    ``_CTX_BUDGET_FULL`` is the normal profile; ``_CTX_BUDGET_REDUCED`` is the
+    deterministic fallback used when the full render would exceed
+    ``_CTX_MAX_TOTAL_BYTES`` (long comment threads × many done parents with
+    large handoffs — the t_c2404f92 121KB amplification). Both profiles keep
+    the task body's leading markers and every omitted-count/pointer note.
+    """
+
+    __slots__ = (
+        "attempts", "comments", "field_bytes", "body_bytes",
+        "comment_bytes", "parent_handoffs", "attachments",
+    )
+
+    def __init__(
+        self, *, attempts: int, comments: int, field_bytes: int, body_bytes: int,
+        comment_bytes: int, parent_handoffs: int, attachments: int,
+    ) -> None:
+        self.attempts = attempts
+        self.comments = comments
+        self.field_bytes = field_bytes
+        self.body_bytes = body_bytes
+        self.comment_bytes = comment_bytes
+        self.parent_handoffs = parent_handoffs
+        self.attachments = attachments
+
+
+_CTX_BUDGET_FULL = _CtxBudget(
+    attempts=_CTX_MAX_PRIOR_ATTEMPTS,
+    comments=_CTX_MAX_COMMENTS,
+    field_bytes=_CTX_MAX_FIELD_BYTES,
+    body_bytes=_CTX_MAX_BODY_BYTES,
+    comment_bytes=_CTX_MAX_COMMENT_BYTES,
+    parent_handoffs=_CTX_MAX_PARENT_HANDOFFS,
+    attachments=_CTX_MAX_ATTACHMENTS,
+)
+
+# Worst-case reduced render: body 12K + 3 attempts × ~4.5K + 3 parent handoffs
+# × ~3K + 8 comments × 1K + one-liners/notes ≈ 45K chars — always below the
+# _CTX_MAX_TOTAL_BYTES ceiling, so the rebuild is a hard deterministic bound.
+_CTX_BUDGET_REDUCED = _CtxBudget(
+    attempts=3,
+    comments=8,
+    field_bytes=1536,
+    body_bytes=12 * 1024,
+    comment_bytes=1024,
+    parent_handoffs=3,
+    attachments=10,
+)
 
 
 def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
@@ -3573,30 +3638,60 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     """Everything a worker should read about its task: header, body,
     attachments, prior attempts, done-parent handoffs, the assignee's recent
     work, comments. Lists are tail-capped and fields char-capped
-    (``_CTX_MAX_*``) so the prompt stays bounded on pathological boards."""
+    (``_CTX_BUDGET_FULL``) so the prompt stays bounded on pathological boards;
+    the whole render is hard-bounded by ``_CTX_MAX_TOTAL_BYTES`` — when the
+    full-budget render would exceed it, the context is deterministically
+    rebuilt with ``_CTX_BUDGET_REDUCED``. Omitted content is reported with an
+    explicit count and a retrieval pointer; historical DB records are never
+    deleted or mutated to fit."""
+    text = _render_worker_context(conn, task_id, _CTX_BUDGET_FULL)
+    if len(text.encode("utf-8", "replace")) > _CTX_MAX_TOTAL_BYTES:
+        # Deterministic reduced rebuild: same shape, tighter per-section knobs.
+        # The reduced profile's worst case (~45K chars) is far below the
+        # ceiling, so this always converges in one extra pass.
+        text = _render_worker_context(conn, task_id, _CTX_BUDGET_REDUCED)
+    return text
+
+
+def _render_worker_context(
+    conn: sqlite3.Connection, task_id: str, budget: _CtxBudget
+) -> str:
     task = get_task(conn, task_id)
     if not task:
         raise ValueError(f"unknown task {task_id}")
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
-    _ctx_header(lines, task)
-    _ctx_attachments(lines, list_attachments(conn, task_id))
-    _ctx_prior_attempts(lines, conn, task_id, now)
-    _ctx_parent_results(lines, conn, task_id, now)
+    _ctx_header(lines, task, budget)
+    _ctx_attachments(lines, list_attachments(conn, task_id), budget)
+    _ctx_prior_attempts(lines, conn, task_id, now, budget)
+    _ctx_parent_results(lines, conn, task_id, now, budget)
     _ctx_role_history(lines, conn, task, now)
-    _ctx_comments(lines, list_comments(conn, task_id), now)
+    _ctx_comments(lines, list_comments(conn, task_id), now, task_id, budget)
+    if budget is not _CTX_BUDGET_FULL:
+        lines.append(
+            "_This context was rendered with a reduced budget because the full "
+            "history exceeded the worker-context ceiling. Nothing was deleted — "
+            "every omitted item is intact in the board DB (see the retrieval "
+            "notes above)._"
+        )
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _ctx_cap(s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES) -> str:
-    """Truncate to ``limit`` chars with a visible ellipsis."""
+def _ctx_cap(
+    s: Optional[str], limit: int = _CTX_MAX_FIELD_BYTES, *, pointer: str = ""
+) -> str:
+    """Truncate to ``limit`` chars with a visible ellipsis. When ``pointer`` is
+    given, the ellipsis note tells the worker where the full text lives
+    (fail-closed retrieval instead of silent loss)."""
     if not s:
         return ""
     s = s.strip()
     if len(s) <= limit:
         return s
-    return s[:limit] + f"… [truncated, {len(s) - limit} chars omitted]"
+    suffix = f" — full text: {pointer}" if pointer else ""
+    return s[:limit] + f"… [truncated, {len(s) - limit} chars omitted{suffix}]"
 
 
 def _ctx_stamp(ts: int, now: int) -> str:
@@ -3606,27 +3701,37 @@ def _ctx_stamp(ts: int, now: int) -> str:
     return f"{disp}, {age}" if age else disp
 
 
-def _ctx_metadata_line(metadata: Any) -> Optional[str]:
+def _ctx_metadata_line(metadata: Any, limit: int = _CTX_MAX_FIELD_BYTES) -> Optional[str]:
     if not metadata:
         return None
     try:
-        return f"_metadata_: `{_ctx_cap(json.dumps(metadata, ensure_ascii=False, sort_keys=True))}`"
+        return f"_metadata_: `{_ctx_cap(json.dumps(metadata, ensure_ascii=False, sort_keys=True), limit)}`"
     except Exception:
         return None
 
 
-def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
-    """Keep the newest ``cap`` items; describe the omitted head, if any."""
+def _ctx_tail(
+    items: list, cap: int, noun: str, task_id: Optional[str] = None
+) -> tuple[list, Optional[str]]:
+    """Keep the newest ``cap`` items; describe the omitted head, if any —
+    count + (when ``task_id`` is given) a retrieval pointer so omission is
+    fail-closed, never silent loss."""
     omitted = max(0, len(items) - cap)
     if not omitted:
         return items, None
-    return items[-cap:], (
+    note = (
         f"_({omitted} earlier {noun}{'s' if omitted != 1 else ''} "
         f"omitted; showing most recent {cap})_"
     )
+    if task_id:
+        note += (
+            f" _(omitted {noun}s are intact in the board DB — retrieve via "
+            f"kanban_show on {task_id})_"
+        )
+    return items[-cap:], note
 
 
-def _ctx_header(lines: list[str], task: Task) -> None:
+def _ctx_header(lines: list[str], task: Task, budget: _CtxBudget) -> None:
     lines.append(f"# Kanban task {task.id}: {task.title}")
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
@@ -3647,21 +3752,35 @@ def _ctx_header(lines: list[str], task: Task) -> None:
     lines.append("")
     if task.body and task.body.strip():
         lines.append("## Body")
-        lines.append(_ctx_cap(task.body, _CTX_MAX_BODY_BYTES))
+        # The body is the worker's spec: render in full up to the fail-closed
+        # ceiling. Head truncation keeps leading mandatory markers (e.g.
+        # ``task_type:``) and the ellipsis carries a retrieval pointer.
+        lines.append(_ctx_cap(
+            task.body, budget.body_bytes,
+            pointer=f"`hermes kanban show {task.id}`",
+        ))
         lines.append("")
 
 
-def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
+def _ctx_attachments(
+    lines: list[str], attachments: list[Attachment], budget: _CtxBudget
+) -> None:
     """Absolute on-disk paths so the worker's file tools read them directly
-    (remote terminal backends need the attachments dir mounted)."""
+    (remote terminal backends need the attachments dir mounted). The newest
+    ``budget.attachments`` rows render in full; older ones are omitted with an
+    explicit count + the ``kanban_attachments`` retrieval pointer."""
     if not attachments:
         return
+    shown, omitted_note = _ctx_tail(attachments, budget.attachments, "attachment")
     lines.append("## Attachments")
     lines.append(
         "Files attached to this task. Read them with the file/terminal "
         "tools at the absolute paths below:"
     )
-    for att in attachments:
+    if omitted_note:
+        # _ctx_tail's generic note is enough; add the dedicated list tool.
+        lines.append(omitted_note + " _(list all via kanban_attachments)_")
+    for att in shown:
         size_kb = max(1, (att.size + 1023) // 1024) if att.size else 0
         size_str = f", {size_kb} KB" if size_kb else ""
         ctype = f", {att.content_type}" if att.content_type else ""
@@ -3669,68 +3788,103 @@ def _ctx_attachments(lines: list[str], attachments: list[Attachment]) -> None:
     lines.append("")
 
 
-def _ctx_prior_attempts(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
+def _ctx_prior_attempts(
+    lines: list[str], conn: sqlite3.Connection, task_id: str, now: int, budget: _CtxBudget
+) -> None:
     """Closed runs on this task (the active run is this worker), newest
-    ``_CTX_MAX_PRIOR_ATTEMPTS`` in full, older ones as a one-line marker."""
+    ``budget.attempts`` in full, older ones omitted with an explicit count +
+    retrieval pointer (``hermes kanban runs``)."""
     all_prior = [r for r in list_runs(conn, task_id) if r.ended_at is not None]
-    shown, omitted_note = _ctx_tail(all_prior, _CTX_MAX_PRIOR_ATTEMPTS, "attempt")
+    shown, omitted_note = _ctx_tail(all_prior, budget.attempts, "attempt", task_id)
     if not shown:
         return
     first_shown_idx = len(all_prior) - len(shown) + 1
     lines.append("## Prior attempts on this task")
     if omitted_note:
         lines.append(omitted_note)
+        lines.append(f"_(full attempt history: `hermes kanban runs {task_id}`)_")
     for offset, run in enumerate(shown):
         profile = run.profile or "(unknown)"
         outcome = run.outcome or run.status
         lines.append(
             f"### Attempt {first_shown_idx + offset} — {outcome} ({profile}, {_ctx_stamp(run.started_at, now)})"
         )
+        runs_pointer = f"`hermes kanban runs {task_id}`"
         if run.summary and run.summary.strip():
-            lines.append(_ctx_cap(run.summary))
+            lines.append(_ctx_cap(run.summary, budget.field_bytes, pointer=runs_pointer))
         if run.error and run.error.strip():
-            lines.append(f"_error_: {_ctx_cap(run.error)}")
-        meta_line = _ctx_metadata_line(run.metadata)
+            lines.append(f"_error_: {_ctx_cap(run.error, budget.field_bytes, pointer=runs_pointer)}")
+        meta_line = _ctx_metadata_line(run.metadata, budget.field_bytes)
         if meta_line:
             lines.append(meta_line)
         lines.append("")
 
 
-def _ctx_parent_results(lines: list[str], conn: sqlite3.Connection, task_id: str, now: int) -> None:
+def _ctx_parent_results(
+    lines: list[str], conn: sqlite3.Connection, task_id: str, now: int, budget: _CtxBudget
+) -> None:
     """Done-parent handoffs: newest ``completed`` run's summary+metadata,
     falling back to ``task.result`` for pre-runs-table data. Stamped with a
-    relative age so the worker re-verifies stale upstream results."""
+    relative age so the worker re-verifies stale upstream results. At most
+    ``budget.parent_handoffs`` parents render in full; the rest are listed as
+    bare ids with a ``kanban_show`` retrieval pointer — never silently
+    dropped."""
     parent_rows = conn.execute(
         "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id", (task_id,),
     ).fetchall()
-    wrote_header = False
+    done_parents: list[tuple[str, Task, Optional[Run]]] = []
     for pid in (r["parent_id"] for r in parent_rows):
         pt = get_task(conn, pid)
         if not pt or pt.status != "done":
             continue
         runs = [r for r in list_runs(conn, pid) if r.outcome == "completed"]
         runs.sort(key=lambda r: r.started_at, reverse=True)
-        run = runs[0] if runs else None
-        if not wrote_header:
-            lines.append("## Parent task results")
-            lines.append(
-                "_Handoffs from upstream tasks, captured when each parent "
-                "completed (see age below). These are point-in-time "
-                "snapshots, not live state — if a result drives your "
-                "current work and it's not recent, re-verify against the "
-                "source before acting on it as current._"
-            )
-            wrote_header = True
+        done_parents.append((pid, pt, runs[0] if runs else None))
+    if not done_parents:
+        return
+
+    # Deterministic order: oldest-completed first, parent_id as the total-order
+    # tiebreak (SQL ORDER BY parent_id alone made which handoffs survive
+    # depend on random id draw). The tail kept below is therefore the most
+    # recently completed parents.
+    def _done_sort_key(triple: tuple[str, Task, Optional[Run]]) -> tuple[int, str]:
+        pid, pt, run = triple
+        ts = run.ended_at if run is not None and run.ended_at else (pt.completed_at or 0)
+        return (int(ts or 0), pid)
+
+    done_parents.sort(key=_done_sort_key)
+
+    lines.append("## Parent task results")
+    lines.append(
+        "_Handoffs from upstream tasks, captured when each parent "
+        "completed (see age below). These are point-in-time "
+        "snapshots, not live state — if a result drives your "
+        "current work and it's not recent, re-verify against the "
+        "source before acting on it as current._"
+    )
+    omitted = max(0, len(done_parents) - budget.parent_handoffs)
+    if omitted:
+        # Deterministic tail: keep the newest-linked parents' full handoffs,
+        # list the omitted ids so retrieval stays unambiguous.
+        omitted_ids = ", ".join(p for p, _, _ in done_parents[:omitted])
+        done_parents = done_parents[omitted:]
+        lines.append(
+            f"_({omitted} earlier parent handoff{'s' if omitted != 1 else ''} "
+            f"omitted to keep the context bounded: {omitted_ids}. Their full "
+            f"results are intact — retrieve with kanban_show on the parent id.)_"
+        )
+    for pid, pt, run in done_parents:
         done_ts = run.ended_at if run is not None and run.ended_at else (pt.completed_at or None)
         age = _relative_age(done_ts, now)
         lines.append(f"### {pid}" + (f" (completed {age})" if age else ""))
+        parent_pointer = f"kanban_show on {pid}"
         if run is not None and run.summary and run.summary.strip():
-            lines.append(_ctx_cap(run.summary))
+            lines.append(_ctx_cap(run.summary, budget.field_bytes, pointer=parent_pointer))
         elif pt.result:
-            lines.append(_ctx_cap(pt.result))
+            lines.append(_ctx_cap(pt.result, budget.field_bytes, pointer=parent_pointer))
         else:
             lines.append("(no result recorded)")
-        meta_line = _ctx_metadata_line(run.metadata) if run is not None else None
+        meta_line = _ctx_metadata_line(run.metadata, budget.field_bytes) if run is not None else None
         if meta_line:
             lines.append(meta_line)
         lines.append("")
@@ -3759,17 +3913,21 @@ def _ctx_role_history(lines: list[str], conn: sqlite3.Connection, task: Task, no
     lines.append("")
 
 
-def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
-    """Newest ``_CTX_MAX_COMMENTS`` comments. The explicit "comment from
+def _ctx_comments(
+    lines: list[str], comments: list[Comment], now: int, task_id: str, budget: _CtxBudget
+) -> None:
+    """Newest ``budget.comments`` comments. The explicit "comment from
     worker" framing stops an operator-controlled HERMES_PROFILE like
     "hermes-system" being read as a system directive above an
-    attacker-influenceable body (defense-in-depth)."""
-    shown, omitted_note = _ctx_tail(comments, _CTX_MAX_COMMENTS, "comment")
+    attacker-influenceable body (defense-in-depth). Omitted older comments are
+    counted and pointed at (``hermes kanban show``) — never silently lost."""
+    shown, omitted_note = _ctx_tail(comments, budget.comments, "comment", task_id)
     if not shown:
         return
     lines.append("## Comment thread")
     if omitted_note:
         lines.append(omitted_note)
+        lines.append(f"_(full thread: `hermes kanban show {task_id}`)_")
     for c in shown:
         # Render author with explicit "comment from worker" framing so operator-controlled HERMES_PROFILE
         # values like "hermes-system" or "operator" can't be misread by the next worker as a system
@@ -3777,7 +3935,10 @@ def _ctx_comments(lines: list[str], comments: list[Comment], now: int) -> None:
         # author-forgery surface was already closed in #22435. See #22452.
         safe_author = (c.author or "").replace("`", "")
         lines.append(f"comment from worker `{safe_author}` at {_ctx_stamp(c.created_at, now)}:")
-        lines.append(_ctx_cap(c.body, _CTX_MAX_COMMENT_BYTES))
+        lines.append(_ctx_cap(
+            c.body, budget.comment_bytes,
+            pointer=f"`hermes kanban show {task_id}`",
+        ))
         lines.append("")
 
 

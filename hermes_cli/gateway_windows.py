@@ -901,7 +901,11 @@ def _attested_pids_from(data: object) -> list[int]:
     """PID list from an attestation payload; empty for anything malformed."""
     if not isinstance(data, dict):
         return []
-    return [p for p in data.get("pids", []) if isinstance(p, int)]
+    pids = data.get("pids")
+    # Fail closed: a null/malformed marker must never authorize a cold start (or raise on iteration).
+    if not isinstance(pids, list):
+        return []
+    return [p for p in pids if isinstance(p, int)]
 
 
 def _attested_pid_exited_cleanly(pid: int) -> bool:

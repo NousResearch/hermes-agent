@@ -85,9 +85,10 @@ def record_response_usage(
         _note_usage_less = getattr(compressor, "note_usage_less_response", None)
         if callable(_note_usage_less):
             _note_usage_less()
+        from agent.log_context import model_provider_fields
         logger.info(
-            "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
-            agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
+            "API call #%d: %s in=? out=? total=? latency=%.1fs usage=unavailable",
+            agent.session_api_calls, model_provider_fields(agent), api_duration,
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
@@ -194,9 +195,10 @@ def record_response_usage(
     _upstream = getattr(response, "provider", None)
     if isinstance(_upstream, str) and _upstream:
         _ident += f" upstream={_upstream}"
+    from agent.log_context import model_provider_fields
     logger.info(
-        "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s%s",
-        agent.session_api_calls, agent.model, agent.provider or "unknown",
+        "API call #%d: %s in=%d out=%d total=%d latency=%.1fs%s%s",
+        agent.session_api_calls, model_provider_fields(agent),
         prompt_tokens, completion_tokens, total_tokens,
         api_duration, _cache_pct, _ident,
     )

@@ -131,7 +131,7 @@ class TestFallbackChainAdvancement:
             "Primary retry eligible in ~60 s; recovery is not guaranteed."
         )
         assert agent._pending_fallback_notice == [expected]
-        assert agent._retry_status_buffer[-1] == ("status", expected)
+        assert agent._retry_status_buffer[-1] == ("fallback_switch", expected)
 
     @patch("time.monotonic", return_value=1000.0)
     def test_records_sequential_switches_in_order(self, _clock):

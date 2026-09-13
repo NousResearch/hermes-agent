@@ -622,6 +622,17 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+def _is_gateway_provider_error_notice(text: str) -> bool:
+    """Recognize either a raw provider envelope or one of this module's safe mapped notices."""
+    body = str(text or "").strip()
+    safe_replies = {reply for _pattern, reply in _PROVIDER_ERROR_REPLIES}
+    return (
+        _looks_like_gateway_provider_error(body)
+        or body in safe_replies
+        or body == _gateway_provider_error_reply("")
+    )
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies for chat surfaces: concise, secret-redacted provider failure
     categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text."""

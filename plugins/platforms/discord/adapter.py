@@ -2842,6 +2842,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             result = SendResult(success=False, error="Refusing to send empty message")
             # Backfill replays from this table: record the dropped final reply as failed or it is lost.
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
+
         try:
             thread_id = None
             if metadata and metadata.get("thread_id"):
@@ -2908,6 +2909,36 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             else:
                 result = SendResult(success=False, error=str(e))
             return await self._record_response_async(reply_to, result, content, bool(metadata and metadata.get("notify")))
+
+    async def send_direct_notice(
+        self, user_id: str, content: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an operator notice to a Discord user without touching the originating channel."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected", retryable=True)
+        try:
+            user = self._client.get_user(int(user_id))
+            if user is None:
+                user = await self._client.fetch_user(int(user_id))
+            if user is None:
+                return SendResult(success=False, error=f"Discord user {user_id} not found")
+            formatted = self.format_message(content)
+            chunks = self._cap_split_chunks(
+                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            )
+            message_ids = []
+            for chunk in chunks:
+                message = await user.send(content=chunk)
+                if getattr(message, "id", None) is not None:
+                    message_ids.append(str(message.id))
+            return SendResult(
+                success=True,
+                message_id=message_ids[-1] if message_ids else None,
+                continuation_message_ids=tuple(message_ids[:-1]),
+            )
+        except Exception as exc:
+            logger.warning("[%s] Direct operator notice to user %s failed: %s", self.name, user_id, exc)
+            return SendResult(success=False, error=str(exc))
 
     @staticmethod
     def _forum_thread_parts(thread: Any) -> tuple:

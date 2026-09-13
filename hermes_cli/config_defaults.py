@@ -1912,6 +1912,14 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+        # Operator-facing runtime notices normally stay in the conversation for compatibility.
+        # Set a kind to "admin_dm" to send it to platforms.<name>.allow_admin_from identities,
+        # or "log" to keep it out of messaging surfaces entirely.
+        "notices": {
+            "session_reset": "chat",
+            "provider_error": "chat",
+            "fallback_switch": "chat",
+        },
         # Seconds to let a SIGTERM-interrupted gateway agent unwind before adapter/database
         # teardown. Keep short so service-manager shutdowns don't exhaust their stop budget.
         "signal_interrupt_grace_timeout": 1,

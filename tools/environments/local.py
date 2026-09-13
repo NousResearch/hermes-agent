@@ -164,9 +164,18 @@ def _quote_bash_path(path: str) -> str:
 
 
 def _cwd_usable(path: str) -> bool:
-    """True when *path* is a directory this process can actually chdir into
-    (``isdir`` alone passes ``/root`` for a non-root user; ``Popen(cwd=)`` then dies)."""
-    return os.path.isdir(path) and os.access(path, os.X_OK)
+    """True when *path* is a writable directory suitable for subprocess work.
+
+    A fallback CWD must be enterable and writable: child tools commonly create
+    project-local state there. Checking both permissions also prevents a
+    searchable but root-owned ancestor such as ``/home`` from becoming the
+    fallback when the configured CWD is temporarily unavailable.
+    """
+    return (
+        os.path.isdir(path)
+        and os.access(path, os.X_OK)
+        and os.access(path, os.W_OK)
+    )
 
 
 def _resolve_safe_cwd(cwd: str) -> str:

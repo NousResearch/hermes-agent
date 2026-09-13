@@ -63,6 +63,26 @@ class TestInaccessibleCwdFallback:
                 pass
 
 
+class TestWritableCwdFallback:
+    def test_resolve_safe_cwd_skips_searchable_but_non_writable_directory(
+        self, tmp_path, monkeypatch
+    ):
+        read_only = tmp_path / "read-only"
+        read_only.mkdir()
+        real_access = os.access
+
+        def access(path, mode):
+            if os.fspath(path) == str(read_only) and mode & os.W_OK:
+                return False
+            return real_access(path, mode)
+
+        monkeypatch.setattr(os, "access", access)
+
+        assert real_access(read_only, os.X_OK)
+        assert _cwd_usable(str(read_only)) is False
+        assert _resolve_safe_cwd(str(read_only / "missing")) == str(tmp_path)
+
+
 class TestUsableCwdBehaviorUnchanged:
     def test_existing_accessible_cwd_returned_verbatim(self, tmp_path):
         assert _resolve_safe_cwd(str(tmp_path)) == str(tmp_path)

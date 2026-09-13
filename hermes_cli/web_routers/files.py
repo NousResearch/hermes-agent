@@ -718,6 +718,12 @@ def _fs_mutation_target(raw_path: str) -> Path:
         candidate = Path(raw_path).expanduser()
         if not candidate.is_absolute():
             raise ValueError
+        # Reject any `.`/`..` component: `Path('.../existing/..')` would pass
+        # the parent checks with the final name `..`, and a delete/copy of
+        # that target resolves to the PARENT directory — deleting outside the
+        # selected tree (e.g. `rmtree('/tmp/existing/..')` → `/tmp`).
+        if any(part in (".", "..") for part in candidate.parts):
+            raise ValueError
         parent = candidate.parent
         if not parent.is_dir():
             raise HTTPException(status_code=400, detail="Parent directory does not exist")
@@ -765,7 +771,9 @@ async def fs_create(payload: FsCreate):
                     raise
             else:
                 try:
-                    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    # Base mode 0o666 (not the 0o777 open() default) so the
+                    # umask yields 0644 for new text files, not 0755.
+                    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o666)
                     os.close(fd)
                 except OSError as exc:
                     if exc.errno in (errno.EEXIST, errno.ENOTEMPTY):
@@ -793,7 +801,10 @@ async def fs_rename(payload: FsRename):
 
     if destination == target:
         return {"ok": True, "path": str(target)}
-    if not target.exists():
+    # exists() FOLLOWS the final symlink, so a dangling link reports missing;
+    # this endpoint renames the LINK itself, so broken links must still be
+    # renameable (is_symlink() is lexical and does not follow).
+    if not (target.is_symlink() or target.exists()):
         raise HTTPException(status_code=404, detail="Path not found")
     if destination.exists() or destination.is_symlink():
         raise HTTPException(status_code=409, detail=f'"{name}" already exists')
@@ -827,7 +838,10 @@ async def fs_delete(payload: FsDelete, request: Request):
     if not payload.path or payload.path.startswith("file:"):
         raise HTTPException(status_code=400, detail="Invalid path")
     target = _fs_mutation_target(payload.path)
-    if not target.exists():
+    # exists() FOLLOWS the final symlink, so a dangling link reports missing;
+    # a delete unlinks the LINK itself (unlink never chases the referent), so
+    # broken links must still be deletable.
+    if not (target.is_symlink() or target.exists()):
         raise HTTPException(status_code=404, detail="Path not found")
     if target.parent == target:
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")

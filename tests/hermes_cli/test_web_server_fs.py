@@ -1,4 +1,6 @@
 import base64
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -266,6 +268,64 @@ def test_fs_create_file_atomically_refuses_existing(client, tmp_path):
 
     assert response.status_code == 409
     assert (parent / "taken.txt").read_text() == "precious"
+
+
+def test_fs_mutation_refuses_dot_components(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "sub").mkdir()
+    (root / "sub" / "keep.txt").write_text("keep")
+    (root / "sentinel.txt").write_text("sentinel")
+
+    # A trailing `..` would resolve the delete target to the PARENT directory —
+    # `rmtree('/project/sub/..')` removes /project, escaping the selected tree.
+    delete = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub" / ".."), "recursive": True}
+    )
+    create = client.post("/api/fs/create", json={"path": str(root / "sub" / ".." / "evil.txt")})
+    rename = client.post("/api/fs/rename", json={"path": str(root / "sub" / "keep.txt"), "name": "../../escape.txt"})
+
+    assert delete.status_code == 400
+    assert create.status_code == 400
+    assert rename.status_code == 400
+    # Nothing outside the selected folder was created or removed.
+    assert (root / "sentinel.txt").read_text() == "sentinel"
+    assert (tmp_path / "evil.txt").exists() is False
+    assert (root / "sub" / "keep.txt").read_text() == "keep"
+
+
+def test_fs_delete_and_rename_handle_dangling_symlink(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "broken").symlink_to(root / "missing-target")
+
+    # exists() follows the referent so a dangling link reports missing; the
+    # mutation targets the LINK itself, so both must still succeed (200).
+    renamed = client.post("/api/fs/rename", json={"path": str(root / "broken"), "name": "broken2"})
+
+    assert renamed.status_code == 200
+    assert renamed.json()["path"] == str(root / "broken2")
+    assert (root / "broken2").is_symlink()
+    assert not (root / "broken").exists()
+
+    deleted = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "broken2")})
+    assert deleted.status_code == 200
+    assert not (root / "broken2").exists()
+
+
+def test_fs_create_file_uses_0666_base_mode(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+
+    response = client.post("/api/fs/create", json={"path": str(parent / "notes.md")})
+
+    assert response.status_code == 200
+    # 0o666 base masked by the umask → 0644 (never the 0755 an 0o777 default
+    # open() would produce for new text files).
+    mode = stat.S_IMODE((parent / "notes.md").stat().st_mode)
+    assert mode == 0o666 & ~current_umask
 
 
 def test_fs_delete_never_removes_filesystem_root(client, tmp_path):

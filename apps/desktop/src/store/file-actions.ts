@@ -85,7 +85,15 @@ export function cancelNewEntry(): void {
 // review's "old path reaches the new connection" class of bugs.
 let lastConnectionKey = ''
 $connection.subscribe(connection => {
-  const key = connection?.connectionId || connection?.baseUrl || `${connection?.mode || 'local'}:${connection?.remoteKind || ''}`
+  // Two profiles on the SAME gateway share connectionId/baseUrl, but their
+  // filesystem roots and auth scopes differ — mirror session.ts's composer
+  // scope and include the profile (plus the legacy SSH identity fallback) so
+  // switching profiles cancels pending actions instead of applying profile A's
+  // absolute path through profile B's connection.
+  const key = connection
+    ? `${connection.connectionId || 'conn'}:${connection.profile || connection.remoteIdentity || 'default'}:${connection.baseUrl || ''}`
+    : 'local'
+
   const changed = lastConnectionKey !== '' && key !== lastConnectionKey
   lastConnectionKey = key
 

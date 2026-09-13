@@ -421,6 +421,10 @@ class SessionAuthority:
                 live.event_stream.publish(ref.session_id, {
                     'text': response, 'content': response, 'admission_id': admission_id,
                     'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+                # The stamp names a claimed, unsettled execution. Left in place, idle
+                # mutations (session.updated) would carry a terminal generation and
+                # a versioned viewer fence would discard them as late frames.
+                live.event_stream.execution = {}
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(response)

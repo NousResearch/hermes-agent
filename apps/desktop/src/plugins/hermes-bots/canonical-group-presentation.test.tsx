@@ -128,6 +128,10 @@ it.each([['en', 'Message the group…', 'User', 'System'], ['ja', 'グループ�
       expect(button.dataset.variant).toBe('ghost')
     }
 
+    const attach = screen.getByRole('button', { name: locale === 'en' ? 'Attach files' : 'ファイルを添付' })
+    expect(attach.querySelector('.codicon-attach')).toBeTruthy()
+    expect(attach.dataset.variant).toBe('ghost')
+    expect(attach.getAttribute('type')).toBe('button')
     expect(mocks.request.mock.calls.every(call => ['groups.state', 'groups.log'].includes(call[1]))).toBe(true)
   }
 )

@@ -103,6 +103,21 @@ describe('fuzzyRank', () => {
     expect(ranked.map(r => r.item.i)).toEqual([0, 1, 2])
   })
 
+  // Ids use hyphens, display names spaces, quants underscores, versions dots;
+  // a user typing from memory picks any of them and must still get the row.
+  it.each([
+    ['gpt.4o', 'gpt-4o'],
+    ['claude_3', 'claude-3-opus'],
+    ['qwen3-8', 'qwen3.8-flash']
+  ])('folds separators on both sides so %s finds %s', (query, expected) => {
+    const catalog = ['gpt-4o', 'claude-3-opus', 'qwen3.8-flash', 'o1-preview']
+    const ranked = fuzzyRank(catalog, query, m => m)
+
+    expect(ranked[0]?.item).toBe(expected)
+    // Positions still index the ORIGINAL target (fold is length-preserving).
+    expect(ranked[0]!.positions.every(i => i >= 0 && i < expected.length)).toBe(true)
+  })
+
   it('matches across a derived key, not just the raw string', () => {
     const providers = [
       { slug: 'openai', name: 'OpenAI' },

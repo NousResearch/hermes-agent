@@ -11,6 +11,12 @@
 // intentionally simple — no external dependency — but good enough to make
 // `son4` rank `claude-sonnet-4` above an incidental scattered hit.
 //
+// Separators (`-`, `_`, `.`) fold to a space on BOTH sides before matching, so
+// `gpt.4o`, `claude_3` and `qwen3-8` hit `gpt-4o`, `claude-3-opus` and
+// `qwen3.8-flash` the way a user typing from memory expects. The fold is one
+// char in, one char out, so returned positions still index the original
+// target and a highlighter can apply the same fold without drift.
+//
 // Shared by the desktop, web and TUI pickers via `@hermes/shared/fuzzy` so a
 // query ranks identically on every surface.
 
@@ -22,6 +28,11 @@ export interface FuzzyMatch {
 }
 
 const WORD_BOUNDARY = /[-_/.\s]/
+
+/** Length-preserving search fold: lower-case and `[-_.]` → space. */
+export function searchFold(value: string): string {
+  return value.toLowerCase().replace(/[-_.]/g, ' ')
+}
 
 function isBoundary(target: string, index: number): boolean {
   if (index === 0) {
@@ -49,8 +60,8 @@ export function fuzzyScore(target: string, query: string): FuzzyMatch | null {
     return { score: 0, positions: [] }
   }
 
-  const lowerTarget = target.toLowerCase()
-  const lowerQuery = query.toLowerCase()
+  const lowerTarget = searchFold(target)
+  const lowerQuery = searchFold(query)
 
   const positions: number[] = []
   let score = 0

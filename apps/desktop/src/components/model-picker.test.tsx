@@ -178,4 +178,29 @@ describe('ModelPickerDialog search ranking', () => {
       expect(rows).toEqual(expected)
     })
   })
+
+  // Regression guard: main folded `[-_.]` on both sides (foldIncludes); the
+  // shared ranker must too, or a query typed with the "wrong" separator
+  // drops every row while the highlighter (which still folds) disagrees.
+  it.each([
+    ['gpt.4o', 'gpt-4o'],
+    ['claude_3', 'claude-3-opus'],
+    ['qwen3-8', 'qwen3.8-flash']
+  ])('separator variant %s still lists %s', async (query, expected) => {
+    const catalog = ['gpt-4o', 'claude-3-opus', 'qwen3.8-flash']
+
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [{ slug: 'nous', name: 'Nous', models: catalog, authenticated: true }]
+    })
+    renderPicker({ currentModel: 'gpt-4o', currentProvider: 'nous' })
+    await screen.findByText('gpt-4o')
+
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: query } })
+
+    await waitFor(() => {
+      const rows = screen.getAllByRole('option').map(el => el.textContent?.trim())
+
+      expect(rows).toContain(expected)
+    })
+  })
 })

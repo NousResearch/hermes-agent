@@ -231,6 +231,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return gateway
         .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
         .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+        .catch(() => {
+          patchOverlayState({ approval: null })
+          actions.sys('deny failed — the request may still be pending')
+        })
     }
 
     if (overlay.sudo || overlay.secret || overlay.vaultUnlock) {

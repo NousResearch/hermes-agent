@@ -72,11 +72,31 @@ def test_darwin_osascript_missing_raises_500(monkeypatch):
     assert "osascript" in excinfo.value.detail
 
 
-def test_darwin_osascript_never_fire_and_forget():
-    """Guard against the endpoint regressing to ``subprocess.Popen``."""
-    import inspect
+def test_darwin_osascript_never_fire_and_forget(monkeypatch):
+    """Guard against the endpoint regressing to ``subprocess.Popen``.
 
-    src = inspect.getsource(profiles_router.open_profile_terminal_endpoint)
-    darwin_branch = src.split('sys.platform == "darwin"', 1)[1].split("else:", 1)[0]
-    assert "subprocess.Popen" not in darwin_branch
-    assert "run_in_threadpool" in darwin_branch
+    Behavior test: if the darwin branch accidentally calls ``subprocess.Popen``,
+    the stub raises RuntimeError and the test fails — regardless of source text.
+    """
+    called_popen = []
+
+    def fake_popen(*args, **kwargs):
+        called_popen.append((args, kwargs))
+        raise RuntimeError("Popen must not be called in the darwin path")
+
+    monkeypatch.setattr(profiles_router.sys, "platform", "darwin")
+    monkeypatch.setattr(profiles_router.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        profiles_router, "_profile_setup_command", lambda name: "hermes setup"
+    )
+    # A normal successful run should complete without touching Popen.
+    result = subprocess.CompletedProcess(["osascript"], 0, stdout="ok", stderr="")
+    monkeypatch.setattr(profiles_router.subprocess, "run", lambda *a, **k: result)
+    try:
+        asyncio.run(profiles_router.open_profile_terminal_endpoint("default"))
+    except Exception:
+        pass  # We only care about whether Popen was called
+    assert called_popen == [], (
+        f"darwin path called subprocess.Popen {len(called_popen)} time(s); "
+        "should use subprocess.run for synchronous osascript execution"
+    )

@@ -40,14 +40,17 @@ jobs:
         run: |
           set -uo pipefail
 
-          # Find the latest CI run for this PR's head SHA.
+          # Find the latest CI run for this PR's head SHA. The workflow file
+          # is ci.yml (not ci.yaml). jq's `// empty` turns a null databaseId
+          # into no output at all, so the empty-string guard below actually
+          # fires instead of letting RUN_ID become the literal "null".
           RUN_INFO=$(gh run list \
             --repo "$REPO" \
             --commit "$HEAD_SHA" \
             --workflow ci.yml \
             --limit 1 \
             --json databaseId,status \
-            --jq '.[0] | "\(.databaseId) \(.status)"' 2>/dev/null || true)
+            --jq '.[0] | select(.databaseId != null and .status != null) | "\(.databaseId) \(.status)"' 2>/dev/null || true)
 
           if [ -z "$RUN_INFO" ]; then
             echo "No CI run found for this PR — nothing to rerun."

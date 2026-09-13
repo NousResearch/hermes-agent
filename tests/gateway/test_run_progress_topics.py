@@ -292,19 +292,19 @@ class DuplicateNativeToolsAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
-        self.tool_start_callback("call-a", "web_search", {"query": "alpha"})
+        # Production (agent/tool_executor.py) fires these through _safe_callback, which skips a
+        # None callback; the card lane leaves them unset when cards are disabled for the turn.
+        start = self.tool_start_callback or (lambda *a, **k: None)
+        complete = self.tool_complete_callback or (lambda *a, **k: None)
+        start("call-a", "web_search", {"query": "alpha"})
         time.sleep(0.15)
-        self.tool_start_callback("call-b", "web_search", {"query": "beta"})
+        start("call-b", "web_search", {"query": "beta"})
         time.sleep(0.15)
         # Complete the second same-name call first. Correlation by tool name
         # would incorrectly mark call-a as failed here.
-        self.tool_complete_callback(
-            "call-b", "web_search", {"query": "beta"}, '{"error": "boom"}'
-        )
+        complete("call-b", "web_search", {"query": "beta"}, '{"error": "boom"}')
         time.sleep(0.15)
-        self.tool_complete_callback(
-            "call-a", "web_search", {"query": "alpha"}, '{"success": true}'
-        )
+        complete("call-a", "web_search", {"query": "alpha"}, '{"success": true}')
         time.sleep(0.15)
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
@@ -1062,14 +1062,13 @@ async def _run_with_agent(
 async def test_slack_native_progress_correlates_concurrent_duplicate_tools_by_id(
     monkeypatch, tmp_path
 ):
+    # No display config: Slack's tier default (tool_progress off) keeps the TEXT lane quiet while
+    # the card lane stays on. An operator-written ``off`` is a different thing (see below).
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
         DuplicateNativeToolsAgent,
         session_id="sess-native-ids",
-        config_data={
-            "display": {"platforms": {"slack": {"tool_progress": "off"}}}
-        },
         platform=Platform.SLACK,
         chat_id="C1",
         thread_id="thread-1",
@@ -1130,6 +1129,138 @@ async def test_slack_native_failure_keeps_editing_one_live_text_fallback(
     assert adapter.edits[-1]["content"].endswith("web_search - beta - error")
     assert "web_search - alpha - complete" in adapter.edits[-1]["content"]
     assert adapter.native_stops == 1
+
+
+class UnsupportedDestinationTaskCardAdapter(NativeTaskCardAdapter):
+    """Relay connector shape for a flat Slack DM: cards need a thread anchor, so the
+    connector rejects every card frame with a deterministic unsupported-destination error."""
+
+    async def send_native_task_card_progress(self, *args, **kwargs) -> SendResult:
+        await super().send_native_task_card_progress(*args, **kwargs)
+        return SendResult(success=False, error="slack task_card requires a thread anchor")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "display_cfg",
+    [
+        {"platforms": {"slack": {"tool_progress": "off"}}},
+        {"tool_progress": "off"},
+        {"tool_progress_overrides": {"slack": "off"}},
+    ],
+    ids=["platform-override", "global", "legacy-overrides"],
+)
+async def test_slack_operator_tool_progress_off_disables_task_cards(monkeypatch, tmp_path, display_cfg):
+    # Task cards ARE tool progress rendered natively. When the operator writes ``off`` (not the
+    # tier default), neither the card lane nor its text fallback may publish anything.
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-operator-off",
+        config_data={"display": display_cfg},
+        platform=Platform.SLACK,
+        chat_id="D1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=NativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates == []
+    assert adapter.native_stops == 0
+    assert adapter.sent == []
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "display_cfg",
+    [
+        {"platforms": {"slack": {"tool_progress": None}}},
+        {"tool_progress": None},
+        {"tool_progress_overrides": {"slack": None}},
+        # null at the platform level over a global "all": the platform inherits "all", cards stay.
+        {"tool_progress": "all", "platforms": {"slack": {"tool_progress": None}}},
+    ],
+    ids=["platform-null", "global-null", "legacy-null", "platform-null-over-global-all"],
+)
+@pytest.mark.parametrize("env_mode", [None, "all", "new"])
+async def test_slack_null_tool_progress_is_inheritance_not_explicit_off(monkeypatch, tmp_path, display_cfg, env_mode):
+    # A bare key with ``null`` inherits (the resolver skips None); it is not an operator saying "off".
+    monkeypatch.delenv("HERMES_TOOL_PROGRESS_MODE", raising=False)
+    if env_mode is not None:
+        monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", env_mode)
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-null",
+        config_data={"display": display_cfg},
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates
+    assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_slack_operator_tool_progress_new_keeps_task_cards(monkeypatch, tmp_path):
+    # An explicit non-off mode keeps the native card lane engaged (text lane stays swallowed by it).
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-operator-new",
+        config_data={"display": {"platforms": {"slack": {"tool_progress": "new"}}}},
+        platform=Platform.SLACK,
+        chat_id="C1",
+        thread_id="thread-1",
+        adapter_cls=NativeTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.native_updates
+    assert adapter.sent == []
+    assert adapter.native_stops == 1
+
+
+@pytest.mark.asyncio
+async def test_slack_unsupported_card_destination_does_not_degrade_to_text_progress(
+    monkeypatch, tmp_path
+):
+    # Flat Slack DM, no operator config (tier default: tool_progress off). The connector cannot
+    # render a card without a thread anchor; that is a property of the destination, not a
+    # transient native failure, so the lane must NOT fall back to text tool progress the operator
+    # never asked for. Transient failures keep the fallback (see the test above).
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-unsupported-dest",
+        platform=Platform.SLACK,
+        chat_id="D1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=UnsupportedDestinationTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.native_updates) == 1
+    assert adapter.sent == []
+    assert adapter.edits == []
 
 
 @pytest.mark.asyncio

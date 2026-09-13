@@ -1894,6 +1894,13 @@ class SlackAdapter(BasePlatformAdapter):
         return self._workspace_thread_key(
             self._metadata_team_id(metadata), chat_id, str(thread_ts))
 
+    def native_task_card_destination_supported(
+        self, chat_id: str, *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Placement eligibility independent of connection/stream availability."""
+        return self._native_task_card_key(chat_id, reply_to, metadata) is not None
+
     async def send_native_task_card_progress(
         self, chat_id: str, tasks: List[Dict[str, str]], *, title: str = "Hermes is working",
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,

@@ -429,10 +429,11 @@ platforms:
       # Requires rich_blocks: true. Default: false.
       feedback_buttons: false
 
-      # Render live tool calls as Slack-native plan/task cards. This explicit
-      # opt-in activates native progress even when text tool_progress is off.
-      # If Slack rejects the native stream, Hermes keeps one editable text
-      # fallback current for the rest of the turn.
+      # Render live tool calls as Slack-native plan/task cards. Works with
+      # Slack's built-in tool_progress: off default; a tool_progress: off you
+      # write yourself disables cards too. Cards need a thread: an un-threaded
+      # chat shows no tool progress. Recoverable native API failures keep one
+      # editable text fallback current for the rest of the turn.
       native_task_cards: false
 
       # Suggested prompts pinned at the top of Agent view's Messages tab.
@@ -468,7 +469,7 @@ platforms:
 | `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
 | `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
-| `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. This is an explicit progress opt-in independent of Slack's default `tool_progress: off`; native API failures fall back to one continuously edited text update. |
+| `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles. Recoverable native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
@@ -573,12 +574,25 @@ platforms:
       native_task_cards: true
 ```
 
-- This is an explicit progress opt-in — it works even though Slack's default
-  is `tool_progress: off` (text bubbles spam channels; native cards don't).
+- Cards are the Slack rendering of tool progress. They work with Slack's
+  built-in default `tool_progress: off`. Writing `tool_progress: off` yourself
+  (globally, under `display.platforms.slack`, or by cycling `/verbose` to off)
+  turns cards off as well; `new` or `all` keeps them. A `null` value inherits
+  and is not an "off". Null also allows the existing environment bridge to
+  supply the mode when no YAML layer sets a non-null value. Changes apply
+  when the next turn resolves its display settings.
+- Cards need a thread. With the card lane active, a chat that has no thread to
+  anchor on (a top-level DM under `reply_in_thread: false`) shows no tool
+  progress at all rather than text bubbles; replies inside an existing thread
+  still get cards.
 - Concurrent calls to the same tool are correlated by real tool-call ID, so
   parallel `web_search` calls each get their own row with the right status.
-- If the native stream can't start or update, Hermes falls back to a single
-  continuously edited text message so progress stays live for the turn.
+- Hermes checks thread eligibility before attempting publication, so a
+  disconnect or timeout cannot turn an unthreaded destination into text fallback.
+- On a supported threaded destination, if the native stream fails for a
+  recoverable reason (API error, rate limit), Hermes falls back to a single continuously edited text message so
+  progress stays live for the turn. A relay egress refusal of the destination
+  is not recoverable and suppresses progress for the turn.
 - The card stream is stopped exactly once when the turn finalizes, including
   on interrupt/disconnect, so no dangling live indicator is left behind.
 

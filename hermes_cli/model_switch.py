@@ -1527,7 +1527,10 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     ``None`` when the target has none — otherwise the OLD provider's endpoint/wire-protocol lingers
     (#25106). A context pin is dropped only when its route identity changed (fail-closed).
     Non-custom targets resolve credentials from env/auth.json/the pool, so an inline
-    ``model.api_key`` is a leftover that would contaminate later custom resolution."""
+    ``model.api_key`` is a leftover that would contaminate later custom resolution. For custom
+    targets the inline key belongs to ONE endpoint: it survives only a same-route re-pick (same
+    provider and base_url) — ``custom:a`` -> ``custom:b`` must not hand endpoint A's secret to B.
+    The dashboard re-adds an explicitly submitted key after this (``_apply_main_model_assignment``)."""
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,
@@ -1539,11 +1542,20 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
                 model_cfg.get("default") or model_cfg.get("model"), result.new_model,
                 model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
             updates["context_length"] = None
-    if not str(result.target_provider or "").strip().lower().startswith("custom"):
+    target = str(result.target_provider or "").strip().lower()
+    if not target.startswith("custom") or _route_changed(model_cfg, result):
         for key in ("api_key", "api"):
             if key in model_cfg:
                 updates[key] = None
     return updates
+
+
+def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
+    """Provider or endpoint differs between the on-disk ``model:`` block and the switch target."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
+        return True
+    return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(result.base_url)
 
 
 def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:

@@ -113,6 +113,25 @@ def test_same_route_repick_keeps_the_context_pin(seeded_home):
     assert block["api_key"] == "sk-stale"  # custom targets keep their inline key
 
 
+def test_custom_to_other_custom_endpoint_drops_the_inline_key(seeded_home):
+    """``custom`` -> ``custom:other-box``: endpoint A's inline ``api_key`` must not become endpoint B's
+    credential (the pointer-not-secret rule, #88990). Same provider *string* but a different
+    ``base_url`` drops it too — the key belongs to one endpoint, not to the word "custom"."""
+    from hermes_cli.model_switch import persist_model_selection
+    other_provider = ModelSwitchResult(
+        success=True, new_model="other-model", target_provider="custom:other-box",
+        base_url="http://other-box:8000/v1", api_mode="chat_completions", is_global=True)
+    persist_model_selection(other_provider)
+    assert "api_key" not in _model_block(seeded_home)
+
+    (seeded_home / "config.yaml").write_text(_SEED, encoding="utf-8")
+    same_provider_other_host = ModelSwitchResult(
+        success=True, new_model="local-model", target_provider="custom",
+        base_url="http://10.0.0.9:1234/v1", api_mode="anthropic_messages", is_global=True)
+    persist_model_selection(same_provider_other_host)
+    assert "api_key" not in _model_block(seeded_home)
+
+
 def test_gateway_persists_to_the_profile_config_it_was_given(tmp_path, monkeypatch):
     """Multiplexed gateway: the write lands in the routed profile's config.yaml, never the
     process-level HERMES_HOME."""

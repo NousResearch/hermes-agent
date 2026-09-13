@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Adversarial Debate Synthesis",
+  "type": "object",
+  "required": [
+    "debate_id", "topic", "format",
+    "rounds_completed", "dqi", "dqi_assessment",
+    "position_changes",
+    "consensus_claims", "tensions",
+    "minority_reports", "execute_automatically"
+  ],
+  "properties": {
+    "debate_id": { "type": "string", "pattern": "^debate-\\d+$" },
+    "topic": { "type": "string" },
+    "format": { "type": "string", "enum": ["rca", "feature"] },
+    "rounds_completed": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "dqi": { "type": "number", "minimum": 0, "maximum": 1 },
+    "dqi_assessment": { "type": "string", "enum": ["high", "moderate", "low"] },
+    "position_changes": { "type": "integer", "minimum": 0, "maximum": 4 },
+    "consensus_claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "statement": { "type": "string" }
+        }
+      }
+    },
+    "tensions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "statement": { "type": "string" }
+        }
+      }
+    },
+    "minority_reports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "agent": { "type": "string" },
+          "position": { "type": "string" },
+          "rationale": { "type": "string" }
+        }
+      }
+    },
+    "execute_automatically": { "type": "boolean" }
+  }
+}

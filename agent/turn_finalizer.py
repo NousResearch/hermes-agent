@@ -551,12 +551,15 @@ def finalize_turn(
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
 
-    # Save the trajectory only after the canonical persistence outcome is known.
-    _guarded_cleanup(
-        "save_trajectory",
-        lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
-        _cleanup_errors, logger,
-    )
+    # Trajectory is downstream evidence: do not write it unless canonical persistence
+    # was positively confirmed. A None/False/exception outcome must not create an
+    # apparently durable artifact from an unconfirmed turn.
+    if persistence_confirmed:
+        _guarded_cleanup(
+            "save_trajectory",
+            lambda: agent._save_trajectory(messages, _summarize_user_message_for_log(user_message), completed),
+            _cleanup_errors, logger,
+        )
     if persistence_confirmed and final_response and not interrupted:
         _emit_post_llm_call(
             agent, final_response, logger, platform=_platform, effective_task_id=effective_task_id,

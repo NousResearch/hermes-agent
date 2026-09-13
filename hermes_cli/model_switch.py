@@ -1519,6 +1519,78 @@ def switch_model(
     return _build_switch_result(st)
 
 
+def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg: Any) -> dict[str, Any]:
+    """The ONE config.yaml shape a persisted model selection produces, as ``model.<key>`` -> value
+    (``None`` = clear). ``current_model_cfg`` is the on-disk ``model:`` block (raw).
+
+    base_url/api_mode are freshly resolved for the target route, so they are always synced —
+    ``None`` when the target has none — otherwise the OLD provider's endpoint/wire-protocol lingers
+    (#25106). A context pin is dropped only when its route identity changed (fail-closed).
+    Non-custom targets resolve credentials from env/auth.json/the pool, so an inline
+    ``model.api_key`` is a leftover that would contaminate later custom resolution. For custom
+    targets the inline key belongs to ONE endpoint: it survives only a same-route re-pick (same
+    provider and base_url) — ``custom:a`` -> ``custom:b`` must not hand endpoint A's secret to B.
+    The dashboard re-adds an explicitly submitted key after this (``_apply_main_model_assignment``)."""
+    model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
+    updates: dict[str, Any] = {
+        "default": result.new_model, "provider": result.target_provider,
+        "base_url": result.base_url or None, "api_mode": result.api_mode or None,
+    }
+    if "context_length" in model_cfg:
+        from hermes_cli.route_identity import should_clear_context_pin
+        if should_clear_context_pin(
+                model_cfg.get("default") or model_cfg.get("model"), result.new_model,
+                model_cfg.get("base_url"), result.base_url, model_cfg.get("provider"), result.target_provider):
+            updates["context_length"] = None
+    target = str(result.target_provider or "").strip().lower()
+    if not target.startswith("custom") or _route_changed(model_cfg, result):
+        for key in ("api_key", "api"):
+            if key in model_cfg:
+                updates[key] = None
+    return updates
+
+
+def _route_changed(model_cfg: dict, result: ModelSwitchResult) -> bool:
+    """Provider or endpoint differs between the on-disk ``model:`` block and the switch target."""
+    from hermes_cli.route_identity import normalize_route_base_url
+    if str(model_cfg.get("provider") or "").strip().lower() != str(result.target_provider or "").strip().lower():
+        return True
+    return normalize_route_base_url(model_cfg.get("base_url")) != normalize_route_base_url(result.base_url)
+
+
+def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
+    """Apply the canonical shape to an in-memory ``model:`` dict (``None`` = key removed) for
+    callers that save a whole config document they are already mutating."""
+    model_cfg = dict(model_cfg) if isinstance(model_cfg, dict) else {}
+    for key, value in model_selection_config_updates(result, model_cfg).items():
+        if value is None:
+            model_cfg.pop(key, None)
+        else:
+            model_cfg[key] = value
+    return model_cfg
+
+
+def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> None:
+    """Write a successful :func:`switch_model` result to ``config_path`` (default:
+    ``HERMES_HOME/config.yaml`` — the context override or ``HERMES_HOME`` at call time).
+
+    Targeted key writes, not a whole-``model:`` rewrite: a block rewrite destroys sibling keys the
+    user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
+    cold-start disk I/O — async callers run this on a worker thread."""
+    from pathlib import Path
+    from hermes_cli.config import get_config_path, read_user_config_raw, warn_unpinned_cron_jobs_after_model_config_change
+    from utils import atomic_roundtrip_yaml_update
+    path = Path(config_path) if config_path else get_config_path()
+    for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
+        atomic_roundtrip_yaml_update(path, f"model.{key}", value)
+        # Same unpinned-cron notice as `hermes config set` for every model switch.
+        warn_unpinned_cron_jobs_after_model_config_change(f"model.{key}", value)
+    try:  # owner-only: config files contain API keys
+        os.chmod(path, 0o600)
+    except (OSError, NotImplementedError):
+        pass
+
+
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:
     if not isinstance(entry, dict):
         return {}

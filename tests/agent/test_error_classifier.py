@@ -539,6 +539,30 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
 
+    def test_429_with_structured_terminal_quota_code_is_billing(self):
+        """LiteLLM stamps ``terminal_quota_exhausted`` on a hard-cap 429. The
+        429 handler always returns a verdict, so the structured billing code
+        must be honored inside it — otherwise the exhausted key is retried
+        (upstream this respawned duplicate subagents; ported from
+        code-yeongyu/oh-my-openagent#6677)."""
+        e = MockAPIError(
+            "request failed", status_code=429,
+            body={"error": {"code": "terminal_quota_exhausted", "message": "request failed"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_429_hard_billing_limit_text_is_billing(self):
+        """The free-text twin: "hard billing limit" is exhaustion wording, not
+        throttling, even though it contains no reset signal to disambiguate."""
+        result = classify_api_error(
+            MockAPIError("hard billing limit reached for this key", status_code=429)
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
     # request-validation failures with a 5xx status. These are

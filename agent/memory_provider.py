@@ -7,13 +7,30 @@ prefetch / sync_turn per turn -> tool dispatch -> shutdown, plus optional ``on_*
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def ctx_bound(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Bind ``fn`` to the CALLER's contextvars for another thread/executor. Profile isolation
+    is a ContextVar-scoped HERMES_HOME override plus the per-turn secret scope; a worker started
+    with an empty context silently lands on the default profile (or fails closed on secrets)."""
+    ctx = contextvars.copy_context()
+    return lambda *args, **kwargs: ctx.run(fn, *args, **kwargs)
+
+
+def spawn_context_thread(target: Callable[..., Any], *, name: str, daemon: bool = True,
+                         args: tuple = ()) -> threading.Thread:
+    """Unstarted thread running *target* under the spawner's contextvars (see :func:`ctx_bound`).
+    Every memory-provider background job (prefetch, sync, writer loops) must go through this."""
+    return threading.Thread(target=ctx_bound(target), args=args, name=name, daemon=daemon)
 
 # v1 = best-effort on_pre_compress() with the raw message list; v2 = opt-in fail-closed
 # checkpoint (normalized evidence handoff + strict-mode failure propagation).

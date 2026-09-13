@@ -25,11 +25,13 @@ from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseB
 logger = logging.getLogger(__name__)
 
 # ── Approval & safety ───────────────────────────────────────────────────────
+# Optional computer_use-specific prompt handed to the shared gate as its explicit ``approval_callback``; when None the
+# gate resolves the per-thread CLI callback (``tools.terminal_tool.set_approval_callback``) like every other tool, so
+# in-tree hosts never call this. Same contract as that callback: ``cb(command, description, **kw)`` ->
+# "once" | "session" | "always" | "deny" | "timeout".
 _approval_callback = None
 
 def set_approval_callback(cb) -> None:
-    """Register the CLI approval prompt (terminal_tool pattern); ``cb(action, args, summary)`` ->
-    "approve_once" | "approve_session" | "always_approve" | "deny"."""
     global _approval_callback
     _approval_callback = cb
 
@@ -82,14 +84,10 @@ _backend_permission_modes: Dict[str, str] = {}
 # (home key, provider, model) → bool. The decision reads the active profile's config (auxiliary.vision
 # override, declared supports_vision), so a multiplexed process must not serve profile A's verdict to B.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
-# Approval state keyed by session_id so a gateway serving concurrent sessions can't leak one run's
-# "always approve" into another; callers without a session_id share "".
-# Falls back to a shared "" bucket for callers that don't pass a session_id (e.g. the classic single-run
-# CLI). Values: _session_auto_approve[sid] -> bool   ("always_approve everything") _always_allow[sid]
-# -> set of (action, delivery_mode) scope keys See NousResearch/hermes-agent#67052 gap 4.
+# Approval grants live in the shared store (``tools.approval``: session set + permanent allowlist), keyed by the
+# gate's session key, so a computer_use "always" is one allowlist entry like any terminal pattern. Only the
+# once-per-session escalation warning is tracked here.
 _approval_lock = threading.Lock()
-_session_auto_approve: Dict[str, bool] = {}   # sid -> "always_approve everything"
-_always_allow: Dict[str, set] = {}            # sid -> set of (action, delivery_mode) scope keys
 _escalation_warned: set = set()               # sids already warned that a bypass widened the driver mode
 
 def _cua_permission_mode(session_id: str) -> str:
@@ -178,13 +176,11 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
 
 def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
-    Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace; approval
-    state is cleared even without a backend."""
+    Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
+    grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
     sid = str(session_id or "")
     with _backend_lock:
         backend, call_lock = _detach_locked(sid)
-    with _approval_lock:
-        _session_auto_approve.pop(sid, None), _always_allow.pop(sid, None)
     if backend is None:
         return False
     _stop_backend(backend, call_lock,
@@ -209,7 +205,7 @@ def _shutdown_backend_atexit() -> None:
         _backend = None
         _backends.clear(), _backend_call_locks.clear(), _backend_permission_modes.clear()
     with _approval_lock:
-        _session_auto_approve.clear(), _always_allow.clear(), _escalation_warned.clear()
+        _escalation_warned.clear()
     for backend, call_lock in unique.values():
         _stop_backend(backend, call_lock, lambda e: logger.debug("cua-driver atexit teardown failed: %s", e))
 
@@ -253,7 +249,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     scopes = ([action] if action in _ACTIONS and _ACTIONS[action].destructive else []) + (
         ["bring_to_front"] if args.get("bring_to_front") or (action == "focus_app" and args.get("raise_window")) else [])
     for scope in scopes:
-        if (err := _request_approval(scope, args, session_id)) is not None:
+        if (err := _request_approval(scope, args)) is not None:
             return err
     try:
         backend = _get_backend(session_id=session_id)
@@ -270,36 +266,29 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
 
-def _request_approval(action: str, args: Dict[str, Any], session_id: str = "") -> Optional[str]:
-    """None if approved, else a JSON error string. Scoped by (action, delivery_mode) AND session_id: foreground
-    delivery is a visible focus change, so a background ``approve_session`` must NOT cover it; the blanket
-    ``always_approve`` does. No CLI approval wired -> default allow (gateway approval runs one layer out).
-
-    ``always_approve`` (the blanket "auto-approve everything" unlock) still covers foreground, since the
-    user explicitly opted into unattended operation. State is keyed on session_id so concurrent runs don't
-    leak unlocks into one another. See #67052.
+def _request_approval(action: str, args: Dict[str, Any]) -> Optional[str]:
+    """None if approved, else a JSON error string. The decision (yolo bypass, session/permanent grants, CLI prompt,
+    gateway pending, cron/unattended policy, fail-closed with nobody to ask) is ``tools.approval``'s shared gate,
+    so a computer_use grant is one store entry like any terminal pattern. Scope key ``cua:<action>:<mode>``:
+    foreground delivery is a visible focus change, so a background ``session`` grant must NOT cover it (#67052).
     """
-    scope_key = (action, "foreground" if args.get("delivery_mode") == "foreground" else "background")
-    with _approval_lock:
-        if _session_auto_approve.get(session_id) or scope_key in _always_allow.get(session_id, set()):
-            return None
-    if (cb := _approval_callback) is None:
+    from tools.approval import _run_approval_gate
+
+    mode = "foreground" if args.get("delivery_mode") == "foreground" else "background"
+    description = f"Allow computer_use to perform `{action}`?"
+    result = _run_approval_gate(
+        pattern_key=f"cua:{action}:{mode}", description=description,
+        display_target=f"computer_use: {_summarize_action(action, args)}", approval_callback=_approval_callback,
+        subject=f"computer_use `{action}` requires approval", noun="desktop actions",
+        advice="Find an alternative approach that avoids driving the desktop.",
+        autoapprove_log_prefix="computer_use action in non-interactive non-gateway context",
+        fail_closed_when_no_human=True,
+        no_human_block_message=(f"BLOCKED: computer_use `{action}` requires approval but no interactive user or "
+                                "gateway is present to approve it."),
+    )
+    if result.get("approved"):
         return None
-    try:
-        verdict = cb(action, args, _summarize_action(action, args))
-    except Exception as e:
-        logger.warning("approval callback failed: %s", e)
-        verdict = "deny"
-    if verdict in ("approve_session", "always_approve"):
-        with _approval_lock:
-            _always_allow.setdefault(session_id, set()).add(scope_key)
-            if verdict == "always_approve":
-                _session_auto_approve[session_id] = True
-    if verdict in ("approve_once", "approve_session", "always_approve"):
-        return None
-    return json.dumps({"error": ("approval prompt timed out — the user did not respond. Silence is not consent; "
-                                 "do not retry without the user.") if verdict == "timeout" else "denied by user",
-                       "action": action})
+    return json.dumps({"error": result.get("message") or "denied by user", "action": action})
 
 def _summarize_action(action: str, args: Dict[str, Any]) -> str:
     fg = " [FOREGROUND — briefly raises the window / changes focus]" if args.get("delivery_mode") == "foreground" else ""

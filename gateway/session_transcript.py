@@ -25,14 +25,6 @@ class TranscriptReadError(RuntimeError):
         super().__init__(f"transcript read failed for session {session_id}")
 
 
-def _plain_text(content) -> str:
-    """Text of a message content (str or text-part list); "" for anything else."""
-    if isinstance(content, list):
-        parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-        return "\n".join(t for t in parts if t)
-    return content if isinstance(content, str) else ""
-
-
 def _spool_dropped(session_id: str, message: Dict[str, Any]):
     """Spool one evicted/undeliverable message to disk (same machinery as the shutdown flush, so it
     is replayed after DB recovery); path or None."""
@@ -516,60 +508,28 @@ class SessionTranscriptMixin:
         self, session_id: str, n: int = 1, *, require_retryable_composite: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Back up ``n`` user turns via soft-delete (``active=0``), mirroring CLI ``/undo [N]``.
-        Returns ``{"rewound_count", "turns_undone", "target_text"}`` or ``None`` (no DB / no user
-        turn); ``n`` clamps to the oldest user turn. ``require_retryable_composite`` is the gateway
-        ``/retry`` guard: the selected turn must be a composite carrier whose live payload is
-        losslessly replayable as text before anything changes."""
+        Returns ``{"rewound_count", "turns_undone", "target_text"}`` or ``None`` (no DB / no rewindable
+        turn / persistence failure); ``n`` clamps to the oldest user turn. ``require_retryable_composite``
+        is the gateway ``/retry`` guard: the selected turn must be a composite carrier whose live payload
+        is losslessly replayable as text — that replay-policy ``ValueError`` propagates so /retry can
+        explain why the carrier is unsafe."""
         db = self._db_for_session_id(session_id)
         if not db:
             return None
+        from hermes_state_rewind import RewindTargetUnavailableError
         with self._get_transcript_drain_lock():
-            n = max(n, 1)
-            from agent.context_compressor import (
-                retryable_user_text, split_user_originated_turn, user_originated_turn_view,
-            )
             try:
-                expected_active_ids = db.get_active_message_ids(session_id)
-                durable = db.get_messages_as_conversation(session_id, include_row_ids=True)
-                user_indices = [
-                    index for index, message in enumerate(durable)
-                    if user_originated_turn_view(message) is not None
-                ]
-                if not user_indices:
-                    return None
-                turns_undone = min(n, len(user_indices))
-                target = durable[user_indices[-turns_undone]]
-                target_id = target.get("_row_id")
-                if not isinstance(target_id, int):
-                    return None
-                handoff, target_view = split_user_originated_turn(target)
-                if target_view is None:
-                    return None
-                if require_retryable_composite and handoff is None:
-                    return None
-            except Exception as e:
-                logger.debug("rewind_session: failed to resolve canonical target: %s", e)
+                outcome = db.rewind_user_turn(
+                    session_id, -max(n, 1), require_retryable=require_retryable_composite,
+                    require_composite=require_retryable_composite)
+            except RewindTargetUnavailableError as e:
+                logger.debug("rewind_session: %s", e)
                 return None
-            if require_retryable_composite:
-                # Keep replay-policy failures distinct from persistence errors so /retry can explain
-                # why the selected carrier is unsafe.
-                target_text = retryable_user_text(target_view.get("content"))
-            try:
-                result = db.rewind_to_message(
-                    session_id, target_id, preserve_compaction_handoff=handoff is not None,
-                    expected_active_ids=expected_active_ids,
-                    expected_target_content=target_view.get("content"))
+            except ValueError:
+                raise
             except Exception as e:
-                prefix = "" if isinstance(e, ValueError) else "rewind_to_message failed: "
-                logger.debug("rewind_session: %s%s", prefix, e)
+                logger.debug("rewind_session: rewind failed: %s", e)
                 return None
             self._clear_dirty_transcript(session_id)
-            # ``target_view`` is the live projection; a composite carrier's raw row holds the
-            # summary wrapper and must not be echoed as prompt.
-            if not require_retryable_composite:
-                target_text = _plain_text(target_view.get("content") or "")
-            return {
-                "rewound_count": result.get("rewound_count", 0),
-                "turns_undone": turns_undone,
-                "target_text": target_text,
-            }
+            return {"rewound_count": outcome.rewound_count, "turns_undone": outcome.turns_undone,
+                    "target_text": outcome.live_text}

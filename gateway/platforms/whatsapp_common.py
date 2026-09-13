@@ -19,12 +19,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.platforms._shared import get_scoped_secret as _get_wsecret
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"true", "1", "yes", "on"}
-_OPTIN_TRUTHY = {"true", "1", "yes"}
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
@@ -47,12 +47,13 @@ def _header_to_bold(m: re.Match) -> str:
     return f"*{inner}*"
 
 
-class WhatsAppBehaviorMixin:
+class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     """Shared behavior for all WhatsApp adapters (Baileys + Cloud API); owns no state
     of its own — see the module docstring for the host adapter's attribute contract."""
 
     # Practical UX limit, not the ~65K protocol max (long messages are unreadable on mobile).
     MAX_MESSAGE_LENGTH: int = 4096
+    ALLOW_ALL_ENV_PREFIX = "WHATSAPP"
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
 
     DEFAULT_REPLY_PREFIX: str = "☤ *Hermes Agent*\n────────────\n"
@@ -67,11 +68,6 @@ class WhatsAppBehaviorMixin:
         if not content:
             return content
         return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content))
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
-        return True
 
     def _effective_reply_prefix(self) -> str:
         """Prefix for outgoing replies in self-chat mode (Cloud API overrides to ``""``)."""
@@ -156,12 +152,6 @@ class WhatsAppBehaviorMixin:
         return cid == "status@broadcast" or cid.endswith(("@broadcast", "@newsletter"))
 
     # ------------------------------------------------------------------ gating
-    def _open_dm_opted_in(self) -> bool:
-        # Both names via the scoped reader — the DEFAULT profile's os.environ opt-in must not open
-        # a secondary bot's DMs.
-        return any((_get_wsecret(name, default="") or "").lower() in _OPTIN_TRUTHY
-                   for name in ("GATEWAY_ALLOW_ALL_USERS", "WHATSAPP_ALLOW_ALL_USERS"))
-
     @staticmethod
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
         """Match a WhatsApp identifier against an allowlist across phone/LID forms. Inbound senders
@@ -182,28 +172,8 @@ class WhatsAppBehaviorMixin:
             for entry in allow_from
         )
 
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Strict DM authorization — pairing does not imply access."""
-        if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(sender_id, self._live_dm_allow_from())
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        """Whether a DM may reach the gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        if not principal:
-            return False
-        if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(principal, self._live_dm_allow_from())
-        if self._dm_policy == "pairing":
-            return True
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_group_allowed(self, chat_id: str) -> bool:
-        """Check whether a group chat should be processed."""
-        if self._group_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
-        return self._group_policy == "open"
+    def _entry_matches(self, entries, target: str) -> bool:
+        return self._matches_whatsapp_allowlist(target, entries)
 
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")

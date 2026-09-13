@@ -33,6 +33,7 @@ from agent.memory_provider import PRE_COMPRESS_CHECKPOINT_API_VERSION
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 from agent.usage_anchor import set_usage_anchor
+from hermes_state_ids import new_session_id as mint_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -2980,7 +2981,7 @@ def _publish_rotated_compaction(
     if _profile_for_child == "default":
         _profile_for_child = None
     old_title = agent._session_db.get_session_title(agent.session_id)
-    new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,

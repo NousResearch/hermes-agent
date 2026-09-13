@@ -12,6 +12,7 @@ The Desktop's relay door on each connected gateway. Contracts:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -295,3 +296,28 @@ def test_deliver_refuses_a_sender_from_a_logged_in_client(home, fake_runs, bound
 
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
     assert len(calls) == 1 and TURN_AUTHOR_ENV not in calls[0]["env"]
+
+
+@pytest.mark.parametrize("subdir", ["profiles/ops", "dev"])
+def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, subdir):
+    """Both ends of the relay mailbox derive the install root from HERMES_HOME with ONE formula.
+    The writer side (``message_agent``'s ``_hermes_root``) and the drain side
+    (``methods_bot_relay._relay_root``) must agree for a ``profiles/<name>`` home AND for an
+    arbitrary subdir of the native ``~/.hermes`` — a split here is silent non-delivery."""
+    from tools.bot_mode_probe import _default_home, _hermes_root
+    from tui_gateway import methods_bot_relay
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home = tmp_path / ".hermes" / subdir
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    writer_root = _hermes_root(Path(_default_home()))
+    target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
+              "connection_label": "", "title": "", "description": ""}
+    env = bot_relay.enqueue_envelope(
+        writer_root, target=target, message="m", sender_profile="default", sender_handle="hermes")
+
+    assert methods_bot_relay._relay_root() == writer_root
+    drained = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
+    assert [e["id"] for e in drained["envelopes"]] == [env["id"]]

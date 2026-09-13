@@ -184,6 +184,14 @@ class SessionFtsSetupMixin:
         return "no such tokenizer: trigram" in err or "no such tokenizer: cjk_unicode61" in err
 
     @staticmethod
+    def _is_cjk_tokenizer_missing_error(exc: sqlite3.Error) -> bool:
+        """A cjk trigger fired on a connection that never registered cjk_unicode61 —
+        the cross-connection mismatch of #108841 (the trigram variant is a build
+        capability, not a loadable extension, and is not ours to detach)."""
+        err = str(exc).lower()
+        return "no such tokenizer" in err and "cjk_unicode61" in err
+
+    @staticmethod
     def _db_has_legacy_inline_fts(cursor: sqlite3.Cursor) -> bool:
         """messages_fts exists in ANY pre-v23 shape: every legacy shape lacks
         tool_name, so "stored CREATE lacks tool_name" catches them all. False when absent.
@@ -398,6 +406,57 @@ class SessionFtsSetupMixin:
             "state.db FTS indexes remain corrupt (%s); disabled FTS sync and "
             "retrying the canonical write. Search temporarily uses LIKE until "
             "a later SessionDB open rebuilds the indexes.",
+            exc,
+        )
+        return True
+
+    def _enter_cjk_tokenizer_fail_open(self, exc: sqlite3.OperationalError) -> bool:
+        """Drop the cjk triggers when they fire on a writer that never registered
+        cjk_unicode61, so canonical writes keep flowing (#108841).
+
+        FTS5 triggers are database-level objects but the tokenizer registers
+        per-connection: a writer opened before the extension existed caches
+        ``_fts_cjk_loaded = False`` (_open_writer_conn loads it exactly once),
+        and a connection opened after the install creates the index DDL +
+        triggers — after which every ``INSERT INTO messages`` on the old writer
+        aborts with "no such tokenizer" inside the trigger while all health
+        probes stay green (the open-time heal in _ensure_fts_cjk_schema cannot
+        help: at ITS moment the triggers did not exist yet). Same degradation
+        contract as that heal — breadcrumb first, drop the triggers, CJK search
+        falls back to trigram/LIKE until optimize-storage rebuilds — but only
+        the cjk index is detached; messages_fts and trigram keep syncing."""
+        if not SessionFtsSetupMixin._is_cjk_tokenizer_missing_error(exc):
+            return False
+        self._raise_if_db_corrupt()
+        self._halt_if_db_generation_changed()
+        try:
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self._conn.execute(
+                        "INSERT INTO state_meta (key, value) VALUES (?, '1') "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (FTS_CJK_STALE_KEY,),
+                    )
+                    for trig in _FTS_CJK_TRIGGERS:
+                        self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+        except sqlite3.Error as detach_exc:
+            logger.error(
+                "Could not drop the cjk triggers after a tokenizer-less write; "
+                "the canonical write still cannot proceed: %s",
+                detach_exc,
+            )
+            return False
+        self._fts_cjk_available = False
+        logger.error(
+            "state.db cjk triggers fired on a writer without the cjk_unicode61 "
+            "tokenizer (%s); dropped them and retrying the canonical write. CJK "
+            "search falls back to trigram/LIKE until `hermes sessions "
+            "optimize-storage` rebuilds the index.",
             exc,
         )
         return True

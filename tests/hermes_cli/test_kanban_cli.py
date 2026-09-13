@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import threading
+from dataclasses import asdict
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,25 @@ def test_kanban_list_json_includes_session_id(kanban_home):
         and row.get("session_id") == "acp-x"
         for row in payload
     )
+
+
+def test_kanban_show_json_preserves_canonical_events(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="event identity")
+        other_id = kb.create_task(conn, title="unrelated events")
+        kb.add_comment(conn, task_id, author="alice", body="first")
+        kb.add_comment(conn, other_id, author="alice", body="interleaved")
+        kb.claim_task(conn, task_id)
+        kb.add_comment(conn, task_id, author="bob", body="second")
+        # Timestamp ties must retain the database identities and their order.
+        conn.execute("UPDATE task_events SET created_at = ?", (1_700_000_000,))
+        conn.commit()
+        events = kb.list_events(conn, task_id)
+
+    output = json.loads(kc.run_slash(f"show {task_id} --json"))
+
+    assert output["events"] == [asdict(event) for event in events]
+    assert [event["id"] for event in output["events"]] == [event.id for event in events]
 
 
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):

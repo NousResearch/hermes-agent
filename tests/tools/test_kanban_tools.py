@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 
 import pytest
 
@@ -79,6 +80,31 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert d["task"]["status"] == "running"
     assert "worker_context" in d
     assert "runs" in d
+
+
+def test_show_preserves_canonical_last_50_events(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    from tools.registry import registry
+
+    with kbc.connect_closing() as conn:
+        other_id = kb.create_task(conn, title="unrelated events")
+        for index in range(55):
+            kb.add_comment(conn, worker_env, author="worker", body=f"progress {index}")
+            kb.add_comment(conn, other_id, author="other", body="interleaved")
+        kb._append_event(conn, worker_env, "heartbeat", run_id=kb.latest_run(conn, worker_env).id)
+        conn.execute("UPDATE task_events SET created_at = ?", (1_700_000_000,))
+        conn.commit()
+        events = kb.list_events(conn, worker_env)
+
+    assert len(events) > 50
+    expected = [asdict(event) for event in events[-50:]]
+    output = json.loads(kt._handle_show({}))
+
+    assert output["events"] == expected
+    assert [event["id"] for event in output["events"]] == [event.id for event in events[-50:]]
+    assert json.loads(registry.dispatch("kanban_show", {}))["events"] == expected
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

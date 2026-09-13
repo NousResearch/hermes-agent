@@ -33,10 +33,74 @@ logger = logging.getLogger("gateway.run")
 class GatewayBusySessionMixin:
     """Busy-session queueing, slot claims, slash dispatch tables, destructive-slash confirmation."""
 
+    _DRAIN_NOTICE_COOLDOWN_S = 30.0
+
+    def _should_send_drain_notice(self, source: SessionSource) -> bool:
+        """Rate-limit drain notices per routed chat without suppressing queueing."""
+        profile = str(getattr(source, "profile", None) or "main")
+        platform = source.platform.value if source.platform else "gateway"
+        chat_id = str(source.chat_id or "")
+        if not chat_id:
+            return True
+        key = (profile, platform, chat_id)
+        stamps = self.__dict__.setdefault("_drain_notice_ts", {})
+        now = time.monotonic()
+        if key in stamps and now - stamps[key] < self._DRAIN_NOTICE_COOLDOWN_S:
+            return False
+        stamps[key] = now
+        return True
+
     def _queue_during_drain_enabled(self, busy_input_mode: Optional[str] = None) -> bool:
         # "queue"/"steer" mean messages survive a restart (queued for the new process); "interrupt" drops.
         mode = busy_input_mode or self._busy_input_mode
         return self._restart_requested and mode in {"queue", "steer"}
+
+    async def _hold_idle_event_for_restart(
+        self, session_key: str, event: "MessageEvent"
+    ) -> bool:
+        """Hold an already-running adapter event for shutdown recovery.
+
+        The adapter pending slot is drained when the current handler returns, so putting an
+        idle drain event there immediately respawns it under the same drain gate.  The overflow
+        FIFO is flushed during shutdown but is not consumed by the old adapter lifecycle.
+        """
+        overflow = self._session_state(session_key).conversation.queued_events
+        if len(overflow) >= self._BUSY_QUEUE_MAX_PENDING:
+            logger.warning(
+                "Dropping restart-drain message for session %s — pending queue at cap (%d).",
+                session_key, self._BUSY_QUEUE_MAX_PENDING,
+            )
+            return False
+        try:
+            session_store = getattr(self, "async_session_store", None)
+            if session_store is not None:
+                entry = await session_store.get_or_create_session(
+                    event.source, touch_activity=not bool(getattr(event, "internal", False))
+                )
+            else:
+                entry = await asyncio.to_thread(
+                    self.session_store.get_or_create_session, event.source
+                )
+            session_id = str(getattr(entry, "session_id", "") or "")
+        except Exception:
+            logger.warning(
+                "Could not resolve a durable session for restart-drain message %s",
+                session_key,
+                exc_info=True,
+            )
+            return False
+        if not session_id:
+            return False
+        media_urls = getattr(event, "media_urls", None) or []
+        if media_urls:
+            from gateway.run import _build_media_placeholder
+
+            media_text = _build_media_placeholder(event)
+            event.text = "\n".join(part for part in (event.text, media_text) if part)
+        event.session_id = session_id
+        overflow.append(event)
+        event._gateway_accepted = True
+        return True
 
     def _overflow_queue(self, session_key: str):
         """The session's FIFO overflow list, or None when no session state exists yet."""
@@ -410,7 +474,8 @@ class GatewayBusySessionMixin:
             message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
         else:
             message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
-        await self._send_busy_reply(event, adapter, message)
+        if self._should_send_drain_notice(event.source):
+            await self._send_busy_reply(event, adapter, message)
 
     # Bare-word approval replies → (verb, args) for the synthesized slash command.
     _PLAINTEXT_APPROVAL_WORDS: Dict[str, tuple] = {

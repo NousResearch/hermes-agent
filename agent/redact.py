@@ -750,25 +750,26 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 # ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
-# Commands that read file contents to stdout. A ``.env`` target is a credential
-# dump (per AGENTS.md ``.env`` holds only secrets), so the ENV pass must run.
+# Commands that read file contents to stdout, plus the filter readers (``grep``/``awk``/``sed``)
+# the model reaches for on config files. A secret-bearing target (``.env`` per AGENTS.md,
+# a shell rc/profile, Hermes' own ``config.yaml`` where ``hermes mcp add --env`` writes
+# tokens) is a credential dump, so the ENV/YAML assignment pass must run. Arbitrary
+# ``config.yaml`` / source files stay on the code_file path (``MAX_TOKENS: 100``).
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat",
+    "zcat", "tac", "view", "batcat", "grep", "awk", "sed",
 })
-_SECRET_BEARING_FILE_BASENAMES = frozenset({
+_SHELL_RC_BASENAMES = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
     ".zshrc", ".zprofile", ".zlogin", ".zshenv",
 })
-_TEXT_FILE_READ_COMMANDS = frozenset({"grep", "awk", "sed"})
+_HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
 
 
 def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments, split only on unquoted ``| ; &``.
-
-    Quote-aware so ``awk '{print $1; print $2}'`` / ``grep 'foo|bar'`` stay
-    one segment. Backslash is not an escape (Windows ``C:\\Users\\...``).
-    """
+    """Pipeline/sequence segments, split only on unquoted ``| ; &`` so an
+    ``awk '{print $1; print $2}'`` program or ``grep 'foo|bar'`` pattern stays one
+    segment. Backslash is not an escape (Windows ``C:\\Users\\...``)."""
     segments: list[str] = []
     buf: list[str] = []
     quote: str | None = None
@@ -795,30 +796,9 @@ def _command_segments(command: str) -> list[str]:
     return segments
 
 
-def _command_reads_env_file(command: str | None) -> bool:
-    """True if ``command`` reads a ``.env``-style file (by basename) to stdout.
-    Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
-    .env)``, ``sed``/``awk``) are not detected, matching ``is_env_dump_command``."""
-    if not command:
-        return False
-    for seg in _command_segments(command):
-        tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
-        if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
-            continue
-        for arg in tokens[1:]:
-            if arg.startswith("-"):
-                continue
-            basename = arg.strip("\"'").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if basename.lower() in _ENV_FILE_BASENAMES:
-                return True
-    return False
-
-
-_HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
-
-
-def _is_secret_bearing_file_arg(arg: str) -> bool:
-    """Recognize explicit Hermes config and standard shell startup paths."""
+def _is_secret_file_arg(arg: str) -> bool:
+    """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
+    ``.hermes`` directory or ``$HERMES_HOME`` (never arbitrary YAML)."""
     path = arg.strip("\"'").replace("\\", "/")
     hermes_home = False
     for prefix in _HERMES_HOME_PREFIXES:
@@ -831,30 +811,23 @@ def _is_secret_bearing_file_arg(arg: str) -> bool:
     parts = [part.lower() for part in path.split("/") if part]
     if not parts:
         return False
-    if parts[-1] in _SECRET_BEARING_FILE_BASENAMES:
+    if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
         return True
-    if parts[-1] != "config.yaml":
-        return False
-    return hermes_home or ".hermes" in parts[:-1]
+    return parts[-1] == "config.yaml" and (hermes_home or ".hermes" in parts[:-1])
 
 
-def _command_reads_secret_bearing_file(command: str | None) -> bool:
-    """True for direct stdout reads of known secret-bearing config files."""
+def _command_reads_secret_file(command: str | None) -> bool:
+    """True if ``command`` reads a secret-bearing file (see ``_is_secret_file_arg``) to
+    stdout. Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
+    .env)``, unresolved variable paths) are not detected, matching ``is_env_dump_command``."""
     if not command or not isinstance(command, str):
         return False
     for seg in _command_segments(command):
-        tokens = seg.split()  # preserve Windows path separators; see _command_reads_env_file
-        if not tokens:
+        tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
+        if not tokens or tokens[0].rsplit("/", 1)[-1].lower() not in _FILE_READ_COMMANDS:
             continue
-        reader = tokens[0].rsplit("/", 1)[-1].lower()
-        if reader in _FILE_READ_COMMANDS:
-            if any(_is_secret_bearing_file_arg(arg) for arg in tokens[1:] if not arg.startswith("-")):
-                return True
-            continue
-        if reader in _TEXT_FILE_READ_COMMANDS:
-            positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
-            if any(_is_secret_bearing_file_arg(arg) for arg in positional[1:]):
-                return True
+        if any(_is_secret_file_arg(arg) for arg in tokens[1:] if not arg.startswith("-")):
+            return True
     return False
 
 
@@ -896,16 +869,13 @@ def redact_for_egress(text: str) -> str:
 
 
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
-    """Single redaction policy for ALL terminal-output surfaces: the ENV-assignment
-    pass runs when ``command`` is an env dump or reads a secret-bearing file
-    (otherwise code_file=True avoids false positives on source/config dumps)."""
+    """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
+    pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
+    shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
+    source/config dumps."""
     if not output:
         return output
-    code_file = not (
-        is_env_dump_command(command)
-        or _command_reads_env_file(command)
-        or _command_reads_secret_bearing_file(command)
-    )
+    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 

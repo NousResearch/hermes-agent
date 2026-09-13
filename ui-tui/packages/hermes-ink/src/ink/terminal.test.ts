@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { isSynchronizedOutputSupported, needsAltScreenResizeScrollbackClear, writeDiffToTerminal } from './terminal.js'
+import {
+  isSynchronizedOutputSupported,
+  needsAltScreenResizeScrollbackClear,
+  supportsExtendedKeys,
+  writeDiffToTerminal
+} from './terminal.js'
 import { BSU, ESU } from './termio/dec.js'
 
 describe('terminal resize quirks', () => {
@@ -108,4 +113,34 @@ describe('skipKittyKeyboardProtocol', () => {
       }
     }
   )
+})
+
+describe('supportsExtendedKeys', () => {
+  it.each(['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode'])(
+    'advertises extended keys for %s',
+    terminal => {
+      expect(supportsExtendedKeys(terminal, null)).toBe(true)
+    }
+  )
+
+  it.each(['alacritty', 'foot', 'foot-extra', 'xterm-kitty', 'xterm-ghostty'])(
+    'advertises extended keys for TERM=%s',
+    term => {
+      expect(supportsExtendedKeys(term, null)).toBe(true)
+    }
+  )
+
+  it('advertises extended keys on VTE terminals reporting TERM=xterm-256color (#51545)', () => {
+    expect(supportsExtendedKeys('xterm-256color', '7600')).toBe(true)
+  })
+
+  // A bare xterm* TERM is the generic fallback, including over SSH, and says
+  // nothing about modifyOtherKeys support. Enabling it there re-opens #75251.
+  it.each(['xterm', 'xterm-256color', 'screen-256color', 'linux'])('leaves TERM=%s alone', term => {
+    expect(supportsExtendedKeys(term, null)).toBe(false)
+  })
+
+  it('leaves an unknown terminal alone', () => {
+    expect(supportsExtendedKeys(null, null)).toBe(false)
+  })
 })

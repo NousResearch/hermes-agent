@@ -293,7 +293,7 @@ def _build_child_agent(
 
 def _run_single_child(
     task_index: int, goal: str, child=None, parent_agent=None, *, owner_session_id: Optional[str] = None,
-    owner_transport: Any = None, owner_session_record: Any = None, **_kwargs,
+    owner_transport: Any = None, owner_session_record: Any = None, release_stale_wait: bool = True, **_kwargs,
 ) -> Dict[str, Any]:
     """Run a pre-built child agent (called from a worker thread) and return its result entry.
 
@@ -327,7 +327,9 @@ def _run_single_child(
         heartbeat.start()
         _safe_progress(child_progress_cb, "subagent.start", preview=goal)
         run.seed_workspace()
-        result, failure_entry, _child_close_deferred = run.await_child(heartbeat)
+        result, failure_entry, _child_close_deferred = run.await_child(
+            heartbeat, release_stale_wait=release_stale_wait,
+        )
         if failure_entry is not None:
             return failure_entry
 

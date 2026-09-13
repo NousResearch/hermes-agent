@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import threading
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from tools import delegate_tool
+from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
 
 class _SlowUnwindingChild:
@@ -16,6 +18,7 @@ class _SlowUnwindingChild:
         self._delegate_role = "leaf"
         self._delegate_depth = 1
         self._subagent_id = None
+        self._parent_subagent_id = None
         self.model = "test-model"
         self.session_prompt_tokens = 0
         self.session_completion_tokens = 0
@@ -59,6 +62,10 @@ class _SlowUnwindingChild:
 
 def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     child = _SlowUnwindingChild()
+    child._subagent_id = "quarantined-child"
+    child._credential_pool = MagicMock()
+    child._credential_pool.acquire_lease.return_value = "cred-1"
+    child._credential_pool.current.return_value = None
     parent = SimpleNamespace(
         session_id="parent-timeout-test",
         _current_task_id=None,
@@ -89,6 +96,10 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
         assert not child.closed.is_set(), (
             "timed-out child.close() ran before its conversation thread unwound"
         )
+        assert child in parent._active_children
+        child._credential_pool.release_lease.assert_not_called()
+        with _active_subagents_lock:
+            assert _active_subagents[child._subagent_id]["status"] == "quarantined"
     finally:
         child.allow_finish.set()
         parent_thread.join(timeout=5)
@@ -98,3 +109,7 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     assert not child.close_while_running, (
         "timed-out child.close() raced its still-running conversation thread"
     )
+    assert child not in parent._active_children
+    child._credential_pool.release_lease.assert_called_once_with("cred-1")
+    with _active_subagents_lock:
+        assert child._subagent_id not in _active_subagents

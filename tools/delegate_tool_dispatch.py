@@ -56,9 +56,14 @@ class _Batch:
             "owner_session_record": self.origin_owner_session_record,
         }
 
-    def run_child(self, i: int, task: Dict[str, Any], child: Any) -> Dict[str, Any]:
+    def run_child(
+        self, i: int, task: Dict[str, Any], child: Any, *, release_stale_wait: bool = True,
+    ) -> Dict[str, Any]:
         from tools.delegate_tool import _run_single_child
-        return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
+        return _run_single_child(
+            task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent,
+            release_stale_wait=release_stale_wait, **self.owner_kwargs(),
+        )
 
 
 def _announce_batch(parent_agent, n_tasks: int, live_deleg_id: Optional[str]) -> None:
@@ -127,7 +132,13 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
             return _fabricated_entry(idx, "error", str(exc), _child_by_index.get(idx))
 
     with DaemonThreadPoolExecutor(max_workers=batch.max_children) as executor:
-        futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
+        futures = {
+            executor.submit(
+                contextvars.copy_context().run, batch.run_child, i, t, child,
+                release_stale_wait=honor_parent_interrupt,
+            ): i
+            for i, t, child in batch.children
+        }
         pending = set(futures)
         while pending:
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
@@ -161,7 +172,9 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     from tools.delegation_live_log import update_manifest_statuses
     results: list = []
     if len(batch.children) == 1:
-        results.append(batch.run_child(*batch.children[0]))
+        results.append(batch.run_child(
+            *batch.children[0], release_stale_wait=honor_parent_interrupt,
+        ))
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 

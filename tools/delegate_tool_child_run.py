@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from tools import file_state
 from tools.delegate_tool_progress import _quiet, _safe_progress
 from tools.delegate_tool_registry import (
-    _capture_gateway_steer_authority, _close_subagent_steering, _register_subagent, _unregister_subagent,
+    _capture_gateway_steer_authority, _close_subagent_steering, _mark_subagent_quarantined,
+    _register_subagent, _unregister_subagent,
 )
 from tools.delegate_tool_results import (
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
@@ -336,19 +337,17 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
         )
     return None
 
-def _defer_close_after_timeout(child: Any, child_future: Any) -> None:
-    """Hand ``child.close()`` to a Future done-callback and drain its transports.
+def _drain_after_timeout(child: Any, child_future: Any) -> None:
+    """Drain transports while a timed-out worker remains quarantined.
 
     The interrupt is cooperative: the worker still runs its finally path, so closing now could close SQLite under its
-    final write — the done-callback is the first safe boundary. The abandoned worker is usually parked in an OpenSSL
-    read; NEVER hard-close that transport from this thread (cross-thread FD release under a live SSL read corrupts
-    native state) — shutdown() the pooled sockets so the read settles with EOF and the worker unwinds. One immediate
-    sweep + one delayed re-sweep for a connection opened in between; a worker that still won't settle keeps its
-    resources until process exit.
+    final write. The abandoned worker is usually parked in an OpenSSL read; NEVER hard-close that transport from this
+    thread (cross-thread FD release under a live SSL read corrupts native state) — shutdown() the pooled sockets so the
+    read settles with EOF and the worker unwinds. One immediate sweep + one delayed re-sweep cover a connection opened
+    in between; ownership cleanup remains deferred until the Future completes.
     """
-    child_future.add_done_callback(lambda _done: _close_child(child, "Failed to close timed-out child after worker exit"))
-    # Bounded drain (#94248 native half): the deferred close above only fires once the abandoned worker
-    # unwinds, but that worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
+    # Bounded drain (#94248 native half): the deferred cleanup only fires once the abandoned worker unwinds, but that
+    # worker is typically parked inside an in-flight OpenSSL read (Codex / httpx). Never
     # hard-close that transport from this thread — releasing FDs under a live SSL read is the #29507/#70773
     # native-corruption family. Instead shutdown() the child's pooled sockets, which is FD-safe from any
     # thread and settles the blocked read with EOF/EPIPE so the worker can unwind and trigger the deferred
@@ -568,6 +567,8 @@ class _ChildRun:
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
+    abandoned_future: Any = None
+    cleanup_done: threading.Event = field(default_factory=threading.Event)
 
     def elapsed(self) -> float:
         return round(time.monotonic() - self.child_start, 2)
@@ -635,7 +636,9 @@ class _ChildRun:
         """Close steer acceptance (see ``_merge_late_steer``); returns late steer text, if any."""
         return _close_subagent_steering(self.subagent_id, self.child) if self.subagent_id else None
 
-    def await_child(self, heartbeat: _Heartbeat) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
+    def await_child(
+        self, heartbeat: _Heartbeat, *, release_stale_wait: bool = True,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
         """Run the child's conversation on a daemon worker: ``(result, None, False)`` or ``(None, error_entry,
         close_deferred)`` on timeout/exception.
 
@@ -675,7 +678,7 @@ class _ChildRun:
             while True:
                 if future.done():
                     return future.result(), None, False
-                if heartbeat.stale.is_set():
+                if release_stale_wait and heartbeat.stale.is_set():
                     stale_watchdog = True
                     raise FuturesTimeoutError()
                 wait_seconds = 0.5
@@ -764,7 +767,8 @@ class _ChildRun:
         self.finish_failed(_error_entry, _late_pending_steer, preview=f"Timed out after {duration}s" if is_timeout else str(exc))
         close_deferred = is_timeout and not future.done()
         if close_deferred:
-            _defer_close_after_timeout(child, future)
+            self.abandoned_future = future
+            _drain_after_timeout(child, future)
         return None, _error_entry, close_deferred
 
     def append_sibling_write_reminder(self, entry: Dict[str, Any]) -> None:
@@ -840,38 +844,20 @@ class _ChildRun:
                 complete_kwargs["cost_usd"] = float(_cost_usd)
         _safe_progress(self.child_progress_cb, "subagent.complete", **complete_kwargs)
 
-    def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:
-        """Finally-path teardown (idempotent, never raises). Order matters: stop heartbeat → drop registry entry →
-        release credential lease → restore the parent's process-global tool names → detach from the parent's
-        interrupt list → close the child (unless a timed-out worker still owns it) → pop the child's Relay scope if
-        no turn is active."""
+    def _finish_cleanup(self, child_pool: Any, leased_cred_id: Any) -> None:
+        """Release child ownership once, after its conversation worker has stopped."""
+        if self.cleanup_done.is_set():
+            return
+        self.cleanup_done.set()
         child = self.child
-        heartbeat.stop()
-
-        # Safe even if the child was never registered (ID missing on test doubles).
         if self.subagent_id:
             _unregister_subagent(self.subagent_id, agent=child)
-
         if child_pool is not None and leased_cred_id is not None:
             with _quiet("Failed to release credential lease: %s"):
                 child_pool.release_lease(leased_cred_id)
-
-        # Restore the parent's tool names so the process-global is correct for
-        # any subsequent execute_code calls or other consumers.
-        import model_tools
-        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
-        if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
-
         _detach_child(self.parent_agent, child)
+        _close_child(child, "Failed to close child agent after delegation")
 
-        # Close tool resources (terminal sandboxes, browser daemons, background
-        # processes, httpx clients) so subagent subprocesses don't outlive the delegation.
-        if not close_deferred:
-            _close_child(child, "Failed to close child agent after delegation")
-
-        # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that
-        # boundary starts, but must not pop a scope while a timed-out child worker is still unwinding.
         with _quiet("Failed to close child Relay session after delegation"):
             from agent import relay_runtime
             runtime = relay_runtime.get_runtime(create=False)
@@ -881,3 +867,24 @@ class _ChildRun:
             )
             if runtime is not None and child_session_id and not child_turn_is_active:
                 runtime.unregister_subagent({"child_session_id": child_session_id})
+
+    def cleanup(self, *, heartbeat: _Heartbeat, child_pool: Any, leased_cred_id: Any, close_deferred: bool) -> None:
+        """Stop bookkeeping now, or quarantine live-worker ownership until its Future completes."""
+        child = self.child
+        heartbeat.stop()
+
+        # Restore the parent's tool names so the process-global is correct for
+        # any subsequent execute_code calls or other consumers.
+        import model_tools
+        saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
+        if isinstance(saved_tool_names, list):
+            model_tools._last_resolved_tool_names = list(saved_tool_names)
+
+        if close_deferred and self.abandoned_future is not None:
+            if self.subagent_id:
+                _mark_subagent_quarantined(self.subagent_id, agent=child)
+            self.abandoned_future.add_done_callback(
+                lambda _done: self._finish_cleanup(child_pool, leased_cred_id)
+            )
+            return
+        self._finish_cleanup(child_pool, leased_cred_id)

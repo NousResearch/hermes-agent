@@ -117,13 +117,59 @@ def _wrap(*, snapshot_ready: bool = True) -> str:
     )
 
 
-def test_wrapper_pipes_the_dump_through_the_filter():
+def test_wrapper_stages_the_dump_then_filters_it():
     script = _wrap()
-    assert _PATH_DEDUPE_AWK in script
-    # The filter must sit between the dump and the temp file, i.e. it edits what gets written.
-    assert f"| {_PATH_DEDUPE_AWK} > " in script
-    assert script.index(_PATH_DEDUPE_AWK) > script.index("export -p")
+    raw, tmp = '"$__hermes_snap_raw"', '"$__hermes_snap_tmp"'
+    # The dump lands in its own staging file, and the filter READS that file into the snapshot temp.
+    assert f"{_PATH_DEDUPE_AWK} < {raw} > {tmp}" in script
+    # Guards the exact shape that silently did nothing: a redirect on the dump's brace group sitting
+    # upstream of the pipe, which sends the dump away from awk and points both sides at one file.
+    assert f"> {raw} | " not in script
+    assert "| awk" not in script
+    # Both staging files are cleaned up on the failure path.
+    assert f"rm -f {tmp} {raw}" in script
 
 
 def test_wrapper_omits_the_filter_when_there_is_no_snapshot():
     assert _PATH_DEDUPE_AWK not in _wrap(snapshot_ready=False)
+
+
+@requires_shell
+def test_round_trip_actually_dedupes_the_persisted_path(tmp_path):
+    """Run the generated wrapper for real and inspect the snapshot it publishes.
+
+    This is the test the string assertions cannot substitute for: a pipeline whose redirect sits
+    upstream of the filter passes every "is the filter wired in?" assertion while the dump never
+    reaches awk, leaving duplicates in the snapshot and racing the same file from both sides.
+    """
+    snap = tmp_path / "snapshot.env"
+    script = _wrap_command_script(
+        "true",
+        quoted_cwd="/tmp",
+        quoted_snap=f'"{snap.as_posix()}"',
+        snap_tmp_template=f'"{tmp_path.as_posix()}/snap.tmp.XXXXXXXXXX"',
+        passthrough_names=(),
+        snapshot_ready=True,
+        cwd_marker="__HERMES_CWD__",
+    )
+    runner = tmp_path / "run.sh"
+    runner.write_text(
+        'export PATH="/usr/bin:/dupe:/dupe:/bin:$PATH"\n'
+        "export HERMES_DEDUPE_ROUNDTRIP=kept\n"
+        f"{script}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    proc = subprocess.run([_BASH, str(runner)], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+
+    assert snap.exists(), "wrapper published no snapshot at all"
+    content = snap.read_text(encoding="utf-8", errors="replace")
+    assert content.strip(), "snapshot was published empty"
+
+    pathline = next((l for l in content.splitlines() if l.startswith("declare -x PATH=")), "")
+    assert pathline, "snapshot dropped PATH entirely"
+    assert "/dupe:/dupe" not in pathline, f"adjacent duplicates survived: {pathline[:160]}"
+
+    # Not just a PATH-only file either: the rest of the environment must round-trip.
+    assert "HERMES_DEDUPE_ROUNDTRIP" in content

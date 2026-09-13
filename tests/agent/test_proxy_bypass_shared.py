@@ -27,6 +27,8 @@ def proxy_env(monkeypatch):
 @pytest.mark.parametrize("no_proxy, host", [
     ("10.0.0.0/8", "10.1.2.3"),
     ("*.internal", "svc.internal"),
+    ("*.slack.com", "slack.com"),  # ``*.`` covers the apex, as the adapter docstring promised
+    (".slack.com", "slack.com"),
     ("localhost,.corp.example", "llm.corp.example"),
     ("api.example.com:8443", "api.example.com:8443"),
 ])

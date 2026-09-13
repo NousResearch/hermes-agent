@@ -74,11 +74,10 @@ def no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> bo
     network = _ip_or_none(token_host, lambda v: ipaddress.ip_network(v, strict=False))
     if network is not None:  # CIDR or bare IP literal (a /32 / /128 network)
         return host_ip is not None and host_ip in network
-    if token_host.startswith("*."):
-        return host.endswith(token_host[1:])
-    if token_host.startswith("."):
-        return host == token_host[1:] or host.endswith(token_host)
-    return host == token_host or host.endswith(f".{token_host}")
+    # ``*.example.com`` and ``.example.com`` both mean apex + subdomains (curl/requests
+    # convention, and what is_host_excluded_by_no_proxy promised the Slack adapter).
+    suffix = token_host.removeprefix("*").removeprefix(".")
+    return host == suffix or host.endswith(f".{suffix}")
 
 
 def should_bypass_proxy(

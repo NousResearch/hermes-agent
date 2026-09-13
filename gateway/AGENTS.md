@@ -136,14 +136,16 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   installed per turn by `_profile_runtime_scope`. All profile-level env config — credentials
   (`app_secret`, tokens) AND authorization (`FEISHU_ALLOWED_USERS`, `{PLATFORM}_ALLOW_ALL_USERS`,
   `GATEWAY_ALLOW_ALL_USERS`, `group_policy`, `allow_bots`) — is read scope-aware: adapters via
-  `_get_scoped_secret()` (canonical fail-closed copy: `plugins/platforms/feishu/adapter.py`),
-  gateway authz via `_auth_env()` / `_platform_gate_env()` (`authz_mixin.py`). Scope installed +
+  `gateway.platforms._shared.get_scoped_secret` (the ONE implementation; adapters import it as
+  `_get_scoped_secret`; `extra_or_secret` / `seed_extra_from_env` / `env_is_connected` build on it),
+  gateway authz via `_shared.platform_gate_env` (imported by `authz_mixin.py` as `_auth_env`). Scope installed +
   multiplex active → a scoped miss returns the **default**, NEVER `os.environ` (a leaked allowlist
   skips the allow-all check and silently rejects every secondary-profile sender, #86905). The
   unscoped default-profile path (`UnscopedSecretError`) and single-profile deployments keep the
-  `os.environ` read — there it IS the profile's own value. `_get_scoped_secret` is copy-pasted
-  across ~15 adapters: when touching one, verify fail-closed semantics and never reintroduce the
-  `except _UnscopedSecretError: val = os.getenv(...)` fallback-after-miss shape.
+  `os.environ` read — there it IS the profile's own value. Never re-implement the reader in an
+  adapter (the `try get_secret / except UnscopedSecretError: os.getenv` shape drifts into a
+  fallback-after-miss leak); import the shared one. `tests/gateway/test_shared_platform_boilerplate.py`
+  asserts every plugin's `_env_enablement` reads only through it.
 
 ## Tests
 

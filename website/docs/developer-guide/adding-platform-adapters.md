@@ -92,7 +92,7 @@ be granted its own outbound tools.
 ### adapter.py
 
 ```python
-import os
+from gateway.platforms._shared import extra_or_secret, get_scoped_secret, seed_extra_from_env
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.config import Platform, PlatformConfig
@@ -101,8 +101,8 @@ from gateway.config import Platform, PlatformConfig
 class MyPlatformAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("my_platform"))
-        extra = config.extra or {}
-        self.token = os.getenv("MY_PLATFORM_TOKEN") or extra.get("token", "")
+        # config.extra first (the per-profile truth under multiplexing), then the profile-scoped env var.
+        self.token = extra_or_secret(config.extra, "token", "MY_PLATFORM_TOKEN")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Connect to the platform API, start listeners
@@ -121,24 +121,20 @@ class MyPlatformAdapter(BasePlatformAdapter):
 
 
 def check_requirements() -> bool:
-    return bool(os.getenv("MY_PLATFORM_TOKEN"))
+    return bool(get_scoped_secret("MY_PLATFORM_TOKEN"))
 
 
 def validate_config(config) -> bool:
-    extra = getattr(config, "extra", {}) or {}
-    return bool(os.getenv("MY_PLATFORM_TOKEN") or extra.get("token"))
+    return bool(extra_or_secret(getattr(config, "extra", None), "token", "MY_PLATFORM_TOKEN"))
 
 
 def _env_enablement() -> dict | None:
-    token = os.getenv("MY_PLATFORM_TOKEN", "").strip()
-    channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
-    if not (token and channel):
+    if not get_scoped_secret("MY_PLATFORM_TOKEN", "").strip():
         return None
-    seed = {"token": token, "channel": channel}
-    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {"chat_id": home, "name": "Home"}
-    return seed
+    return seed_extra_from_env(
+        (("MY_PLATFORM_TOKEN", "token", None), ("MY_PLATFORM_CHANNEL", "channel", None)),
+        home_env="MY_PLATFORM_HOME_CHANNEL",
+    )
 
 
 def register(ctx):
@@ -146,7 +142,7 @@ def register(ctx):
     ctx.register_platform(
         name="my_platform",
         label="My Platform",
-        adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
+        adapter_factory=MyPlatformAdapter,
         # PASSIVE probe — "are deps/config present right now?".  Called from
         # status displays and config loading, so it must NEVER pip-install.
         check_fn=check_requirements,
@@ -295,37 +291,38 @@ the next profile.
 
 Most users set up a platform by dropping env vars into `~/.hermes/.env` rather than editing `config.yaml`. The `env_enablement_fn` hook lets your plugin pick those env vars up **before** the adapter is constructed, so `hermes gateway status`, `get_connected_platforms()`, and cron delivery see the correct state without instantiating the platform SDK.
 
+Read env through `gateway.platforms._shared.get_scoped_secret` — never `os.getenv`. Under `gateway.multiplex_profiles` the process env holds the DEFAULT profile's values; a secondary profile's `.env` exists only in its secret scope, and a raw read would enable your platform for the wrong profile with the wrong credentials. `seed_extra_from_env` builds the seed dict from a `(ENV_VAR, extra_key, conv)` table through that reader.
+
 ```python
+from gateway.platforms._shared import get_scoped_secret, seed_extra_from_env
+
+
 def _env_enablement() -> dict | None:
     """Seed PlatformConfig.extra from env vars.
 
     Called by the platform registry during load_gateway_config().
     Return None when the platform isn't minimally configured — the
     caller then skips auto-enabling. Return a dict to seed extras.
-
-    The special 'home_channel' key is extracted and becomes a proper
-    HomeChannel dataclass on the PlatformConfig; every other key is
-    merged into PlatformConfig.extra.
     """
-    token = os.getenv("MY_PLATFORM_TOKEN", "").strip()
-    channel = os.getenv("MY_PLATFORM_CHANNEL", "").strip()
+    token = get_scoped_secret("MY_PLATFORM_TOKEN", "").strip()
+    channel = get_scoped_secret("MY_PLATFORM_CHANNEL", "").strip()
     if not (token and channel):
         return None
-    seed = {"token": token, "channel": channel}
-    home = os.getenv("MY_PLATFORM_HOME_CHANNEL")
-    if home:
-        seed["home_channel"] = {
-            "chat_id": home,
-            "name": os.getenv("MY_PLATFORM_HOME_CHANNEL_NAME", "Home"),
-        }
-    return seed
+    # (ENV_VAR, extra_key, conv): blank values are skipped, a conv raising
+    # ValueError drops the key. home_env seeds the special 'home_channel'
+    # dict ({chat_id, name} from MY_PLATFORM_HOME_CHANNEL[_NAME], name
+    # defaults to "Home"), which the core hook lifts into a HomeChannel.
+    return {"token": token, "channel": channel, **seed_extra_from_env(
+        (("MY_PLATFORM_PORT", "port", int), ("MY_PLATFORM_NICK", "nick", None)),
+        home_env="MY_PLATFORM_HOME_CHANNEL",
+    )}
 
 
 def register(ctx):
     ctx.register_platform(
         name="my_platform",
         label="My Platform",
-        adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
+        adapter_factory=MyPlatformAdapter,
         check_fn=check_requirements,
         validate_config=validate_config,
         env_enablement_fn=_env_enablement,
@@ -339,7 +336,16 @@ def register(ctx):
 Some users prefer setting `config.yaml` keys (`my_platform.require_mention`, `my_platform.allowed_channels`, etc.) over env vars. The `apply_yaml_config_fn` hook lets your plugin own this translation instead of forcing core `gateway/config.py` to know your platform's YAML schema.
 
 ```python
-import os
+from gateway.platforms._shared import apply_yaml_bridge
+
+# (yaml key, ENV_VAR, kind). "lower" bridges whenever the key is present
+# (booleans become "true"/"false"); "str" skips null/blank; "csv" comma-joins
+# lists; "json" dumps the value.
+_YAML_BRIDGE = (
+    ("require_mention", "MY_PLATFORM_REQUIRE_MENTION", "lower"),
+    ("allowed_channels", "MY_PLATFORM_ALLOWED_CHANNELS", "csv"),
+)
+
 
 def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict | None:
     """Translate config.yaml `my_platform:` keys into env vars / extras.
@@ -347,18 +353,13 @@ def _apply_yaml_config(yaml_cfg: dict, platform_cfg: dict) -> dict | None:
     yaml_cfg     — the full top-level parsed config.yaml dict
     platform_cfg — the platform's own sub-dict (yaml_cfg.get("my_platform", {}))
 
-    May mutate os.environ directly (use `not os.getenv(...)` guards to
-    preserve env > YAML precedence) and/or return a dict to merge into
-    PlatformConfig.extra. Return None or {} for no extras.
+    apply_yaml_bridge writes each env var only when it is unset (env > YAML)
+    and NEVER while a multiplexed secondary profile's config is loading — a
+    write there would pin that profile's policy process-wide. It returns the
+    same values for PlatformConfig.extra, so read `extra` first in the adapter
+    and fall back to the env var (`_shared.extra_or_secret`).
     """
-    if "require_mention" in platform_cfg and not os.getenv("MY_PLATFORM_REQUIRE_MENTION"):
-        os.environ["MY_PLATFORM_REQUIRE_MENTION"] = str(platform_cfg["require_mention"]).lower()
-    allowed = platform_cfg.get("allowed_channels")
-    if allowed is not None and not os.getenv("MY_PLATFORM_ALLOWED_CHANNELS"):
-        if isinstance(allowed, list):
-            allowed = ",".join(str(v) for v in allowed)
-        os.environ["MY_PLATFORM_ALLOWED_CHANNELS"] = str(allowed)
-    return None  # nothing extra to merge into PlatformConfig.extra
+    return apply_yaml_bridge(platform_cfg, _YAML_BRIDGE)
 
 def register(ctx):
     ctx.register_platform(
@@ -573,6 +574,7 @@ Create `plugins/platforms/newplat/adapter.py`:
 
 ```python
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms._shared import extra_or_secret
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
@@ -585,7 +587,7 @@ class NewPlatAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.NEWPLAT)
         # Read config from config.extra dict
         extra = config.extra or {}
-        self._api_key = extra.get("api_key") or os.getenv("NEWPLAT_API_KEY", "")
+        self._api_key = extra_or_secret(extra, "api_key", "NEWPLAT_API_KEY")
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Set up connection, start polling/webhook

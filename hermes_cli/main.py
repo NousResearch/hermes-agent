@@ -604,20 +604,14 @@ load_hermes_dotenv(
 # is read from the same parse to avoid a second full load_config() (~17ms).
 _FORCE_IPV4_EARLY = False
 try:
-    # read_raw_config()'s (mtime, size)-keyed cache means this SAME parse serves
-    # hermes_logging and later raw reads: 3-4 config.yaml parses become one.
-    from hermes_cli.config import read_raw_config as _read_raw_early
+    # The effective-config cache (shared raw parse with read_raw_config()) means this SAME parse
+    # serves hermes_logging, hermes_time and later raw reads: 3-4 config.yaml parses become one.
+    # Managed overlay included: administrator-pinned redact_secrets / force_ipv4 win here too.
+    from hermes_cli.config_effective import load_user_config_effective as _load_effective_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
     if _cfg_path.exists():
-        _early_cfg_raw = _read_raw_early() or {}
-        # Managed scope overlay: administrator-pinned redact_secrets /
-        # force_ipv4 must win here too (load_config isn't usable yet). Fail-open.
-        try:
-            from hermes_cli import managed_scope
-            _early_cfg_raw = managed_scope.apply_managed_overlay(_early_cfg_raw)
-        except Exception:
-            pass
+        _early_cfg_raw = _load_effective_early(_cfg_path)
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})
             if isinstance(_early_sec_cfg, dict):
@@ -1340,11 +1334,10 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     db = None
     try:
-        import uuid as _uuid
-
         from hermes_state import SessionDB
+        from hermes_state_ids import new_session_id as mint_session_id
 
-        new_session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:6]}"
+        new_session_id = mint_session_id()
         db = SessionDB()
         db.create_session(new_session_id, source="cli")
         db.set_session_title(new_session_id, title)

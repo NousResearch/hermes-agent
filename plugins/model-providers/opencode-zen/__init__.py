@@ -42,25 +42,6 @@ def _is_glm_5_2_model(model: str | None) -> bool:
     return any(token in m for token in ("glm-5.2", "glm-5-2", "glm-5p2"))
 
 
-def _requested_effort(reasoning_config: dict | None) -> str | None:
-    """Normalized effort when reasoning is enabled and an effort is set, else None."""
-    effort = re_.requested_effort(reasoning_config)
-    return None if effort == "none" else effort
-
-
-def _thinking_toggle_extras(
-    reasoning_config: dict | None, efforts, overrides=None
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Moonshot/DeepSeek wire shape: extra_body.thinking XOR top-level reasoning_effort
-    (sending both is an HTTP 400)."""
-    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
-        return {"thinking": {"type": "disabled"}}, {}
-    clamped = re_.clamp_effort(_requested_effort(reasoning_config), efforts, overrides)
-    if clamped in efforts:
-        return {}, {"reasoning_effort": clamped}
-    return {"thinking": {"type": "enabled"}}, {}
-
-
 class OpenCodeGoProfile(ProviderProfile):
     """OpenCode Go - model-specific reasoning controls."""
 
@@ -77,29 +58,18 @@ class OpenCodeGoProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         if _is_glm_5_2_model(model):
             # Native reasoning_effort knob (high/max); server default when unset/disabled.
-            effort = _requested_effort(reasoning_config)
-            if effort is None:
+            effort = re_.requested_effort(reasoning_config)
+            if effort is None or effort == "none":
                 return {}, {}
             clamped = re_.clamp_effort(effort, re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES)
             return {}, {"reasoning_effort": clamped if clamped in re_.GLM52_EFFORTS else "high"}
         if _flat_model_name(model).startswith("kimi-k2"):
             if not isinstance(reasoning_config, dict):
                 return {}, {}
-            return _thinking_toggle_extras(reasoning_config, re_.KIMI_K2_EFFORTS)
+            return re_.thinking_toggle_extras(reasoning_config, re_.KIMI_K2_EFFORTS)
         if _is_deepseek_thinking_model(model):
-            return _thinking_toggle_extras(reasoning_config, re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES)
+            return re_.thinking_toggle_extras(reasoning_config, re_.DEEPSEEK_V4_EFFORTS, re_.DEEPSEEK_V4_OVERRIDES)
         return {}, {}
-
-
-def _build_ox_alpha_reasoning_extras(
-    reasoning_config: dict | None, model: str | None
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Ox Alpha (x-preview-f-free) reasoning_effort translation, shared with the
-    opencode-free profile (low/high/max only; anything else 400s)."""
-    if _flat_model_name(model) != "x-preview-f-free":
-        return {}, {}
-    clamped = re_.clamp_effort(_requested_effort(reasoning_config), re_.OX_ALPHA_EFFORTS, re_.OX_ALPHA_OVERRIDES)
-    return ({}, {"reasoning_effort": clamped}) if clamped in re_.OX_ALPHA_EFFORTS else ({}, {})
 
 
 class OpenCodeZenProfile(ProviderProfile):
@@ -108,7 +78,7 @@ class OpenCodeZenProfile(ProviderProfile):
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, model: str | None = None, **context
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        return _build_ox_alpha_reasoning_extras(reasoning_config, model)
+        return re_.ox_alpha_reasoning_extras(reasoning_config, model)
 
 
 opencode_zen = OpenCodeZenProfile(

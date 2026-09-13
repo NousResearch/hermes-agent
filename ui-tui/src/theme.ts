@@ -1,6 +1,7 @@
+import { contrastRatio, ensureContrast, mix, parseColor, relativeLuminance, toHex } from '@hermes/shared/color'
 import type { SkinBranding, SkinColors } from '@hermes/shared/skin'
 
-import { desaturate, grayOf, liftForContrast, mix, parseColor, relativeLuminance, toHex } from './lib/color.js'
+import { desaturate, grayOf, liftForContrast } from './lib/color.js'
 
 export interface ThemeColors {
   primary: string
@@ -68,12 +69,13 @@ export interface Theme {
 
 // ── Color math ───────────────────────────────────────────────────────
 //
-// All generic color computation lives in lib/color.ts (the color primitive);
+// Generic color computation lives in @hermes/shared/color (the primitives,
+// shared with the desktop) and lib/color.ts (TUI-only lifts and re-toning);
 // this file keeps only the ANSI-256 remapping that is specific to the
 // limited-palette Apple Terminal path. contrastRatio/ensureContrast are
 // re-exported for existing consumers (tests, /theme-info).
 
-export { contrastRatio, ensureContrast } from './lib/color.js'
+export { contrastRatio, ensureContrast }
 
 const XTERM_6_LEVELS = [0, 95, 135, 175, 215, 255] as const
 const ANSI_LIGHT_MAX_LUMINANCE = 0.72

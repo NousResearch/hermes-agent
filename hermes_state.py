@@ -24,7 +24,6 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
@@ -54,6 +53,7 @@ from hermes_state_dbfile import (
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
+from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
     _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
 )
@@ -142,11 +142,6 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     except (OSError, OverflowError):  # PermissionError is an OSError: alive but foreign
         return False
     return False
-
-
-def _scrub_surrogates(value: Any) -> Any:
-    """Replace lone surrogates in text (sqlite3 raises UnicodeEncodeError, aborting the whole write)."""
-    return _sanitize_surrogates(value) if isinstance(value, str) else value
 
 
 # Billing buckets that aren't a routable provider identity: a session that persisted only
@@ -398,7 +393,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin,
+    SessionMessagesMixin, SessionRewindMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 

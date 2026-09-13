@@ -1472,7 +1472,11 @@ def _preflight_or_block(job: dict, job_id: str, job_name: str, cfg: dict) -> Opt
         _pf_reason = None
     if not _pf_reason:
         return None
+    return _blocked_config_result(job_id, job_name, _pf_reason)
 
+
+def _blocked_config_result(job_id: str, job_name: str, _pf_reason: str) -> tuple:
+    """The ``blocked_config`` failure tuple for *_pf_reason*, alerting once per job."""
     logger.warning(
         "Job '%s' (ID: %s): BLOCKED by pre-dispatch config validation — %s (no LLM call was made)",
         job_name, job_id, _pf_reason)
@@ -2163,6 +2167,12 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)
+    # Only now can a requested MCP toolset be judged: its alias is process-global but its tools live
+    # in this profile's registry overlay, and quiet_mode hides the empty resolution (#109050).
+    if _cron_preflight_enabled(_cfg):
+        _mcp_reason = _empty_requested_mcp_toolsets(job, _cfg)
+        if _mcp_reason:
+            setup.blocked = _blocked_config_result(job_id, job_name, _mcp_reason)
     return setup
 
 
@@ -3842,7 +3852,7 @@ from cron.scheduler_prompt import (  # noqa: E402
 )
 from cron.scheduler_preflight import (  # noqa: E402
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,
-    _is_transient_provider_resolve_error, _preflight_job_config,
+    _empty_requested_mcp_toolsets, _is_transient_provider_resolve_error, _preflight_job_config,
 )
 
 

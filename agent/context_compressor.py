@@ -1263,8 +1263,69 @@ def evict_stale_outbound_tool_images(
     return _retire_stale_tool_result_images(api_messages, keep_newest=keep_newest)
 
 
-def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
-    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
+# Historical behaviour, preserved as the defaults: keep 200 chars per string leaf, and only inspect
+# argument blobs longer than 500 chars. Both are now configurable so a user who writes large files
+# through tools is not silently truncated by compaction.
+_TOOL_ARG_HEAD_CHARS_DEFAULT = 200
+_TOOL_ARG_MIN_CHARS_DEFAULT = 500
+_cached_tool_arg_limits: tuple[int, int] | None = None
+
+
+def _reset_tool_arg_limits_cache() -> None:
+    """Drop the cached limits — for tests, or after a config hot-reload."""
+    global _cached_tool_arg_limits
+    _cached_tool_arg_limits = None
+
+
+def get_tool_arg_truncation_limits() -> tuple[int, int]:
+    """Resolved ``(head_chars, min_chars)`` for tool-call argument shrinking; never raises.
+
+    * ``compression.tool_arg_head_chars`` — chars kept per string leaf. Absent/invalid keeps the
+      default ``200``. **A value ``<= 0`` disables argument shrinking entirely**, which is the way to
+      keep large ``write_file`` / ``execute_code`` / heredoc payloads intact through compaction.
+    * ``compression.tool_arg_min_chars`` — only argument blobs longer than this are inspected.
+
+    Cached for the process (the pass runs once per message per compaction, so a config read per
+    message would be wasteful); ``_reset_tool_arg_limits_cache()`` forces a fresh read.
+    """
+    global _cached_tool_arg_limits
+    if _cached_tool_arg_limits is not None:
+        return _cached_tool_arg_limits
+    head_chars = _TOOL_ARG_HEAD_CHARS_DEFAULT
+    min_chars = _TOOL_ARG_MIN_CHARS_DEFAULT
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        section = cfg.get("compression") if isinstance(cfg, dict) else None
+        if isinstance(section, dict):
+            raw_head = section.get("tool_arg_head_chars")
+            if raw_head is not None:
+                try:
+                    head_chars = int(raw_head)
+                except (TypeError, ValueError):
+                    head_chars = _TOOL_ARG_HEAD_CHARS_DEFAULT
+            raw_min = section.get("tool_arg_min_chars")
+            if raw_min is not None:
+                try:
+                    min_chars = max(0, int(raw_min))
+                except (TypeError, ValueError):
+                    min_chars = _TOOL_ARG_MIN_CHARS_DEFAULT
+    except Exception:  # noqa: BLE001 — limits must never break compaction
+        pass
+    _cached_tool_arg_limits = (head_chars, min_chars)
+    return _cached_tool_arg_limits
+
+
+def _truncate_tool_call_args_json(args: str, head_chars: int | None = None) -> str:
+    """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args).
+
+    ``head_chars`` is resolved from ``compression.tool_arg_head_chars`` when omitted; ``<= 0`` disables
+    the shrink so the payload passes through untouched.
+    """
+    if head_chars is None:
+        head_chars, _ = get_tool_arg_truncation_limits()
+    if head_chars <= 0:
+        return args
     try:
         parsed = json.loads(args)
     except (ValueError, TypeError):
@@ -2657,14 +2718,22 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     @staticmethod
     def _truncate_tool_call_args_at(result: List[Dict[str, Any]], idx: int) -> bool:
-        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid)."""
+        """Shrink large tool_call argument payloads at ``idx`` (inside the parsed JSON, so it stays valid).
+
+        The head size and the "large" threshold come from ``compression.tool_arg_head_chars`` and
+        ``compression.tool_arg_min_chars``. A head of ``<= 0`` disables the pass, leaving payloads
+        (``write_file`` content, ``execute_code`` source, heredoc commands) intact through compaction.
+        """
+        head_chars, min_chars = get_tool_arg_truncation_limits()
+        if head_chars <= 0:
+            return False
         msg = result[idx]
         if msg.get("role") != "assistant" or not msg.get("tool_calls"):
             return False
         new_tcs = []
         for tc in msg["tool_calls"]:
             args = tc.get("function", {}).get("arguments", "") if isinstance(tc, dict) else ""
-            new_args = _truncate_tool_call_args_json(args) if len(args) > 500 else args
+            new_args = _truncate_tool_call_args_json(args, head_chars) if len(args) > min_chars else args
             new_tcs.append(tc if new_args == args else {**tc, "function": {**tc["function"], "arguments": new_args}})
         modified = any(new is not old for new, old in zip(new_tcs, msg["tool_calls"]))
         if modified:

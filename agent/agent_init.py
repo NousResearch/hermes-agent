@@ -38,7 +38,10 @@ from agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
 from hermes_cli.config import cfg_get
-from hermes_cli.route_identity import normalize_route_base_url
+from hermes_cli.route_identity import (
+    configured_default_base_url, custom_provider_runtime_ids, normalize_custom_provider_name,
+    normalize_route_base_url,
+)
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches, is_truthy_value
@@ -142,19 +145,6 @@ def _context_route_mismatch(
     return bool(
         configured_provider and active_provider and configured_provider != active_provider
     )
-
-
-def _normalize_custom_provider_name(value: Any) -> str:
-    """Mirror runtime normalization for a requested custom-provider identity."""
-    return str(value or "").strip().lower().replace(" ", "-")
-
-
-def _custom_provider_runtime_ids(value: Any) -> set[str]:
-    """Return raw/menu identities that runtime accepts for a configured name."""
-    normalized = _normalize_custom_provider_name(value)
-    if not normalized:
-        return set()
-    return {normalized, f"custom:{normalized}"}
 
 
 def _build_codex_gpt5_autoraise_notice(
@@ -1518,72 +1508,6 @@ def _warn_invalid_config_int(
     )
 
 
-def _custom_provider_configured_base_url(
-    _configured_provider: str, _agent_cfg, _custom_providers
-) -> str:
-    """Base URL of a named custom provider (``providers.<name>`` first, then
-    ``custom_providers``), normalized for route comparison; "" if unknown.
-    Disabled ``providers.*`` entries also mask their ``custom_providers`` twin.
-    """
-    _wanted = _normalize_custom_provider_name(_configured_provider)
-    _user_providers = _agent_cfg.get("providers")
-    _disabled_ids: set[str] = set()
-    if isinstance(_user_providers, dict):
-        from hermes_cli.config import is_provider_enabled
-        for _key, _entry in _user_providers.items():
-            if not isinstance(_entry, dict):
-                continue
-            _ids = _custom_provider_runtime_ids(_key) | _custom_provider_runtime_ids(_entry.get("name"))
-            if not is_provider_enabled(_entry):
-                _disabled_ids.update(_ids)
-                continue
-            if _wanted in _ids:
-                _url = normalize_route_base_url(
-                    _entry.get("api") or _entry.get("url") or _entry.get("base_url")
-                )
-                if _url:
-                    return _url
-    for _entry in _custom_providers:
-        if not isinstance(_entry, dict):
-            continue
-        _key_ids = _custom_provider_runtime_ids(_entry.get("provider_key"))
-        if _key_ids & _disabled_ids:
-            continue
-        if _wanted in _key_ids | _custom_provider_runtime_ids(_entry.get("name")):
-            _url = normalize_route_base_url(_entry.get("base_url"))
-            if _url:
-                return _url
-    return ""
-
-
-# Provider ids whose runtime is resolved first-hand (never a named custom provider).
-_RUNTIME_FIRST_PROVIDER_IDS = {
-    "auto", "moa", "vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai",
-}
-
-
-def _configured_default_base_url(_agent_cfg, _model_cfg, _custom_providers) -> str:
-    """Normalized route of the configured default model (``model.base_url``, else the named
-    custom provider's URL when ``model.provider`` is not a first-class/auth provider)."""
-    _configured_base_url = normalize_route_base_url(_model_cfg.get("base_url"))
-    _configured_provider = str(_model_cfg.get("provider") or "").strip()
-    _norm = _normalize_custom_provider_name(_configured_provider)
-    _custom_provider_candidate = bool(_norm)
-    if _norm in _RUNTIME_FIRST_PROVIDER_IDS:
-        _custom_provider_candidate = False
-    elif _custom_provider_candidate and _norm != "custom" and not _norm.startswith("custom:"):
-        with suppress(Exception):
-            from hermes_cli.auth import resolve_provider as resolve_auth_provider
-            _custom_provider_candidate = (
-                str(resolve_auth_provider(_norm) or "").strip().lower() != _norm
-            )
-    if not _configured_base_url and _custom_provider_candidate:
-        _configured_base_url = _custom_provider_configured_base_url(
-            _configured_provider, _agent_cfg, _custom_providers
-        )
-    return _configured_base_url
-
-
 def _active_route_url(agent, base_url) -> str:
     """The runtime route, keeping the requested URL's query string when it is the same route."""
     _active = str(agent.base_url or "")
@@ -1619,7 +1543,7 @@ def _scope_context_length_to_default_runtime(
                 _configured_default_model, agent.provider
             )
             _active_runtime_model = normalize_model_for_provider(agent.model, agent.provider)
-    _configured_base_url = _configured_default_base_url(_agent_cfg, _model_cfg, _custom_providers)
+    _configured_base_url = configured_default_base_url(_agent_cfg, _model_cfg, _custom_providers)
     _active_base_url = _active_route_url(agent, base_url)
     _route_mismatch = _context_route_mismatch(
         _configured_base_url, _active_base_url, str(_model_cfg.get("provider") or "").strip(),

@@ -565,7 +565,24 @@ class GatewayTurnMixin:
             hs.data = _load_gateway_config()
             if hs.data:
                 self._hmwa_hygiene_read_config(hs, hs.data)
-            configured_model, configured_provider, configured_base_url = hs.model, hs.provider, hs.base_url
+            configured_model, configured_provider = hs.model, hs.provider
+            # ``configured_base_url`` must be the pin's OWNER route: a custom endpoint declared under
+            # ``providers.<name>`` keeps ``model.base_url`` empty and its runtime identity is the bare
+            # ``custom`` class, so the raw value would clear the pin for an unchanged route (#107606).
+            configured_base_url = hs.base_url
+            _hyg_custom_providers = []
+            if isinstance(hs.data, dict):
+                from hermes_cli.config import get_compatible_custom_providers
+                try:
+                    _hyg_custom_providers = get_compatible_custom_providers(hs.data)
+                except Exception:
+                    _raw_custom = hs.data.get("custom_providers")
+                    _hyg_custom_providers = _raw_custom if isinstance(_raw_custom, list) else []
+                _hyg_model_cfg = hs.data.get("model")
+                if isinstance(_hyg_model_cfg, dict):
+                    from hermes_cli.route_identity import configured_default_base_url
+                    configured_base_url = configured_default_base_url(
+                        hs.data, _hyg_model_cfg, _hyg_custom_providers) or None
 
             with suppress(Exception):
                 hs.model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -591,16 +608,8 @@ class GatewayTurnMixin:
             # custom_providers per-model context_length fallback (as in run_agent.py); needs base_url.
             if hs.config_context_length is None and hs.base_url:
                 with suppress(TypeError, ValueError):
-                    try:
-                        from hermes_cli.config import (
-                            get_compatible_custom_providers as _gw_gcp,
-                            get_custom_provider_context_length as _gw_gccl,
-                        )
-                        _hyg_custom_providers = _gw_gcp(hs.data)
-                    except Exception:
-                        _hyg_custom_providers = hs.data.get("custom_providers")
-                        if not isinstance(_hyg_custom_providers, list):
-                            _hyg_custom_providers = []
+                    from hermes_cli.config import get_custom_provider_context_length as _gw_gccl
+
                     _hyg_custom_ctx = _gw_gccl(
                         model=hs.model, base_url=hs.base_url, custom_providers=_hyg_custom_providers,
                     )

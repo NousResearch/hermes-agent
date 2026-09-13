@@ -2317,6 +2317,11 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
         data = _load_gateway_config()
         if not data:
             return
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+            custom_providers = get_compatible_custom_providers(data)
+        except Exception:
+            custom_providers = data.get("custom_providers")
         model_cfg = data.get("model", {})
         if isinstance(model_cfg, dict):
             configured_model = model_cfg.get("default") or model_cfg.get("model")
@@ -2325,12 +2330,15 @@ def _resolve_gateway_model_context(model: Optional[str] = None) -> _GatewayModel
                 with suppress(TypeError, ValueError):
                     config_context_length = int(raw_ctx)
             configured_provider = provider = model_cfg.get("provider") or None
-            configured_base_url = base_url = model_cfg.get("base_url") or None
-        try:
-            from hermes_cli.config import get_compatible_custom_providers
-            custom_providers = get_compatible_custom_providers(data)
-        except Exception:
-            custom_providers = data.get("custom_providers")
+            base_url = model_cfg.get("base_url") or None
+            # ``configured_base_url`` is the pin's OWNER route, not the raw config value: a custom
+            # endpoint declared under ``providers.<name>`` keeps ``model.base_url`` empty and its
+            # runtime identity is the bare ``custom`` class, so only the resolved URL tells the pin
+            # check that the route is unchanged (agent_init resolves the same way before comparing).
+            from hermes_cli.route_identity import configured_default_base_url
+            configured_base_url = configured_default_base_url(
+                data, model_cfg,
+                custom_providers if isinstance(custom_providers, list) else []) or None
 
     def _read_runtime() -> None:
         nonlocal provider, base_url, api_key

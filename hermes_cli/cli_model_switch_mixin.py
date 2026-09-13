@@ -549,15 +549,22 @@ class CLIModelSwitchMixin:
         """Drop a global context pin when its configured owner changes."""
         from cli import save_config_value
         try:
-            from hermes_cli.config import load_config_readonly
-            from hermes_cli.route_identity import should_clear_context_pin
+            from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+            from hermes_cli.route_identity import configured_default_base_url, should_clear_context_pin
             config = load_config_readonly()
             model_cfg = config.get("model", {}) if isinstance(config, dict) else {}
             if not isinstance(model_cfg, dict) or "context_length" not in model_cfg:
                 return
+            try:
+                custom_providers = get_compatible_custom_providers(config)
+            except Exception:
+                raw_custom = config.get("custom_providers") if isinstance(config, dict) else None
+                custom_providers = raw_custom if isinstance(raw_custom, list) else []
             if should_clear_context_pin(
                 model_cfg.get("default") or model_cfg.get("model"), result.new_model,
-                model_cfg.get("base_url"), result.base_url,
+                # Resolved route: a ``providers.<name>`` block owns the URL while model.base_url stays
+                # empty, and comparing the raw value would drop the pin for an unchanged route.
+                configured_default_base_url(config, model_cfg, custom_providers) or None, result.base_url,
                 model_cfg.get("provider"), result.target_provider):
                 save_config_value("model.context_length", None)
         except Exception:

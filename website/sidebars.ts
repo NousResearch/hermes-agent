@@ -588,6 +588,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/security/security-sherlock',
                     'user-guide/skills/optional/security/security-unbroker',
                     'user-guide/skills/optional/security/security-web-pentest',
+                    'user-guide/skills/optional/security/security-web3-permission-audit',
                   ],
                 },
                 {

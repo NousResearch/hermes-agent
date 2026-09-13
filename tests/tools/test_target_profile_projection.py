@@ -233,3 +233,15 @@ def test_wrapped_source_ownership_excludes_raw_snapshot_value(profiles, monkeypa
         assert "VALUE:UNSET" in result["output"]
     finally:
         environment.cleanup()
+
+
+@pytest.mark.windows_only
+def test_native_windows_profile_boundary_removes_mixed_case_carriers(profiles):
+    source, target = profiles
+    names = ["source_only", "aPpTaInErEnV_sOuRcE_oNlY",
+             "sInGuLaRiTyEnV_aPpTaInErEnV_sOuRcE_oNlY"]
+    env = build_subprocess_env(
+        base={name: "source-residue" for name in names},
+        profile_home=target, source_profile_home=source, enforce_profile_boundary=True,
+    )
+    assert _child(env, names) == dict.fromkeys(names)

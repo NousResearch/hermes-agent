@@ -93,6 +93,31 @@ export function normalizePreviewAddress(value: string): null | string {
   }
 }
 
+export type PreviewBrowserWindowAction = 'open-external' | 'pop-in' | 'pop-out'
+
+/**
+ * Which window glyph the bar should offer. Pop-out is a Browser-tab action
+ * (a URL vessel that can leave the rail). File and artifact previews have no
+ * such vessel — `popOutBrowserTab` no-ops for them — so they take the
+ * open-in-system-browser fallback instead of advertising a dead click.
+ */
+export function previewBrowserBarWindowAction(input: {
+  canOpenBrowserWindow: boolean
+  isBrowserWindow: boolean
+  tabId?: string
+  targetKind: 'artifact' | 'file' | 'url'
+}): PreviewBrowserWindowAction | undefined {
+  if (input.isBrowserWindow) {
+    return 'pop-in'
+  }
+
+  if (input.targetKind === 'url' && input.tabId && input.canOpenBrowserWindow) {
+    return 'pop-out'
+  }
+
+  return 'open-external'
+}
+
 export function PreviewBrowserBar({
   annotateMode = false,
   canGoBack,

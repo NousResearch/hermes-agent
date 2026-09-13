@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { createRejectionLog } from './rejection_log.js';
 import {
   buildPollPayload,
   createReconnectScheduler,
@@ -265,6 +266,11 @@ const messageStore = createBoundedMessageStore(512);
 // uncaptioned photo/video/document/voice note can still surface the original
 // file — see createQuotedMediaCache's doc comment in bridge_helpers.js.
 const quotedMediaCache = createQuotedMediaCache(512);
+
+// Timestamps and counts every 'ignored' admission-decision event (allowlist
+// misses, self-chat mismatches, ...) so operators can tell "rejecting
+// everything" from "rejecting nothing" without tailing bridge.log (#92677).
+const rejectionLog = createRejectionLog();
 
 function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
   const selected = [];
@@ -575,12 +581,7 @@ async function startSocket() {
           if (decision.action === 'drop_disabled') continue;
           if (decision.action === 'drop_allowlist') {
             try {
-              console.log(JSON.stringify({
-                event: 'ignored',
-                reason: 'allowlist_mismatch_owner_chat',
-                chatId,
-                senderId,
-              }));
+              console.log(JSON.stringify(rejectionLog.record('allowlist_mismatch_owner_chat', { chatId, senderId })));
             } catch {}
             continue;
           }
@@ -621,23 +622,13 @@ async function startSocket() {
       if (!msg.key.fromMe) {
         if (WHATSAPP_MODE === 'self-chat') {
           try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'self_chat_mode_rejects_non_self',
-              chatId,
-              senderId,
-            }));
+            console.log(JSON.stringify(rejectionLog.record('self_chat_mode_rejects_non_self', { chatId, senderId })));
           } catch {}
           continue;
         }
         if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
-            console.log(JSON.stringify({
-              event: 'ignored',
-              reason: 'allowlist_mismatch',
-              chatId,
-              senderId,
-            }));
+            console.log(JSON.stringify(rejectionLog.record('allowlist_mismatch', { chatId, senderId })));
           } catch {}
           continue;
         }
@@ -1106,6 +1097,7 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     scriptHash: SCRIPT_HASH,
     sendReadReceipts: SEND_READ_RECEIPTS,
+    rejectionCounts: rejectionLog.snapshot(),
   });
 });
 

@@ -33,6 +33,10 @@ _SCALAR_TYPES = (str, int, float, bool)
 # ``(task_id, platform, chat_id, thread_id or "")`` against it.
 _SUB_KEY_WHERE = "WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?"
 _OUTBOX_OPEN_STATES = ("pending", "sending", "retry_wait", "delivery_unknown", "dead_letter")
+_TERMINAL_EVENT_KINDS = (
+    "completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived",
+    "unblocked", "block_loop_detected", "review_requested", "changes_requested",
+)
 _MAX_DELIVERY_ATTEMPTS = 12
 
 
@@ -653,6 +657,59 @@ def remove_notify_sub(
             (*key, owned),
         )
     return cur.rowcount > 0
+
+
+def retire_archived_notify_sub_if_settled(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    incarnation_id: Optional[str],
+    notifier_profile: Optional[str],
+    delivery_mode: str,
+    kinds: Optional[Iterable[str]] = None,
+) -> bool:
+    """Retire one exact archived route only after all of its effects settle.
+
+    Unlike explicit unsubscribe, archival retirement never revokes outbox rows:
+    an unresolved row is a reason to retain the discovery route, not permission
+    to cancel the delivery obligation.
+    """
+    if not incarnation_id:
+        return False
+    kind_list = tuple(kinds or _TERMINAL_EVENT_KINDS)
+    if not kind_list:
+        raise ValueError("terminal event kinds are required for safe retirement")
+    mode = str(delivery_mode or "")
+    if mode not in _NOTIFY_DELIVERY_MODES:
+        return False
+    key = _sub_key(task_id, platform, chat_id, thread_id)
+    kind_placeholders = ",".join("?" for _ in kind_list)
+    state_placeholders = ",".join("?" for _ in _OUTBOX_OPEN_STATES)
+    with _kb.write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_notify_subs "
+            "WHERE task_id=? AND platform=? AND chat_id=? AND thread_id=? "
+            "AND incarnation_id=? AND notifier_profile IS ? AND delivery_mode=? "
+            "AND EXISTS (SELECT 1 FROM tasks t WHERE t.id=kanban_notify_subs.task_id "
+            "            AND t.status='archived') "
+            f"AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.task_id=kanban_notify_subs.task_id "
+            f"                AND e.id>kanban_notify_subs.last_event_id AND e.kind IN ({kind_placeholders})) "
+            "AND NOT EXISTS (SELECT 1 FROM kanban_delivery_outbox o "
+            "                WHERE o.task_id=kanban_notify_subs.task_id "
+            "                  AND o.platform=kanban_notify_subs.platform "
+            "                  AND o.chat_id=kanban_notify_subs.chat_id "
+            "                  AND o.thread_id=kanban_notify_subs.thread_id "
+            "                  AND o.incarnation_id=kanban_notify_subs.incarnation_id "
+            "                  AND o.notifier_profile IS kanban_notify_subs.notifier_profile "
+            "                  AND COALESCE(json_extract(o.payload_json,'$.delivery_mode'),'notify')="
+            "                      kanban_notify_subs.delivery_mode "
+            f"                  AND o.state IN ({state_placeholders}) AND o.revoked_at IS NULL)",
+            (*key, incarnation_id, notifier_profile, mode, *kind_list, *_OUTBOX_OPEN_STATES),
+        )
+    return cur.rowcount == 1
 
 
 def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 30) -> int:

@@ -228,6 +228,12 @@ class _Collector:
                 "Inspect with `hermes kanban delivery-list` and reconcile explicitly",
                 sub["task_id"], unknown["delivery_key"],
             )
+        # This also recovers a crash after the final archive acknowledgement or
+        # an operator reconciliation that settled the last open row.  The DB
+        # predicate refuses retirement while an unseen terminal event or any
+        # unrevoked obligation remains, so it is safe before adapter lookup.
+        if self.runner._kanban_retire_archived(sub, board=slug):
+            return []
         owner_profile = sub.get("notifier_profile") or None
         platform = (sub.get("platform") or "").lower()
         if platform not in self.active_platforms:
@@ -766,6 +772,10 @@ class _KanbanNotification:
             return
         if not is_push:
             self.clear_failures()
-        # Unsubscribe only on archive; ``done`` is reversible.
+        # Archive teardown is conditional and non-revoking. Explicit user
+        # unsubscribe still uses remove_notify_sub and retains its revocation
+        # semantics; archival must preserve unresolved obligations instead.
         if self.task and self.task.status == "archived":
-            await self.unsub()
+            await _to_thread_process_service(partial(
+                self.runner._kanban_retire_archived, self.sub, board=self.board_slug,
+            ))

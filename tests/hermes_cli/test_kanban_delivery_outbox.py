@@ -8,6 +8,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -170,6 +172,112 @@ def test_explicit_post_send_ambiguity_is_durable_and_not_reclaimed(tmp_path, mon
     assert [item["delivery_key"] for item in warnings] == [row["delivery_key"]]
     assert kbn.claim_delivery_unknown_warnings(conn, task_id=task_id) == []
     conn.close()
+
+
+_NOTIFIER_TERMINAL_KINDS = (
+    "completed", "blocked", "gave_up", "crashed", "timed_out", "status",
+    "archived", "unblocked", "block_loop_detected", "review_requested",
+    "changes_requested",
+)
+
+
+def _archived_delivery_fixture(tmp_path, monkeypatch):
+    _db, conn, task_id, sub, _event = _fixture(tmp_path, monkeypatch)
+    assert kb.archive_task(conn, task_id)
+    _old, _cursor, events = kbn.claim_unseen_events_for_sub(
+        conn, task_id=task_id, platform=sub["platform"], chat_id=sub["chat_id"],
+        thread_id=sub["thread_id"], kinds=_NOTIFIER_TERMINAL_KINDS,
+        incarnation_id=sub["incarnation_id"],
+    )
+    assert [event.kind for event in events] == ["archived"]
+    conn.execute(
+        "UPDATE kanban_delivery_outbox SET state='delivered',transport_receipt='test-settled' "
+        "WHERE task_id=?",
+        (task_id,),
+    )
+    conn.commit()
+    return conn, task_id, sub
+
+
+def _retire_archived(conn, sub, **overrides):
+    captured = {
+        "task_id": sub["task_id"],
+        "platform": sub["platform"],
+        "chat_id": sub["chat_id"],
+        "thread_id": sub["thread_id"],
+        "incarnation_id": sub["incarnation_id"],
+        "notifier_profile": sub["notifier_profile"],
+        "delivery_mode": sub["delivery_mode"],
+        "kinds": _NOTIFIER_TERMINAL_KINDS,
+    }
+    captured.update(overrides)
+    return kbn.retire_archived_notify_sub_if_settled(conn, **captured)
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    [
+        ("incarnation_id", "wrong-incarnation"),
+        ("notifier_profile", "wrong-owner"),
+        ("delivery_mode", "wake"),
+    ],
+)
+def test_archived_retirement_requires_exact_captured_authority(
+    tmp_path, monkeypatch, field, wrong_value,
+):
+    conn, task_id, sub = _archived_delivery_fixture(tmp_path, monkeypatch)
+    try:
+        audit_before = [
+            tuple(row) for row in conn.execute(
+                "SELECT delivery_key,state,transport_receipt,revoked_at "
+                "FROM kanban_delivery_outbox ORDER BY id"
+            ).fetchall()
+        ]
+
+        assert not _retire_archived(conn, sub, **{field: wrong_value})
+        assert len(kbn.list_notify_subs(conn, task_id)) == 1
+        assert _retire_archived(conn, sub)
+        assert kbn.list_notify_subs(conn, task_id) == []
+
+        audit_after = [
+            tuple(row) for row in conn.execute(
+                "SELECT delivery_key,state,transport_receipt,revoked_at "
+                "FROM kanban_delivery_outbox ORDER BY id"
+            ).fetchall()
+        ]
+        assert audit_after == audit_before
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "open_state",
+    ["pending", "retry_wait", "sending", "delivery_unknown", "dead_letter"],
+)
+def test_each_unrevoked_open_state_blocks_archived_retirement(
+    tmp_path, monkeypatch, open_state,
+):
+    conn, task_id, sub = _archived_delivery_fixture(tmp_path, monkeypatch)
+    try:
+        delivery_key = conn.execute(
+            "SELECT delivery_key FROM kanban_delivery_outbox ORDER BY event_id LIMIT 1"
+        ).fetchone()["delivery_key"]
+        conn.execute(
+            "UPDATE kanban_delivery_outbox SET state=?,revoked_at=NULL WHERE delivery_key=?",
+            (open_state, delivery_key),
+        )
+        conn.commit()
+
+        assert not _retire_archived(conn, sub)
+        retained = kbn.list_notify_subs(conn, task_id)
+        assert len(retained) == 1
+        row = conn.execute(
+            "SELECT state,revoked_at FROM kanban_delivery_outbox WHERE delivery_key=?",
+            (delivery_key,),
+        ).fetchone()
+        assert (row["state"], row["revoked_at"]) == (open_state, None)
+    finally:
+        conn.close()
 
 
 def test_due_listing_does_not_lease_later_unattempted_delivery(tmp_path, monkeypatch):

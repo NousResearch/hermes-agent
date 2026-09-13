@@ -677,6 +677,295 @@ def test_notifier_subscription_survives_done_reopen_until_archive(
         conn.close()
 
 
+def _create_owned_completed_subscription():
+    conn = kbc.connect()
+    try:
+        task_id = kb.create_task(conn, title="archive recovery", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=task_id, platform="telegram", chat_id="archive-chat",
+            thread_id="archive-thread", notifier_profile="reviewer", delivery_mode="notify",
+        )
+        sub = kbn.list_notify_subs(conn, task_id)[0]
+        assert kb.complete_task(conn, task_id, summary="completion to preserve")
+        return task_id, sub
+    finally:
+        conn.close()
+
+
+def _reviewer_runner(adapter):
+    runner = _make_runner(adapter)
+    runner._active_profile_name = lambda: "reviewer"
+    return runner
+
+
+def _outbox_rows(task_id):
+    conn = kbc.connect()
+    try:
+        return [
+            dict(row) for row in conn.execute(
+                "SELECT * FROM kanban_delivery_outbox WHERE task_id=? ORDER BY event_id,id",
+                (task_id,),
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def test_archived_route_survives_confirmed_no_send_until_ordinary_retry(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-retry.db"))
+    kb.init_db()
+    task_id, captured_sub = _create_owned_completed_subscription()
+
+    class RejectBeforeIoOnce(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def send(self, chat_id, text, metadata=None):
+            self.attempts += 1
+            if self.attempts == 1:
+                return SendResult(
+                    success=False, delivery_attempted=False, error="pre-I/O failure",
+                )
+            return await super().send(chat_id, text, metadata=metadata)
+
+    adapter = RejectBeforeIoOnce()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    first_rows = _outbox_rows(task_id)
+    assert [(row["state"], row["revoked_at"]) for row in first_rows] == [
+        ("retry_wait", None),
+    ]
+
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, task_id)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+
+    archived_rows = _outbox_rows(task_id)
+    assert [(row["state"], row["revoked_at"]) for row in archived_rows] == [
+        ("retry_wait", None), ("delivered", None),
+    ]
+    conn = kbc.connect()
+    try:
+        retained = kbn.list_notify_subs(conn, task_id)
+    finally:
+        conn.close()
+    assert len(retained) == 1
+    assert {
+        key: retained[0][key]
+        for key in ("incarnation_id", "notifier_profile", "delivery_mode")
+    } == {
+        key: captured_sub[key]
+        for key in ("incarnation_id", "notifier_profile", "delivery_mode")
+    }
+
+    conn = kbc.connect()
+    try:
+        conn.execute(
+            "UPDATE kanban_delivery_outbox SET next_attempt_at=0 "
+            "WHERE task_id=? AND state='retry_wait'",
+            (task_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+
+    assert adapter.attempts == 2
+    assert len(adapter.sent) == 1
+    assert all(row["state"] == "delivered" for row in _outbox_rows(task_id))
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, task_id) == []
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert adapter.attempts == 2
+
+
+def test_archived_unknown_remains_discoverable_after_explicit_retry_reconciliation(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-unknown.db"))
+    kb.init_db()
+    task_id, _captured_sub = _create_owned_completed_subscription()
+
+    class AmbiguousOnce(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def send(self, chat_id, text, metadata=None):
+            self.attempts += 1
+            if self.attempts == 1:
+                return SendResult(
+                    success=False, delivery_attempted=True, error="transport outcome unknown",
+                )
+            return await super().send(chat_id, text, metadata=metadata)
+
+    adapter = AmbiguousOnce()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    unknown_key = _outbox_rows(task_id)[0]["delivery_key"]
+    assert _outbox_rows(task_id)[0]["state"] == "delivery_unknown"
+
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, task_id)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+
+    rows = _outbox_rows(task_id)
+    assert [(row["state"], row["revoked_at"]) for row in rows] == [
+        ("delivery_unknown", None), ("delivered", None),
+    ]
+    conn = kbc.connect()
+    try:
+        assert len(kbn.list_notify_subs(conn, task_id)) == 1
+        reconciled = kbn.reconcile_delivery_unknown(
+            conn, delivery_key=unknown_key, action="retry",
+            reason="destination checked; retry authorized", operator="tester",
+            accept_duplicate_risk=True,
+        )
+        assert reconciled == {
+            "ok": True, "delivery_key": unknown_key, "state": "retry_wait", "action": "retry",
+        }
+        audit = [event for event in kb.list_events(conn, task_id) if event.kind == "delivery_reconciled"]
+        assert len(audit) == 1
+        assert audit[0].payload["delivery_key"] == unknown_key
+    finally:
+        conn.close()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert adapter.attempts == 2
+    assert len(adapter.sent) == 1
+    rows = _outbox_rows(task_id)
+    assert all(row["state"] == "delivered" and row["revoked_at"] is None for row in rows)
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, task_id) == []
+        audit = [event for event in kb.list_events(conn, task_id) if event.kind == "delivery_reconciled"]
+        assert len(audit) == 1
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert adapter.attempts == 2
+
+
+def test_quiet_tick_retires_archived_route_after_unknown_marked_delivered(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-mark-delivered.db"))
+    kb.init_db()
+    task_id, captured_sub = _create_owned_completed_subscription()
+
+    class AmbiguousAdapter(RecordingAdapter):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def send(self, chat_id, text, metadata=None):
+            self.attempts += 1
+            return SendResult(
+                success=False, delivery_attempted=True, error="transport outcome unknown",
+            )
+
+    adapter = AmbiguousAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    unknown_key = _outbox_rows(task_id)[0]["delivery_key"]
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, task_id)
+    finally:
+        conn.close()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+
+    conn = kbc.connect()
+    try:
+        assert len(kbn.list_notify_subs(conn, task_id)) == 1
+        assert kbn.reconcile_delivery_unknown(
+            conn, delivery_key=unknown_key, action="mark-delivered",
+            reason="verified at destination", operator="tester",
+        ) == {
+            "ok": True, "delivery_key": unknown_key,
+            "state": "delivered", "action": "mark-delivered",
+        }
+        assert kbn.list_due_deliveries_for_sub(
+            conn, task_id=task_id, platform=captured_sub["platform"],
+            chat_id=captured_sub["chat_id"], thread_id=captured_sub["thread_id"],
+            incarnation_id=captured_sub["incarnation_id"],
+        ) == []
+    finally:
+        conn.close()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert adapter.attempts == 1
+    rows = _outbox_rows(task_id)
+    assert all(row["state"] == "delivered" and row["revoked_at"] is None for row in rows)
+    assert rows[0]["transport_receipt"] == "operator-verified:tester"
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, task_id) == []
+        audit = [event for event in kb.list_events(conn, task_id) if event.kind == "delivery_reconciled"]
+        assert len(audit) == 1
+        assert audit[0].payload["action"] == "mark-delivered"
+    finally:
+        conn.close()
+
+
+def test_quiet_tick_retires_all_settled_archived_route_after_missed_teardown(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "archive-missed-teardown.db"))
+    kb.init_db()
+    task_id, _captured_sub = _create_owned_completed_subscription()
+    adapter = RecordingAdapter()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    conn = kbc.connect()
+    try:
+        assert kb.archive_task(conn, task_id)
+    finally:
+        conn.close()
+
+    interrupted_runner = _reviewer_runner(adapter)
+    interrupted_runner._kanban_retire_archived = lambda sub, board=None: False
+    asyncio.run(_run_one_notifier_tick(monkeypatch, interrupted_runner))
+    rows_after_ack = _outbox_rows(task_id)
+    assert [row["state"] for row in rows_after_ack] == ["delivered", "delivered"]
+    conn = kbc.connect()
+    try:
+        assert len(kbn.list_notify_subs(conn, task_id)) == 1
+        event_count = len(kb.list_events(conn, task_id))
+    finally:
+        conn.close()
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _reviewer_runner(adapter)))
+    assert len(adapter.sent) == 1
+    conn = kbc.connect()
+    try:
+        assert kbn.list_notify_subs(conn, task_id) == []
+        assert len(kb.list_events(conn, task_id)) == event_count
+        assert [dict(row) for row in conn.execute(
+            "SELECT state,transport_receipt,revoked_at FROM kanban_delivery_outbox "
+            "WHERE task_id=? ORDER BY event_id",
+            (task_id,),
+        ).fetchall()] == [
+            {"state": "delivered", "transport_receipt": "transport:sent-1", "revoked_at": None},
+            {"state": "delivered", "transport_receipt": "no-op-event-acknowledged", "revoked_at": None},
+        ]
+    finally:
+        conn.close()
+
+
 def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
     db_path = tmp_path / "chat-type-wakeup.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

@@ -31,14 +31,23 @@ a2a_agents:
 
 ## Outbound — call other agents
 
-The agent gets five tools:
+The agent gets seven tools:
 
 - `a2a_discover(url)` — what can this agent do?
-- `a2a_call(agent, message, context_id?)` — send it a task, get the reply.
+- `a2a_call(agent, message, context_id?, wait?)` — send a task. The default
+  waits for its reply; `wait=false` returns a task id immediately.
+- `a2a_get_task(agent, task_id)` — fetch a detached task's latest state/output.
+- `a2a_wait(agent, task_id, timeout?, poll_interval?)` — wait locally for a
+  detached task. A local timeout never cancels the remote execution.
 - `a2a_list()` — configured peers, saved conversations, metrics.
 - `a2a_history(context_id)` — recall a saved A2A conversation.
 - `a2a_orchestrate(capability, message, mode?)` — fan-out a task to every
   peer advertising a capability (`all` / `first` / `best`).
+
+Use `a2a_call(..., wait=false)` for long-running work. The peer returns a
+`WORKING` Task, closes the original HTTP request, continues execution in its
+own gateway/profile, and stores the terminal result for `a2a_get_task`,
+`a2a_wait`, subscriptions, or configured push notifications.
 
 ## Inbound — be callable
 
@@ -83,7 +92,7 @@ via `tasks/get`.
 | `A2A_ALLOW_ALL_USERS` | `false` | Allow any authed peer (dev only). |
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity. |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20). |
-| `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply. |
+| `A2A_REPLY_TIMEOUT` | `300` | Seconds a blocking call waits for a reply; detached tasks are not failed by this timeout. |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push signing. |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict skills on the Agent Card. |
 

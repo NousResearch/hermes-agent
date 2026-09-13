@@ -17,7 +17,7 @@ import mimetypes
 import os
 import re
 from pathlib import Path
-from urllib.parse import unquote as _unquote
+from urllib.request import url2pathname
 from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.config import Platform, PlatformConfig
@@ -33,6 +33,18 @@ _Metadata = Optional[Dict[str, Any]]
 # Server default is 16383, but 4000 is the practical limit for readable messages.
 MAX_POST_LENGTH = 4000
 
+
+def _resolve_max_post_length(extra: Optional[Dict[str, Any]] = None) -> int:
+    """Resolve the profile's YAML-only outbound limit; never read process env."""
+    raw = (extra or {}).get("max_post_length")
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        return MAX_POST_LENGTH
+    try:
+        limit = int(raw)
+    except ValueError:
+        return MAX_POST_LENGTH
+    return min(limit, 16383) if limit >= 500 else MAX_POST_LENGTH
+
 # Channel type codes returned by the Mattermost API ("P" private → treat as group).
 _CHANNEL_TYPE_MAP = {"D": "dm", "G": "group", "P": "group", "O": "channel"}
 
@@ -41,6 +53,8 @@ _MATTERMOST_DISABLE_MENTIONS_PROPS = {"disable_mentions": True}
 _RECONNECT_BASE_DELAY, _RECONNECT_MAX_DELAY, _RECONNECT_JITTER = 2.0, 60.0, 0.2  # exponential backoff
 
 _POST_WITH_FILE_ERROR = "Failed to post with file"
+_POST_DELIVERY_UNCERTAIN = "Mattermost content delivery uncertain"
+_POST_DELIVERY_PARTIAL = "Mattermost content partially delivered; replay suppressed"
 _MEDIA_MSG_TYPES = (("image/", MessageType.PHOTO), ("audio/", MessageType.VOICE))  # first match wins
 _INBOUND_CACHE_EXT = {"image/": ".png", "audio/": ".ogg"}  # mime prefix → default extension for cached media
 
@@ -63,9 +77,60 @@ def _csv(value: Any) -> str:
 
 
 def _post_result(data: Dict[str, Any], error: str) -> SendResult:
-    if not data or "id" not in data:
-        return SendResult(success=False, error=error)
-    return SendResult(success=True, message_id=data["id"])
+    data = data or {}
+    ids = data.get("message_ids") or ([data["id"]] if data.get("id") else [])
+    success = bool(data.get("id"))
+    if data.get("_delivery_uncertain"):
+        error = _POST_DELIVERY_UNCERTAIN
+    return SendResult(success=success, message_id=ids[-1] if ids else None,
+                      continuation_message_ids=tuple(ids[:-1]), error=None if success else error)
+
+
+def _post_was_rejected(data: Dict[str, Any]) -> bool:
+    """Only a response-bound rejection with no acknowledged or uncertain content permits recovery."""
+    return (data.get("_post_rejection_status") in {400, 403, 404, 413, 422}
+            and not data.get("id") and not data.get("message_ids") and not data.get("_delivery_uncertain"))
+
+
+def _visible_file_post_name(name: Any, max_len: int = 160) -> str:
+    """Compact filename label that cannot create an accidental mention."""
+    label = re.sub(r"\s+", " ", str(name or "")).strip().replace("@", "@\u200b")
+    return label if len(label) <= max_len else f"{label[:max_len - 1]}…"
+
+
+def _file_post_message(caption: Optional[str], filenames: List[str]) -> str:
+    """Preserve explicit captions; only fallback filenames are normalized."""
+    if caption:
+        return caption
+    # Five generated labels must fit even the smallest supported post budget (500).
+    # A fixed floor keeps file delivery independent of configurable-limit support.
+    name_budget = min(160, 501 // max(1, len(filenames)) - 3)
+    labels = [_visible_file_post_name(name, name_budget) for name in filenames]
+    return "\n".join(f"📎 {label}" for label in labels if label) or "📎 Attachment"
+
+
+def _media_delivery_receipt(chat_id, total, delivered, message_ids, error=None):
+    """Direct-send success requires all requested work and an acknowledged post."""
+    if delivered != total and not error:
+        error = "Not all requested Mattermost media were delivered"
+    if not message_ids and not error:
+        error = "No deliverable Mattermost media"
+    result = {"success": not error, "platform": "mattermost", "chat_id": chat_id,
+              "message_id": message_ids[-1] if message_ids else None,
+              "message_ids": list(message_ids), "total_media": total, "delivered_media": delivered,
+              "failed_media": total - delivered,
+              "media_delivered": bool(delivered), "partial_failure": bool(error and message_ids)}
+    if error:
+        result["error"] = error
+    return result
+
+
+def _media_path(descriptor):
+    if isinstance(descriptor, dict):
+        return descriptor.get("path")
+    if isinstance(descriptor, (tuple, list)):
+        return descriptor[0] if descriptor else None
+    return descriptor
 
 
 def _url_filename(url: str, fallback: str) -> str:
@@ -104,10 +169,11 @@ def validate_mattermost_config(config: PlatformConfig) -> bool:
 class MattermostAdapter(BasePlatformAdapter):
     """Gateway adapter for Mattermost (self-hosted or cloud)."""
 
-    splits_long_messages = True  # send() chunks via truncate_message(MAX_POST_LENGTH)
+    splits_long_messages = True  # send() chunks at the profile-local limit
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATTERMOST)
+        self.MAX_MESSAGE_LENGTH = _resolve_max_post_length(config.extra)
         self._base_url, self._token = _url_and_token(config)
         self._base_url = self._base_url.rstrip("/")
         self._bot_user_id = self._bot_username = ""
@@ -146,8 +212,11 @@ class MattermostAdapter(BasePlatformAdapter):
             kwargs["json"] = payload
         if method != "PUT":  # PUT relies on the session default timeout
             kwargs["timeout"] = aiohttp.ClientTimeout(total=30)
+        # Another POST may finish while this request's response body is pending.
+        response_status: Optional[int] = None
         try:
             async with getattr(self._session, method.lower())(url, **kwargs) as resp:
+                response_status = resp.status
                 if is_post:
                     self._last_post_status = resp.status
                 if resp.status >= 400:
@@ -155,12 +224,36 @@ class MattermostAdapter(BasePlatformAdapter):
                     if is_post:
                         self._last_post_error = body or ""
                     logger.error("MM API %s %s → %s: %s", method, path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
-        except aiohttp.ClientError as exc:
+                    if is_post and path == "posts" and resp.status >= 500:
+                        # A server/proxy failure does not establish that the POST was rejected.
+                        return {"_delivery_uncertain": True}
+                    return {"_post_rejection_status": resp.status} if is_post and path == "posts" else {}
+                try:
+                    data = await resp.json()
+                except ValueError:
+                    if is_post and path == "posts":
+                        return {"_delivery_uncertain": True}
+                    raise
+                if is_post and path == "posts":
+                    # Only a usable post ID acknowledges delivery; malformed success
+                    # bodies cannot authorize replay of a non-idempotent request.
+                    if not isinstance(data, dict) or not isinstance(data.get("id"), str) or not data["id"].strip():
+                        return {"_delivery_uncertain": True}
+                    # Internal evidence comes only from the HTTP status, never response JSON.
+                    data.pop("_post_rejection_status", None)
+                return data
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             if is_post:
                 self._last_post_error = str(exc)
             logger.error("MM API %s %s network error: %s", method, path, exc)
+            if isinstance(exc, aiohttp.ClientConnectorError):
+                return {}
+            if is_post and path == "posts":
+                if response_status is None or response_status < 400 or response_status >= 500:
+                    return {"_delivery_uncertain": True}
+                return {}
+            if isinstance(exc, asyncio.TimeoutError):
+                raise
             return {}
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
@@ -168,6 +261,11 @@ class MattermostAdapter(BasePlatformAdapter):
 
     async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         return await self._api("POST", path, payload)
+
+    @staticmethod
+    def _is_timeout_error(error: Optional[str]) -> bool:
+        # The gateway's timeout guard also prevents replay after a lost POST acknowledgement.
+        return error in {_POST_DELIVERY_UNCERTAIN, _POST_DELIVERY_PARTIAL} or BasePlatformAdapter._is_timeout_error(error)
 
     def _last_post_failure_is_broken_thread_root(self) -> bool:
         """Return True only for clear invalid/missing Mattermost thread roots."""
@@ -181,13 +279,32 @@ class MattermostAdapter(BasePlatformAdapter):
         self, chat_id: str, payload: Dict[str, Any], metadata: _Metadata) -> Dict[str, Any]:
         """Post once, optionally falling back flat for final notify content."""
         data = await self._api_post("posts", payload)
-        if (data or "root_id" not in payload or not (isinstance(metadata, dict) and metadata.get("notify"))
+        if ((data and not _post_was_rejected(data)) or "root_id" not in payload
+                or not (isinstance(metadata, dict) and metadata.get("notify"))
                 or not self._last_post_failure_is_broken_thread_root()):
             return data
         flat_payload = {k: v for k, v in payload.items() if k != "root_id"}
-        flat_payload["message"] = ("⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n"
-                                   + str(flat_payload.get("message") or "")).strip()
+        warning = "⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n"
+        message = str(flat_payload.get("message") or "")
         logger.warning("Mattermost: falling back to flat channel delivery for notify-worthy post in %s", chat_id)
+        if len(warning) + len(message) > self.MAX_MESSAGE_LENGTH:
+            # The answer/caption already owns its budget. Keep it intact and attach files only once.
+            notice = _with_mentions_disabled({"channel_id": chat_id, "message": warning.rstrip()})
+            notice_data = await self._api_post("posts", notice)
+            if not notice_data.get("id"):
+                return notice_data
+            ids = [str(notice_data["id"])]
+            try:
+                data = await self._api_post("posts", flat_payload) or {}
+                return {**data, "message_ids": ids + ([str(data["id"])] if data.get("id") else [])}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A lost content response must not erase the acknowledged warning or cause replay.
+                logger.warning("Mattermost: content post failed after acknowledged fallback notice")
+                return {"message_ids": ids, "_delivery_uncertain": True}
+        else:
+            flat_payload["message"] = warning + message
         return await self._api_post("posts", flat_payload)
 
     async def _post_message(self, chat_id: str, message: str, reply_to: Optional[str], metadata: _Metadata,
@@ -197,13 +314,34 @@ class MattermostAdapter(BasePlatformAdapter):
         if file_ids is not None:
             base["file_ids"] = file_ids
         payload = _with_mentions_disabled(base)
-        if self._reply_mode == "thread":
+        if self._reply_mode == "thread" or (metadata or {}).get("mattermost_explicit_thread"):
             # root_id from reply_to, else metadata["thread_id"]/["root_id"], resolved to the true thread root.
             candidate = reply_to or (
                 isinstance(metadata, dict) and (metadata.get("thread_id") or metadata.get("root_id")))
             if candidate:
                 payload["root_id"] = await self._resolve_root_id(str(candidate))
-        return await self._post_preserving_thread(chat_id, payload, metadata)
+        # Slice captions without formatting, trimming, or synthetic chunk markers.
+        # Attach files to the final slice only; earlier slices retain their receipts.
+        chunks = [message[i:i + self.MAX_MESSAGE_LENGTH] for i in range(0, len(message), self.MAX_MESSAGE_LENGTH)] or [""]
+        ids = []
+        data: Dict[str, Any] = {}
+        for index, chunk in enumerate(chunks):
+            chunk_payload = {**payload, "message": chunk}
+            if index < len(chunks) - 1:
+                chunk_payload.pop("file_ids", None)
+            try:
+                data = await self._post_preserving_thread(chat_id, chunk_payload, metadata) or {}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not ids:
+                    raise
+                # Replaying the whole caption would repeat acknowledged slices.
+                return {"message_ids": ids, "_delivery_uncertain": True}
+            ids.extend(data.get("message_ids") or ([str(data["id"])] if data.get("id") else []))
+            if not data.get("id"):
+                break
+        return {**data, "message_ids": ids}
 
     async def _post_with_file(self, chat_id: str, file_id: str, caption: Optional[str], reply_to: Optional[str],
                               metadata: _Metadata) -> SendResult:
@@ -276,11 +414,25 @@ class MattermostAdapter(BasePlatformAdapter):
         """Send a message (or multiple chunks) to a channel; reply_to / metadata["thread_id"] is the root post."""
         if not content:
             return SendResult(success=True)
-        result = SendResult(success=True)
-        for chunk in self.truncate_message(self.format_message(content), MAX_POST_LENGTH):
-            result = _post_result(await self._post_message(chat_id, chunk, reply_to, metadata), "Failed to create post")
-            if not result.success:
+        ids = []
+        data: Dict[str, Any] = {}
+        for chunk in self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH):
+            try:
+                data = await self._post_message(chat_id, chunk, reply_to, metadata) or {}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if not ids:
+                    raise
+                data = {"_delivery_uncertain": True}
+            ids.extend(data.get("message_ids") or ([str(data["id"])] if data.get("id") else []))
+            if not data.get("id"):
                 break
+        # The base's no-replay guard also applies to acknowledged partial text,
+        # even if its last POST was definitively rejected rather than uncertain.
+        result = _post_result({**data, "message_ids": ids},
+                              _POST_DELIVERY_PARTIAL if ids else "Failed to create post")
+        result.raw_response = {**data, "message_ids": ids}
         return result
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
@@ -295,9 +447,33 @@ class MattermostAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata: _Metadata = None) -> None:
         await self._api_post(f"users/{self._bot_user_id}/typing", {"channel_id": chat_id})
 
-    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
-        payload = _with_mentions_disabled({"message": self.format_message(content)})
-        return _post_result(await self._api("PUT", f"posts/{message_id}/patch", payload), "Failed to edit post")
+    async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False,
+                           metadata: _Metadata = None) -> SendResult:
+        # Slice the source before formatting: offsets must stay in the caller's
+        # domain, including whitespace, image markdown and literal chunk numbers.
+        chunks = ([content] if len(self.format_message(content)) <= self.MAX_MESSAGE_LENGTH else
+                  [content[i:i + self.MAX_MESSAGE_LENGTH] for i in range(0, len(content), self.MAX_MESSAGE_LENGTH)])
+        payload = _with_mentions_disabled({"message": self.format_message(chunks[0])})
+        data: Dict[str, Any] = await self._api("PUT", f"posts/{message_id}/patch", payload) or {}
+        if not data.get("id"):
+            return _post_result(data, "Failed to edit post")
+        ids = [str(data["id"])]
+        consumed = len(chunks[0])
+        for chunk in chunks[1:]:
+            try:
+                data = await self._post_message(chat_id, self.format_message(chunk), message_id, metadata) or {}
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                data = {"_delivery_uncertain": self._last_post_status is None or self._last_post_status < 400}
+            ids.extend(data.get("message_ids") or ([str(data["id"])] if data.get("id") else []))
+            if not data.get("id"):
+                result = _post_result({**data, "message_ids": ids}, "Failed to create edit continuation")
+                result.raw_response = {**data, "message_ids": ids, "partial_overflow": True,
+                                       "last_message_id": ids[-1], "delivered_prefix": content[:consumed]}
+                return result
+            consumed += len(chunk)
+        return _post_result({**data, "message_ids": ids}, "Failed to edit post")
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
                          reply_to: Optional[str] = None, metadata: _Metadata = None) -> SendResult:
@@ -354,8 +530,10 @@ class MattermostAdapter(BasePlatformAdapter):
                     logger.warning("Mattermost: failed to download %s after %d attempts: %s", url, attempt + 1, exc)
                     return await fallback()
             await asyncio.sleep(1.5 * (attempt + 1))
-        file_id = await self._upload_file(chat_id, file_data, _url_filename(url, f"{kind}.png"), ct)
-        return await self._post_with_file(chat_id, file_id, caption, reply_to, metadata) if file_id else await fallback()
+        filename = _url_filename(url, f"{kind}.png")
+        file_id = await self._upload_file(chat_id, file_data, filename, ct)
+        return await self._post_with_file(
+            chat_id, file_id, _file_post_message(caption, [filename]), reply_to, metadata) if file_id else await fallback()
 
     async def _send_local_file(
         self, chat_id: str, file_path: str, caption: Optional[str], reply_to: Optional[str],
@@ -364,19 +542,21 @@ class MattermostAdapter(BasePlatformAdapter):
         p = Path(file_path)
         if not p.exists():
             logger.warning("Mattermost: local file not found, skipping: %s", file_path)
-            return SendResult(success=True, message_id=None)
+            return SendResult(success=False, error="Local file not found")
         fname = file_name or p.name
         file_id = await self._upload_file(chat_id, p.read_bytes(), fname,
                                           mimetypes.guess_type(fname)[0] or "application/octet-stream")
         if not file_id:
             return SendResult(success=False, error="File upload failed")
-        return await self._post_with_file(chat_id, file_id, caption, reply_to, metadata)
+        return await self._post_with_file(chat_id, file_id, _file_post_message(caption, [fname]), reply_to, metadata)
 
     async def _load_batch_image(self, image_url: str, index: int) -> Optional[Tuple[bytes, str, str]]:
         """Read a file:// or remote image for a batch post → (data, filename, content_type), or None to skip."""
         import aiohttp
-        if image_url.startswith("file://"):
-            local_path = _unquote(image_url[7:])
+        if not image_url:
+            return None
+        if "://" not in image_url or image_url.startswith("file://"):
+            local_path = url2pathname(image_url[5:]) if image_url.startswith("file://") else image_url
             p = Path(local_path)
             if not p.exists():
                 logger.warning("Mattermost: skipping missing image %s", local_path)
@@ -398,41 +578,80 @@ class MattermostAdapter(BasePlatformAdapter):
         return file_data, _url_filename(image_url, f"image_{index}.png"), ct
 
     async def send_multiple_images(self, chat_id: str, images: List[Tuple[str, str]],
-                                   metadata: _Metadata = None, human_delay: float = 0.0) -> SendResult:
-        """Send a batch of images as one post; chunked at Mattermost's 5-``file_ids`` cap, each chunk
-        falling back to the base per-image loop on failure."""
-        if not images:
-            return SendResult(success=False, error="no images to send")
-        chunks = [images[i:i + 5] for i in range(0, len(images), 5)]  # Mattermost post file_ids cap
-        delivered = False
-        for chunk_idx, chunk in enumerate(chunks):
-            if human_delay > 0 and chunk_idx > 0:
-                await asyncio.sleep(human_delay)
-            file_ids, caption_parts = [], []
-            try:
-                for image_url, alt_text in chunk:
+                                   metadata: _Metadata = None, human_delay: float = 0.0,
+                                   *, caption: Optional[str] = None) -> SendResult:
+        """Post up to five files per batch, retaining receipts without replaying uncertain POSTs."""
+        message_ids: List[str] = []
+        delivered = 0
+        error = None
+        caption_pending = caption
+        pending_captions: List[str] = []
+        try:
+            for offset in range(0, len(images), 5):
+                if human_delay > 0 and offset:
+                    await asyncio.sleep(human_delay)
+                file_ids, names = [], []
+                for image_url, alt_text in images[offset:offset + 5]:
                     if alt_text:
-                        caption_parts.append(alt_text)
+                        pending_captions.append(alt_text)
                     loaded = await self._load_batch_image(image_url, len(file_ids))
                     if loaded is not None and (fid := await self._upload_file(chat_id, *loaded)):
                         file_ids.append(fid)
+                        names.append(loaded[1])
                 if not file_ids:
                     continue
-                logger.info("Mattermost: sending %d image(s) as single post (chunk %d/%d)",
-                            len(file_ids), chunk_idx + 1, len(chunks))
-                data = await self._post_message(chat_id, "\n".join(caption_parts), None, metadata, file_ids)
-                if data and "id" in data:
-                    delivered = True
-                else:
-                    logger.warning("Mattermost: multi-image post failed, falling back")
-                    fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
-                    delivered = delivered or fallback.success
-            except Exception as e:
-                logger.warning("Mattermost: multi-image send failed (chunk %d/%d), falling back: %s",
-                               chunk_idx + 1, len(chunks), e, exc_info=True)
-                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
-                delivered = delivered or fallback.success
-        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
+                explicit_caption = caption_pending or "\n".join(pending_captions)
+                body = _file_post_message(explicit_caption, names)
+                data = await self._post_message(chat_id, body, None, metadata, file_ids)
+                if data:
+                    message_ids.extend(data.get("message_ids") or ([str(data["id"])] if data.get("id") else []))
+                if not data or not data.get("id"):
+                    if _post_was_rejected(data):
+                        # Reuse the uploaded files through the native bounded post path.
+                        # Do not download/upload again or replay an acknowledged caption.
+                        for file_id, name in zip(file_ids, names):
+                            if human_delay > 0:
+                                await asyncio.sleep(human_delay)
+                            single = await self._post_message(
+                                chat_id, _file_post_message(explicit_caption, [name]), None, metadata, [file_id])
+                            message_ids.extend(single.get("message_ids") or
+                                               ([str(single["id"])] if single.get("id") else []))
+                            if not single.get("id"):
+                                error = "Mattermost single image post was not acknowledged"
+                                if explicit_caption and not message_ids and _post_was_rejected(single):
+                                    # Both attachment attempts were rejected: preserve the prose once.
+                                    text = await self._post_message(chat_id, explicit_caption, None, metadata)
+                                    message_ids.extend(text.get("message_ids") or
+                                                       ([str(text["id"])] if text.get("id") else []))
+                                break
+                            delivered += 1
+                            explicit_caption = caption_pending = None
+                            pending_captions.clear()
+                        if not error:
+                            continue
+                    else:
+                        error = "Mattermost image post was not acknowledged"
+                    break
+                delivered += len(file_ids)
+                caption_pending = None
+                pending_captions.clear()
+            caption_pending = caption_pending or "\n".join(pending_captions)
+            if caption_pending and not error:
+                # Text still belongs to the delivery when every image was missing.
+                data = await self._post_message(chat_id, caption_pending, None, metadata)
+                if data:
+                    message_ids.extend(data.get("message_ids") or ([str(data["id"])] if data.get("id") else []))
+                if not data or not data.get("id"):
+                    error = "Mattermost caption post was not acknowledged"
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            error = "Mattermost image batch delivery failed"
+        receipt = _media_delivery_receipt(chat_id, len(images), delivered, message_ids, error)
+        # Gateway's batch contract means ANY image delivered; direct callers use counts.
+        return SendResult(success=bool(delivered), message_id=receipt["message_id"],
+                          continuation_message_ids=tuple(message_ids[:-1]),
+                          error=receipt.get("error"), raw_response=receipt)
 
     # --- WebSocket ---
 
@@ -601,58 +820,122 @@ class MattermostAdapter(BasePlatformAdapter):
 
 async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Optional[str] = None,
                            media_files: Optional[list] = None, force_document: bool = False) -> Dict[str, Any]:
-    """Send via the Mattermost v4 REST API without a live gateway adapter (out-of-process cron).
+    """Native live delivery, else standalone REST; acknowledge each batch once, never replay."""
+    from tools.send_message_tool import _dispatch_on_gateway_loop, _live_adapter
+    runner, adapter = _live_adapter(Platform.MATTERMOST)
+    if adapter is not None:
+        metadata = {"thread_id": thread_id, "mattermost_explicit_thread": True} if thread_id else None
+        if media_files:
+            # Native paths stay native; URI conversion corrupts Windows drive/UNC paths.
+            images = [(os.fspath(path) if isinstance(path := _media_path(item), (str, os.PathLike)) else "", "")
+                      for item in media_files]
+            make_coro = lambda: adapter.send_multiple_images(chat_id, images, metadata=metadata, caption=message)
+        else:
+            make_coro = lambda: adapter.send(chat_id=chat_id, content=message, metadata=metadata)
+        try:
+            result = await _dispatch_on_gateway_loop(runner, make_coro, "Mattermost native send failed")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return {"error": "Mattermost native send failed"}
+        if isinstance(result, dict):
+            return result
+        if media_files:
+            return dict(result.raw_response)
+        ids = [*result.continuation_message_ids, *([result.message_id] if result.message_id else [])]
+        return _media_delivery_receipt(chat_id, 0, 0, ids, result.error)
+    media_files = media_files or []
+    message_ids: List[str] = []
+    delivered = 0
 
-    Token/URL: ``pconfig`` with env fallback. ``media_files`` upload via ``POST /files`` and attach by
-    file_id; ``thread_id`` becomes ``root_id``. ``force_document`` is signature parity only (unused).
-    """
+    def receipt(error=None):
+        return _media_delivery_receipt(chat_id, len(media_files), delivered, message_ids, error)
+
     try:
         import aiohttp
     except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-
+        return receipt("aiohttp not installed. Run: pip install aiohttp")
     base_url, token = _url_and_token(pconfig)
     base_url, token = base_url.rstrip("/"), token.strip()
     if not base_url or not token:
-        return {"error": "Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set"}
+        return receipt("Mattermost standalone send: MATTERMOST_URL and MATTERMOST_TOKEN must both be set")
     upload_headers = {"Authorization": f"Bearer {token}"}
     headers = {**upload_headers, "Content-Type": "application/json"}
     try:
-        # One ClientSession (with proxy) covers the optional uploads + final post.
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(resolve_proxy_url(platform_env_var="MATTERMOST_PROXY"))
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
-            file_ids: List[str] = []
-            for media in media_files or []:
-                file_path = media.get("path") if isinstance(media, dict) else media
-                if not file_path or not os.path.exists(file_path):
+            caption_pending = message
+            batches = [media_files[i:i + 5] for i in range(0, len(media_files), 5)] or [[]]
+            for index, batch in enumerate(batches):
+                file_ids, names = [], []
+                for descriptor in batch:
+                    file_path = _media_path(descriptor)
+                    if not isinstance(file_path, (str, os.PathLike)) or not file_path:
+                        continue
+                    filename = os.path.basename(file_path)
+                    try:
+                        with open(file_path, "rb") as fh:
+                            file_data = fh.read()
+                    except OSError:
+                        # Includes disappearance between path validation and opening the file.
+                        continue
+                    form = aiohttp.FormData()
+                    form.add_field("channel_id", chat_id)
+                    form.add_field("files", file_data, filename=filename)
+                    async with session.post(f"{base_url}/api/v4/files", data=form, headers=upload_headers,
+                                            **_req_kw) as upload_resp:
+                        if upload_resp.status not in {200, 201}:
+                            return receipt(f"Mattermost file upload failed ({upload_resp.status})")
+                        infos = (await upload_resp.json()).get("file_infos", [])
+                        if not infos or not infos[0].get("id"):
+                            return receipt("Mattermost file upload returned no file ID")
+                        file_ids.append(infos[0]["id"])
+                        names.append(filename)
+                # Keep the caption for the first actual post, even if the first batch vanished.
+                if not file_ids and (index < len(batches) - 1 or not caption_pending):
                     continue
-                form = aiohttp.FormData()
-                form.add_field("channel_id", chat_id)  # required so the server can attribute the upload
-                with open(file_path, "rb") as fh:
-                    form.add_field("files", fh.read(), filename=os.path.basename(file_path))
-                async with session.post(f"{base_url}/api/v4/files", data=form, headers=upload_headers,
-                                        **_req_kw) as upload_resp:
-                    if upload_resp.status not in {200, 201}:
-                        body = await upload_resp.text()
-                        return {"error": f"Mattermost file upload failed ({upload_resp.status}): {body[:400]}"}
-                    upload_data = await upload_resp.json()
-                    file_ids.extend(info["id"] for info in upload_data.get("file_infos", []) if info.get("id"))
-            payload: Dict[str, Any] = {"channel_id": chat_id, "message": message}
-            if thread_id:
-                payload["root_id"] = thread_id
-            if file_ids:
-                payload["file_ids"] = file_ids
-            async with session.post(f"{base_url}/api/v4/posts", headers=headers, json=payload, **_req_kw) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return {"error": f"Mattermost API error ({resp.status}): {body[:400]}"}
-                data = await resp.json()
-            return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
-    except aiohttp.ClientError as exc:
-        return {"error": f"Mattermost send failed (network): {exc}"}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"Mattermost send failed: {exc}"}
+                payload = _with_mentions_disabled({
+                    "channel_id": chat_id,
+                    "message": _file_post_message(caption_pending, names) if file_ids else caption_pending,
+                })
+                if thread_id:
+                    payload["root_id"] = thread_id
+                if file_ids:
+                    payload["file_ids"] = file_ids
+                limit = _resolve_max_post_length(getattr(pconfig, "extra", None))
+                body = payload["message"]
+                chunks = [body[i:i + limit] for i in range(0, len(body), limit)] or [""]
+                for chunk_index, chunk in enumerate(chunks):
+                    chunk_payload = {**payload, "message": chunk}
+                    if chunk_index < len(chunks) - 1:
+                        chunk_payload.pop("file_ids", None)
+                    status = None
+                    try:
+                        async with session.post(f"{base_url}/api/v4/posts", headers=headers,
+                                                json=chunk_payload, **_req_kw) as resp:
+                            status = resp.status
+                            if status not in {200, 201}:
+                                return receipt(f"Mattermost API error ({status})")
+                            data = await resp.json()
+                    except asyncio.CancelledError:
+                        raise
+                    except aiohttp.ClientConnectorError:
+                        return receipt("Mattermost connection failed before sending")
+                    except Exception:
+                        if status is None or status < 400:
+                            return {**receipt(_POST_DELIVERY_UNCERTAIN), "_delivery_uncertain": True}
+                        return receipt(f"Mattermost API error ({status})")
+                    if not isinstance(data, dict) or not data.get("id"):
+                        return receipt("Mattermost post was not acknowledged")
+                    message_ids.append(str(data["id"]))
+                    delivered += len(chunk_payload.get("file_ids", []))
+                caption_pending = ""
+        return receipt()
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        return receipt(f"Mattermost send failed: {exc}")
 
 
 # --- Interactive setup wizard ---
@@ -725,6 +1008,8 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     """
     skip_env_bridge = _profile_scoped_config_load()
     seeded: dict = {}
+    if "max_post_length" in mattermost_cfg:
+        seeded["max_post_length"] = _resolve_max_post_length(mattermost_cfg)
     for key, env, to_env in _YAML_BRIDGE:
         value = mattermost_cfg.get(key)
         if value is None and not (key == "require_mention" and key in mattermost_cfg):

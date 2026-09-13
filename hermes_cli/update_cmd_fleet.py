@@ -1358,20 +1358,6 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             _pre_update_plan, _pre_restart, _windows_gateway_resume, restart.restarted_services, _killed,
         )
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
-        if not _fleet_snapshot and _fleet_rows_expected:
-            # collect_fleet_versions() swallows every failure, so zero rows with
-            # expected runtimes is indistinguishable from health — fail (partial, exit 1).
-            print(
-                # Fleet probe returned zero rows even though at least one gateway runtime was (or may have
-                # been) live pre-update — POSIX restart bookkeeping, the pre-restart PID snapshot, the
-                # pre-update plan inventory, or the Windows pause/resume token all count as that signal.
-                # Every failure path inside collect_fleet_versions() is swallowed via logger.debug(), so an
-                # empty list is indistinguishable from a healthy fleet in the current output. Treat it as
-                # verification failure so the receipt records "partial" and the exit code is 1 (#93406).
-                "\n⚠ Fleet version check returned no rows even though"
-                " gateway runtimes were expected — verification incomplete."
-            )
-            restart.incomplete = True
 
     # Every runtime the PLAN saw must appear in restart bookkeeping; an
     # unaccounted one is a silent miss and escalates like a STALE/DOWN row.
@@ -1420,6 +1406,15 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         ", ".join(f"{result['profile']}={result['status']}" for result in _state_integrity),
     )
     if print_fleet_version_matrix(_fleet_snapshot):
+        restart.incomplete = True
+    elif not _fleet_snapshot and _fleet_rows_expected:
+        # collect_fleet_versions() swallows every failure, so zero rows with expected runtimes is
+        # indistinguishable from health. The pre-restart snapshot and Windows resume token both
+        # count as evidence that a replacement row must exist (#93406).
+        print(
+            "\n⚠ Fleet version check returned no rows even though"
+            " gateway runtimes were expected — verification incomplete."
+        )
         restart.incomplete = True
 
     with _best_effort('Update receipt finalize failed: %s'):

@@ -1,0 +1,55 @@
+# Hermes cron schedules for the B2B SDR Agent skill.
+#
+# These are NOT auto-installed. The SKILL.md setup wizard guides the user
+# through creating each one via `hermes cron create`. This file is a
+# reference for manual setup or scripted provisioning.
+#
+# To install all at once:
+#   cat cron/sdr-schedules.yaml | hermes cron import
+
+schedules:
+  - name: "SDR: New leads check"
+    schedule: "0 */4 * * *"
+    instruction: >
+      Check CRM for status=new leads created today. For each, list name/country/product
+      interest/source and suggest ICP scoring + first-touch message draft. If none, reply HEARTBEAT_OK.
+
+  - name: "SDR: Stalled leads"
+    schedule: "0 9 * * 1-5"
+    instruction: >
+      Check CRM for active leads (contacted/interested/quote_sent/negotiating) with
+      last_contact > 5 business days. Draft follow-up messages for each. If none, HEARTBEAT_OK.
+
+  - name: "SDR: Quote follow-up"
+    schedule: "0 10 * * 1-5"
+    instruction: >
+      Check CRM for status=quote_sent with last_contact > 3 days. Draft follow-up
+      asking for feedback on the quote. If none, HEARTBEAT_OK.
+
+  - name: "SDR: Email sequences"
+    schedule: "0 11 * * *"
+    instruction: >
+      Check email outreach sequences. For leads at Day 3 since last email with no
+      reply, send follow-up #2. Day 7: follow-up #3. Day 14: final follow-up and
+      move to nurture. Any reply: update status to email_replied, notify owner.
+
+  - name: "SDR: Lead discovery"
+    schedule: "0 10 * * *"
+    instruction: >
+      Run 2-3 web searches for potential B2B buyers in the target market. Focus on
+      companies importing products in our industry. Score ICP and add leads with
+      ICP >= 5 to CRM. Report findings.
+
+  - name: "SDR: Weekly report"
+    schedule: "0 9 * * 1"
+    instruction: >
+      Generate weekly sales report in table format: new leads this week, pipeline
+      status changes, conversion rates by stage, top 5 opportunities by deal size,
+      stalled deals requiring attention. No narrative — tables and bullets only.
+
+  - name: "SDR: Nurture check"
+    schedule: "0 9 * * 1"
+    instruction: >
+      Nurture pool check: cold_lead with last_contact > 14 days (suggest value content),
+      closed_won > 30 days (suggest after-sale care), closed_lost > 90 days (suggest
+      quarterly re-engagement). Draft appropriate messages for each.

@@ -62,6 +62,11 @@ vi.mock('react-router', async importOriginal => ({
   useNavigate: () => navigateSpy
 }))
 
+// Import at module scope (after the hoisted vi.mock calls) so the heavy
+// component-tree transform is paid during collection, not billed against the
+// first test's testTimeout — same flake class as messaging/index.test.tsx.
+const { SkillsView } = await import('./index')
+
 function toolset(overrides: Record<string, unknown> = {}) {
   return {
     name: 'web',
@@ -76,7 +81,6 @@ function toolset(overrides: Record<string, unknown> = {}) {
 }
 
 async function renderSkills() {
-  const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
@@ -116,11 +120,11 @@ afterEach(() => {
   queryClient.clear()
 })
 
-// SkillsView is a heavy module: the first test pays the whole dynamic-import
-// cost, and the file legitimately runs ~14s on CI runners — right against the
-// global 15s per-test budget, so slow runners cascade-fail all 11 tests
-// (2× in a row on PR #93612, plus a main run the same hour). Give this file
-// headroom; the tests are not slow individually.
+// SkillsView is a heavy module (import cost now paid at module scope above,
+// during collection) but the file still legitimately runs ~14s on CI runners —
+// right against the global 15s per-test budget, so slow runners cascade-fail
+// all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
+// Give this file headroom; the tests are not slow individually.
 describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
@@ -173,8 +177,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
-    await act(async () => {
+      await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
@@ -219,8 +222,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
-    await act(async () => {
+      await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=skills']}>
@@ -263,8 +265,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
-    await act(async () => {
+      await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=skills']}>
@@ -319,8 +320,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
 
     // Embedded mode drives tabs through local state (the route hooks are
     // mocked here), starting on Skills: the picker mounts with the tab.
-    const { SkillsView } = await import('./index')
-    await act(async () => {
+      await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills']}>
@@ -378,8 +378,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // the live surface pointed at ITS backend — the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
-    const { SkillsView } = await import('./index')
-    await act(async () => {
+      await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills']}>
@@ -492,8 +491,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
-    await act(async () => {
+      await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=skills']}>

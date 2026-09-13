@@ -480,7 +480,8 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
 
 
 def _write_manifest(default_home: Path, data: dict) -> None:
-    _manifest_path(default_home).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    from utils import atomic_json_write
+    atomic_json_write(_manifest_path(default_home), data)
 
 
 def _wait_for_served(default_home: Path, expected: set[str], timeout: float) -> Optional[list[str]]:
@@ -531,6 +532,9 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         "default": plan.default.to_dict(),
         "secondaries": [p.to_dict() for p in plan.standalone_secondaries],
     }
+    # Establish recovery metadata before the first destructive operation.  The
+    # atomic write keeps the previous valid manifest if the process is interrupted.
+    _write_manifest(plan.default_home, manifest)
     for p in plan.standalone_secondaries:
         if p.service is not None:
             kind, system = p.service
@@ -577,8 +581,6 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
         "default", default_home, pid=_live_gateway_pid(default_home),
         service=(default_service["kind"], bool(default_service.get("system"))) if default_service else _installed_service(default_home),
     )
-    if default_gw.has_gateway:
-        print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
     ok = True
     for rec in manifest.get("secondaries", []):
         home = Path(rec["home"])
@@ -599,6 +601,21 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
         except Exception as exc:
             ok = False
             print(f"  ✗ {name}: {exc}")
+    # Restore secondary ownership before restarting the default.  A service-manager
+    # restart can terminate this command when it runs inside the default gateway's
+    # cgroup, so it must be the final lifecycle operation.
+    if ok and default_gw.has_gateway:
+        try:
+            # Clear this before the restart: a service-manager restart can
+            # terminate the migration process when it runs in the gateway's
+            # cgroup, so cleanup after restart is not reliable.
+            with _home_env(default_home):
+                from gateway.status import write_runtime_status
+                write_runtime_status(served_profiles=[])
+            print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
+        except Exception as exc:
+            ok = False
+            print(f"  ✗ default: {exc}")
     if ok:
         _manifest_path(default_home).unlink(missing_ok=True)
         print("✓ Rolled back to per-profile gateways.")
@@ -622,6 +639,9 @@ def _host_supports_migration() -> Optional[str]:
 
 def cmd_migrate(args) -> None:
     """``hermes gateway migrate [--multiplex|--standalone] [--dry-run] [--yes]``."""
+    if getattr(args, "standalone", False) and getattr(args, "dry_run", False):
+        print("✗ --standalone --dry-run is not supported; no changes were made.")
+        return
     if getattr(args, "standalone", False):
         sys.exit(0 if rollback_migration() else 1)
     reason = _host_supports_migration()

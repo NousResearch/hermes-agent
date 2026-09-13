@@ -56,7 +56,7 @@ def fleet(tmp_path, monkeypatch):
             (root / "gateway.pid").write_text(json.dumps({"pid": os.getpid(), "hermes_home": str(root)}))
             (root / "gateway_state.json").write_text(json.dumps({
                 "pid": os.getpid(), "hermes_home": str(root), "gateway_state": "running",
-                "served_profiles": ["default", "coder", "ops"],
+                "served_profiles": ["default", "coder", "ops"] if _config_flag(root) else [],
             }))
 
     monkeypatch.setattr(gm, "_installed_service", lambda home: state.services.get(_name(home)))
@@ -117,6 +117,32 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert [op for op in fleet.ops if op[0] != "default"] == [
         ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_standalone_dry_run_is_side_effect_free(fleet, capsys):
+    manifest = fleet.root / gm.MANIFEST_NAME
+    manifest.write_text('{"flag_was": true}', encoding="utf-8")
+    before = manifest.read_bytes()
+
+    gm.cmd_migrate(SimpleNamespace(multiplex=False, standalone=True, dry_run=True, yes=True))
+
+    assert manifest.read_bytes() == before
+    assert fleet.ops == []
+    assert _config_flag(fleet.root) is None
+    assert "no changes were made" in capsys.readouterr().out
+
+
+def test_rollback_restores_secondaries_before_restarting_default(fleet):
+    plan = gm.build_migration_plan()
+    assert gm.apply_migration(plan, served_wait=5.0) is True
+    fleet.ops.clear()
+
+    assert gm.rollback_migration(fleet.root) is True
+
+    default_restart = next(i for i, op in enumerate(fleet.ops) if op == ("default", "restart"))
+    assert all(i < default_restart for i, op in enumerate(fleet.ops) if op[0] != "default")
+    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    assert not recorded_served_profiles(fleet.root)
 
 
 def test_secondary_port_binder_is_notice_with_ingress_and_blocker_without(fleet, monkeypatch):

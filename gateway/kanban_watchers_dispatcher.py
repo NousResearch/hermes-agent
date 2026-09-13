@@ -132,9 +132,32 @@ class _KanbanDispatcher:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        # Advanced once per per-tick-budget consumer; see
+        # :meth:`_rotated_board_slugs` for why the board order must not be fixed.
+        self._rotation_cursor = 0
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
+
+    def _rotated_board_slugs(self) -> list:
+        """Board slugs, rotated so the same board is not always served first.
+
+        ``tick_once`` and ``auto_decompose_tick`` each hand every board a
+        *shared* per-tick budget (the host-wide ``kanban.max_in_progress``
+        allowance for spawns, ``auto_decompose_per_tick`` for triage work), and
+        the board they visit first spends it. With a fixed order the first
+        board therefore wins every tick: a board later in the list is starved
+        for as long as an earlier board has work to spend the budget on, even
+        though its own queue is ready and spawnable. Rotating the starting
+        offset gives every board a turn at the head of the line; the budget
+        arithmetic itself is untouched, so this cannot raise concurrency.
+        """
+        slugs = self._board_slugs()
+        if len(slugs) < 2:
+            return slugs
+        offset = self._rotation_cursor % len(slugs)
+        self._rotation_cursor = offset + 1
+        return slugs[offset:] + slugs[:offset]
 
     def board_db_fingerprint(self, slug: str) -> tuple[str, int | None, int | None]:
         path = self.kb.kanban_db_path(slug)
@@ -207,7 +230,7 @@ class _KanbanDispatcher:
 
     def tick_once(self) -> list[tuple[str, Optional[object]]]:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""
-        return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
+        return [(slug, self.tick_once_for_board(slug)) for slug in self._rotated_board_slugs()]
 
     def ready_nonempty(self) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?
@@ -247,7 +270,7 @@ class _KanbanDispatcher:
             return 0
         attempted = 0
         successes = 0
-        for slug in self._board_slugs():
+        for slug in self._rotated_board_slugs():
             if attempted >= auto_decompose_per_tick:
                 break
             # Pin the board via env for the call: the decomposer connects

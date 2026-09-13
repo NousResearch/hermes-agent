@@ -10,6 +10,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from plugins.memory.honcho.client import _first_parsed, _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
 from hermes_cli.config import cfg_get
+from utils import read_json_or_empty
 
 RULE = "─" * 40
 REASONING_LEVELS = ("minimal", "low", "medium", "high", "max")
@@ -66,10 +67,7 @@ def _local_config_path() -> Path:
 
 
 def _read_config() -> dict:
-    try:
-        return json.loads(_config_path().read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return read_json_or_empty(_config_path())
 
 
 def _write_config(cfg: dict, path: Path | None = None) -> None:

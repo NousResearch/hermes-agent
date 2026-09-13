@@ -7,7 +7,7 @@ import re
 import threading
 import time
 
-from plugins.memory.honcho.client import spawn_context_thread
+from agent.memory_provider import spawn_context_thread
 
 logger = logging.getLogger("plugins.memory.honcho")
 

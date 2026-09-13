@@ -169,8 +169,8 @@ def _persist_provider_config(hermes_home: str, config: dict, provider_config: di
 
 def _setup_platform(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     """Platform mode setup — prompts for API key (secret -> .env), user/agent ids and rerank (-> mem0.json)."""
-    from . import _read_mem0_json
-    provider_config = _read_mem0_json(Path(hermes_home) / "mem0.json")
+    from utils import read_json_or_empty
+    provider_config = read_json_or_empty(Path(hermes_home) / "mem0.json")
     print("\n  Configuring mem0:\n")
     env_writes = _api_key_writes(flags, "Mem0 Platform API key", url="https://app.mem0.ai")
     for key, desc, default in (("user_id", "User identifier", "hermes-user"), ("agent_id", "Agent identifier", "hermes")):
@@ -205,8 +205,8 @@ def _check_selfhosted_server(host: str) -> None:
 
 def _setup_selfhosted(hermes_home: str, config: dict, flags: dict[str, str]) -> None:
     """Self-hosted mode — point at an existing Mem0 server: URL -> mem0.json, key -> .env (MEM0_API_KEY)."""
-    from . import _read_mem0_json
-    provider_config = _read_mem0_json(Path(hermes_home) / "mem0.json")
+    from utils import read_json_or_empty
+    provider_config = read_json_or_empty(Path(hermes_home) / "mem0.json")
     print("\n  Configuring mem0 (self-hosted server):\n")
     host = flags.get("host") or _prompt("Mem0 server URL (e.g. http://localhost:8888)", default=provider_config.get("host") or None)
     if not host:
@@ -238,11 +238,11 @@ def _print_oss_summary(oss_config: dict, env_writes: dict, dry_run: bool = False
 
 def _finish_oss(hermes_home: str, config: dict, oss_config: dict, env_writes: dict[str, str], user_id: str, agent_id: str, pgvector_config: dict | None = None) -> None:
     """Shared OSS tail: write secrets + mem0.json, install deps, activate, check, summarize."""
-    from . import _read_mem0_json
+    from utils import read_json_or_empty
     if env_writes:
         _write_env(Path(hermes_home) / ".env", env_writes)
     config_path = Path(hermes_home) / "mem0.json"  # merge-write, plain text (platform path uses save_config's 0600 atomic write)
-    config_path.write_text(json.dumps({**_read_mem0_json(config_path), "mode": "oss", "user_id": user_id, "agent_id": agent_id, "oss": oss_config}, indent=2) + "\n", encoding="utf-8")
+    config_path.write_text(json.dumps({**read_json_or_empty(config_path), "mode": "oss", "user_id": user_id, "agent_id": agent_id, "oss": oss_config}, indent=2) + "\n", encoding="utf-8")
     _install_provider_deps(oss_config["llm"]["provider"], oss_config["embedder"]["provider"], oss_config["vector_store"]["provider"])
     if pgvector_config:
         _ensure_pgvector_extension(pgvector_config)

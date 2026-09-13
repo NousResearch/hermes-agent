@@ -53,6 +53,9 @@ _PARSE_FAILURE_FALLBACK_MSG = {
     "last-known-good": (
         "Keeping the previously loaded config for this process — "
         "edits to config.yaml are being IGNORED until the YAML is fixed."),
+    "last-known-good-backup": (
+        "Loading the LAST KNOWN GOOD copy from backups/config/ instead — edits to config.yaml "
+        "since that copy are being IGNORED until the YAML is fixed."),
     "refuse-write": (
         "REFUSING to write config.yaml so the existing file is preserved. "
         "Fix the YAML (hermes config edit) and retry.")}
@@ -2133,8 +2136,21 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
     # process we still have the last successfully loaded config — keep serving it until the file is fixed.
     # See #31188.
     lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+    fallback = "last-known-good"
+    if lkg is None:
+        # Fresh process (CLI restart, `hermes config get`): nothing loaded yet in this process, so
+        # fall back to the newest byte-exact copy the last successful parse left in backups/config/.
+        # It holds the raw file (``${VAR}`` templates intact), so it goes through the same
+        # canonicalize -> expand -> managed-overlay pipeline as a normal load.
+        from hermes_cli.config_backups import load_newest_good_backup
+        raw_good = load_newest_good_backup(config_path)
+        if raw_good is not None:
+            normalized = _canonicalize_config(_deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good))
+            expanded_good: Dict[str, Any] = _expand_env_vars(normalized)  # type: ignore[assignment]
+            lkg, _ = _merge_managed_overlay(expanded_good)
+            fallback = "last-known-good-backup"
     _warn_config_parse_failure(
-        config_path, exc, fallback="last-known-good" if lkg is not None else "defaults")
+        config_path, exc, fallback=fallback if lkg is not None else "defaults")
     if lkg is None:
         return None
     # save_config() stores the pre-expansion dict (templates preserved); the load path stores the
@@ -2204,6 +2220,11 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
+                # A copy of the file that just parsed is what a FRESH process falls back to when the
+                # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
+                # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
+                from hermes_cli.config_backups import backup_config
+                backup_config(config_path, "good")
             except Exception as e:
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
                 if lkg_copy is not None:

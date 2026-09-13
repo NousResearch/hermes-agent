@@ -1391,9 +1391,18 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
         headers = st.validation_headers or (
             _extra_headers_from_config(st.user_providers.get(st.target_provider))
             if st.user_providers and st.target_provider in st.user_providers else None)
+    # A ``providers.<key>`` endpoint is the user's own: validate it as a custom endpoint (an id its
+    # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
+    # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing
+    # branch and hard-rejected the very model the user selected.
+    validate_as = st.target_provider
+    if not validate_as.lower().startswith("custom"):
+        pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
+        if pdef is not None and pdef.source == "user-config":
+            validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(
-            st.new_model, st.target_provider, api_key=st.api_key, base_url=st.base_url,
+            st.new_model, validate_as, api_key=st.api_key, base_url=st.base_url,
             api_mode=st.api_mode or None, headers=headers)
     except Exception as e:
         validation = {"accepted": False, "persist": False, "recognized": False,
@@ -1406,7 +1415,6 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
                 validation.get("message", "Invalid model"),
                 new_model=st.new_model, target_provider=st.target_provider, provider_label=st.provider_label)
         validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
-    st.new_model = validation.get("corrected_model") or st.new_model
     st.validation = validation
     return None
 

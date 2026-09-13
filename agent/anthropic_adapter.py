@@ -628,7 +628,9 @@ def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None
     """Retry knob for a malformed fine-grained tool-JSON stream (#107830): the beta streams tool
     args unvalidated, so a model that emits ``{"names": cronjob_manage}`` breaks the SDK parser
     and an identical retry breaks identically. ``eager_input_streaming: false`` per tool restores
-    Anthropic's buffered, validated args for THIS request only. Off the happy path on purpose:
+    Anthropic's buffered, validated args for the rest of this turn (the flag lives on the turn's
+    kwargs, so a later retry of the same turn keeps it; the changed ``tools`` block costs one
+    prompt-cache miss, cheaper than a dead turn). Off the happy path on purpose:
     buffering a large payload is a zero-event gap the stale-stream detector kills. No-op on
     endpoints that never get the beta (MiniMax) rather than sending them an unknown field."""
     if _TOOL_STREAMING_BETA not in _common_betas_for_base_url(base_url):

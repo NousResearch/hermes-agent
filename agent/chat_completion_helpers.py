@@ -3171,7 +3171,6 @@ class _StreamingCall(StreamingWaitMonitor):
             # reset the streamed-text buffer so it isn't double-recorded; fresh accumulators.
             self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
             self._quiet(self.agent._reset_stream_delivery_tracking)
-            self.result["partial_tool_names"] = []
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")

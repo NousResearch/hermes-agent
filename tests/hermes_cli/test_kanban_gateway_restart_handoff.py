@@ -122,7 +122,8 @@ def test_managed_gateway_scope_builder_fails_closed_if_binary_disappears(
 
 
 def test_standalone_dispatcher_keeps_direct_worker_spawn(
-    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch
+    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch,
+    contained_worker_spawn,
 ) -> None:
     workspace, task = worker_setup
     captured_cmd: list[str] = []

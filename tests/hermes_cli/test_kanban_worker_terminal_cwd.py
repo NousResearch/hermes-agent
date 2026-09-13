@@ -58,7 +58,7 @@ def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
     return captured
 
 
-def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
+def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path, contained_worker_spawn):
     """A real, absolute workspace dir is pinned as TERMINAL_CWD."""
     root = tmp_path / ".hermes"
     (root / "profiles" / "w").mkdir(parents=True)

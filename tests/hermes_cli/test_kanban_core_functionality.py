@@ -697,7 +697,7 @@ def test_pid_alive_detects_zombie(kanban_home):
 
 
 
-def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
+def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch, contained_worker_spawn):
     """The dispatcher no longer auto-loads a bundled kanban skill.
 
     The kanban lifecycle (formerly the kanban-worker/kanban-orchestrator

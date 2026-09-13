@@ -19,6 +19,34 @@ def all_assignees_spawnable(monkeypatch):
     monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
 
 
+@pytest.fixture
+def contained_worker_spawn(monkeypatch):
+    """Succeed the Windows containment boundary for dispatcher tests that fake Popen.
+
+    Those tests replace ``subprocess.Popen`` with a stub object that has no real
+    OS process behind it, so per-attempt Job Object containment cannot succeed on
+    Windows — and by design it must not silently degrade. What they actually
+    exercise is the spawned child's argv/env, not process lifecycle.
+
+    Requesting this fixture makes the spawn contract explicit for them
+    (worker exists AND contained AND resumed) rather than weakening the
+    production invariant, which stays strict: a worker whose tree cannot be
+    owned is never a successful spawn.
+    """
+    from hermes_cli import kanban_worker_containment as kc
+
+    def _contained(pid, job_name, *, process=None):
+        return {
+            "contained": True,
+            "job_name": job_name,
+            "worker_pid": int(pid),
+            "worker_create_time": None,
+            "reason": None,
+        }
+
+    monkeypatch.setattr(kc, "contain_and_resume", _contained)
+
+
 @pytest.fixture(autouse=True)
 def _suppress_concurrent_hermes_gate(request, monkeypatch):
     """Default ``_detect_concurrent_hermes_instances`` to ``[]`` for every test.

@@ -77,6 +77,28 @@ it('does not hide content or event-scoped files on a bookkeeping-kind event', ()
   expect(mocks.request).not.toHaveBeenCalled()
 })
 
+it.each([binding.roomId, 'another-room'])('uses only same-room member labels from snapshot %s', async roomId => {
+  mocks.request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { room_id: roomId, name: 'Original room', members: [
+      { member_id: 'default', profile: 'default', handle: 'hermes' }
+    ] }, driver_status: {} }}
+
+    if (method === 'groups.log') {return { events: [
+      { ...event(1, 'message.bot', { text: 'Reply from current room' }), actor: { kind: 'bot', id: 'default' } },
+      { ...event(2, 'message.bot', { text: 'Different event room' }), room_id: 'another-room', actor: { kind: 'bot', id: 'default' } },
+      { ...event(3, 'message.bot', { text: 'Original speaker' }), actor: { kind: 'bot', id: 'default', display_name: 'Recorded name' } }
+    ] }}
+
+    throw new Error(`Unexpected mutation: ${method}`)
+  })
+  const view = render(<CanonicalGroupWorkspace binding={binding} />)
+  await screen.findByText('Reply from current room', { exact: false })
+  expect([...view.container.querySelectorAll('strong')].map(node => node.textContent)).toEqual([
+    roomId === binding.roomId ? '@hermes: ' : 'default: ', 'default: ', 'Recorded name: '
+  ])
+  expect(mocks.request.mock.calls.every(call => ['groups.state', 'groups.log'].includes(call[1]))).toBe(true)
+})
+
 it.each([['en', 'Message the group…', 'User', 'System'], ['ja', 'グループにメッセージを送信…', 'ユーザー', 'システム']] as const)(
   'uses the shared visible composer and localized transcript labels in %s', async (locale, placeholder, user, system) => {
     mocks.locale = locale

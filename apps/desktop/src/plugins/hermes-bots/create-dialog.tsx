@@ -1174,6 +1174,12 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
 
     const route = captureCanonicalGroupRoute()
     const sourceCurrent = groupCreationSource(route)
+    const frozenMembers = durableGroupChatMembers(selected)
+
+    const canonicalMembers = frozenMembers.map((member, index) => ({
+      ...member,
+      handle: botHandle(selected[index].name, selected[index])
+    }))
 
     const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
     const mode = groupExecutionMode(capabilities)
@@ -1183,7 +1189,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     }
 
     if (mode === 'canonical') {
-      const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+      const created = await createCanonicalGroup(route, base, canonicalMembers)
 
       // Creation already succeeded; leave it on its owner without adopting a stale result.
       if (!sourceCurrent()) {return}

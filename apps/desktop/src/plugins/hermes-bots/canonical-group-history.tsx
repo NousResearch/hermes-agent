@@ -1,6 +1,6 @@
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
-import type { CanonicalGroupBinding } from './canonical-groups'
+import type { CanonicalGroupBinding, CanonicalRoomMember } from './canonical-groups'
 
 export interface CanonicalGroupEvent {
   seq: number
@@ -11,7 +11,7 @@ export interface CanonicalGroupEvent {
   actor?: { kind?: string; id?: string; member_id?: string; profile?: string; display_name?: string }
 }
 
-function speaker(event: CanonicalGroupEvent, labels: ReturnType<typeof useCanonicalGroupLabels>): string | undefined {
+function speaker(event: CanonicalGroupEvent, labels: ReturnType<typeof useCanonicalGroupLabels>, members: readonly CanonicalRoomMember[]): string | undefined {
   const actor = event.actor
 
   // Event-owned metadata, never a same-named Bot from the foreground roster.
@@ -21,10 +21,20 @@ function speaker(event: CanonicalGroupEvent, labels: ReturnType<typeof useCanoni
 
   if (actor?.kind === 'gateway' || actor?.kind === 'system') {return labels.systemSpeaker}
 
+  if (actor?.kind === 'bot' || actor?.kind === 'member' || (!actor?.kind && actor?.member_id)) {
+    const member = members.find(value => value.member_id === (actor.member_id || actor.id))
+
+    if (typeof member?.display_name === 'string' && member.display_name.trim()) {return member.display_name}
+
+    if (typeof member?.handle === 'string' && member.handle.trim()) {return `@${member.handle}`}
+  }
+
   return [actor?.id, actor?.member_id].find(value => typeof value === 'string' && value.trim())
 }
 
-export function CanonicalGroupHistory({ binding, events, disabled = false }: { binding: CanonicalGroupBinding; events: CanonicalGroupEvent[]; disabled?: boolean }) {
+export function CanonicalGroupHistory({ binding, events, disabled = false, members = [] }: {
+  binding: CanonicalGroupBinding; events: CanonicalGroupEvent[]; disabled?: boolean; members?: readonly CanonicalRoomMember[]
+}) {
   const labels = useCanonicalGroupLabels()
 
   return <>{events.map(event => {
@@ -32,7 +42,7 @@ export function CanonicalGroupHistory({ binding, events, disabled = false }: { b
 
     // Suppress only known bookkeeping without user-visible content. Unknown kinds stay visible.
     if ((event.kind === 'turn.settled' || event.kind === 'room.activity') && !text && !event.payload.attachments?.length) {return null}
-    const name = speaker(event, labels)
+    const name = speaker(event, labels, event.room_id === binding.roomId ? members : [])
 
     return <div className="whitespace-pre-wrap wrap-anywhere py-2 text-sm text-(--ui-text-primary)" key={event.seq}>
       {name && <strong className="font-medium text-(--ui-text-secondary)">{name}: </strong>}

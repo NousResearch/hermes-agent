@@ -173,6 +173,37 @@ def test_update_hook_never_touches_single_profile_or_already_multiplexed(fleet, 
     assert capsys.readouterr().out == "" and _config_flag(fleet.root) is None
 
 
+def test_auto_migrate_false_opts_out_of_the_update_hook_but_not_the_explicit_command(fleet, capsys):
+    """``gateway.auto_migrate: false`` is a durable opt-out: an otherwise-eligible fleet is left
+    alone by ``hermes update``, while the operator typing ``migrate --multiplex`` still migrates."""
+    assert gm.build_migration_plan().eligible_for_migration()  # would migrate but for the flag
+    (fleet.root / "config.yaml").write_text(
+        "model:\n  default: x\ngateway:\n  auto_migrate: false\n", encoding="utf-8")
+
+    gm.maybe_auto_migrate_after_update()
+    assert capsys.readouterr().out == ""
+    assert fleet.ops == [] and _config_flag(fleet.root) is None
+    assert fleet.services == {"coder": ("systemd", False), "ops": ("systemd", False)}
+    assert fleet.pids == {"coder": 4101, "ops": 4102}
+    assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+    # Absent (the default) and an explicit true both keep today's automatic behaviour.
+    assert gm._read_auto_migrate_flag(fleet.root) is False
+    (fleet.root / "config.yaml").write_text(
+        "model:\n  default: x\ngateway:\n  auto_migrate: true\n", encoding="utf-8")
+    assert gm._read_auto_migrate_flag(fleet.root) is True
+    (fleet.root / "config.yaml").write_text("model:\n  default: x\n", encoding="utf-8")
+    assert gm._read_auto_migrate_flag(fleet.root) is True
+
+    # The opt-out governs the AUTOMATIC path only: an explicit --multiplex is an explicit request.
+    (fleet.root / "config.yaml").write_text(
+        "model:\n  default: x\ngateway:\n  auto_migrate: false\n", encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        gm.cmd_migrate(SimpleNamespace(multiplex=True, standalone=False, dry_run=False, yes=True))
+    assert exc.value.code == 0
+    assert _config_flag(fleet.root) is True and (fleet.root / gm.MANIFEST_NAME).exists()
+
+
 def test_explicit_migrate_with_no_standalone_secondaries_still_flips_flag_and_restarts_default(fleet, capsys, monkeypatch):
     """The user typed --multiplex: 'nothing to migrate' + flag left off was a no-op the user did not ask
     for. The update hook keeps its no-op (previous test); the explicit command proceeds."""

@@ -1955,6 +1955,13 @@ DEFAULT_CONFIG = {
         # served together — the duplicate adapter is parked; `hermes profile create --clone`
         # therefore leaves messaging channels behind unless --clone-channels is passed.
         "multiplex_profiles": False,
+        # May `hermes update` fold this install onto a multiplexed default gateway by itself?
+        # True (the default) keeps today's behaviour: a multi-profile install whose secondaries run
+        # their own gateways is migrated automatically after an update when nothing blocks it.
+        # Set to False to stay on per-profile gateways — a durable opt-out that survives updates, so
+        # the decision is not re-litigated on every release. Only the AUTOMATIC path reads this:
+        # `hermes gateway migrate --multiplex` is an explicit request and always proceeds.
+        "auto_migrate": True,
         # Route inbound chats of the default profile's bots to another profile
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
         # Most-specific match wins; only read by the multiplexing default gateway.

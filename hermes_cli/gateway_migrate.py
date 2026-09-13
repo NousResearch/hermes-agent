@@ -216,6 +216,25 @@ def _read_multiplex_flag(default_home: Path) -> bool:
     return bool(cfg.get("multiplex_profiles") or gateway_section.get("multiplex_profiles"))
 
 
+def _read_auto_migrate_flag(default_home: Path) -> bool:
+    """``gateway.auto_migrate`` in the DEFAULT profile's config.yaml: may ``hermes update`` fold
+    this install onto a multiplexed gateway on its own? Absent (the default) means yes; an explicit
+    ``false`` is a durable opt-out that survives updates, so an operator who wants to stay on
+    per-profile gateways does not have to re-decide after every release. Only the AUTO path reads
+    this — ``hermes gateway migrate --multiplex`` is an explicit request and always proceeds."""
+    cfg_path = default_home / "config.yaml"
+    if not cfg_path.exists():
+        return True
+    from hermes_cli.config import read_user_config_raw
+    cfg = read_user_config_raw(cfg_path) or {}
+    gateway_section = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+    for source in (gateway_section, cfg):
+        value = source.get("auto_migrate")
+        if value is not None:
+            return bool(value)
+    return True
+
+
 def _write_multiplex_flag(default_home: Path, value: bool) -> None:
     """Set ``gateway.multiplex_profiles`` in the DEFAULT profile's config.yaml through the config API
     (same read-guard + nested-set + atomic write ``hermes config set`` uses; no raw YAML edits)."""
@@ -660,8 +679,11 @@ def cmd_migrate(args) -> None:
 
 def maybe_auto_migrate_after_update() -> None:
     """``hermes update`` hook: with >= 2 profiles, per-profile gateways present and multiplex off,
-    migrate automatically when unblocked (deterministic, never prompts) or print the blocker block."""
+    migrate automatically when unblocked (deterministic, never prompts) or print the blocker block.
+    ``gateway.auto_migrate: false`` on the default profile opts out durably."""
     if _host_supports_migration() is not None:
+        return
+    if not _read_auto_migrate_flag(_default_home()):
         return
     plan = build_migration_plan()
     if plan.already_multiplexed or len(plan.profiles) < 2 or not plan.standalone_secondaries:

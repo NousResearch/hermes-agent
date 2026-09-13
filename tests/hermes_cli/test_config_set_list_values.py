@@ -33,6 +33,22 @@ def test_list_literal_is_parsed_to_list(user_home):
     assert raw["platform_toolsets"]["line"] == ["clarify", "file", "web"]
 
 
+@pytest.mark.parametrize(("literal", "expected"), [
+    ('["en", "fi"]', ["en", "fi"]),
+    ("[]", []),
+    ("null", ["sv"]),
+])
+def test_openai_languages_config_round_trip(user_home, capsys, literal, expected):
+    from hermes_cli.config import load_config, set_config_value
+    from tools.transcription_cloud import _gpt_transcribe_languages
+
+    set_config_value("stt.openai.language", "sv")
+    set_config_value("stt.openai.languages", literal)
+    assert "not a recognized config key" not in capsys.readouterr().out
+    assert load_config()["stt"]["openai"]["language"] == "sv"
+    assert _gpt_transcribe_languages("openai", None) == expected
+
+
 def test_mapping_literal_is_parsed_to_dict(user_home):
     from hermes_cli.config import set_config_value, read_raw_config
 

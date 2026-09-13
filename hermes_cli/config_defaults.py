@@ -1094,7 +1094,9 @@ DEFAULT_CONFIG = {
         "openai": {
             # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
             "model": "whisper-1",
-            "language": "",  # auto-detect; set "en", "es", ... to force
+            "language": "",  # Legacy single-language hint; blank falls back to stt.language/env.
+            # gpt-transcribe: native list (e.g. ["en", "fi"]). None = legacy fallback; [] = auto.
+            "languages": None,
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602

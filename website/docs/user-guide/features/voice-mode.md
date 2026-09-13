@@ -492,6 +492,54 @@ tts:
     device: cpu
 ```
 
+### Multiple language hints with OpenAI
+
+For `gpt-transcribe`, configure expected languages as a native YAML array:
+
+```yaml
+stt:
+  provider: openai
+  openai:
+    model: gpt-transcribe
+    languages: ["en", "fi"]
+```
+
+Or use the configuration CLI:
+
+```bash
+hermes config set stt.openai.languages '["en", "fi"]'
+```
+
+Hermes sends an array of **separate language codes**, as required by the
+[OpenAI transcription API](https://developers.openai.com/api/docs/guides/speech-to-text#add-transcription-context):
+`languages: ["en", "fi"]`, not `languages: ["en,fi"]`. For one language, use
+`languages: ["en"]`. These are hints, not output-language restrictions.
+
+The shared Python STT backend resolves `gpt-transcribe` hints in this order:
+
+1. A nonempty per-call / `pre_transcription` hook `language` override.
+2. `stt.openai.languages`, when it is not `null`.
+3. The existing string settings: `stt.openai.language`, then `stt.language`, then
+   `HERMES_LOCAL_STT_LANGUAGE` (first nonempty value).
+4. Automatic detection when no hint is set.
+
+Set `languages: []` to request automatic detection without falling back to the
+string settings. Omit `languages` or set it to `null` (the default) to retain
+legacy fallback behavior. Existing `language: "en"` and `language: "en,fi"`
+configurations remain supported; comma-separated strings are a compatibility
+format, not the recommended way to configure multiple languages.
+
+`languages` must be an array of nonempty strings, one language code per item.
+Surrounding whitespace is trimmed. Wrong types, empty items and comma-separated
+items such as `["en,fi"]` produce a configuration error before audio upload;
+OpenAI still validates which language codes it supports.
+
+This array setting applies to `gpt-transcribe` in the shared Python backend
+(CLI, gateway and server-side WebUI transcription). Other models such as
+`whisper-1` and `gpt-4o-transcribe` ignore it and continue to use the singular
+`language` string. The separate Desktop client-direct transcription path does
+not consume this setting; use server-side transcription for these hints.
+
 ### Environment Variables
 
 ```bash

@@ -22,11 +22,12 @@ def _normalize_completion_path(path_part: str) -> str:
 
 def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
+    profile_home = _profile_home(params.get("profile"))
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
-    # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
-    # terminal.cwd is read directly.
+    # env var. A profile with no configured workspace lands in its own home, never the launch profile's workspace.
     raw = (params.get("cwd") or _sessions.get(params.get("session_id") or "", {}).get("cwd")
-           or _profile_configured_cwd(_profile_home(params.get("profile"))) or _launch_configured_cwd()
+           or _profile_configured_cwd(profile_home) or (str(profile_home) if profile_home is not None else None)
+           or _launch_configured_cwd()
            or os.environ.get("TERMINAL_CWD") or os.getcwd())
     with contextlib.suppress(Exception):
         resolved = os.path.abspath(os.path.expanduser(str(raw)))

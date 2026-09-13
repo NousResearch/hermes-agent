@@ -228,7 +228,7 @@ def _darwin_libproc():
         return lib
     import ctypes
 
-    lib = ctypes.CDLL(None, use_errno=True)
+    lib = ctypes.CDLL(None)
     lib.proc_listpids.restype = ctypes.c_int
     lib.proc_listpids.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32)
     lib.proc_pidinfo.restype = ctypes.c_int
@@ -265,7 +265,8 @@ def _darwin_fd_record(lib, pid: int, fd: int) -> Optional[Tuple[str, Tuple[int, 
                           _DARWIN_FD_RECORD_SIZE) != _DARWIN_FD_RECORD_SIZE:
         return None
     raw = record.raw
-    identity = (struct.unpack_from("<I", raw, _DARWIN_FD_DEV_OFFSET)[0],
+    # ``dev_t`` is a signed int32, as ``os.fstat().st_dev`` reports it.
+    identity = (struct.unpack_from("<i", raw, _DARWIN_FD_DEV_OFFSET)[0],
                 struct.unpack_from("<Q", raw, _DARWIN_FD_INO_OFFSET)[0])
     target = raw[_DARWIN_FD_PATH_OFFSET:].split(b"\x00", 1)[0].decode("utf-8", "replace")
     return target, identity
@@ -312,8 +313,6 @@ def _iter_darwin_fd_targets():
             if used < size:
                 break
             size *= 2
-        else:
-            continue
         for offset in range(0, used - _DARWIN_PROC_FD_INFO_SIZE + 1, _DARWIN_PROC_FD_INFO_SIZE):
             fd = struct.unpack_from("<i", listing.raw, offset)[0]
             decoded = _darwin_fd_record(lib, pid, fd)

@@ -1,8 +1,7 @@
 name: disk-cleanup
-version: 2.2.0
-description: "Clean owned cache/cron files and exact platform-temp files proven new by a tool call."
+version: 2.3.0
+description: "Clean only generation-bound files inside fixed Hermes-owned cache and cron roots."
 author: "@LVT382009 (original), NousResearch (plugin port)"
 hooks:
-  - pre_tool_call
   - post_tool_call
   - on_session_end

@@ -1,9 +1,8 @@
 """disk_cleanup — ephemeral file cleanup library behind the disk-cleanup plugin.
 
-Rules: exact platform-temp files proven new by a successful file-tool call delete at task end;
-managed cache artifacts after 7 days; cron-output after 14 days. Prompt-only: research
+Rules: explicitly owned cache artifacts after 7 days; cron-output after 14 days. Prompt-only: research
 (keep 10 newest, > 30 days), chrome-profile > 14 days, any file > 500 MB.
-Arbitrary paths under HERMES_HOME are never inferred to be disposable by name.
+Arbitrary workspace and platform-temp paths are never inferred to be disposable by name.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ import logging
 import os
 import shutil
 import stat
-import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
@@ -25,7 +24,8 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 _LARGE_FILE_BYTES = 500 * 1024 * 1024
-_REGISTERED_SYSTEM_TEMP_FILES: Dict[Tuple[str, str], Tuple[int, int]] = {}
+_DELETE_LOCK = threading.Lock()
+_STATE_LOCK = threading.RLock()
 
 
 def _state_file(name: str) -> Path:
@@ -34,7 +34,7 @@ def _state_file(name: str) -> Path:
 
 
 def is_safe_path(path: Path) -> bool:
-    """Accept profile paths or exact temp files proven new by a tool call."""
+    """Accept paths that stay lexically and physically inside this profile."""
     try:
         lexical = _absolute_without_symlinks(path)
         resolved = path.resolve()
@@ -44,9 +44,7 @@ def is_safe_path(path: Path) -> bool:
         return False
     if _is_descendant(lexical, lexical_home):
         return _is_descendant(resolved, resolved_home)
-    if _is_descendant(resolved, resolved_home):
-        return True
-    return _registered_system_temp_file(path) is not None
+    return _is_descendant(resolved, resolved_home)
 
 
 def _log(message: str) -> None:
@@ -61,34 +59,36 @@ def _log(message: str) -> None:
 
 def load_tracked() -> List[Dict[str, Any]]:
     """Load tracked.json.  Restores from ``.bak`` on corruption."""
-    tf = _state_file("tracked.json")
-    tf.parent.mkdir(parents=True, exist_ok=True)
-    if not tf.exists():
-        return []
-    with contextlib.suppress(ValueError, OSError):
-        data = json.loads(tf.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            return data
-    bak = tf.with_suffix(".json.bak")
-    if bak.exists():
-        with contextlib.suppress(Exception):
-            data = json.loads(bak.read_text(encoding="utf-8"))
+    with _STATE_LOCK:
+        tf = _state_file("tracked.json")
+        tf.parent.mkdir(parents=True, exist_ok=True)
+        if not tf.exists():
+            return []
+        with contextlib.suppress(ValueError, OSError):
+            data = json.loads(tf.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                _log("WARN: tracked.json corrupted — restored from .bak")
                 return data
-    _log("WARN: tracked.json corrupted, no backup — starting fresh")
-    return []
+        bak = tf.with_suffix(".json.bak")
+        if bak.exists():
+            with contextlib.suppress(Exception):
+                data = json.loads(bak.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    _log("WARN: tracked.json corrupted — restored from .bak")
+                    return data
+        _log("WARN: tracked.json corrupted, no backup — starting fresh")
+        return []
 
 
 def save_tracked(tracked: List[Dict[str, Any]]) -> None:
     """Atomic write: ``.tmp`` → backup old → rename."""
-    tf = _state_file("tracked.json")
-    tf.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tf.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
-    if tf.exists():
-        shutil.copy2(tf, tf.with_suffix(".json.bak"))
-    tmp.replace(tf)
+    with _STATE_LOCK:
+        tf = _state_file("tracked.json")
+        tf.parent.mkdir(parents=True, exist_ok=True)
+        tmp = tf.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
+        if tf.exists():
+            shutil.copy2(tf, tf.with_suffix(".json.bak"))
+        tmp.replace(tf)
 
 
 ALLOWED_CATEGORIES = {
@@ -131,102 +131,6 @@ def _is_descendant(path: Path, root: Path) -> bool:
     return False
 
 
-def _temp_roots() -> Set[Tuple[Path, Path]]:
-    roots = set()
-    candidates = [Path(tempfile.gettempdir())]
-    if os.name != "nt":
-        candidates.append(Path("/tmp"))
-    for candidate in candidates:
-        with contextlib.suppress(OSError):
-            lexical = _absolute_without_symlinks(candidate)
-            resolved = candidate.resolve()
-            roots.add((lexical, resolved))
-            roots.add((resolved, resolved))
-    return roots
-
-
-def _system_temp_file_key(path: Path) -> Optional[str]:
-    """Canonical key for a non-symlink path below a platform temp root."""
-    try:
-        lexical = _absolute_without_symlinks(path)
-        resolved = path.resolve(strict=False)
-        lexical_home = _absolute_without_symlinks(get_hermes_home())
-        resolved_home = get_hermes_home().resolve()
-    except (OSError, RuntimeError, ValueError):
-        return None
-    if _is_descendant(lexical, lexical_home) or _is_descendant(resolved, resolved_home):
-        return None
-    for lexical_temp, resolved_temp in _temp_roots():
-        try:
-            lexical_rel = lexical.relative_to(lexical_temp)
-            resolved_rel = resolved.relative_to(resolved_temp)
-        except ValueError:
-            continue
-        if not lexical_rel.parts or lexical_rel != resolved_rel:
-            continue
-        current = lexical_temp
-        try:
-            for part in lexical_rel.parts:
-                current /= part
-                if current.is_symlink():
-                    raise ValueError("system temp candidate crosses a symlink")
-        except (OSError, ValueError):
-            continue
-        return str(resolved)
-    return None
-
-
-def _register_created_system_temp_file(path: Path) -> bool:
-    """Register one temp file proven new by a matching successful Hermes file-tool call."""
-    key = _system_temp_file_key(path)
-    if key is None:
-        return False
-    try:
-        file_stat = Path(key).lstat()
-        profile_key = str(get_hermes_home().resolve())
-    except (OSError, RuntimeError, ValueError):
-        return False
-    if not stat.S_ISREG(file_stat.st_mode):
-        return False
-    _REGISTERED_SYSTEM_TEMP_FILES[(profile_key, key)] = (file_stat.st_dev, file_stat.st_ino)
-    return True
-
-
-def _registered_system_temp_file(path: Path) -> Optional[Path]:
-    """Return the still-identical exact temp file registered by this process."""
-    key = _system_temp_file_key(path)
-    if key is None:
-        return None
-    try:
-        profile_key = str(get_hermes_home().resolve())
-    except (OSError, RuntimeError, ValueError):
-        return None
-    registration_key = (profile_key, key)
-    expected = _REGISTERED_SYSTEM_TEMP_FILES.get(registration_key)
-    if expected is None:
-        return None
-    try:
-        current = Path(key).lstat()
-    except (OSError, RuntimeError, ValueError):
-        return None
-    if not stat.S_ISREG(current.st_mode):
-        _REGISTERED_SYSTEM_TEMP_FILES.pop(registration_key, None)
-        return None
-    if (current.st_dev, current.st_ino) != expected:
-        _REGISTERED_SYSTEM_TEMP_FILES.pop(registration_key, None)
-        return None
-    return Path(key)
-
-
-def _forget_registered_system_temp_file(path: Path) -> None:
-    key = _system_temp_file_key(path)
-    if key is None:
-        return
-    with contextlib.suppress(OSError, RuntimeError, ValueError):
-        profile_key = str(get_hermes_home().resolve())
-        _REGISTERED_SYSTEM_TEMP_FILES.pop((profile_key, key), None)
-
-
 def _managed_category(path: Path) -> Optional[str]:
     try:
         lexical = _absolute_without_symlinks(path)
@@ -244,7 +148,7 @@ def _managed_category(path: Path) -> Optional[str]:
     with contextlib.suppress(ValueError):
         resolved.relative_to(resolved_home)
         return None
-    return "test" if _registered_system_temp_file(path) is not None else None
+    return None
 
 
 def _managed_sweep_root(path: Path) -> Optional[Path]:
@@ -284,8 +188,63 @@ def fmt_size(n: float) -> str:
     return f"{n:.1f} PB"
 
 
-def track(path_str: str, category: str, silent: bool = False) -> bool:
-    """Register a file for tracking. Returns True if newly tracked."""
+def _managed_root(path: Path, category: str) -> Optional[Path]:
+    """Return the exact owned root for a path/category pair."""
+    try:
+        canonical = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    for root, owned_category in _managed_hermes_roots().items():
+        if category != owned_category:
+            continue
+        with contextlib.suppress(ValueError):
+            if canonical.relative_to(root).parts:
+                return root
+    return None
+
+
+def _generation_receipt(path: Path, category: str) -> Optional[Dict[str, Any]]:
+    """Bind a tracked row to one file generation and its owned root generation."""
+    try:
+        file_stat = path.lstat()
+        profile = str(get_hermes_home().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not stat.S_ISREG(file_stat.st_mode):
+        return None
+    receipt = {
+        "profile": profile,
+        "device": file_stat.st_dev,
+        "inode": file_stat.st_ino,
+        "generation_size": file_stat.st_size,
+        "mtime_ns": file_stat.st_mtime_ns,
+        "ctime_ns": file_stat.st_ctime_ns,
+    }
+    root = _managed_root(path, category)
+    if root is None:
+        return receipt
+    try:
+        root_stat = root.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISDIR(root_stat.st_mode):
+        return None
+    return {
+        **receipt,
+        "root": str(root),
+        "root_device": root_stat.st_dev,
+        "root_inode": root_stat.st_ino,
+    }
+
+
+def track(
+    path_str: str,
+    category: str,
+    silent: bool = False,
+    *,
+    owner: Optional[str] = None,
+) -> bool:
+    """Register one immutable file generation for tracking."""
     if category not in ALLOWED_CATEGORIES:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
@@ -305,21 +264,34 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
     if category in {"test", "temp", "cron-output"} and guess_category(path) != category:
         _log(f"REJECT: {path} ({category} is not owned by disk-cleanup)")
         return False
-    try:
-        file_stat = lexical_path.lstat()
-    except OSError:
-        _log(f"SKIP: {path} (cannot stat)")
-        return False
-    if not stat.S_ISREG(file_stat.st_mode):
+    receipt = _generation_receipt(path, category)
+    if receipt is None:
         _log(f"REJECT: {path} (only regular files can be tracked)")
         return False
-    size = file_stat.st_size
-    tracked = load_tracked()
-    if any(isinstance(item, dict) and item.get("path") == str(path) for item in tracked):
+    if category in {"test", "temp", "cron-output"} and "root" not in receipt:
+        _log(f"REJECT: {path} ({category} has no owned generation receipt)")
         return False
-    tracked.append({"path": str(path), "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "category": category, "size": size})
-    save_tracked(tracked)
+    size = receipt["generation_size"]
+    with _STATE_LOCK:
+        tracked = load_tracked()
+        if any(
+            isinstance(item, dict)
+            and item.get("path") == str(path)
+            and all(item.get(key) == receipt[key] for key in (
+                "device", "inode", "generation_size", "mtime_ns", "ctime_ns"
+            ))
+            for item in tracked
+        ):
+            return False
+        tracked.append({
+            "path": str(path),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "category": category,
+            "size": size,
+            **receipt,
+            **({"owner": owner} if owner else {}),
+        })
+        save_tracked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")
     if not silent:
         print(f"Tracked: {path} ({category}, {fmt_size(size)})")
@@ -329,19 +301,20 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
 def forget(path_str: str) -> int:
     """Remove a path from tracking without deleting the file."""
     p = Path(path_str).resolve()
-    tracked = load_tracked()
-    kept = []
-    for item in tracked:
-        try:
-            matches = Path(item["path"]).resolve() == p
-        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
-            matches = False
-        if not matches:
-            kept.append(item)
-    removed = len(tracked) - len(kept)
-    if removed:
-        save_tracked(kept)
-        _log(f"FORGOT: {p} ({removed} entries)")
+    with _STATE_LOCK:
+        tracked = load_tracked()
+        kept = []
+        for item in tracked:
+            try:
+                matches = Path(item["path"]).resolve() == p
+            except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                matches = False
+            if not matches:
+                kept.append(item)
+        removed = len(tracked) - len(kept)
+        if removed:
+            save_tracked(kept)
+            _log(f"FORGOT: {p} ({removed} entries)")
     return removed
 
 
@@ -384,9 +357,14 @@ def _prompt_group(item: Dict, age: int) -> Optional[str]:
 
 def _is_current_owned_file(item: Dict, path: Path) -> bool:
     """Revalidate the complete automatic-deletion boundary for one file."""
+    if not _secure_unlink_supported():
+        return False
     try:
         file_stat = path.lstat()
         canonical = path.resolve(strict=True)
+        category = item.get("category")
+        root = _managed_root(path, category)
+        root_stat = root.lstat() if root is not None else None
     except (OSError, RuntimeError, ValueError):
         return False
     try:
@@ -394,23 +372,108 @@ def _is_current_owned_file(item: Dict, path: Path) -> bool:
             path.is_absolute()
             and canonical == path
             and stat.S_ISREG(file_stat.st_mode)
+            and item.get("profile") == str(get_hermes_home().resolve())
+            and root is not None
+            and root_stat is not None
+            and stat.S_ISDIR(root_stat.st_mode)
+            and _same_file_generation(item, file_stat)
+            and item.get("root") == str(root)
+            and item.get("root_device") == root_stat.st_dev
+            and item.get("root_inode") == root_stat.st_ino
             and is_safe_path(path)
-            and guess_category(path) == item.get("category")
+            and guess_category(path) == category
             and not _is_protected_cron_path(path)
         )
     except (OSError, RuntimeError, ValueError):
         return False
 
 
+def _secure_unlink_supported() -> bool:
+    """Whether this host can bind traversal and unlink to opened directory handles."""
+    return (
+        hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in os.supports_dir_fd
+        and os.stat in os.supports_dir_fd
+        and os.stat in os.supports_follow_symlinks
+        and os.unlink in os.supports_dir_fd
+    )
+
+
+def _same_generation(item: Dict, current: os.stat_result, prefix: str = "") -> bool:
+    return (
+        item.get(f"{prefix}device") == current.st_dev
+        and item.get(f"{prefix}inode") == current.st_ino
+    )
+
+
+def _same_file_generation(item: Dict, current: os.stat_result) -> bool:
+    """Match both filesystem identity and in-place rewrite metadata."""
+    return (
+        _same_generation(item, current)
+        and item.get("generation_size") == current.st_size
+        and item.get("mtime_ns") == current.st_mtime_ns
+        and item.get("ctime_ns") == current.st_ctime_ns
+    )
+
+
+def _unlink_at(filename: str, parent_fd: int) -> None:
+    os.unlink(filename, dir_fd=parent_fd)
+
+
+def _unlink_owned_generation(item: Dict, path: Path) -> bool:
+    """Unlink through verified directory handles; never re-traverse a mutable pathname."""
+    if not _secure_unlink_supported():
+        return False
+    category = item.get("category")
+    root = _managed_root(path, category)
+    if root is None or item.get("root") != str(root):
+        return False
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return False
+    if not relative.parts:
+        return False
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptors: List[int] = []
+    try:
+        current_fd = os.open(root, directory_flags)
+        descriptors.append(current_fd)
+        root_stat = os.fstat(current_fd)
+        if not stat.S_ISDIR(root_stat.st_mode) or not _same_generation(
+            item, root_stat, "root_"
+        ):
+            return False
+        for component in relative.parts[:-1]:
+            current_fd = os.open(component, directory_flags, dir_fd=current_fd)
+            descriptors.append(current_fd)
+        filename = relative.parts[-1]
+        file_stat = os.stat(filename, dir_fd=current_fd, follow_symlinks=False)
+        if not stat.S_ISREG(file_stat.st_mode) or not _same_file_generation(
+            item, file_stat
+        ):
+            return False
+        _unlink_at(filename, current_fd)
+        return True
+    except (NotImplementedError, OSError, TypeError, ValueError):
+        return False
+    finally:
+        for descriptor in reversed(descriptors):
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
+
+
 def _delete_item(item: Dict) -> Tuple[bool, Optional[str]]:
     """Revalidate and delete one owned item. Returns ``(deleted, error)``."""
     p = Path(str(item.get("path", "")))
     try:
-        if not _is_current_owned_file(item, p):
+        with _DELETE_LOCK:
+            deleted = _unlink_owned_generation(item, p)
+        if not deleted:
             _log(f"SKIP unmanaged path before delete: {p}")
             return False, None
-        p.unlink()
-        _forget_registered_system_temp_file(p)
     except (OSError, RuntimeError, ValueError) as e:
         _log(f"ERROR deleting {p}: {e}")
         return False, f"{p}: {e}"
@@ -431,13 +494,35 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     return auto, prompt
 
 
-def quick(only_paths: Optional[Set[str]] = None) -> Dict[str, Any]:
-    """Safe deterministic cleanup — no prompts. Returns ``{deleted, empty_dirs, freed, errors}``."""
+def quick(
+    only_paths: Optional[Set[str]] = None,
+    *,
+    immediate_owner: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Safe cleanup; ``immediate_owner`` scopes immediate files, not aged retention."""
+    with _STATE_LOCK:
+        return _quick_locked(only_paths, immediate_owner=immediate_owner)
+
+
+def _quick_locked(
+    only_paths: Optional[Set[str]] = None,
+    *,
+    immediate_owner: Optional[str] = None,
+) -> Dict[str, Any]:
+    if only_paths is not None and immediate_owner is not None:
+        raise ValueError("Select cleanup by path or owner, not both.")
+    if not _secure_unlink_supported():
+        _log("SKIP quick cleanup: secure directory-handle unlink is unavailable")
+        return {"deleted": 0, "empty_dirs": 0, "freed": 0, "errors": []}
     deleted = freed = 0
     new_tracked: List[Dict] = []
     errors: List[str] = []
     selected = None if only_paths is None else {str(Path(path).resolve()) for path in only_paths}
-    sweep_roots = set(_managed_hermes_roots()) if selected is None else set()
+    sweep_roots = (
+        set(_managed_hermes_roots())
+        if selected is None and immediate_owner is None
+        else set()
+    )
     for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc), log_stale=True):
         try:
             item_path = str(p.resolve())
@@ -447,6 +532,13 @@ def quick(only_paths: Optional[Set[str]] = None) -> Dict[str, Any]:
             new_tracked.append(item)
             continue
         cat = item.get("category")
+        if (
+            immediate_owner is not None
+            and cat == "test"
+            and item.get("owner") != immediate_owner
+        ):
+            new_tracked.append(item)
+            continue
         if not _is_auto_delete(cat, age):
             new_tracked.append(item)
             continue

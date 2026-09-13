@@ -1,9 +1,9 @@
 # disk-cleanup
 
-Tracks and cleans generated media caches, cron run output, and exact files in
-the platform temp directory that Hermes observed as absent immediately before
-a tool call created them. A directory name, terminal output, manual category,
-or filename such as `test_*` / `tmp_*` never establishes ownership.
+Tracks and cleans generated media caches and cron run output inside fixed,
+Hermes-owned roots. A directory name, terminal output, successful file creation,
+manual category, or filename such as `test_*` / `tmp_*` never establishes
+ownership for a platform-temp or workspace path.
 
 Originally contributed by [@LVT382009](https://github.com/LVT382009) as a
 skill in PR #12212.  Ported to the plugin system so the behaviour runs
@@ -14,9 +14,8 @@ never needs to remember to call a tool.
 
 | Hook | Behaviour |
 |---|---|
-| `pre_tool_call` | Before `write_file` / `patch`, record explicit platform-temp paths that do not yet exist. |
-| `post_tool_call` | Track owned-root files, plus exact new platform-temp files after a successful matching file-tool call. Terminal text can never establish external-temp ownership. |
-| `on_session_end` | Delete only immediate-cleanup files tracked by that exact turn. Concurrent and long-running bot turns remain isolated. |
+| `post_tool_call` | Track regular files only when they are inside a fixed Hermes-owned cache/cron root. |
+| `on_session_end` | After every completed turn, run aged cache/cron retention and delete only immediate-cleanup file generations owned by that turn. Long-running bot sessions therefore still clean incrementally. |
 
 Deletion rules:
 
@@ -46,18 +45,21 @@ Deletion rules:
 - Auto-deletion requires both an eligible category and current membership in an
   explicit owned root; stored tracking data is revalidated immediately before deletion
 - Arbitrary workspace and durable Hermes files survive regardless of filename
-- One turn ending cannot delete files tracked by another active turn
+- A cleanup obligation records its profile/turn, file generation, and owned-root generation;
+  reusing the same pathname never transfers deletion authority to another turn
 - Malformed or stale tracking entries are skipped fail-closed
-- System-temp ownership is exact-file only: the path must be absent before the
-  matching successful `write_file` / `patch` call and the new regular file is bound to its filesystem
-  identity. Pre-existing files, replacements, directories, output-only paths,
-  manual categories, and records left by an earlier process are skipped
+- Platform-temp paths are never automatically owned. File creation proves who wrote
+  a file, not that its lifetime is disposable; Git/worktree source and other durable
+  workspace artifacts therefore remain untouched
+- Automatic deletion traverses from verified owned-root directory handles and unlinks
+  relative to the verified parent handle. Ancestor symlink swaps cannot redirect it
+- Hosts without secure directory-handle unlink support skip automatic deletion and
+  keep their tracking records for a future supported run
 - Backup/restore is scoped to `tracked.json` — the plugin never touches
   agent logs
 - Atomic writes: `.tmp` → backup → rename
 
-The owned roots are `$HERMES_HOME/cache/vision/temp_vision_images/`,
+The only owned roots are `$HERMES_HOME/cache/vision/temp_vision_images/`,
 `$HERMES_HOME/cache/video/temp_video_files/`, `$HERMES_HOME/cron/output/`
-(plus the legacy `cronjobs/output/` alias). Outside those roots, only the exact
-regular platform-temp file proven new by the matching tool call is owned; its
-parent directory is never swept.
+(plus the legacy `cronjobs/output/` alias). Nothing outside those roots is
+automatically deleted.

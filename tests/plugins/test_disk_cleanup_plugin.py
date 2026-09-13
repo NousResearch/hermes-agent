@@ -14,6 +14,7 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 import importlib
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -314,29 +315,49 @@ class TestStaleCronEntryMigration:
         from datetime import datetime, timezone, timedelta
         old_ts = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
 
+        assert dg.track(str(run_md), "cron-output", silent=True)
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        tracked_file.parent.mkdir(parents=True, exist_ok=True)
-        tracked_file.write_text(json.dumps([{
-            "path": str(run_md),
-            "category": "cron-output",
-            "timestamp": old_ts,
-            "size": 10,
-        }]), encoding="utf-8")
+        tracked = json.loads(tracked_file.read_text(encoding="utf-8"))
+        tracked[0]["timestamp"] = old_ts
+        tracked_file.write_text(json.dumps(tracked), encoding="utf-8")
 
         summary = dg.quick()
-        assert summary["deleted"] == 1, "valid old cron-output should be deleted"
-        assert not run_md.exists()
+        if dg._secure_unlink_supported():
+            assert summary["deleted"] == 1, "valid old cron-output should be deleted"
+            assert not run_md.exists()
+        else:
+            assert summary["deleted"] == 0
+            assert run_md.exists()
 
 
 class TestTrackForgetQuick:
+    def test_unsupported_secure_unlink_fails_closed_and_keeps_receipt(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        p = _owned_test_root(dg, _isolate_env) / "kept.txt"
+        p.write_text("owned", encoding="utf-8")
+        assert dg.track(str(p), "test", silent=True)
+        monkeypatch.setattr(dg, "_secure_unlink_supported", lambda: False)
+
+        summary = dg.quick()
+
+        assert summary == {"deleted": 0, "empty_dirs": 0, "freed": 0, "errors": []}
+        assert p.read_text(encoding="utf-8") == "owned"
+        assert len(dg.load_tracked()) == 1
+
     def test_track_then_quick_deletes_test(self, _isolate_env):
         dg = _load_lib()
         p = _owned_test_root(dg, _isolate_env) / "test_a.py"
         p.write_text("x", encoding="utf-8")
         assert dg.track(str(p), "test", silent=True) is True
         summary = dg.quick()
-        assert summary["deleted"] == 1
-        assert not p.exists()
+        if dg._secure_unlink_supported():
+            assert summary["deleted"] == 1
+            assert not p.exists()
+        else:
+            assert summary["deleted"] == 0
+            assert p.exists()
 
     def test_auto_cleanup_never_recursively_deletes_a_tracked_directory(
         self, _isolate_env
@@ -364,6 +385,45 @@ class TestTrackForgetQuick:
         assert auto == []
         assert summary["deleted"] == 0
         assert victim.read_text(encoding="utf-8") == "durable"
+
+    def test_ancestor_swap_cannot_redirect_unlink(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        root = _owned_test_root(dg, _isolate_env)
+        parent = root / "branch"
+        parent.mkdir()
+        owned = parent / "payload.txt"
+        owned.write_text("owned", encoding="utf-8")
+        outside = _isolate_env.parent / "outside-swap"
+        outside.mkdir()
+        victim = outside / owned.name
+        victim.write_text("durable", encoding="utf-8")
+        assert dg.track(str(owned), "test", silent=True)
+
+        if not dg._secure_unlink_supported():
+            summary = dg.quick()
+            assert summary["deleted"] == 0
+            assert owned.read_text(encoding="utf-8") == "owned"
+            assert victim.read_text(encoding="utf-8") == "durable"
+            return
+
+        held = root / "held-branch"
+        real_unlink = dg._unlink_at
+
+        def swap_before_unlink(path, dir_fd):
+            if path == owned.name:
+                parent.rename(held)
+                parent.symlink_to(outside, target_is_directory=True)
+            return real_unlink(path, dir_fd)
+
+        monkeypatch.setattr(dg, "_unlink_at", swap_before_unlink)
+        summary = dg.quick()
+
+        assert summary["deleted"] == 1
+        assert not (held / owned.name).exists()
+        assert victim.read_text(encoding="utf-8") == "durable"
+        parent.unlink()
 
 
     def test_forget_removes_entry(self, _isolate_env):
@@ -422,12 +482,6 @@ class TestPostToolCallHook:
         victim.write_text("durable", encoding="utf-8")
         output_only = _managed_tmp_root / "output-only.txt"
 
-        pi._on_pre_tool_call(
-            tool_name="terminal",
-            args={"command": f"cat {victim}"},
-            task_id="unowned", session_id="unowned", turn_id="unowned-turn",
-            tool_call_id="unowned-call",
-        )
         output_only.write_text("not-created-by-the-command", encoding="utf-8")
         pi._on_post_tool_call(
             tool_name="terminal",
@@ -448,45 +502,34 @@ class TestPostToolCallHook:
         assert victim.read_text(encoding="utf-8") == "durable"
         assert output_only.read_text(encoding="utf-8") == "not-created-by-the-command"
 
-    def test_new_system_temp_file_is_exactly_owned_and_replacement_survives(
-        self, _isolate_env, _managed_tmp_root, monkeypatch
+    def test_new_system_temp_and_git_source_are_never_claimed(
+        self, _isolate_env, _managed_tmp_root
     ):
         pi = _load_plugin_init()
-        paths = [
-            _managed_tmp_root / "unchanged.txt",
-            _managed_tmp_root / "replaced.txt",
-            _managed_tmp_root / "failed-call.txt",
-        ]
+        repo = _managed_tmp_root / "project"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        paths = [_managed_tmp_root / "scratch.txt", repo / "src" / "service.py"]
         for index, path in enumerate(paths):
-            call_id = f"created-call-{index}"
             args = {"path": str(path), "content": "created"}
-            pi._on_pre_tool_call(
-                tool_name="write_file", args=args, task_id="created",
-                session_id="created", turn_id="created-turn", tool_call_id=call_id,
-            )
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("created", encoding="utf-8")
             pi._on_post_tool_call(
                 tool_name="write_file", args=args, result="OK", task_id="created",
-                session_id="created", turn_id="created-turn", tool_call_id=call_id,
-                status="error" if index == 2 else "ok",
+                session_id="created", turn_id="created-turn",
+                tool_call_id=f"created-call-{index}", status="ok",
             )
 
-        other_profile = _isolate_env.parent / "other-profile"
-        other_profile.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(other_profile))
-        assert pi.dg.guess_category(paths[0]) is None
-        monkeypatch.setenv("HERMES_HOME", str(_isolate_env))
-
-        paths[1].unlink()
-        paths[1].write_text("replacement", encoding="utf-8")
         pi._on_session_end(
             session_id="created", task_id="created", turn_id="created-turn",
             completed=True, interrupted=False,
         )
 
-        assert not paths[0].exists()
-        assert paths[1].read_text(encoding="utf-8") == "replacement"
-        assert paths[2].read_text(encoding="utf-8") == "created"
+        assert [path.read_text(encoding="utf-8") for path in paths] == [
+            "created", "created"
+        ]
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        assert json.loads(tracked_file.read_text(encoding="utf-8")) == []
 
     def test_write_file_in_owned_temp_root_tracked(self, _isolate_env):
         pi = _load_plugin_init()
@@ -532,6 +575,31 @@ class TestPostToolCallHook:
 
 
 class TestOnSessionEndHook:
+    def test_each_turn_runs_aged_owned_root_retention(self, _isolate_env):
+        from datetime import datetime, timedelta, timezone
+
+        pi = _load_plugin_init()
+        path = (
+            _isolate_env / "cache" / "vision" / "temp_vision_images" / "old.png"
+        )
+        path.parent.mkdir(parents=True)
+        path.write_text("old", encoding="utf-8")
+        pi._on_post_tool_call(
+            tool_name="write_file", args={"path": str(path)}, result="OK",
+            task_id="creator", session_id="session", turn_id="creator-turn",
+        )
+        tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
+        tracked = json.loads(tracked_file.read_text(encoding="utf-8"))
+        tracked[0]["timestamp"] = (
+            datetime.now(timezone.utc) - timedelta(days=8)
+        ).isoformat()
+        tracked_file.write_text(json.dumps(tracked), encoding="utf-8")
+
+        pi._on_session_end(
+            task_id="other", session_id="session", turn_id="ordinary-bot-turn"
+        )
+        assert path.exists() is (not pi.dg._secure_unlink_supported())
+
     def test_only_cleans_the_turn_that_ended(self, _isolate_env):
         pi = _load_plugin_init()
         root = _owned_test_root(pi.dg, _isolate_env)
@@ -549,14 +617,98 @@ class TestOnSessionEndHook:
             session_id="session", task_id="task", turn_id="turn-a",
             completed=True, interrupted=False,
         )
-        assert not paths[0].exists()
+        assert paths[0].exists() is (not pi.dg._secure_unlink_supported())
         assert paths[1].exists(), "ending one turn must not clean another turn's file"
 
         pi._on_session_end(
             session_id="session", task_id="task", turn_id="turn-b",
             completed=True, interrupted=False,
         )
-        assert not paths[1].exists()
+        assert paths[1].exists() is (not pi.dg._secure_unlink_supported())
+
+    def test_old_turn_cannot_delete_new_generation_at_same_path(self, _isolate_env):
+        pi = _load_plugin_init()
+        root = _owned_test_root(pi.dg, _isolate_env)
+        path = root / "shared.txt"
+
+        path.write_text("turn-a", encoding="utf-8")
+        pi._on_post_tool_call(
+            tool_name="write_file", args={"path": str(path)}, result="OK",
+            task_id="task-a", session_id="session-a", turn_id="turn-a",
+        )
+        first_inode = path.stat().st_ino
+        path.rename(root / "held-turn-a.txt")
+        path.write_text("turn-b", encoding="utf-8")
+        assert path.stat().st_ino != first_inode
+        pi._on_post_tool_call(
+            tool_name="write_file", args={"path": str(path)}, result="OK",
+            task_id="task-b", session_id="session-b", turn_id="turn-b",
+        )
+
+        pi._on_session_end(task_id="task-a", session_id="session-a", turn_id="turn-a")
+        assert path.read_text(encoding="utf-8") == "turn-b"
+
+        pi._on_session_end(task_id="task-b", session_id="session-b", turn_id="turn-b")
+        assert path.exists() is (not pi.dg._secure_unlink_supported())
+
+    def test_old_turn_cannot_delete_in_place_rewrite_at_same_path(self, _isolate_env):
+        pi = _load_plugin_init()
+        root = _owned_test_root(pi.dg, _isolate_env)
+        path = root / "shared-inode.txt"
+
+        path.write_text("turn-a", encoding="utf-8")
+        pi._on_post_tool_call(
+            tool_name="write_file", args={"path": str(path)}, result="OK",
+            task_id="task-a", session_id="session-a", turn_id="turn-a",
+        )
+        first_inode = path.stat().st_ino
+
+        path.write_text("turn-b-has-different-size", encoding="utf-8")
+        assert path.stat().st_ino == first_inode
+        pi._on_post_tool_call(
+            tool_name="write_file", args={"path": str(path)}, result="OK",
+            task_id="task-b", session_id="session-b", turn_id="turn-b",
+        )
+
+        pi._on_session_end(task_id="task-a", session_id="session-a", turn_id="turn-a")
+        assert path.read_text(encoding="utf-8") == "turn-b-has-different-size"
+
+        pi._on_session_end(task_id="task-b", session_id="session-b", turn_id="turn-b")
+        assert path.exists() is (not pi.dg._secure_unlink_supported())
+
+    def test_same_turn_id_is_isolated_by_profile(
+        self, _isolate_env, tmp_path, monkeypatch
+    ):
+        pi = _load_plugin_init()
+        root_a = _owned_test_root(pi.dg, _isolate_env)
+        path_a = root_a / "profile-a.txt"
+        path_a.write_text("a", encoding="utf-8")
+        pi._on_post_tool_call(
+            tool_name="write_file", args={"path": str(path_a)}, result="OK",
+            task_id="task", session_id="session", turn_id="shared-turn",
+        )
+
+        home_b = tmp_path / "profile-b"
+        home_b.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        root_b = _owned_test_root(pi.dg, home_b)
+        path_b = root_b / "profile-b.txt"
+        path_b.write_text("b", encoding="utf-8")
+        pi._on_post_tool_call(
+            tool_name="write_file", args={"path": str(path_b)}, result="OK",
+            task_id="task", session_id="session", turn_id="shared-turn",
+        )
+        pi._on_session_end(
+            task_id="task", session_id="session", turn_id="shared-turn"
+        )
+        assert path_b.exists() is (not pi.dg._secure_unlink_supported())
+        assert path_a.read_text(encoding="utf-8") == "a"
+
+        monkeypatch.setenv("HERMES_HOME", str(_isolate_env))
+        pi._on_session_end(
+            task_id="task", session_id="session", turn_id="shared-turn"
+        )
+        assert path_a.exists() is (not pi.dg._secure_unlink_supported())
 
     def test_noop_when_no_test_tracked(self, _isolate_env):
         pi = _load_plugin_init()
@@ -606,6 +758,46 @@ class TestBundledDiscovery:
         # But NOT enabled — no hooks or commands registered
         assert not loaded.enabled
         assert loaded.error and "not enabled" in loaded.error
+
+    def test_enabled_plugin_registers_real_hooks_and_slash_command(self, _isolate_env):
+        self._write_enabled_config(_isolate_env, ["disk-cleanup"])
+        from hermes_cli import plugins as pmod
+
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["disk-cleanup"]
+        assert loaded.enabled
+        assert loaded.hooks_registered == ["post_tool_call", "on_session_end"]
+        assert loaded.commands_registered == ["disk-cleanup"]
+        assert "Dry-run preview" in mgr._plugin_commands["disk-cleanup"]["handler"](
+            "dry-run"
+        )
+
+    def test_real_plugin_manager_dispatches_generation_bound_lifecycle(
+        self, _isolate_env
+    ):
+        self._write_enabled_config(_isolate_env, ["disk-cleanup"])
+        from hermes_cli import plugins as pmod
+
+        mgr = pmod.PluginManager()
+        mgr.discover_and_load()
+        loaded = mgr._plugins["disk-cleanup"]
+        assert loaded.module is not None
+        path = _owned_test_root(loaded.module.dg, _isolate_env) / "dispatched.txt"
+        path.write_text("owned", encoding="utf-8")
+
+        mgr.invoke_hook(
+            "post_tool_call", tool_name="write_file", args={"path": str(path)},
+            result="OK", task_id="task", session_id="session", turn_id="turn",
+            tool_call_id="call",
+        )
+        assert path.exists()
+        mgr.invoke_hook(
+            "on_session_end", task_id="task", session_id="session", turn_id="turn",
+            completed=True, interrupted=False,
+        )
+        assert path.exists() is (not loaded.module.dg._secure_unlink_supported())
 
 
     def test_disabled_beats_enabled(self, _isolate_env):

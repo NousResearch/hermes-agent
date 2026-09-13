@@ -55,7 +55,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 
 | Plugin | Kind | Purpose |
 |---|---|---|
-| `disk-cleanup` | hooks + slash command | Auto-track ephemeral files and clean them on session end |
+| `disk-cleanup` | hooks + slash command | Track files in fixed Hermes-owned ephemeral roots and clean them safely |
 | `security-guidance` | hooks | Pattern-match dangerous code on `write_file`/`patch` and append a security warning (or block) — 25 rules (Apache-2.0 fork of Anthropic's `claude-plugins-official` patterns) |
 | `observability/langfuse` | hooks | Trace turns / LLM calls / tools to [Langfuse](https://langfuse.com) |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
@@ -71,15 +71,14 @@ Memory providers (`plugins/memory/*`) and context engines (`plugins/context_engi
 
 ### disk-cleanup
 
-Tracks and removes generated media caches, cron run output, and exact platform-temp files that Hermes observed as absent immediately before a tool call created them. A directory name, terminal output, manual category, or filename such as `test_*` / `tmp_*` never establishes ownership.
+Tracks and removes generated media caches and cron run output only within fixed Hermes-owned ephemeral roots. A directory name, terminal output, successful file creation, manual category, or filename such as `test_*` / `tmp_*` never establishes ownership outside those roots.
 
 **How it works:**
 
 | Hook | Behaviour |
 |---|---|
-| `pre_tool_call` | Before `write_file` / `patch`, record explicit platform-temp paths that do not yet exist. |
-| `post_tool_call` | Track owned-root files, plus exact new platform-temp files after a successful matching file-tool call. Terminal text can never establish external-temp ownership. |
-| `on_session_end` | Delete only immediate-cleanup files tracked by that exact turn and log a one-line summary. Concurrent and long-running bot turns remain isolated. |
+| `post_tool_call` | Track regular files found in fixed Hermes-owned ephemeral roots and bind each record to the current profile, turn, file generation, and root generation. |
+| `on_session_end` | After every completed turn, run aged cache/cron retention and delete only immediate-cleanup file generations owned by that exact turn. Long-running bot sessions therefore still clean incrementally. |
 
 **Deletion rules:**
 
@@ -112,7 +111,7 @@ Tracks and removes generated media caches, cron run output, and exact platform-t
 | `tracked.json.bak` | Atomic-write backup of the above |
 | `cleanup.log` | Append-only audit trail of every track / skip / reject / delete |
 
-**Safety** — automatic deletion requires current membership in an explicit owned root: `$HERMES_HOME/cache/vision/temp_vision_images/`, `$HERMES_HOME/cache/video/temp_video_files/`, or `$HERMES_HOME/cron/output/` (plus `cronjobs/output/`). Outside those roots, ownership is limited to the exact regular platform-temp file proven new by a matching successful `write_file` / `patch` call and bound to that file's filesystem identity; terminal text and its parent directory never grant ownership. Candidates are revalidated immediately before deletion, pre-existing/replaced files and malformed tracking records are skipped, and one turn cannot clean another active turn's files. All other workspace and Hermes paths are durable regardless of their filename.
+**Safety** — automatic deletion requires current membership in an explicit owned root: `$HERMES_HOME/cache/vision/temp_vision_images/`, `$HERMES_HOME/cache/video/temp_video_files/`, or `$HERMES_HOME/cron/output/` (plus `cronjobs/output/`). Each tracked row is bound to the current profile and turn plus the filesystem identity of both the file and owned root. Deletion traverses from an opened, verified root directory handle and revalidates the final file generation before unlinking, so replacing a file or swapping an ancestor path cannot redirect cleanup. Hosts without that secure unlink capability skip automatic deletion and retain their records. Legacy or malformed records fail closed. Platform-temp and workspace paths remain durable regardless of their filename or which tool created them.
 
 **Enabling:** `hermes plugins enable disk-cleanup` (or check the box in `hermes plugins`).
 

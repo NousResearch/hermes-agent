@@ -362,6 +362,27 @@ describe('connection-aware plugin host APIs', () => {
     )
   })
 
+  it('forwards foreground priority while preserving the numeric timeout overload', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.requestProfile(route, 'session.list', {}, { priority: 'foreground', timeoutMs: 45_000 })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      'source-a',
+      'remote-worker',
+      'session.list',
+      {},
+      45_000,
+      undefined,
+      'foreground'
+    )
+  })
+
   it('survives a backend that settles at its own ceiling, and only fails past the client deadline', async () => {
     // #93911 review follow-up (adversarial): the failure mode is not "no
     // timeout" but "a timeout equal to the backend's ceiling". Model the

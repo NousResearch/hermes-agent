@@ -197,12 +197,17 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
   let res: { sessions?: CanonicalChatRow[] }
 
   try {
-    res = await requestForBot<{ sessions?: CanonicalChatRow[] }>(bot, 'session.list', {
-      profile: backendTargetProfile(route, name),
-      title: CANONICAL_CHAT_TITLE,
-      limit: PROFILE_SESSION_LIST_LIMIT,
-      include_hidden: true
-    })
+    res = await requestForBot<{ sessions?: CanonicalChatRow[] }>(
+      bot,
+      'session.list',
+      {
+        profile: backendTargetProfile(route, name),
+        title: CANONICAL_CHAT_TITLE,
+        limit: PROFILE_SESSION_LIST_LIMIT,
+        include_hidden: true
+      },
+      { priority: 'foreground' }
+    )
   } catch (error) {
     // Plugin tests and host bridges can return Error-like values from another
     // JS realm, where `instanceof Error` is false. Preserve the provider/RPC

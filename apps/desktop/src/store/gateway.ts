@@ -967,9 +967,10 @@ export async function requestGatewayForProfile<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  spawnPriority: SpawnPriority = 'background'
 ): Promise<T> {
-  const route = await gatewayForProfile(profile, true)
+  const route = await gatewayForProfile(profile, true, spawnPriority)
 
   try {
     if (!route.gateway) {
@@ -1001,13 +1002,14 @@ export async function requestGatewayForAgent<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  spawnPriority: SpawnPriority = 'background'
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, spawnPriority)
   }
 
   // A primary remote selected from the connection registry carries its source
@@ -1019,10 +1021,10 @@ export async function requestGatewayForAgent<T>(
   // Require both owner identities to agree before collapsing the route; a
   // different source or profile must retain its isolated secondary.
   if (isPrimaryRegistryRoute(connectionId, key)) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, spawnPriority)
   }
 
-  if (await isAttachedSharedRemote(connectionId, key)) {
+  if (await isAttachedSharedRemote(connectionId, key, spawnPriority)) {
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
   }
 
@@ -1046,7 +1048,7 @@ export async function requestGatewayForAgent<T>(
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry)
+      await openSecondary(entry, spawnPriority)
     }
 
     return await (timeoutMs === undefined && signal === undefined

@@ -236,14 +236,29 @@ async function requestPluginProfile<T>(
   route: PluginProfileRoute | string,
   method: string,
   params: Record<string, unknown>,
-  timeoutMs?: number
+  options?: number | { priority?: 'background' | 'foreground'; timeoutMs?: number }
 ): Promise<T> {
+  const timeoutMs = typeof options === 'number' ? options : options?.timeoutMs
+  const spawnPriority = typeof options === 'number' ? 'background' : options?.priority || 'background'
+
   if (typeof route !== 'string') {
     if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
     }
 
-    // Omit the bound entirely when unset so callers stay on the pool default.
+    if (spawnPriority === 'foreground') {
+      return requestGatewayForAgent<T>(
+        route.connectionId,
+        route.profile,
+        method,
+        params,
+        timeoutMs,
+        undefined,
+        spawnPriority
+      )
+    }
+
+    // Preserve the legacy arity for background calls and numeric timeout users.
     return timeoutMs === undefined
       ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
       : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
@@ -252,6 +267,10 @@ async function requestPluginProfile<T>(
   const getAgentRoster = window.hermesDesktop?.getAgentRoster
 
   if (!getAgentRoster) {
+    if (spawnPriority === 'foreground') {
+      return requestGatewayForProfile<T>(route, method, params, timeoutMs, undefined, spawnPriority)
+    }
+
     return timeoutMs === undefined
       ? requestGatewayForProfile<T>(route, method, params)
       : requestGatewayForProfile<T>(route, method, params, timeoutMs)
@@ -266,6 +285,10 @@ async function requestPluginProfile<T>(
   // its live enumeration transiently failed. Any additional source requires a
   // descriptor because an undialed/unreachable source may expose the same name.
   if (soleLocalSource) {
+    if (spawnPriority === 'foreground') {
+      return requestGatewayForProfile<T>(profile, method, params, timeoutMs, undefined, spawnPriority)
+    }
+
     return timeoutMs === undefined
       ? requestGatewayForProfile<T>(profile, method, params)
       : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
@@ -1318,6 +1341,9 @@ export const host = {
    *  overload; registry callers must pass the descriptor so duplicate names
    *  remain unambiguous.
    *
+   *  A numeric fourth argument remains the timeout compatibility overload.
+   *  The options form also lets an explicit user action mark its first backend
+   *  dial foreground, so it can take the pool's reserved interactive slot.
    *  `timeoutMs` opts one call out of the pool's generic deadline (#93911: a
    *  method whose backend contract is minutes long, such as `bot_relay.deliver`,
    *  otherwise dies at 30s and reports an unclassified failure). Leave it unset
@@ -1326,8 +1352,8 @@ export const host = {
     route: PluginProfileRoute | string,
     method: string,
     params: Record<string, unknown> = {},
-    timeoutMs?: number
-  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
+    options?: number | { priority?: 'background' | 'foreground'; timeoutMs?: number }
+  ): Promise<T> => requestPluginProfile<T>(route, method, params, options),
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a

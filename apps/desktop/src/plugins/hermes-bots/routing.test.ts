@@ -261,6 +261,28 @@ describe('requestForBot rides the bot’s own source', () => {
     })
   })
 
+  it('forwards foreground priority for an explicit bot open without changing background defaults', async () => {
+    hostMock.requestProfile.mockResolvedValue({})
+    const bot = { connectionId: 'local', name: 'ops', sourceScoped: true } as RosterRow
+
+    await requestForBot(bot, 'session.list', {}, { priority: 'foreground' })
+    await requestForBot(bot, 'profiles.list', {})
+
+    expect(hostMock.requestProfile).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ connectionId: 'local', profile: 'ops' }),
+      'session.list',
+      {},
+      { priority: 'foreground' }
+    )
+    expect(hostMock.requestProfile).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ connectionId: 'local', profile: 'ops' }),
+      'profiles.list',
+      {}
+    )
+  })
+
   it('fails closed rather than falling back to the ambient request', async () => {
     // A scoped row whose shell predates requestProfile must NOT silently
     // execute against whichever gateway happens to be active.

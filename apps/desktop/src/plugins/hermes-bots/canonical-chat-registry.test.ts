@@ -68,13 +68,24 @@ vi.mock('./shared', () => ({ getPluginCtx: () => null }))
 
 /** Route every RPC through one table, recording what was asked. */
 function respondWith(handler: (method: string, params: Record<string, unknown>) => unknown) {
-  const calls: Array<{ method: string; params: Record<string, unknown> }> = []
+  const calls: Array<{
+    method: string
+    options?: { priority?: 'background' | 'foreground'; timeoutMs?: number }
+    params: Record<string, unknown>
+  }> = []
 
-  requestForBotMock.mockImplementation(async (_bot: unknown, method: string, params: Record<string, unknown>) => {
-    calls.push({ method, params: structuredClone(params ?? {}) })
+  requestForBotMock.mockImplementation(
+    async (
+      _bot: unknown,
+      method: string,
+      params: Record<string, unknown>,
+      options?: { priority?: 'background' | 'foreground'; timeoutMs?: number }
+    ) => {
+      calls.push({ method, options, params: structuredClone(params ?? {}) })
 
-    return handler(method, params)
-  })
+      return handler(method, params)
+    }
+  )
 
   return calls
 }
@@ -134,6 +145,7 @@ describe('the registry row wins, always', () => {
       include_hidden: true,
       title: 'Bot Chat'
     })
+    expect(list?.options).toEqual({ priority: 'foreground' })
   })
 
   it('opens the lineage tip of a compression-rotated registry row', async () => {

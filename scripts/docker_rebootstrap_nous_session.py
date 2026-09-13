@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -189,8 +190,10 @@ def reseed_if_terminal(auth_path: str, seed_raw: str) -> str:
 
     # 0600 from creation: the seed holds a refresh token and must never sit at umask, even briefly.
     # (stdlib only by design — see module docstring — so this mirrors utils.atomic_json_write by hand.)
-    tmp_path = f"{auth_path}.rebootstrap.{os.getpid()}.tmp"
-    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    # Randomly named: boot-hook PIDs inside a container repeat, so a PID-named temp left by a
+    # SIGKILL'd run would collide with O_EXCL forever and main() would swallow the FileExistsError.
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(auth_path) or ".", prefix=os.path.basename(auth_path) + ".rebootstrap.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(store, fh)

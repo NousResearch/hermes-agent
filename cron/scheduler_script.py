@@ -358,7 +358,7 @@ def _run_job_script(
         # fires; the parent process is never mutated.
         from agent.secret_scope import _is_global_env, current_secret_scope, is_multiplex_active
         from hermes_cli.env_loader import secret_source_names
-        from tools.environments.local import strip_launch_profile_env
+        from tools.environments.local import restore_managed_env, strip_launch_profile_env
         base = strip_launch_profile_env(dict(os.environ))
         # strip_launch_profile_env only knows dotenv- and terminal-config-owned names. External
         # secret sources (vault, 1Password, ...) also write their names into the shared os.environ,
@@ -375,6 +375,9 @@ def _run_job_script(
         scope = current_secret_scope()
         if scope:
             base.update(scope)
+        # Administrator-managed values keep their precedence over the routed profile's own .env, exactly
+        # as they do in the launch process (``_apply_managed_env`` applies them last, with override).
+        restore_managed_env(base)
         env = build_subprocess_env(base=base)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.

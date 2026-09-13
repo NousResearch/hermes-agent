@@ -543,6 +543,46 @@ def test_apply_external_secret_sources_status_line_suppresses_secret_names(
     assert "LEAK_THIS_TOKEN" not in err
 
 
+def test_private_hydration_records_skipped_existing_names_for_the_routed_scrub(tmp_path, monkeypatch):
+    """The private (routed-profile) hydration path must feed ``secret_source_names()`` like the
+    process-global path does — including ``skipped_existing`` — or a name first observed through
+    ``hydrate_profile_secret_sources()`` is invisible to the routed-child scrub and a sibling inherits
+    the ambient launch value for it (#107695 review on f5f88d5058)."""
+    from agent.secret_sources import registry as reg_module
+    from agent.secret_sources.base import FetchResult
+    from agent.secret_sources.registry import AppliedVar, ApplyReport, SourceReport
+
+    home = tmp_path / "profile-b"
+    home.mkdir()
+    (home / "config.yaml").write_text("secrets:\n  test-source:\n    enabled: true\n", encoding="utf-8")
+    monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", set())
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCES", {})
+    monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
+    monkeypatch.setattr(env_loader, "_SECRET_SOURCE_VALUES_BY_HOME", {})
+
+    report = ApplyReport(
+        sources=[SourceReport(name="test-source", label="Test Source", result=FetchResult(),
+                              applied=["APPLIED_SECRET"], skipped_existing=["CUSTOM_SOURCE_SECRET"])],
+        provenance={"APPLIED_SECRET": AppliedVar(name="APPLIED_SECRET", source="test-source",
+                                                 shape="mapped", overrode_env=False)},
+    )
+
+    def _fake_apply_all(_cfg, home_path, environ=None):
+        if environ is not None:
+            environ["APPLIED_SECRET"] = "applied-b"
+        return report
+
+    monkeypatch.setattr(reg_module, "apply_all", _fake_apply_all)
+
+    env_loader.hydrate_profile_secret_sources(home)
+
+    names = set(env_loader.secret_source_names())
+    assert {"APPLIED_SECRET", "CUSTOM_SOURCE_SECRET"} <= names
+    # provenance stays honest: only the APPLIED name carries a source label
+    assert env_loader.get_secret_source("APPLIED_SECRET") == "test-source"
+    assert env_loader.get_secret_source("CUSTOM_SOURCE_SECRET") is None
+
+
 def test_external_secret_values_are_isolated_between_homes(tmp_path, monkeypatch):
     """A later apply for the same key must not mutate an earlier home snapshot."""
     from agent.secret_scope import build_profile_secret_scope

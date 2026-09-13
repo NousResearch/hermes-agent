@@ -38,6 +38,10 @@ _SOURCE_SUPPLIED_NAMES: set[str] = set()
 # re-parse of the current file no longer names it — so the launch-residue strip for a routed child must
 # work from what was LOADED, not from what the file says now. Additive for the process lifetime.
 _LOADED_DOTENV_KEYS: set[str] = set()
+# KEY names loaded from the administrator-managed ``.env`` (``_apply_managed_env``). Kept OUT of the launch
+# residue: those values are policy that beats the user's own ``.env`` for every profile, so a routed child
+# must keep them — and keep them LAST, over the routed profile's scope (review on f5f88d5058).
+_MANAGED_DOTENV_KEYS: set[str] = set()
 # Immutable per-home snapshots: os.environ is shared across profiles and a later home's apply may overwrite it.
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
@@ -94,9 +98,15 @@ def secret_source_names() -> tuple[str, ...]:
 
 
 def launch_dotenv_keys() -> frozenset[str]:
-    """KEY names any dotenv file loaded into this process's ``os.environ`` so far (see
+    """KEY names any NON-managed dotenv file loaded into this process's ``os.environ`` so far (see
     ``_LOADED_DOTENV_KEYS``); the launch profile's residue set for routed children."""
     return frozenset(_LOADED_DOTENV_KEYS)
+
+
+def managed_dotenv_keys() -> frozenset[str]:
+    """KEY names the administrator-managed ``.env`` loaded (see ``_MANAGED_DOTENV_KEYS``). Policy for
+    every profile: never stripped from a routed child, and re-applied over the routed scope."""
+    return frozenset(_MANAGED_DOTENV_KEYS)
 
 
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
@@ -157,6 +167,15 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # mixed report are still snapshotted below and can be used while the failed source recovers.
     if all(src.result.ok for src in report.sources):
         _APPLIED_HOMES.add(home_key)
+    # Same ownership bookkeeping as the process-global path: a name this profile's source supplied — applied,
+    # or skipped because the private mapping already had it — is a source-owned name the routed-child scrub
+    # must know about, or a sibling still inherits the launch value for it (review on f5f88d5058).
+    # Unconditional, unlike the applied-mark above: a partly failed report does not make the names its
+    # successful sources DID supply any less source-owned, and the scrub needs them either way.
+    supplied = set(report.provenance)
+    for src in report.sources:
+        supplied.update(src.skipped_existing)
+    _SOURCE_SUPPLIED_NAMES.update(supplied)
     values: dict[str, str] = {}
     for name, applied in report.provenance.items():
         value = local_env.get(name)
@@ -253,7 +272,7 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
-def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
+def _load_dotenv_with_fallback(path: Path, *, override: bool, managed: bool = False) -> None:
     try:
         # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
         # first key name and silently drop it from os.environ under its canonical name.
@@ -263,8 +282,9 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
         if raw.startswith(codecs.BOM_UTF8):
             raw = raw[len(codecs.BOM_UTF8) :]
         load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
-    # Same scanner both branches: it re-reads the file with the same latin-1 fallback.
-    _LOADED_DOTENV_KEYS.update(_env_keys_defined_in_dotenv(path))
+    # Same scanner both branches: it re-reads the file with the same latin-1 fallback. Managed keys are
+    # recorded separately: they are administrator policy, not launch-profile residue.
+    (_MANAGED_DOTENV_KEYS if managed else _LOADED_DOTENV_KEYS).update(_env_keys_defined_in_dotenv(path))
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
@@ -458,7 +478,7 @@ def _apply_managed_env() -> None:
     if not managed_env.exists():
         return
     _sanitize_env_file_if_needed(managed_env)
-    _load_dotenv_with_fallback(managed_env, override=True)
+    _load_dotenv_with_fallback(managed_env, override=True, managed=True)
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:

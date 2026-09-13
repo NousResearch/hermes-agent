@@ -3154,7 +3154,25 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ownership handoff: in a transient user scope, or — when no user D-Bus
     session exists and ``cron.require_restart_safe_scope`` is false — as a
     direct subprocess (process separation kept, cgroup isolation lost).
+
+    A fire routed to a profile other than the process's own is multiplexed at THIS boundary too.
+    ``run_one_job`` switches the context on in ``_install_fire_secret_scope``, which runs AFTER
+    this handoff, so a routed desktop fire on the managed path serialized ``multiplex_active=False``
+    and built the worker environment with the launch profile's residue and no scrub (review on
+    f5f88d5058). Enable it for exactly this span; the worker then re-establishes it from the payload.
     """
+    from agent.secret_scope import is_multiplex_active, reset_multiplex_context, set_multiplex_context
+    from cron.scheduler_provider import routed_profile_fire
+
+    context_token = set_multiplex_context(True) if routed_profile_fire() and not is_multiplex_active() else None
+    try:
+        return _launch_external_cron_worker_inner(job)
+    finally:
+        if context_token is not None:
+            reset_multiplex_context(context_token)
+
+
+def _launch_external_cron_worker_inner(job: dict) -> bool:
     execution_id = str(job["execution_id"])
     job_id = str(job["id"])
     handoff_dir = _get_hermes_home() / "cron" / "external-workers"
@@ -3177,7 +3195,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         set_secret_scope,
     )
     from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from tools.environments.local import build_subprocess_env, restore_managed_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
         systemd_user_bus_env,
@@ -3229,11 +3247,11 @@ def _launch_external_cron_worker(job: dict) -> bool:
     hydrate_profile_secret_sources(profile_home)
     secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
     try:
-        worker_env = strip_launch_profile_env(build_subprocess_env(
+        worker_env = restore_managed_env(strip_launch_profile_env(build_subprocess_env(
             scrub_secrets=multiplex_active,
             inherit_profile_home=True,
             extra={"HERMES_HOME": str(profile_home)},
-        ))
+        )))
     finally:
         reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)

@@ -714,13 +714,39 @@ def get_entry(entry_id: str) -> Optional[dict[str, Any]]:
     return next((r for r in list_entries() if r.get("id") == entry_id), None) if entry_id else None
 
 
+def _configured_skill_roots() -> List[Path]:
+    """Roots a rollback may write into: HERMES_HOME plus every configured skill root
+    (``skills.external_dirs``, ``skills.create_dir``, and the trusted project skills dirs).
+
+    Read from CONFIG on every call, never from the entry: the anti-tamper property is that a
+    hand-edited ledger cannot widen the set, only the operator's own skills config can (the
+    project side is managed by ``hermes skills trust`` and read back through
+    ``get_project_skills_dirs``). Create-dir and external roots are in because the tool itself
+    CAPTURES mutations there; refusing them at rollback would mint entries that are permanently
+    unrecoverable.
+    """
+    roots = [get_hermes_home()]
+    try:
+        from agent.skill_utils import (
+            get_external_skills_dirs, get_project_skills_dirs, get_skill_create_dir)
+        roots.extend(get_external_skills_dirs())
+        roots.extend(get_project_skills_dirs())
+        create_dir = get_skill_create_dir()
+        if create_dir is not None:
+            roots.append(create_dir)
+    except Exception:  # pragma: no cover — a config read failure narrows, never widens
+        logger.debug("skill_ledger: configured skill-root lookup failed", exc_info=True)
+    return roots
+
+
 def _validate_entry_paths(entry: dict[str, Any]) -> Optional[str]:
     """Every entry path must be under HERMES_HOME or a classifiable skills root — the
     classifier ledgers exactly that universe (active profile, default root, sibling
-    profiles), so rollback must cover it, while a hand-edited ledger still cannot become
-    a write-anywhere primitive (#129222 review: under a named profile HERMES_HOME is
-    ``<root>/profiles/<active>`` and sibling trees sit OUTSIDE it, which made
-    sibling-tree entries — deletes included — unrecoverable)."""
+    profiles, configured external/create_dir and trusted project dirs), so rollback must
+    cover it, while a hand-edited ledger still cannot become a write-anywhere primitive
+    (#129222 review: under a named profile HERMES_HOME is ``<root>/profiles/<active>`` and
+    sibling trees sit OUTSIDE it, which made sibling-tree entries — deletes included —
+    unrecoverable; #110011 adds trusted project dirs to the allowed set)."""
     home = get_hermes_home()
     roots = [home]
     with suppress(Exception):

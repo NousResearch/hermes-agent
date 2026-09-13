@@ -23,6 +23,7 @@ def require_idle(db, conn, session_ids):
 def delete_targets(conn, session_id):
     from hermes_state_sessions import _collect_delegate_child_ids
     import json
+    from hermes_state_compression import _CHAIN_STEP_SQL
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_lineage import validate_local_lineage
     targets = {session_id}
@@ -32,5 +33,14 @@ def delete_targets(conn, session_id):
         receipt = json.loads(saved[0])
         validate_local_lineage(conn, receipt)
         targets.update(receipt.get('lineage', [session_id]))
+    # Canonical admissions bind to the compression root for every producer, not only
+    # local receipts: every physical continuation of a target goes with it, or the next
+    # message on the route re-admits the "deleted" conversation through the surviving child.
+    frontier = list(targets)
+    while frontier:
+        row = conn.execute(_CHAIN_STEP_SQL, (frontier.pop(),)).fetchone()
+        if row is not None and row[0] not in targets:
+            targets.add(row[0])
+            frontier.append(row[0])
     targets.update(_collect_delegate_child_ids(conn, targets))
     return [session_id, *sorted(targets - {session_id})]

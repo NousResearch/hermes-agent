@@ -46,3 +46,25 @@ def test_delete_receipt_survives_removal_and_fences_generation(tmp_path):
         assert rt.mutate_runtime_session(db, **args) == receipt
         with pytest.raises(rt.RuntimeStoreError, match='admission_conflict'):
             rt.mutate_runtime_session(db, **(args | {'expected_generation': 1}))
+
+
+def test_delete_of_compressed_logical_root_retires_every_physical_continuation(tmp_path):
+    """Canonical admissions bind to the compression root; deleting it must remove the whole
+    chain (transcript, rows, routing) for native sessions too, or the next message on the same
+    route resolves to the surviving child and re-admits the 'deleted' conversation with history."""
+    import json
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('root', source='telegram', session_key='agent:telegram:dm:1')
+        db.append_message('root', 'user', 'before compression')
+        assert db.try_acquire_compression_lock('root', 'holder')
+        db.publish_compression_child(parent_session_id='root', child_session_id='child', source='telegram',
+                                     messages=[{'role': 'user', 'content': 'summary'}], compression_lock_holder='holder')
+        db.append_message('child', 'user', 'after compression')
+        db.save_gateway_routing_entry('agent:telegram:dm:1', json.dumps({'session_id': 'child', 'session_key': 'agent:telegram:dm:1'}))
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        receipt = rt.mutate_runtime_session(db, epoch=epoch, principal_id='human', session_id='root', request_id='delete',
+                                            expected_revision=0, expected_generation=0, operation='delete', payload={})
+        assert set(receipt['deleted_ids']) == {'root', 'child'}
+        assert db.get_session('child') is None
+        assert db.get_messages_as_conversation('child') == []
+        assert db.load_gateway_routing_entries() == {}

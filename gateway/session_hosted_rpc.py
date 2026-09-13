@@ -14,6 +14,8 @@ from gateway.hosted_room_driver import TaskIdentity
 from gateway.session_contract import SessionRef, Submission
 from hermes_state_runtime import RuntimeStoreError, list_session_admissions
 
+_RESULTLESS_OUTCOMES = frozenset({'interrupted', 'cancelled'})
+
 
 class HostedRoomAuthorityRPC:
     def __init__(self, authority, loop, *, room_id, member_id, profile, principal,
@@ -112,11 +114,11 @@ class HostedRoomAuthorityRPC:
     def _terminal(self, row, task, generation):
         from gateway.session_results import admission_result
         saved = admission_result(self.authority.db, row['admission_id'])
-        if saved is None and row['outcome'] != 'interrupted':
+        # Unknown discard and queued cancellation never ran: no result exists to recover.
+        if saved is None and row['outcome'] not in _RESULTLESS_OUTCOMES:
             raise RuntimeStoreError('storage_unavailable')
-        # Explicit unknown discard has no execution result to recover.
         value = saved['result'] if saved is not None else {}
-        status = {'completed': 'settled', 'interrupted': 'cancelled'}.get(row['outcome'], 'failed')
+        status = {'completed': 'settled', 'interrupted': 'cancelled', 'cancelled': 'cancelled'}.get(row['outcome'], 'failed')
         receipt = {'status': status, 'text': value.get('final_response', ''),
                    'message_id': row['admission_id'], 'settlement_id': row['admission_id'],
                    'task_id': task.task_id, 'execution_generation': generation}

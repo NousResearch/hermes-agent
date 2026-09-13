@@ -909,13 +909,29 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         existing_columns = _column_names(conn, "candidate_profile_requests")
         legacy_columns = canonical_candidate_columns - {"generation_id"}
         if existing_columns == legacy_columns:
-            conn.execute(
-                "ALTER TABLE candidate_profile_requests ADD COLUMN generation_id TEXT"
-            )
-            conn.execute(
-                "UPDATE candidate_profile_requests SET generation_id = request_id "
-                "WHERE generation_id IS NULL"
-            )
+            # ``connect()`` has already run SCHEMA_SQL, which installs the
+            # append-only trigger on an existing legacy table. Backfilling
+            # this additive column is the one intentional UPDATE during the
+            # migration, so temporarily remove only that trigger and restore
+            # it before any later migration step can fail.
+            conn.execute("DROP TRIGGER IF EXISTS candidate_profile_requests_no_update")
+            try:
+                conn.execute(
+                    "ALTER TABLE candidate_profile_requests ADD COLUMN generation_id TEXT"
+                )
+                conn.execute(
+                    "UPDATE candidate_profile_requests SET generation_id = request_id "
+                    "WHERE generation_id IS NULL"
+                )
+            finally:
+                conn.execute(
+                    """
+                    CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_update
+                    BEFORE UPDATE ON candidate_profile_requests BEGIN
+                        SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+                    END
+                    """
+                )
         elif existing_columns != canonical_candidate_columns:
             conn.execute("DROP TABLE candidate_profile_requests")
         else:

@@ -137,6 +137,21 @@ def _candidate_fallback(
     return fallback, result
 
 
+def _resolve_handoff_registry(
+    *,
+    signature: CapabilitySignature,
+    registry: CapabilityRegistry,
+    connection: object,
+    profile_id: str | None,
+) -> RegistryResolution:
+    """Resolve the route against the handoff transaction's live connection."""
+    return registry.resolve(
+        signature,
+        profile_id=profile_id,
+        connection=connection,
+    )
+
+
 def _is_candidate_orchestration_fallback(
     decision: SpecialistRouteDecision,
     resolution: RegistryResolution | None,
@@ -217,24 +232,54 @@ def create_specialist_handoff(
                     # terminal candidate; otherwise the task keeps the old
                     # candidate in its body while the new ledger row is orphaned.
                     return HandoffResult(True, task_id=row["id"], created=False)
-            selected_profile = (
-                "task-orchestrator"
-                if effective_resolution is not None
-                and effective_resolution.status in {"no_match", "ambiguous"}
-                else effective_decision.profile
-            )
-            if signature is not None and not profile_exists(selected_profile):
-                return HandoffResult(False, reason="profile_unavailable")
             with kb.write_txn(conn):
-                effective_decision, candidate_result = _candidate_fallback(
-                    decision=effective_decision,
-                    signature=signature,
-                    resolution=effective_resolution,
-                    source_key=key or "",
-                    db_path=db_path,
-                    candidate_requests=candidate_requests,
-                    connection=conn,
-                )
+                candidate_result = None
+                if signature is not None and type(registry) is CapabilityRegistry:
+                    authoritative_resolution = _resolve_handoff_registry(
+                        signature=signature,
+                        registry=registry,
+                        connection=conn,
+                        profile_id=(
+                            decision.profile
+                            if decision.profile in SPECIALIST_PROFILES
+                            else None
+                        ),
+                    )
+                    if authoritative_resolution.status == "active_match":
+                        effective_decision = apply_registry_resolution(
+                            authoritative_resolution, fallback=decision
+                        )
+                    elif effective_resolution is not None and effective_resolution.status == "active_match":
+                        # A route that was active before the transaction but is
+                        # no longer active must not be dispatched using stale
+                        # classifier or registry output.
+                        effective_decision = apply_registry_resolution(
+                            authoritative_resolution
+                        )
+                    elif _is_candidate_orchestration_fallback(
+                        decision, authoritative_resolution, registry
+                    ):
+                        effective_decision, candidate_result = _candidate_fallback(
+                            decision=decision,
+                            signature=signature,
+                            resolution=authoritative_resolution,
+                            source_key=key or "",
+                            db_path=db_path,
+                            candidate_requests=candidate_requests,
+                            connection=conn,
+                        )
+                    else:
+                        effective_decision = apply_registry_resolution(
+                            authoritative_resolution, fallback=decision
+                        )
+                if not effective_decision.dispatches:
+                    return HandoffResult(
+                        False,
+                        reason=effective_decision.audit_reason or "registry_unresolved",
+                    )
+                selected_profile = effective_decision.profile
+                if signature is not None and not profile_exists(selected_profile):
+                    return HandoffResult(False, reason="profile_unavailable")
                 task_id = kb.create_task(
                     conn, title=effective_decision.title,
                     body=_body(

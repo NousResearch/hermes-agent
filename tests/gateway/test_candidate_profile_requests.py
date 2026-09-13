@@ -326,6 +326,62 @@ def test_candidate_request_migration_is_idempotent(tmp_path):
     }
 
 
+def test_legacy_generation_backfill_runs_through_init_db_with_append_only_trigger(
+    tmp_path,
+):
+    """The real connect/init path must migrate a populated pre-generation ledger."""
+    db_path = tmp_path / "legacy-generation.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE candidate_profile_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL UNIQUE,
+                request_hash TEXT NOT NULL,
+                signature_hash TEXT NOT NULL,
+                permissions_hash TEXT NOT NULL,
+                source_key_hash TEXT NOT NULL,
+                policy_digest TEXT NOT NULL,
+                evidence_ref_hashes_json TEXT NOT NULL,
+                lifecycle_status TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                cooldown_until INTEGER,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TRIGGER candidate_profile_requests_no_update
+            BEFORE UPDATE ON candidate_profile_requests BEGIN
+                SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+            END;
+            CREATE TRIGGER candidate_profile_requests_no_delete
+            BEFORE DELETE ON candidate_profile_requests BEGIN
+                SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+            END;
+            INSERT INTO candidate_profile_requests (
+                request_id, request_hash, signature_hash, permissions_hash,
+                source_key_hash, policy_digest, evidence_ref_hashes_json,
+                lifecycle_status, reason_code, cooldown_until, created_at
+            ) VALUES (
+                'legacy-generation', 'a', 'b', 'c', 'd', 'e', '[]',
+                'candidate', 'candidate_opened', NULL, 1
+            );
+            """
+        )
+
+    kb.init_db(db_path)
+
+    with kbc.connect_closing(db_path) as conn:
+        row = conn.execute(
+            "SELECT generation_id FROM candidate_profile_requests "
+            "WHERE request_id = 'legacy-generation'"
+        ).fetchone()
+        assert row["generation_id"] == "legacy-generation"
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute(
+                "UPDATE candidate_profile_requests SET reason_code = 'changed' "
+                "WHERE request_id = 'legacy-generation'"
+            )
+
+
 def test_legacy_plaintext_candidate_ledger_is_replaced_before_opening_requests(tmp_path):
     db_path = tmp_path / "legacy-candidate-requests.db"
     kb.init_db(db_path)
@@ -531,3 +587,126 @@ def test_no_match_handoff_uses_existing_orchestrator_and_preserves_source_idempo
     assert subscriptions["count"] == 1
     assert len(candidate_rows) == 1
     assert candidate_rows[0]["lifecycle_status"] == "candidate"
+
+
+def test_handoff_rechecks_registry_inside_transaction_before_candidate_fallback(
+    kanban_home, monkeypatch
+):
+    registry = CapabilityRegistry(
+        board=kb.DEFAULT_BOARD,
+        configured_profiles={"market-data-authority-auditor": NO_MATCH},
+    )
+    original_resolve = registry.resolve
+    calls = 0
+
+    def resolve_with_activation(signature, *, profile_id=None, connection=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            registry.register_fixed_baseline(
+                profile_id="market-data-authority-auditor", signature=NO_MATCH
+            )
+            return NO_MATCH_RESOLUTION
+        return original_resolve(
+            signature, profile_id=profile_id, connection=connection
+        )
+
+    monkeypatch.setattr(registry, "resolve", resolve_with_activation)
+    source = HandoffSource(
+        platform="discord",
+        chat_id="channel-transaction-race",
+        chat_type="group",
+        user_id="user-1",
+        message_id="message-transaction-race",
+    )
+    decision = SpecialistRouteDecision(
+        kind=RouteKind.SPECIALIST,
+        profile="generated-market-data-candidate",
+        confidence=1.0,
+        reason="request requires a local capability",
+        title="Audit market data",
+    )
+
+    result = create_specialist_handoff(
+        decision=decision,
+        source=source,
+        request="Audit the supplied market-data evidence.",
+        signature=NO_MATCH,
+        registry=registry,
+        board=kb.DEFAULT_BOARD,
+    )
+
+    assert result.ok, result.reason
+    assert calls == 2
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, result.task_id)
+        candidate_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM candidate_profile_requests"
+        ).fetchone()["count"]
+    assert task is not None
+    assert task.assignee == "market-data-authority-auditor"
+    assert result.candidate_request_id is None
+    assert candidate_count == 0
+
+
+def test_handoff_does_not_dispatch_route_revoked_before_transaction(
+    kanban_home, monkeypatch
+):
+    registry = CapabilityRegistry(
+        board=kb.DEFAULT_BOARD,
+        configured_profiles={"market-data-authority-auditor": NO_MATCH},
+    )
+    declaration_id = registry.register_fixed_baseline(
+        profile_id="market-data-authority-auditor", signature=NO_MATCH
+    )
+    original_resolve = registry.resolve
+    calls = 0
+
+    def resolve_with_revocation(signature, *, profile_id=None, connection=None):
+        nonlocal calls
+        calls += 1
+        resolution = original_resolve(
+            signature, profile_id=profile_id, connection=connection
+        )
+        if calls == 1:
+            registry.revoke(
+                declaration_id=declaration_id,
+                profile_id="market-data-authority-auditor",
+                signature=NO_MATCH,
+                reason_code="test_revoked",
+            )
+        return resolution
+
+    monkeypatch.setattr(registry, "resolve", resolve_with_revocation)
+    source = HandoffSource(
+        platform="discord",
+        chat_id="channel-revoked-route",
+        chat_type="group",
+        user_id="user-1",
+        message_id="message-revoked-route",
+    )
+    decision = SpecialistRouteDecision(
+        kind=RouteKind.SPECIALIST,
+        profile="market-data-authority-auditor",
+        confidence=1.0,
+        reason="request requires a local capability",
+        title="Audit market data",
+    )
+
+    result = create_specialist_handoff(
+        decision=decision,
+        source=source,
+        request="Audit the supplied market-data evidence.",
+        signature=NO_MATCH,
+        registry=registry,
+        board=kb.DEFAULT_BOARD,
+    )
+
+    assert not result.ok
+    assert result.reason == "registry_no_match"
+    assert calls == 2
+    with kbc.connect() as conn:
+        task_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM tasks"
+        ).fetchone()["count"]
+    assert task_count == 0

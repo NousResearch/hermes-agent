@@ -49,6 +49,8 @@ export const activeSessionCountLabel = (count: number) => `${count} live ${count
 export const sessionsCountLabel = (liveCount: number, resumableCount: number) =>
   `${liveCount} live · ${resumableCount} resumable`
 
+export const sessionListRequestParams = (includeCron: boolean) => ({ include_cron: includeCron, limit: 200 })
+
 export type SessionRowKind = 'history' | 'live' | 'new'
 
 /**
@@ -304,6 +306,7 @@ export function ActiveSessionSwitcher({
   const [draftModel, setDraftModel] = useState('')
   const [pickingModel, setPickingModel] = useState(false)
   const [closingId, setClosingId] = useState('')
+  const [includeCron, setIncludeCron] = useState(false)
   // When non-null, the user pressed `d` on this (history) session and we await
   // a second `d` to confirm deletion. Tracked by session id (not row index) so
   // the 1.5s live-status poll re-indexing rows can't redirect the delete to a
@@ -353,7 +356,9 @@ export function ActiveSessionSwitcher({
           gw.request<SessionActiveListResponse>('session.active_list', {
             current_session_id: currentSessionId
           }),
-          includeHistory ? gw.request<SessionListResponse>('session.list', { limit: 200 }) : Promise.resolve(null)
+          includeHistory
+            ? gw.request<SessionListResponse>('session.list', sessionListRequestParams(includeCron))
+            : Promise.resolve(null)
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
@@ -433,7 +438,7 @@ export function ActiveSessionSwitcher({
         return []
       }
     },
-    [currentSessionId, gw]
+    [currentSessionId, gw, includeCron]
   )
 
   useEffect(() => {
@@ -598,6 +603,12 @@ export function ActiveSessionSwitcher({
       return
     }
 
+    if (key.meta && lower === 'c') {
+      setIncludeCron(value => !value)
+
+      return
+    }
+
     if (key.tab) {
       if (newSelected) {
         setPickingModel(true)
@@ -692,6 +703,21 @@ export function ActiveSessionSwitcher({
         Sessions
       </Text>
       <Text color={t.color.muted}>{sessionsCountLabel(items.length, history.length)}</Text>
+
+      <Box flexDirection="row">
+        <Text color={t.color.muted}>Resume: </Text>
+        <Box
+          onClick={(event: { stopImmediatePropagation?: () => void }) => {
+            event.stopImmediatePropagation?.()
+            setIncludeCron(value => !value)
+          }}
+        >
+          <Text color={includeCron ? t.color.label : t.color.muted}>
+            {includeCron ? '[x]' : '[ ]'} Include cron sessions
+          </Text>
+        </Box>
+      </Box>
+      <Text color={t.color.muted}>Alt+C toggle</Text>
 
       {err && <Text color={t.color.label}>error: {err}</Text>}
 

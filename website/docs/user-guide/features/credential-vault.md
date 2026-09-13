@@ -92,7 +92,10 @@ Cron jobs, webhooks, the API server and `hermes chat -q` have nobody to answer a
 prompt. Saved local logins keep working there; a locked password manager reports
 `unavailable_in_this_session` and a missing login reports `prompt_unavailable`.
 Unlock or save from an interactive session first, or give 1Password a service
-account token (`OP_SERVICE_ACCOUNT_TOKEN`).
+account token (`OP_SERVICE_ACCOUNT_TOKEN`). A service account has no default
+vault, so filling a login also needs `vault` set to the vault it was granted
+access to — otherwise `op` rejects the read with "a vault query must be
+provided when this command is called by a service account".
 
 ```yaml
 vault:
@@ -100,6 +103,7 @@ vault:
     enabled: false          # opt OUT of a detected manager (default: on when installed)
     account: ""             # `op --account` shorthand; empty = default
     service_account_token_env: OP_SERVICE_ACCOUNT_TOKEN
+    vault: ""               # vault name/ID for `op --vault`; required by a service account
   bitwarden:
     enabled: false
 ```

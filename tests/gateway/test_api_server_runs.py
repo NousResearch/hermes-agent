@@ -1,7 +1,8 @@
-"""Tests for /v1/runs endpoints: start, status, events, steer, and stop.
+"""Tests for /v1/runs endpoints: start, list, status, events, steer, and stop.
 
 Covers:
 - POST /v1/runs — start a run (202)
+- GET /v1/runs — list pollable run statuses for the caller's scope
 - GET /v1/runs/{run_id} — poll run status
 - GET /v1/runs/{run_id}/events — SSE event stream
 - POST /v1/runs/{run_id}/steer — inject guidance into a running agent
@@ -83,6 +84,7 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs", adapter._handle_list_runs)
     app.router.add_post(
         "/v1/room-members/invitations",
         adapter._handle_room_member_invitation,
@@ -2194,3 +2196,95 @@ class TestHostedRoomRuns:
                 )
             assert rejected.status == 403
             create.assert_not_called()
+
+# ---------------------------------------------------------------------------
+# GET /v1/runs — list pollable run statuses
+# ---------------------------------------------------------------------------
+
+
+class TestListRuns:
+    @pytest.mark.asyncio
+    async def test_list_returns_owned_runs_newest_first(self, adapter):
+        app = _create_runs_app(adapter)
+        _claim_run(adapter, "run_older")
+        adapter._set_run_status("run_older", "completed", session_id="s-older")
+        _claim_run(adapter, "run_newer")
+        adapter._set_run_status("run_newer", "running", session_id="s-newer")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs")
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["object"] == "list"
+        assert [entry["run_id"] for entry in data["data"]] == [
+            "run_newer",
+            "run_older",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_list_excludes_runs_owned_by_other_scopes(self, adapter):
+        """The list is scoped like GET /v1/runs/{id}: foreign runs are absent."""
+        app = _create_runs_app(adapter)
+        _claim_run(adapter, "run_mine")
+        adapter._set_run_status("run_mine", "running")
+        adapter._run_owners["run_theirs"] = "scope:someone-else"
+        adapter._set_run_status("run_theirs", "running")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs")
+            assert resp.status == 200
+            data = await resp.json()
+        assert [entry["run_id"] for entry in data["data"]] == ["run_mine"]
+
+    @pytest.mark.asyncio
+    async def test_list_requires_auth(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs")
+        assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_list_trims_waiting_approval_payload(self, adapter):
+        app = _create_runs_app(adapter)
+        _claim_run(adapter, "run_waiting")
+        adapter._set_run_status(
+            "run_waiting",
+            "waiting_for_approval",
+            approval={
+                "run_id": "run_waiting",
+                "approval_id": "appr_1",
+                "summary": "rm -rf /tmp/scratch",
+                "choices": ["once", "session", "always", "deny"],
+                "internal_agent_ref": object(),
+                "callback": lambda: None,
+            },
+        )
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/runs")
+            assert resp.status == 200
+            data = await resp.json()
+        (entry,) = data["data"]
+        assert entry["status"] == "waiting_for_approval"
+        assert set(entry["approval"]) == {
+            "run_id",
+            "approval_id",
+            "summary",
+            "choices",
+        }
+
+    @pytest.mark.asyncio
+    async def test_list_honors_limit_query(self, adapter):
+        app = _create_runs_app(adapter)
+        for index in range(3):
+            run_id = f"run_{index}"
+            _claim_run(adapter, run_id)
+            adapter._set_run_status(run_id, "running")
+
+        async with TestClient(TestServer(app)) as cli:
+            default_resp = await cli.get("/v1/runs")
+            limited_resp = await cli.get("/v1/runs?limit=2")
+            invalid_resp = await cli.get("/v1/runs?limit=not-a-number")
+            assert len((await default_resp.json())["data"]) == 3
+            assert len((await limited_resp.json())["data"]) == 2
+            assert invalid_resp.status == 200

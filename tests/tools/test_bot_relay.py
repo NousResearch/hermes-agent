@@ -84,6 +84,9 @@ def test_resolve_remote_target_forms(root):
     assert bot_relay.resolve_remote_target("default", roster)["connection_id"] == "cloud-1"
     # exact connection-qualified form
     assert bot_relay.resolve_remote_target("hermes@cloud-1", roster)["profile"] == "default"
+    # profile@connection — the form Desktop's mention middleware annotates
+    # for remote bots (#97678); the UI alias form must not be required
+    assert bot_relay.resolve_remote_target("default@cloud-1", roster)["profile"] == "default"
     assert bot_relay.resolve_remote_target("hermes@nope", roster) is None
     assert bot_relay.resolve_remote_target("ghost", roster) is None
 
@@ -151,6 +154,105 @@ def test_waiter_command_quotes_and_targets_reply_file(root):
     assert "rm -rf" not in cmd  # sanity: single quoted -c payload
 
 
+def test_waiter_outlives_the_desktop_deliver_deadline():
+    """The Desktop posts its timeout reply when RELAY_DELIVER_TIMEOUT_MS passes. A waiter that gave
+    up first left that reply, and any turn finishing after minute 15, in a file nobody read (#93911).
+    relay-deliver-budget.test.ts pins the TS constants against these Python ones."""
+    desktop_budget_s = (
+        bot_relay.TURN_WAIT_SECONDS_FALLBACK
+        + bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS * bot_relay.TURN_MAX_ATTEMPTS
+        + bot_relay.DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
+    )
+    assert bot_relay.DESKTOP_DELIVER_TIMEOUT_SECONDS == desktop_budget_s
+    assert bot_relay.REPLY_WAIT_SECONDS > desktop_budget_s
+
+
+def test_waiter_give_up_message_states_the_real_budget(root):
+    import shlex
+
+    env = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+    parts = shlex.split(bot_relay.waiter_command(root, env))
+    code = parts[parts.index("-c") + 1]
+    assert f"deadline = time.time() + {bot_relay.REPLY_WAIT_SECONDS}\n" in code
+    assert f"within {bot_relay.REPLY_WAIT_SECONDS}s" in code
+    assert "within 900s" not in code
+
+
+def test_waiter_picks_up_reply_within_a_sub_second_cadence(root):
+    """The reply file is written once; the waiter must notice it fast, not
+    on a multi-second sleep (dead air the sender's completion notification
+    inherits on every cross-machine reply)."""
+    import shlex
+    import subprocess
+    import threading
+    import time
+
+    env = {"id": "c" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
+    reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{env['id']}.json"
+    reply_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def write_reply():
+        time.sleep(0.3)
+        reply_path.write_text(json.dumps({"reply": "pong"}), encoding="utf-8")
+
+    threading.Thread(target=write_reply, daemon=True).start()
+    started = time.monotonic()
+    proc = subprocess.run(shlex.split(bot_relay.waiter_command(root, env)), capture_output=True, text=True, timeout=10)
+    elapsed = time.monotonic() - started
+    assert proc.returncode == 0 and "pong" in proc.stdout
+    assert elapsed < 1.5, f"waiter took {elapsed:.2f}s to notice a reply written at 0.3s"
+
+
+def test_roster_rejects_connection_id_outside_handle_charset(root):
+    bad = [
+        {"profile": "researcher", "handle": "researcher", "connection_id": "vps'); print(1)"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "foo'bar"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "ssh vps"},
+        {"profile": "researcher", "handle": "researcher", "connection_id": "a" * 65},
+    ]
+    assert bot_relay.write_remote_roster(root, bad) == 0
+    good = {
+        "profile": "researcher",
+        "handle": "researcher",
+        "connection_id": "ssh-vps",
+    }
+    assert bot_relay.write_remote_roster(root, [good]) == 1
+
+
+def test_waiter_command_repr_encodes_hostile_connection_id(root):
+    import ast
+    import shlex
+
+    inj = "x'); open(r'/tmp/pwned','w').write('pwned'); print('x"
+    env = {
+        "id": "c" * 32,
+        "target_handle": "researcher",
+        "target_connection": inj,
+    }
+    cmd = bot_relay.waiter_command(root, env)
+    parts = shlex.split(cmd)
+    code = parts[parts.index("-c") + 1]
+    compile(code, "<waiter>", "exec")
+    tree = ast.parse(code)
+    opens = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "open"
+    ]
+    # Only json.load(open(p, ...)) is a real open(); the payload must stay data.
+    assert len(opens) == 1
+
+    # A quote in the id used to SyntaxError the waiter. It must compile.
+    quoted = bot_relay.waiter_command(
+        root,
+        {"id": "a" * 32, "target_handle": "h", "target_connection": "foo'bar"},
+    )
+    qcode = shlex.split(quoted)[shlex.split(quoted).index("-c") + 1]
+    compile(qcode, "<waiter-quote>", "exec")
+
+
 # ── message_agent integration: relay route + legacy-SOUL gate fix ───────────
 
 import textwrap
@@ -209,18 +311,12 @@ def _fresh_probe_cache():
 
 
 def test_tool_injects_despite_legacy_soul_protocol(tmp_path):
-    """The legacy-SOUL dedupe empties the SECTION, never the TOOL.
-
-    Regression: upgraded installs whose SOUL.md still carries the old
-    plugin-appended protocol silently lost message_agent because the gate
-    keyed on section non-emptiness.
-    """
+    """A SOUL.md still carrying the plugin-appended protocol must not cost the TOOL (nor,
+    since load-time stripping, the live section)."""
     from tools import bot_mode_probe
 
     home = _managed_home(tmp_path, legacy_soul=True)
-    # Premise: the dedupe really does empty the section for this profile...
-    assert bot_mode_probe.get_bot_mode_protocol_section(home) == ""
-    # ...but the install is managed, so the tool must still inject.
+    assert bot_mode_probe.get_bot_mode_protocol_section(home) != ""
     agent = _FakeAgent(home)
     assert ensure_message_agent_tool(agent) is True
     assert [t["function"]["name"] for t in agent.tools] == [MESSAGE_AGENT_TOOL_NAME]
@@ -488,3 +584,38 @@ def test_message_agent_surfaces_runtime_offline_refusal(tmp_path, monkeypatch):
     assert "offline" in out.get("error", "")
     # fail-fast means no envelope was queued
     assert bot_relay.claim_pending_envelopes(home) == []
+
+
+# ── delivery turn author (HERMES_TURN_AUTHOR on the recipient turn) ──────────
+
+
+def test_delivery_turn_author_from_envelope_sender_fields():
+    author = bot_relay.delivery_turn_author("ops", "ops-bot")
+    assert author == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+    # The display name falls back to the profile; the id never comes from the handle.
+    assert bot_relay.delivery_turn_author("ops", "") == {"id": "bot:ops", "name": "ops", "is_bot": True}
+    assert bot_relay.delivery_turn_author("", "ops-bot") is None
+    assert bot_relay.delivery_turn_author(None, None) is None
+
+
+def test_delivery_turn_author_qualifies_a_remote_sender_by_its_connection():
+    """A relayed DM always crosses gateways, so the sender's connection id is part of the author id, ``local``
+    included; the recipient's own ``ops`` is the only bare ``bot:ops``."""
+    remote = bot_relay.delivery_turn_author("ops", "ops-bot", "cloud-1")
+    assert remote == {"id": "bot:cloud-1/ops", "name": "ops-bot", "is_bot": True}
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "local") == {"id": "bot:local/ops", "name": "ops-bot", "is_bot": True}
+    # An older Desktop that sends no connection id still yields an author.
+    assert bot_relay.delivery_turn_author("ops", "ops-bot", "") == {"id": "bot:ops", "name": "ops-bot", "is_bot": True}
+
+
+def test_delivery_env_carries_only_the_given_author(monkeypatch):
+    """The dispatcher's own HERMES_TURN_AUTHOR never reaches the child: dropped without an author, replaced with one."""
+    from agent.turn_author import TURN_AUTHOR_ENV
+
+    monkeypatch.setenv("HERMES_RELAY_TEST_MARKER", "kept")
+    monkeypatch.setenv(TURN_AUTHOR_ENV, json.dumps({"id": "bot:previous", "name": "previous", "is_bot": True}))
+
+    assert TURN_AUTHOR_ENV not in bot_relay.delivery_env(None)
+    env = bot_relay.delivery_env(bot_relay.delivery_turn_author("ops", "ops"))
+    assert json.loads(env[TURN_AUTHOR_ENV]) == {"id": "bot:ops", "name": "ops", "is_bot": True}
+    assert env["HERMES_RELAY_TEST_MARKER"] == "kept"

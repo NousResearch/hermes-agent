@@ -30,11 +30,12 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
-import { type ErrorSurface, formatErrorDiagnostics } from '@/lib/error-surface'
+import { type ErrorSurface, formatErrorDiagnostics, isOAuthReauthSurface } from '@/lib/error-surface'
 import { triggerHaptic } from '@/lib/haptics'
 import {
   AudioLines,
   GitForkIcon,
+  KeyRound,
   Loader2Icon,
   RefreshCwIcon,
   SmilePlusIcon,
@@ -48,6 +49,8 @@ import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notifyError } from '@/store/notifications'
+import { startManualProviderOAuth } from '@/store/onboarding'
+import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
 import { requestSendDiagnostics } from '@/store/send-diagnostics'
 import { $connection, $currentModel } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -469,7 +472,14 @@ const ErrorLayerLabel: FC = () => {
   const labels = t.assistant.thread.errorLayers
   const label = (surface && labels[surface.layer]) || labels.generic
 
-  return <div className="font-medium">{label}</div>
+  return (
+    <>
+      <div className="font-medium">{label}</div>
+      {isOAuthReauthSurface(surface) && (
+        <div>{t.assistant.thread.errorOauthExpired(surface.providerLabel || surface.provider)}</div>
+      )}
+    </>
+  )
 }
 
 // Isolated because useNavigate() THROWS outside a <Router> (bare test
@@ -509,10 +519,34 @@ const ErrorRecoveryActions: FC = () => {
   // runtime's logs.
   const remoteConnection = connection?.mode === 'remote'
 
+  // An expired/revoked OAuth grant (HTTP 401 on nous / openai-codex / ...):
+  // the one-click fix is re-running that provider's sign-in, which the
+  // onboarding overlay already owns end to end (device code → poll →
+  // reload.env → model confirm). Scoped to the gateway profile the failed
+  // session runs on, so a Bot profile's grant is renewed, not the primary's.
+  const oauthReauth = isOAuthReauthSurface(surface)
+  const gatewayProfile = useStore($activeGatewayProfile)
+
+  const signInAgain = useCallback(() => {
+    if (!oauthReauth) {
+      return
+    }
+
+    triggerHaptic('submit')
+    const key = normalizeProfileKey(gatewayProfile)
+    startManualProviderOAuth(surface.provider, key === 'default' ? undefined : key)
+  }, [gatewayProfile, oauthReauth, surface])
+
   // Retry = assistant-ui reload (same wiring as the footer's refresh action):
   // re-runs the failed turn's prompt in place. Suppressed when the classifier
-  // says the failure is deterministic (retrying reproduces it).
-  const retryable = !surface || surface.retryable
+  // says the failure is deterministic (retrying reproduces it) — except for an
+  // OAuth rejection, where signing in again changes the outcome and Retry is
+  // the natural second click.
+  const retryable = !surface || surface.retryable || oauthReauth
+
+  // Another surface holds this session's lease (#106217): Retry would hit the
+  // same refusal, so the way out is a fresh session on this surface.
+  const ownershipRefusal = surface?.code === 'SESSION_NOT_OWNED'
 
   // Switch Provider deep-links Settings → Models for the layers where the fix
   // is provider/endpoint/auth config, not a retry.
@@ -548,8 +582,24 @@ const ErrorRecoveryActions: FC = () => {
     [errorText, model, surface]
   )
 
+  const startNewSession = useCallback(() => {
+    triggerHaptic('submit')
+    requestFreshSession()
+  }, [])
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
+      {ownershipRefusal && (
+        <button className="aui-error-action" onClick={startNewSession} type="button">
+          {copy.errorStartNewSession}
+        </button>
+      )}
+      {oauthReauth && (
+        <button className="aui-error-action" onClick={signInAgain} type="button">
+          <KeyRound className="size-3" />
+          {copy.errorSignInAgain(surface.providerLabel || surface.provider)}
+        </button>
+      )}
       {retryable && (
         <ActionBarPrimitive.Reload asChild>
           <button className="aui-error-action" onClick={() => triggerHaptic('submit')} type="button">
@@ -578,7 +628,12 @@ const ErrorRecoveryActions: FC = () => {
   )
 }
 
-const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText, onBranchInNewChat }) => {
+const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
+  durationS,
+  messageId,
+  getMessageText,
+  onBranchInNewChat
+}) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
 
@@ -595,6 +650,15 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, getMessageText,
 
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
+      {durationS !== undefined && (
+        <span
+          className="mr-auto select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
+          data-slot="aui_turn-duration"
+          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
+        >
+          ⏱ {formatElapsed(durationS)}
+        </span>
+      )}
       <ActionBarPrimitive.Root
         className={
           // NOTE: intentionally NOT `hideWhenRunning`. That prop unmounts the
@@ -713,19 +777,8 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 }
 
 const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ durationS, ...props }) => {
-  const { t } = useI18n()
-
   return (
     <div className="flex min-h-6 flex-col items-end gap-1 pr-(--message-text-indent) pl-(--message-text-indent)">
-      {durationS !== undefined && (
-        <span
-          className="select-none px-0.5 text-[0.6875rem] leading-5 tabular-nums text-muted-foreground"
-          data-slot="aui_turn-duration"
-          title={t.assistant.thread.turnDuration(formatElapsed(durationS))}
-        >
-          ⏱ {formatElapsed(durationS)}
-        </span>
-      )}
       <BranchPickerPrimitive.Root
         className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
         hideWhenSingleBranch
@@ -740,7 +793,7 @@ const AssistantFooter: FC<MessageActionProps & { durationS?: number }> = ({ dura
           <Codicon name="chevron-right" size="0.875rem" />
         </BranchPickerPrimitive.Next>
       </BranchPickerPrimitive.Root>
-      <AssistantActionBar {...props} />
+      <AssistantActionBar durationS={durationS} {...props} />
     </div>
   )
 }

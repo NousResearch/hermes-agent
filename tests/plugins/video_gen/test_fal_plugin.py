@@ -81,6 +81,30 @@ def test_minimax_h3_int_duration_and_resolution_alias():
     assert hi["resolution"] == "2K"
 
 
+def test_h3_max_turbo_static_key_and_1080p_alias():
+    """H3 Max Turbo requires prompt_expansion_mode on both endpoints, adds a real
+    1080P tier (unlike Max, which caps at 768P), and its i2v drops aspect_ratio."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    meta = FAL_FAMILIES["minimax-h3-max-turbo"]
+    t2v = _build_payload(
+        meta, prompt="x", image_url=None, duration=7, aspect_ratio="16:9",
+        resolution="1080p", negative_prompt=None, audio=None, seed=11,
+    )
+    assert t2v["prompt_expansion_mode"] == "balanced"
+    assert t2v["resolution"] == "1080P"
+    assert t2v["duration"] == 7 and isinstance(t2v["duration"], int)
+    assert t2v["seed"] == 11
+
+    i2v = _build_payload(
+        meta, prompt="x", image_url="https://example.com/i.png", duration=5,
+        aspect_ratio="16:9", resolution="480p", negative_prompt=None, audio=None, seed=None,
+    )
+    assert i2v["prompt_expansion_mode"] == "balanced"
+    assert "aspect_ratio" not in i2v
+    assert i2v["image_url"] == "https://example.com/i.png"
+
+
 def test_image_drop_keys_strips_aspect_ratio_on_i2v():
     """Seedance 2.5 / MiniMax H3 / Grok 1.5 i2v endpoints derive the
     aspect ratio from the input image; sending the key is rejected."""
@@ -268,10 +292,34 @@ class TestFamilyKeyNormalization:
         assert _normalize_family_key("blackforestlabs/flux-3") == "flux-3"
 
     def test_capabilities_span_longest_family_duration(self):
-        """Provider caps must not understate Seedance 2.5's 30s ceiling."""
-        from plugins.video_gen.fal import FALVideoGenProvider
+        """capabilities() is active-MODEL-aware (#95681 diet): it reports
+        the resolved family's real window, so the schema doesn't overstate
+        short families or understate Seedance 2.5. The union fallback
+        (resolution failure) must still span the 30s ceiling."""
+        from unittest.mock import patch as _patch
 
-        caps = FALVideoGenProvider().capabilities()
+        import plugins.video_gen.fal as _fp
+        from plugins.video_gen.fal import FAL_FAMILIES, FALVideoGenProvider
+
+        # Active model resolved → that family's actual window.
+        meta = FAL_FAMILIES["seedance-2.5"]
+        with _patch.object(_fp, "_resolve_family",
+                           return_value=("seedance-2.5", meta)):
+            caps = FALVideoGenProvider().capabilities()
+        assert caps["max_duration"] >= 30
+        # A short family must NOT be inflated to the union ceiling.
+        short = FAL_FAMILIES["pixverse-v6"]
+        durs = short.get("durations")
+        hi = durs[1] if isinstance(durs, tuple) else max(durs)
+        with _patch.object(_fp, "_resolve_family",
+                           return_value=("pixverse-v6", short)):
+            caps = FALVideoGenProvider().capabilities()
+        assert caps["max_duration"] == hi
+
+        # Resolution failure → union fallback still spans the ceiling.
+        with _patch.object(_fp, "_resolve_family",
+                           side_effect=RuntimeError("no config")):
+            caps = FALVideoGenProvider().capabilities()
         assert caps["max_duration"] >= 30
         assert caps["min_duration"] <= 1
 

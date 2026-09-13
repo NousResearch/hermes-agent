@@ -17,7 +17,6 @@ other tests keep their existing no-arg behaviour.
 from __future__ import annotations
 
 import threading
-import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -98,7 +97,7 @@ def _real_agent(db, session_id, session_messages):
     agent._cached_system_prompt = "test system prompt"
     agent._session_init_model_config = None
     agent._parent_session_id = None
-    agent._session_json_enabled = False
+
     agent._pending_cli_user_message = None
     agent._session_persist_lock = threading.RLock()
     return agent

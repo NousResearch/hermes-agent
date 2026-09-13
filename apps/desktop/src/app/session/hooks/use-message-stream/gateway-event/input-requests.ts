@@ -1,9 +1,31 @@
+import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
-import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import { restorePendingClarifyToolCall, settlePendingClarifyToolCall } from '@/lib/chat-messages'
+import {
+  $clarifyRequests,
+  clearClarifyRequest,
+  normalizeChoices,
+  normalizeQuestions,
+  setClarifyRequest,
+  warnDroppedChoices
+} from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { receiveApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import {
+  $vaultCodeRequests,
+  $vaultSaveLoginRequests,
+  $vaultUnlockRequests,
+  clearVaultCodeRequest,
+  clearVaultSaveLoginRequest,
+  clearVaultUnlockRequest,
+  receiveApprovalRequest,
+  setSecretRequest,
+  setSudoRequest,
+  setVaultCodeRequest,
+  setVaultSaveLoginRequest,
+  setVaultUnlockRequest
+} from '@/store/prompts'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 
 import type { GatewayEventContext } from './types'
@@ -13,7 +35,7 @@ import type { GatewayEventContext } from './types'
  *  each of these must be parked per-session and surfaced. */
 export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, occurredAt } = ctx
-  const { activeSessionIdRef, updateSessionState, upsertToolCall } = deps
+  const { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall } = deps
 
   if (event.type === 'clarify.request') {
     // Surface the clarify tool's overlay. The Python side is blocked on
@@ -26,6 +48,10 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     // indefinitely and re-focusing it could never recover (the event is
     // gone). Parking it per-session lets the user answer once they switch
     // over; the inline ClarifyTool reads the active session's entry.
+    if (sessionId && sessionInterrupted(sessionId)) {
+      return true
+    }
+
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
     const question = typeof payload?.question === 'string' ? payload.question : ''
     const rawChoices = payload?.choices
@@ -46,41 +72,42 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         : undefined
 
     if (requestId && questions.length > 0) {
-      setClarifyRequest({
+      const request = {
         choices: null,
         lockedAnswers,
         multiSelect: false,
         question: '',
         questions,
+        receivedAt: Date.now() / 1000,
         requestId,
         sessionId: sessionId ?? null
-      })
+      }
+
+      setClarifyRequest(request)
 
       if (sessionId) {
-        // Same hydration-race guard as the single-question path below: the
-        // form mounts from the tool row, so upsert a stable one keyed by
-        // the request id in case tool.start was missed.
-        upsertToolCall(
-          sessionId,
-          {
-            args: {
-              questions: questions.map(q => ({
-                choices: q.choices ?? undefined,
-                multi_select: q.multiSelect || undefined,
-                question: q.question
-              }))
-            },
-            name: 'clarify',
-            tool_id: requestId
-          },
-          'running',
-          event.type,
-          occurredAt
-        )
-        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+        // A resumed/hydrated transcript may already contain this provider's
+        // clarify call while carrying no live streamId. Re-arm that exact row
+        // instead of letting the generic stream mutator append a second card.
+        updateSessionState(sessionId, state => {
+          const projection = restorePendingClarifyToolCall(
+            state.messages,
+            pendingClarifyToolPayload(request),
+            occurredAt
+          )
+
+          return {
+            ...state,
+            messages: projection.messages,
+            streamId: projection.streamId,
+            sawAssistantPayload: true,
+            awaitingResponse: false,
+            needsInput: true
+          }
+        })
 
         if (sessionId === activeSessionIdRef.current) {
-          requestScrollToBottom()
+          requestScrollToBottom(sessionId)
         }
       }
 
@@ -95,43 +122,40 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         warnDroppedChoices('gateway', question, rawChoices)
       }
 
-      setClarifyRequest({
+      const request = {
         requestId,
         question,
         choices: choices.length > 0 ? choices : null,
         multiSelect,
+        receivedAt: Date.now() / 1000,
         sessionId: sessionId ?? null
-      })
+      }
+
+      setClarifyRequest(request)
 
       if (sessionId) {
-        // `clarify.request` is the blocking event the Python side waits on,
-        // while the inline UI normally mounts from the earlier `tool.start`
-        // row. If that row was missed (stream reconnect / hydration race) the
-        // sidebar still says "needs input" but there is nowhere to render the
-        // choices. Upsert a stable pending clarify tool row from the request
-        // itself so the prompt stays answerable; a real tool.start/complete
-        // with the same request id merges rather than duplicates.
-        upsertToolCall(
-          sessionId,
-          {
-            args: { choices, ...(multiSelect ? { multi_select: true } : {}), question },
-            name: 'clarify',
-            tool_id: requestId
-          },
-          'running',
-          event.type,
-          occurredAt
-        )
+        // Same provider-shape-aware repair as the batch path above. This keeps
+        // the original hydrated row and provider tool id, while still seeding
+        // a row when tool.start was genuinely missed.
+        updateSessionState(sessionId, state => {
+          const projection = restorePendingClarifyToolCall(
+            state.messages,
+            pendingClarifyToolPayload(request),
+            occurredAt
+          )
 
-        // The transcript only renders the active session, so a background
-        // clarify is otherwise invisible (the row just keeps spinning like
-        // it's working). Flag the session so the sidebar shows a persistent
-        // "needs input" indicator on its row — works for the active session
-        // too, and survives alt-tab / window blur (unlike a toast).
-        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          return {
+            ...state,
+            messages: projection.messages,
+            streamId: projection.streamId,
+            sawAssistantPayload: true,
+            awaitingResponse: false,
+            needsInput: true
+          }
+        })
 
         if (sessionId === activeSessionIdRef.current) {
-          requestScrollToBottom()
+          requestScrollToBottom(sessionId)
         }
       }
 
@@ -142,6 +166,73 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         title: translateNow('notifications.native.inputTitle')
       })
     }
+
+    return true
+  }
+
+  if (event.type === 'vault.code.expire') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const request = sessionId ? $vaultCodeRequests.get()[sessionId] : undefined
+
+    if (requestId && request && request.requestId === requestId) {
+      clearVaultCodeRequest(sessionId, requestId)
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.save_login.expire') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const request = sessionId ? $vaultSaveLoginRequests.get()[sessionId] : undefined
+
+    if (requestId && request && request.requestId === requestId) {
+      clearVaultSaveLoginRequest(sessionId, requestId)
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.unlock.expire') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const request = sessionId ? $vaultUnlockRequests.get()[sessionId] : undefined
+
+    if (requestId && request && request.requestId === requestId) {
+      clearVaultUnlockRequest(sessionId, requestId)
+    }
+
+    return true
+  }
+
+  if (event.type === 'clarify.expire') {
+    if (!sessionId) {
+      return true
+    }
+
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    const request = $clarifyRequests.get()[sessionId]
+
+    // Expiry is request-correlated: a delayed event from an older prompt must
+    // not erase a newer clarify raised by the same session.
+    if (!requestId || !request || request.requestId !== requestId) {
+      return true
+    }
+
+    clearClarifyRequest(requestId, sessionId)
+    updateSessionState(sessionId, state => {
+      const projection = settlePendingClarifyToolCall(
+        state.messages,
+        pendingClarifyToolPayload(request),
+        state.busy,
+        occurredAt
+      )
+
+      return {
+        ...state,
+        messages: projection.messages,
+        needsInput: false,
+        streamId: state.busy ? (projection.streamId ?? state.streamId) : null
+      }
+    })
 
     return true
   }
@@ -267,6 +358,83 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
 
       dispatchNativeNotification({
         body: promptText || envVar || translateNow('notifications.native.inputBody'),
+        kind: 'input',
+        sessionId,
+        title: translateNow('notifications.native.inputTitle')
+      })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.code.request') {
+    // Second factor: the site asked for a one-time code and no authenticator key is saved for the login.
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (requestId) {
+      const site = typeof payload?.site === 'string' ? payload.site : ''
+      const hint = typeof payload?.hint === 'string' ? payload.hint : ''
+
+      setVaultCodeRequest({ hint, requestId, sessionId: sessionId ?? null, site })
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: translateNow('prompts.vaultCodeTitle', site),
+        kind: 'input',
+        sessionId,
+        title: translateNow('notifications.native.inputTitle')
+      })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.save_login.request') {
+    // The agent is on a sign-in page with no saved login: identifier + masked password card; the
+    // answer is stored in the encrypted vault by the backend and filled at once (never shown to the model).
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (requestId) {
+      const origin = typeof payload?.origin === 'string' ? payload.origin : ''
+      const site = typeof payload?.site === 'string' ? payload.site : origin
+
+      setVaultSaveLoginRequest({ origin, requestId, sessionId: sessionId ?? null, site })
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: translateNow('prompts.vaultSaveTitle', site),
+        kind: 'input',
+        sessionId,
+        title: translateNow('notifications.native.inputTitle')
+      })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.unlock.request') {
+    // External password-manager unlock (agent/vault_backends). Blocked on
+    // vault.unlock.respond {request_id, password}; "" keeps it locked.
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (requestId) {
+      const backend = typeof payload?.backend === 'string' ? payload.backend : ''
+      const displayName = typeof payload?.display_name === 'string' ? payload.display_name : backend
+
+      setVaultUnlockRequest({ backend, displayName, requestId, sessionId: sessionId ?? null })
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: translateNow('prompts.vaultUnlockTitle', displayName),
         kind: 'input',
         sessionId,
         title: translateNow('notifications.native.inputTitle')

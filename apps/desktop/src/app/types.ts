@@ -66,6 +66,10 @@ export interface SessionCompressResponse {
     usage?: Partial<UsageStats>
   }
   messages?: SessionMessage[]
+  /** Set with `status: 'pending'` when the gateway's compute-host wait expired
+   *  while compression is still running; the transcript refreshes from the
+   *  pushed session.info / `compacted` status edge (#97948). */
+  message?: string
   removed?: number
   status?: string
   summary?: {
@@ -118,46 +122,6 @@ export interface HandoffFailResponse {
   state?: string
 }
 
-export interface ExecCommandDispatchResponse {
-  type: 'exec' | 'plugin'
-  output?: string
-}
-
-export interface AliasCommandDispatchResponse {
-  type: 'alias'
-  target: string
-}
-
-export interface SkillCommandDispatchResponse {
-  type: 'skill'
-  name: string
-  message?: string
-  /** The invocation the UI renders (`/work fix the leak`). `message` is the
-   *  expanded skill body — model-facing scaffolding no surface may show. */
-  display?: string
-}
-
-export interface SendCommandDispatchResponse {
-  type: 'send'
-  message: string
-  notice?: string
-  /** Set for a skill-bundle send: see SkillCommandDispatchResponse.display. */
-  display?: string
-}
-
-export interface PrefillCommandDispatchResponse {
-  type: 'prefill'
-  message: string
-  notice?: string
-}
-
-export type CommandDispatchResponse =
-  | ExecCommandDispatchResponse
-  | AliasCommandDispatchResponse
-  | SkillCommandDispatchResponse
-  | SendCommandDispatchResponse
-  | PrefillCommandDispatchResponse
-
 export type SidebarNavId = 'artifacts' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings' | 'skills'
 
 export interface SidebarNavItem {
@@ -171,8 +135,19 @@ export interface SidebarNavItem {
   keybindActionId?: string
 }
 
+export interface PersistedDisplayTranscriptProvenance {
+  source: 'persisted-display'
+  connectionId: string
+  profile: string
+  storedSessionId: string
+  lineageRootId: string | null
+  coverage: 'latest-page'
+}
+
 export interface ClientSessionState {
   storedSessionId: string | null
+  transcriptAuthorityEpoch?: number
+  transcriptProvenance?: PersistedDisplayTranscriptProvenance
   messages: ChatMessage[]
   branch: string
   cwd: string

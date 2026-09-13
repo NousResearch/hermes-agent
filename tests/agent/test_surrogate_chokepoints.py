@@ -171,16 +171,22 @@ def test_api_kwargs_walk_makes_tool_descriptions_json_safe():
 
 def test_conversation_loop_sanitizes_api_kwargs_after_build():
     """Wiring pin: the structure walk runs on the fully-built api_kwargs
-    (after _build_api_kwargs, before any transport/provider sees it)."""
+    (after _build_api_kwargs, before any transport/provider sees it).
+
+    The request build lives in ``agent.turn_api_request.build_api_request`` and the
+    provider call in ``agent.turn_api_call.perform_api_call``; the loop calls them in
+    that order, so the sanitize step provably precedes the call."""
     import inspect
 
     import agent.conversation_loop as cl
+    import agent.turn_api_request as rq
 
-    src = inspect.getsource(cl.run_conversation)
+    src = inspect.getsource(rq.build_api_request)
     build_idx = src.index("api_kwargs = agent._build_api_kwargs(api_messages)")
     sanitize_idx = src.index("_sanitize_structure_surrogates(api_kwargs)")
-    perform_idx = src.index("def _perform_api_call")
-    assert build_idx < sanitize_idx < perform_idx
+    assert build_idx < sanitize_idx
+    loop_src = inspect.getsource(cl._run_api_retry_loop)
+    assert loop_src.index("build_api_request,") < loop_src.index("perform_api_call,")
 
 
 # ---------------------------------------------------------------------------

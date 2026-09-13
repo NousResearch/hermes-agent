@@ -22,25 +22,26 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tts_tool import (
-    BUILTIN_TTS_PROVIDERS,
+from tools.tts_command_provider import (
     COMMAND_TTS_OUTPUT_FORMATS,
     DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH,
     DEFAULT_COMMAND_TTS_OUTPUT_FORMAT,
     DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS,
-    _generate_command_tts,
-    _get_command_tts_output_format,
     _get_command_tts_timeout,
     _get_named_provider_config,
-    _has_any_command_tts_provider,
     _is_command_provider_config,
-    _is_command_tts_voice_compatible,
     _iter_command_providers,
-    _render_command_tts_template,
+    render_command_template as _render_command_tts_template,
+    run_command_provider as _run_command_tts,
+    shell_quote_context as _shell_quote_context,
+)
+from tools.tts_tool import (
+    BUILTIN_TTS_PROVIDERS,
+    _generate_command_tts,
+    _get_command_tts_output_format,
+    _is_command_tts_voice_compatible,
     _resolve_command_provider_config,
     _resolve_max_text_length,
-    _run_command_tts,
-    _shell_quote_context,
     check_tts_requirements,
     text_to_speech_tool,
 )
@@ -128,7 +129,7 @@ class TestCommandTtsEnv:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_tool.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -168,7 +169,7 @@ class TestIsCommandProviderConfig:
 
 
 # ---------------------------------------------------------------------------
-# _iter_command_providers / _has_any_command_tts_provider
+# _iter_command_providers
 # ---------------------------------------------------------------------------
 
 class TestIterCommandProviders:
@@ -183,11 +184,6 @@ class TestIterCommandProviders:
         }
         names = sorted(name for name, _ in _iter_command_providers(cfg))
         assert names == ["piper-cli", "voxcpm"]
-
-
-    def test_has_any_command_provider_when_none(self):
-        assert _has_any_command_tts_provider({"providers": {}}) is False
-        assert _has_any_command_tts_provider({}) is False
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +343,7 @@ class TestRunCommandTts:
             def wait(self, timeout=None):
                 return self.returncode
 
-        with patch("tools.tts_tool.subprocess.Popen", return_value=FakeProcess()):
+        with patch("tools.tts_command_provider.subprocess.Popen", return_value=FakeProcess()):
             result = _run_command_tts("fake tts", timeout=0.25)
 
         assert result.returncode == 0
@@ -524,7 +520,7 @@ class TestCommandTtsEnvPassthrough:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_tool.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
 
         result = _run_command_tts(
             "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
@@ -536,7 +532,7 @@ class TestCommandTtsEnvPassthrough:
         assert "OPENAI_API_KEY" not in env
 
     def test_allowlist_parsed_from_provider_config(self):
-        from tools.tts_tool import _command_provider_env_passthrough
+        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
 
         assert _command_provider_env_passthrough(
             {"env_passthrough": ["A_KEY", " B_KEY ", ""]}

@@ -12,6 +12,14 @@ from tools.registry import ToolRegistry
 def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
     registry = ToolRegistry()
 
+    # The client tools are config-gated now (test_a2a_tools_gate.py):
+    # open the gate the way a real install would — configure a peer.
+    monkeypatch.setattr(
+        a2a_tools,
+        "_load_config",
+        lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}},
+    )
+
     class _Context:
         def register_tool(self, name, toolset, schema, handler, **kwargs):
             registry.register(
@@ -27,15 +35,16 @@ def test_a2a_call_schema_round_trips_through_tool_describe(monkeypatch):
     monkeypatch.setattr(
         tool_search,
         "is_deferrable_tool_name",
-        lambda name: name == "a2a_call",
+        # #97979 added the defer_tools positional (curated-set override).
+        lambda name, defer_tools=None: name == "a2a_call",
     )
 
     described = json.loads(
         tool_search.dispatch_tool_describe(
-            {"name": "a2a_call"},
+            {"names": ["a2a_call"]},
             current_tool_defs=definitions,
         )
-    )
+    )["tools"]["a2a_call"]
 
     assert described["description"]
     assert described["parameters"]["required"] == ["agent", "message"]

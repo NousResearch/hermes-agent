@@ -17,11 +17,11 @@ from unittest.mock import MagicMock, patch
 
 
 
-# ── Text aux tasks — _resolve_auto ──────────────────────────────────────────
+# ── Text aux tasks — _resolve_auto_route ──────────────────────────────────────────
 
 
 class TestResolveAutoMainFirst:
-    """_resolve_auto() must prefer main provider + main model for every user."""
+    """_resolve_auto_route() must prefer main provider + main model for every user."""
 
     def test_title_generation_auto_honors_main_model(self):
         """The default auto title route must not replace the selected main model."""
@@ -37,9 +37,9 @@ class TestResolveAutoMainFirst:
         ) as mock_resolve, patch(
             "agent.auxiliary_client._is_provider_unhealthy", return_value=False
         ):
-            from agent.auxiliary_client import _resolve_auto
+            from agent.auxiliary_client import _resolve_auto_route
 
-            client, model = _resolve_auto(
+            client, model, _provider = _resolve_auto_route(
                 main_runtime={
                     "provider": "opencode-zen",
                     "model": main_model,
@@ -71,9 +71,9 @@ class TestResolveAutoMainFirst:
         ), patch(
             "agent.auxiliary_client._is_provider_unhealthy", return_value=False
         ):
-            from agent.auxiliary_client import _resolve_auto
+            from agent.auxiliary_client import _resolve_auto_route
 
-            client, model = _resolve_auto(
+            client, model, _provider = _resolve_auto_route(
                 main_runtime={
                     "provider": "opencode-zen",
                     "model": "deepseek-v4-flash-free",
@@ -124,9 +124,9 @@ class TestResolveAutoMainFirst:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
 
-            from agent.auxiliary_client import _resolve_auto
+            from agent.auxiliary_client import _resolve_auto_route
 
-            client, model = _resolve_auto(
+            client, model, _provider = _resolve_auto_route(
                 main_runtime={
                     "provider": "moa",
                     "model": "opus-gpt",
@@ -166,9 +166,9 @@ class TestResolveAutoMainFirst:
         ) as mock_main_chain, patch(
             "agent.auxiliary_client._try_openrouter",
         ) as mock_openrouter:
-            from agent.auxiliary_client import _resolve_auto
+            from agent.auxiliary_client import _resolve_auto_route
 
-            client, model = _resolve_auto(task="title_generation")
+            client, model, _provider = _resolve_auto_route(task="title_generation")
 
         assert client is task_client
         assert model == "task-free-model"
@@ -221,9 +221,9 @@ class TestResolveAutoMainFirst:
         ) as mock_resolve:
             mock_resolve.return_value = (MagicMock(), "mimo-v2.5-pro")
 
-            from agent.auxiliary_client import _resolve_auto
+            from agent.auxiliary_client import _resolve_auto_route
 
-            _resolve_auto(main_runtime={
+            _resolve_auto_route(main_runtime={
                 "provider": "xiaomi",
                 "model": "mimo-v2.5-pro",
                 "base_url": token_plan_url,
@@ -614,7 +614,7 @@ def test_aggregator_providers_constant_removed():
     import agent.auxiliary_client as aux_mod
 
     assert not hasattr(aux_mod, "_AGGREGATOR_PROVIDERS"), (
-        "_AGGREGATOR_PROVIDERS was removed when _resolve_auto stopped "
+        "_AGGREGATOR_PROVIDERS was removed when _resolve_auto_route stopped "
         "treating aggregators specially. If you re-added it, the main-first "
         "policy may have regressed."
     )

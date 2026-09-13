@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
 import { $connection } from '@/store/session'
 
 import {
@@ -68,6 +69,21 @@ afterEach(() => {
 })
 
 describe('ConnectionsRegistrySection', () => {
+  it('refreshes a cached roster immediately after a successful connection test', async () => {
+    _resetFleetRosterForTests()
+    const getAgentRoster = vi.fn().mockResolvedValue({ agents: [], sources: [] })
+    Object.assign(window.hermesDesktop!, { getAgentRoster })
+
+    try {
+      await refreshFleetRoster()
+      render(<ConnectionsRegistrySection />)
+      await screen.findByText('Homelab')
+      fireEvent.click(screen.getAllByRole('button', { name: /^test$/i })[0])
+      await waitFor(() => expect(getAgentRoster).toHaveBeenCalledTimes(2))
+    } finally {
+      _resetFleetRosterForTests()
+    }
+  })
   it('distinguishes the current connection from the registry primary', async () => {
     render(<ConnectionsRegistrySection />)
 
@@ -161,13 +177,16 @@ describe('ConnectionsRegistrySection', () => {
     await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
   })
 
-  it('keeps the launch preference out of the way for a single source', async () => {
+  it('offers the launch preference even for a single source', async () => {
+    // A local-only registry is the drift state from #90174, and the launch
+    // toggle is the control that lets a user out of it. Hiding it there left
+    // hand-editing connections.json as the only recourse.
     list.mockResolvedValueOnce({ ...registry, connections: [registry.connections[0]] })
 
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
-    expect(screen.queryByText('At startup, return to Sessions on the last-used gateway')).toBeNull()
+    expect(screen.getByText('At startup, return to Sessions on the last-used gateway')).toBeTruthy()
   })
 
   it('keeps search out of the way for a small registry', async () => {

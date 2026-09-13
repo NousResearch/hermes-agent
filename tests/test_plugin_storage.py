@@ -43,7 +43,11 @@ def test_hostile_names_are_rejected(hermes_home, bad):
         plugin_data_dir(bad)
 
 
-def test_plugin_db_opens_wal_sqlite_in_the_data_dir(hermes_home):
+def test_plugin_db_journal_mode_is_the_shared_fallback_verdict(hermes_home):
+    """Plugin DBs take the journal mode the core WAL helper decides for this SQLite build and
+    filesystem (WAL normally; DELETE on WAL-reset-bug builds or network FS) — never a raw PRAGMA."""
+    from hermes_state_wal import is_sqlite_wal_reset_vulnerable
+
     conn = plugin_db("board")
     try:
         conn.execute("CREATE TABLE t (x)")
@@ -51,7 +55,7 @@ def test_plugin_db_opens_wal_sqlite_in_the_data_dir(hermes_home):
         conn.commit()
 
         mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
-        assert mode == "wal"
+        assert mode == ("delete" if is_sqlite_wal_reset_vulnerable() else "wal")
     finally:
         conn.close()
 

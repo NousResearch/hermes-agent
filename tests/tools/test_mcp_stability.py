@@ -6,6 +6,8 @@ import signal
 from unittest.mock import patch, MagicMock
 
 import pytest
+from tools import mcp_tool_lifecycle as _mcp_lifecycle
+from tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -16,7 +18,7 @@ class TestMCPLoopExceptionHandler:
     """_mcp_loop_exception_handler suppresses benign 'Event loop is closed'."""
 
     def test_suppresses_event_loop_closed(self):
-        from tools.mcp_tool import _mcp_loop_exception_handler
+        from tools.mcp_tool_loop import _mcp_loop_exception_handler
         loop = MagicMock()
         context = {"exception": RuntimeError("Event loop is closed")}
         # Should NOT call default handler
@@ -32,12 +34,12 @@ class TestMCPLoopExceptionHandler:
             mcp_mod._servers.clear()
             mcp_mod._server_connecting.clear()
         try:
-            mcp_mod._ensure_mcp_loop()
+            _mcp_loop._ensure_mcp_loop()
             with mcp_mod._lock:
                 loop = mcp_mod._mcp_loop
                 mcp_mod._servers["live"] = MagicMock(session=object())
 
-            assert mcp_mod._stop_mcp_loop_if_idle() is False
+            assert _mcp_lifecycle._stop_mcp_loop_if_idle() is False
 
             with mcp_mod._lock:
                 assert mcp_mod._mcp_loop is loop
@@ -48,7 +50,7 @@ class TestMCPLoopExceptionHandler:
             with mcp_mod._lock:
                 mcp_mod._servers.clear()
                 mcp_mod._server_connecting.clear()
-            mcp_mod._stop_mcp_loop()
+            _mcp_loop._stop_mcp_loop()
 
 
 # ---------------------------------------------------------------------------
@@ -59,22 +61,49 @@ class TestStdioPidTracking:
     """_snapshot_child_pids and _stdio_pids track subprocess PIDs."""
 
     def test_snapshot_returns_set(self):
-        from tools.mcp_tool import _snapshot_child_pids
+        from tools.mcp_tool_lifecycle import _snapshot_child_pids
         result = _snapshot_child_pids()
         assert isinstance(result, set)
         # All elements should be ints
         for pid in result:
             assert isinstance(pid, int)
 
+    def test_snapshot_sees_child_spawned_from_another_thread(self):
+        """/proc/<pid>/task/<tid>/children is per-thread; the MCP subprocess
+        is spawned from the background loop thread, so a main-thread-only
+        read misses it and every dead-child fast-fail / respawn / killpg
+        path silently no-ops."""
+        import subprocess
+        import sys as _sys
+        import threading
+
+        from tools.mcp_tool_lifecycle import _snapshot_child_pids
+
+        procs = []
+        started = threading.Event()
+        release = threading.Event()
+
+        def _spawn():
+            procs.append(subprocess.Popen([_sys.executable, "-c", "import time; time.sleep(30)"]))
+            started.set()
+            release.wait(10)  # keep the spawning thread alive while we snapshot
+
+        t = threading.Thread(target=_spawn, daemon=True)
+        t.start()
+        assert started.wait(10)
+        try:
+            assert procs[0].pid in _snapshot_child_pids()
+        finally:
+            release.set()
+            procs[0].kill()
+            procs[0].wait(5)
+
 
     def test_kill_orphaned_handles_dead_pids(self):
         """_kill_orphaned_mcp_children gracefully handles already-dead PIDs."""
-        from tools.mcp_tool import (
-            _kill_orphaned_mcp_children,
-            _orphan_stdio_pid_servers,
-            _orphan_stdio_pids,
-            _lock,
-        )
+        from tools.mcp_tool_lifecycle import (
+            _kill_orphaned_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids)
+        from tools.mcp_tool import _lock
 
         # Use a PID that definitely doesn't exist
         fake_pid = 999999999
@@ -92,14 +121,9 @@ class TestStdioPidTracking:
 
     def test_run_stdio_reaps_orphans_before_spawn(self):
         """_run_stdio kills orphaned PIDs from prior failed attempts (#57355)."""
-        from tools.mcp_tool import (
-            _kill_orphaned_mcp_children,
-            _orphan_stdio_pids,
-            _stdio_pids,
-            _stdio_pgids,
-            _lock,
-            MCPServerTask,
-        )
+        from tools.mcp_tool_lifecycle import (
+            _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pids, _stdio_pgids)
+        from tools.mcp_tool import _lock, MCPServerTask
         from unittest.mock import patch, MagicMock, AsyncMock
 
         # Seed an orphan PID that belongs to a prior failed connection.
@@ -126,10 +150,10 @@ class TestStdioPidTracking:
             # stdio_client spawn.  Patch the OSV check (local import)
             # and stdio_client so no real subprocess is spawned.
             with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-                 patch("tools.mcp_tool._build_safe_env", return_value={}), \
-                 patch("tools.mcp_tool._resolve_stdio_command",
+                 patch("tools.mcp_tool_config._build_safe_env", return_value={}), \
+                 patch("tools.mcp_tool_config._resolve_stdio_command",
                        return_value=("echo", {})), \
-                 patch("tools.mcp_tool._write_stderr_log_header"), \
+                 patch("tools.mcp_tool_config._write_stderr_log_header"), \
                  patch("tools.mcp_tool._get_mcp_stderr_log",
                        return_value=None), \
                  patch("tools.mcp_tool.check_package_for_malware",
@@ -155,12 +179,9 @@ class TestStdioPidTracking:
 
     def test_kill_orphaned_can_filter_by_server_name(self):
         """Reconnect cleanup reaps only the orphan owned by that MCP server."""
-        from tools.mcp_tool import (
-            _kill_orphaned_mcp_children,
-            _orphan_stdio_pid_servers,
-            _orphan_stdio_pids,
-            _lock,
-        )
+        from tools.mcp_tool_lifecycle import (
+            _kill_orphaned_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids)
+        from tools.mcp_tool import _lock
 
         target_pid = 454545
         other_pid = 464646
@@ -199,13 +220,8 @@ class TestStdioPgroupReaping:
     """_kill_orphaned_mcp_children reaps via killpg when a pgid is tracked."""
 
     def _reset_state(self):
-        from tools.mcp_tool import (
-            _orphan_stdio_pid_servers,
-            _orphan_stdio_pids,
-            _stdio_pgids,
-            _stdio_pids,
-            _lock,
-        )
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
+        from tools.mcp_tool import _lock
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
@@ -214,12 +230,8 @@ class TestStdioPgroupReaping:
 
     def test_killpg_used_when_pgid_tracked(self, monkeypatch):
         """SIGTERM and SIGKILL route through killpg when pgid is known."""
-        from tools.mcp_tool import (
-            _kill_orphaned_mcp_children,
-            _orphan_stdio_pids,
-            _stdio_pgids,
-            _lock,
-        )
+        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids
+        from tools.mcp_tool import _lock
 
         self._reset_state()
         fake_pid = 525252
@@ -257,12 +269,8 @@ class TestStdioPgroupReaping:
         group, killpg(pgid) would signal the gateway itself and crash it.
         The guard must skip killpg for that pgid and fall through to per-pid
         os.kill instead."""
-        from tools.mcp_tool import (
-            _kill_orphaned_mcp_children,
-            _orphan_stdio_pids,
-            _stdio_pgids,
-            _lock,
-        )
+        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids
+        from tools.mcp_tool import _lock
 
         if not hasattr(os, "killpg") or not hasattr(os, "getpgrp"):
             pytest.skip("os.killpg/os.getpgrp not available on this platform")
@@ -305,12 +313,8 @@ class TestStdioPgroupReaping:
 
     def test_no_pgid_uses_per_pid_kill(self, monkeypatch):
         """When no pgid is recorded (e.g. Windows), fall back to os.kill."""
-        from tools.mcp_tool import (
-            _kill_orphaned_mcp_children,
-            _orphan_stdio_pids,
-            _stdio_pgids,
-            _lock,
-        )
+        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids
+        from tools.mcp_tool import _lock
 
         self._reset_state()
         fake_pid = 747474
@@ -397,14 +401,9 @@ class TestStdioPgroupReaping:
         assert os.getpgid(grandchild_pid) == parent_pgid
 
         # Drive the reaper: register the parent pid + pgid as an orphan.
-        from tools.mcp_tool import (
-            _kill_orphaned_mcp_children,
-            _orphan_stdio_pid_servers,
-            _orphan_stdio_pids,
-            _stdio_pgids,
-            _stdio_pids,
-            _lock,
-        )
+        from tools.mcp_tool_lifecycle import (
+            _kill_orphaned_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids)
+        from tools.mcp_tool import _lock
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
@@ -500,7 +499,7 @@ class TestMCPInitialConnectionRetry:
                 raise AssertionError("Should not attempt after shutdown")
 
             with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
-                 patch('tools.mcp_tool._jittered', lambda s: 0.01):
+                 patch('tools.mcp_tool_common._jittered', lambda s: 0.01):
                 task = asyncio.ensure_future(server.run({"command": "fake"}))
 
                 # Give the first attempt time to fail, then set shutdown
@@ -562,7 +561,7 @@ class TestMCPLoopDrainOnStop:
             mcp_mod._servers.clear()
             mcp_mod._server_connecting.clear()
         try:
-            mcp_mod._ensure_mcp_loop()
+            _mcp_loop._ensure_mcp_loop()
             with mcp_mod._lock:
                 loop = mcp_mod._mcp_loop
             assert loop is not None
@@ -601,7 +600,7 @@ class TestMCPLoopDrainOnStop:
                     ),
                 ),
             ):
-                mcp_mod._stop_mcp_loop()
+                _mcp_loop._stop_mcp_loop()
 
             assert state["task"] is not None
             assert state["task"].done(), "task left pending when the loop closed"
@@ -614,11 +613,12 @@ class TestMCPLoopDrainOnStop:
             with mcp_mod._lock:
                 mcp_mod._servers.clear()
                 mcp_mod._server_connecting.clear()
-            mcp_mod._stop_mcp_loop()
+            _mcp_loop._stop_mcp_loop()
 
     def test_drain_is_bounded_when_task_ignores_cancellation(self, caplog):
         """A cancellation-resistant task must not hang final MCP shutdown."""
         import tools.mcp_tool as mcp_mod
+        from tools import mcp_tool_lifecycle as _mcp_lifecycle
 
         async def _run():
             release = asyncio.Event()
@@ -634,7 +634,7 @@ class TestMCPLoopDrainOnStop:
             try:
                 with caplog.at_level("WARNING", logger=mcp_mod.logger.name):
                     async with asyncio.timeout(0.5):
-                        await mcp_mod._drain_mcp_loop_tasks(timeout=0.01)
+                        await _mcp_lifecycle._drain_mcp_loop_tasks(timeout=0.01)
                 assert not task.done(), "drain waited indefinitely for resistant task"
             finally:
                 release.set()
@@ -655,6 +655,7 @@ class TestMCPLoopDrainOnStop:
         """A blocked loop must drain after it resumes, not stop ahead of the drain."""
         import threading
         import tools.mcp_tool as mcp_mod
+        from tools import mcp_tool_loop as _mcp_loop
 
         parked_started = threading.Event()
         cleanup_ran = threading.Event()
@@ -675,7 +676,7 @@ class TestMCPLoopDrainOnStop:
         with mcp_mod._lock:
             mcp_mod._servers.clear()
             mcp_mod._server_connecting.clear()
-        mcp_mod._ensure_mcp_loop()
+        _mcp_loop._ensure_mcp_loop()
         with mcp_mod._lock:
             loop = mcp_mod._mcp_loop
         assert loop is not None
@@ -690,7 +691,7 @@ class TestMCPLoopDrainOnStop:
         release_timer.start()
         try:
             with caplog.at_level("WARNING", logger=mcp_mod.logger.name):
-                mcp_mod._stop_mcp_loop()
+                _mcp_loop._stop_mcp_loop()
 
             assert cleanup_ran.is_set(), "drain was overtaken by loop.stop"
             assert future.done(), "parked task remained pending after loop resumed"
@@ -702,7 +703,7 @@ class TestMCPLoopDrainOnStop:
             with mcp_mod._lock:
                 mcp_mod._servers.clear()
                 mcp_mod._server_connecting.clear()
-            mcp_mod._stop_mcp_loop()
+            _mcp_loop._stop_mcp_loop()
 
         assert any(
             "Timed out waiting for MCP loop drain" in record.getMessage()

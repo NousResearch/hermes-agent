@@ -97,3 +97,46 @@ def test_e2e_no_scrub_child_keeps_planted_secret(tmp_path, monkeypatch):
         env=env, capture_output=True, text=True, timeout=60, check=True,
     )
     assert out.stdout.strip() == "sk-FAKE-planted"
+
+
+# ---------------------------------------------------------------------------
+# E2E regression (#93082): cron/no_agent children keep bare `hermes` on PATH
+# ---------------------------------------------------------------------------
+
+
+def test_e2e_scrubbed_env_resolves_bare_hermes_under_minimal_parent_path(monkeypatch):
+    """Regression for #92998/#93082: a gateway launched by systemd/cron with a
+    minimal PATH (no hermes console-script dir) must still hand cron job
+    children an env whose PATH resolves bare ``hermes``.
+
+    Exercises the REAL factory and the REAL bin-dir resolver — no mocks of the
+    helpers. cron/scheduler._run_job_script builds its child env via exactly
+    this call (``build_subprocess_env()`` with scrub on).
+    """
+    import shutil
+
+    from tools.environments import local as local_mod
+
+    bin_dir = local_mod._resolve_hermes_bin_dir()
+    if not bin_dir or not os.path.isfile(
+        os.path.join(bin_dir, "hermes.exe" if os.name == "nt" else "hermes")
+    ):
+        pytest.skip("no real hermes console-script install available")
+
+    # Simulate the service-manager minimal PATH: hermes dir absent.
+    minimal_path = os.pathsep.join(["/usr/bin", "/bin"])
+    monkeypatch.setenv("PATH", minimal_path)
+    assert shutil.which("hermes", path=minimal_path) is None
+
+    env = build_subprocess_env(scrub_secrets=True)  # cron _run_job_script path
+
+    resolved = shutil.which("hermes", path=env.get("PATH", ""))
+    assert resolved is not None, (
+        f"bare 'hermes' must resolve from the child PATH {env.get('PATH')!r}"
+    )
+    assert os.path.dirname(resolved) == bin_dir
+    assert env["PATH"].split(os.pathsep)[0] == bin_dir
+    # Idempotent: running the parent env through the factory again must not
+    # duplicate the entry.
+    env2 = build_subprocess_env(env, scrub_secrets=True)
+    assert env2["PATH"].split(os.pathsep).count(bin_dir) == 1

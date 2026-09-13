@@ -494,12 +494,26 @@ class TestMarkJobRun:
         mark_job_run(job["id"], success=True)
         assert get_job(job["id"])["failure_streak"] == 0
 
+    def test_failure_history_survives_later_success(self, tmp_cron_dir):
+        """A later success resets the streak but preserves historical failure evidence."""
+        job = create_job(prompt="Flaky", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="timeout")
+        failed = get_job(job["id"])
+        assert failed["ever_failed"] is True
+        assert failed["last_failed_at"] == failed["last_run_at"]
+        mark_job_run(job["id"], success=True)
+        recovered = get_job(job["id"])
+        assert recovered["failure_streak"] == 0
+        assert recovered["ever_failed"] is True
+        assert recovered["last_failed_at"] == failed["last_failed_at"]
+
     def test_failure_streak_ignores_delivery_errors(self, tmp_cron_dir):
         """A successful run with a delivery error must not count as a failure."""
         job = create_job(prompt="Report", schedule="every 1h")
         mark_job_run(job["id"], success=False, error="timeout")
         mark_job_run(job["id"], success=True, delivery_error="send failed: 502")
         assert get_job(job["id"])["failure_streak"] == 0
+        assert get_job(job["id"])["ever_failed"] is True
 
     def test_failure_streak_backcompat_missing_field(self, tmp_cron_dir):
         """Jobs persisted before the field existed increment from 0."""

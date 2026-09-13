@@ -552,7 +552,10 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         name = label_source[:50].strip() or "cron job"
     normalized["name"] = name
     normalized["schedule_display"] = _schedule_display_for_job(normalized)
-
+    # Failure history is deliberately distinct from the current consecutive streak: a later
+    # successful run must not erase evidence that this job failed in the past.
+    normalized.setdefault("ever_failed", False)
+    normalized.setdefault("last_failed_at", None)
     # Display state is derived from the scheduler-honoured ``enabled`` flag so a
     # half-paused record (enabled=true + state/paused_at) cannot render as
     # "paused" while the fleet is still live. See effective_job_state().
@@ -2032,6 +2035,8 @@ def create_job(
         "last_delivery_error": None,
         "failure_streak": 0,
         # Delivery configuration
+        "ever_failed": False,
+        "last_failed_at": None,
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
@@ -2348,6 +2353,129 @@ def remove_job(job_id: str) -> bool:
                 _fire_fence_locks.pop(_fence_key, None)
             return True
     return False
+def _set_alert_flag(job_id: str, field: str, value: bool) -> bool:
+    """Set/clear a persisted alert-dedup marker (alert exactly once until the condition heals;
+    survives restarts) and return the PRIOR value. Field: ``preflight_alerted`` (blocked config).
+
+    The marker records that the operator was already alerted about this job's condition, so the scheduler
+    alerts exactly once and stays silent on subsequent ticks until the condition heals (same alert-once
+    shape as the dead-pin auto-pause in #73506).
+    """
+    def apply(jobs, _i, job):
+        prior = bool(job.get(field))
+        if value:
+            job[field] = True
+        else:
+            job.pop(field, None)
+        if prior != value:
+            save_jobs(jobs)
+        return prior
+
+    return _with_job(job_id, apply, False)
+
+
+def mark_preflight_alerted(job_id: str) -> bool:
+    """Mark the job as preflight-alerted; return True if it already was."""
+    return _set_alert_flag(job_id, "preflight_alerted", True)
+
+
+def clear_preflight_alerted(job_id: str) -> None:
+    """Clear the preflight alert-dedup marker (config validates again)."""
+    _set_alert_flag(job_id, "preflight_alerted", False)
+
+
+def note_fire_forward_failure(job_id: str, detail: str) -> bool:
+    """Durably record (as ``last_fire_error``) that a scheduled fire could not be handed to the
+    runner — written by the dashboard fire webhook when the loopback forward fails. Without it
+    the miss is invisible (no execution row, last_status only covers started runs); mark_job_run
+    clears it."""
+    def apply(jobs, _i, job):
+        job["last_fire_error"] = {
+            "at": _hermes_now().isoformat(), "detail": str(detail or "")[:500]}
+        save_jobs(jobs)
+        return True
+
+    return _with_job(job_id, apply, False)
+
+
+def _record_run_outcome(
+    job: Dict[str, Any], success: bool, error: Optional[str], delivery_error: Optional[str],
+    status: Optional[str], now: str,
+) -> None:
+    """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
+    job["last_run_at"] = now
+    job.pop("manual_run_at", None)
+    # The transient manual-run context is single-fire: the run that just completed consumed it.
+    job.pop("manual_run_prompt", None)
+    delivery_failed = isinstance(delivery_error, str) and bool(delivery_error.strip())
+    job["last_status"] = status or (
+        "error" if not success else ("delivery_failed" if delivery_failed else "ok"))
+    job["last_error"] = None if success else error
+    if success:
+        # Healthy run: drop the alert-once dedup markers so a FUTURE break re-alerts, and clear
+        # the forward-failure stamp so it only describes CURRENT auto-fire health.
+        job.pop("preflight_alerted", None)
+        job.pop("last_fire_error", None)
+        job["failure_streak"] = 0
+    else:
+        # Consecutive agent-failure streak; delivery failures do NOT count
+        # (scheduler._failure_streak_nudge).
+        job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
+        job["ever_failed"] = True
+        job["last_failed_at"] = now
+    job["last_delivery_error"] = delivery_error
+    # Clear both claims: the run is over, so the job is claimable again.
+    job["fire_claim"] = None
+    job.pop("pending_slot", None)
+    if job.get("run_claim") is not None:  # keep key absence for legacy records
+        job["run_claim"] = None
+
+
+def _advance_after_run(job: Dict[str, Any], now: str) -> None:
+    """Bump ``repeat.completed`` and recompute ``next_run_at``; retire the record as a terminal
+    completion when the repeat limit is reached or a one-shot has no further run."""
+    # If no next run, decide whether this is terminal completion (one-shot) or a transient failure
+    # (recurring schedule couldn't compute — e.g. 'croniter' missing from the runtime env). Recurring jobs
+    # must NEVER be silently disabled: that turns a missing runtime dep into "job completed" and the user's
+    # schedule quietly goes off. See issue #16265.
+    kind = job.get("schedule", {}).get("kind")
+    # One-shot dispatch-limit guard (issue #38758): a finite one-shot claimed via claim_dispatch() but whose
+    # tick died before mark_job_run could remove it will have completed >= times while still looking due
+    # (last_run_at was never written, so the recovery helper re-armed it). Remove it instead of re-firing.
+    repeat = job.get("repeat")
+    if repeat:
+        times = repeat.get("times")
+        finite = times is not None and times > 0
+        completed = repeat.get("completed", 0)
+        # Finite one-shots were pre-claimed by claim_dispatch() (completed already incremented) —
+        # do not double-count; recurring jobs and direct callers still get the increment.
+        if not (kind == "once" and finite and completed > 0):
+            completed += 1
+            repeat["completed"] = completed
+        if finite and completed >= times:
+            # Limit reached: retain a terminal record instead of popping it, so the status just
+            # written stays inspectable in `cronjob list`; the retention sweep prunes it later.
+            _complete_job_record(job)
+            return
+
+    job["next_run_at"] = compute_next_run(job["schedule"], now)
+    if job["next_run_at"] is not None:
+        if job.get("state") != "paused":
+            job["state"] = "scheduled"
+    elif kind in {"cron", "interval"}:
+        # Recurring: transient failure (e.g. croniter missing) — disabling it would turn a missing
+        # dep into "job completed" and silently drop the schedule.
+        job["state"] = "error"
+        if not job.get("last_error"):
+            job["last_error"] = (
+                "Failed to compute next run for recurring schedule (is the 'croniter' package "
+                "installed in the gateway's Python env?)")
+        logger.error(
+            "Job '%s' (%s) could not compute next_run_at; "
+            "leaving enabled and marking state=error so the job is not silently disabled.",
+            job.get("name", job.get("id", "?")), kind)
+    else:
+        _complete_job_record(job)  # one-shot: terminal completion
 
 
 def mark_job_run(
@@ -2517,6 +2645,8 @@ def _mark_job_run_locked(
                     job["failure_streak"] = 0
                 else:
                     job["failure_streak"] = int(job.get("failure_streak") or 0) + 1
+                    job["ever_failed"] = True
+                    job["last_failed_at"] = now
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 # Clear any external-fire claim so a re-armed recurring job can

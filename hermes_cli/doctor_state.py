@@ -327,7 +327,7 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
     if bot_token or bot_login:
         try:
             from hermes_cli.github_identity import GitHubAutomationIdentity
-            GitHubAutomationIdentity.from_environment({
+            identity = GitHubAutomationIdentity.from_environment({
                 "HERMES_GITHUB_BOT_LOGIN": bot_login or "",
             })
         except Exception:
@@ -337,7 +337,10 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
             )
         else:
             if bot_token:
-                check_ok("Dedicated Hermes GitHub automation token configured (mrkillbobbot)")
+                check_ok(
+                    "Dedicated Hermes GitHub automation token configured "
+                    f"({identity.expected_login})"
+                )
             else:
                 check_warn(
                     "Dedicated Hermes GitHub automation token is incomplete",

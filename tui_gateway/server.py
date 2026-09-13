@@ -556,9 +556,16 @@ def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
     if source_path == configured_path:
         return policy
 
-    configured_common = git_probe.common_repo_root(str(configured_path)) or str(configured_path)
-    selected_common = git_probe.common_repo_root(str(source_path)) or str(source_path)
-    if Path(configured_common).resolve() == Path(selected_common).resolve():
+    configured_common = git_probe.common_repo_root(str(configured_path))
+    selected_common = git_probe.common_repo_root(str(source_path))
+    if not configured_common or not selected_common:
+        from agent.conversation_worktree import ConversationWorktreeError
+        raise ConversationWorktreeError(
+            "selected session repository common identity could not be established",
+            phase="identity",
+        )
+    same_repository = Path(configured_common).resolve() == Path(selected_common).resolve()
+    if same_repository and source_path == configured_path:
         return policy
     if policy.worktree_root is None:
         return policy
@@ -590,7 +597,10 @@ def _conversation_worktree_policy_for_session(policy, session_cwd: str | None):
         source_path,
         worktree_root,
     )
-    return replace(policy, source_worktree=selected_common_path, worktree_root=worktree_root)
+    # Keep the selected checkout as the manager source so its HEAD becomes the
+    # immutable conversation base.  ``selected_common`` remains the durable
+    # repository namespace and ownership identity used above.
+    return replace(policy, source_worktree=source_path, worktree_root=worktree_root)
 
 
 def _conversation_worktree_manager(*, profile_home=None, db=None, session_cwd=None):
@@ -697,7 +707,9 @@ def _bind_conversation_worktree_on_submit(session: dict) -> None:
         session["explicit_cwd"] = True
         _register_session_cwd(session)
         if db is not None:
-            common_root = git_probe.common_repo_root(metadata["path"]) or str(binding.repo_common_dir)
+            common_root = git_probe.common_repo_root(metadata["path"])
+            if not common_root:
+                common_root = str(binding.repo_common_dir)
             try:
                 db.update_session_cwd(
                     key, metadata["path"], metadata.get("branch", ""),

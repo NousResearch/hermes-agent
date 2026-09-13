@@ -5,6 +5,7 @@ helpers (``_sessions``, ``_ok``, ``_err``, ...) bare; module-level helpers are p
 server.py the same way (tests monkeypatching ``server.X`` still intercept)."""
 
 import contextlib
+from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -1105,7 +1106,9 @@ def _(rid, params: dict) -> dict:
             if binding_record is None:
                 return _err(rid, 5036, "conversation worktree binding disappeared")
             session_row = db.get_session(root_session_id) or {}
-            binding_cwd = session_row.get("cwd") or binding_record.worktree_path
+            # The session cwd is mutable (project workspace switches); cleanup
+            # must resolve the durable binding's repository identity instead.
+            binding_cwd = str(Path(binding_record.repo_common_dir).resolve().parent)
             manager, _owned_db, owns_db = _conversation_worktree_manager(
                 profile_home=profile_home,
                 db=db,

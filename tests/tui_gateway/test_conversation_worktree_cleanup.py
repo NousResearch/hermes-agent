@@ -17,6 +17,7 @@ class _Record:
     worktree_path: str = "/repo/worktrees/root"
     branch: str = "hermes/session/root"
     base_commit: str = "a" * 40
+    repo_common_dir: str = "/repo/.git"
     state: str = "ready"
 
 
@@ -125,7 +126,7 @@ def test_cleanup_manager_uses_root_session_repository_context(monkeypatch):
     response = call({"session_id": "root", "action": "inspect"})
 
     assert "error" not in response
-    assert manager_calls == ["/repo/worktrees/root"]
+    assert manager_calls == ["/repo"]
 
 
 def test_inspect_reports_live_root_binding_as_active(monkeypatch):

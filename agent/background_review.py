@@ -146,6 +146,11 @@ def cancel_background_review_for_live_turn(agent: Any) -> None:
 # Aux-model routing: by default ("auto") the fork runs on the MAIN model and replays the full
 # conversation as warm cache reads. When auxiliary.background_review.{provider,model} routes it
 # to a DIFFERENT model the cache is cold anyway, so the fork replays a compact digest instead.
+#
+# ``_REVIEW_MAX_ITERATIONS`` is the DEFAULT for one background-review fork; operators can override
+# via ``auxiliary.background_review.max_iterations`` (see ``_review_max_iterations``). The default
+# of 16 is tight on purpose — most reviews need 1-3 iterations and any surplus burns full-budget
+# replayed input tokens for no benefit.
 _REVIEW_MAX_ITERATIONS = 16
 # Aggregate INPUT-token budget for one review fork (checked in conversation_loop's
 # ``_review_input_budget_exhausted``). Request #1 replays the full snapshot as a warm cache read
@@ -182,6 +187,27 @@ def _review_input_token_budget(task_cfg: Optional[Dict[str, Any]] = None) -> Opt
     except (TypeError, ValueError):
         budget = _REVIEW_MAX_INPUT_TOKENS_DEFAULT
     return budget if budget > 0 else None
+
+
+def _review_max_iterations(task_cfg: Optional[Dict[str, Any]] = None) -> int:
+    """Iteration budget for one background-review fork.
+
+    Reads ``auxiliary.background_review.max_iterations`` (default ``_REVIEW_MAX_ITERATIONS``,
+    currently 16). Numeric strings are coerced. Garbage / non-positive values fall back to the
+    default so a typo cannot silently disable the review loop by handing ``AIAgent`` an
+    invalid ``max_iterations`` (which the constructor would either reject or, worse, accept
+    as ``sys.maxsize`` and let the review run unbounded).
+
+    No clamp / range restriction: operators can lower the cost floor to 1 for tight cost
+    control, or raise it well above the default for unusually heavy reviews (the global
+    ``agent.max_iterations`` cap still applies).
+    """
+    raw = _background_review_task_config(task_cfg).get("max_iterations", _REVIEW_MAX_ITERATIONS)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _REVIEW_MAX_ITERATIONS
+    return value if value > 0 else _REVIEW_MAX_ITERATIONS
 
 
 def load_background_review_settings() -> tuple[bool, Dict[str, Any]]:
@@ -1024,7 +1050,7 @@ def _run_review_fork(
     keeps the ``background_review`` origin (curator/skill guards still apply) but marks the fork
     attended, so the unattended-only memory delete gate leaves the full operation set available."""
     st.review_agent, _rt, _routed = build_cache_parity_fork(
-        agent, task_cfg, max_iterations=_REVIEW_MAX_ITERATIONS)
+        agent, task_cfg, max_iterations=_review_max_iterations(task_cfg))
     st.review_agent._review_attended = explicit
     _track_review_fork(agent, st.review_agent, register=True)
     from hermes_cli.plugins import set_thread_tool_whitelist, clear_thread_tool_whitelist

@@ -739,9 +739,10 @@ DEFAULT_CONFIG = {
         # Post-turn self-improvement fork (save memory / patch skill). "auto" = main model replaying
         # the full conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
         # enabled=false skips auto spawns (/refine still works). max_input_tokens caps the SUM of
-        # replayed input tokens over the review loop (iterations capped at 16); the loop stops
-        # before crossing it. <= 0 = unlimited.
-        "background_review": {"enabled": True, **_aux(120), "max_input_tokens": 600000},
+        # replayed input tokens over the review loop (default 600_000); <= 0 = unlimited.
+        # max_iterations caps the per-fork iteration budget (default 16); non-positive values
+        # fall back to the default. The loop stops before crossing either gate.
+        "background_review": {"enabled": True, **_aux(120), "max_input_tokens": 600000, "max_iterations": 16},
         # No reasoning_effort on MoA blocks by design — configured PER SLOT in the preset
         # (moa.presets.<name>.reference_models[].reasoning_effort / aggregator.reasoning_effort).
         "moa_reference": _aux(900, reasoning_effort=False),

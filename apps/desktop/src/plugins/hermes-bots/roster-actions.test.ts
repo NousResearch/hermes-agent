@@ -146,6 +146,32 @@ describe('new activity after the seed', () => {
     expect(markUnreadMock).not.toHaveBeenCalled()
   })
 
+  it('does not re-toast an unchanged preview when last_active keeps advancing', async () => {
+    const { $activityToasts, trackInboundActivity } = await loadActions()
+
+    $activityToasts.set(true)
+    trackInboundActivity([chatting('researcher', 5000)])
+    trackInboundActivity([chatting('researcher', 6000, 'same message')])
+    // A busy bridge (Feishu) re-pings the same message; last_active moved on
+    // but the preview is identical — must not produce a second toast.
+    trackInboundActivity([chatting('researcher', 7000, 'same message')])
+
+    const toasts = hostMock.notify.mock.calls.filter((c) => c[0].title.includes('has new activity') || c[0].title.includes('New message for'))
+    expect(toasts.length).toBe(1)
+  })
+
+  it('toasts again once the preview actually changes', async () => {
+    const { $activityToasts, trackInboundActivity } = await loadActions()
+
+    $activityToasts.set(true)
+    trackInboundActivity([chatting('researcher', 5000)])
+    trackInboundActivity([chatting('researcher', 6000, 'first message')])
+    trackInboundActivity([chatting('researcher', 7000, 'second message')])
+
+    const toasts = hostMock.notify.mock.calls.filter((c) => c[0].title.includes('has new activity') || c[0].title.includes('New message for'))
+    expect(toasts.length).toBe(2)
+  })
+
   it('keeps marking a roster-hidden bot but never toasts it', async () => {
     const { $activityToasts, $botMeta, trackInboundActivity } = await loadActions()
 

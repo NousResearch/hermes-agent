@@ -280,10 +280,11 @@ export function groupChatMemberBots(
 
 /** A stored member descriptor, resolved against the live roster when its
  *  `name` is not a real slug (#92794). Exact key matches pass through
- *  untouched; only a descriptor whose key matches NO roster row is re-tried
- *  by friendly name against rows on the same connection. Unresolvable
- *  descriptors return as-is — they stay visible-but-degraded ghosts and must
- *  never be used as a `profile:` target. */
+ *  untouched; only a descriptor whose key matches NO roster row is re-tried —
+ *  by friendly name, then by recorded previous profile names (#110200) —
+ *  against rows on the same connection. Unresolvable descriptors return as-is
+ *  — they stay visible-but-degraded ghosts and must never be used as a
+ *  `profile:` target. */
 function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[]): RosterRow {
   const rows = roster || []
 
@@ -326,7 +327,20 @@ function resolveLegacyMemberDescriptor(descriptor: RosterRow, roster: RosterRow[
           String(name || '')
             .trim()
             .toLowerCase() === wanted
-      )
+      ) ||
+      // … or a profile renamed after the descriptor was persisted
+      // ('niezale-ny' for 'niezalezny'): the CLI records previous_names in
+      // profile.yaml and the gateway surfaces them on profiles.list.
+      // Returning the live row re-seats the member under its new identity;
+      // the next persistence pass rewrites the stored descriptor, so the
+      // repair is self-healing.
+      (Array.isArray(bot?.previous_names) &&
+        bot.previous_names.some(
+          previous =>
+            String(previous || '')
+              .trim()
+              .toLowerCase() === wanted
+        ))
   )
 
   return match || descriptor
@@ -361,6 +375,14 @@ export function durableGroupChatMembers(bots: RosterRow[]): GroupMember[] {
       ...(bot.display_name
         ? {
             display_name: bot.display_name
+          }
+        : {}),
+      // Previous profile names ride along so @-mentions using a pre-rename
+      // handle still resolve after the descriptor heals to the new slug,
+      // even when the live roster row is unreachable (#110200).
+      ...(Array.isArray(bot.previous_names) && bot.previous_names.length > 0
+        ? {
+            previous_names: [...bot.previous_names]
           }
         : {}),
       connectionId: bot.connectionId,

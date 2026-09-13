@@ -78,6 +78,23 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     }
   }
 
+  // Renamed members keep answering to their previous handles: a profile
+  // renamed after the room was created (or @-typed from muscle memory)
+  // still routes to the right member. Previous-name forms only fill gaps —
+  // a live name always wins over another member's history (#110200).
+  for (const member of members) {
+    const key = groupMemberKey(member)
+    const previous = Array.isArray(member.previous_names) ? member.previous_names : []
+
+    for (const name of previous) {
+      for (const form of mentionNameForms(name)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, key)
+        }
+      }
+    }
+  }
+
   for (const match of source.matchAll(/@([a-z0-9][a-z0-9._-]*)/gi)) {
     const handle = match[1].toLowerCase()
 

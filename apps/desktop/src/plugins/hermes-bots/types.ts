@@ -100,6 +100,11 @@ export interface RosterRow {
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string
+  /** Canonical ids this profile was previously known by (`hermes profile
+   *  rename` records them in profile.yaml; the gateway surfaces them on
+   *  profiles.list). Lets group chats re-link persisted member descriptors
+   *  after a rename (#110200). */
+  previous_names?: string[]
   ui_meta?: Record<string, unknown> & { 'hermes-bots'?: BotMeta }
   /** Compare-and-swap revisions, per ui_meta key. */
   ui_meta_revisions?: Record<string, number>
@@ -116,6 +121,7 @@ export type GroupMember = Pick<
   | 'ghost'
   | 'handle'
   | 'name'
+  | 'previous_names'
   | 'remoteSource'
   | 'route'
   | 'sourceMissing'

@@ -107,3 +107,44 @@ class TestBillingExitIsNotRateLimit:
 
     def test_billing_code_is_distinct_from_rate_limit(self):
         assert kb.KANBAN_BILLING_EXIT_CODE != kb.KANBAN_RATE_LIMIT_EXIT_CODE
+
+
+class TestBillingExitIsTerminal:
+    def test_billing_exit_blocks_task_immediately_and_unblock_recovers(
+        self, kanban_home, monkeypatch,
+    ):
+        """End-to-end, from reaped billing exit through the next dispatch:
+        the task must land ``blocked`` with an actionable error — not sit
+        ``ready`` forever behind the ``blocker_auth`` respawn guard, where it
+        never runs again and ``unblock_task`` cannot even act on it (upstream
+        review finding on the stop-boundary repair)."""
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+        with kbc.connect() as conn:
+            host = kb._claimer_id().split(":", 1)[0]
+            tid = kb.create_task(conn, title="billing job", assignee="builder")
+            kb.claim_task(conn, tid, claimer=f"{host}:w0")
+            pid = 75000
+            conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+            conn.commit()
+            dispatch._record_worker_exit(pid, kb.KANBAN_BILLING_EXIT_CODE << 8)
+
+            auto_blocked = dispatch.detect_crashed_workers(conn)
+
+            task = kb.get_task(conn, tid)
+            assert tid in auto_blocked, (
+                "a billing exit must be terminal immediately — retrying can "
+                "never fix an empty account"
+            )
+            assert task.status == "blocked", (
+                f"billing must park the task blocked, got {task.status!r}: a "
+                "ready task behind blocker_auth is invisible to the operator "
+                "and unreachable by unblock_task"
+            )
+            assert task.last_failure_error and "billing" in task.last_failure_error
+
+            # The human recovery path the reviewer named: unblock must act on
+            # the parked task and return it to a runnable phase.
+            assert kb.unblock_task(conn, tid) is True
+            assert kb.get_task(conn, tid).status in ("ready", "todo")

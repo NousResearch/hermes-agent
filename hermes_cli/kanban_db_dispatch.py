@@ -780,9 +780,11 @@ def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
         )
     if kind == "billing":
         # 402/credit exhaustion — a terminal-for-now account state, not a task
-        # defect and not a quota wall. Counts as a NORMAL failure so the
-        # breaker trips quickly and the task parks blocked with an actionable
-        # error (top up / switch route), instead of relaunching forever.
+        # defect and not a quota wall. ``_account_crashes`` force-trips the
+        # breaker on the FIRST billing exit so the task parks blocked with an
+        # actionable error (top up / switch route): a merely-counted failure
+        # would leave it ``ready`` behind the blocker_auth respawn guard,
+        # never running and unreachable by ``unblock_task``.
         return _DeadWorker(
             kind, code,
             f"pid {pid} exited on billing (credits exhausted / payment required) — "
@@ -810,9 +812,11 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
-    # ``(task_id, pid, claimer, protocol_violation, error_text)``: accounted
-    # after the txn via ``_record_task_failure`` (needs its own write_txn).
-    crash_details: list[tuple[str, int, str, bool, str]] = field(default_factory=list)
+    # ``(task_id, pid, claimer, protocol_violation, billing, error_text)``:
+    # accounted after the txn via ``_record_task_failure`` (needs its own
+    # write_txn). Billing is terminal on first exit — no retry fixes an empty
+    # account — so it force-trips the breaker regardless of retry budgets.
+    crash_details: list[tuple[str, int, str, bool, bool, str]] = field(default_factory=list)
     # Worker-exit observer payloads, fired only after every reclaim/accounting
     # txn has committed.
     exited_hook_payloads: list[dict] = field(default_factory=list)
@@ -885,7 +889,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append(
-                    (row["id"], pid, row["claim_lock"], dead.protocol_violation, dead.error_text)
+                    (row["id"], pid, row["claim_lock"], dead.protocol_violation,
+                     dead.kind == "billing", dead.error_text)
                 )
     return sweep
 
@@ -900,10 +905,10 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
     """
     auto_blocked: list[str] = []
     fp_counts: dict[str, int] = {}
-    for _, _, _, _, err_text in crash_details:
+    for _, _, _, _, _, err_text in crash_details:
         fp = _error_fingerprint(err_text)
         fp_counts[fp] = fp_counts.get(fp, 0) + 1
-    for tid, pid, claimer, protocol_violation, error_text in crash_details:
+    for tid, pid, claimer, protocol_violation, billing, error_text in crash_details:
         if protocol_violation:
             streak = _protocol_violation_streak(conn, tid)
             trow = conn.execute("SELECT max_retries FROM tasks WHERE id = ?", (tid,)).fetchone()
@@ -936,11 +941,16 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
             )
         else:
             is_systemic = fp_counts.get(_error_fingerprint(error_text), 0) >= 3
+            # Billing is terminal on the FIRST exit: no retry policy (task
+            # ``max_retries`` included) can fix a 402, and a merely-counted
+            # failure leaves the task ``ready`` behind the blocker_auth
+            # respawn guard — parked invisibly, unreachable by unblock_task.
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
                 failure_limit=1 if is_systemic else None,
+                force_trip=billing,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},

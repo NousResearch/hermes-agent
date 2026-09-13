@@ -4031,12 +4031,15 @@ def _failed_backend_skip(
 def _try_main_agent_model_fallback(
     failed_provider: str, task: str = None, reason: str = "error",
     failed_model: Optional[str] = None, failed_base_url: str = "", failure_scope: Any = None,
+    main_runtime: Optional[Dict[str, Any]] = None,
+    excluded_identities: set[tuple[str, str, str, str]] | None = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Last-resort fallback to the main agent provider + model after the configured chain is exhausted.
     ``failed_model`` scoping per ``_failed_backend_skip``; same-URL custom endpoints serve many models,
     so a hung aux model says nothing about the main model's health. Returns (client, model, label) or (None, None, "")."""
-    main_provider = (_read_main_provider() or "").strip()
-    main_model = (_read_main_model() or "").strip()
+    runtime = _normalize_main_runtime(main_runtime)
+    main_provider = (runtime.get("provider") or _read_main_provider() or "").strip()
+    main_model = (runtime.get("model") or _read_main_model() or "").strip()
     if main_provider.lower() == "moa":
         # MoA virtual provider: fall back to the preset's aggregator (the acting model).
         _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
@@ -4045,7 +4048,7 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
-    main_base_url = _custom_health_base_url(main_provider)
+    main_base_url = str(runtime.get("base_url") or "").strip() or _custom_health_base_url(main_provider)
     if _failed_backend_skip(
             failed_provider, failed_model, failed_base_url=failed_base_url,
             failure_scope=failure_scope)(main_provider, main_model, main_base_url):
@@ -4053,8 +4056,23 @@ def _try_main_agent_model_fallback(
     if _is_provider_unhealthy(main_provider, main_base_url):
         _log_skip_unhealthy(main_provider, task, base_url=main_base_url)
         return None, None, ""
+    identity = (
+        main_provider,
+        main_model,
+        main_base_url,
+        str(runtime.get("api_mode") or "").strip(),
+    )
+    if excluded_identities is not None and identity in excluded_identities:
+        return None, None, ""
     try:
-        client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
+        client, resolved_model = resolve_provider_client(
+            provider=main_provider,
+            model=main_model,
+            explicit_base_url=main_base_url or None,
+            explicit_api_key=runtime.get("api_key"),
+            api_mode=runtime.get("api_mode"),
+            main_runtime=runtime,
+        )
     except Exception:
         client, resolved_model = None, None
     if client is None:
@@ -4120,6 +4138,7 @@ def _context_too_small(
 def _try_configured_fallback_chain(
     task: str, failed_provider: str, reason: str = "error", failed_model: Optional[str] = None, *,
     failed_base_url: str = "", failure_scope: Any = None,
+    excluded_identities: set[tuple[str, str, str, str]] | None = None,
 ) -> Tuple[Optional[Any], Optional[str], str]:
     """Try auxiliary.<task>.fallback_chain entries in order (each needs ``provider``; model/base_url/api_key optional).
     ``failed_model`` scoping per ``_failed_backend_skip`` (sibling models on the same provider still
@@ -4154,6 +4173,18 @@ def _try_configured_fallback_chain(
         except Exception:
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            destination = _fallback_destination_from_entry(
+                entry, fb_client, resolved_model or fb_model
+            )
+            identity = (
+                destination.provider,
+                destination.model or "",
+                destination.base_url,
+                destination.api_mode or "",
+            )
+            if excluded_identities is not None and identity in excluded_identities:
+                tried.append(f"{label} (already attempted)")
+                continue
             too_small = _context_too_small(
                 entry, fb_provider, resolved_model, min_ctx, task=task, label=label, name_model=True,
             ) if resolved_model else None

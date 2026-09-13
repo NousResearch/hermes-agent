@@ -140,6 +140,10 @@ def export_board(
         # The snapshot is a private file with no other writers, so plain
         # commit/close is enough — no need for the board DB's WAL dance.
         with contextlib.closing(sqlite3.connect(str(staged / "kanban.db"))) as snapshot:
+            # The copied DB retains its writer-identity triggers. This is the
+            # one sanctioned raw snapshot writer; identify it before scrubbing
+            # machine-local state (#110080).
+            kbc._register_writer_identity(snapshot)
             _scrub_local_state(snapshot)
             snapshot.commit()
             counts = _count_rows(snapshot)

@@ -33,6 +33,23 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
+# Persistent triggers make the write boundary visible to SQLite itself. A raw
+# ``sqlite3 kanban.db`` connection has no registered identity function, while a
+# connection opened by the kanban kernel does. This turns direct task/event/run
+# edits into a loud SQLite error instead of letting them bypass the kanban verbs
+# and their gates (#110080).
+_WRITER_IDENTITY_FUNCTION = "_hermes_kanban_writer_authorized"
+_WRITER_GUARD_TABLES = (
+    "tasks",
+    "task_links",
+    "task_comments",
+    "task_events",
+    "task_runs",
+    "task_attachments",
+    "kanban_notify_subs",
+)
+_WRITER_GUARD_ERROR = "kanban board writes require Hermes kanban verbs"
+
 # Cap on ``<db>.corrupt.<hash>.bak`` quarantines per board: content-addressing
 # dedupes identical bytes, but mutating corruption mints a new fingerprint each
 # time (one user hit 124). Oldest-by-mtime beyond the cap are pruned after each
@@ -79,6 +96,33 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
             conn.close()
         raise
     return conn
+
+
+def _register_writer_identity(conn: sqlite3.Connection) -> None:
+    """Identify a connection opened by the kanban kernel to SQLite triggers."""
+    conn.create_function(
+        _WRITER_IDENTITY_FUNCTION,
+        0,
+        lambda: 1,
+        deterministic=True,
+    )
+
+
+def _install_writer_guards(conn: sqlite3.Connection) -> None:
+    """Install persistent DML guards after schema migration/rebuild completes."""
+    for table in _WRITER_GUARD_TABLES:
+        for operation in ("INSERT", "UPDATE", "DELETE"):
+            trigger = f"kanban_writer_guard_{table}_{operation.lower()}"
+            conn.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {trigger}
+                BEFORE {operation} ON {table}
+                WHEN {_WRITER_IDENTITY_FUNCTION}() != 1
+                BEGIN
+                    SELECT RAISE(ABORT, '{_WRITER_GUARD_ERROR}');
+                END
+                """
+            )
 
 
 def _try_lock_nb(handle) -> bool:
@@ -639,6 +683,7 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     conn = _sqlite_connect(path)
     try:
         conn.row_factory = sqlite3.Row
+        _register_writer_identity(conn)
         with _INIT_LOCK:
             # WAL doesn't work on network filesystems; the helper falls back to
             # DELETE with one ERROR log (see hermes_state_wal._WAL_INCOMPAT_MARKERS).
@@ -727,6 +772,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
             if resolved not in _INITIALIZED_PATHS:
                 conn.executescript(_kb.SCHEMA_SQL)
                 _migrate_add_optional_columns(conn)
+                _install_writer_guards(conn)
                 _INITIALIZED_PATHS.add(resolved)
 
         conn, _ = _open_configured(path, _init_if_needed)

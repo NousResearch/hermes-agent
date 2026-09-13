@@ -763,7 +763,13 @@ _SHELL_RC_BASENAMES = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
     ".zshrc", ".zprofile", ".zlogin", ".zshenv",
 })
+# Filter readers take a PATTERN/program as their first positional; only the operands after
+# it are files, so ``grep .bashrc app.py`` must not gate on the pattern.
+_PATTERN_FIRST_COMMANDS = frozenset({"grep", "awk", "sed"})
 _HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
+# ``$HOME/.hermes/config.yaml`` keeps the ``.hermes`` segment, so stripping the prefix is
+# enough to gate it; ``~/`` already survives the ``$``-bearing-path bail-out.
+_HOME_PREFIXES = ("$HOME/", "${HOME}/")
 
 
 def _command_segments(command: str) -> list[str]:
@@ -806,6 +812,10 @@ def _is_secret_file_arg(arg: str) -> bool:
             path = path[len(prefix):]
             hermes_home = True
             break
+    for prefix in _HOME_PREFIXES:
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            break
     if "$" in path:
         return False
     parts = [part.lower() for part in path.split("/") if part]
@@ -824,9 +834,15 @@ def _command_reads_secret_file(command: str | None) -> bool:
         return False
     for seg in _command_segments(command):
         tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
-        if not tokens or tokens[0].rsplit("/", 1)[-1].lower() not in _FILE_READ_COMMANDS:
+        if not tokens:
             continue
-        if any(_is_secret_file_arg(arg) for arg in tokens[1:] if not arg.startswith("-")):
+        reader = tokens[0].rsplit("/", 1)[-1].lower()
+        if reader not in _FILE_READ_COMMANDS:
+            continue
+        positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
+        if reader in _PATTERN_FIRST_COMMANDS:
+            positional = positional[1:]
+        if any(_is_secret_file_arg(arg) for arg in positional):
             return True
     return False
 

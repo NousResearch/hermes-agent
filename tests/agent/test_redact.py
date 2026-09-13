@@ -996,6 +996,11 @@ class TestTerminalOutputRedaction:
                 "variablePathSecret123456789",
             ),
             (
+                "cat $HOME/.hermes/config.yaml",
+                "SERVICE_TOKEN=homeVariablePathSecret123456",
+                "homeVariablePathSecret123456",
+            ),
+            (
                 "awk '{print $1; print $2}' ~/.bashrc",
                 "export SERVICE_TOKEN=awkQuotedSecret123",
                 "awkQuotedSecret123",
@@ -1022,6 +1027,8 @@ class TestTerminalOutputRedaction:
             "cat ~/.bashrc.example",
             'cat "$OTHER/config.yaml"',
             "grep TOKEN app.py",
+            "grep .bashrc app.py",
+            "grep -n .env src/settings.py",
             "awk '/TOKEN/' settings.yaml",
             "sed -n '1,20p' template.yaml",
         ],

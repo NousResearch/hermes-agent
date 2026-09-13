@@ -575,9 +575,13 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     with _hermes_home_scope(_session_home(session)):
-        if not session.get("running") and session.get("agent") is not None:
+        if (not session.get("running") and session.get("agent") is not None
+                and not session.get("one_turn_model_restore")):
             _apply_pending_model_switch(sid, session)
-            _sync_agent_model_with_config(sid, session)
+            # A pending /model --once can install the override here too. Admission
+            # must inspect that selected route, not sync it back to the config.
+            if not session.get("one_turn_model_restore"):
+                _sync_agent_model_with_config(sid, session)
         free_tier_block = _free_tier_session_refusal(session)
     if free_tier_block is not None:
         if session.get("running") and not internal_hosted_submit:

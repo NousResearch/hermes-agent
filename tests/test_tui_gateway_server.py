@@ -12841,6 +12841,8 @@ def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch)
             self._target()
 
     def _apply_pending(_sid, session):
+        if not session.pop("pending_model_switch", None):
+            return
         with session["history_lock"]:
             session["history"].append(marker)
             session["history_version"] += 1
@@ -12868,6 +12870,63 @@ def test_prompt_submit_snapshots_history_after_pending_model_switch(monkeypatch)
         assert "warning" not in complete[0][2]
     finally:
         server._sessions.pop("sid", None)
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_prompt_submit_preserves_one_turn_model_override_before_admission(monkeypatch, pending):
+    """The early free-tier probe must not undo a /model --once selection."""
+    seen = {}
+
+    class _Agent:
+        model = "one-turn-model"
+
+        def run_conversation(self, prompt, **_kwargs):
+            seen["model"] = self.model
+            return {
+                "final_response": "reply",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, **_kwargs):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    session = _session(agent=_Agent())
+    restore = {"model": "original-model"}
+    if pending:
+        session["pending_model_switch"] = {"raw": "one-turn-model --once"}
+
+        def _apply_pending(_sid, target):
+            assert target.pop("pending_model_switch")["raw"] == "one-turn-model --once"
+            target["one_turn_model_restore"] = restore
+
+        monkeypatch.setattr(server, "_apply_pending_model_switch", _apply_pending)
+    else:
+        session["one_turn_model_restore"] = restore
+    sync = Mock(side_effect=AssertionError("config sync would undo the once model"))
+    restored = []
+    monkeypatch.setitem(server._sessions, "sid_once", session)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_sync_agent_model_with_config", sync)
+    monkeypatch.setattr(server, "_restore_agent_model_runtime", lambda agent, snapshot: restored.append(snapshot))
+    monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+    monkeypatch.setattr(server, "render_message", lambda *_a: "")
+    monkeypatch.setattr(server, "_emit", lambda *a: None)
+
+    response = server.handle_request({"id": "once", "method": "prompt.submit", "params": {
+        "session_id": "sid_once", "text": "hi"}})
+
+    assert response["result"]["status"] == "streaming"
+    assert seen["model"] == "one-turn-model"
+    assert restored == [restore]
+    sync.assert_not_called()
+    assert "one_turn_model_restore" not in session
 
 
 def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
@@ -20818,12 +20877,16 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
 def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_path):
     """The trim boundary must not retain the just-pruned history snapshots."""
     observed = {}
-    cleanup_order = []
+    active_scopes = []
+    trimmed_scope = []
+    reset_scopes = []
 
     class _Agent:
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None,
+            persist_user_message=None,
         ):
+            observed["persist_user_message"] = persist_user_message
             return {
                 "final_response": "reply",
                 "messages": [{"role": "assistant", "content": "reply"}],
@@ -20839,8 +20902,11 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
 
     def _inspect_trim_frame(**_kwargs):
         import inspect
+        from hermes_constants import get_hermes_home
 
-        cleanup_order.append("trim")
+        assert active_scopes
+        assert get_hermes_home() == profile_home
+        trimmed_scope.append(active_scopes[-1])
         frame = inspect.currentframe()
         assert frame is not None and frame.f_back is not None
         caller_locals = frame.f_back.f_locals
@@ -20852,6 +20918,19 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
         )
         observed["history"] = caller_locals.get("history")
         observed["run_kwargs"] = caller_locals.get("run_kwargs")
+
+    real_set_home = server.set_hermes_home_override
+    real_reset_home = server.reset_hermes_home_override
+
+    def _set_home(home):
+        token = real_set_home(home)
+        active_scopes.append(token)
+        return token
+
+    def _reset_home(token):
+        assert active_scopes.pop() is token
+        reset_scopes.append(token)
+        real_reset_home(token)
 
     session = _session(agent=_Agent())
     profile_home = tmp_path / "profiles" / "worker"
@@ -20867,12 +20946,8 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
         monkeypatch.setattr(server, "_get_usage", lambda _a: {})
         monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
         monkeypatch.setattr(server, "_emit", lambda *a: None)
-        monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: object())
-        monkeypatch.setattr(
-            server,
-            "reset_hermes_home_override",
-            lambda _token: cleanup_order.append("reset_home"),
-        )
+        monkeypatch.setattr(server, "set_hermes_home_override", _set_home)
+        monkeypatch.setattr(server, "reset_hermes_home_override", _reset_home)
         monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _inspect_trim_frame)
 
         resp = server.handle_request(
@@ -20884,9 +20959,12 @@ def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_pa
         )
 
         assert resp is not None and resp.get("result")
+        assert observed["persist_user_message"] == "hi"
         assert not observed["history"]
         assert not observed["run_kwargs"]
-        assert cleanup_order == ["trim", "reset_home"]
+        assert len(trimmed_scope) == 1
+        assert any(token is trimmed_scope[0] for token in reset_scopes)
+        assert not active_scopes
     finally:
         server._sessions.pop("sid_trim", None)
 

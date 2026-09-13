@@ -1338,21 +1338,12 @@ def _split_namespace_list(raw: Optional[str]) -> "tuple[Optional[str], frozenset
     return valid[0], frozenset(valid)
 
 
-def install_namespaces() -> "tuple[Optional[str], frozenset[str]]":
-    """``(canonical, accepted)`` namespace tokens for THIS install.
+def _resolve_install_namespaces(override: str) -> "tuple[Optional[str], frozenset[str]]":
+    """The uncached resolution ``install_namespaces()`` memoises.
 
-    Resolution order: ``HERMES_KANBAN_NAMESPACE`` (explicit override — deploy,
-    tests, containers), ``kanban.namespace`` in ``config.yaml`` (comma-separated,
-    first token canonical), then the OS user running the install, which is the
-    identity the install is already implicit under (``/home/<user>/.hermes``;
-    every dispatched worker inherits it). Deliberately NOT ``display_name``
-    (cosmetic, user-editable) and NOT the hostname — two installs share this host,
-    which is precisely the shared-board case.
-
-    ``(None, frozenset())`` when nothing resolves ⇒ install-relative and
-    namespaced assignees are refused rather than guessed.
+    ``override`` is the already-stripped ``HERMES_KANBAN_NAMESPACE`` value (``""``
+    when unset). See :func:`install_namespaces` for the documented order.
     """
-    override = os.environ.get("HERMES_KANBAN_NAMESPACE", "").strip()
     if override:
         return _split_namespace_list(override)
     try:
@@ -1375,6 +1366,62 @@ def install_namespaces() -> "tuple[Optional[str], frozenset[str]]":
         return _split_namespace_list(pwd.getpwuid(os.geteuid()).pw_name)
     except Exception:
         return None, frozenset()
+
+
+# The resolution, memoised for the life of the process. ``install_namespaces()``
+# sits on the dispatcher's per-tick path and the namespace is a DEPLOY-TIME
+# fact: changing it is a deliberate act that takes a restart (gateway) or a
+# fresh process (worker), so re-parsing ``config.yaml`` every tick buys nothing.
+# The memo is keyed on the raw override so ``HERMES_KANBAN_NAMESPACE`` stays
+# first in the order and stays live (an env read is a dict lookup, not a config
+# parse); the config read and the OS-user fallback happen once per process.
+_NAMESPACE_MEMO: "Optional[tuple[Optional[str], frozenset[str]]]" = None
+_NAMESPACE_MEMO_KEY: Optional[str] = None
+
+
+def _reset_namespace_cache() -> None:
+    """Drop the per-process namespace memo.
+
+    Tests that vary the install's namespace within one process must call this
+    when the variation has to be visible: the ``HERMES_KANBAN_NAMESPACE`` override
+    is part of the memo key and therefore live anyway, but a namespace derived
+    from ``config.yaml`` or the OS user is read once, so a test that rewrites
+    ``config.yaml`` mid-process needs this reset to be re-read. Nothing outside
+    tests calls it and no refusal or remedy depends on it.
+    """
+    global _NAMESPACE_MEMO, _NAMESPACE_MEMO_KEY
+    _NAMESPACE_MEMO = None
+    _NAMESPACE_MEMO_KEY = None
+
+
+def install_namespaces() -> "tuple[Optional[str], frozenset[str]]":
+    """``(canonical, accepted)`` namespace tokens for THIS install.
+
+    Resolution order: ``HERMES_KANBAN_NAMESPACE`` (explicit override — deploy,
+    tests, containers), ``kanban.namespace`` in ``config.yaml`` (comma-separated,
+    first token canonical), then the OS user running the install, which is the
+    identity the install is already implicit under (``/home/<user>/.hermes``;
+    every dispatched worker inherits it). Deliberately NOT ``display_name``
+    (cosmetic, user-editable) and NOT the hostname — two installs share this host,
+    which is precisely the shared-board case.
+
+    ``(None, frozenset())`` when nothing resolves ⇒ install-relative and
+    namespaced assignees are refused rather than guessed.
+
+    Read ONCE per process (:data:`_NAMESPACE_MEMO`): the gateway resolves it at
+    start and every tick after that is free, while a dispatched worker is a fresh
+    process and reads it at spawn. Identical semantics for what matters — the
+    value only changes through a restart — without a config parse per tick. The
+    ``HERMES_KANBAN_NAMESPACE`` override is part of the memo key, so it takes
+    effect in-process as well (:func:`_reset_namespace_cache` for tests that need
+    a full re-read).
+    """
+    global _NAMESPACE_MEMO, _NAMESPACE_MEMO_KEY
+    override = os.environ.get("HERMES_KANBAN_NAMESPACE", "").strip()
+    if _NAMESPACE_MEMO is None or _NAMESPACE_MEMO_KEY != override:
+        _NAMESPACE_MEMO = _resolve_install_namespaces(override)
+        _NAMESPACE_MEMO_KEY = override
+    return _NAMESPACE_MEMO
 
 
 def canonical_install_namespace() -> Optional[str]:

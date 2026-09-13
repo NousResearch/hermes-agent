@@ -81,11 +81,27 @@ def fleet(monkeypatch):
         from hermes_cli import kanban_db_dispatch as kbd
         for slug, namespace in boards.items():
             kb.create_board(slug=slug, name=slug, namespace=namespace)
+        # The install namespace is resolved once per process and memoised, so a
+        # fresh module (above) is a fresh startup. Clearing explicitly keeps a
+        # test that runs after an in-process env swap honest either way.
+        kbd._reset_namespace_cache()
         env = SimpleNamespace(
             home=home, kb=kb, kbc=kbc, kbd=kbd, boards=dict(boards),
             monkeypatch=monkeypatch,
         )
-        env.as_install = lambda ns: monkeypatch.setenv("HERMES_KANBAN_NAMESPACE", ns)
+
+        def as_install(ns):
+            """Tick as though THIS install's dispatcher were the one running.
+
+            ``HERMES_KANBAN_NAMESPACE`` is part of the namespace memo key, so the
+            swap is picked up anyway; the documented reset hook is called too, so
+            the tests exercise it (and so a config-derived namespace, which is
+            only read once per process, would be re-read).
+            """
+            monkeypatch.setenv("HERMES_KANBAN_NAMESPACE", ns)
+            kbd._reset_namespace_cache()
+
+        env.as_install = as_install
         return env
 
     return build

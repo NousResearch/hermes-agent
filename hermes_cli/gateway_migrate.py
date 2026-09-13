@@ -465,6 +465,7 @@ def format_rollback_plan(default_home: Path, manifest: dict, *, dry_run: bool) -
     head = "Rollback plan (dry run — nothing changed)" if dry_run else "Rollback plan"
     lines = [head, f"  default home: {default_home}", "", "  Steps:"]
     lines.append("  - default: restore gateway.multiplex_profiles to its pre-migration value")
+    lines.append("  - default: clear multiplex-owned runtime status")
     for rec in manifest.get("secondaries", []):
         if not isinstance(rec, dict):
             continue
@@ -478,7 +479,6 @@ def format_rollback_plan(default_home: Path, manifest: dict, *, dry_run: bool) -
             action = "restore its recorded standalone gateway"
         lines.append(f"  - {name}: {action}")
     lines += [
-        "  - default: clear multiplex-owned runtime status",
         f"  - remove rollback manifest {default_home / MANIFEST_NAME}",
         "  - default: restart the standalone gateway last",
     ]
@@ -639,19 +639,25 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
         "default", default_home, pid=_live_gateway_pid(default_home),
         service=(default_service["kind"], bool(default_service.get("system"))) if default_service else _installed_service(default_home),
     )
-    ok = True
-    secondary_names: set[str] = set()
-    for rec in manifest.get("secondaries", []):
-        if not isinstance(rec, dict):
-            ok = False
-            print("  ✗ invalid secondary record in migration manifest")
-            continue
+    secondaries = [rec for rec in manifest.get("secondaries", []) if isinstance(rec, dict)]
+    ok = len(secondaries) == len(manifest.get("secondaries", []))
+    if not ok:
+        print("  ✗ invalid secondary record in migration manifest")
+    # The live multiplexer's record still claims every secondary; a per-profile gateway started
+    # while it does is refused (exit 78, parked by RestartPreventExitStatus) — clear it FIRST.
+    try:
+        _reconcile_standalone_runtime(default_home, {str(rec.get("profile") or "") for rec in secondaries})
+        print("  ✓ default: cleared multiplex-owned runtime status")
+    except Exception as exc:
+        print(f"  ✗ default: could not clear multiplex-owned runtime status ({exc})")
+        print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
+        return False
+    for rec in secondaries:
         name = str(rec.get("profile") or "")
         try:
             home = Path(rec["home"])
             if not name:
                 raise ValueError("missing profile name")
-            secondary_names.add(name)
             service = rec.get("service")
             if service:
                 kind, system = service["kind"], bool(service.get("system"))
@@ -667,32 +673,27 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
         except Exception as exc:
             ok = False
             print(f"  ✗ {name or '<unknown>'}: {exc}")
-    if not ok:
-        print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
-        return False
-
-    try:
-        _reconcile_standalone_runtime(default_home, secondary_names)
-        print("  ✓ default: cleared multiplex-owned runtime status")
+    if ok:
         _manifest_path(default_home).unlink(missing_ok=True)
-    except Exception as exc:
-        print(f"  ✗ default: could not finish rollback cleanup ({exc})")
-        print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
-        return False
-
+    # The flag is already off, so the default must come back standalone even when a secondary
+    # failed (otherwise config and the live process disagree). The restart is LAST: from inside
+    # the gateway's cgroup a service-manager restart kills this process, so nothing after it runs.
     if default_gw.has_gateway:
         try:
             print(f"  ✓ {_restart_default(default_gw, None, default_home)}")
         except Exception as exc:
-            try:
-                _write_manifest(default_home, manifest)
-            except Exception as manifest_exc:
-                print(f"  ✗ default: could not restore rollback manifest ({manifest_exc})")
+            if ok:
+                try:
+                    _write_manifest(default_home, manifest)
+                except Exception as manifest_exc:
+                    print(f"  ✗ default: could not restore rollback manifest ({manifest_exc})")
+            ok = False
             print(f"  ✗ default: could not restart its standalone gateway ({exc})")
-            print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
-            return False
-    print("✓ Rolled back to per-profile gateways.")
-    return True
+    if ok:
+        print("✓ Rolled back to per-profile gateways.")
+    else:
+        print(f"⚠ Rollback incomplete; manifest kept at {_manifest_path(default_home)}.")
+    return ok
 
 
 # --------------------------------------------------------------------------- CLI + update hook

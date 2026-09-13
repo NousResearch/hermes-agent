@@ -39,6 +39,7 @@ def fleet(tmp_path, monkeypatch):
         services={"coder": ("systemd", False), "ops": ("systemd", False)},
         pids={"coder": 4101, "ops": 4102},
         ops=[],
+        refused_at_start={},
     )
 
     def _name(home: Path) -> str:
@@ -47,6 +48,11 @@ def fleet(tmp_path, monkeypatch):
     def _service_op(kind, system, verb, home):
         name = _name(home)
         state.ops.append((name, verb))
+        if verb == "start" and name != "default":
+            # What the real `hermes -p <name> gateway run` checks first: is a live multiplexer
+            # still recorded as serving me? (exit 78 if so — the unit is then parked for good).
+            from hermes_cli.gateway import named_profile_served_by_running_multiplexer
+            state.refused_at_start[name] = named_profile_served_by_running_multiplexer(name)
         if verb == "uninstall":
             state.services.pop(name, None)
         elif verb == "install":
@@ -128,12 +134,37 @@ def test_apply_records_manifest_flips_flag_and_rollback_restores(fleet, capsys):
     assert [op for op in fleet.ops if op[0] != "default"] == [
         ("coder", "install"), ("coder", "start"), ("ops", "install"), ("ops", "start")]
     assert fleet.ops[-1] == ("default", "restart")
+    # Each secondary's own gateway must have been startable at the moment it was started.
+    assert fleet.refused_at_start == {"coder": False, "ops": False}
     runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
     assert runtime["served_profiles"] == []
     assert runtime["platforms"] == {"telegram": {"state": "connected"}}
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     assert named_profile_served_by_running_multiplexer("coder") is False
     assert not (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def test_rollback_with_failed_secondary_still_restarts_default_and_keeps_manifest(fleet, monkeypatch):
+    assert gm.apply_migration(gm.build_migration_plan(), served_wait=5.0) is True
+    fleet.ops.clear()
+    real_op = gm._service_op
+
+    def _flaky(kind, system, verb, home):
+        if verb == "start" and _name_of(home) == "coder":
+            raise RuntimeError("systemctl start failed")
+        real_op(kind, system, verb, home)
+
+    monkeypatch.setattr(gm, "_service_op", _flaky)
+    assert gm.rollback_migration(fleet.root) is False
+    # The flag is off, so the default must not be left multiplexing; the manifest stays for a re-run.
+    assert _config_flag(fleet.root) is False
+    assert fleet.ops[-1] == ("default", "restart")
+    assert ("ops", "start") in fleet.ops
+    assert (fleet.root / gm.MANIFEST_NAME).exists()
+
+
+def _name_of(home: Path) -> str:
+    return hermes_constants.profile_name_for_home(home) or "default"
 
 
 def test_standalone_dry_run_prints_rollback_plan_without_mutation(fleet, capsys):

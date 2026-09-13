@@ -756,13 +756,13 @@ def _distinct_async_event(delegation_id, session_key="agent:main:telegram:dm:123
     return event
 
 
-def test_same_tick_async_batch_coalesces_into_one_turn_and_acks_all_rows(
+def test_same_tick_async_batch_coalesces_into_one_turn_and_queues_all_rows(
     monkeypatch, isolated_registry,
 ):
     """Three same-session async completions in one drain -> one synthetic turn.
 
-    All three durable delegation rows must be honestly acknowledged only
-    after the single consolidated injection was accepted by the adapter.
+    All three durable delegation rows remain queued after admission;
+    this adapter double does not execute a model turn.
     """
     from tools import async_delegation
 
@@ -787,7 +787,7 @@ def test_same_tick_async_batch_coalesces_into_one_turn_and_acks_all_rows(
     for event in events:
         row = async_delegation.get_durable_delegation(event["delegation_id"])
         assert row is not None
-        assert row["delivery_state"] == "delivered"
+        assert row["delivery_state"] == "queued"
     assert isolated.empty()
 
 
@@ -855,12 +855,12 @@ def test_failed_coalesced_async_batch_releases_claims_and_retries(
 
     asyncio.run(runner._async_delegation_watcher(interval=0))
 
-    # First tick fails as one batch, second tick delivers the same batch.
+    # First tick fails as one batch, second tick admits the same batch.
     assert adapter.handle_message.await_count == 2
     for event in events:
         row = async_delegation.get_durable_delegation(event["delegation_id"])
         assert row is not None
-        assert row["delivery_state"] == "delivered"
+        assert row["delivery_state"] == "queued"
     assert isolated.empty()
 
 
@@ -935,7 +935,7 @@ def test_unavailable_delivery_preserves_budget_across_restarts(tmp_path, unavail
         assert asyncio.run(runner._deliver_async_delegation_group(events)) is True
         for event in events:
             row = async_delegation.get_durable_delegation(event["delegation_id"])
-            assert (row["delivery_state"], row["delivery_attempts"]) == ("delivered", 1)
+            assert (row["delivery_state"], row["delivery_attempts"]) == ("delivered" if raw else "queued", 1)
         if raw:
             rows = db.get_messages("opaque-client-session")
             assert len(rows) == 1

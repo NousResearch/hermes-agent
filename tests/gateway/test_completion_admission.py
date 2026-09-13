@@ -1,4 +1,4 @@
-"""Real adapter admission is the completion acknowledgement boundary."""
+"""Refused admission is retryable; accepted completions settle only after processing."""
 import asyncio
 import logging
 import time
@@ -6,6 +6,7 @@ import time
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.completion_admission import begin_completion_event
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource, build_session_key
@@ -32,6 +33,7 @@ async def test_completion_ack_requires_admission_and_replay_never_repeats(tmp_pa
     runner = GatewayRunner(GatewayConfig())
     adapter = DiscordAdapter(PlatformConfig(enabled=True, typing_indicator=False))
     runner.adapters = {Platform.DISCORD: adapter}
+    adapter.gateway_runner = runner
     source = SessionSource(platform=Platform.DISCORD, chat_type="dm", chat_id="42", user_id="42")
     key = build_session_key(source)
     events = [pending(key, f"admission-{i}") for i in range(2)]
@@ -39,6 +41,7 @@ async def test_completion_ack_requires_admission_and_replay_never_repeats(tmp_pa
     release, started = asyncio.Event(), asyncio.Event()
 
     async def handler(event):
+        assert begin_completion_event(event)
         received.append(event.text)
         started.set()
         await release.wait()
@@ -46,6 +49,7 @@ async def test_completion_ack_requires_admission_and_replay_never_repeats(tmp_pa
             queued = runner._promote_queued_event(key, adapter, None)
             if queued is not None:
                 adapter._pending_messages[key] = queued
+        event._gateway_completion_processing_ok = True
 
     try:
         # Missing handler must not acknowledge either durable sibling.

@@ -351,6 +351,9 @@ class GatewayAgentCacheMixin:
             return
         state = self._peek_session_state(session_key)
         if state is not None:
+            from gateway.completion_admission import discard_completion_event
+            for queued_event in state.conversation.queued_events:
+                discard_completion_event(queued_event)
             state.conversation.clear()
         # Legacy plain-dict stores still in _CONVERSATION_SCOPED_STATE (not yet folded into
         # SessionState), e.g. _pending_model_notes. SessionState-backed names resolve to MutableMapping
@@ -496,7 +499,8 @@ class GatewayAgentCacheMixin:
             else:
                 await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
-            adapter.get_pending_message(session_key)  # consume and discard
+            from gateway.completion_admission import discard_completion_event
+            discard_completion_event(adapter.get_pending_message(session_key))
         if state is not None:
             state.persistent.pending_command_text = None
         if release_running_state:

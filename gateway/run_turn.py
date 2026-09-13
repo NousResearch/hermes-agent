@@ -1985,6 +1985,7 @@ class GatewayTurnMixin:
         if resolved is None:
             return
         source, session_entry, session_key = resolved
+        event._gateway_completion_resolved_session_id = session_entry.session_id
         prepared, _session_env_tokens = await self._hmwa_prepare_turn(
             event, source, session_entry, session_key, _quick_key, run_generation,
         )
@@ -2014,6 +2015,10 @@ class GatewayTurnMixin:
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
+            from gateway.completion_admission import begin_completion_event, completion_owner_is_current
+            if (not await completion_owner_is_current(self, event, session_key, run_generation)
+                    or not begin_completion_event(event)):
+                return None
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -2069,6 +2074,8 @@ class GatewayTurnMixin:
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
+            from gateway.run import _should_clear_resume_pending_after_turn
+            event._gateway_completion_processing_ok = _should_clear_resume_pending_after_turn(agent_result)
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,
                 agent_result, agent_messages, response, _footer_line, _intentional_silence,
@@ -3398,6 +3405,14 @@ class GatewayTurnMixin:
         pending_event = None
         pending = None
         if result and adapter and session_key:
+            from gateway.completion_admission import must_use_cold_handler
+            head = getattr(adapter, "_pending_messages", {}).get(session_key)
+            overflow = getattr(self, "_overflow_queue")(session_key)
+            next_event = head if head is not None else (overflow[0] if overflow else None)
+            if must_use_cold_handler(next_event):
+                if head is None and overflow:
+                    adapter._pending_messages[session_key] = overflow.pop(0)
+                return None, None
             pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).

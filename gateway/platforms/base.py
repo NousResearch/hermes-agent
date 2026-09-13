@@ -3431,7 +3431,8 @@ class BasePlatformAdapter(ABC):
         logger.warning("[%s] Healing stale session lock for %s (owner task is done/absent)",
                        self.name, session_key)
         self._active_sessions.pop(session_key, None)
-        self._pending_messages.pop(session_key, None)
+        from gateway.completion_admission import retry_completion_event
+        retry_completion_event(self.gateway_runner, self._pending_messages.pop(session_key, None), refund=True)
         self._session_tasks.pop(session_key, None)
         self._discard_text_debounce(session_key)
         return True
@@ -3444,13 +3445,14 @@ class BasePlatformAdapter(ABC):
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
         task = asyncio.create_task(self._process_message_background(event, session_key))
-        if not self._track_session_task(session_key, task):
+        if not self._track_session_task(session_key, task, event=event):
             self._session_tasks.pop(session_key, None)
             self._release_session_guard(session_key, guard=guard)
             return False
         return True
 
-    def _track_session_task(self, session_key: str, task: Any) -> bool:
+    def _track_session_task(self, session_key: str, task: Any, *,
+                            event: Optional[MessageEvent] = None) -> bool:
         """Record ``task`` as the session owner and track it for shutdown; False when
         ``create_task`` was stubbed with an unhashable sentinel (tests) — the owner entry is left
         for the caller."""
@@ -3459,6 +3461,10 @@ class BasePlatformAdapter(ABC):
             self._background_tasks.add(task)
         except TypeError:
             return False
+        from gateway.completion_admission import completion_receipts
+        if completion_receipts(event):
+            # Cancellation before the first coroutine step never runs its finally block.
+            setattr(task, "_gateway_completion_event", event)
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
             task.add_done_callback(self._expected_cancelled_tasks.discard)
@@ -3473,6 +3479,9 @@ class BasePlatformAdapter(ABC):
         if task is not None and not task.done():
             logger.debug("[%s] Cancelling active processing for session %s", self.name, session_key)
             self._expected_cancelled_tasks.add(task)
+            setattr(task, "_gateway_completion_user_cancelled", True)
+            from gateway.completion_admission import discard_completion_event
+            discard_completion_event(getattr(task, "_gateway_completion_event", None))
             task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
@@ -3486,7 +3495,8 @@ class BasePlatformAdapter(ABC):
                 logger.debug("[%s] Session cancellation raised while unwinding %s", self.name,
                              session_key, exc_info=True)
         if discard_pending:
-            self._pending_messages.pop(session_key, None)
+            from gateway.completion_admission import discard_completion_event
+            discard_completion_event(self._pending_messages.pop(session_key, None))
             self._discard_text_debounce(session_key)
         if release_guard:
             self._release_session_guard(session_key)
@@ -3997,8 +4007,11 @@ class BasePlatformAdapter(ABC):
         _thread_metadata = _thread_metadata_for_event(event)
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
-            await self._run_processing_hook("on_processing_start", event)
-            response = await self._message_handler(event)
+            from gateway.completion_admission import handle_completion_event
+            response = await handle_completion_event(
+                self.gateway_runner, self._message_handler, event,
+                start_hook=lambda: self._run_processing_hook("on_processing_start", event),
+            )
             is_ephemeral_response = isinstance(response, EphemeralReply)
             # Unwrap EphemeralReply for downstream text processing; TTL applies after send.
             response, _ephemeral_ttl = self._unwrap_ephemeral(response)
@@ -4090,7 +4103,8 @@ class BasePlatformAdapter(ABC):
         self._clear_session_guard(session_key)
         self._track_session_task(
             session_key,
-            asyncio.create_task(self._process_message_background(pending_event, session_key)))
+            asyncio.create_task(self._process_message_background(pending_event, session_key)),
+            event=pending_event)
 
     def _clear_session_guard(self, session_key: str) -> None:
         """Clear (not delete) the session's interrupt Event so the guard stays live for inbound."""
@@ -4119,6 +4133,9 @@ class BasePlatformAdapter(ABC):
     async def cancel_background_tasks(self) -> None:
         """Cancel in-flight background tasks (shutdown/replacement); 5s bound each,
         stragglers are untracked and left to unwind."""
+        from gateway.completion_admission import release_adapter_completions
+        # Fence unstarted receipts before any bounded cleanup await can time out.
+        release_adapter_completions(self)
         # Re-drain (max 5 rounds): a message arriving mid-gather spawns a task clear() would
         # untrack.
         for _ in range(5):
@@ -4137,6 +4154,7 @@ class BasePlatformAdapter(ABC):
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
                 break
+        release_adapter_completions(self)
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file
             flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")

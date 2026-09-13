@@ -163,12 +163,20 @@ const InterAgentCollapsedNotice: FC<{ sender: string }> = ({ sender }) => (
  * vary: settling is now a prop change React applies in place.
  */
 const InterAgentAssistantMessage: FC<AssistantMessageProps & { sender: string }> = ({ sender, ...props }) => {
+  // The collapse (Grok-bots parity: "Replied to X", expandable) is ONLY for
+  // replies that land inside a SHARED GROUP room, where the exchange is one
+  // event among many and the sender-side notice already narrates it. A DIRECT
+  // bot-to-bot DM has no other place to surface the answer — collapsing it
+  // hides the response entirely (the bug report). The thread opting a message
+  // into the collapse sets `data-inter-agent-collapse`; absent that, the reply
+  // renders expanded (visible) like any other assistant turn.
+  const collapse = useAuiState(s => s.message.metadata?.custom?.interAgentCollapse === true)
   const isRunning = useAuiState(s => s.message.status?.type === 'running')
 
   return (
     <AssistantMessageBody
       {...props}
-      collapsedNotice={isRunning ? null : <InterAgentCollapsedNotice sender={sender} />}
+      collapsedNotice={collapse && !isRunning ? <InterAgentCollapsedNotice sender={sender} /> : null}
     />
   )
 }

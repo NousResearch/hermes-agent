@@ -1658,6 +1658,7 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     conn.close()  # explicit close to avoid leaking THIS test
 
 
+
 def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
     """``archive_task`` on a *running* task must actually signal its host-local
     worker process, not just null ``worker_pid`` in the DB (#76196: a worker
@@ -1710,3 +1711,244 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+# ---------------------------------------------------------------------------
+# Orphaned task_runs rows — cross-session completion (#2863)
+#
+# When current_run_id is NULL (cleared by zombie reaper or a different
+# session) but a task_runs row is still status='running', _end_run must
+# close that orphan instead of leaving it stuck forever.
+# ---------------------------------------------------------------------------
+
+
+def _orphaned_runs(conn, task_id):
+    """Return all task_runs rows still status='running' with ended_at IS NULL."""
+    return conn.execute(
+        "SELECT * FROM task_runs WHERE task_id = ? AND status = 'running' AND ended_at IS NULL",
+        (task_id,),
+    ).fetchall()
+
+
+def test_end_run_closes_orphaned_when_current_run_id_null(kanban_home):
+    """_end_run closes orphaned task_runs rows when current_run_id is NULL.
+
+    Simulates the cross-session completion scenario: a task was claimed
+    (run row created), the zombie reaper or crash recovery cleared
+    current_run_id, then complete_task is called from a different session.
+    Without the fix, the orphaned row stays status='running' forever.
+    """
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="orphan test", assignee="a")
+        # Claim the task — creates a run row and sets current_run_id
+        kb.claim_task(conn, t, claimer="host:worker")
+        assert kb._current_run_id(conn, t) is not None
+
+        # Simulate the zombie reaper / crash recovery clearing current_run_id
+        # WITHOUT closing the run row (the bug condition)
+        conn.execute(
+            "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (t,)
+        )
+        assert kb._current_run_id(conn, t) is None
+        assert len(_orphaned_runs(conn, t)) == 1
+
+        # Now complete the task — _end_run should close the orphan
+        assert kb.complete_task(conn, t, result="done")
+
+        # The orphaned run must be closed
+        orphans = _orphaned_runs(conn, t)
+        assert len(orphans) == 0, f"Orphaned runs remain: {orphans}"
+
+        # The task must be done
+        task = kb.get_task(conn, t)
+        assert task.status == "done"
+
+
+def test_end_run_normal_completion_still_works(kanban_home):
+    """Normal completion path (current_run_id set) still closes the run."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="normal completion", assignee="a")
+        kb.claim_task(conn, t, claimer="host:worker")
+        run_id = kb._current_run_id(conn, t)
+        assert run_id is not None
+
+        assert kb.complete_task(conn, t, result="ok")
+
+        # No orphaned runs
+        assert len(_orphaned_runs(conn, t)) == 0
+
+        # The run was properly closed
+        run = kb.latest_run(conn, t)
+        assert run is not None
+        assert run.status == "done"
+        assert run.outcome == "completed"
+
+
+def test_zombie_reaper_then_completion_leaves_no_orphans(kanban_home):
+    """Zombie reaper clears current_run_id, then completion closes the orphan.
+
+    Simulates the full sequence: claim -> reaper clears current_run_id
+    (but leaves the run row running) -> complete_task from another
+    session closes the orphan.
+    """
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="zombie reaper test", assignee="a")
+        kb.claim_task(conn, t, claimer="host:worker")
+        assert kb._current_run_id(conn, t) is not None
+
+        # Simulate the zombie reaper: clear current_run_id and leave
+        # the run row as status='running' (what happens when the reaper
+        # clears the pointer but doesn't close the run)
+        conn.execute(
+            "UPDATE tasks SET current_run_id = NULL WHERE id = ?", (t,)
+        )
+
+        # There should be exactly one orphaned run
+        assert len(_orphaned_runs(conn, t)) == 1
+
+        # Complete the task — should close the orphan
+        assert kb.complete_task(conn, t, result="completed via different session")
+
+        # No orphaned runs remain
+        assert len(_orphaned_runs(conn, t)) == 0
+
+        # Task is done
+        task = kb.get_task(conn, t)
+        assert task.status == "done"
+
+
+def test_close_orphaned_runs_function(kanban_home):
+    """_close_orphaned_runs directly closes all running/ended_at IS NULL rows."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="close orphaned", assignee="a")
+        kb.claim_task(conn, t, claimer="host:worker")
+
+        # Manually create a second orphaned run
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, started_at) "
+            "VALUES (?, ?, 'running', ?)",
+            (t, "a", now),
+        )
+
+        # Clear current_run_id to simulate the orphan condition
+        conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (t,))
+
+        orphans_before = _orphaned_runs(conn, t)
+        assert len(orphans_before) == 2  # the claimed run + the manual one
+
+        closed = kb._close_orphaned_runs(
+            conn, t, outcome="completed", status="done", now=now
+        )
+        assert closed == 2
+        assert len(_orphaned_runs(conn, t)) == 0
+
+
+def test_close_orphaned_runs_excludes_run_id(kanban_home):
+    """_close_orphaned_runs with exclude_run_id leaves the specified run open."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="exclude test", assignee="a")
+        kb.claim_task(conn, t, claimer="host:worker")
+        active_run_id = kb._current_run_id(conn, t)
+
+        # Create an extra orphaned run
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, profile, status, started_at) "
+            "VALUES (?, ?, 'running', ?)",
+            (t, "a", now),
+        )
+
+        # Close orphans but exclude the active run
+        closed = kb._close_orphaned_runs(
+            conn, t, outcome="completed", status="done",
+            now=now, exclude_run_id=active_run_id,
+        )
+        assert closed == 1  # only the extra one was closed
+
+        # The active run is still running
+        active = conn.execute(
+            "SELECT status, ended_at FROM task_runs WHERE id = ?",
+            (active_run_id,),
+        ).fetchone()
+        assert active["status"] == "running"
+        assert active["ended_at"] is None
+
+
+def test_cleanup_orphaned_task_runs_closes_all(kanban_home):
+    """cleanup_orphaned_task_runs closes all orphaned rows across the DB."""
+    with kbc.connect() as conn:
+        # Create and complete a task with an orphaned run
+        t1 = kb.create_task(conn, title="orphan 1", assignee="a")
+        kb.claim_task(conn, t1, claimer="host:worker")
+        conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (t1,))
+        # Complete the task (which should close the orphan)
+        kb.complete_task(conn, t1, result="done")
+
+        # Create a second task and manually leave an orphaned run
+        t2 = kb.create_task(conn, title="orphan 2", assignee="a")
+        kb.claim_task(conn, t2, claimer="host:worker")
+        # Force-complete the task row without closing the run
+        conn.execute(
+            "UPDATE tasks SET status = 'done', current_run_id = NULL "
+            "WHERE id = ?", (t2,)
+        )
+        # The run row is still status='running'
+        assert len(_orphaned_runs(conn, t2)) == 1
+
+        # Run cleanup
+        closed = kb.cleanup_orphaned_task_runs(conn)
+        assert closed >= 1
+        assert len(_orphaned_runs(conn, t2)) == 0
+
+        # All tasks should have zero orphaned runs
+        all_orphans = conn.execute(
+            "SELECT COUNT(*) as cnt FROM task_runs r "
+            "JOIN tasks t ON r.task_id = t.id "
+            "WHERE r.status = 'running' AND r.ended_at IS NULL "
+            "AND t.status IN ('done', 'failed', 'blocked')"
+        ).fetchone()
+        assert all_orphans["cnt"] == 0
+
+    # Extra: orphaned run pointing to a DELETED task must also be closed
+    with kbc.connect() as conn:
+        t3 = kb.create_task(conn, title="deleted parent", assignee="a")
+        kb.claim_task(conn, t3, claimer="host:worker")
+        run_id = kb._current_run_id(conn, t3)
+        # Delete the task row but leave the run row dangling
+        conn.execute("DELETE FROM tasks WHERE id = ?", (t3,))
+        assert len(_orphaned_runs(conn, t3)) == 1
+        closed = kb.cleanup_orphaned_task_runs(conn)
+        assert closed >= 1
+        assert len(_orphaned_runs(conn, t3)) == 0
+
+
+def test_block_task_closes_orphaned_runs(kanban_home):
+    """block_task also closes orphaned runs via _end_or_synthesize_run."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="block orphan test", assignee="a")
+        kb.claim_task(conn, t, claimer="host:worker")
+
+        # Simulate current_run_id cleared by reaper
+        conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (t,))
+        assert len(_orphaned_runs(conn, t)) == 1
+
+        # Block the task
+        assert kb.block_task(conn, t, reason="stuck", kind="needs_input")
+        assert len(_orphaned_runs(conn, t)) == 0
+
+
+def test_fail_task_closes_orphaned_runs(kanban_home):
+    """Failing a task via _end_run with outcome=failed also closes orphans."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="fail orphan test", assignee="a")
+        kb.claim_task(conn, t, claimer="host:worker")
+
+        # Simulate current_run_id cleared by reaper
+        conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (t,))
+        assert len(_orphaned_runs(conn, t)) == 1
+
+        # Directly call _end_run with outcome=failed (simulates what
+        # _record_task_failure would do when end_run=True)
+        kb._end_run(conn, t, outcome="failed", status="failed", error="boom")
+        assert len(_orphaned_runs(conn, t)) == 0

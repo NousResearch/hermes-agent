@@ -208,6 +208,7 @@ class CLIStatusBarMixin:
             "battery_label": "",
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
+            "custom_segment": "",
             "goal_active": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
@@ -217,6 +218,20 @@ class CLIStatusBarMixin:
 
             snapshot["focus_label"] = focus_statusbar_segment(
                 bool(getattr(self, "_focus_view_enabled", False)))
+        except Exception:
+            pass
+
+        # Custom user command (field ``custom``) — opt-in via display.status_bar.fields, so
+        # the background runner (status_bar_custom) only ever starts when asked for. Repaint
+        # reads are cache-only and never block.
+        try:
+            _fields = self._get_status_bar_field_set()
+            if _fields is not None and "custom" in _fields:
+                command = self._get_status_bar_custom_command()
+                if command:
+                    from hermes_cli.status_bar_custom import custom_segment
+
+                    snapshot["custom_segment"] = custom_segment(command)
         except Exception:
             pass
 
@@ -956,8 +971,9 @@ class CLIStatusBarMixin:
 
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since,
-        focus, yolo, stash, battery, title, total_tokens (opt-in only). Order is fixed; the
-        config controls visibility only.
+        focus, yolo, stash, battery, title, total_tokens (opt-in only), custom (opt-in only;
+        renders display.status_bar.custom_command output). Order is fixed; the config
+        controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -973,6 +989,24 @@ class CLIStatusBarMixin:
             result = None
         self._status_bar_field_set_cache = result
         return result
+
+    def _get_status_bar_custom_command(self) -> str:
+        """``display.status_bar.custom_command`` from module-level ``CLI_CONFIG``
+        (cached like the field set; no per-render YAML parse)."""
+        if hasattr(self, "_status_bar_custom_command_cache"):
+            return self._status_bar_custom_command_cache
+        from cli import CLI_CONFIG
+        command = ""
+        try:
+            display = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
+            status_bar = (display or {}).get("status_bar") if isinstance(display, dict) else None
+            raw = status_bar.get("custom_command") if isinstance(status_bar, dict) else None
+            if isinstance(raw, str):
+                command = raw.strip()
+        except Exception:
+            command = ""
+        self._status_bar_custom_command_cache = command
+        return command
 
     def _status_bar_segments(
         self, snapshot, width: int, field_set, yolo_active: bool, *, styled: bool) -> list:
@@ -1043,6 +1077,9 @@ class CLIStatusBarMixin:
             add_count("bg_subagents", "active_background_subagents", "⛓")
         if goal_segment:
             add("goal", _STRONG, goal_segment)
+        custom_segment = snapshot.get("custom_segment") or ""
+        if custom_segment:
+            add("custom", _DIM, custom_segment)
         if not narrow:
             add("duration", _DIM, duration_label)
         if wide:

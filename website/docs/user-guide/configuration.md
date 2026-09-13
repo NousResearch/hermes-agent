@@ -2003,6 +2003,7 @@ display:
     fields: ["model", "context_pct", "cwd"]
   status_bar:             # CLI/TUI: choose which status-bar fields are visible
     fields: []            # empty = show the default set; see below
+    custom_command: ""    # shell command whose first output line renders as the opt-in 'custom' field
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   cli_rebuild_scrollback_on_redraw: false  # Classic CLI: also wipe terminal scrollback (CSI 3J) on /redraw / Ctrl+L / width-change resize recovery. Enable when a terminal/tmux stack stamps stale prompt chrome into scrollback on maximize/restore.
@@ -2115,7 +2116,24 @@ display:
     fields: ["model", "duration", "total_tokens"]   # visibility only; built-in order is preserved
 ```
 
-Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), and `total_tokens` (session Σ — opt-in only, never shown by default).
+Supported fields: `model`, `context_detail` (used/total tokens), `context_pct` (percent + meter), `cache_hit` (prompt cache hit ratio — resets on model switch and compression), `latency` (rolling mean API latency, last 10 calls), `tps` (rolling output tokens/sec, last 10 calls), `compressions`, `bg_tasks`, `bg_processes`, `bg_subagents`, `goal`, `duration`, `prompt_elapsed`, `idle_since`, `focus`, `yolo`, `stash`, `battery`, `title` (right-aligned session badge), `total_tokens` (session Σ — opt-in only, never shown by default), and `custom` (opt-in only — renders the output of `display.status_bar.custom_command`, see below).
+
+#### Custom command segment
+
+The `custom` field shows the first output line of a shell command you configure — a lightweight equivalent of a shell prompt segment (current git branch, kubectl context, a todo count):
+
+```yaml
+display:
+  status_bar:
+    fields: ["model", "context_pct", "custom", "duration"]
+    custom_command: "git rev-parse --abbrev-ref HEAD"
+```
+
+- The command never runs on the render path: repaints read a cached value and a background thread refreshes it roughly every 10 seconds (5-second execution timeout), so a slow or hung command can only make the segment stale, never freeze the UI.
+- Only the first non-empty stdout line is used, trimmed to 40 characters; empty output hides the segment.
+- It runs in the session's working directory with Hermes-managed secrets filtered from the environment (same policy as [`!` shell mode](./cli.md)).
+- Doubly opt-in: both `custom` in `fields` **and** a non-empty `custom_command` are required.
+
 
 Notes:
 

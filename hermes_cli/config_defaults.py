@@ -897,10 +897,15 @@ DEFAULT_CONFIG = {
         # config controls visibility not ordering); empty = default set. Available: model,
         # context_detail, context_pct, cache_hit, latency, tps, compressions, bg_tasks,
         # bg_processes, bg_subagents, goal, duration, prompt_elapsed, idle_since, focus, yolo,
-        # stash, battery, title, total_tokens (session Σ, opt-in only). Narrow terminals still drop
-        # context_detail/prompt_elapsed/idle_since.
+        # stash, battery, title, total_tokens (session Σ, opt-in only), custom (opt-in only:
+        # first output line of custom_command, refreshed in the background every ~10s). Narrow
+        # terminals still drop context_detail/prompt_elapsed/idle_since.
         "status_bar": {
             "fields": [],
+            # Shell command whose first output line renders as the 'custom' field, e.g.
+            # "git rev-parse --abbrev-ref HEAD" or "kubectl config current-context".
+            # Runs off the repaint path with Hermes-managed secrets filtered.
+            "custom_command": "",
         },
         "copy_shortcut": "auto",  # "auto" (platform default) | ctrl_c | ctrl_shift_c | disabled
         # Petdex animated mascot (github.com/crafter-station/petdex): cosmetic sprite across

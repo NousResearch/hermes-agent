@@ -175,6 +175,10 @@ async def test_runs_execute_code_approval_round_trip_once(monkeypatch):
         assert seen[0]["approved"] is True
         assert seen[0].get("user_approved") is True
 
+        stop_after_approval = await client.post(f"/v1/runs/{run_id}/stop")
+        assert stop_after_approval.status == 200
+        assert (await stop_after_approval.json())["status"] == "completed"
+
     _clear_run_approval(run_id)
 
 

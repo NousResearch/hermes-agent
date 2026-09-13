@@ -52,7 +52,7 @@ def execute(
             raise
         raw_result["value"] = result
         raw_result["json"] = _jsonable(result)
-        return raw_result["json"]
+        return runtime.relay.ToolExecutionResult(raw_result["json"])
 
     try:
         managed = _run_awaitable(
@@ -85,11 +85,20 @@ def execute(
             return raw_result["value"], observed_args
         raise
 
-    if "value" in raw_result and _json_equal(managed, raw_result["json"]):
+    managed_payload = _tool_execution_payload(managed)
+    if "value" in raw_result and _json_equal(managed_payload, raw_result["json"]):
         return raw_result["value"], observed_args
     if isinstance(managed, str):
         return managed, observed_args
-    return json.dumps(_jsonable(managed), ensure_ascii=False), observed_args
+    return json.dumps(_jsonable(managed_payload), ensure_ascii=False), observed_args
+
+
+def _tool_execution_payload(value: Any) -> Any:
+    """Return the JSON payload from a native ToolExecutionResult when present."""
+    payload = getattr(value, "result", None)
+    if payload is not None:
+        return payload
+    return value
 
 
 def _jsonable(value: Any) -> Any:

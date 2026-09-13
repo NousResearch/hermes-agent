@@ -451,6 +451,7 @@ class RelayRuntime:
 
     def __init__(self, relay: Any = None, *, profile_key: str | None = None) -> None:
         self.relay = relay or _load_nemo_relay()
+        _install_tool_execution_intercept_shim(self.relay)
         self.profile_key = profile_key or current_profile_key()
         self.runtime_id = uuid.uuid4().hex
         self._sessions_lock = threading.RLock()
@@ -812,14 +813,16 @@ class RelayRuntime:
                 context.run(variable.set, value)
 
             async def invoke() -> Any:
-                self.relay.get_scope_stack()
-                result = callback(*args, **kwargs)
+                def dispatch() -> Any:
+                    self.relay.get_scope_stack()
+                    return callback(*args, **kwargs)
+
+                result = context.run(dispatch)
                 if inspect.isawaitable(result):
                     return await result
                 return result
 
-            task = context.run(asyncio.create_task, invoke())
-            return await task
+            return await invoke()
         finally:
             self._end_operation()
 
@@ -1975,9 +1978,98 @@ def current_profile_key() -> str:
     return _PROFILE_KEY_CACHE.setdefault(raw, resolved)
 
 
+def _install_tool_execution_intercept_shim(relay: Any) -> None:
+    """Expose dict payloads to execution intercepts awaiting ``next_call``.
+
+    NeMo Relay 0.8+ types ``next_call`` as returning ``ToolExecutionResult``,
+    but Hermes intercepts (and bundled tests) spread the downstream payload with
+    ``{**result}``. Wrap registered intercepts so their ``next_call`` receives
+    the JSON payload while the native pipeline still records
+    ``ToolExecutionResult`` objects.
+    """
+    if getattr(relay, "_native", None) is None:
+        return
+    intercepts = relay.intercepts
+    if getattr(intercepts, "_hermes_tool_execution_payload_shim", False):
+        return
+    register = intercepts.register_tool_execution
+
+    def register_tool_execution(name: str, priority: int, fn: Any) -> None:
+        if inspect.iscoroutinefunction(fn):
+
+            async def shim(tool_name: str, args: Any, next_call: Any) -> Any:
+                async def payload_next(call_args: Any) -> Any:
+                    downstream = await next_call(call_args)
+                    payload = getattr(downstream, "result", downstream)
+                    return payload
+
+                return await fn(tool_name, args, payload_next)
+
+            wrapped = shim
+        else:
+
+            def shim(tool_name: str, args: Any, next_call: Any) -> Any:
+                async def payload_next(call_args: Any) -> Any:
+                    downstream = await next_call(call_args)
+                    payload = getattr(downstream, "result", downstream)
+                    return payload
+
+                outcome = fn(tool_name, args, payload_next)
+                if inspect.isawaitable(outcome):
+                    return outcome
+                return outcome
+
+            wrapped = shim
+
+        return register(name, priority, wrapped)
+
+    intercepts.register_tool_execution = register_tool_execution
+    intercepts._hermes_tool_execution_payload_shim = True
+
+
 def _load_nemo_relay() -> Any:
     """Load the binding only when a producer or consumer needs Relay."""
-    return importlib.import_module("nemo_relay")
+    relay = importlib.import_module("nemo_relay")
+    _install_tool_execution_intercept_shim(relay)
+    return relay
+
+
+def _discover_ambient_plugin_config_path() -> Path | None:
+    """Return the nearest ``.nemo-relay/plugins.toml`` discovered from ``cwd``."""
+    current = Path.cwd().resolve()
+    for directory in (current, *current.parents):
+        candidate = directory / ".nemo-relay" / "plugins.toml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_plugin_config_toml(path: Path) -> dict[str, Any]:
+    with path.open("rb") as config_file:
+        config = tomllib.load(config_file)
+    if "dynamic_plugins" in config:
+        raise ValueError(
+            "Hermes [[dynamic_plugins]] records are unsupported; use Relay "
+            "[[plugins.dynamic]] records"
+        )
+    plugin_config = dict(config)
+    plugin_config.pop("plugins", None)
+    return plugin_config
+
+
+def _merge_plugin_configs(
+    discovered: dict[str, Any],
+    selected: dict[str, Any],
+) -> dict[str, Any]:
+    """Layer the selected static configuration over discovered ambient config."""
+    merged = dict(discovered)
+    for key, value in selected.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_plugin_configs(existing, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _configured_plugin_inputs(
@@ -1997,22 +2089,26 @@ def _configured_plugin_inputs(
             )
         return None
 
-    config_path = Path(configured).expanduser()
+    config_path = Path(configured).expanduser().resolve()
     try:
         with config_path.open("rb") as config_file:
-            config = tomllib.load(config_file)
-        if "dynamic_plugins" in config:
+            selected_config = tomllib.load(config_file)
+        if "dynamic_plugins" in selected_config:
             raise ValueError(
                 "Hermes [[dynamic_plugins]] records are unsupported; use Relay "
                 "[[plugins.dynamic]] records"
             )
         dynamic_plugins: list[Any] = []
-        if "plugins" in config:
+        if "plugins" in selected_config:
             dynamic_plugins = relay.plugin.load_dynamic_plugin_activation_specs(
                 config_path
             )
-        plugin_config = dict(config)
+        plugin_config = dict(selected_config)
         plugin_config.pop("plugins", None)
+        discovered_path = _discover_ambient_plugin_config_path()
+        if discovered_path is not None and discovered_path != config_path:
+            discovered_config = _load_plugin_config_toml(discovered_path)
+            plugin_config = _merge_plugin_configs(discovered_config, plugin_config)
         return plugin_config, dynamic_plugins
     except Exception as exc:
         raise _RelayPluginConfigurationLoadError(

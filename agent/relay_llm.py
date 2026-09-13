@@ -21,7 +21,11 @@ _PROVIDER_MESSAGE_EXTENSION_KEYS = frozenset(
     {"reasoning_content", "reasoning_details"}
 )
 _RELAY_INTERNAL_PROVIDER_HEADERS = frozenset(
-    {"x-dynamo-parent-session-id", "x-dynamo-session-id"}
+    {
+        "traceparent",
+        "x-dynamo-parent-session-id",
+        "x-dynamo-session-id",
+    }
 )
 @dataclass(frozen=True, slots=True)
 class _RelayProtocol:

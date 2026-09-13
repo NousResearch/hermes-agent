@@ -20,10 +20,27 @@ def require_idle(db, conn, session_ids):
             reject_active_turn_lease=True, reject_active_compression_lock=True)
 
 
+def _compression_children(conn, parent_ids):
+    from hermes_state_sessions import SessionSessionsMixin
+    # Use the existing parent-bound fork predicate: compressed children inherit
+    # their parent's older branch/delegate markers without becoming new forks.
+    children = set()
+    for parent in parent_ids:
+        rows = conn.execute('''
+            SELECT child.id FROM sessions parent
+            JOIN sessions child ON child.parent_session_id=parent.id
+            WHERE parent.id=? AND parent.end_reason='compression'
+            ''' + SessionSessionsMixin._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias='child.')
+            + ' LIMIT 2', (parent, parent, parent)).fetchall()
+        if len(rows) > 1:
+            raise RuntimeStoreError('admission_conflict')
+        children.update(row[0] for row in rows)
+    return children
+
+
 def delete_targets(conn, session_id):
     from hermes_state_sessions import _collect_delegate_child_ids
     import json
-    from hermes_state_compression import _CHAIN_STEP_SQL
     from hermes_state_local import POLICY_PREFIX
     from hermes_state_local_lineage import validate_local_lineage
     targets = {session_id}
@@ -36,11 +53,10 @@ def delete_targets(conn, session_id):
     # Canonical admissions bind to the compression root for every producer, not only
     # local receipts: every physical continuation of a target goes with it, or the next
     # message on the route re-admits the "deleted" conversation through the surviving child.
-    frontier = list(targets)
+    frontier = set(targets)
     while frontier:
-        row = conn.execute(_CHAIN_STEP_SQL, (frontier.pop(),)).fetchone()
-        if row is not None and row[0] not in targets:
-            targets.add(row[0])
-            frontier.append(row[0])
-    targets.update(_collect_delegate_child_ids(conn, targets))
+        found = _compression_children(conn, frontier)
+        found.update(_collect_delegate_child_ids(conn, frontier))
+        frontier = found - targets
+        targets.update(frontier)
     return [session_id, *sorted(targets - {session_id})]

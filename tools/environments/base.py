@@ -154,6 +154,10 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Opt in only when a timed-out probe can kill its command without tearing
+    # down the whole backend. SDK adapters cancel by stopping the sandbox.
+    _sudo_nopasswd_probe_supported: bool = False
+
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
     _profile_scoped_passthrough: bool = False
@@ -258,6 +262,7 @@ class BaseEnvironment(ABC):
         _multiplex_active = False
         try:
             from agent.secret_scope import (
+                _env_name_key,
                 build_profile_env_boundary,
                 get_profile_owned_secret_names,
                 is_multiplex_active,
@@ -278,6 +283,7 @@ class BaseEnvironment(ABC):
                     *get_all_passthrough(profile_home=boundary.target_home),
                     *self._additional_profile_scoped_passthrough_names(),
                     *source_owned_names,
+                    *(_env_name_key(name) for name in source_owned_names),
                 )
                 self._snapshot_passthrough_names.update(
                     name for name in names if isinstance(name, str) and _SHELL_ENV_NAME_RE.fullmatch(name))
@@ -626,9 +632,22 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Transform sudo commands if SUDO_PASSWORD is available."""
+        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD."""
         from tools.terminal_tool_sudo import _transform_sudo_command
-        return _transform_sudo_command(command)
+        return _transform_sudo_command(command, sudo_nopasswd_check=self._sudo_nopasswd_works)
+
+    _SUDO_PROBE_TIMEOUT_S = 3
+
+    def _sudo_nopasswd_works(self) -> bool:
+        """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).
+        Fails closed: any error or a timed-out probe means "assume a password is needed"."""
+        if not self._sudo_nopasswd_probe_supported:
+            return False
+        try:
+            proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+        except Exception:
+            return False
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

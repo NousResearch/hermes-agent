@@ -784,6 +784,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'session.info': {
         const info = ev.payload
 
+        // A replayed snapshot can be the only terminal signal after reconnect.
+        // Missing running on older gateways must not clear a live turn.
+        if (info.running === false) {
+          turnController.clearStatusTimer()
+          turnController.idle()
+          setStatus('ready')
+        }
+
         patchUiState(state => ({
           ...state,
           info,
@@ -1307,6 +1315,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'secret.expire':
         patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
+
+        return
+
+      case 'vault.unlock.request':
+        patchOverlayState({
+          vaultUnlock: {
+            backend: ev.payload.backend,
+            displayName: ev.payload.display_name,
+            requestId: ev.payload.request_id
+          }
+        })
+        setStatus(`unlock ${ev.payload.display_name}`)
+        ringPromptBell()
+
+        return
+
+      case 'vault.unlock.expire':
+        patchOverlayState(prev =>
+          prev.vaultUnlock?.requestId === ev.payload.request_id ? { ...prev, vaultUnlock: null } : prev
+        )
 
         return
 

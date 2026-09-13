@@ -68,6 +68,7 @@ class _FakeRPC:
         task,
         execution_generation,
         on_terminal,
+        member_id="",
     ):
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
         return {"accepted": True}
@@ -279,6 +280,7 @@ class _PromptRecordingRPC(_FakeRPC):
         task,
         execution_generation,
         on_terminal,
+        member_id="",
     ):
         self.prompts.append((profile, prompt))
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
@@ -2073,3 +2075,19 @@ def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
     assert recovered["task_id"] == "task-1"
     assert recovered["execution_generation"] == 1
     assert recovered["prompt"] == "Recover the accepted review."
+
+
+def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
+    """`hermes profile delete` leaves ``profiles/.deleted/<name>``; neither the tombstone dir nor a
+    tombstoned profile is a roster member (#106847: ``.deleted`` failed validate_roster every cycle)."""
+    from hermes_constants import mark_named_profile_deleted
+
+    profiles = tmp_path / "profiles"
+    (profiles / "ops").mkdir(parents=True)
+    (profiles / "gone").mkdir()
+    mark_named_profile_deleted(profiles / "gone")
+    assert (profiles / ".deleted").is_dir()
+
+    service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
+
+    assert service.local_profiles() == ("default", "ops")

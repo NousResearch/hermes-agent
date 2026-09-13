@@ -13,7 +13,7 @@ import base64
 import datetime
 import uuid
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 
 def cache_dir(kind: str) -> Path:
@@ -45,7 +45,8 @@ def save_b64(kind: str, b64_data: str, *, prefix: str, extension: str) -> Path:
 def save_url(
     kind: str, url: str, *, prefix: str, timeout: float, max_bytes: int, chunk_size: int,
     content_types: Dict[str, str], url_extensions: Tuple[str, ...], default_extension: str,
-    label: str, empty_error: str,
+    label: str, empty_error: str, headers: Optional[Dict[str, str]] = None,
+    require_known_content_type: bool = False,
 ) -> Path:
     """Stream-download *url* into the cache with a size cap.
 
@@ -56,11 +57,15 @@ def save_url(
     callers can fall back to the bare URL; a partial file is never left behind.
     """
     import requests
-    response = requests.get(url, timeout=timeout, stream=True)
+    response = requests.get(url, headers=headers, timeout=timeout, stream=True)
     response.raise_for_status()
 
     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
     extension = content_types.get(content_type)
+    if require_known_content_type and extension is None:
+        raise ValueError(
+            f"{label} download returned unexpected Content-Type {content_type or '(missing)'}"
+        )
     if extension is None:
         url_path = url.split("?", 1)[0].lower()
         extension = next(

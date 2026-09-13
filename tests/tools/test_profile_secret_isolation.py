@@ -584,7 +584,7 @@ def test_build_subprocess_env_supports_standalone_explicit_boundary(tmp_path):
 
     assert _SOURCE_ONLY not in result
     assert result[_SHARED] == "beta-db"
-    assert result["PATH"].endswith(":/usr/bin")
+    assert "/usr/bin" in result["PATH"].split(os.pathsep)
 
 
 def test_ambient_force_prefix_cannot_unwrap_in_make_run_env(

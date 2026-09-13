@@ -175,10 +175,6 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
         encoding="utf-8",
     )
 
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
@@ -304,10 +300,6 @@ async def test_payload_less_split_does_not_suppress_complete_response(
         ),
         encoding="utf-8",
     )
-
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = StalePrefixAgent

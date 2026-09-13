@@ -7,7 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.env_passthrough as _ep_mod
 from tools.env_passthrough import clear_env_passthrough, is_env_passthrough
 
 # Real optional AgentMail skill — its CLI-first workflow runs `agentmail` through
@@ -20,10 +19,8 @@ _AGENTMAIL_SKILL_SRC = (
 @pytest.fixture(autouse=True)
 def _clean_passthrough():
     clear_env_passthrough()
-    _ep_mod._config_passthrough = None
     yield
     clear_env_passthrough()
-    _ep_mod._config_passthrough = None
 
 
 def _create_skill(tmp_path, name, frontmatter_extra=""):

@@ -99,7 +99,13 @@ def _assert_child_env_is_sanitized(child_env: dict[str, str]) -> None:
     for key, value in _USER_PASSWORDS.items():
         assert child_env.get(key) == value, f"user shell variable {key} was removed"
     for key, value in _SAFE.items():
-        assert child_env.get(key) == value, f"benign control {key} was not preserved"
+        if key == "PATH":
+            # An installed Hermes may prepend its interpreter's console-script
+            # directory; the caller's complete search path must remain intact.
+            with_console_dir = os.pathsep.join((str(Path(sys.executable).parent), value))
+            assert child_env.get(key) in (value, with_console_dir)
+        else:
+            assert child_env.get(key) == value, f"benign control {key} was not preserved"
 
 
 def _make_docker_exec_env():
@@ -202,11 +208,11 @@ def test_shared_popen_boundary_accepts_empty_base_env(monkeypatch, tmp_path):
     assert not set(_BLOCKED) & set(calls[0][1]["env"])
 
 
+@pytest.mark.windows_only
 def test_mixed_case_credential_names_are_denied_for_windows_semantics(
     monkeypatch, tmp_path
 ):
     """Windows treats env keys case-insensitively; the filter must do the same."""
-    monkeypatch.setattr(local_env, "_IS_WINDOWS", True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     base = {
         "Path": "C:/Windows/System32",

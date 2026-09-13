@@ -205,6 +205,12 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
+def secret_source_names() -> tuple[str, ...]:
+    """Every env-var name some profile's external secret source supplied (names only — the map is
+    process-wide, so a value must be resolved through the active profile's secret scope)."""
+    return tuple(_SECRET_SOURCES)
+
+
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
     return dict(get_external_secret_snapshot(hermes_home).data)
@@ -295,14 +301,20 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     return dict(snapshot.data)
 
 
-def reset_secret_source_cache() -> None:
-    """Forget applied homes so the next load re-pulls (tests, long-running processes after config edits)."""
-    _APPLIED_HOMES.clear()
-    _SECRET_SOURCES.clear()
-    _SECRET_SOURCE_VALUES_BY_HOME.clear()
-    _SECRET_SOURCE_SNAPSHOTS_BY_HOME.clear()
-    # Generation epochs remain monotonic across reset. A reset authorizes a
-    # refresh; it must not make a later snapshot look like the revoked epoch.
+def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> None:
+    """Revoke one home's snapshot, or all homes, without resetting generation epochs."""
+    with _SECRET_SOURCE_CACHE_LOCK:
+        if hermes_home is None:
+            _APPLIED_HOMES.clear()
+            _SECRET_SOURCES.clear()
+            _SECRET_SOURCE_VALUES_BY_HOME.clear()
+            _SECRET_SOURCE_SNAPSHOTS_BY_HOME.clear()
+            return
+        # Cron and plugin refreshes must not revoke another profile's snapshot.
+        home_key = str(Path(hermes_home).resolve())
+        _APPLIED_HOMES.discard(home_key)
+        _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
+        _SECRET_SOURCE_SNAPSHOTS_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -635,20 +647,21 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
         return
 
-    values: dict[str, str] = {}
     if report.applied_any:
-        _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env
-        # Re-run the ASCII sanitization pass: vault values are user-supplied and might have the same
-        # copy-paste corruption as a manually edited .env (see #6843).
+        _sanitize_loaded_credentials()
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
-            if name in os.environ:
-                values[name] = os.environ[name]
-        from agent.secret_scope import record_profile_owned_secret_names
 
-        # Even a subsequently stale fetch has already written ambient values.
-        record_profile_owned_secret_names(home_path, values)
+    # Startup's existing process value may win over a source value. It still
+    # belongs to this home's snapshot, including on a second pull (#102041).
+    supplied = set(report.provenance)
+    for src in report.sources:
+        supplied.update(src.skipped_existing)
+    values = {name: os.environ[name] for name in supplied if name in os.environ}
+    from agent.secret_scope import record_profile_owned_secret_names
 
+    # Even a subsequently stale fetch has already affected ambient ownership.
+    record_profile_owned_secret_names(home_path, values)
     source_errors = [src for src in report.sources if src.result.error]
     if source_errors and values:
         snapshot_status = "degraded"
@@ -666,9 +679,8 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         source_identity=source_identity,
     )
     if snapshot.status != "stale":
-        # Preserve once-per-startup error suppression, not child authority.
-        # Private boundary hydration explicitly revokes this guard and retries
-        # failed/degraded snapshots before admitting a child.
+        # Preserve startup error suppression; private admission rechecks failed
+        # or degraded authority before a child can use it.
         _APPLIED_HOMES.add(home_key)
 
     for src in report.sources:

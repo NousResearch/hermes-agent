@@ -212,15 +212,35 @@ def _resolve_safe_cwd(cwd: str) -> str:
 
 
 # --- Child-process environment construction ---
-def _apply_profile_home(env: dict) -> None:
-    """Bridge the context-local HERMES_HOME override, then the subprocess HOME contract."""
-    from hermes_constants import apply_subprocess_home_env, get_hermes_home_override
+def _apply_profile_home(
+    env: dict, profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+) -> None:
+    """Resolve source HOME before changing identity, then apply the target policy."""
+    from hermes_constants import (
+        apply_subprocess_home_env, get_hermes_home_override, get_real_home,
+        reset_hermes_home_override, set_hermes_home_override,
+    )
+    if source_profile_home is not None:
+        token = set_hermes_home_override(Path(source_profile_home))
+        try:
+            # Otherwise the source's profile HOME can be mistaken for the real
+            # OS home once HERMES_HOME (or the context override) names the target.
+            env["HOME"] = env["HERMES_REAL_HOME"] = get_real_home(env)
+        finally:
+            reset_hermes_home_override(token)
+    target = profile_home if profile_home is not None else get_hermes_home_override()
+    if target is None:
+        apply_subprocess_home_env(env)
+        return
+    env["HERMES_HOME"] = str(target)
+    token = set_hermes_home_override(Path(target))
     try:
-        if value := get_hermes_home_override():
-            env["HERMES_HOME"] = value
-    except Exception:
-        pass
-    apply_subprocess_home_env(env)
+        # The canonical HOME resolver consults context first. An explicit worker
+        # target must win for this call without changing the dispatcher's context.
+        apply_subprocess_home_env(env)
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _inject_session_context_env(env: dict) -> None:
@@ -279,21 +299,19 @@ def _filter_secret_env(
             out[key] = value
 
 
-def _finalize_child_env(env: dict) -> dict:
+def _finalize_child_env(
+    env: dict, profile_home: str | os.PathLike | None = None,
+    source_profile_home: str | os.PathLike | None = None,
+) -> dict:
     """Guards shared by every spawn surface: profile-home propagation, session-context
     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
     Kanban scrub. Returns the (possibly new) dict."""
-    _apply_profile_home(env)
+    _apply_profile_home(env, profile_home, source_profile_home)
     _inject_session_context_env(env)
     _strip_hermes_owned_pythonpath_and_runtime_markers(env)
     _apply_windows_msys_bash_env_defaults(env)
-    try:  # strip dispatcher-owned Kanban env from delegate_task child subprocesses
-        from agent.delegation_context import is_delegated_child_process_context, scrub_kanban_env
-        if is_delegated_child_process_context():
-            return scrub_kanban_env(env)
-    except Exception:
-        pass
-    return env
+    from agent.delegation_context import delegated_child_subprocess_env
+    return delegated_child_subprocess_env(env)
 
 
 def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
@@ -373,7 +391,7 @@ def _sanitize_subprocess_env(
     spawn path, search workers, computer-use driver, user-script runners)."""
     protected = dict(base_env or {})
     boundary = None
-    from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
+    from agent.secret_scope import _is_global_env, build_profile_env_boundary, is_multiplex_active
 
     boundary_active = enforce_profile_boundary or is_multiplex_active()
     if boundary_active:
@@ -423,7 +441,9 @@ def _sanitize_subprocess_env(
                 continue
             resolved = value
             if passthrough and not first_party:
-                resolved = resolve_value(key, value)
+                resolved = (boundary.target_values.get(key)
+                            if boundary is not None and cross_profile and not _is_global_env(key)
+                            else resolve_value(key, value))
             if resolved is not None:
                 out[key] = resolved
     if boundary is not None:
@@ -435,9 +455,9 @@ def _sanitize_subprocess_env(
         out, is_pass, explicit_force, enforce_password_policy=cross_profile,
         profile_home=policy_home,
     )
-    if profile_home is not None:
-        out["HERMES_HOME"] = str(profile_home)
-    out = _finalize_child_env(out)
+    out = _finalize_child_env(
+        out, boundary.target_home if boundary is not None else profile_home,
+        boundary.source_home if boundary is not None else None)
     path_key = _path_env_key(out)
     if path_key is not None:
         out[path_key] = _prepend_hermes_bin_dir(out.get(path_key, ""))
@@ -475,9 +495,9 @@ def hermes_subprocess_env(
                     and _is_credential_shaped_password(target))):
             del env[key]
     env.setdefault("PYTHONUTF8", "1")  # Windows UTF-8 safety for spawned processes
-    if boundary is not None:
-        env["HERMES_HOME"] = str(boundary.target_home)
-    return _finalize_child_env(env)
+    return _finalize_child_env(
+        env, boundary.target_home if boundary is not None else None,
+        boundary.source_home if boundary is not None else None)
 
 
 def build_subprocess_env(
@@ -503,6 +523,30 @@ def build_subprocess_env(
         _apply_profile_home(env)
     if extra:
         env.update(extra)
+    from agent.delegation_context import delegated_child_subprocess_env
+    return delegated_child_subprocess_env(env)
+
+
+def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None) -> dict:
+    """Drop the LAUNCH profile's residue from a child env built for another served profile.
+    ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
+    the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
+    ``HERMES_LANGUAGE``...), so a standalone ``hermes -p X`` worker and a served one saw different
+    envs. The child re-loads X's own ``.env`` and bridges X's config itself. ``target_home``
+    defaults to the active home override; no-op outside multiplex or when the target IS the
+    launch profile."""
+    from agent.secret_scope import _is_global_env, is_multiplex_active, load_env_file
+    from hermes_constants import get_hermes_home_override, get_process_hermes_home
+    target = target_home or get_hermes_home_override()
+    if not is_multiplex_active() or not target:
+        return env
+    launch_home = get_process_hermes_home()
+    if Path(target).resolve() == launch_home.resolve():
+        return env
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    for key in set(load_env_file(launch_home / ".env")) | set(TERMINAL_CONFIG_ENV_MAP.values()):
+        if not _is_global_env(key) or key.startswith("TERMINAL_"):
+            env.pop(key, None)
     return env
 
 
@@ -872,6 +916,7 @@ class LocalEnvironment(BaseEnvironment):
     the session snapshot preserves env vars across calls; CWD persists via the
     stdout marker."""
 
+    _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.
@@ -883,10 +928,14 @@ class LocalEnvironment(BaseEnvironment):
         names), so under a multiplexed gateway profile A's BUZZ_PRIVATE_KEY would land
         in the snapshot and be sourced by profile B. Prefix-only and monotonic on
         purpose: conservative even when the context-gated carve-out is inactive."""
-        merged = dict(os.environ | self.env)
-        return tuple(sorted(
-            name for name in merged
-            if isinstance(name, str) and _matches_terminal_first_party_prefix(name)))
+        from tools.env_passthrough import get_all_passthrough
+
+        # Unlike a remote backend bound to one target, a shared local shell
+        # executes under the current profile. Exclude that profile's grants too.
+        names = set(get_all_passthrough())
+        names.update(name for name in os.environ | self.env
+                     if isinstance(name, str) and _matches_terminal_first_party_prefix(name))
+        return tuple(sorted(names))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env)

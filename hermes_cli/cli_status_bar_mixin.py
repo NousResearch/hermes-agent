@@ -273,13 +273,15 @@ class CLIStatusBarMixin:
             # last_prompt_tokens parks at the -1 sentinel right after a compression until the
             # next real API call; clamp so the bar never renders "-1/200K".
             context_tokens = max(0, getattr(compressor, "last_prompt_tokens", 0) or 0)
+            from agent.context_breakdown import context_display_source
+            snapshot["context_estimated"] = context_display_source(compressor) != "provider_usage"
             # Display-only anchoring: on reasoning models a long tool loop replays the turn's
             # thinking on every request, so the LAST request's prompt_tokens can exceed the
             # durable transcript by hundreds of K and the bar sawtooths at the turn boundary.
             # Anchor on the turn's FIRST response plus a delta estimate of appended messages.
             # The compression trigger keeps using real last-request usage.
             try:
-                from agent.model_metadata import anchored_context_tokens
+                from agent.usage_anchor import anchored_context_tokens
 
                 _msgs = getattr(agent, "_session_messages", None)
                 _anchored = anchored_context_tokens(
@@ -288,6 +290,11 @@ class CLIStatusBarMixin:
                     charge_stale_thinking=False)
                 if _anchored is not None and _anchored > 0:
                     context_tokens = _anchored
+                    anchor = agent._turn_base_usage_anchor
+                    delta = _msgs[int(anchor["base_count"]):]
+                    if delta and delta[0].get("role") == "assistant":
+                        delta = delta[1:]
+                    snapshot["context_estimated"] = bool(delta)
             except Exception:
                 pass
             context_length = max(0, getattr(compressor, "context_length", 0) or 0)
@@ -994,21 +1001,22 @@ class CLIStatusBarMixin:
 
         if _ok("model"):
             if styled:
-                segs.append([(_SB, " ⚕ "), (_STRONG, model_short)])
+                segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
-                segs.append([("", f"⚕ {model_short}")])
+                segs.append([("", f"☤ {model_short}")])
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.
             add("duration", _DIM, duration_label)
         else:
             percent = snapshot["context_percent"]
-            percent_label = f"{percent}%" if percent is not None else "--"
+            mark = "~" if snapshot.get("context_estimated") else ""
+            percent_label = f"{mark}{percent}%" if percent is not None else "--"
             if wide and _ok("context_detail"):
                 if snapshot["context_length"]:
                     ctx_total = _format_context_length(snapshot["context_length"])
                     ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                    context_label = f"{ctx_used}/{ctx_total}"
+                    context_label = f"{mark}{ctx_used}/{ctx_total}"
                 else:
                     context_label = "ctx --"
                 segs.append([(_DIM, context_label)])
@@ -1066,7 +1074,7 @@ class CLIStatusBarMixin:
             session_title = (snapshot.get("session_title") or "") if show_title else ""
             segs = self._status_bar_segments(
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=False)
-            parts = ["".join(t for _, t in seg) for seg in segs] or [f"⚕ {model_short}"]
+            parts = ["".join(t for _, t in seg) for seg in segs] or [f"☤ {model_short}"]
             # Narrow bars always join the battery with │; wider tiers use the tier separator.
             if battery_label:
                 parts.insert(0, battery_label)
@@ -1076,7 +1084,7 @@ class CLIStatusBarMixin:
                 text = (" · " if width < 76 else " │ ").join(parts)
             return self._right_align_status_title(text, session_title, width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if (
@@ -1099,7 +1107,7 @@ class CLIStatusBarMixin:
                 snapshot, width, field_set, self._is_session_yolo_active(), styled=True)
             sep = " · " if width < 76 else " │ "
             frags: list = []
-            for seg in segs or [[(_SB, " ⚕ "), (_STRONG, snapshot["model_short"])]]:
+            for seg in segs or [[(_SB, " ☤ "), (_STRONG, snapshot["model_short"])]]:
                 if frags:
                     frags.append((_DIM, sep))
                 frags.extend(seg)
@@ -1112,7 +1120,7 @@ class CLIStatusBarMixin:
             if stash_indicator and _ok("stash"):
                 frags.extend([(_DIM, " · "), (_STRONG, stash_indicator)])
             frags.append((_SB, " "))  # one-cell right margin
-            # Battery is the first element when enabled: prepend ahead of the ⚕ marker.
+            # Battery is the first element when enabled: prepend ahead of the ☤ marker.
             battery_label = snapshot.get("battery_label") or ""
             if battery_label and _ok("battery"):
                 battery_style = self._battery_status_style(snapshot.get("battery_category", "dim"))

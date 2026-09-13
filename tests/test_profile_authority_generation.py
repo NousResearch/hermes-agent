@@ -100,3 +100,38 @@ def test_startup_disabled_source_race_is_not_empty_authority(tmp_path, monkeypat
     assert snapshot.status == "stale"
     assert snapshot.error_kind == "source_changed_during_fetch"
     assert not snapshot.data
+
+
+def test_targeted_source_reset_keeps_sibling_authority_and_epoch_order(tmp_path):
+    class HomeSource(SecretSource):
+        name = "audit_home"
+        shape = "bulk"
+
+        def is_enabled(self, cfg):
+            return cfg.get("enabled") is True
+
+        def fetch(self, cfg, home_path):
+            return FetchResult(secrets={"AUDIT_SHARED_LOGIN": home_path.name})
+
+    assert registry.register_source(HomeSource())
+    homes = [tmp_path / "first", tmp_path / "second"]
+    before = []
+    for home in homes:
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "secrets:\n  audit_home:\n    enabled: true\n", encoding="utf-8")
+        assert env_loader.hydrate_profile_secret_sources(home) == {
+            "AUDIT_SHARED_LOGIN": home.name}
+        before.append(env_loader.get_external_secret_snapshot(home))
+    assert all(snapshot.status == "ready" for snapshot in before)
+
+    env_loader.reset_secret_source_cache(homes[0])
+
+    assert env_loader.get_external_secret_snapshot(homes[0]).status == "not_hydrated"
+    assert env_loader.get_external_secret_snapshot(homes[1]) == before[1]
+    assert env_loader.hydrate_profile_secret_sources(homes[0]) == {
+        "AUDIT_SHARED_LOGIN": "first"}
+    refreshed = env_loader.get_external_secret_snapshot(homes[0])
+    assert refreshed.status == "ready"
+    assert refreshed.generation > before[0].generation
+    assert env_loader.get_external_secret_snapshot(homes[1]) == before[1]

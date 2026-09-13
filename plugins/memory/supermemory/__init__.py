@@ -55,8 +55,8 @@ def _sanitize_tag(raw: str) -> str:
 
 
 def _resolve_base_url(config_value: Any = "") -> str:
-    """config > SUPERMEMORY_BASE_URL env var > default (self-hosted support)."""
-    raw = str(config_value or "").strip() or os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
+    """config > SUPERMEMORY_BASE_URL (profile-scoped) > default (self-hosted support)."""
+    raw = str(config_value or "").strip() or (get_secret("SUPERMEMORY_BASE_URL", "") or "").strip()
     return (raw or _DEFAULT_BASE_URL).rstrip("/") or _DEFAULT_BASE_URL
 
 
@@ -247,8 +247,10 @@ def _build_client(api_key: str, config: dict, container_tag: str) -> _Supermemor
 
 
 def _resolve_container_tag(config_tag: str, identity: str) -> str:
-    """SUPERMEMORY_CONTAINER_TAG env > config > default; {identity} expands to the agent identity, then sanitize."""
-    raw_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip() or config_tag
+    """SUPERMEMORY_CONTAINER_TAG (profile-scoped) > config > default; {identity} expands to the agent
+    identity, then sanitize. The container is the data partition, so it must never be borrowed from
+    the default profile's environ under multiplexing."""
+    raw_tag = (get_secret("SUPERMEMORY_CONTAINER_TAG", "") or "").strip() or config_tag
     return _sanitize_tag(raw_tag.replace("{identity}", identity))
 
 

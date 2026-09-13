@@ -16,11 +16,6 @@ from argparse import Namespace
 
 import pytest
 
-if "dotenv" not in sys.modules:
-    fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
-    sys.modules["dotenv"] = fake_dotenv
-
 from hermes_cli.auth import resolve_api_key_provider_credentials
 from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS, normalize_provider
 

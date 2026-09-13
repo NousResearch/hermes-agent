@@ -263,7 +263,7 @@ def update_secret_scope(
 _GLOBAL_ENV_EXACT = frozenset({
     # Hermes runtime / deployment
     "HERMES_HOME", "HERMES_PROFILE", "HERMES_GATEWAY_LOCK_DIR",
-    "HERMES_MAX_ITERATIONS", "HERMES_MAX_TOKENS", "HERMES_API_TIMEOUT",
+    "HERMES_MAX_ITERATIONS", "HERMES_API_TIMEOUT",
     "HERMES_REDACT_SECRETS", "HERMES_NOUS_TIMEOUT_SECONDS",
     "_HERMES_GATEWAY",
     # OS / interpreter
@@ -563,8 +563,11 @@ class ProfileEnvBoundary:
             carrier = _env_carrier(name)
             source_carriers.setdefault(carrier.effective_name, []).append(carrier)
 
-        for effective_name, owned_carriers in source_carriers.items():
-            target_declaration = target_declarations.get(effective_name)
+        for effective_name in source_carriers.keys() | target_declarations.keys():
+            owned_carriers = source_carriers.get(effective_name, ())
+            # Ambient collisions with target-only ownership must be removed too;
+            # the child policy separately grants target-only materialization.
+            target_declaration = target_declarations.get(effective_name) if owned_carriers else None
 
             # Direct process globals (PATH, HOME, terminal coordinates) remain
             # operational baseline when the source owned only a forwarded

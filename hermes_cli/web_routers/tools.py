@@ -663,6 +663,22 @@ async def select_terminal_backend(
     return {"ok": True, "backend": backend}
 
 
+@router.get("/api/tools/browser/real-profile")
+async def get_browser_real_profile(profile: Optional[str] = None):
+    """Browsers + profiles real-profile browsing can use on THIS host, for the desktop picker.
+
+    Read-only discovery (see ``list_real_profile_candidates``): no credential is copied, no
+    browser launched. Runs inside ``_profile_scope`` so the resolved browser/profile reflect
+    the scoped profile's own ``config.yaml`` — a Hermes profile driving Brave/Profile 2 and
+    another driving Chrome/Default report different answers from the same gateway. The
+    picker WRITES through ``PUT /api/config`` like every other browser setting; this endpoint
+    only tells it what exists and what a launch would resolve to right now.
+    """
+    from hermes_cli.browser_connect import list_real_profile_candidates
+
+    return await scoped_to_thread(profile, list_real_profile_candidates)
+
+
 @router.get("/api/tools/computer-use/status")
 async def get_computer_use_status(profile: Optional[str] = None):
     """Computer Use readiness for the desktop card (payload shape: see

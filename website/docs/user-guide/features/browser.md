@@ -199,22 +199,55 @@ same [headed-mode](#headed-mode-visible-browser-window) toggle applies —
 real-profile browsing too. On a display-less host (servers, CI) it always runs
 headless regardless.
 
-If your browser has several profiles (say a work profile and a personal one)
-and you don't want "whichever profile you touched last" deciding the agent's
-identity, pin the snapshot source explicitly:
+### Choosing the browser and profile
+
+By default the agent borrows logins from your **system default browser**, using
+whichever profile you last browsed in. On a machine with several browsers or
+several profiles that is "last-touched roulette" — so both halves of the
+identity can be pinned. In the desktop app: **Settings → Capabilities → Tools →
+Browser**, where the two pickers appear under the toggle and the panel tells you
+exactly who the agent will browse as ("Browsing as Brave · Personal"). In YAML:
 
 ```yaml
 # ~/.hermes/config.yaml
 browser:
   use_real_profile: true
-  real_profile_pin: "Profile 2"   # directory name under the browser's user-data dir
+  real_profile_browser: brave        # chrome | chromium | brave | brave-origin | edge
+  real_profile_pin: "Profile 2"      # directory name under that browser's user-data dir
 ```
 
-A pin naming a profile directory that doesn't exist fails closed with a
-fixable message — it never silently falls back to the last-used profile.
+- `real_profile_browser` — empty follows your OS default. Set it to drive a
+  browser that is *not* your default, e.g. a machine that defaults to Chrome
+  while the agent should use Brave.
+- `real_profile_pin` — empty follows `Local State → profile.last_used`. Set it
+  to the profile **directory** name (`Default`, `Profile 2`), not the display
+  name.
+
+Both fail closed: a browser key that isn't supported or has no profile
+directory, and a pin naming a directory that doesn't exist, produce a fixable
+error rather than silently falling back to a different identity. Run
+`hermes browser profiles` to list what's available on the machine:
+
+```
+$ hermes browser profiles
+brave  (Brave) — system default, active
+    Default      Default
+    Profile 1    Me            [last used]
+    Profile 2    Personal      [in use]
+chromium  (Chromium)
+    Default      Your Chromium
+```
+
+Because these are ordinary `config.yaml` keys, **each Hermes profile gets its
+own browsing identity**: `~/.hermes/profiles/work/config.yaml` can pin
+Chrome/Default while `~/.hermes/profiles/personal/config.yaml` pins
+Brave/Profile 2, and each profile's snapshot lives under its own
+`HERMES_HOME/browser-profile/`. Changing the pin rebuilds the snapshot from the
+newly selected profile, and switching browsers deletes the previous browser's
+snapshot so credential copies don't linger.
 
 When you turn the toggle back off, Hermes deletes the snapshot store
-(`~/.hermes/browser-profile/`) on the next browser use, so the copied
+(`<HERMES_HOME>/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.
 
 :::note Windows: the browser must be fully closed

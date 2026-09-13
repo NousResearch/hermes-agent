@@ -121,7 +121,7 @@ _REAL_PROFILE_CHROME_FLAGS = (
 
 
 def _real_profile_unsupported_reason(browser) -> Optional[str]:
-    """Fail-closed message when the default browser can't be used, else None.
+    """Fail-closed message when the resolved browser can't be used, else None.
 
     A pre-release channel lives in a profile dir we don't resolve; normalizing to the stable
     family would drive a DIFFERENT profile/account (wrong-principal bug), so refuse rather than guess.
@@ -129,11 +129,13 @@ def _real_profile_unsupported_reason(browser) -> Optional[str]:
     from hermes_cli.browser_connect import UNSUPPORTED_CHANNEL
     if browser is None:
         return (_RP + "your default browser is not a supported Chromium browser (Chrome, Edge, Brave, "
-                "Brave Origin, Chromium). Real-profile browsing requires a Chromium default; set one or turn the toggle off.")
+                "Brave Origin, Chromium). Real-profile browsing requires a Chromium default; set one, "
+                "pick a browser with browser.real_profile_browser, or turn the toggle off.")
     if browser == UNSUPPORTED_CHANNEL:
         return (_RP + "your default browser is a pre-release Chromium channel (Beta / Dev / Canary), which "
                 "real-profile browsing does not support. Set your default to a "
-                "stable Chrome / Edge / Brave / Brave Origin / Chromium, or turn the toggle off.")
+                "stable Chrome / Edge / Brave / Brave Origin / Chromium, pick one with "
+                "browser.real_profile_browser, or turn the toggle off.")
     return None
 
 
@@ -245,8 +247,9 @@ def _real_profile_cdp() -> tuple:
         return None, (_RP + "browser.engine is set to 'lightpanda', which cannot load a real Chromium profile. "
                       "Set browser.engine to 'auto' or 'chrome' to use real-profile browsing, or turn the toggle off.")
 
-    from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
-                                            real_profile_copy_dir, snapshot_real_profile)
+    from hermes_cli.browser_connect import (chromium_executable, cleanup_real_profile_snapshots,
+                                            real_profile_copy_dir, resolve_real_profile_browser,
+                                            snapshot_real_profile)
 
     with _bt._real_profile_cdp_lock:
         cached = _bt._real_profile_cdp_cache.get("cdp")
@@ -257,7 +260,12 @@ def _real_profile_cdp() -> tuple:
             return cached, None
         _bt._real_profile_cdp_cache.pop("cdp", None)
 
-        browser = detect_default_chromium()
+        # ONE resolver decides the principal (browser.real_profile_browser pin, else the OS
+        # default) so this launch, `hermes browser close-profile` and the desktop picker can
+        # never disagree about whose logins the agent gets.
+        browser, resolve_err = resolve_real_profile_browser()
+        if resolve_err:
+            return None, f"{_RP}{resolve_err}"
         unsupported = _real_profile_unsupported_reason(browser)
         if unsupported:
             return None, unsupported
@@ -284,6 +292,14 @@ def _real_profile_cdp() -> tuple:
             _bt._real_profile_cdp_cache["cdp"] = cdp
             _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
             return cdp, None
+
+        # Switching browsers leaves the previous one's cookie/login copy on disk; drop it now
+        # that a different browser owns the session. AFTER the session close above, so we never
+        # rmtree a dir a live copy-browser still holds. Best-effort: never blocks a launch.
+        try:
+            cleanup_real_profile_snapshots(keep=browser)
+        except Exception as e:
+            _bt.logger.debug("real-profile stale-snapshot cleanup failed: %s", e)
 
         copy_dir, err = snapshot_real_profile(browser)
         if err or not copy_dir:

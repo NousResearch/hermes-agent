@@ -12,15 +12,25 @@ export const $freeTierBlocks = atom<Record<string, string>>({})
 
 export function freeTierBlockMessage(): string | undefined {
   const { sid, notice } = getUiState()
+
   return (sid ? $freeTierBlocks.get()[sid] : undefined) || (notice?.key === FREE_TIER_LIMIT_KEY ? notice.text : undefined)
 }
 
 export function setFreeTierBlock(message: string | null): void {
   const { sid } = getUiState()
-  if (!sid) return
+
+  if (!sid) {
+    return
+  }
+
   const next = { ...$freeTierBlocks.get() }
-  if (message) next[sid] = message
-  else delete next[sid]
+
+  if (message) {
+    next[sid] = message
+  } else {
+    delete next[sid]
+  }
+
   $freeTierBlocks.set(next)
 }
 

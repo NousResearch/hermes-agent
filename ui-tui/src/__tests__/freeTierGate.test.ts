@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $freeTierBlocks } from '../app/freeTierGate.js'
-
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { $freeTierBlocks } from '../app/freeTierGate.js'
 import type { GatewayEventHandlerContext } from '../app/interfaces.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
@@ -57,7 +56,10 @@ describe('free-tier continuation in TUI and embedded web chat', () => {
     expect(getUiState().busy).toBe(false)
     const picker = getOverlayState().modelPicker
     expect(typeof picker).toBe('object')
-    if (typeof picker !== 'object') throw new Error('missing continuation picker')
+
+    if (typeof picker !== 'object') {
+      throw new Error('missing continuation picker')
+    }
     picker.onSignIn?.()
     picker.onSetup?.()
     expect(ctx.submission.submitRef.current.mock.calls).toEqual([['/login'], ['/setup model']])

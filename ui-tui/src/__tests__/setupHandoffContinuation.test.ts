@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $freeTierBlocks } from '../app/freeTierGate.js'
-
 import type { RunExternalSetupOptions } from '../app/setupHandoff.js'
 import { runExternalSetup } from '../app/setupHandoff.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -9,12 +8,20 @@ import { FREE_TIER_LIMIT_KEY } from '../content/setup.js'
 
 function options(runtime: Record<string, unknown>) {
   const rpc = vi.fn(async (method: string) => {
-    if (method === 'setup.runtime_check') return runtime
-    if (method === 'config.set') return { value: runtime.model }
+    if (method === 'setup.runtime_check') {
+      return runtime
+    }
+
+    if (method === 'config.set') {
+      return { value: runtime.model }
+    }
+
     return {}
   })
+
   const newSession = vi.fn()
   const sys = vi.fn()
+
   return {
     args: ['setup', 'model'], done: 'done', launcher: vi.fn(async () => ({ code: 0 })),
     suspend: async (run: () => Promise<void>) => { await run() },

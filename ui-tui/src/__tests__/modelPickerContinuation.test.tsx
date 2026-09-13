@@ -25,14 +25,16 @@ describe('ModelPicker continuation variant', () => {
     let output = ''
     stdout.on('data', chunk => { output += chunk.toString() })
     const gw = { request: vi.fn(async () => { throw new Error('Catalog unavailable') }) } as unknown as GatewayClient
+
     const instance = renderSync(
       <ModelPicker
         continuationMessage="Your first 10 tool calls are complete."
-        gw={gw} onCancel={vi.fn()} onSelect={vi.fn()} onSignIn={vi.fn()} onSetup={vi.fn()}
+        gw={gw} onCancel={vi.fn()} onSelect={vi.fn()} onSetup={vi.fn()} onSignIn={vi.fn()}
         sessionId="focused" t={DEFAULT_THEME}
       />,
       { patchConsole: false, stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, stderr: stderr as unknown as NodeJS.WriteStream }
     )
+
     try {
       await vi.waitFor(() => expect(stripAnsi(output)).toContain('Catalog unavailable'))
       const frame = stripAnsi(output)

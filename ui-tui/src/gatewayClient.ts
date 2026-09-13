@@ -4,8 +4,8 @@ import { existsSync } from 'node:fs'
 import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
-import { WebSocket as UndiciWebSocket } from 'undici'
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-error'
+import { WebSocket as UndiciWebSocket } from 'undici'
 
 import type { GatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'

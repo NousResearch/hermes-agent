@@ -10,8 +10,8 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
 import { freeTierBlockMessage } from './freeTierGate.js'
+import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { submitPrompt } from './submissionCore.js'
 import { turnController } from './turnController.js'
@@ -303,6 +303,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           onSignIn: () => slashRef.current('/login'),
           onSetup: () => slashRef.current('/setup model')
         } })
+
         return
       }
 

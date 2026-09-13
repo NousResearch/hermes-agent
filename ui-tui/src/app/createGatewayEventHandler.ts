@@ -3,6 +3,7 @@ import { execFile } from 'child_process'
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 import { stripAnsi } from '@hermes/shared/ansi'
+import { relativeLuminance } from '@hermes/shared/color'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -16,7 +17,6 @@ import type {
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
-import { relativeLuminance } from '../lib/color.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'

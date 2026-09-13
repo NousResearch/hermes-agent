@@ -1,125 +1,24 @@
 /**
- * THE color primitive — every color computation in the TUI goes through this
- * module (the twin of the desktop app's `src/themes/color.ts`). No component
- * or theme code does its own hex parsing or channel math: parse, mix, measure
- * and fix colors here, so tone ladders, contrast floors and one-off UI needs
- * all share one set of semantics.
- *
- * Mixing is an sRGB lerp — deliberately, for byte parity with the desktop's
- * `color-mix(in srgb, ...)` ladder in styles.css.
+ * TUI-only color derivations. The sRGB primitives (parse, mix, WCAG measure,
+ * `ensureContrast`) live in `@hermes/shared/color`, shared byte-for-byte with
+ * the desktop app; this module adds what only a terminal needs — xterm.js's
+ * multiplicative contrast lift, HSL re-toning for light-terminal variants, and
+ * the chainable `color()` form — and re-parses nothing itself.
  */
 
-export type Rgb = readonly [number, number, number]
-
-const HEX6_RE = /^#?([0-9a-f]{6})$/i
-const HEX3_RE = /^#?([0-9a-f]{3})$/i
-const RGB_FN_RE = /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i
+import {
+  contrastRatio,
+  darken,
+  ensureContrast,
+  lighten,
+  mix,
+  parseColor,
+  relativeLuminance,
+  type Rgb,
+  toHex
+} from '@hermes/shared/color'
 
 const clampChannel = (v: number) => Math.max(0, Math.min(255, Math.round(v)))
-
-/** Parse `#rgb`, `#rrggbb` or `rgb(r,g,b)` → channels. Null for anything else. */
-export function parseColor(input: string): Rgb | null {
-  const value = input.trim()
-
-  let m = HEX6_RE.exec(value)
-
-  if (m) {
-    const n = parseInt(m[1]!, 16)
-
-    return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
-  }
-
-  m = HEX3_RE.exec(value)
-
-  if (m) {
-    const [r, g, b] = m[1]!
-
-    return [parseInt(r! + r!, 16), parseInt(g! + g!, 16), parseInt(b! + b!, 16)]
-  }
-
-  m = RGB_FN_RE.exec(value)
-
-  if (m) {
-    return [clampChannel(Number(m[1])), clampChannel(Number(m[2])), clampChannel(Number(m[3]))]
-  }
-
-  return null
-}
-
-export const toHex = (rgb: Rgb): string => '#' + rgb.map(c => clampChannel(c).toString(16).padStart(2, '0')).join('')
-
-/** sRGB lerp `a → b` by `t` in [0,1]. Unparseable inputs return `a` unchanged. */
-export function mix(a: string, b: string, t: number): string {
-  const pa = parseColor(a)
-  const pb = parseColor(b)
-
-  if (!pa || !pb) {
-    return a
-  }
-
-  return toHex([pa[0] + (pb[0] - pa[0]) * t, pa[1] + (pb[1] - pa[1]) * t, pa[2] + (pb[2] - pa[2]) * t])
-}
-
-function channelLuminance(value: number): number {
-  const normalized = value / 255
-
-  return normalized <= 0.03928 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
-}
-
-/** WCAG relative luminance in [0,1]. Null when unparseable. */
-export function relativeLuminance(color: string): null | number {
-  const rgb = parseColor(color)
-
-  return rgb
-    ? 0.2126 * channelLuminance(rgb[0]) + 0.7152 * channelLuminance(rgb[1]) + 0.0722 * channelLuminance(rgb[2])
-    : null
-}
-
-/** WCAG contrast ratio between two colors (1–21). Null when unparseable. */
-export function contrastRatio(a: string, b: string): null | number {
-  const la = relativeLuminance(a)
-  const lb = relativeLuminance(b)
-
-  if (la === null || lb === null) {
-    return null
-  }
-
-  const [hi, lo] = la >= lb ? [la, lb] : [lb, la]
-
-  return (hi + 0.05) / (lo + 0.05)
-}
-
-/** The readable ink pole for a given background (desktop `readableOn`). */
-export function readableOn(bg: string): '#000000' | '#ffffff' {
-  return (relativeLuminance(bg) ?? 0) > 0.5 ? '#000000' : '#ffffff'
-}
-
-/**
- * Step-mix `color` toward the readable pole of `bg` until the contrast ratio
- * clears `min` (desktop `ensureContrast`). Each step re-mixes from the
- * ORIGINAL color so hue decays linearly, not exponentially. Returns the
- * original when it already passes or isn't parseable.
- */
-export function ensureContrast(color: string, bg: string, min: number): string {
-  if (relativeLuminance(bg) === null || parseColor(color) === null) {
-    return color
-  }
-
-  const pole = readableOn(bg)
-  let current = color
-
-  for (let step = 0; step <= 20; step++) {
-    const ratio = contrastRatio(current, bg)
-
-    if (ratio === null || ratio >= min) {
-      return current
-    }
-
-    current = mix(color, pole, Math.min(1, (step + 1) * 0.05))
-  }
-
-  return current
-}
 
 /**
  * xterm.js's minimum-contrast algorithm (Color.ts reduce/increaseLuminance),
@@ -170,10 +69,6 @@ export function liftForContrast(color: string, bg: string, ratio: number): strin
 
   return toHex([r, g, b])
 }
-
-/** Recede toward the background pole (opposite of `readableOn`). */
-export const lighten = (color: string, t: number) => mix(color, '#ffffff', t)
-export const darken = (color: string, t: number) => mix(color, '#000000', t)
 
 /** The luminance-weighted gray of a color (its perceptual brightness). */
 export function grayOf(color: string): string {

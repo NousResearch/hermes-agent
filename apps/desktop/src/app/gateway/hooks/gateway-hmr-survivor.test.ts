@@ -51,6 +51,9 @@ describe('gateway HMR survivor cache', () => {
   })
 
   it('treats open / connecting sockets as adoptable', () => {
+    // use-gateway-boot stashes on HMR when !survivorIsStale(survivor). Connecting
+    // must stay non-stale so a mid-dial hot reload parks the socket instead of
+    // closing it.
     expect(survivorIsStale(makeSurvivor('open'))).toBe(false)
     expect(survivorIsStale(makeSurvivor('connecting'))).toBe(false)
   })

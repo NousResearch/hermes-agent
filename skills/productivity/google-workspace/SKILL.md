@@ -239,6 +239,13 @@ $GAPI drive download DOC_ID --export-mime text/plain --output ~/doc.txt
 $GAPI drive create-folder "Reports"
 $GAPI drive create-folder "Q4" --parent FOLDER_ID
 
+# Move — preview is the default and never writes. After explicit confirmation,
+# repeat with --execute. Cross-drive moves require separate confirmation.
+# Folder self/descendant moves and unexpected multi-parent state fail safely.
+$GAPI drive move FILE_ID --to FOLDER_ID
+$GAPI drive move FILE_ID --to FOLDER_ID --execute
+$GAPI drive move FILE_ID --to FOLDER_ID --execute --allow-cross-drive
+
 # Share
 $GAPI drive share FILE_ID --email alice@example.com --role reader
 $GAPI drive share FILE_ID --email alice@example.com --role writer --notify
@@ -301,6 +308,8 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Drive upload**: `{status: "uploaded", id, name, mimeType, webViewLink}`
 - **Drive download**: `{status: "downloaded", id, name, path, mimeType}`
 - **Drive create-folder**: `{status: "created", id, name, webViewLink}`
+- **Drive move preview**: `{status: "preview", file, from, to, crossDrive, duplicateNameWarning, requiresConfirmation}`
+- **Drive move execute**: `{status: "moved", verified: true, file, from, to, crossDrive, duplicateNameWarning, rollback}`
 - **Drive share**: `{status: "shared", permissionId, fileId, role, type}`
 - **Drive delete**: `{status: "trashed" | "deleted", fileId, permanent}`
 - **Contacts list**: `[{name, emails: [...], phones: [...]}]`
@@ -311,7 +320,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 ## Rules
 
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
+1. **Never send email, create/delete calendar events, delete/share/move Drive files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, current parent, destination, content, share role) and ask for approval. For `drive move`, run the preview first; use `--execute` only after confirmation, and require separate confirmation before `--allow-cross-drive`. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
 4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).

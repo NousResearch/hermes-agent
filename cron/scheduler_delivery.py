@@ -742,8 +742,13 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             "chat", "--in", "~", "-c", "Bot Chat", "--create-if-missing",
             "-Q", "--query-file", query_file,
         ]
+        # Lossy decode: this child's stdout/stderr only feed the failure tail, so one stray
+        # non-UTF-8 byte (e.g. a grandchild sharing the pipe interleaving a partial multi-byte
+        # write) must not raise UnicodeDecodeError inside run() and fail a delivery that in
+        # fact completed (#105582; same errors= hardening as _run_job_script).
         result = subprocess.run(
-            argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
+            argv, capture_output=True, text=True, errors="replace",
+            timeout=_get_bot_chat_delivery_timeout(), env=env,
             creationflags=windows_hide_flags())
         if result.returncode != 0:
             tail = (result.stderr or result.stdout or "").strip()[-500:]

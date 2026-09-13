@@ -7,6 +7,7 @@ and the delivery-targets listing used by UI pickers.
 """
 
 import subprocess
+import sys
 from unittest import mock
 
 import pytest
@@ -201,6 +202,65 @@ def test_deliver_message_carries_cron_attribution(tmp_path):
     assert 'Cronjob "Daily digest" output' in captured["message"]
     assert "not the user" in captured["message"]
     assert "the payload" in captured["message"]
+
+
+def test_deliver_run_kwargs_pin_lossy_errors():
+    """The delivery child must decode lossily regardless of platform — its output
+    only feeds the failure tail (#105582)."""
+    calls = {}
+
+    def fake_run(argv, **kwargs):
+        calls["kwargs"] = kwargs
+        return _completed()
+
+    with mock.patch.object(sched.subprocess, "run", side_effect=fake_run), \
+         mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+    assert calls["kwargs"]["errors"] == "replace"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shebang child not executable on win32")
+def test_deliver_child_undecodable_stderr_does_not_fail_delivery(tmp_path):
+    """A stray non-UTF-8 byte on the delivery child's stderr must not raise
+    UnicodeDecodeError inside run() and fail a delivery that completed. Field
+    report on #105597: a grandchild sharing the pipe interleaved a partial
+    multi-byte write, and an exit-0 job was delivered as 'script failed'."""
+    fake_hermes = tmp_path / "fake-hermes"
+    fake_hermes.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "os.write(2, b'noise before \\x80 after\\n')\n"
+        "sys.exit(0)\n"
+    )
+    fake_hermes.chmod(0o755)
+
+    with mock.patch.object(sched_delivery.shutil, "which", return_value=str(fake_hermes)):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="shebang child not executable on win32")
+def test_deliver_failure_tail_decodes_lossily(tmp_path):
+    """The exit-1 tail is still surfaced (with U+FFFD for the bad byte) instead
+    of aborting at decode time."""
+    fake_hermes = tmp_path / "fake-hermes"
+    fake_hermes.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "os.write(2, b'boom before \\x80 after\\n')\n"
+        "sys.exit(1)\n"
+    )
+    fake_hermes.chmod(0o755)
+
+    with mock.patch.object(sched_delivery.shutil, "which", return_value=str(fake_hermes)):
+        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
+
+    assert err is not None
+    assert "failed (exit 1)" in err
+    assert "\ufffd" in err
 
 
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────

@@ -7,6 +7,7 @@
 //! On Unix we shell out to `bash <script>` since install.sh expects bash.
 
 use anyhow::{Context, Result};
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
@@ -299,6 +300,15 @@ pub async fn run_script(
         cmd.current_dir(cwd);
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        let mut extra = Vec::new();
+        if let Some(home) = hermes_home_override {
+            extra.push(("HERMES_HOME".to_string(), OsString::from(home)));
+        }
+        apply_windows_child_env(&mut cmd, &extra);
+    }
+    #[cfg(not(target_os = "windows"))]
     if let Some(home) = hermes_home_override {
         cmd.env("HERMES_HOME", home);
     }
@@ -510,6 +520,65 @@ pub fn parse_manifest(stdout: &str) -> Option<crate::events::Manifest> {
         }
     }
     None
+}
+
+/// Default PATHEXT when a parent env block dropped it. cmd.exe uses this
+/// list to resolve ``tsc`` to ``tsc.cmd`` (#96112).
+pub(crate) const WINDOWS_DEFAULT_PATHEXT: &str =
+    ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
+
+/// Collapse duplicate ``Path``/``PATH`` entries in a Windows environment block.
+///
+/// Windows env lookup is case-insensitive, but the block can still carry
+/// both keys as distinct entries (Rust ``Command.env("PATH", ...)`` on top
+/// of an inherited ``Path``). Node and npm iterate the block as a list and
+/// may pick the stale/empty one, so ``tsc.cmd`` is "not recognized" even
+/// though TypeScript is installed (#96112).
+pub(crate) fn collapse_windows_path_env(
+    entries: Vec<(String, OsString)>,
+) -> Vec<(String, OsString)> {
+    let mut canonical_path: Option<OsString> = None;
+    let mut other_path: Option<OsString> = None;
+    let mut pathext: Option<OsString> = None;
+    let mut rest: Vec<(String, OsString)> = Vec::new();
+    for (k, v) in entries {
+        if k == "Path" {
+            canonical_path = Some(v);
+            continue;
+        }
+        if k.eq_ignore_ascii_case("path") {
+            other_path = Some(v);
+            continue;
+        }
+        if k.eq_ignore_ascii_case("pathext") {
+            pathext = Some(v);
+            continue;
+        }
+        rest.push((k, v));
+    }
+    if let Some(v) = canonical_path.or(other_path) {
+        rest.push(("Path".to_string(), v));
+    }
+    rest.push((
+        "PATHEXT".to_string(),
+        pathext.unwrap_or_else(|| OsString::from(WINDOWS_DEFAULT_PATHEXT)),
+    ));
+    rest
+}
+
+/// Replace the child env block with a Path/PATH-collapsed copy of the
+/// current process env plus *extra* (last ``Path`` wins).
+#[cfg(target_os = "windows")]
+pub(crate) fn apply_windows_child_env(cmd: &mut Command, extra: &[(String, OsString)]) {
+    let mut collected: Vec<(String, OsString)> = std::env::vars_os()
+        .map(|(k, v)| (k.to_string_lossy().into_owned(), v))
+        .collect();
+    collected.extend(extra.iter().cloned());
+    let collapsed = collapse_windows_path_env(collected);
+    cmd.env_clear();
+    for (k, v) in collapsed {
+        cmd.env(k, v);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -838,5 +907,77 @@ info line
         assert_eq!(lines, vec!["bye"], "output written before EOF must survive");
         // Far below the child's 30s: a pass cannot be it exiting on its own.
         assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    }
+
+    #[test]
+    fn collapse_windows_path_env_keeps_a_single_path_key() {
+        let out = collapse_windows_path_env(vec![
+            ("Path".to_string(), OsString::from(r"C:\Windows\system32")),
+            ("PATH".to_string(), OsString::from(r"C:\empty")),
+            (
+                "HERMES_HOME".to_string(),
+                OsString::from(r"C:\Users\x\.hermes"),
+            ),
+        ]);
+        let path_keys: Vec<_> = out
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("path"))
+            .collect();
+        assert_eq!(path_keys.len(), 1);
+        assert_eq!(path_keys[0].0, "Path");
+        // Last exact `Path` wins; a later `PATH` is the fallback only.
+        assert_eq!(
+            path_keys[0].1,
+            OsString::from(r"C:\Windows\system32")
+        );
+        assert!(out.iter().any(|(k, _)| k == "HERMES_HOME"));
+    }
+
+    #[test]
+    fn collapse_windows_path_env_last_exact_path_wins() {
+        let out = collapse_windows_path_env(vec![
+            ("Path".to_string(), OsString::from(r"C:\Windows\system32")),
+            (
+                "Path".to_string(),
+                OsString::from(r"C:\hermes\node;C:\Windows\system32"),
+            ),
+        ]);
+        let path = out
+            .iter()
+            .find(|(k, _)| k == "Path")
+            .expect("collapsed Path");
+        assert_eq!(
+            path.1,
+            OsString::from(r"C:\hermes\node;C:\Windows\system32")
+        );
+    }
+
+    #[test]
+    fn collapse_windows_path_env_seeds_pathext_when_missing() {
+        let out = collapse_windows_path_env(vec![(
+            "Path".to_string(),
+            OsString::from(r"C:\Windows\system32"),
+        )]);
+        let pe = out
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("pathext"))
+            .expect("PATHEXT");
+        assert!(
+            pe.1.to_string_lossy().to_ascii_uppercase().contains(".CMD"),
+            "cmd.exe must be able to resolve tsc.cmd shims"
+        );
+    }
+
+    #[test]
+    fn collapse_windows_path_env_preserves_existing_pathext() {
+        let out = collapse_windows_path_env(vec![
+            ("Path".to_string(), OsString::from(r"C:\Windows\system32")),
+            ("PATHEXT".to_string(), OsString::from(".EXE;.CMD")),
+        ]);
+        let pe = out
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("pathext"))
+            .expect("PATHEXT");
+        assert_eq!(pe.1, OsString::from(".EXE;.CMD"));
     }
 }

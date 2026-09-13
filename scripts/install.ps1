@@ -884,6 +884,50 @@ function Ensure-NodeExeOnPath {
     return $true
 }
 
+# npm lifecycle scripts spawn cmd.exe, which resolves `tsc` via PATHEXT + PATH.
+# The bootstrap installer (Rust Command) can hand the child both Path and PATH
+# as distinct env-block entries; Node/npm then pick the wrong one and tsc.cmd
+# is "not recognized" even though TypeScript is already in node_modules\.bin
+# (#96112). Collapse to a single Path, keep PATHEXT, and prepend the workspace
+# shim dirs so pack can see tsc even if npm's own PATH rewrite is confused.
+function Ensure-NpmLifecyclePath {
+    param([string]$RepoRoot)
+
+    $path = [Environment]::GetEnvironmentVariable("Path", "Process")
+    if (-not $path) {
+        $path = [Environment]::GetEnvironmentVariable("PATH", "Process")
+    }
+    if (-not $path) { $path = "" }
+
+    $bins = @(
+        (Join-Path $RepoRoot "node_modules\.bin"),
+        (Join-Path $RepoRoot "apps\desktop\node_modules\.bin")
+    )
+    foreach ($bin in $bins) {
+        if ((Test-Path -LiteralPath $bin) -and ($path -notlike "*${bin}*")) {
+            $path = "$bin;$path"
+        }
+    }
+
+    [Environment]::SetEnvironmentVariable("Path", $path, "Process")
+    [Environment]::SetEnvironmentVariable("PATH", $path, "Process")
+
+    $pathext = [Environment]::GetEnvironmentVariable("PATHEXT", "Process")
+    if (-not $pathext) {
+        [Environment]::SetEnvironmentVariable(
+            "PATHEXT",
+            ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC",
+            "Process"
+        )
+    }
+}
+
+function Test-DesktopBuildIsMissingTsc {
+    param([string]$LogText)
+    if ([string]::IsNullOrEmpty($LogText)) { return $false }
+    return $LogText -match "tsc['"" ]?\s*is not recognized" -or $LogText -match "'tsc' is not recognized"
+}
+
 # Put the Hermes-managed Node dir at the FRONT of the persisted User PATH.
 #
 # Appending is not enough: it leaves a pre-existing system Node ahead of the
@@ -4195,6 +4239,8 @@ function Install-Desktop {
     } else {
         Write-Warn "Could not resolve a git commit for the desktop stamp -- write-build-stamp will use its non-git fallback"
     }
+    Ensure-NodeExeOnPath | Out-Null
+    Ensure-NpmLifecyclePath -RepoRoot $InstallDir
     Push-Location $desktopDir
     $prevEAP = $ErrorActionPreference
     $prevCSCAuto = $env:CSC_IDENTITY_AUTO_DISCOVERY
@@ -4208,20 +4254,25 @@ function Install-Desktop {
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
         if ($code -ne 0) {
-            $purged = @()
-            $restored = $false
-            if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
-                $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
-                $restored = Restore-ElectronDist -InstallDir $InstallDir
-            }
-            if ($restored) {
-                Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
-                foreach ($p in $purged) { Write-Info "  - $p" }
-                & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
-                $code = $LASTEXITCODE
+            $errSoFar = Get-Content $buildLog -Raw -ErrorAction SilentlyContinue
+            if (Test-DesktopBuildIsMissingTsc $errSoFar) {
+                Write-Warn "Desktop build failed because tsc was not on PATH for npm lifecycle scripts (not an Electron download problem)."
+            } else {
+                $purged = @()
+                $restored = $false
+                if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                    $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
+                    $restored = Restore-ElectronDist -InstallDir $InstallDir
+                }
+                if ($restored) {
+                    Write-Warn "Desktop build failed - refreshed the Electron download, retrying once:"
+                    foreach ($p in $purged) { Write-Info "  - $p" }
+                    & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+                    $code = $LASTEXITCODE
+                }
             }
         }
-        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
+        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR -and -not (Test-DesktopBuildIsMissingTsc (Get-Content $buildLog -Raw -ErrorAction SilentlyContinue))) {
             $mirror = $script:DesktopElectronFallbackMirror
             Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
             Write-Warn "Re-downloading Electron via a public mirror ($mirror), then rebuilding:"

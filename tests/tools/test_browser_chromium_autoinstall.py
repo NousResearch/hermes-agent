@@ -92,6 +92,40 @@ class TestInstall:
         assert bt_install._maybe_autoinstall_chromium() is False
 
 
+class TestStaleCacheOnFailure:
+    def test_manual_install_after_failed_autoinstall_is_detected(self, monkeypatch):
+        """#105746: a failed autoinstall must not freeze the negative cache forever.
+
+        Mirrors the real call order in ``_browser_command_preflight``: ``_chromium_installed()``
+        runs first (caching the negative result), then ``_maybe_autoinstall_chromium()``. Once the
+        autoinstall attempt has failed, the next preflight round must re-probe disk rather than keep
+        reporting the pre-install absence, so a manual ``npx playwright install`` becomes visible
+        without a process restart.
+        """
+        monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+        monkeypatch.setattr(shutil, "which", lambda name: None)
+        chromium_present = {"value": False}
+        monkeypatch.setattr(bt_install, "_chromium_search_roots", lambda: ["/fake/ms-playwright"])
+        monkeypatch.setattr("os.path.isdir", lambda p: p == "/fake/ms-playwright")
+        monkeypatch.setattr(bt_install, "_has_chromium_build", lambda root: chromium_present["value"])
+
+        # Preflight's first check: Chromium absent, negative result cached.
+        assert bt_install._chromium_installed() is False
+
+        # Autoinstall attempt fails (e.g. offline, no npx).
+        monkeypatch.setattr(bt_install, "_running_in_docker", lambda: False)
+        monkeypatch.setattr("tools.lazy_deps._allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: (_ for _ in ()).throw(FileNotFoundError()))
+        assert bt_install._maybe_autoinstall_chromium() is False
+
+        # User installs Chromium manually; the on-disk probe now finds it.
+        chromium_present["value"] = True
+
+        # Without invalidating the cache on the failure path, this would still return False.
+        assert bt_install._maybe_autoinstall_chromium() is True
+        assert bt_install._chromium_installed() is True
+
+
 class TestOneShot:
     def test_second_call_does_not_reinstall(self, monkeypatch):
         monkeypatch.setattr("tools.browser_tool_install._running_in_docker", lambda: False)

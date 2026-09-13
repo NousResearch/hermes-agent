@@ -326,6 +326,26 @@ class TestPostToolCallHook:
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
 
+    def test_unreadable_path_never_aborts_the_hook(self, _isolate_env):
+        """PermissionError from an unreadable parent must not crash the hook."""
+        import os
+        if os.geteuid() == 0:
+            pytest.skip("chmod 000 is ineffective as root")
+        pi = _load_plugin_init()
+        locked_dir = _isolate_env / "locked"
+        locked_dir.mkdir()
+        locked_dir.chmod(0o000)
+        try:
+            # Must not raise — the hook contract is "best-effort, never raises".
+            pi._on_post_tool_call(
+                tool_name="terminal",
+                args={"command": f"cat {locked_dir / 'test_secret.log'}"},
+                result="",
+                task_id="t5", session_id="s5",
+            )
+        finally:
+            locked_dir.chmod(0o755)
+
 
 class TestOnSessionEndHook:
     def test_runs_quick_when_test_files_tracked(self, _isolate_env):

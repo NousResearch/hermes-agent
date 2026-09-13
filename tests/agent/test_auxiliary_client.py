@@ -42,6 +42,8 @@ from agent.auxiliary_client import (
     _pool_runtime_base_url,
     _auxiliary_egress_binding,
     _RELAY_AUX_CALL_CONTEXT,
+    _LadderRoute,
+    _ladder_provider_fallback,
 )
 
 
@@ -410,6 +412,40 @@ def test_blocked_remote_aux_call_uses_local_fallback_without_retry(monkeypatch, 
     assert response.choices[0].message.content == "fallback"
     primary.chat.completions.create.assert_not_called()
     fallback.chat.completions.create.assert_called_once()
+
+
+def test_egress_blocked_fallback_continues_to_later_local_candidate(monkeypatch):
+    import agent.auxiliary_client as auxiliary
+
+    remote = SimpleNamespace(base_url="https://remote.example/v1")
+    local = SimpleNamespace(base_url="http://127.0.0.1:11434/v1")
+    configured_calls = []
+
+    def configured(*args, **kwargs):
+        configured_calls.append(kwargs.get("failed_base_url"))
+        return remote, "remote-model", "remote"
+
+    monkeypatch.setattr(auxiliary, "_try_configured_fallback_chain", configured)
+    monkeypatch.setattr(
+        auxiliary,
+        "_try_main_agent_model_fallback",
+        lambda *args, **kwargs: (local, "local-model", "local"),
+    )
+    route = _LadderRoute(
+        object(), "compression", "", False, "https://primary.example/v1", "custom",
+        None, "https://primary.example/v1", None, "chat_completions", "primary-model", None, {},
+    )
+    ladder = _ladder_provider_fallback(ConnectionError("primary unavailable"), route)
+
+    first_step = next(ladder)
+    assert first_step.args[0] is remote
+    local_step = ladder.throw(_blocked_egress_error())
+    assert local_step.args[0] is local
+    with pytest.raises(StopIteration) as completed:
+        ladder.send("local response")
+
+    assert completed.value.value == "local response"
+    assert configured_calls[0] == "https://primary.example/v1"
 
 
 @pytest.mark.asyncio

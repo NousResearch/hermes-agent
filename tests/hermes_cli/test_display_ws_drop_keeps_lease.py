@@ -75,3 +75,56 @@ def test_ex_holder_who_handed_back_is_not_evicted_by_a_later_takeover():
     held = {"ever": False}
     display._should_evict(held, lease.Lease(holder=lease.HUMAN, viewer_id="desk-1"), "desk-1")
     assert display._should_evict(held, lease.Lease(holder=lease.HUMAN, viewer_id="desk-2"), "desk-1") is True
+
+
+class _OpenWs(_Ws):
+    """Stays open until ``finish`` is set, then reports a clean close."""
+
+    def __init__(self):
+        super().__init__(1000)
+        self.finish = asyncio.Event()
+
+    async def receive(self):
+        await self.finish.wait()
+        return {"type": "websocket.disconnect", "code": self._code}
+
+
+def test_a_takeover_made_by_another_process_stops_input_within_the_refresh_interval(monkeypatch):
+    """The bridge caches the input decision instead of reading lease.json per message; a takeover
+    written by ANOTHER process (no in-process listener fires) must still be seen quickly."""
+    from tools.bot_desktop import rfb_filter
+    captured = {}
+
+    class _Filter(rfb_filter.RfbClientFilter):
+        def __init__(self, allow_input):
+            super().__init__(allow_input)
+            captured["allow"] = allow_input
+    monkeypatch.setattr(rfb_filter, "RfbClientFilter", _Filter)
+
+    async def _run(home: str) -> float:
+        sock_dir = os.path.join(home, "bot-desktop")
+        os.makedirs(sock_dir, exist_ok=True)
+        server = await asyncio.start_unix_server(lambda r, w: None, path=os.path.join(sock_dir, "rfb.sock"))
+        ws = _OpenWs()
+        task = asyncio.create_task(display._bridge(ws, {"hermes_home": home, "viewer_id": "desk-1"}))
+        try:
+            while "allow" not in captured:
+                await asyncio.sleep(0.01)
+            assert captured["allow"]() is True
+            # Another process takes over: the file changes, no listener in this process is told.
+            lease._write(lease._path(home), lease.Lease(holder=lease.HUMAN, viewer_id="desk-2", epoch=2))
+            t0 = asyncio.get_running_loop().time()
+            while captured["allow"]() and asyncio.get_running_loop().time() - t0 < 2.0:
+                await asyncio.sleep(0.02)
+            return asyncio.get_running_loop().time() - t0
+        finally:
+            ws.finish.set()
+            await task
+            server.close()
+
+    lease._reset_for_tests()
+    with tempfile.TemporaryDirectory() as home:
+        lease.acquire("desk-1", profile_key=home)
+        elapsed = asyncio.run(_run(home))
+    lease._reset_for_tests()
+    assert elapsed < 0.5, elapsed

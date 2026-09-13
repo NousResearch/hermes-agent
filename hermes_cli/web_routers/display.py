@@ -31,6 +31,7 @@ _CLOSE_DESKTOP_GONE = 4001
 _CLOSE_BAD_TICKET = 4401
 _CLOSE_NOT_ALLOWED = 4403
 _CLOSE_PROTOCOL = 1003
+_LEASE_REFRESH_S = 0.25
 
 
 def _should_evict(held: dict, lease, viewer_id: str) -> bool:
@@ -99,15 +100,31 @@ async def _bridge(ws: WebSocket, info: dict) -> None:
     loop = asyncio.get_running_loop()
     evicted = asyncio.Event()
     held = {"ever": _lease.viewer_may_send_input(viewer_id, profile_key=profile_home)}
+    # Input gate cache: reading lease.json per client message (a stat + read on the event loop for
+    # every pointer move) is replaced by a decision refreshed on this process's on_change callback
+    # and by a file re-read at most every _LEASE_REFRESH_S, so another process's takeover still lands.
+    allowed = {"input": held["ever"], "at": loop.time()}
+
+    def _refresh_allowed(lease=None) -> None:
+        if lease is None:
+            lease = _lease.get(profile_key=profile_home)
+        allowed["input"] = lease.holder == _lease.HUMAN and lease.viewer_id == viewer_id
+        allowed["at"] = loop.time()
+
+    def _may_send_input() -> bool:
+        if loop.time() - allowed["at"] > _LEASE_REFRESH_S:
+            _refresh_allowed()
+        return allowed["input"]
 
     def _on_lease(key: str, lease) -> None:
         if key != profile_key:
             return
+        loop.call_soon_threadsafe(_refresh_allowed, lease)
         if _should_evict(held, lease, viewer_id):
             loop.call_soon_threadsafe(evicted.set)
     unsubscribe = _lease.on_change(_on_lease)
 
-    rfb_filter = RfbClientFilter(lambda: _lease.viewer_may_send_input(viewer_id, profile_key=profile_home))
+    rfb_filter = RfbClientFilter(_may_send_input)
 
     viewer_closed = asyncio.Event()
 

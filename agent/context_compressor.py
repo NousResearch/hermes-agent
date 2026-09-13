@@ -4252,10 +4252,40 @@ Write only the summary body. Do not include any preamble or prefix."""
             cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True)
 
         fallback_cut = n - min_tail
-        cut_idx = min(cut_idx, fallback_cut)
+        # Token-bounded floor: the min_tail message floor must not override the
+        # soft token ceiling unbounded (LEAN_TAIL 10k budget -> 15k ceiling grew
+        # to 63k / 6.3x in #108647). Only expand to fallback_cut when its tail
+        # fits soft_ceiling; otherwise keep the budget-respecting cut. Also
+        # compute a hard cap (floor=0) so even the budget walk's own min_tail
+        # inclusion cannot blow past soft_ceiling without bound.
+        hard_cap_cut, _ = self._walk_tail_budget(messages, head_end, soft_ceiling, 0, cut_at_break=False)
+        if hard_cap_cut > head_end:
+            # Budget-respecting cap exists (tail alone exceeds ceiling) — floor
+            # cannot move earlier than it.
+            if fallback_cut < cut_idx:
+                # Measure fallback tail tokens; only enforce floor if it fits.
+                charge_all = self._stale_thinking_on_wire()
+                newest_idx = _last_assistant_index(messages)
+                fallback_tokens = sum(
+                    _estimate_msg_budget_tokens(messages[i], charge_all or i == newest_idx)
+                    for i in range(fallback_cut, n)
+                )
+                if fallback_tokens <= soft_ceiling:
+                    cut_idx = fallback_cut
+                else:
+                    # Floor would blow the ceiling — keep budget cut, but still
+                    # respect the hard cap so walk's own floor overshoot is clipped.
+                    cut_idx = max(cut_idx, hard_cap_cut)
+            else:
+                cut_idx = max(min(cut_idx, fallback_cut), hard_cap_cut)
+        else:
+            cut_idx = min(cut_idx, fallback_cut)
         # Small conversations: force a cut after the head so compression still removes something.
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
+            # Re-apply hard cap if tail now exceeds ceiling (small convo path).
+            if hard_cap_cut > head_end:
+                cut_idx = max(cut_idx, hard_cap_cut)
         cut_idx = self._align_boundary_backward(messages, cut_idx)
         # Latest user message must stay in the tail (active task). Latest assistant reply must stay too;
         # anchors only walk backward, so chaining is monotonic.

@@ -9,7 +9,7 @@ export function useRouteEnumParam<T extends string>(
   values: readonly T[],
   fallback: T
 ): [T, (next: T) => void] {
-  const { hash, pathname, search } = useLocation()
+  const { hash, pathname, search, state } = useLocation()
   const navigate = useNavigate()
 
   const value = useMemo<T>(() => {
@@ -29,9 +29,9 @@ export function useRouteEnumParam<T extends string>(
       }
 
       const qs = params.toString()
-      navigate({ hash, pathname, search: qs ? `?${qs}` : '' }, { replace: true })
+      navigate({ hash, pathname, search: qs ? `?${qs}` : '' }, { replace: true, state })
     },
-    [fallback, hash, key, navigate, pathname, search]
+    [fallback, hash, key, navigate, pathname, search, state]
   )
 
   return [value, setValue]

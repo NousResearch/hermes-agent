@@ -8,6 +8,7 @@ import {
   COMMAND_CENTER_ROUTE,
   isOverlayView,
   NEW_CHAT_ROUTE,
+  SKILLS_ROUTE,
   STARMAP_ROUTE
 } from '@/app/routes'
 
@@ -58,6 +59,11 @@ export function useOverlayRouting() {
     [navigate]
   )
 
+  const openCapabilitiesFromOverlay = useCallback(
+    () => navigate(`${SKILLS_ROUTE}?tab=plugins`, { replace: true, state: { returnTo: returnPathRef.current } }),
+    [navigate]
+  )
+
   const toggleCommandCenter = useCallback(() => {
     if (commandCenterOpen) {
       closeOverlayToPreviousRoute()
@@ -78,6 +84,7 @@ export function useOverlayRouting() {
     cronOpen,
     currentView,
     openAgents,
+    openCapabilitiesFromOverlay,
     openCommandCenterSection,
     openStarmap,
     profilesOpen,

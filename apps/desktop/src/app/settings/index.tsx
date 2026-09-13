@@ -75,7 +75,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
-export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+export function SettingsView({ onClose, onConfigSaved, onMainModelChanged, onOpenCapabilities }: SettingsPageProps) {
   const scopeProfile = useStore($settingsScopeProfile)
   const activeConnectionId = useStore($activeConnectionId)
   const { t } = useI18n()
@@ -304,7 +304,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         icon: Package,
         id: 'plugins',
         label: `${t.skills.tabPlugins} (${t.sidebar.nav.skills})`,
-        onSelect: () => navigate(`${SKILLS_ROUTE}?tab=plugins`)
+        onSelect: onOpenCapabilities ?? (() => navigate(`${SKILLS_ROUTE}?tab=plugins`, { replace: true }))
       },
       {
         active: activeView === 'sessions',
@@ -322,7 +322,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('about')
       }
     ],
-    [activeView, keysView, navigate, providerView, t, setActiveView, openProviderView, openKeysView]
+    [activeView, keysView, navigate, onOpenCapabilities, providerView, t, setActiveView, openProviderView, openKeysView]
   )
 
   // Type-to-search: printable keystrokes on the Settings surface (outside any

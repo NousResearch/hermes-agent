@@ -301,7 +301,7 @@ class TestSecondaryProfileFatalRecovery:
         )
         monkeypatch.setattr(runner, "_connect_adapter_with_timeout", connect)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", connect)
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
         if entry == "startup":
@@ -335,7 +335,7 @@ class TestSecondaryProfileFatalRecovery:
         synced = []
         runner._sync_voice_mode_state_to_adapter = synced.append
         monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda h: {})
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
         monkeypatch.setattr(runner, "_snapshot_profile_busy_modes", lambda *a, **k: None)
         monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
 

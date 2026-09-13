@@ -73,6 +73,10 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
 
 ## Compression (`agent/compression_facade.py`, `conversation_compression.py`, `turn_context_compaction.py`)
 
+Manual `/compress` on every surface (CLI, gateway, TUI, ACP) runs through
+`agent/conversation_compression_manual.py::compress_now` (one parser for `here [N]` / focus /
+`--preview` / `--aggressive`; surfaces only parse their own argv, install `after_messages` and render).
+
 Two layers: gateway session hygiene (85% threshold) and the agent `ContextCompressor` (50%,
 configurable; per-model overrides; failure cooldown after provider-proven overflow). The algorithm
 prunes old tool results first (no LLM call), then picks boundaries, then generates a structured

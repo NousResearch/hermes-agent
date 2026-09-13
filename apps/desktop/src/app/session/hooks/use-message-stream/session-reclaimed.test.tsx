@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,7 +8,6 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { resetRuntimeGoneHealing } from '@/store/runtime-gone'
 import { $activeSessionId, $sessionResumeRequest } from '@/store/session'
 import { $sessionStates, $sessionTiles, publishSessionState } from '@/store/session-states'
-import type { RpcEvent } from '@/types/hermes'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
@@ -33,7 +33,7 @@ const reclaim = (sessionId: string, reason = 'ws_orphan_reap') =>
       payload: { reason, session_id: sessionId, stored_session_id: 'stored-1' },
       session_id: '',
       type: 'session.reclaimed'
-    } as RpcEvent)
+    } as GatewayEvent)
   )
 
 beforeEach(() => {

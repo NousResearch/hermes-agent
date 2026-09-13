@@ -19,9 +19,9 @@ import re
 import sqlite3
 import threading
 import time
-from contextlib import closing, contextmanager
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
+from hermes_cli.sqlite_util import add_column_if_missing
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -143,20 +143,15 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    try:
-        _initialize_schema(conn)
-    except Exception:
-        conn.close()  # a PRAGMA/DDL failure after connect() must not leak the connection
-        raise
-    return conn
+    from hermes_cli.sqlite_util import open_db
+
+    # Shared state.db: SessionDB owns the durable PRAGMA set; this opener keeps the plain-tuple rows
+    # and the 10 s busy timeout it always had.
+    return open_db(_db_path(), db_label="state.db (delivery_ledger)", busy_timeout_ms=10_000,
+                   row_factory=None, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    from hermes_state_wal import apply_wal_with_fallback
-    apply_wal_with_fallback(conn, db_label="state.db (delivery_ledger)")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS delivery_obligations (
             obligation_id TEXT PRIMARY KEY,
@@ -176,27 +171,13 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         )"""
     )
     if "adapter_profile" not in {row[1] for row in conn.execute("PRAGMA table_info(delivery_obligations)")}:
-        try:
-            conn.execute("ALTER TABLE delivery_obligations ADD COLUMN adapter_profile TEXT")
-        except sqlite3.OperationalError as exc:
-            # Concurrent first-use connections can both observe the old schema.
-            if "duplicate column" not in str(exc).lower():
-                raise
+        add_column_if_missing(conn, "delivery_obligations", "adapter_profile", "adapter_profile TEXT")
 
 
-@contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it: ``sqlite3.Connection`` as a
-    context manager only commits/rolls back, so ``with _connect()`` alone leaks a connection (and its
-    WAL/SHM fds) per call — ``record_obligation`` runs on every final response; exhausts RLIMIT_NOFILE.
+def _transaction():
+    from hermes_cli.sqlite_util import transaction
 
-    On a long-running gateway that exhausts ``RLIMIT_NOFILE`` (the cron-ledger sibling of this bug was
-    #69567 / PR #69594). ``record_obligation`` runs on every outbound final response, so this ledger is the
-    highest-frequency leaker.
-    """
-    conn = _connect()
-    with closing(conn), conn:
-        yield conn
+    return transaction(_connect())
 
 
 def _start_time(pid: int) -> Optional[int]:

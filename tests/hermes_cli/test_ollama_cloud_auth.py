@@ -12,6 +12,14 @@ Covers:
 import os
 
 
+class TestDoctorEnvHints:
+    """Verify hermes doctor recognizes OLLAMA_API_KEY as provider auth."""
+
+    def test_ollama_api_key_in_provider_env_hints(self):
+        from hermes_cli.doctor import _PROVIDER_ENV_HINTS
+        assert "OLLAMA_API_KEY" in _PROVIDER_ENV_HINTS
+
+
 # ---------------------------------------------------------------------------
 # OLLAMA_API_KEY credential resolution
 # ---------------------------------------------------------------------------

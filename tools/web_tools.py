@@ -282,6 +282,25 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         from tools.interrupt import is_interrupted
         if is_interrupted():
             return tool_error("Interrupted", success=False)
+        # Block queries containing embedded secrets (exfiltration prevention).
+        # web_extract_tool gates URLs against _PREFIX_RE; the search query is
+        # the other free-text field that leaves the machine, and it was
+        # ungated. A query is not URL-encoded, so the single raw check that
+        # mirrors extract's first gate is the whole equivalent here.
+        from agent.redact import _PREFIX_RE
+        if isinstance(query, str) and _PREFIX_RE.search(query):
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        "Blocked: query contains what appears to be an API key or "
+                        "token. Secrets must not be sent to third-party search "
+                        "backends."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
         # Sync only — every provider's search() is sync.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import get_active_search_provider, get_provider as _wsp_get_provider

@@ -712,6 +712,31 @@ class LocalEnvironment(BaseEnvironment):
 
     _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
+
+    def _wrap_command(self, command: str, cwd: str) -> str:
+        from tools.terminal_tool_sudo import (
+            _nnp_sudo_unit_from_command,
+            _wrap_local_command_for_no_new_privs,
+        )
+
+        script = super()._wrap_command(command, cwd)
+        wrapped = _wrap_local_command_for_no_new_privs(script, cwd=cwd)
+        self._nnp_sudo_unit = _nnp_sudo_unit_from_command(wrapped)
+        return wrapped
+
+    def _sudo_nopasswd_works(self) -> bool:
+        """Probe ``sudo -n`` outside Electron's NoNewPrivs tree when latched."""
+        from tools.terminal_tool_sudo import _wrap_local_command_for_no_new_privs
+
+        if not self._sudo_nopasswd_probe_supported:
+            return False
+        try:
+            probe = _wrap_local_command_for_no_new_privs("sudo -n true", cwd=self.cwd or None)
+            proc = self._run_bash(probe, timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+        except Exception:
+            return False
+
     # Commands run on the Hermes host itself — controller-side platform behavior
     # (macOS TCC pruning, etc.) legitimately applies here.
     is_local = True
@@ -817,12 +842,18 @@ class LocalEnvironment(BaseEnvironment):
         return proc
 
     def _kill_process(self, proc):
-        """Kill the entire process group (all children)."""
+        """Kill the entire process group (all children) and any NNP sudo unit."""
+        from tools.terminal_tool_sudo import _stop_nnp_sudo_unit
+
         try:
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
         except OSError:  # ProcessLookupError / PermissionError included
             with contextlib.suppress(Exception):
                 proc.kill()
+        unit = getattr(self, "_nnp_sudo_unit", None)
+        if unit:
+            _stop_nnp_sudo_unit(unit)
+            self._nnp_sudo_unit = None
 
     def _extract_cwd_from_output(self, result: dict):
         """Base semantics plus: Git Bash ``pwd -P`` emits MSYS form on Windows —

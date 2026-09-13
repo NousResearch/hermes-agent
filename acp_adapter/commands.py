@@ -241,16 +241,9 @@ class SlashCommandsMixin:
             _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
             _tools = getattr(agent, "tools", None) or None
             approx_tokens = _estimate_tokens(state.history, agent, _sys_prompt, _tools)
-            original_session_db = getattr(agent, "_session_db", None)
-
-            try:
-                # Stable ACP session id: suppress _compress_context's SQLite session split.
-                agent._session_db = None
-                compressed, _ = agent._compress_context(
-                    state.history, _sys_prompt, approx_tokens=approx_tokens, task_id=state.session_id, force=True,
-                )
-            finally:
-                agent._session_db = original_session_db
+            compressed, _ = agent._compress_context(
+                state.history, _sys_prompt, approx_tokens=approx_tokens, task_id=state.session_id, force=True,
+            )
 
             state.history = compressed
             self.session_manager.save_session(state.session_id)

@@ -66,12 +66,13 @@ class TestCreateSession:
         assert fetched is state
 
 
-    def test_make_agent_stamps_session_cwd_for_codex_runtime(self, monkeypatch):
+    def test_make_agent_applies_acp_runtime_invariants(self, monkeypatch):
         class FakeAgent:
             model = "fake-model"
 
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
+                self.compression_in_place = False
 
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(
@@ -109,6 +110,7 @@ class TestCreateSession:
         state = SessionManager(db=None).create_session(cwd="/tmp/project")
 
         assert state.agent.session_cwd == "/tmp/project"
+        assert state.agent.compression_in_place is True
 
 
 

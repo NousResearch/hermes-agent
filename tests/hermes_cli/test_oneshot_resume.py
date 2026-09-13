@@ -215,6 +215,63 @@ class TestRunAgentResumeRuntime:
         finally:
             db.close()
 
+    def test_run_agent_continues_without_writing_closed_row_when_reopen_fails(self, tmp_path, monkeypatch):
+        """A readable transcript still runs without targeting its closed row."""
+        import hermes_cli.oneshot as oneshot_mod
+
+        db = _db_with_session(tmp_path, "s1", messages=[("user", "remember this")])
+        db.end_session("s1", "agent_close")
+        captured = {}
+
+        def _fail_reopen(_target):
+            raise OSError("transient lock")
+
+        class _FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def __setattr__(self, name, _value):
+                pass
+
+            def run_conversation(self, _prompt, conversation_history=None):
+                captured["history"] = conversation_history
+                return {"final_response": "ok", "session_id": "s1"}
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(db, "reopen_session", _fail_reopen)
+        monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", lambda: db)
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"default": "ambient-model", "provider": "openrouter"},
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda **_kw: {
+                "api_key": "resolved", "base_url": None, "provider": "openrouter",
+                "requested_provider": "openrouter", "api_mode": "chat", "credential_pool": None,
+            },
+        )
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda _cfg, _p: [])
+        monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
+        monkeypatch.setattr("run_agent.AIAgent", _FakeAgent)
+
+        try:
+            text, result = oneshot_mod._run_agent("continue", resume="s1")
+            assert text == "ok" and result["final_response"] == "ok"
+            assert captured["session_id"] is None
+            assert [(message["role"], message["content"]) for message in captured["history"]] == [
+                ("user", "remember this"),
+            ]
+            row = db.get_session("s1")
+            assert row["ended_at"] is not None and row["end_reason"] == "agent_close"
+            stored, _display = db.get_resume_conversations("s1")
+            assert [(message["role"], message["content"]) for message in stored] == [
+                ("user", "remember this"),
+            ]
+        finally:
+            db.close()
+
     def test_run_agent_explicit_model_beats_stored_runtime(self, tmp_path, monkeypatch):
         import hermes_cli.oneshot as oneshot_mod
 

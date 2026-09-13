@@ -356,9 +356,8 @@ def _load_resume_target(session_db, resume: Optional[str]) -> tuple[Optional[str
     --create-if-missing`` must fill the titled session it created, not mint a fresh id
     (same contract as the interactive /resume of an empty session).
 
-    The resolved row is reopened immediately before agent construction, after provider and
-    skill setup has succeeded.  Keeping that mutation out of this loader prevents a failed
-    pre-agent setup from leaving an ended session falsely active.
+    Loading is read-only. The resolved row is reopened later, after provider, MCP, and skill
+    setup succeeds, so a failed pre-agent setup cannot leave an ended session falsely active.
     """
     if not resume:
         return None, [], None
@@ -455,8 +454,14 @@ def _run_agent(
     reopened_resume = False
     try:
         if resume_sid:
-            session_db.reopen_session(resume_sid)
-            reopened_resume = True
+            try:
+                session_db.reopen_session(resume_sid)
+                reopened_resume = True
+            except Exception:
+                logging.debug("reopen_session failed for resumed one-shot session %s", resume_sid, exc_info=True)
+        # If the ended row could not be reopened, run the loaded transcript best-effort but let
+        # AIAgent create a fresh durable row; never append this turn to the still-closed target.
+        agent_session_id = resume_sid if reopened_resume else None
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -468,7 +473,7 @@ def _run_agent(
             quiet_mode=True,
             platform="cli",
             session_db=session_db,
-            session_id=resume_sid,
+            session_id=agent_session_id,
             credential_pool=runtime.get("credential_pool"),
             fallback_model=get_fallback_chain(cfg) or None,
             ephemeral_system_prompt=skills_prompt,

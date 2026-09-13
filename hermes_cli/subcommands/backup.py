@@ -23,5 +23,6 @@ def build_backup_parser(subparsers, *, cmd_backup: Callable) -> None:
     backup_parser.add_argument(
         "-k", "--keep", type=int, default=3, metavar="N",
         help="After a full backup, delete older hermes-backup-*.zip files in the output "
-             "directory beyond the newest N (default 3; 0 keeps everything)")
+             "directory beyond N total; complete archives are retained first and incomplete "
+             "ones fill spare slots (default 3; 0 keeps everything)")
     backup_parser.set_defaults(func=cmd_backup)

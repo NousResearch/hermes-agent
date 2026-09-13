@@ -57,6 +57,51 @@ _SHADOWED_CHECKPOINT_ROWS_SQL = ("SELECT id, codex_reasoning_items FROM messages
     "AND role = 'assistant' AND id < ? AND codex_reasoning_items LIKE '%\"compaction\"%'")
 _SET_CODEX_REASONING_SQL = "UPDATE messages SET codex_reasoning_items = ? WHERE id = ?"
 _INVALID = object()  # _json_or sentinel where the fallback must be distinguishable from JSON null
+_REDACTION_FIELDS = (
+    'content', 'api_content', 'tool_calls', 'reasoning', 'reasoning_content',
+    'reasoning_details', 'codex_reasoning_items', 'codex_message_items', 'display_metadata',
+)
+_REDACTION_META_PREFIX = 'transcript_redaction:'
+_DEPENDENT_SESSIONS_SQL = '''WITH RECURSIVE dependent(id) AS (
+    SELECT id FROM sessions WHERE id=? UNION
+    SELECT s.id FROM sessions s JOIN dependent d ON s.parent_session_id=d.id
+) SELECT id FROM dependent'''
+_REDACTION_REVISION_SQL = 'SELECT value FROM state_meta WHERE key=?'
+# Native delivery dedupe identities, not user text or attachment/result captions.
+_REDACTION_IDENTITY_KEYS = ('gateway_input_owner', 'delegation_id', 'delivery_notice')
+
+
+def _redaction_digest(row) -> str:
+    # Bind the payload to its exact native role/pair, not merely matching prose.
+    fields = ('id', 'session_id', 'role', 'tool_call_id', 'tool_name', *_REDACTION_FIELDS)
+    return hashlib.sha256(json.dumps([row[field] for field in fields],
+        ensure_ascii=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def _redacted_payload(row, digest: str, mode: str = 'payload') -> dict:
+    metadata = SessionMessagesMixin._decode_display_metadata(row['display_metadata']) or {}
+    if mode == 'api_content':
+        return {'api_content': None, 'display_metadata': json.dumps(
+            metadata | {'redacted_api_content_from_sha256': digest}, separators=(',', ':'))}
+    identities = {key: metadata[key] for key in _REDACTION_IDENTITY_KEYS if key in metadata}
+    calls = None
+    if row['tool_calls']:
+        original = json.loads(row['tool_calls'])
+        if not isinstance(original, list):
+            raise ValueError('redaction requires native function tool-call pairs')
+        calls = []
+        for call in original:
+            function = call.get('function') if isinstance(call, dict) else None
+            if (not isinstance(function, dict) or not isinstance(function.get('name'), str)
+                    or not isinstance(call.get('id'), str) or call.get('type', 'function') != 'function'):
+                raise ValueError('redaction requires native function tool-call pairs')
+            calls.append({'id': call['id'], 'type': 'function',
+                          'function': {'name': function['name'], 'arguments': '{}'}})
+    return dict.fromkeys(_REDACTION_FIELDS) | {
+        'content': None if calls and row['role'] == 'assistant' else '[Content removed.]',
+        'tool_calls': json.dumps(calls) if calls else None,
+        'display_metadata': json.dumps(identities | {'redacted_from_sha256': digest}, separators=(',', ':')),
+    }
 
 
 def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
@@ -545,6 +590,109 @@ class SessionMessagesMixin:
             conn.execute(_SET_CODEX_REASONING_SQL, (self._reasoning_json_text(kept), row_id))
             rewritten += 1
         return rewritten
+
+    def _transcript_dependents_on_conn(self, conn, session_id: str) -> List[str]:
+        root = self._session_turn_lease_key_on_conn(conn, session_id)
+        return [row[0] for row in conn.execute(_DEPENDENT_SESSIONS_SQL, (root,))
+                if self._session_turn_lease_key_on_conn(conn, row[0]) == root]
+
+    def get_transcript_dependents(self, session_id: str) -> List[str]:
+        """The shared compression conversation, excluding separate forks/delegates/resets.
+
+        A copied fork's rows require their own explicit ownership selection. A raw
+        parent_session_id is not proof that it consumed this source.
+        """
+        with self._read_ctx() as conn:
+            return self._transcript_dependents_on_conn(conn, session_id)
+
+    def _transcript_redaction_revision_on_conn(self, conn, session_id: str) -> int:
+        root = self._session_turn_lease_key_on_conn(conn, session_id)
+        row = conn.execute(_REDACTION_REVISION_SQL, (_REDACTION_META_PREFIX + root,)).fetchone()
+        return int(row[0]) if row else 0
+
+    def get_transcript_redaction_revision(self, session_id: str) -> int:
+        """Change counter shared by compression segments, not unrelated child work."""
+        with self._read_ctx() as conn:
+            return self._transcript_redaction_revision_on_conn(conn, session_id)
+
+    def get_message_redaction_snapshot(self, session_id: str, message_ids: List[int], *,
+        mode: str = 'payload') -> List[Dict[str, Any]]:
+        """Pin exact stored payloads, including archived rows, for an authorized selective erase.
+
+        This does not discover sources or authorize deletion. A memory provider must resolve
+        its own provenance before selecting native rows. The snapshot carries hashes only.
+        """
+        if mode not in ('payload', 'api_content'):
+            raise ValueError('unknown native redaction mode')
+        if (not session_id or not isinstance(message_ids, list) or not 1 <= len(message_ids) <= 512
+                or any(type(row_id) is not int or row_id <= 0 for row_id in message_ids)
+                or len(set(message_ids)) != len(message_ids)):
+            raise ValueError('select 1..512 distinct native message IDs')
+        with self._read_ctx() as conn:
+            rows = {row['id']: row for row in conn.execute(
+                f'SELECT * FROM messages WHERE session_id=? AND id IN ({_placeholders(message_ids)})',
+                (session_id, *message_ids))}
+            if len(rows) != len(message_ids):
+                raise ValueError('redaction source row missing')
+            return [{'id': row_id, 'sha256': _redaction_digest(rows[row_id]), 'mode': mode}
+                    for row_id in message_ids]
+
+    def redact_message_payloads(self, session_id: str, expected_rows: List[Dict[str, Any]], *,
+        turn_lease_holder: Optional[str] = None) -> Dict[str, Any]:
+        """Erase only selected owned payloads, preserving row IDs and conversation/tool structure.
+
+        Current/archived source and derived-answer rows must be explicitly selected by the
+        caller. All preimages and native writer leases are checked in the same transaction.
+        Held leases raise the existing busy errors: the caller retains its erasure event for
+        later reconciliation. A digest-only marker makes a completed selection replayable.
+        Gateway callers use its serialized/cache-aware door; standalone callers must also
+        settle their own pending transcript/file copies. This is not secure file erasure.
+        """
+        if (not session_id or not isinstance(expected_rows, list) or not 1 <= len(expected_rows) <= 512
+                or any(not isinstance(row, dict) or set(row) != {'id', 'sha256', 'mode'}
+                    or row['mode'] not in ('payload', 'api_content')
+                    or type(row['id']) is not int or row['id'] <= 0
+                    or not isinstance(row['sha256'], str) or len(row['sha256']) != 64
+                    or set(row['sha256']) - set('0123456789abcdef') for row in expected_rows)
+                or len({row['id'] for row in expected_rows}) != len(expected_rows)):
+            raise ValueError('select 1..512 distinct native message preimages')
+
+        def _do(conn):
+            dependents = self._transcript_dependents_on_conn(conn, session_id)
+            if not dependents:
+                raise ValueError('redaction source session missing')
+            for dependent in dependents:
+                self._check_transcript_write_guards(conn, dependent, None,
+                    turn_lease_holder=turn_lease_holder, reject_active_turn_lease=True,
+                    reject_active_compression_lock=True, allow_closed_compression_parent=True)
+            changed = []
+            for expected in expected_rows:
+                row = conn.execute('SELECT * FROM messages WHERE session_id=? AND id=?',
+                    (session_id, expected['id'])).fetchone()
+                if row is None:
+                    raise ValueError('redaction source row missing')
+                mode = expected['mode']
+                metadata = self._decode_display_metadata(row['display_metadata']) or {}
+                marker = 'redacted_api_content_from_sha256' if mode == 'api_content' else 'redacted_from_sha256'
+                prior = metadata.get(marker)
+                already = isinstance(prior, str) and all(
+                    row[field] == value for field, value in _redacted_payload(row, prior, mode).items())
+                if _redaction_digest(row) != expected['sha256'] and not (already and prior == expected['sha256']):
+                    raise ValueError('redaction preimage changed')
+                if already:
+                    continue
+                values = _redacted_payload(row, expected['sha256'], mode)
+                conn.execute('UPDATE messages SET ' + ','.join(field+'=?' for field in values) + ' WHERE id=?',
+                    (*values.values(), row['id']))
+                changed.append(row['id'])
+            if changed:
+                conn.execute('''INSERT INTO state_meta(key,value) VALUES (?, '1')
+                    ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1''',
+                    (_REDACTION_META_PREFIX + self._session_turn_lease_key_on_conn(conn, session_id),))
+            revision = self._transcript_redaction_revision_on_conn(conn, session_id)
+            return {'status': 'redacted', 'session_id': session_id,
+                    'redacted_ids': changed, 'revision': revision}
+        return self._execute_write(_do)
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]], active_only: bool = False,
         archive_dropped: bool = False, reject_active_turn_lease: bool = False) -> None:

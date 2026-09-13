@@ -72,6 +72,7 @@ class TurnFacadeMixin:
         # the finally resets each one unconditionally.
         token = affinity_token = acct_token = None
         task_started = task_finished = False
+        turn_entered = False
         relay_outcome = "failed"
 
         try:
@@ -134,6 +135,7 @@ class TurnFacadeMixin:
                 try:
                     if lease is not None:
                         lease.start()
+                    turn_entered = True
                     result = run_conversation(
                         self, user_message, system_message, conversation_history, effective_task_id,
                         stream_callback, persist_user_message,
@@ -203,6 +205,21 @@ class TurnFacadeMixin:
                     # Balance note_turn_started so the idle queue's live-turn count cannot leak.
                     with suppress(Exception):
                         _review_queue.note_turn_finished()
+                    if turn_entered and not getattr(self, "_persist_disabled", False):
+                        # on_session_end runs inside the loop while its durable lease is held.
+                        # Owned-copy reconciliation needs this later boundary, including first
+                        # turns that create their native session row inside the loop.
+                        try:
+                            from hermes_cli.lifecycle import has_hook, invoke_hook
+                            if has_hook("on_native_turn_settled"):
+                                invoke_hook(
+                                    "on_native_turn_settled",
+                                    session_id=str(getattr(self, "session_id", None) or session_id),
+                                    task_id=effective_task_id, turn_id=relay_turn_id,
+                                    platform=task_context["platform"],
+                                )
+                        except Exception:
+                            logger.warning("Native turn settled hook failed", exc_info=True)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """Final response string of one turn; ``stream_callback`` receives each text delta."""

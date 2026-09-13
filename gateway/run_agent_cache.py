@@ -4,6 +4,7 @@ for GatewayRunner (MRO mixin). ``gateway.run`` internals are imported lazily ins
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import threading
@@ -42,8 +43,122 @@ def _tuple_agent(entry: Any) -> Any:
     return entry[0] if isinstance(entry, tuple) and entry else None
 
 
+def _clear_cached_transcript(agent: Any) -> None:
+    """Drop both references to flushed history; rebuilding preserves session tool state."""
+    if hasattr(agent, "_session_messages"):
+        agent._session_messages = []
+    # This shallow copy retains the same message dictionaries as _session_messages.
+    if hasattr(agent, "_db_flush_scan_prefix"):
+        agent._db_flush_scan_prefix = None
+
+
 class GatewayAgentCacheMixin:
     """Agent cache, session model overrides, turn leases, run generations and conversation-scope reset for GatewayRunner."""
+
+    async def redact_native_message_payloads(self, session_key, session_id, expected_rows):
+        """Owner-authorized internal erasure of exact rows in the routing key's profile.
+
+        This is a storage operation, not sender authorization or an erasure queue. Busy
+        work returns pending for the caller to reconcile at an idle boundary. Cancellation
+        waits for mutation, cache eviction and lease release, including offloaded writes.
+        """
+        operation = asyncio.create_task(
+            self._redact_native_message_payloads(session_key, session_id, expected_rows)
+        )
+        cancelled = False
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            # Observe any worker error even when the original caller has gone away.
+            if not operation.cancelled():
+                operation.exception()
+            raise asyncio.CancelledError
+        return operation.result()
+
+    async def _redact_native_message_payloads(self, session_key, session_id, expected_rows):
+        import os
+        import uuid
+        from hermes_state_errors import SessionCompressionInProgressError, SessionTurnLeaseLostError
+
+        if not session_key or not session_id:
+            raise ValueError("An owning routing key and exact native session are required")
+        store = self.session_store
+        with self._agent_cache_lock:
+            cache = dict(self._agent_cache)
+
+        def prepare(cache):
+            db = store._db_for_key(session_key)
+            if db is None or db.get_session(session_id) is None:
+                raise ValueError("Native session is unavailable in the owning profile")
+            dependents = set(db.get_transcript_dependents(session_id))
+            leases, affected = set(dependents), set()
+            for key, entry in cache.items():
+                owner_db = store._db_for_key(key)
+                if owner_db is None or owner_db.db_path != db.db_path:
+                    continue
+                agent = _first_agent(entry)
+                sids = {getattr(agent, "session_id", None)}
+                if isinstance(entry, tuple) and len(entry) > 3:
+                    sids.add(entry[3])
+                route = store._entries.get(key)
+                if route is not None:
+                    sids.add(route.session_id)
+                sids.discard(None)
+                if sids & dependents:
+                    affected.add(key)
+                    leases.update(sids)
+            return db, dependents, leases, affected
+
+        db, dependents, lease_ids, affected_keys = await asyncio.to_thread(prepare, cache)
+        registry = self._turn_leases
+        holder = f"pid={os.getpid()}:redaction={uuid.uuid4().hex}"
+        tokens = await registry.try_acquire_many(lease_ids, owner_key=holder, generation=0)
+        pending = {"status": "pending", "reason": "active_turn", "session_id": session_id}
+        if tokens is None:
+            return pending
+        acquired = []
+        try:
+            # An alias may have been cached while the first DB read was offloaded.
+            # Recheck after admission; new dependent sessions require a fresh attempt.
+            with self._agent_cache_lock:
+                cache = dict(self._agent_cache)
+            current_db, current_dependents, current_leases, affected_keys = await asyncio.to_thread(prepare, cache)
+            if (current_db.db_path != db.db_path or current_dependents != dependents
+                    or not current_leases <= lease_ids):
+                return {**pending, "reason": "transcript_scope_changed"}
+            # One cached object can be aliased from a different routing key.
+            running = self._running_agent_ids()
+            if any(id(_first_agent(cache[key])) in running for key in affected_keys):
+                return pending
+            for sid in sorted(dependents):
+                held = await asyncio.to_thread(
+                    db.try_acquire_session_turn_lease, sid, holder,
+                    ttl_seconds=300, patience_s=0.5,
+                )
+                if not held:
+                    return pending
+                acquired.append(sid)
+            try:
+                result = await asyncio.to_thread(
+                    store._redact_message_payloads_serialized, db, session_id, expected_rows,
+                    session_ids=dependents, turn_lease_holder=holder,
+                )
+            except (SessionCompressionInProgressError, SessionTurnLeaseLostError):
+                return {**pending, "reason": "active_transcript_writer"}
+            if result.get("status") == "redacted":
+                for key in affected_keys:
+                    self._evict_cached_agent(key, expected_agent=_first_agent(cache[key]))
+            return result
+        finally:
+            try:
+                for sid in reversed(acquired):
+                    await asyncio.to_thread(db.release_session_turn_lease, sid, holder)
+            finally:
+                for token in tokens:
+                    registry.release(token)
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
@@ -323,10 +438,21 @@ class GatewayAgentCacheMixin:
         registry, tokens = held
         token = tokens.pop(run_generation)
         try:
-            return registry.release(token)
+            released = registry.release(token)
         except Exception:
             logger.debug("Failed to release turn lease", exc_info=True)
             return False
+        if released:
+            try:
+                from hermes_cli.lifecycle import has_hook, invoke_hook
+                if has_hook("on_gateway_turn_settled"):
+                    invoke_hook(
+                        "on_gateway_turn_settled", session_id=token.session_id,
+                        session_key=session_key, run_generation=run_generation, gateway=self,
+                    )
+            except Exception:
+                logger.warning("Gateway turn settled hook failed", exc_info=True)
+        return released
 
     def _rebind_turn_lease(self, session_key: str, run_generation: int, new_session_id: str) -> bool:
         """Follow a mid-turn session_id rotation (compression) with the held turn lease, or an alias
@@ -673,7 +799,7 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str) -> None:
+    def _evict_cached_agent(self, session_key: str, *, expected_agent: Any = None) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -687,27 +813,34 @@ class GatewayAgentCacheMixin:
         leak class as #25315).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
-        # session-context bytes (the pin) and re-see the current voice-channel state once.
-        state = self._peek_session_state(session_key)
-        if state is not None:
-            state.conversation.ephemeral_pin = None
-            state.conversation.vc_last = None
         # Tests build runners with ``_agent_cache_lock = None``; evict lock-free then. With the lock
         # present ``_agent_cache`` is read directly (an initialized runner always has it).
         _lock = getattr(self, "_agent_cache_lock", None)
         evicted = None
         if _lock:
             with _lock:
+                if expected_agent is not None and _first_agent(self._agent_cache.get(session_key)) is not expected_agent:
+                    return  # A routing change installed unrelated work during an offloaded mutation.
                 evicted = self._agent_cache.pop(session_key, None)
         else:
             _cache = getattr(self, "_agent_cache", None)
             if _cache is not None:
+                if expected_agent is not None and _first_agent(_cache.get(session_key)) is not expected_agent:
+                    return
                 evicted = _cache.pop(session_key, None)
+        # Prompt-stability state rides the agent-cache lifecycle. Preserve a replacement
+        # agent's pin when a caller supplied the identity of an older cache snapshot.
+        state = self._peek_session_state(session_key)
+        if state is not None:
+            state.conversation.ephemeral_pin = None
+            state.conversation.vc_last = None
         agent = _first_agent(evicted)
         # Never tear down an agent that's mid-turn — its client, sandbox and child subagents are in use.
         if agent is None or agent is _AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
             return
+        if expected_agent is not None:
+            # Exact erasure receipts must not depend on daemon client cleanup running.
+            _clear_cached_transcript(agent)
         self._spawn_release_thread(
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
             session_key=session_key,
@@ -790,16 +923,7 @@ class GatewayAgentCacheMixin:
             else:
                 # Older agent instance (shouldn't happen in practice) — legacy full-close path.
                 self._cleanup_agent_resources(agent)
-        # Free conversation history — tens of MB of tool output on heavy 100+-tool-call sessions.
-        # release_clients() preserves session tool state for resume, but the message list is rebuilt from
-        # persisted session JSON on the next turn, so dropping it here is safe.
-        if hasattr(agent, "_session_messages"):
-            agent._session_messages = []
-        # _db_flush_scan_prefix (run_agent.py, stamped on every successful flush) is a shallow copy
-        # sharing every message dict of the flushed transcript, so leaving it pins the multi-MB strings
-        # this eviction frees. Pressure-evictable agents have flushed by definition, so it's populated.
-        if hasattr(agent, "_db_flush_scan_prefix"):
-            agent._db_flush_scan_prefix = None
+        _clear_cached_transcript(agent)
 
     def _agent_cache_bounds(self):
         """Operator-configured agent-cache bounds, resolved once per process (lazily, not in

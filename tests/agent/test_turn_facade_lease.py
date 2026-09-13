@@ -25,6 +25,9 @@ class _Db:
     def refresh_session_turn_lease(self, session_id, holder, **kwargs):
         return True
 
+    def get_transcript_redaction_revision(self, session_id):
+        return 0
+
     def release_session_turn_lease(self, session_id, holder):
         self.events.append(("release", session_id, holder))
 

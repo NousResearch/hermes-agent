@@ -46,6 +46,9 @@ class _DB:
     def get_session(self, session_id):
         return {"id": session_id} if self.session_exists else None
 
+    def get_transcript_redaction_revision(self, session_id):
+        return 0
+
     def acquire_session_turn_lease(self, session_id, holder, **kwargs):
         self.events.append(("acquire", session_id, holder))
         on_wait = kwargs.get("on_wait")

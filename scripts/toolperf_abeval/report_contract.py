@@ -6,6 +6,7 @@ import re
 
 REQUIRED = {"baseline_sha", "fixes_sha", "model", "concurrency", "metrics", "status"}
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 def validate_toolperf_report(report: Mapping[str, object]) -> list[str]:
@@ -14,6 +15,17 @@ def validate_toolperf_report(report: Mapping[str, object]) -> list[str]:
         errors.append("invalid_status")
     if not isinstance(report.get("metrics"), Mapping):
         errors.append("metrics_must_be_mapping")
+    provenance = report.get("model_provenance")
+    if not isinstance(provenance, Mapping):
+        errors.append("model_provenance_must_be_mapping")
+    else:
+        for key in ("model", "provider"):
+            if not isinstance(provenance.get(key), str) or not provenance[key].strip():
+                errors.append(f"model_provenance.{key}_must_be_nonempty_string")
+        if not isinstance(provenance.get("config_digest"), str) or not _DIGEST.fullmatch(
+            provenance.get("config_digest", "")
+        ):
+            errors.append("model_provenance.config_digest_must_be_sha256")
     concurrency = report.get("concurrency")
     if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1:
         errors.append("concurrency_must_be_positive_integer")

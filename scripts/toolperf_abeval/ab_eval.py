@@ -29,6 +29,7 @@ This is the harness used for the August 2026 core-toolset performance batch
 (tracker: NousResearch/hermes-agent#77056).
 """
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -36,6 +37,7 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 
 from report_contract import validate_toolperf_report
@@ -44,6 +46,10 @@ ROOT = Path(os.environ.get("ABEVAL_ROOT", "abeval-workspace")).resolve()
 HOME = Path(os.environ.get("ABEVAL_HOME", str(ROOT / "home"))).resolve()
 _BATTERY_MANIFEST = "manifest.json"
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+_CREDENTIAL_KEY = re.compile(
+    r"(?i)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|"
+    r"authorization|credential|token)"
+)
 
 TASKS = {
     # P: python-not-found + venv module confusion (terminal failure hints)
@@ -147,6 +153,68 @@ SUCCESS = {
 }
 
 
+def _safe_config(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {
+            str(key): "<redacted>" if _CREDENTIAL_KEY.search(str(key)) else _safe_config(child)
+            for key, child in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_safe_config(child) for child in value]
+    return value
+
+
+def _model_provenance(model: str) -> dict[str, str]:
+    config: object = {}
+    config_path = HOME / "config.yaml"
+    if config_path.exists():
+        import yaml
+
+        try:
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise SystemExit(f"unable to read ABEVAL_HOME model config: {config_path}") from exc
+    model_config = config.get("model", {}) if isinstance(config, Mapping) else {}
+    provider = (
+        str(model_config.get("provider") or "configured-default")
+        if isinstance(model_config, Mapping)
+        else "configured-default"
+    )
+    provider_config = {}
+    if isinstance(config, Mapping) and isinstance(config.get("providers"), Mapping):
+        provider_config = config["providers"].get(provider, {})
+    payload = _safe_config(
+        {"model": model, "provider": provider, "model_config": model_config,
+         "provider_config": provider_config}
+    )
+    digest = hashlib.sha256(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {"model": model, "provider": provider, "config_digest": digest}
+
+
+def _resolve_clean_source(pythonpath: str) -> tuple[Path, str]:
+    source_root = Path(pythonpath).expanduser().resolve()
+    if not source_root.is_dir():
+        raise SystemExit(f"evaluated source tree is not a directory: {source_root}")
+    status = subprocess.run(
+        ["git", "-C", str(source_root), "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if status.returncode or status.stdout.strip():
+        raise SystemExit(f"evaluated source tree must be clean: {source_root}")
+    try:
+        source_sha = subprocess.run(
+            ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemExit(f"unable to resolve evaluated source revision: {source_root}") from exc
+    if not _GIT_SHA.fullmatch(source_sha):
+        raise SystemExit(f"evaluated source revision is not a full git SHA: {source_root}")
+    return source_root, source_sha
+
+
 def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
     resdir = ROOT / "results" / model.replace("/", "_") / arm
     resdir.mkdir(parents=True, exist_ok=True)
@@ -159,13 +227,7 @@ def run(arm: str, model: str, reps: int, pythonpath: str, only=None):
     else:
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     meta_path = resdir / "meta.jsonl"
-    try:
-        source_sha = subprocess.run(
-            ["git", "-C", str(Path(pythonpath).resolve()), "rev-parse", "HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
-        ).stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        source_sha = "unavailable"
+    source_root, source_sha = _resolve_clean_source(pythonpath)
     done = set()
     if meta_path.exists():
         for line in meta_path.read_text(encoding="utf-8").splitlines():
@@ -209,7 +271,7 @@ mode = "overwrite"
             )
             env = dict(os.environ)
             env.update({
-                "PYTHONPATH": pythonpath,
+                "PYTHONPATH": str(source_root),
                 "HERMES_HOME": str(HOME),
                 "HERMES_NEMO_RELAY_PLUGINS_TOML": str(relay_config),
             })
@@ -247,11 +309,19 @@ def score_run(atof: Path):
     last_err_tool = None
     if not atof.exists():
         return None
-    for line in atof.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = atof.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None
+    valid_events = 0
+    for line in lines:
         try:
             ev = json.loads(line)
         except ValueError:
             continue
+        if not isinstance(ev, dict):
+            continue
+        valid_events += 1
         k, c, sc = ev.get("kind"), ev.get("category"), ev.get("scope_category")
         if k == "scope" and c == "llm" and sc == "end":
             llm += 1
@@ -273,6 +343,8 @@ def score_run(atof: Path):
                 last_err_tool = ev.get("name")
             else:
                 last_err_tool = None
+    if not valid_events:
+        return None
     return {"llm": llm, "tools": tools, "errs": errs,
             "retries": retries, "kb": result_bytes // 1024}
 
@@ -288,7 +360,12 @@ def report(models):
                 continue
             for line in meta_path.read_text(encoding="utf-8").splitlines():
                 m = json.loads(line)
-                s = score_run(mdir / arm / f"{m['run_id']}.atof.jsonl") or {}
+                s = score_run(mdir / arm / f"{m['run_id']}.atof.jsonl")
+                if s is None:
+                    raise SystemExit(
+                        f"invalid tool-performance completeness: missing or unreadable trace "
+                        f"for {arm}/{m['run_id']}"
+                    )
                 work = ROOT / "runs" / model.replace("/", "_") / arm / m["run_id"]
                 try:
                     ok = SUCCESS[m["task"]](m.get("tail", ""), work)
@@ -359,6 +436,7 @@ def report(models):
             "baseline_sha": provenance.get("baseline", "unavailable"),
             "fixes_sha": provenance.get("fixes", "unavailable"),
             "model": model,
+            "model_provenance": _model_provenance(model),
             "concurrency": 1,
             "metrics": {arm: dict(agg[arm]) for arm in ("baseline", "fixes")},
             "status": "pass" if complete else "fail",

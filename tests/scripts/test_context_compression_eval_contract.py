@@ -61,3 +61,14 @@ def test_report_rejects_impossible_counts_and_empty_provenance() -> None:
     assert "compressed_tokens_must_be_nonnegative" in errors
     assert "baseline_tokens_must_be_positive" in errors
     assert "model_provenance.compression_model_must_be_nonempty_string" in errors
+
+
+def test_report_rejects_invalid_fixture_scores_and_home_paths() -> None:
+    value = report()
+    value["fixture_digest"] = "not-a-digest"
+    value["probe_scores"] = {"accuracy": float("nan")}
+    value["model_provenance"]["provider"] = r"C:\Users\alice\provider"
+    errors = validate_report(value)
+    assert "fixture_digest_must_be_sha256" in errors
+    assert "nonfinite_number:probe_scores.accuracy" in errors
+    assert "forbidden_home_path" in errors

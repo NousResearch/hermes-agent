@@ -31,6 +31,26 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
     process.wait()
 
 
+def _resolve_clean_source(path: Path) -> tuple[Path, str]:
+    source_root = path.expanduser().resolve()
+    if not source_root.is_dir():
+        raise SystemExit(f"--hermes-root is not a directory: {source_root}")
+    status = subprocess.run(
+        ["git", "-C", str(source_root), "status", "--porcelain", "--untracked-files=all"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+    )
+    if status.returncode or status.stdout.strip():
+        raise SystemExit(f"--hermes-root must be clean: {source_root}")
+    try:
+        source_sha = subprocess.run(
+            ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+        ).stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise SystemExit("unable to resolve --hermes-root source revision") from exc
+    return source_root, source_sha
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--harness", type=Path, required=True)
@@ -52,13 +72,7 @@ def main() -> int:
     if report_path.exists():
         stale = report_path.with_name(f"report.stale.{time.time_ns()}.json")
         report_path.replace(stale)
-    try:
-        source_sha = subprocess.run(
-            ["git", "-C", str(hermes_root), "rev-parse", "HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
-        ).stdout.strip()
-    except subprocess.CalledProcessError as exc:
-        raise SystemExit("unable to resolve --hermes-root source revision") from exc
+    hermes_root, source_sha = _resolve_clean_source(hermes_root)
     process: subprocess.Popen[str] = subprocess.Popen(
         command,
         cwd=harness,
@@ -89,7 +103,7 @@ def main() -> int:
         raise SystemExit("invalid compression report: " + ", ".join(errors))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return 0
+    return 0 if report.get("status") == "pass" else 1
 
 
 if __name__ == "__main__":

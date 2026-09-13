@@ -62,15 +62,31 @@ def test_runner_resolves_root_strips_separator_and_rejects_stale_report(tmp_path
     )
     output = tmp_path / "out" / "report.json"
     result = subprocess.run(
-        [sys.executable, str(RUNNER), "--harness", str(harness), "--hermes-root", ".",
-         "--output", str(output), "--", sys.executable, "write_report.py"],
-        cwd=root, env={**os.environ, "REPORT": json.dumps(_report(source_sha))},
+        [sys.executable, str(RUNNER),
+         "--harness", "harness", "--hermes-root", "hermes", "--output", "out/report.json",
+         "--", sys.executable, "write_report.py"],
+        cwd=tmp_path, env={**os.environ, "REPORT": json.dumps(_report(source_sha))},
         capture_output=True, text=True,
     )
 
     assert result.returncode == 0, result.stderr
     assert json.loads(output.read_text(encoding="utf-8"))["source_sha"] == source_sha
     assert list(latest.glob("report.stale.*.json"))
+
+
+def test_runner_rejects_dirty_evaluated_tree(tmp_path: Path) -> None:
+    root = tmp_path / "hermes"
+    harness = tmp_path / "harness"
+    harness.mkdir()
+    _git_root(root)
+    (root / "dirty.py").write_text("dirty\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(RUNNER), "--harness", str(harness), "--hermes-root", str(root),
+         "--output", str(tmp_path / "out.json"), "--", "true"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "must be clean" in result.stderr
 
 
 def test_runner_rejects_nonfinite_timeout(tmp_path: Path) -> None:

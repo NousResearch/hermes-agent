@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import math
 import re
 
 REQUIRED_KEYS = {
@@ -9,7 +10,11 @@ REQUIRED_KEYS = {
     "baseline_tokens", "probe_scores", "artifact_trail_preserved",
     "continuity_preserved", "model_provenance", "status",
 }
-FORBIDDEN_MARKERS = ("/Users/", "/home/")
+_FIXTURE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_FORBIDDEN_HOME_PATH = re.compile(
+    r"(?i)(?:[a-z]:[\\/]+(?:users|documents and settings)[\\/]+|"
+    r"/(?:users|home|root|private/var|var/folders)/)"
+)
 _CREDENTIAL_ASSIGNMENT = re.compile(
     r"(?i)\b(?:[a-z0-9]+[_-])*"
     r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|"
@@ -38,10 +43,31 @@ def _credential_errors(value: object, path: str = "report") -> list[str]:
     return []
 
 
+def _nonfinite_errors(value: object, path: str) -> list[str]:
+    if isinstance(value, float) and not math.isfinite(value):
+        return [f"nonfinite_number:{path}"]
+    if isinstance(value, Mapping):
+        return [
+            error
+            for key, child in value.items()
+            for error in _nonfinite_errors(child, f"{path}.{key}")
+        ]
+    if isinstance(value, (list, tuple)):
+        return [
+            error
+            for index, child in enumerate(value)
+            for error in _nonfinite_errors(child, f"{path}[{index}]")
+        ]
+    return []
+
+
 def validate_report(report: Mapping[str, object]) -> list[str]:
     errors = [f"missing:{key}" for key in sorted(REQUIRED_KEYS - report.keys())]
     if report.get("schema_version") != 1:
         errors.append("schema_version_must_be_1")
+    fixture_digest = report.get("fixture_digest")
+    if not isinstance(fixture_digest, str) or not _FIXTURE_DIGEST.fullmatch(fixture_digest):
+        errors.append("fixture_digest_must_be_sha256")
     for key in ("compressed_tokens", "baseline_tokens"):
         if not isinstance(report.get(key), int) or isinstance(report.get(key), bool):
             errors.append(f"{key}_must_be_integer")
@@ -52,6 +78,8 @@ def validate_report(report: Mapping[str, object]) -> list[str]:
             errors.append("baseline_tokens_must_be_positive")
     if not isinstance(report.get("probe_scores"), Mapping):
         errors.append("probe_scores_must_be_mapping")
+    else:
+        errors.extend(_nonfinite_errors(report["probe_scores"], "probe_scores"))
     if not isinstance(report.get("artifact_trail_preserved"), bool):
         errors.append("artifact_trail_preserved_must_be_boolean")
     if not isinstance(report.get("continuity_preserved"), bool):
@@ -76,5 +104,6 @@ def validate_report(report: Mapping[str, object]) -> list[str]:
     text = repr(dict(report))
     if _CREDENTIAL_ASSIGNMENT.search(text):
         errors.append("forbidden_credential_assignment")
-    errors.extend(f"forbidden_marker:{marker}" for marker in FORBIDDEN_MARKERS if marker in text)
+    if _FORBIDDEN_HOME_PATH.search(text):
+        errors.append("forbidden_home_path")
     return errors

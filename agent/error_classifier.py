@@ -239,6 +239,16 @@ _MODEL_NOT_FOUND_PATTERNS = (
     "no such model", "unknown model", "unsupported model", "no endpoints found that support tool use",
 )
 
+# LM Studio can unload/eject a configured model at runtime (JIT disabled,
+# manual eject, or an idle-TTL sweep). Retrying the identical request can
+# trigger a reload loop, while silently choosing a fallback hides the local
+# endpoint state the operator needs to fix. Keep these signals separate from
+# generic model-not-found errors, which may legitimately fall back.
+_MODEL_UNLOADED_PATTERNS = (
+    "model unloaded", "model not loaded", "no model loaded", "no models loaded",
+    "no chat-capable models",
+)
+
 # Qwen/vLLM chat-template "No user query found". Shared by the invalid-body
 # table (→ format_error) and the llama.cpp grammar guard so they cannot drift.
 _NO_USER_QUERY_SIGNAL = "no user query found"
@@ -392,6 +402,7 @@ _V_RATE_LIMIT = _v(_R.rate_limit, **_ROTATE_FALLBACK)
 _V_AUTH_ROTATE = _v(_R.auth, retryable=False, **_ROTATE_FALLBACK)
 _V_AUTH_FALLBACK = _v(_R.auth, **_ABORT_FALLBACK)
 _V_MODEL_NOT_FOUND = _v(_R.model_not_found, **_ABORT_FALLBACK)
+_V_MODEL_UNLOADED = _v(_R.model_not_found, retryable=False, should_fallback=False)
 _V_CONTENT_BLOCKED = _v(_R.content_policy_blocked, **_ABORT_FALLBACK)
 _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
 # A different provider (direct instead of the aggregator; another host's TLS chain) can fix these.
@@ -445,13 +456,15 @@ _OVERFLOW_AS_5XX_RULES = (
 # Free Tier (billing, not missing model); policy block before model_not_found.
 _404_RULES = (
     (_BILLING_PATTERNS, _V_BILLING), (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED),
+    (_MODEL_UNLOADED_PATTERNS, _V_MODEL_UNLOADED),
     (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
 )
 
 # 400 tail after the deterministic request-shape checks. Some providers return
 # model-not-found / rate-limit / billing as 400 instead of 404/429/402.
 _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
-    (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
+    (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED),
+    (_MODEL_UNLOADED_PATTERNS, _V_MODEL_UNLOADED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_BILLING_PATTERNS, _billing_hints),
 )
 
@@ -466,7 +479,8 @@ _MESSAGE_TAIL_RULES = (
     (_OVERLOADED_PATTERNS, _V_OVERLOADED), (_BILLING_PATTERNS, _billing_hints),
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_EMPTY_PROVIDER_RESPONSE_PATTERNS, _V_SERVER_ERROR),
     (_CONTEXT_OVERFLOW_PATTERNS, _V_CONTEXT_OVERFLOW), (_AUTH_PATTERNS, _V_AUTH_ROTATE),
-    (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
+    (_PROVIDER_POLICY_BLOCKED_PATTERNS, _V_POLICY_BLOCKED),
+    (_MODEL_UNLOADED_PATTERNS, _V_MODEL_UNLOADED), (_MODEL_NOT_FOUND_PATTERNS, _V_MODEL_NOT_FOUND),
     (_TIMEOUT_MESSAGE_PATTERNS, _V_TIMEOUT), (_CONNECTION_MESSAGE_PATTERNS, _V_TIMEOUT),
 )
 

@@ -1764,6 +1764,41 @@ class TestServerInjectedParameterRejection:
         assert result.retryable is False
 
 
+class TestLMStudioModelUnloaded:
+    @pytest.mark.parametrize(
+        ("message", "status_code", "body"),
+        [
+            ("Model unloaded", 404, None),
+            ("Model not loaded", 404, None),
+            ("No models loaded", 400, None),
+            ("No chat-capable models are loaded", 404, None),
+            ("No model loaded", None, None),
+            ("Not Found", 404, {"error": {"message": "No models loaded"}}),
+            ("Bad Request", 400, {"message": "Model unloaded"}),
+        ],
+    )
+    def test_model_unloaded_is_terminal_without_fallback(self, message, status_code, body):
+        error = (
+            MockAPIError(message, status_code=status_code, body=body)
+            if status_code
+            else Exception(message)
+        )
+
+        result = classify_api_error(error, provider="lmstudio")
+
+        assert result.reason is FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_genuine_model_not_found_still_falls_back(self):
+        result = classify_api_error(
+            MockAPIError("model not found", status_code=404),
+            provider="lmstudio",
+        )
+
+        assert result.reason is FailoverReason.model_not_found
+        assert result.retryable is False
+        assert result.should_fallback is True
 
 
 # ── Test: Nous welcome tier (free tier) refusals ───────────────────────

@@ -7,7 +7,7 @@ import logging
 import urllib.request
 
 from hermes_cli.urllib_security import open_credentialed_url
-from providers import register_provider
+from providers import get_provider_profile, register_provider
 from providers.base import ProviderProfile, _profile_user_agent
 
 logger = logging.getLogger(__name__)
@@ -47,11 +47,14 @@ class CommandCodeProfile(ProviderProfile):
         without them ``/reasoning`` never reaches the request (#95232). Other model
         families stay a no-op — CommandCode declares no reasoning vocabulary for them."""
         m = (model or "").strip()
-        if not m.lower().startswith("deepseek/") or len(m) <= len("deepseek/"):
+        if not m.lower().startswith("deepseek/"):
             return {}, {}
-        from plugins.model_providers.deepseek import deepseek as _deepseek_profile
-
-        return _deepseek_profile.build_api_kwargs_extras(
+        # Registry lookup, not a module import: the deepseek shim is only a loader-injected
+        # sys.modules entry, and the registry honours a user override of the profile.
+        native = get_provider_profile("deepseek")
+        if native is None:
+            return {}, {}
+        return native.build_api_kwargs_extras(
             reasoning_config=reasoning_config, model=m.split("/", 1)[1], **context,
         )
 

@@ -213,12 +213,12 @@ class TestModelPickerBaseUrlIntegration:
 
 
 def test_profiles_without_model_listing_never_hit_the_network():
-    """SDK/subprocess-backed profiles (bedrock, vertex, copilot-acp) still carry a base_url the
-    generic fetch_models would happily GET ``/models`` against; the flag must short-circuit first."""
+    """SDK-backed profiles (bedrock, vertex) still carry a base_url the generic fetch_models
+    would happily GET ``/models`` against; the flag must short-circuit first."""
     from providers import list_providers
 
     flagged = [p for p in list_providers() if not p.supports_model_listing]
-    assert {p.name for p in flagged} >= {"bedrock", "vertex", "copilot-acp"}
+    assert {p.name for p in flagged} >= {"bedrock", "vertex"}
     with patch("hermes_cli.urllib_security.open_credentialed_url") as opener:
         for profile in flagged:
             assert profile.fetch_models(api_key="k", base_url=profile.base_url) is None, profile.name

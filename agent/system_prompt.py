@@ -618,13 +618,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
-    _help_guidance_slot = len(stable_parts)
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+    # Gated by config.yaml ``agent.self_help_guidance`` (default True):
+    # embedded / white-labeled deployments turn it off to strip the runtime's
+    # vendor identity and public docs URL from the prompt.
+    _help_guidance_slot = None
+    if getattr(agent, "_self_help_guidance", True):
+        _help_guidance_slot = len(stable_parts)
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
     stable_parts.extend(_guidance_parts(agent))
     skills_prompt = _skills_prompt(agent)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
-    if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
+    # _help_guidance_slot is None when self-help guidance is disabled.
+    if _help_guidance_slot is not None and "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
     stable_parts.extend(_alibaba_identity_part(agent))
     # Coding posture: the operating brief stays in the stable prefix. The

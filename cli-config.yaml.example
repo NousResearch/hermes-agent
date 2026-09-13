@@ -1172,6 +1172,13 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
+  # Self-help docs-pointer in the system prompt ("You run on Hermes Agent ...").
+  # Points the model at the public docs and the hermes-agent skill for
+  # questions about Hermes itself. Set false for embedded / white-labeled
+  # deployments where the runtime's vendor identity and docs URL should not
+  # reach end users. Default true.
+  # self_help_guidance: true
+
   # Enable verbose logging
   verbose: false
   

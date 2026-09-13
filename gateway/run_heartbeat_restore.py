@@ -9,21 +9,18 @@ logger = logging.getLogger("gateway.run")
 def _profile_has_heartbeat_keys(profile_home) -> bool:
     """Indexed ``heartbeat:*`` probe on one profile's SessionDB — no config/secret parsing.
 
-    Only the HERMES_HOME override (a contextvar) is installed; the expensive secret/terminal
-    scopes are skipped. Fails OPEN: a probe error must not suppress the restore sweep.
+    Fails OPEN: a probe error or unavailable DB must not suppress the restore sweep.
     """
-    from hermes_cli.goals import _get_session_db
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from gateway.run import _profile_session_db_probe
 
-    token = set_hermes_home_override(str(profile_home))
+    db = _profile_session_db_probe(profile_home)
+    if db is None:
+        return True
     try:
-        db = _get_session_db()
-        return bool(db is not None and db.list_meta_prefix("heartbeat:"))
+        return bool(db.list_meta_prefix("heartbeat:"))
     except Exception:
         logger.debug("heartbeat probe failed for %s; running full sweep", profile_home, exc_info=True)
         return True
-    finally:
-        reset_hermes_home_override(token)
 
 
 def _served_profile_homes(runner, default_home):

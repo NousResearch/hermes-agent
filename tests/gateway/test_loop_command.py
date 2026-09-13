@@ -402,3 +402,71 @@ async def test_loop_wakeup_watcher_runs_every_sessiondb_call_off_loop_thread(loo
     assert on_loop_calls == [], f"SessionDB calls ran on the event-loop thread: {on_loop_calls}"
     # complete_tick ran (slash-command loops complete immediately).
     assert loops.load_loop("sid-gateway-loop").ticks_fired == 1
+
+
+@pytest.mark.asyncio
+async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env, monkeypatch, tmp_path):
+    """A secondary profile with no ACTIVE loop must not get its runtime scope entered on
+    every tick (each entry re-parses the profile's config/secrets — the dominant idle-CPU
+    cost on multiplex gateways); a profile holding an active loop must still be scanned."""
+    from hermes_state import SessionDB
+
+    work_home = tmp_path / "profiles" / "work"
+    work_home.mkdir(parents=True)
+    work_db = SessionDB(db_path=work_home / "state.db")
+    goals._DB_CACHE[str(work_home)] = work_db
+
+    scopes = [(None, None), ("work", work_home)]
+    monkeypatch.setattr("gateway.run._handoff_watch_scopes", lambda _r: scopes)
+
+    entered = []
+
+    class _SpyScope:
+        def __init__(self, home):
+            self.home = home
+
+        async def __aenter__(self):
+            entered.append(self.home)
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("gateway.run._async_profile_runtime_scope", _SpyScope)
+
+    runner = _make_runner()
+    runner._running_agents = {}
+    runner.adapters = {}
+
+    orig_sleep = asyncio.sleep
+
+    async def _run_one_tick():
+        runner._running = True
+        calls = {"n": 0}
+
+        async def _one_pass_sleep(delay):
+            calls["n"] += 1
+            if calls["n"] >= 2:  # 5s connect grace, then exactly one scan pass
+                runner._running = False
+            return await orig_sleep(0)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(asyncio, "sleep", _one_pass_sleep)
+            await asyncio.wait_for(
+                GatewayRunner._loop_wakeup_watcher(runner, interval=0), timeout=5)
+
+    try:
+        # Idle: no loop rows in the work profile's store → its scope is never entered.
+        await _run_one_tick()
+        assert entered == [], f"idle profile scope must not be entered; got {entered}"
+
+        # An ACTIVE loop row in the work profile's store opens the gate.
+        await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+        raw = loops._get_session_db().get_meta("loop:sid-gateway-loop")
+        assert raw
+        work_db.set_meta("loop:sid-work-loop", raw)
+        await _run_one_tick()
+        assert entered == [work_home], (
+            f"profile with an active loop must still be scanned; got {entered}")
+    finally:
+        work_db.close()

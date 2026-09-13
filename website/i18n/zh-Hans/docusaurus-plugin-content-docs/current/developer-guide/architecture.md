@@ -85,7 +85,7 @@ hermes-agent/
 │   ├── model_switch.py       # /model 命令逻辑（CLI + gateway 共用）
 │   ├── setup.py              # 交互式设置向导（大文件）
 │   ├── skin_engine.py        # CLI 主题引擎
-│   ├── skills_config.py      # hermes skills——按平台启用/禁用
+│   ├── skills_config.py      # hermes skills config ——按平台启用/禁用
 │   ├── skills_hub.py         # /skills 斜杠命令
 │   ├── tools_config.py       # hermes tools——按平台启用/禁用
 │   ├── plugins.py            # PluginManager——发现、加载、hook

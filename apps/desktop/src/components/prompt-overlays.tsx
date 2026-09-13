@@ -181,10 +181,12 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>('secret.respond', {
-          request_id: request.requestId,
-          value: secret
-        })
+        await requestForOwnedSession<{ status?: string }>(
+          request.sessionId,
+          ambientRequestFor(gateway),
+          request.responseMethod ?? 'secret.respond',
+          { request_id: request.requestId, value: secret }
+        )
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {

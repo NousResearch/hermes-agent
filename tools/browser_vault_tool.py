@@ -190,6 +190,16 @@ _TAB_PROBES = {
     "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
 }
 
+# Export/file-password dialogs commonly misuse autocomplete=one-time-code. Purpose is explicit here:
+# require a same-form password + confirmation pair instead of treating autocomplete as OTP truth.
+_TAB_PROBES["export_password"] = """(() => {
+  const fields = Array.from(document.querySelectorAll('input[type=password]')).filter((el) => {
+    const style = getComputedStyle(el);
+    return !el.disabled && !el.readOnly && style.display !== 'none' && style.visibility !== 'hidden' && el.getClientRects().length;
+  });
+  return fields.length === 2 && fields[0].form === fields[1].form;
+})()"""
+
 
 def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
@@ -385,6 +395,89 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     filled = int(parsed.get("filled", 0)) if isinstance(parsed, dict) else 0
     return json.dumps({"success": bool(filled), "filled_fields": filled, "origin": origin, "source": source,
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
+
+
+def browser_vault_fill_export_password(task_id: Optional[str] = None) -> str:
+    """Prompt for an ephemeral non-login file password and fill password + confirmation atomically."""
+    from agent.redact import register_vault_redaction_value
+    from agent.vault_backends.unlock import can_prompt_here, get_export_password_prompt_callback
+    from agent.vault_login_classifier import (
+        LoginControl, build_fill_js, build_inspection_js, select_export_password_fills,
+    )
+
+    effective_task_id = task_id or "default"
+    try:
+        supervisor = _ensure_supervisor(effective_task_id)
+    except Exception:
+        supervisor = None
+    if supervisor is None:
+        return json.dumps({
+            "success": False,
+            "error_type": "secure_fill_unsupported",
+            "error": (
+                "The active browser control path does not expose Hermes secure fill. Hermes will not switch "
+                "to a different browser or pass a password through chat, shell arguments, or an MCP tool. "
+                "Ego/Aside sessions require a trusted adapter with supervised target-bound secret fill."
+            ),
+        })
+
+    if not _focus_bound_origin(effective_task_id, "", "export_password"):
+        return json.dumps({
+            "success": False,
+            "error_type": "no_export_password_fields",
+            "error": "No same-form password and confirmation fields were found in this Hermes browser session.",
+        })
+    origin = _current_page_origin(effective_task_id)
+    if not origin:
+        return json.dumps({"success": False, "error_type": "origin_unavailable",
+                           "error": "Could not bind the export-password prompt to a page origin."})
+
+    nonce = secrets.token_hex(8)
+    inspect = _eval_js(effective_task_id, build_inspection_js(nonce))
+    raw_controls = _parse_json_result(inspect.get("result")) if inspect.get("success") else None
+    if isinstance(raw_controls, str):
+        raw_controls = _parse_json_result(raw_controls)
+    if not isinstance(raw_controls, list):
+        return json.dumps({"success": False, "error_type": "inspection_failed",
+                           "error": "Could not bind the export-password fields."})
+    controls = [LoginControl.from_dict(raw) for raw in raw_controls if isinstance(raw, dict)]
+    # Validate before asking for a secret. The fill later re-validates the same nonce stamps and origin
+    # immediately before either field is written, binding the operation to this task/tab/frame/document.
+    if not select_export_password_fills(controls, "binding-probe"):
+        return json.dumps({"success": False, "error_type": "ambiguous_export_password_fields",
+                           "error": "Export-password fields were ambiguous; nothing was requested or filled."})
+
+    prompt = get_export_password_prompt_callback()
+    if prompt is None or not can_prompt_here():
+        return json.dumps({"success": False, "error_type": "prompt_unavailable",
+                           "error": "This session cannot show a masked export-password prompt."})
+    site = origin.split("://", 1)[-1]
+    password = prompt(origin, site) or ""
+    if not password:
+        return json.dumps({"success": False, "error_type": "export_password_declined",
+                           "error": "The user declined the export-password prompt. Do not ask again this turn."})
+
+    register_vault_redaction_value(password)
+    fills = select_export_password_fills(controls, password)
+    try:
+        result = _eval_js_secret(
+            effective_task_id, build_fill_js(fills, expected_origin=origin, nonce=nonce)
+        )
+    finally:
+        del password
+    if not result.get("success"):
+        return json.dumps({"success": False, "error_type": result.get("error_type", "fill_failed"),
+                           "error": "The supervised export-password fill failed; nothing was submitted."})
+    parsed = _parse_json_result(result.get("result"))
+    if isinstance(parsed, str):
+        parsed = _parse_json_result(parsed)
+    if isinstance(parsed, dict) and parsed.get("refused") in {"origin_changed", "target_changed"}:
+        reason = str(parsed["refused"])
+        return json.dumps({"success": False, "error_type": reason,
+                           "error": "The bound page or fields changed before fill; nothing was written."})
+    filled = int(parsed.get("filled", 0)) if isinstance(parsed, dict) else 0
+    return json.dumps({"success": filled == len(fills), "filled_fields": filled,
+                       "purpose": "export_password", "origin": origin, "submitted": False})
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
@@ -660,6 +753,21 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
 }
 
 
+BROWSER_VAULT_FILL_EXPORT_PASSWORD_SCHEMA = {
+    "name": "browser_vault_fill_export_password",
+    "description": (
+        "Use only when an already-authenticated site asks the user to choose a password for an exported or "
+        "downloaded file. Shows a dedicated masked prompt without a username, then fills the page's password "
+        "and confirmation fields together in the exact supervised Hermes browser task/tab/frame and origin. "
+        "The password is ephemeral, never returned or saved, and the form is not submitted. A password input "
+        "with autocomplete=one-time-code is still handled as an export password because purpose and the paired "
+        "fields are validated explicitly. External Ego/Aside CLI or MCP sessions are refused unless a trusted "
+        "Hermes browser adapter exposes target-bound secure fill; Hermes never silently switches browsers."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
+
+
 def _handle_vault_enter_code(args: Dict[str, Any], **kwargs) -> str:
     return browser_vault_enter_code(handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id"))
 
@@ -680,6 +788,10 @@ def _handle_vault_fill(args: Dict[str, Any], **kwargs) -> str:
     return browser_vault_fill(
         handle=str(args.get("handle") or ""), task_id=kwargs.get("task_id")
     )
+
+
+def _handle_vault_fill_export_password(args: Dict[str, Any], **kwargs) -> str:
+    return browser_vault_fill_export_password(task_id=kwargs.get("task_id"))
 
 
 from tools.registry import no_cache_check_fn, registry  # noqa: E402
@@ -727,6 +839,15 @@ registry.register(
     toolset="browser",
     schema=BROWSER_VAULT_FILL_SCHEMA,
     handler=_handle_vault_fill,
+    check_fn=_check_vault_available,
+    emoji="🔐",
+)
+
+registry.register(
+    name="browser_vault_fill_export_password",
+    toolset="browser",
+    schema=BROWSER_VAULT_FILL_EXPORT_PASSWORD_SCHEMA,
+    handler=_handle_vault_fill_export_password,
     check_fn=_check_vault_available,
     emoji="🔐",
 )

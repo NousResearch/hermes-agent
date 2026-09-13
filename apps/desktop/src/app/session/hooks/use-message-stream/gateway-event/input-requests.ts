@@ -16,6 +16,7 @@ import {
   $vaultCodeRequests,
   $vaultSaveLoginRequests,
   $vaultUnlockRequests,
+  clearSecretRequest,
   clearVaultCodeRequest,
   clearVaultSaveLoginRequest,
   clearVaultUnlockRequest,
@@ -363,6 +364,43 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         title: translateNow('notifications.native.inputTitle')
       })
     }
+
+    return true
+  }
+
+  if (event.type === 'vault.export_password.request') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+    if (requestId) {
+      const origin = typeof payload?.origin === 'string' ? payload.origin : ''
+      const site = typeof payload?.site === 'string' ? payload.site : origin
+
+      setSecretRequest({
+        envVar: 'Export file password',
+        prompt: `Choose a password for the file exported from ${site}. Hermes fills both fields at ${origin}; it is not saved or shown to the model, and the form is not submitted.`,
+        requestId,
+        responseMethod: 'vault.export_password.respond',
+        sessionId: sessionId ?? null
+      })
+
+      if (sessionId) {
+        updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+      }
+
+      dispatchNativeNotification({
+        body: `Export password for ${site}`,
+        kind: 'input',
+        sessionId,
+        title: translateNow('notifications.native.inputTitle')
+      })
+    }
+
+    return true
+  }
+
+  if (event.type === 'vault.export_password.expire') {
+    const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+    clearSecretRequest(sessionId, requestId)
 
     return true
   }

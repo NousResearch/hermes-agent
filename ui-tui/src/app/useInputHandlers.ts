@@ -158,11 +158,12 @@ export function dismissSensitivePrompt(
 
   if (overlay.secret) {
     const requestId = overlay.secret.requestId
+    const responseMethod = overlay.secret.responseMethod ?? 'secret.respond'
 
     patchOverlayState({ secret: null })
     sys('secret entry cancelled')
 
-    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+    return rpc<SecretRespondResponse>(responseMethod, { request_id: requestId, value: '' })
   }
 
   if (overlay.vaultUnlock) {

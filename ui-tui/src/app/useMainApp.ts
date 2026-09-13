@@ -1062,7 +1062,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ secret: null })
       }
 
-      return respondWith('secret.respond', { request_id: requestId, value }, () => {
+      return respondWith(overlay.secret.responseMethod ?? 'secret.respond', { request_id: requestId, value }, () => {
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })

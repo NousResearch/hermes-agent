@@ -3011,9 +3011,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
-        from agent.vault_backends.unlock import set_code_prompt_callback, set_save_login_prompt_callback, set_unlock_prompt_callback
+        from agent.vault_backends.unlock import (set_code_prompt_callback, set_export_password_prompt_callback,
+                                                 set_save_login_prompt_callback, set_unlock_prompt_callback)
         set_unlock_prompt_callback(self._vault_unlock_callback)
         set_save_login_prompt_callback(self._vault_save_login_callback)
+        set_export_password_prompt_callback(self._vault_export_password_callback)
         set_code_prompt_callback(self._vault_code_callback)
         self._tool_callbacks_installed = True
 
@@ -3954,9 +3956,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             from tools.voice_mode import cleanup_temp_recordings
             cleanup_temp_recordings()
         from agent.vault_backends.unlock import (lock as _vault_lock, set_code_prompt_callback,
+                                                 set_export_password_prompt_callback,
                                                  set_save_login_prompt_callback, set_unlock_prompt_callback)
         for _unset in (set_sudo_password_callback, set_approval_callback, set_secret_capture_callback,
-                       set_unlock_prompt_callback, set_save_login_prompt_callback, set_code_prompt_callback):
+                       set_unlock_prompt_callback, set_save_login_prompt_callback,
+                       set_export_password_prompt_callback, set_code_prompt_callback):
             _unset(None)
         _vault_lock()  # session tokens for external password managers die with the session
         # On SIGHUP/SIGTERM the agent thread may be reaped before its own persistence runs.

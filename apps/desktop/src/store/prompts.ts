@@ -104,6 +104,7 @@ export interface SecretRequest extends KeyedPrompt {
   envVar: string
   prompt: string
   requestId: string
+  responseMethod?: 'secret.respond' | 'vault.export_password.respond'
 }
 
 // External password-manager unlock (agent/vault_backends). Resolved via

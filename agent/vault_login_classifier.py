@@ -179,6 +179,33 @@ def select_password_fill(
     ]
 
 
+def select_export_password_fills(controls: List[LoginControl], password: str) -> List[Dict[str, Any]]:
+    """Select one password field, or a password + confirmation pair, from one form.
+
+    This path is purpose-explicit: ``autocomplete=one-time-code`` does not turn a
+    ``type=password`` export field into an OTP target. Ambiguous pages with password
+    controls in multiple forms are refused. A pair is returned only when both controls
+    share the same form, allowing the fill script to validate both before either write.
+    """
+    if not password:
+        return []
+    groups: Dict[Optional[int], List[LoginControl]] = {}
+    for control in controls:
+        if control.type == "password":
+            groups.setdefault(control.form_index, []).append(control)
+    groups = {
+        form: sorted(items, key=lambda c: c.index)
+        for form, items in groups.items()
+        if len(items) <= 2
+    }
+    if len(groups) != 1:
+        return []
+    return [
+        {"index": control.index, "token": "export-password", "value": password}
+        for control in next(iter(groups.values()))
+    ]
+
+
 def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
     """Classify one control as a payment/address fill target (autocomplete token exact match 100,
     label/name heuristic 70), or None. Password/email inputs are never checkout targets."""
@@ -289,9 +316,11 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
     evaluated script, immediately before any write. If the page navigated between inspection and fill
     (TOCTOU), the script writes nothing and returns ``{"refused": "origin_changed", "found": <actual>}``:
     proof scope equals mutation scope (#88706). Targets resolve by the ``<nonce>:<index>`` stamp of
-    THIS inspection; a ``current-password`` fill additionally requires ``type=password``; ``<select>``
-    controls (country, state, expiry month) match an option by value or visible text. No marker is
-    left on filled controls so later model-driven DOM reads cannot address them deterministically.
+    THIS inspection; password fills additionally require ``type=password``; ``<select>`` controls
+    (country, state, expiry month) match an option by value or visible text. Every target is resolved
+    and type-checked before the first write, so a password + confirmation operation cannot partially
+    fill after a DOM/tab/frame change. No marker is left on filled controls so later model-driven DOM
+    reads cannot address them deterministically.
     """
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
@@ -309,9 +338,15 @@ _FILL_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
-  for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
-    if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+  const targets = fills.map((f) => ({
+    f,
+    el: document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')
+  }));
+  if (targets.some(({ f, el }) => !el || (["current-password", "export-password"].includes(f.token) && el.type !== "password"))) {
+    document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+    return JSON.stringify({ refused: "target_changed" });
+  }
+  for (const { f, el } of targets) {
     try {
       if (el.tagName === "SELECT") {
         const want = norm(f.value);

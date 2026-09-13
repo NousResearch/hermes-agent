@@ -34,6 +34,28 @@ Key capabilities:
 - **Automatic cleanup** — inactive sessions are closed after a timeout
 - **Vision analysis** — screenshot + AI analysis for visual understanding
 
+### Password-blind export passwords
+
+When an already-authenticated site asks you to choose a password for an exported file, Hermes can use
+`browser_vault_fill_export_password`. The tool first binds a visible password + confirmation pair to the
+current Hermes browser task, tab, frame/document, and origin. It then shows a dedicated masked prompt on
+your interactive surface and fills both fields in one supervised operation. The password is not saved,
+returned to the model, placed in command-line arguments, or included in screenshots, logs, transcripts, or
+artifacts. Hermes does not submit the form. A `type=password` field whose `autocomplete` is incorrectly set
+to `one-time-code` remains an export-password field in this explicit flow; the attribute alone never decides
+that it is an OTP.
+
+Secure fill is currently available only for Hermes-managed or explicitly connected CDP browser sessions.
+External agent browsers controlled independently through an Ego or Aside CLI/MCP session are not silently
+retargeted. They receive `secure_fill_unsupported` unless an adapter can provide all of the same guarantees:
+user-approved browser/profile/task-space binding; exact session, tab, frame/document and origin binding;
+short-lived single-use secret redemption over a trusted local transport; capability discovery for secure
+fill and interactive handoff; and browser-side revalidation immediately before writing. Adapters must not
+copy cookies, profiles, or credential stores, and must not pass secret values through model-visible tool
+arguments or shell arguments. Browser-provider plugins that expose a user-approved CDP session already use
+the supervised Hermes path; vendor-specific Ego/Aside adapters require vendor support for the remaining
+contract.
+
 ## Setup
 
 :::tip Nous Subscribers

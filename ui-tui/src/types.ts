@@ -241,6 +241,7 @@ export interface SecretReq {
   envVar: string
   prompt: string
   requestId: string
+  responseMethod?: 'secret.respond' | 'vault.export_password.respond'
 }
 
 /** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */

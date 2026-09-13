@@ -30,6 +30,7 @@ from agent.vault_login_classifier import (  # noqa: E402
     LoginControl,
     build_fill_js,
     classify_login_control,
+    select_export_password_fills,
     select_password_fill,
 )
 from agent.vault_store import (  # noqa: E402
@@ -220,6 +221,19 @@ class TestClassifier:
         fills = select_password_fill([pw1, pw2], "p")
         assert len(fills) == 1 and fills[0]["index"] == 1
 
+    def test_export_password_pair_is_purpose_explicit_and_same_form_only(self):
+        controls = [
+            _ctrl(index=2, type="password", autocomplete="one-time-code", label="Export password"),
+            _ctrl(index=3, type="password", autocomplete="one-time-code", label="Confirm password"),
+        ]
+        fills = select_export_password_fills(controls, "file-secret")
+        assert [(fill["index"], fill["token"]) for fill in fills] == [
+            (2, "export-password"), (3, "export-password")
+        ]
+        assert select_export_password_fills(
+            [controls[0], _ctrl(index=3, form_index=1, type="password")], "x"
+        ) == []
+
     def test_build_fill_js_contains_events(self):
         js = build_fill_js(
             [{"index": 0, "token": "current-password", "value": "x"}],
@@ -240,7 +254,8 @@ class TestClassifier:
         assert "data-vault-secret" not in js
         assert "elements[f.index]" not in js
         assert "[data-hermes-vault-slot=" in js and "nonce + ':' + f.index" in js
-        assert 'f.token === "current-password" && el.type !== "password"' in js  # a password fill never lands in a text box
+        assert '["current-password", "export-password"].includes(f.token)' in js
+        assert "target_changed" in js  # all targets are validated before the first write
         assert js.index('removeAttribute("data-hermes-vault-slot")') > js.index("setter.set.call")
 
     def test_build_fill_js_asserts_origin_before_any_write(self):
@@ -277,6 +292,38 @@ class TestBrowserVaultTools:
         with patch("tools.browser_use_cli.is_browser_use_cli_mode", return_value=True), \
              patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
             assert browser_vault_tool._check_vault_available() is True
+
+    def test_export_password_prompt_fills_pair_without_leaking_or_submitting(self):
+        from agent.vault_backends import unlock as unlock_mod
+        from tools import browser_vault_tool
+
+        canary = "file-secret-never-model-visible"
+        controls = [
+            {"autocomplete": "one-time-code", "formIndex": 4, "index": 2, "label": "Export password",
+             "name": "password", "type": "password"},
+            {"autocomplete": "one-time-code", "formIndex": 4, "index": 3, "label": "Confirm password",
+             "name": "confirm", "type": "password"},
+        ]
+        secret_expressions = []
+        unlock_mod.set_export_password_prompt_callback(lambda origin, site: canary)
+        try:
+            with patch.object(browser_vault_tool, "_ensure_supervisor", return_value=object()), \
+                 patch.object(browser_vault_tool, "_focus_bound_origin", return_value="https://seller.test/export"), \
+                 patch.object(browser_vault_tool, "_current_page_origin", return_value="https://seller.test"), \
+                 patch.object(browser_vault_tool, "_eval_js", return_value={"success": True, "result": json.dumps(controls)}), \
+                 patch.object(browser_vault_tool, "_eval_js_secret",
+                              side_effect=lambda task, expr: secret_expressions.append(expr) or
+                              {"success": True, "result": json.dumps({"filled": 2})}), \
+                 patch("agent.vault_backends.unlock.can_prompt_here", return_value=True):
+                raw = browser_vault_tool.browser_vault_fill_export_password(task_id="task-bound")
+        finally:
+            unlock_mod.set_export_password_prompt_callback(None)
+
+        assert json.loads(raw) == {"success": True, "filled_fields": 2, "purpose": "export_password",
+                                   "origin": "https://seller.test", "submitted": False}
+        assert canary not in raw and len(secret_expressions) == 1
+        assert secret_expressions[0].count(canary) == 2
+        assert "submit(" not in secret_expressions[0]
 
     def test_list_returns_identifier_never_password(self, store):
         from tools import browser_vault_tool

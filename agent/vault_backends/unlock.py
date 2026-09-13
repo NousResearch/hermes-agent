@@ -29,6 +29,9 @@ UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> mast
 # (origin, site label) -> {"identifier": str, "password": str} or None when the user declines. The
 # surface owns the masked fields; the tool stores the answer in the local vault and fills at once.
 SaveLoginPrompt = Callable[[str, str], Optional[Dict[str, str]]]
+# (origin, site label) -> one ephemeral file/export password, or "" when declined.
+# The value is never stored: the browser tool consumes it directly over the supervised socket.
+ExportPasswordPrompt = Callable[[str, str], str]
 
 
 def set_unlock_prompt_callback(cb: Optional[UnlockPrompt]) -> None:
@@ -60,6 +63,15 @@ def set_save_login_prompt_callback(cb: Optional[SaveLoginPrompt]) -> None:
 
 def get_save_login_prompt_callback() -> Optional[SaveLoginPrompt]:
     return getattr(_callback_tls, "save_login", None)
+
+
+def set_export_password_prompt_callback(cb: Optional[ExportPasswordPrompt]) -> None:
+    """Register the surface's masked non-login export-password prompt, per thread."""
+    _callback_tls.export_password = cb
+
+
+def get_export_password_prompt_callback() -> Optional[ExportPasswordPrompt]:
+    return getattr(_callback_tls, "export_password", None)
 
 
 def _key(backend: str) -> tuple[str, str]:

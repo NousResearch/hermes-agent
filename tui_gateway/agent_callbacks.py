@@ -174,6 +174,7 @@ def _wire_callbacks(sid: str):
     # External password-manager unlock: the renderer shows a masked master-password card; the
     # answer is consumed by the manager CLI on stdin and only a session token stays in memory.
     from agent.vault_backends.unlock import (set_code_prompt_callback, set_current_session_id,
+                                             set_export_password_prompt_callback,
                                              set_save_login_prompt_callback, set_unlock_prompt_callback)
     set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
     set_unlock_prompt_callback(lambda backend, display_name: _block(
@@ -189,6 +190,8 @@ def _wire_callbacks(sid: str):
         return data if isinstance(data, dict) and data.get("password") else None
 
     set_save_login_prompt_callback(save_login_cb)
+    set_export_password_prompt_callback(lambda origin, site: _block(
+        "vault.export_password.request", sid, {"origin": origin, "site": site}, timeout=180))
     set_code_prompt_callback(lambda site, hint: _block(
         "vault.code.request", sid, {"site": site, "hint": hint}, timeout=180))
 

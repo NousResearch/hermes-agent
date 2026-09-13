@@ -690,6 +690,12 @@ class CLITuiMixin:
     def _get_sudo_display_fragments(self):
         if not self._sudo_state:
             return []
+        if export := self._sudo_state.get("vault_export_password"):
+            return self._render_sudo_style_panel(
+                f'🔐 Export password for {export["site"]}',
+                ['Choose the password that will protect the exported file (hidden).',
+                 f'It is filled into both fields at {export["origin"]}, never saved or shown to the model.',
+                 'Hermes will not submit the export form. Enter on an empty line skips.'])
         if code := self._sudo_state.get("vault_code"):
             return self._render_sudo_style_panel(
                 f'🔐 Verification code for {code["site"]}',

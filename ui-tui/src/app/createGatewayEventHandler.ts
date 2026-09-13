@@ -1308,12 +1308,31 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'vault.export_password.request':
+        patchOverlayState({
+          secret: {
+            envVar: 'Export file password',
+            prompt: `Choose a password for the file exported from ${ev.payload.site}. It is filled into both fields at ${ev.payload.origin}, never saved or shown to the model, and the form is not submitted.`,
+            requestId: ev.payload.request_id,
+            responseMethod: 'vault.export_password.respond'
+          }
+        })
+        setStatus('export password needed')
+        ringPromptBell()
+
+        return
+
       case 'sudo.expire':
         patchOverlayState(prev => (prev.sudo?.requestId === ev.payload.request_id ? { ...prev, sudo: null } : prev))
 
         return
 
       case 'secret.expire':
+        patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
+
+        return
+
+      case 'vault.export_password.expire':
         patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
 
         return

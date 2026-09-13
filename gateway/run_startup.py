@@ -16,6 +16,7 @@ import signal
 import time
 from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from gateway.config import Platform
 from gateway.delivery import looks_like_telegram_private_chat_id
 from gateway.platforms.base import BasePlatformAdapter
@@ -89,6 +90,13 @@ class GatewayStartupMixin:
             await adapter.handle_message(event)
             drained += 1
         return drained
+
+    @staticmethod
+    def _start_free_tier_bootstrap() -> None:
+        """One bootstrap per process. `run_bootstrap` already records its own failure in the boot record
+        and never raises, so this is a plain call; it exists as a method so tests can seam it."""
+        from hermes_cli.free_tier_bootstrap import run_bootstrap
+        run_bootstrap(announce=False)
 
     def _start_startup_warmup(self) -> None:
         """Kick off the boot turn-machinery warm-up so it overlaps the network-bound platform
@@ -494,7 +502,7 @@ class GatewayStartupMixin:
         allowlist existed (or whose owner was since removed) must not silently receive a full agent
         response just because it carries a resume marker."""
         try:
-            if self._is_user_authorized(source):
+            if self._is_user_authorized_for_source(source):
                 return True
             logger.warning(
                 "Skipping auto-resume for %s: session owner is no "
@@ -869,7 +877,8 @@ class GatewayStartupMixin:
         with _log_suppressed(logging.WARNING, "plugin discovery failed at gateway startup", exc_info=True):
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
-        # Generic relay adapter only if GATEWAY_RELAY_URL / gateway.relay_url is set; no URL -> no-op.
+        # Relay entrypoints share the effective profile opt-out, including when a
+        # deployment injects a URL. No URL or explicitly disabled -> no side effects.
         try:
             from gateway.relay import (
                 register_relay_adapter, relay_url, self_provision_relay, send_relay_policy
@@ -902,15 +911,37 @@ class GatewayStartupMixin:
         except Exception:
             logger.log(level, fail_fmt, *fail_args, exc_info=True)
 
+    def _recover_secondary_process_checkpoints(self, process_registry) -> int:
+        """Replay every SERVED secondary profile's ``processes.json`` under its own scope.
+        The launch profile's file was already read by ``recover_from_checkpoint`` above."""
+        if not getattr(self.config, "multiplex_profiles", False):
+            return 0
+        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+        from hermes_constants import get_hermes_home
+        launch_home = get_hermes_home().resolve()
+        recovered = 0
+        for profile_name, profile_home in _multiplex_profile_homes(self.config):
+            if Path(profile_home).resolve() == launch_home:
+                continue
+            try:
+                with _profile_runtime_scope(Path(profile_home), {}):
+                    recovered += process_registry.recover_from_checkpoint()
+            except Exception:
+                logger.warning("Process checkpoint recovery for profile %r failed", profile_name, exc_info=True)
+        return recovered
+
     async def _start_recover_previous_run(self) -> None:
         """Plugins, relay, hooks, then crash/clean-exit recovery of processes and sessions."""
         from gateway.run import _hermes_home
         self._start_register_plugins_relay_hooks()
         self.hooks.discover_and_load()
-        # Recover background processes from checkpoint (crash recovery)
+        # Recover background processes from checkpoint (crash recovery). ``_checkpoint_path`` is
+        # scope-relative, so a served secondary's turn wrote ITS home's processes.json; recover each
+        # served profile's file under its scope or those processes are never re-adopted.
         with _log_suppressed(logging.WARNING, "Process checkpoint recovery: %s"):
             from tools.process_registry import process_registry
             recovered = process_registry.recover_from_checkpoint()
+            recovered += self._recover_secondary_process_checkpoints(process_registry)
             if recovered:
                 logger.info("Recovered %s background process(es) from previous run", recovered)
         # Recover sessions active at last exit (exact turn markers + 120s recency fallback for
@@ -1274,7 +1305,9 @@ class GatewayStartupMixin:
         "_session_housekeeping_watcher", "_model_catalog_refresh_watcher", "_session_stall_watcher",
         "_kanban_notifier_watcher", "_kanban_dispatcher_watcher",
     )
-    _POST_RECONNECT_WATCHERS = ("_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher")
+    _POST_RECONNECT_WATCHERS = (
+        "_handoff_watcher", "_async_delegation_watcher", "_loop_wakeup_watcher", "_profile_reconcile_watcher",
+    )
 
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""
@@ -1317,6 +1350,12 @@ class GatewayStartupMixin:
         if self._start_check_access_policy():
             return True
         await self._start_recover_previous_run()
+        # The gateway is a boot owner of the Nous free tier, beside `cmd_chat` and `hermes serve`: every
+        # demand-time site (provider resolution, /login, the connector token) is a read that needs the
+        # identity to already exist. Blocking here, before any adapter connects, is what keeps a fast
+        # first DM from arriving with nothing to resolve. With the launch gate unset this is a local
+        # inventory and no network.
+        await asyncio.get_running_loop().run_in_executor(None, self._start_free_tier_bootstrap)
         # Serialize startup restore against inbound: adapters receive as soon as they connect, so inbound
         # queues until every synthetic resume turn has finished.
         self._startup_restore_in_progress = True

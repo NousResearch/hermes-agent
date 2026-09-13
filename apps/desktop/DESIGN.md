@@ -202,6 +202,32 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 - **No dividers between rows** unless the list genuinely needs them; prefer
   spacing. When you do need one, it's a single `--ui-stroke-tertiary` hairline.
 
+## Panel titlebars
+
+Top-edge panels extend into the native titlebar band. Their tab strips remain
+inside their own zones so tab drops, focus, and split boundaries use the same
+geometry. Panels without room beside the measured window controls place their
+tabs on a full-width row below the controls. Minimized row groups use vertical
+restore rails, including groups with multiple tabs. Sidebar buttons and shortcuts
+restore minimized or fully hidden side groups without changing the selected tab.
+Lower panels keep local headers. Empty header space moves the window;
+tabs and actions remain no-drag, with native-control space reserved from the
+existing traffic-light and Window Controls Overlay measurements.
+
+The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
+and the right-sidebar toggle sit on the right; haptics remain in settings.
+Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
+status dots after 400ms, without changing tab widths. Hints follow the same
+binding and hovered/focused-zone resolver as the number shortcuts.
+
+Tab close buttons fade the label with a content mask, not a painted gradient.
+The tab reads its surface token directly so glass tint is painted only once.
+
+Sticky user messages clip covered scrolling content, including the gap above
+them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
+Clipping follows the pinned prompt and its live height without changing layout,
+so glass and message-bubble transparency do not reveal scrolling text.
+
 ## Feedback & empty/error/loading states
 
 - **Loading:** `Loader` (`src/components/ui/loader.tsx`) — animated math/ascii

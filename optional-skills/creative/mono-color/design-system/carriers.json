@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "carriers": [
+    {"id": "carrier_wall_poster", "name": "Wall poster", "ratios": ["3:4", "2:3"], "required_signals": ["poster edge or mounting context", "small date or venue tier"], "forbidden_signals": ["phone frame", "garment folds"]},
+    {"id": "carrier_zine", "name": "Bound zine", "ratios": ["3:4", "2:3"], "required_signals": ["binding or spine", "page edge or open spread"], "forbidden_signals": ["phone frame", "wall mounting"]},
+    {"id": "carrier_social_cover", "name": "Social cover", "ratios": ["3:4", "4:5"], "required_signals": ["screen-native crop", "one immediate headline tier"], "forbidden_signals": ["book binding", "garment folds"]},
+    {"id": "carrier_record_sleeve", "name": "Record or playlist sleeve", "ratios": ["1:1"], "required_signals": ["square sleeve geometry", "artist or track metadata"], "forbidden_signals": ["poster date hierarchy", "book binding"]},
+    {"id": "carrier_packaging", "name": "Packaging", "ratios": ["3:4", "1:1"], "required_signals": ["fold, seam, or label boundary", "product-scale information"], "forbidden_signals": ["floating poster sheet", "phone frame"]},
+    {"id": "carrier_merch", "name": "Garment merchandise", "ratios": ["3:4", "4:5"], "required_signals": ["fabric or garment silhouette", "print at wearable scale"], "forbidden_signals": ["floating poster sheet", "book binding"]},
+    {"id": "carrier_portfolio", "name": "Portfolio or exhibition", "ratios": ["3:4", "4:3"], "required_signals": ["book spread or exhibition wall", "caption or work label"], "forbidden_signals": ["phone chrome", "product nutrition panel"]}
+  ]
+}

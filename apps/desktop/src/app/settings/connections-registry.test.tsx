@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
 import { $connection } from '@/store/session'
 
 import {
@@ -68,6 +69,21 @@ afterEach(() => {
 })
 
 describe('ConnectionsRegistrySection', () => {
+  it('refreshes a cached roster immediately after a successful connection test', async () => {
+    _resetFleetRosterForTests()
+    const getAgentRoster = vi.fn().mockResolvedValue({ agents: [], sources: [] })
+    Object.assign(window.hermesDesktop!, { getAgentRoster })
+
+    try {
+      await refreshFleetRoster()
+      render(<ConnectionsRegistrySection />)
+      await screen.findByText('Homelab')
+      fireEvent.click(screen.getAllByRole('button', { name: /^test$/i })[0])
+      await waitFor(() => expect(getAgentRoster).toHaveBeenCalledTimes(2))
+    } finally {
+      _resetFleetRosterForTests()
+    }
+  })
   it('distinguishes the current connection from the registry primary', async () => {
     render(<ConnectionsRegistrySection />)
 

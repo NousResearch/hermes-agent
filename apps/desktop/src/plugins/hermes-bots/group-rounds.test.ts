@@ -152,6 +152,61 @@ describe('routing', () => {
 })
 
 describe('round lifecycle', () => {
+  it('clears each exact member turn on success, failure and supersession without clearing a newer turn', async () => {
+    for (const outcome of ['success', 'failure', 'superseded', 'newer-turn']) {
+      let finish!: () => void
+
+      const gate = new Promise<void>(resolve => {
+        finish = resolve
+      })
+
+      const room = await loadRoom({
+        turn: async () => {
+          await gate
+
+          if (outcome === 'failure') {
+            throw new Error('member failed')
+          }
+
+          return '(pass)'
+        }
+      })
+
+      const { runGroupRoundMember } = await import('./group-round-members')
+      const presence = await import('./group-presence')
+      const member: GroupMember = { name: 'default', connectionId: 'remote', remoteSource: true, sourceScoped: true }
+      const newer = { ...member }
+      room.chat.appendGroupChatEntry('Room', { kind: 'user', name: 'You' }, 'hello', 't1')
+      room.chat.updateGroupChat('Room', state => ({ ...state, running: true, epoch: 1 }))
+
+      const context = {
+        group: 'Room',
+        members: [member],
+        thread: 't1',
+        startEpoch: 1,
+        binding: { isLive: () => true },
+        isCurrent: () => room.chat.$groupChats.get().Room.epoch === 1
+      }
+
+      const pending = runGroupRoundMember(context, member)
+      await drain(() => room.gateway.calls.length === 0)
+      expect(room.chat.$groupChats.get().Room.turn).toEqual(member)
+      expect([...presence.$activeGroupMemberKeys.get()]).toEqual(['remote::default'])
+
+      if (outcome === 'superseded' || outcome === 'newer-turn') {
+        room.chat.updateGroupChat('Room', state => ({
+          ...state,
+          epoch: 2,
+          ...(outcome === 'newer-turn' ? { turn: newer } : {})
+        }))
+      }
+
+      finish()
+      await pending
+      expect(room.chat.$groupChats.get().Room.turn).toBe(outcome === 'newer-turn' ? newer : null)
+      expect([...presence.$activeGroupMemberKeys.get()]).toEqual(outcome === 'newer-turn' ? ['remote::default'] : [])
+    }
+  })
   it('settles when everyone passes, logging only the user message', async () => {
     const room = await loadRoom()
 
@@ -503,7 +558,7 @@ describe('attachments', () => {
     expect(room.gateway.calls).toHaveLength(2)
   })
 
-  it('routes PDFs through pdf.attach and files through file.attach, per member', async () => {
+  it('routes PDFs and files through file.attach, and images through image.attach_bytes, per member', async () => {
     const room = await loadRoom()
     const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'spec.pdf' }
     const doc: Attachment = { data: 'data:text/plain;base64,aGVsbG8=', kind: 'file', name: 'notes.txt' }
@@ -526,14 +581,48 @@ describe('attachments', () => {
       byMethod[attach.method] = (byMethod[attach.method] || 0) + 1
     }
 
-    // 3 attachments × 2 members, each via its own RPC.
+    // 3 attachments × 2 members. PDFs share file.attach with other files so
+    // the member workspace gets a readable copy (1:1 chat does the same).
     expect(room.gateway.attaches).toHaveLength(6)
-    expect(byMethod).toEqual({ 'file.attach': 2, 'image.attach_bytes': 2, 'pdf.attach': 2 })
+    expect(byMethod).toEqual({ 'file.attach': 4, 'image.attach_bytes': 2 })
 
-    const staged = room.gateway.attaches.find(attach => attach.method === 'pdf.attach')
+    const staged = room.gateway.attaches.find(
+      attach => attach.method === 'file.attach' && attach.filename === 'spec.pdf'
+    )
 
     expect(staged?.filename).toBe('spec.pdf')
     expect(staged?.data).toBe(pdf.data)
+  })
+
+  it('stages group PDFs via file.attach and puts the workspace ref in the member prompt', async () => {
+    const room = await loadRoom()
+    const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'spec.pdf' }
+
+    room.rounds.sendToGroupChat('PdfFile', [{ name: 'research', title: '' }], 'read this', null, [pdf])
+    await settle(room, 'PdfFile')
+
+    expect(
+      room.gateway.attaches.some(attach => attach.method === 'file.attach' && attach.filename === 'spec.pdf')
+    ).toBe(true)
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.gateway.calls[0].prompt).toContain('Attached files staged in your session workspace:')
+    expect(room.gateway.calls[0].prompt).toContain('spec.pdf → @file:attachments/spec.pdf')
+  })
+
+  it('names a failed group PDF attach in the member prompt instead of pretending the file is there', async () => {
+    const room = await loadRoom({
+      failAttach: { 'file.attach': Object.assign(new Error('pdftoppm not installed'), { code: 5028 }) }
+    })
+
+    const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'notes.pdf' }
+
+    room.rounds.sendToGroupChat('PdfFail', [{ name: 'research', title: '' }], 'summarize this', null, [pdf])
+    await settle(room, 'PdfFail')
+
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.gateway.calls[0].prompt).toContain('could not be staged into your session')
+    expect(room.gateway.calls[0].prompt).toContain('notes.pdf')
+    expect(room.gateway.calls[0].prompt).not.toContain('Attached files staged in your session workspace:')
   })
 
   it('appends the file.attach ref_text to the member turn prompt', async () => {
@@ -730,7 +819,7 @@ describe('stopGroupThread (#91868/#94569)', () => {
         members: STOP_MEMBERS,
         running: true,
         sessions: { alpha: 'live-alpha-sid' },
-        turn,
+        turn: turn ? STOP_MEMBERS.find(member => member.name === turn) : null,
         watermarks: {}
       }
     } as unknown as Record<string, GroupChat>)
@@ -752,6 +841,27 @@ describe('stopGroupThread (#91868/#94569)', () => {
       expect(state.holds?.[member.name]).toBeTruthy()
       expect(state.holds?.[member.name].thread).toBe('t1')
     }
+  })
+
+  it('interrupts the exact on-turn owner even when same-name members are reordered', async () => {
+    const room = await loadRoom()
+    const local: GroupMember = { name: 'default', connectionId: 'local', sourceScoped: true }
+    const remote: GroupMember = { name: 'default', connectionId: 'remote', remoteSource: true, sourceScoped: true }
+    room.chat.$groupChats.set({
+      Room: {
+        epoch: 3,
+        running: true,
+        log: [],
+        watermarks: {},
+        members: [local, remote],
+        turn: remote,
+        sessions: { 'local::default': 'local-session', 'remote::default': 'remote-session' }
+      }
+    })
+    await room.rounds.stopGroupThread('Room', 't1', [remote, local])
+    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual(['remote-session'])
+    expect(room.chat.$groupChats.get().Room.turn).toBeNull()
+    expect(room.chat.$groupChats.get().Room.running).toBe(false)
   })
 
   it('interrupts the member ON TURN via its live session', async () => {

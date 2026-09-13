@@ -86,6 +86,10 @@ bedrock:
     trace: "disabled"                     # "enabled", "disabled", or "enabled_full"
 ```
 
+The guardrail is attached on the Converse route (`guardrailConfig`) and on the Claude route (InvokeModel headers via the Anthropic Bedrock SDK, so prompt caching and thinking are kept). A blocked request surfaces as a content-filter refusal rather than as model text. `stream_processing_mode` only applies to Converse.
+
+AWS does not apply Guardrails to the Mantle Responses endpoint used by `openai.gpt-5.x` models ([AWS docs](https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-mantle.html)); use a Converse-served model when a guardrail is required.
+
 ### Model Discovery
 
 Hermes auto-discovers available models via the Bedrock control plane. You can customize discovery:

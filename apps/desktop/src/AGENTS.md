@@ -81,3 +81,12 @@ in `src/plugins/hermes-bots/`: `canonical-chat-registry.test.ts` (tripwire: the 
 reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-chat-adopt-on-conflict.test.ts`,
 `bot-row-opens-canonical-chat.test.ts`, `hide-bot-chats.test.ts`; plus repo-root
 `tests/tui_gateway/test_profiles_list_canonical_session.py`.
+
+## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
+
+`$freeTierStatus` mirrors `free_tier.status` (pull; refreshed with the status snapshot and after a
+sign-in). `deriveBillingView` branches on `billing.free_tier` BEFORE `logged_in` (status
+`free_tier`: notice + one Sign in, Plan/Model/Connectors summary, no payment or usage rows). The
+sign-in dialog is a single claimed owner (first mount wins, like the real-profile consent prompt);
+its states map 1:1 to the poll route's `status` + `reason`. Copy is the ruled free-tier copy: never
+"guest", "anonymous", "claim" or "Nous Portal" in user-facing text.

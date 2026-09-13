@@ -9,6 +9,8 @@ import re
 import shlex
 from typing import Iterable
 
+from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, KANBAN_ENV_KEYS
+
 # Bridged per-session vars (gateway.session_context._VAR_MAP) are injected fresh onto every
 # command's process env and must NEVER persist in the shared bash snapshot: one long-lived
 # backend serves many sessions, so a snapshot carrying the FIRST session's HERMES_SESSION_ID
@@ -26,9 +28,21 @@ from typing import Iterable
 # only carry the user's own shell state (PATH, functions, exports they set), not Hermes' per-turn session
 # identity. Used by unit tests as the Python-side contract for the exclusion set; the dump path unsets by
 # name/prefix instead of grepping declare lines (see below / issue #71296).
+#
+# The delegate_task lineage marker (HERMES_DELEGATED_CHILD_CONTEXT) and the Kanban dispatcher-ownership
+# vars (agent.delegation_context.KANBAN_ENV_KEYS) are invocation-scoped the same way: a delegated child
+# shares the parent's cached "default" environment, so ``export -p`` would serialize its marker into the
+# snapshot and a later ordinary command would source the stale value and be misidentified as a delegated
+# child (issue #71941). They are matched by EXACT name — a broad ``HERMES_KANBAN_`` prefix would also
+# strip user-authored config such as HERMES_KANBAN_HOME / HERMES_KANBAN_DISPATCH_IN_GATEWAY, which the
+# snapshot must preserve.
 _SNAPSHOT_EXCLUDED_ENV_REGEX = (
     "^declare -x (HERMES_SESSION_|HERMES_UI_SESSION_ID|HERMES_CRON_AUTO_DELIVER_|"
-    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_)")
+    "HERMES_CRON_SESSION|HERMES_BROWSER_CONTROL_|"
+    + "|".join((DELEGATED_CHILD_ENV_MARKER, *KANBAN_ENV_KEYS))
+    + ")")
+# Exact invocation-scoped names unset by name (not prefix) so user-authored HERMES_KANBAN_HOME survives.
+_SNAPSHOT_EXCLUDED_EXACT_NAMES = " ".join((DELEGATED_CHILD_ENV_MARKER, *KANBAN_ENV_KEYS))
 _SHELL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # mktemp template suffix + the shell variable holding the allocated temp path.
@@ -72,6 +86,9 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # by every wrapper with ${VAR:-default} semantics; persisting them would
         # let the FIRST command's value override a later outer-harness value.
         "AI_AGENT HERMES_AGENT "
+        # Delegate lineage marker + Kanban dispatcher-ownership vars, unset by
+        # exact name so user-authored HERMES_KANBAN_HOME survives (issue #71941).
+        f"{_SNAPSHOT_EXCLUDED_EXACT_NAMES} "
         f"HERMES_UI_SESSION_ID{extra_unset} 2>/dev/null; "
         "export -p; ) || true; } "
         f"> {tmp_path}")
@@ -137,7 +154,21 @@ def _wrap_command_script(
     save, restore = _passthrough_save_restore(passthrough_names)
     parts = list(save)
     if snapshot_ready:
+        # Capture the delegate_task lineage marker's AUTHORITATIVE state from this command's
+        # process env (set only for genuine delegated children by delegated_child_subprocess_env)
+        # BEFORE sourcing. The export dump strips the marker on WRITE, but a snapshot persisted by
+        # an older build may still carry a stale HERMES_DELEGATED_CHILD_CONTEXT=1 that this ``source``
+        # would leak until the next dump rewrites the file. Restoring the captured state afterwards
+        # keeps that one-command window from misidentifying a non-delegated command as a delegated
+        # child (issue #71941). Scoped to the marker alone: the session/Kanban vars are legitimately
+        # supplied per command via the process env, so a blanket post-source unset would drop the
+        # current command's own values.
+        _m = DELEGATED_CHILD_ENV_MARKER
+        parts.append(
+            f'if [ "${{{_m}+x}}" = x ]; then __hermes_dcc=${{{_m}}}; else __hermes_dcc=; fi')
         parts.append(f"source {quoted_snap} >/dev/null 2>&1 || true")
+        parts.append(
+            f'unset {_m}; [ -n "$__hermes_dcc" ] && export {_m}="$__hermes_dcc"; unset __hermes_dcc')
     parts += restore
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',

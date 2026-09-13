@@ -180,7 +180,7 @@ def select_password_fill(
 
 
 def select_export_password_fills(controls: List[LoginControl], password: str) -> List[Dict[str, Any]]:
-    """Select one password field, or a password + confirmation pair, from one form.
+    """Select exactly one password + confirmation pair from one form.
 
     This path is purpose-explicit: ``autocomplete=one-time-code`` does not turn a
     ``type=password`` export field into an OTP target. Ambiguous pages with password
@@ -193,16 +193,12 @@ def select_export_password_fills(controls: List[LoginControl], password: str) ->
     for control in controls:
         if control.type == "password":
             groups.setdefault(control.form_index, []).append(control)
-    groups = {
-        form: sorted(items, key=lambda c: c.index)
-        for form, items in groups.items()
-        if len(items) <= 2
-    }
-    if len(groups) != 1:
+    if len(groups) != 1 or len(next(iter(groups.values()), [])) != 2:
         return []
+    selected = sorted(next(iter(groups.values())), key=lambda c: c.index)
     return [
         {"index": control.index, "token": "export-password", "value": password}
-        for control in next(iter(groups.values()))
+        for control in selected
     ]
 
 

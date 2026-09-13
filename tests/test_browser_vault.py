@@ -233,6 +233,7 @@ class TestClassifier:
         assert select_export_password_fills(
             [controls[0], _ctrl(index=3, form_index=1, type="password")], "x"
         ) == []
+        assert select_export_password_fills(controls[:1], "x") == []
 
     def test_build_fill_js_contains_events(self):
         js = build_fill_js(

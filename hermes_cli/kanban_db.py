@@ -2087,6 +2087,22 @@ def _parents_satisfied(conn: sqlite3.Connection, task_id: str) -> bool:
     ).fetchone() is None
 
 
+def _unsatisfied_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
+    """Blocking parents of ``task_id`` as ``(parent_id, status)`` — the same
+    predicate as :func:`_parents_satisfied`, enumerated (id order) so a
+    refusal can name its blockers instead of guessing."""
+    return [
+        (row[0], row[1])
+        for row in conn.execute(
+            "SELECT p.id, p.status FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? "
+            "AND p.status NOT IN ('done', 'archived') ORDER BY p.id",
+            (task_id,),
+        )
+    ]
+
+
 def _claim_and_open_run(
     conn: sqlite3.Connection, task_id: str, source_status: str, lock: str, expires: int, now: int,
     *, event_extra: Optional[dict] = None,
@@ -2533,11 +2549,27 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class ParentsNotSatisfiedError(RuntimeError):
+    """``complete_task`` refused: direct parents are still unfinished. Carries
+    the ``blockers`` as ``(parent_id, status)`` captured at the authoritative
+    check so callers can report the actionable reason. Raised only when the
+    caller opts in via ``raise_parents_refusal``; the boolean API (return
+    ``False``) is unchanged for everyone else."""
+
+    def __init__(self, blockers: list[tuple[str, str]], completing_task_id: str):
+        self.blockers = list(blockers)
+        self.completing_task_id = completing_task_id
+        super().__init__(
+            "unsatisfied parent dependencies: "
+            + ", ".join(f"{pid} ({status})" for pid, status in blockers)
+        )
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True,
+    fire_lifecycle_hook: bool = True, raise_parents_refusal: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2552,6 +2584,8 @@ def complete_task(
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
+        if raise_parents_refusal:
+            raise ParentsNotSatisfiedError(_unsatisfied_parents(conn, task_id), task_id)
         return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
@@ -2566,6 +2600,10 @@ def complete_task(
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
+            if raise_parents_refusal:
+                raise ParentsNotSatisfiedError(
+                    _unsatisfied_parents(conn, task_id), task_id,
+                )
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False

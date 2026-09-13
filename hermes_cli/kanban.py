@@ -880,8 +880,18 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                 fail_msg[tid] = gate_err
                 return False
             fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+            try:
+                return kb.complete_task(conn, tid, result=args.result, summary=summary,
+                                        metadata=metadata, expected_run_id=_worker_run_id_for(tid),
+                                        raise_parents_refusal=True)
+            except kb.ParentsNotSatisfiedError as exc:
+                # The refusal reason was captured at the authoritative check,
+                # not re-derived here: name the blockers instead of the
+                # generic unknown-id/terminal message.
+                blockers = ", ".join(f"{pid} ({status})" for pid, status in exc.blockers)
+                fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: "
+                                 f"{blockers}; complete the parents first (done or archived)")
+                return False
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 

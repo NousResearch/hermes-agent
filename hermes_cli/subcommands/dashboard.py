@@ -12,7 +12,7 @@ import argparse
 from typing import Callable
 
 
-def _add_server_runtime_args(parser) -> None:
+def _add_server_runtime_args(parser, *, headless: bool) -> None:
     """Runtime flags shared by ``dashboard`` and ``serve`` (same ``web_server.start_server``)."""
     parser.add_argument(
         "--port", type=int, default=9119, help="Port (default 9119, 0 for auto-assign by OS)")
@@ -22,12 +22,15 @@ def _add_server_runtime_args(parser) -> None:
         help="DEPRECATED / NO-OP. Formerly bypassed auth on a non-loopback "
             "bind. As of the June 2026 hardening it no longer disables "
             "authentication — a public bind always requires an auth provider "
-            "(password or OAuth). Bind 127.0.0.1 + tunnel to keep it local.")
+            "(password or OAuth). This server exposes agent and command execution "
+            "with the Hermes process's OS privileges. Bind 127.0.0.1 + tunnel to keep it local.")
     parser.add_argument(
         "--skip-build", action="store_true",
-        help="Skip the web UI build step and serve the existing dist directly. "
-            "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
-            "where npm may not be available. Pre-build with: cd web && npm run build")
+        help=("Accepted no-op for backward compatibility. hermes serve is always headless "
+              "and never builds or serves the web UI." if headless else
+              "Skip the web UI build step and serve the existing dist directly. "
+              "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
+              "where npm may not be available. Pre-build with: cd web && npm run build"))
     parser.add_argument(
         "--isolated", action="store_true",
         help="When launched from a named profile, run a dedicated server scoped "
@@ -47,7 +50,7 @@ def _add_server_runtime_args(parser) -> None:
 
 def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
     """Canonical ``serve`` arguments; shared by the full tree and Desktop's lean hot-path parser."""
-    _add_server_runtime_args(parser)
+    _add_server_runtime_args(parser, headless=True)
     # Redundant (serve is always headless) but accepted so legacy callers don't error.
     parser.add_argument("--no-open", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -80,7 +83,7 @@ def build_dashboard_parser(
         "dashboard", help="Start the web UI dashboard",
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
     )
-    _add_server_runtime_args(dashboard_parser)
+    _add_server_runtime_args(dashboard_parser, headless=False)
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically")
     # Compat shim: desktop shells <= 0.15.x spawn `hermes dashboard --no-open --tui ...`;

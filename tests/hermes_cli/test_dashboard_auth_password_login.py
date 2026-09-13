@@ -344,6 +344,17 @@ class TestRateLimit:
 
 
 class TestLoginPageRender:
+    def test_empty_provider_fallback_describes_fail_closed_setup(self):
+        clear_providers()
+        html = render_login_html()
+
+        assert "hermes dashboard register" in html
+        assert "dashboard.basic_auth" in html
+        assert "There is no unauthenticated public-bind option" in html
+        assert "127.0.0.1" in html
+        assert "SSH or Tailscale tunnel" in html
+        assert "--insecure" not in html
+
     def test_password_provider_renders_credential_form_and_script(self):
         clear_providers()
         register_provider(PasswordProvider())
@@ -372,4 +383,3 @@ class TestLoginPageRender:
             assert "/auth/password-login" not in html
         finally:
             clear_providers()
-

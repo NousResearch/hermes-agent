@@ -17,7 +17,7 @@ from tools.mcp_tool_handlers import (
     _make_list_resources_handler, _make_read_resource_handler)
 from tools.mcp_tool_schema import (
     _UTILITY_CAPABILITY_ATTRS, _build_utility_schemas, _normalize_name_filter, matches_name_filter)
-from tools.mcp_tool_scope import _key_name, _resolve_server_key, _server_key
+from tools.mcp_tool_scope import _key_name, _key_scope, _resolve_server_key, _server_key
 
 if TYPE_CHECKING:  # pragma: no cover
     from tools.mcp_tool import MCPServerTask
@@ -421,13 +421,11 @@ def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False
     OAuth credentials live in the owning profile's token storage rather than the static config,
     so identical OAuth configs cannot prove that two profiles authenticate as the same account.
     """
-    server_config = getattr(server, "_config", {}) or {}
-    if cross_profile and any(
-        (candidate.get("auth") or "").lower().strip() == "oauth"
-        for candidate in (server_config, config)
-    ):
+    ident = _connection_identity(getattr(server, "_config", {}) or {})
+    if ident != _connection_identity(config):
         return False
-    return _connection_identity(server_config) == _connection_identity(config)
+    # The normalised auth type is the identity's last element, so one side suffices here.
+    return not (cross_profile and ident[-1] == "oauth")
 
 
 def register_connected_into_current_scope(servers: dict) -> int:
@@ -460,7 +458,7 @@ def _register_connected_into_current_scope(servers: dict) -> int:
                 continue
             server = _core._servers.get(key)
             config = servers.get(_key_name(key))
-            cross_profile = key != _server_key(_key_name(key), scope, current=False)
+            cross_profile = _key_scope(key) != scope
             if (config is None or not _server_enabled(config) or server is None
                     or getattr(server, "session", None) is None
                     or not _same_server_route(server, config, cross_profile=cross_profile)):

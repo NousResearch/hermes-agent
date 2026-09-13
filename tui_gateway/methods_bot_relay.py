@@ -20,9 +20,11 @@ method = _registry.method
 
 
 def _relay_root() -> Path:
-    """Install root shared by every profile (relay state is install-wide)."""
-    from hermes_constants import get_default_hermes_root
-    return get_default_hermes_root()
+    """Install root shared by every profile (relay state is install-wide). Same formula as the
+    writers (``tools/bot_relay``, ``tools/bot_mode_dm``): both ends of the mailbox must agree for
+    every HERMES_HOME, including non-``profiles/`` subdirs of ``~/.hermes``."""
+    from tools.bot_mode_probe import _default_home, _hermes_root
+    return _hermes_root(Path(_default_home()))
 
 
 def _run_delivery(profile: str, tmp: str, env: dict | None = None) -> subprocess.CompletedProcess:

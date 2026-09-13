@@ -9,6 +9,7 @@ sessions reuse ``Group: <room_id>`` so a local-to-hosted migration keeps one tra
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 import uuid
@@ -148,6 +149,11 @@ class HostedRoomRuntime:
         self._blocked_rooms: set[str] = set()
         self._status_lock, self._current_tasks = threading.Lock(), {}
         self._room_schedule_cursor, self._cycles = 0, 0
+        # The idle room poll opens and closes the shared state.db every cycle. A
+        # content-touched keeper keeps SQLite from treating one of those closes
+        # as the last WAL participant while another process owns the generation.
+        self._wal_keeper: sqlite3.Connection | None = None
+        self._wal_keeper_disabled: bool = False
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -424,6 +430,8 @@ class HostedRoomRuntime:
             while not self._stop.is_set():
                 # Clear before work so a write racing the cycle forces a follow-up pass.
                 self._wake.clear()
+                if self._wal_keeper is None and not self._wal_keeper_disabled:
+                    self._acquire_wal_keeper()
                 try:
                     self._run_cycle()
                 except Exception as exc:  # keep independent rooms serviceable
@@ -432,14 +440,66 @@ class HostedRoomRuntime:
                     self._cycles += 1
                 self._wake.wait(self.poll_interval_seconds)
         finally:
-            while True:
-                with self._status_lock:
-                    room_threads = tuple(t for t in self._room_threads.values() if t.is_alive())
-                if not room_threads:
-                    break
-                for room_thread in room_threads:
-                    room_thread.join(self.active_poll_interval_seconds)
-            self._release_idle_leases()
+            try:
+                while True:
+                    with self._status_lock:
+                        room_threads = tuple(t for t in self._room_threads.values() if t.is_alive())
+                    if not room_threads:
+                        break
+                    for room_thread in room_threads:
+                        room_thread.join(self.active_poll_interval_seconds)
+                self._release_idle_leases()
+            finally:
+                self._release_wal_keeper()
+
+    def _acquire_wal_keeper(self) -> None:
+        """Keep one content-touched SQLite connection open for the worker lifetime.
+
+        A failed acquire is non-fatal and retried on the next cycle. The half-open
+        connection is always closed so a transient setup failure cannot leak a
+        descriptor or silently disable future attempts.
+
+        When the database operates in canonical DELETE mode (or on non-WAL fallbacks),
+        no WAL sidecars exist to preserve, so the runtime treats this as a stable
+        no-keeper state without retrying or recording an error.
+        """
+        if self._wal_keeper is not None or self._wal_keeper_disabled:
+            return
+        conn = None
+        try:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(self.db_path, timeout=10, check_same_thread=False)
+            from hermes_state_wal import apply_wal_with_fallback
+
+            mode = apply_wal_with_fallback(conn, db_label=self.db_path.name)
+            if mode != "wal":
+                with suppress(Exception):
+                    conn.close()
+                self._wal_keeper_disabled = True
+                return
+            row = conn.execute("PRAGMA journal_mode").fetchone()
+            effective_mode = (
+                str(row[0]).strip().lower() if row and row[0] is not None else ""
+            )
+            if effective_mode != "wal":
+                with suppress(Exception):
+                    conn.close()
+                self._wal_keeper_disabled = True
+                return
+            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+            self._wal_keeper = conn
+        except Exception as exc:
+            if conn is not None:
+                with suppress(Exception):
+                    conn.close()
+            self._record_error(f"wal keeper unavailable: {exc}")
+
+    def _release_wal_keeper(self) -> None:
+        conn, self._wal_keeper = self._wal_keeper, None
+        self._wal_keeper_disabled = False
+        if conn is not None:
+            with suppress(Exception):
+                conn.close()
 
     def _run_cycle(self) -> None:
         with self._status_lock:

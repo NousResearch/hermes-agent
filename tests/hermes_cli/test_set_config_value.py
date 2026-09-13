@@ -492,6 +492,17 @@ class TestSchemaValidation:
             set_config_value("agent.reasoning_effort", value)
         set_config_value("x_search.reasoning_effort", "null")
 
+    def test_invalid_reasoning_effort_value_is_rejected(self, _isolated_hermes_home, capsys):
+        """A typo'd level fails loudly instead of being saved: the key validates, but the
+        runtime would silently ignore the value and keep the default."""
+        with pytest.raises(SystemExit):
+            set_config_value("agent.reasoning_effort", "ultra-turbo")
+
+        err = capsys.readouterr().err
+        assert "ultra-turbo" in err
+        assert "xhigh" in err  # the message spells out the ladder
+        assert "reasoning_effort" not in _read_config(_isolated_hermes_home)
+
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
         forward-compat writes)."""

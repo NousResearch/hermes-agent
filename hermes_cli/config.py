@@ -3414,6 +3414,60 @@ def _exit_invalid(msg: str) -> None:
     sys.exit(1)
 
 
+# Keys whose value is a reasoning-effort level (``agent.reasoning_effort``,
+# ``delegation.reasoning_effort``, ``auxiliary.<task>.reasoning_effort``, ``x_search.*``).
+_REASONING_EFFORT_KEY_SUFFIX = "reasoning_effort"
+
+
+def _is_declared_reasoning_effort_key(key: str) -> bool:
+    """True when *key* resolves to a ``reasoning_effort`` leaf declared in DEFAULT_CONFIG.
+
+    Deliberately precise rather than a ``endswith`` test: ``model.reasoning_effort`` and
+    ``<plugin>.reasoning_effort`` are not schema leaves, and hard-failing their values would
+    convert the documented warn-and-save contract for arbitrary keys into a value gate. Only
+    keys the schema actually declares get their value checked.
+    """
+    segments = _split_key_path(key)
+    if not segments or segments[-1] != _REASONING_EFFORT_KEY_SUFFIX:
+        return False
+    node: Any = DEFAULT_CONFIG
+    for segment in segments:
+        if not isinstance(node, dict) or segment not in node:
+            return False
+        node = node[segment]
+    return True
+
+
+def _reject_unrecognized_reasoning_effort(key: str, value: Any) -> None:
+    """Refuse a reasoning-effort value the runtime would silently discard.
+
+    ``parse_reasoning_effort()`` returns ``None`` for an unrecognized level, and every caller
+    then falls back to the default (medium) with a log warning at most — so a typo saved here
+    leaves the user believing the setting took effect. Key validation already covers the dotted
+    path; this covers the value of the schema-declared leaves only.
+    ``set_config_value(..., force=True)`` bypasses this, matching how ``--force`` already
+    bypasses the unknown-key notice.
+    """
+    if not _is_declared_reasoning_effort_key(key):
+        return
+    # The "unset" sentinel is per-leaf: ``""`` for the string-defaulted leaves (agent,
+    # delegation, auxiliary.*) and ``None`` for the null-defaulted one (x_search).
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return
+
+    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+
+    if parse_reasoning_effort(value) is None:
+        valid = ", ".join(("none", *VALID_REASONING_EFFORTS))
+        _exit_invalid(
+            f"✗ Invalid {key} value {value!r} — the runtime would ignore it and keep the "
+            f"default (medium).\n"
+            f"  Valid levels: {valid}; \"false\"/\"disabled\" also disable thinking, "
+            f"empty = unset.\n"
+            f"  Use --force to save it anyway."
+        )
+
+
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
@@ -3475,6 +3529,10 @@ def set_config_value(key: str, value: str, force: bool = False):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
     value = _coerce_config_set_value(key, value)
+    # Schema-declared leaves only: an unrecognized dotted path stays warn-and-save (arbitrary
+    # keys are a documented forward-compat contract), so the value gate must not reach it.
+    if not force:
+        _reject_unrecognized_reasoning_effort(key, value)
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")

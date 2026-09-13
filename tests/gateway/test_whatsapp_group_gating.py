@@ -118,6 +118,18 @@ def test_free_response_chats_bypass_mention_gating():
     assert adapter._should_process_message(_group_message("hello everyone")) is True
 
 
+def test_blank_free_response_chats_falls_through_to_env(monkeypatch):
+    """A present-but-blank ``free_response_chats: ''`` in config.yaml means unset: the env CSV applies."""
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    monkeypatch.setenv("WHATSAPP_FREE_RESPONSE_CHATS", "123@g.us")
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter.config = PlatformConfig(enabled=True, extra={"free_response_chats": ""})
+    assert adapter._whatsapp_free_response_chats() == {"123@g.us"}
+    adapter.config = PlatformConfig(enabled=True, extra={"free_response_chats": []})
+    assert adapter._whatsapp_free_response_chats() == set()
+
+
 def test_free_response_chats_does_not_bypass_other_groups():
     adapter = _make_adapter(
         require_mention=True,

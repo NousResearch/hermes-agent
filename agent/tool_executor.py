@@ -36,6 +36,10 @@ from agent.inline_tool_executors import (
     emit_terminal_post_tool_call,
     tool_hook_ids,
 )
+from agent.tool_snapshot import (
+    ToolSnapshotChangedError, bind_tool_execution_route,
+    execute_dynamic_tool, mark_tool_effects_unknown, memory_provider_owns_tool, snapshot_bound_tool_batch, stale_tool_result,
+)
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
@@ -680,13 +684,14 @@ def _dispatch_authorized_once(
             block_message=block_message, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
         )
 
-    if ref.name == "memory":
-        agent._turns_since_memory = 0
-    elif ref.name == "skill_manage":
-        agent._iters_since_skill = 0
+    with bind_tool_execution_route(agent, ref.name):
+        if ref.name == "memory":
+            agent._turns_since_memory = 0
+        elif ref.name == "skill_manage":
+            agent._iters_since_skill = 0
 
-    _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+        _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
+        return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
 
 
 def _run_agent_tool_execution_middleware(
@@ -887,6 +892,7 @@ def _run_sequential_tool_execution_middleware(
                 duration_ms=int(timeout_s * 1000), status="timeout", error_type="tool_timeout", error_message=message,
             )
         abandoned = True
+        mark_tool_effects_unknown(agent)
         future.cancel()
         if state == "timeout":
             _interrupt_worker_tids(agent, worker_tid)
@@ -1194,6 +1200,10 @@ class _ConcurrentBatch:
             )
             result, ref.args, ref.trace = managed.result, managed.args, managed.middleware_trace
             blocked, dispatched = managed.blocked, managed.dispatched
+        except ToolSnapshotChangedError:
+            result = stale_tool_result(ref.name)
+            ref.emit_post(agent, result, status="blocked", error_type="tool_snapshot_changed")
+            return _ToolOutcome(ref, result, time.time() - start, True, True)
         except _BatchAbandoned:
             logger.info("tool %s abandoned at start-order gate; skipping dispatch", ref.name)
             return None
@@ -1347,6 +1357,7 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
     """Synthesize the result for a slot no worker filled (deadline, interrupt, or a thread
     that never returned), emit its terminal post_tool_call, and return
     ``(function_result, tool_duration, effect_disposition)``."""
+    mark_tool_effects_unknown(agent)
     if timed_out:
         suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
         function_result = f"Error executing tool '{ref.name}': timed out after {suffix}"
@@ -1401,6 +1412,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
     return True
 
 
+@snapshot_bound_tool_batch
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls concurrently; results are appended in original call order.
     ``finalize=False`` skips end-of-batch budget enforcement and /steer injection (the
@@ -1513,16 +1525,18 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
         agent._delegate_spinner = spinner
         return _SequentialDispatch(agent._dispatch_delegate_task, spinner=spinner, is_delegate=True)
     if agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
+        handler = agent.context_compressor.handle_tool_call
         return _SequentialDispatch(
-            execute=lambda next_args: agent.context_compressor.handle_tool_call(function_name, next_args, messages=messages),
+            execute=lambda next_args: execute_dynamic_tool(function_name, handler, next_args, messages=messages),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args, gate=False),
             error_result=lambda e: json.dumps({"error": f"Context engine tool '{function_name}' failed: {e}"}),
             error_log="context_engine.handle_tool_call raised for %s: %s",
         )
-    if agent._memory_manager and agent._memory_manager.has_tool(function_name):
+    if agent._memory_manager and memory_provider_owns_tool(agent, function_name):
         # Memory-provider tools (hindsight_retain, honcho_search, ...) are not in the registry.
+        handler = agent._memory_manager.handle_tool_call
         return _SequentialDispatch(
-            execute=lambda next_args: agent._memory_manager.handle_tool_call(function_name, next_args),
+            execute=lambda next_args: execute_dynamic_tool(function_name, handler, next_args),
             spinner=_start_quiet_tool_spinner(agent, function_name, function_args),
             error_result=lambda e: json.dumps({"error": f"Memory tool '{function_name}' failed: {e}"}),
             error_log="memory_manager.handle_tool_call raised for %s: %s",
@@ -1600,6 +1614,11 @@ def _run_sequential_call(
         )
         ref.args = managed.args
         _spinner_result = managed.result
+    except ToolSnapshotChangedError:
+        result = stale_tool_result(ref.name)
+        ref.emit_post(agent, result, status="blocked", error_type="tool_snapshot_changed")
+        managed = _ManagedToolResult(result=result, args=ref.args, middleware_trace=ref.trace,
+                                     blocked=True, dispatched=False)
     except KeyboardInterrupt:
         if not dispatch.handles_keyboard_interrupt:
             raise
@@ -1644,7 +1663,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
-        effect_disposition="unknown" if _execution_timed_out else None, observed=True,
+        effect_disposition="none" if managed.blocked else ("unknown" if _execution_timed_out else None), observed=True,
         error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,
@@ -1659,6 +1678,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     return True
 
 
+@snapshot_bound_tool_batch
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
     """Execute tool calls sequentially (single calls or interactive tools). ``finalize=False``
     skips end-of-batch budget enforcement and /steer injection (the segmented dispatcher
@@ -1716,6 +1736,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _finalize_tool_batch(agent, messages, effective_task_id, len(tool_calls), _tool_budget)
 
 
+@snapshot_bound_tool_batch
 def execute_tool_calls_segmented(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, segments=None) -> None:
     """Execute a mixed batch as ordered parallel/sequential segments (the ``(kind, calls)``
     plan from ``_plan_tool_batch_segments``), preserving per-call result order and barrier

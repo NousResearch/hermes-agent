@@ -213,9 +213,24 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     """
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
+    from agent.tool_snapshot import captured_tool_route, execute_dynamic_tool, memory_provider_owns_tool
+
+    route = captured_tool_route(function_name)
+    if route is not None:
+        kind, handler = route
+        if kind == "registry":
+            return None
+        if kind == "context_engine":
+            return lambda agent, args, ctx: handler(function_name, args, messages=ctx.messages)
+        return lambda agent, args, ctx: handler(function_name, args)
+
     memory_manager = agent._memory_manager
-    if memory_manager and memory_manager.has_tool(function_name):
-        return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
+    if memory_manager and memory_provider_owns_tool(agent, function_name):
+        return lambda agent, args, ctx: execute_dynamic_tool(function_name, agent._memory_manager.handle_tool_call, args)
+    if function_name in (getattr(agent, "_context_engine_tool_names", None) or set()):
+        return lambda agent, args, ctx: execute_dynamic_tool(
+            function_name, agent.context_compressor.handle_tool_call, args, messages=ctx.messages
+        )
     if function_name == "message_agent":
         return None
     return INLINE_TOOL_EXECUTORS.get(function_name)

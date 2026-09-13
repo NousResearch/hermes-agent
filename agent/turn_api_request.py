@@ -32,6 +32,7 @@ class ApiRequestBuild:
     api_kwargs: Any
     _original_api_kwargs: Any
     _llm_middleware_trace: Any
+    request_tool_snapshot_epoch: Any = None
 
 
 def _set_extra_header(api_kwargs: Any, key: str, value: str) -> None:
@@ -110,16 +111,21 @@ def build_api_request(
     # require reasoning_content — re-apply the echo-back pad (idempotent) and re-render
     # the prompt-cache decoration for the current provider.
     agent._reapply_reasoning_echo_for_provider(api_messages)
+    from agent.tool_snapshot import bind_tool_request_snapshot
+    from tools.mcp_tool_agent import capture_agent_tool_request_snapshot
+
+    tools_for_api, request_tool_snapshot_epoch = capture_agent_tool_request_snapshot(agent)
     api_messages, _moa_prepared_request, tools_for_api = (
         _redecorate_prompt_cache_for_provider(
             agent, api_messages, system_message=system_message, moa_prepared=_moa_prepared_request,
             tools_for_api=tools_for_api,
         )
     )
-    if tools_for_api == agent.tools:
-        api_kwargs = agent._build_api_kwargs(api_messages)
-    else:
-        api_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=tools_for_api)
+    with bind_tool_request_snapshot(tools_for_api, request_tool_snapshot_epoch):
+        if tools_for_api == agent.tools:
+            api_kwargs = agent._build_api_kwargs(api_messages)
+        else:
+            api_kwargs = agent._build_api_kwargs(api_messages, tools_for_api=tools_for_api)
     # Surrogate chokepoint: tool descriptions, extra_body and kwargs strings can carry
     # invalid code points (HTTP 400). One walk makes the payload json.dumps()-safe.
     # Outbound-request surrogate chokepoint (#50959): the messages were scrubbed above, but the rest of the
@@ -187,5 +193,5 @@ def build_api_request(
             )
     return ApiRequestBuild(
         "fallthrough", api_messages, _moa_prepared_request, tools_for_api, api_kwargs,
-        _original_api_kwargs, _llm_middleware_trace,
+        _original_api_kwargs, _llm_middleware_trace, request_tool_snapshot_epoch,
     )

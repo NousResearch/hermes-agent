@@ -53,6 +53,7 @@ from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
+from agent.tool_snapshot import ToolSnapshotChangedError, ToolSnapshotRefreshError
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
@@ -1313,6 +1314,7 @@ class _LoopState:
     # refund the iteration budget forever and hold the turn lease indefinitely.
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
+    stale_tool_snapshot_retries: int = 0
     truncated_tool_call_retries: int = 0
     truncated_response_parts: List[str] = field(default_factory=list)
     compression_attempts: int = 0
@@ -1334,6 +1336,7 @@ class _LoopState:
     # Per-iteration slots.
     request_logger: Any = None
     api_messages: Any = None
+    request_tool_snapshot_epoch: Any = None
     tools_for_api: Any = None
     _moa_prepared_request: Any = None
     approx_tokens: Any = None
@@ -1554,6 +1557,10 @@ def _run_conversation_turn(
                 break
             if _v.action == "continue":
                 continue
+        except (ToolSnapshotChangedError, ToolSnapshotRefreshError) as e:
+            from agent.turn_tool_snapshot import recover_stale_tool_snapshot
+            if _run_phase(recover_stale_tool_snapshot, agent, s, error=e).action == "break":
+                break
         except Exception as e:
             if _run_phase(handle_outer_loop_error, agent, s, e=e).action == "break":
                 break

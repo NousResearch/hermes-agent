@@ -244,10 +244,29 @@ jobs:
           path: _asset_retention
           key: docs-asset-retention-${{ github.run_id }}
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3
+      # Inlined from actions/upload-pages-artifact@56afc609 (v3, Linux path)
+      # so every step is directly SHA-pinned: the composite action internally
+      # calls actions/upload-artifact@v4 — a mutable tag reference the
+      # supply-chain audit fails closed on.
+      - name: Archive Pages artifact
+        run: |
+          echo ::group::Archive artifact
+          tar \
+            --dereference --hard-dereference \
+            --directory _site \
+            -cvf "$RUNNER_TEMP/artifact.tar" \
+            --exclude=.git \
+            --exclude=.github \
+            .
+          echo ::endgroup::
+
+      - name: Upload Pages artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          path: _site
+          name: github-pages
+          path: ${{ runner.temp }}/artifact.tar
+          retention-days: 1
+          if-no-files-found: error
 
       - name: Deploy to GitHub Pages
         id: deploy

@@ -177,6 +177,7 @@ patches:
       - contributors/emails/agent@Agents-Mac-mini.local
       - contributors/emails/agent@agents-Mac-mini.local
       - contributors/emails/aleman@batumi.works
+      - contributors/emails/audit@batumi.works
       - contributors/emails/hermes@local
       - contributors/emails/repo-builder@batumi.works
       - contributors/emails/repo-ops-glm-5-1@hermes.local

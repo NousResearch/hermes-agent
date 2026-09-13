@@ -934,7 +934,13 @@ def _sub_index(subs):
 def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     """A gateway session (platform + chat_id set) gets auto-subscribed
     to its own kanban_create result, and the response surfaces the
-    ``subscribed`` flag so the orchestrator can react."""
+    ``subscribed`` flag so the orchestrator can react.
+
+    Auto-subscribe is passive by default: it should notify the originating
+    chat without waking a full agent turn for routine completion notices.
+    Operators who need wake behaviour can still opt in with an explicit
+    ``kanban_notify-subscribe --delivery-mode notify+wake``.
+    """
     from tools import kanban_tools as kt
     monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
     monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
@@ -961,7 +967,7 @@ def test_create_subscribes_gateway_session(monkeypatch, worker_env):
     assert s["user_id"] == "user-9"
     assert s["user_id_alt"] == "alt-user-9"
     assert s["chat_type"] == "forum"
-    assert s["delivery_mode"] == "notify+wake"
+    assert s["delivery_mode"] == "notify"
 
 
 def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):

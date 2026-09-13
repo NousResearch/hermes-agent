@@ -256,7 +256,7 @@ def remove_notify_sub(
     return cur.rowcount > 0
 
 
-def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 30) -> int:
+def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int = 7) -> int:
     """Delete notify subs whose task sat in ``done``/``blocked`` untouched for
     longer than ``max_age_days`` (``<= 0`` disables); returns rows deleted.
 
@@ -277,7 +277,7 @@ def purge_stale_done_notify_subs(conn: sqlite3.Connection, *, max_age_days: int 
     try:
         days = int(max_age_days)
     except (TypeError, ValueError):
-        days = 30
+        days = 7
     if days <= 0:
         return 0
     cutoff = int(time.time()) - days * 86400

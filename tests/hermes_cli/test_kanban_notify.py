@@ -714,6 +714,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     assert len(subs) == 1
     assert subs[0]["chat_id"] == "chat1"
     assert subs[0]["thread_id"] == "20197"
+    assert subs[0]["delivery_mode"] == "notify"
     assert subs[0]["delivery_metadata"] == {
         "chat_type": "dm",
         "direct_messages_topic_id": "20197",
@@ -788,6 +789,7 @@ async def test_gateway_autosubscribe_roundtrips_user_id_alt_for_session_key(
     row = subs[0]
     assert row["user_id"] == "open-id"
     assert row["user_id_alt"] == "union-id"
+    assert row["delivery_mode"] == "notify"
 
     original = SessionSource(
         platform=Platform.TELEGRAM,
@@ -1109,19 +1111,22 @@ def test_gc_honors_configured_retention_days(kanban_home):
         tid = _make_done_task_with_sub(kb, conn, title="ten days old", chat_id="c-10d")
         _backdate_task(kb, conn, tid, days=10)
 
-        # Under the shipped default (>= 30d) a 10-day-old done task is fresh.
-        assert kbn.purge_stale_done_notify_subs(conn, max_age_days=default_days) == 0
-        assert len(kbn.list_notify_subs(conn, tid)) == 1
-
-        # A tighter user-configured retention purges the same row.
-        assert kbn.purge_stale_done_notify_subs(conn, max_age_days=7) == 1
+        # Under the shipped default a 10-day-old done task is settled and is
+        # swept before it can keep notifying/waking a stale origin session.
+        assert kbn.purge_stale_done_notify_subs(conn, max_age_days=default_days) == 1
         assert kbn.list_notify_subs(conn, tid) == []
 
-        # Zero (and below) disables the sweep entirely.
-        tid2 = _make_done_task_with_sub(kb, conn, title="ancient", chat_id="c-anc")
-        _backdate_task(kb, conn, tid2, days=3650)
-        assert kbn.purge_stale_done_notify_subs(conn, max_age_days=0) == 0
+        # Users can still choose a longer reversible-done window explicitly.
+        tid2 = _make_done_task_with_sub(kb, conn, title="ten days old long", chat_id="c-10d-long")
+        _backdate_task(kb, conn, tid2, days=10)
+        assert kbn.purge_stale_done_notify_subs(conn, max_age_days=30) == 0
         assert len(kbn.list_notify_subs(conn, tid2)) == 1
+
+        # Zero (and below) disables the sweep entirely.
+        tid3 = _make_done_task_with_sub(kb, conn, title="ancient", chat_id="c-anc")
+        _backdate_task(kb, conn, tid3, days=3650)
+        assert kbn.purge_stale_done_notify_subs(conn, max_age_days=0) == 0
+        assert len(kbn.list_notify_subs(conn, tid3)) == 1
     finally:
         conn.close()
 

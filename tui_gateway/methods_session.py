@@ -94,8 +94,7 @@ def _make_agent_in_context(sid: str, key: str, **kwargs):
 def _profile_session_db(profile_home):
     """``(db, owns)``: a DEDICATED handle on ``profile_home``'s state.db, else the shared launch db."""
     if profile_home:
-        from hermes_state_registry import acquire
-        return acquire(Path(profile_home) / "state.db"), True
+        return _open_profile_session_db(profile_home), True
     return _get_db(), False
 
 

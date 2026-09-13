@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -254,6 +255,37 @@ def test_get_db_returns_the_cached_instance(monkeypatch):
     assert server._get_db() is server._get_db()
 
 
+def test_profile_store_stays_anchored_while_tui_sessions_release_their_leases(
+    monkeypatch, tmp_path
+):
+    """Concurrent tui_gateways must not retire a profile WAL after every session.
+
+    A profile agent still owns and releases its lease, but the gateway holds a
+    distinct registry reference until shutdown.  Without that lifecycle anchor,
+    each agent teardown is the final release and starts the next gateway turn
+    with a close/open WAL generation race.
+    """
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    db = _RecordingDB(profile_home / "state.db")
+    acquired: list[object] = []
+    monkeypatch.setattr("hermes_state_registry.acquire", lambda _path: acquired.append(db) or db)
+    monkeypatch.setattr(server, "_profile_db_anchors", {})
+
+    first = server._open_profile_session_db(profile_home)
+    second = server._open_profile_session_db(profile_home)
+
+    assert first is db and second is db
+    # one gateway-lifetime anchor plus one lease per concurrently live agent
+    assert acquired == [db, db, db]
+    first.close()
+    second.close()
+    assert db.closed == 2
+
+    server._release_profile_session_db_anchors()
+    assert db.closed == 3
+
+
 # ---------------------------------------------------------------------------
 # 3. The deferred builder — _start_agent_build
 # ---------------------------------------------------------------------------
@@ -310,6 +342,12 @@ def _session(profile_home):
     }
 
 
+def _profile_handles(build_env):
+    """The anchor and session lease, excluding a possible launch-db acquire."""
+    db_path = Path(build_env.profile_home) / "state.db"
+    return [db for db in build_env.opened if db.db_path == db_path]
+
+
 @pytest.fixture()
 def registered(monkeypatch):
     """Register/unregister sessions in the module-global _sessions map."""
@@ -341,8 +379,11 @@ def test_deferred_build_closes_the_handle_when_the_build_fails(
     _run_build(sid, session)
 
     assert session.get("agent") is None
-    assert len(build_env.opened) == 1
-    assert build_env.opened[0].closed == 1
+    anchor, lease = _profile_handles(build_env)
+    # The first acquire is the gateway-lifetime WAL anchor; the second is the
+    # lease lent to this deferred build and must be released on failure.
+    assert anchor.closed == 0
+    assert lease.closed == 1
 
 
 def test_deferred_build_transfers_the_handle_on_success(
@@ -361,7 +402,9 @@ def test_deferred_build_transfers_the_handle_on_success(
 
     _run_build(sid, session)
 
-    db = build_env.opened[0]
+    # Keep the gateway anchor distinct from the lease transferred to the agent.
+    anchor, db = _profile_handles(build_env)
+    assert anchor.closed == 0
     assert captured["db"] is db
     assert db.closed == 0
     # Ownership landed on the agent, so _teardown_session releases it later.
@@ -419,7 +462,10 @@ def test_deferred_build_closes_the_handle_when_the_session_is_reaped_midbuild(
 
     _run_build(sid, session)
 
-    db = build_env.opened[0]
+    # The discarded agent never owns the lease; the anchor remains for gateway
+    # lifetime while the build-specific lease is closed here.
+    anchor, db = _profile_handles(build_env)
+    assert anchor.closed == 0
     assert db.closed == 1
     assert session["agent"]._owns_session_db is False
 

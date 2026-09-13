@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -91,6 +92,13 @@ def profile_dbs(monkeypatch, tmp_path):
         return db
 
     monkeypatch.setattr("hermes_state_registry.acquire", _factory)
+    # These tests pin ownership of the lease returned to session.resume.  The
+    # gateway-lifetime profile anchor is covered separately; bypass it here so
+    # a recording double's close count remains the lease boundary under test.
+    monkeypatch.setattr(
+        server, "_open_profile_session_db",
+        lambda home: __import__("hermes_state_registry").acquire(Path(home) / "state.db"),
+    )
     monkeypatch.setattr(
         server, "_profile_home", lambda profile: profile_home if profile else None
     )

@@ -2232,6 +2232,77 @@ def update_version_files(semver: str, calver_date: str):
         )
         desktop_pkg.write_text(pkg_text, encoding="utf-8")
 
+    # Keep the bootstrap installer (Hermes-Setup.dmg CFBundleShortVersionString)
+    # in lockstep with the Python package version. Tauri reads `version` from
+    # package.json + tauri.conf.json; a hardcoded 0.0.1 ships in the DMG.
+    installer_pkg = REPO_ROOT / "apps" / "bootstrap-installer" / "package.json"
+    if installer_pkg.exists():
+        pkg_text = installer_pkg.read_text(encoding="utf-8")
+        pkg_text = re.sub(
+            r'("version"\s*:\s*)"[^"]+"',
+            rf'\g<1>"{semver}"',
+            pkg_text,
+            count=1,
+        )
+        installer_pkg.write_text(pkg_text, encoding="utf-8")
+
+    # npm workspaces mirror each package version in the root lockfile. Keep
+    # this metadata in sync with the released apps without regenerating
+    # dependency resolutions or contacting the registry.
+    package_lock = REPO_ROOT / "package-lock.json"
+    if package_lock.exists():
+        lock_data = json.loads(package_lock.read_text(encoding="utf-8"))
+        packages = lock_data.get("packages", {})
+        changed = False
+        for workspace in ("apps/desktop", "apps/bootstrap-installer"):
+            entry = packages.get(workspace)
+            if isinstance(entry, dict) and "version" in entry and entry["version"] != semver:
+                entry["version"] = semver
+                changed = True
+        if changed:
+            package_lock.write_text(json.dumps(lock_data, indent=2) + "\n", encoding="utf-8")
+
+    installer_tauri = (
+        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json"
+    )
+    if installer_tauri.exists():
+        pkg_text = installer_tauri.read_text(encoding="utf-8")
+        pkg_text = re.sub(
+            r'("version"\s*:\s*)"[^"]+"',
+            rf'\g<1>"{semver}"',
+            pkg_text,
+            count=1,
+        )
+        installer_tauri.write_text(pkg_text, encoding="utf-8")
+
+    installer_cargo = (
+        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml"
+    )
+    if installer_cargo.exists():
+        cargo_text = installer_cargo.read_text(encoding="utf-8")
+        cargo_text = re.sub(
+            r'^version\s*=\s*"[^"]+"',
+            f'version = "{semver}"',
+            cargo_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        installer_cargo.write_text(cargo_text, encoding="utf-8")
+
+
+def version_files_to_stage() -> list[str]:
+    """Return version-bearing files that exist and should be `git add`ed after a bump."""
+    candidates = [
+        VERSION_FILE,
+        PYPROJECT_FILE,
+        REPO_ROOT / "apps" / "desktop" / "package.json",
+        REPO_ROOT / "apps" / "bootstrap-installer" / "package.json",
+        REPO_ROOT / "package-lock.json",
+        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "tauri.conf.json",
+        REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / "Cargo.toml",
+    ]
+    return [str(path) for path in candidates if path.exists()]
+
 
 def resolve_author(name: str, email: str) -> str:
     """Resolve a git author to a GitHub @mention."""
@@ -2570,7 +2641,7 @@ def main():
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
             # Commit version bump
-            add_files = [str(VERSION_FILE), str(PYPROJECT_FILE)]
+            add_files = version_files_to_stage()
             add_result = git_result("add", *add_files)
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")

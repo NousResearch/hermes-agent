@@ -873,3 +873,20 @@ class TestBlockedVerdict:
         assert mgr.state is not None
         assert mgr.state.status == "paused"
         assert "unachievable" in (mgr.state.paused_reason or "").lower()
+
+
+def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
+    """GoalManager must borrow the process-wide registry handle for ``state.db`` rather than
+    minting a bare ``SessionDB()``: a second writer per profile carries its own token-writer
+    thread and close-time checkpoint beside the gateway's handle (the #90837 corruption shape)."""
+    from hermes_cli import goals
+    import hermes_state_registry as registry
+
+    db = goals._get_session_db()
+    assert db is not None
+    try:
+        assert any(shared is db for shared in registry.live_shared_session_dbs())
+        assert goals._get_session_db() is db
+    finally:
+        goals._DB_CACHE.clear()
+        registry.release_or_close(db)

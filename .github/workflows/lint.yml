@@ -190,7 +190,8 @@ jobs:
     name: Public-surface diff (advisory)
     if: inputs.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Leave scheduling/reporting headroom beyond the 1 + 3 + 1 minute steps.
+    timeout-minutes: 6
     steps:
       - name: Checkout code
         id: checkout
@@ -203,20 +204,30 @@ jobs:
       # decomposition opened with 1,703 such drops that reviewers had to find by hand.
       # The checkout above is depth-1, so deepen both sides until
       # a merge-base exists (the script refuses to report a clean diff without one, by design).
+      # Diff the PR head ref, not the checked-out refs/pull/N/merge commit: that synthetic commit
+      # is recomputed server-side whenever main moves, and once it is unreachable no amount of
+      # deepening ever reaches its parents (run 34285107265: 4 fetches, 4m15s, "no merge-base").
       - name: Public-surface diff vs base (advisory)
         id: surface
         if: steps.checkout.outcome == 'success'
-        timeout-minutes: 2
+        timeout-minutes: 3
         continue-on-error: true
         env:
           BASE_REF: ${{ github.base_ref }}
+          PR_HEAD: "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head"
+        # Bound the advisory step so a long deepen/fetch (e.g. a distant or missing
+        # merge-base) can't consume the blocking job's 5-minute budget and cancel it.
+        # continue-on-error already keeps a step *failure* off the job; a step-level
+        # timeout keeps a step *overrun* off the job-level timeout the same way.
+        # Sizing: a --deepen=200 fetch took ~56s and a --deepen=1000 ~67s on the runner, and
+        # main gains ~170 commits/day, so a day-old branch legitimately needs both (~2 min).
         run: |
-          git fetch --no-tags --deepen=200 origin "$BASE_REF" HEAD
+          git fetch --no-tags --deepen=200 origin "$BASE_REF" "$PR_HEAD"
           for i in 1 2 3; do
-            git merge-base "origin/$BASE_REF" HEAD >/dev/null 2>&1 && break
-            git fetch --no-tags --deepen=1000 origin "$BASE_REF" HEAD
+            git merge-base "origin/$BASE_REF" origin/pr-head >/dev/null 2>&1 && break
+            git fetch --no-tags --deepen=1000 origin "$BASE_REF" "$PR_HEAD"
           done
-          python scripts/ci/check_public_surface.py --base "origin/$BASE_REF" --head HEAD
+          python scripts/ci/check_public_surface.py --base "origin/$BASE_REF" --head origin/pr-head
           echo "completed=true" >> "$GITHUB_OUTPUT"
 
       - name: Report advisory completeness

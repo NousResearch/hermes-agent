@@ -34,5 +34,3 @@ def test_slash_worker_accepts_profile_home():
             call_kwargs = mock_popen.call_args[1]
             assert "env" in call_kwargs
             assert call_kwargs["env"]["HERMES_HOME"] == "/home/luke/.hermes/profiles/work"
-
-

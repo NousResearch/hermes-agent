@@ -62,6 +62,11 @@ vi.mock('react-router', async importOriginal => ({
   useNavigate: () => navigateSpy
 }))
 
+// Import at module scope (after the hoisted vi.mock calls) so the heavy
+// component-tree transform is paid during collection, not billed against the
+// first test's testTimeout — same flake class as messaging/index.test.tsx.
+const { SkillsView } = await import('./index')
+
 function toolset(overrides: Record<string, unknown> = {}) {
   return {
     name: 'web',
@@ -75,14 +80,13 @@ function toolset(overrides: Record<string, unknown> = {}) {
   }
 }
 
-async function renderSkills() {
-  const { SkillsView } = await import('./index')
+async function renderSkills(tab = 'toolsets') {
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
       // SkillsView reads skills/toolsets via useQuery, so it needs a provider.
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={['/skills?tab=toolsets']}>
+        <MemoryRouter initialEntries={[`/skills?tab=${tab}`]}>
           <SkillsView />
         </MemoryRouter>
       </QueryClientProvider>
@@ -122,7 +126,12 @@ afterEach(() => {
   queryClient.clear()
 })
 
-describe('SkillsView toolset management', () => {
+// SkillsView is a heavy module (import cost now paid at module scope above,
+// during collection) but the file still legitimately runs ~14s on CI runners —
+// right against the global 15s per-test budget, so slow runners cascade-fail
+// all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
+// Give this file headroom; the tests are not slow individually.
+describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
 
@@ -174,7 +183,6 @@ describe('SkillsView toolset management', () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -220,7 +228,6 @@ describe('SkillsView toolset management', () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -264,7 +271,6 @@ describe('SkillsView toolset management', () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -311,16 +317,9 @@ describe('SkillsView toolset management', () => {
   })
 
   it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
-    // On a non-Skills tab the docs-site iframe must not exist at all — an
+    // In embedded mode the Skills tab is the initial non-Hub tab, so the
+    // docs-site iframe must not exist at all — an
     // eagerly mounted hub is exactly the Capabilities lag bug.
-    await renderSkills() // ?tab=toolsets
-    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    expect(document.querySelector('iframe')).toBeNull()
-    cleanup()
-
-    // Embedded mode drives tabs through local state (the route hooks are
-    // mocked here), starting on Skills: the picker mounts with the tab.
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -330,20 +329,49 @@ describe('SkillsView toolset management', () => {
         </QueryClientProvider>
       )
     })
+    expect(document.querySelector('iframe')).toBeNull()
 
-    const iframe = document.querySelector('iframe')
-    expect(iframe).toBeTruthy()
-    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
-
-    // Switch to Tools → the iframe STAYS mounted (no docs-site reload on the
-    // next visit) but its section is fully hidden, so nothing from the hub
-    // can paint over the toolsets UI.
+    // Hub is a page-local tab. The first visit creates the iframe and the
+    // standalone layout owns the whole content column.
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /Tools/ }))
+      fireEvent.click(document.querySelector('[data-tour="tab-hub"]')!)
+    })
+
+    const iframe = await waitFor(() => {
+      const node = document.querySelector('iframe')
+      expect(node).toBeTruthy()
+
+      return node
+    })
+
+    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
+    expect(iframe!.closest('section')!.className).toContain('flex-1')
+
+    // Switch to Skills → the iframe STAYS mounted (no docs-site reload on the
+    // next visit) but its section is fully hidden, so nothing from the hub
+    // can paint over the installed-skills UI.
+    await act(async () => {
+      fireEvent.click(document.querySelector('[data-tour="tab-skills"]')!)
     })
     const kept = document.querySelector('iframe')
     expect(kept).toBeTruthy()
+    expect(kept).toBe(iframe)
     expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
+
+    await act(async () => {
+      fireEvent.click(document.querySelector('[data-tour="tab-hub"]')!)
+    })
+    expect(document.querySelector('iframe')).toBe(iframe)
+    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
+  })
+
+  it('opens the standalone Hub from a deep link without rendering the Skills list', async () => {
+    await renderSkills('hub')
+
+    expect(screen.getAllByRole('button', { name: 'Browse Hub' })[0]).toBeTruthy()
+    expect(document.querySelector('iframe')).toBeTruthy()
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.queryByRole('switch')).toBeNull()
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {
@@ -379,7 +407,6 @@ describe('SkillsView toolset management', () => {
     // the live surface pointed at ITS backend — the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -493,7 +520,6 @@ describe('SkillsView toolset management', () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>

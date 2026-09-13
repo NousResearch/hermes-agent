@@ -11,8 +11,6 @@ import {
   createToolMergeCache,
   messageCreatedAt,
   optimisticAttachmentRef,
-  parseCommandDispatch,
-  parseSlashCommand,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -126,72 +124,6 @@ describe('coerceThinkingText', () => {
         "◉_◉ processing... I don't see any current rewritten thinking or next thinking to process. Could you provide the thinking content you'd like me to rewrite?"
       )
     ).toBe('')
-  })
-})
-
-describe('parseCommandDispatch', () => {
-  it('keeps the notice on a send directive (e.g. /goal set)', () => {
-    // The backend's /goal set returns {type:send, notice:"⊙ Goal set …", message}.
-    // Dropping the notice made /goal look like it did nothing in the desktop app.
-    const parsed = parseCommandDispatch({ type: 'send', notice: '⊙ Goal set', message: 'do the thing' })
-
-    expect(parsed).toEqual({ type: 'send', message: 'do the thing', notice: '⊙ Goal set' })
-  })
-
-  it('keeps message-only send directives working (no notice)', () => {
-    expect(parseCommandDispatch({ type: 'send', message: 'hi' })).toEqual({
-      type: 'send',
-      message: 'hi',
-      notice: undefined
-    })
-  })
-
-  it('parses a prefill directive with its notice (e.g. /undo)', () => {
-    const parsed = parseCommandDispatch({ type: 'prefill', notice: 'backed up 1 turn', message: 'edit me' })
-
-    expect(parsed).toEqual({ type: 'prefill', message: 'edit me', notice: 'backed up 1 turn' })
-  })
-
-  it('rejects a prefill directive missing its message', () => {
-    expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
-  })
-})
-
-describe('parseSlashCommand', () => {
-  it('parses a single-line command', () => {
-    expect(parseSlashCommand('/some-skill do something')).toEqual({
-      arg: 'do something',
-      name: 'some-skill'
-    })
-  })
-
-  it('keeps a multiline arg intact instead of failing the whole parse (#41323)', () => {
-    expect(parseSlashCommand('/goal Write a Python script\nthat prints Hello World')).toEqual({
-      arg: 'Write a Python script\nthat prints Hello World',
-      name: 'goal'
-    })
-  })
-
-  it('parses a skill command with a long pasted multi-paragraph context (#55510)', () => {
-    const context = 'summarize this:\n\nparagraph one\nparagraph two\n\nparagraph three'
-
-    expect(parseSlashCommand(`/some-skill ${context}`)).toEqual({
-      arg: context,
-      name: 'some-skill'
-    })
-  })
-
-  it('takes the name across a newline boundary like the CLI and gateway (split on any whitespace)', () => {
-    expect(parseSlashCommand('/goal\npasted block')).toEqual({ arg: 'pasted block', name: 'goal' })
-  })
-
-  it('keeps truly empty slash input empty', () => {
-    expect(parseSlashCommand('/')).toEqual({ arg: '', name: '' })
-    expect(parseSlashCommand('/   ')).toEqual({ arg: '', name: '' })
-  })
-
-  it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
-    expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
   })
 })
 

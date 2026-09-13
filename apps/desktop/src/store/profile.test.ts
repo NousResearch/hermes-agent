@@ -6,7 +6,7 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
-const ensureGatewayForProfile = vi.fn(async () => undefined)
+const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
 const openGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
@@ -16,6 +16,8 @@ const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
+  // Activation now verifies the socket's route before publishing the profile.
+  activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
   ensureGatewayForProfile,
   openGatewayForAgent,
@@ -166,6 +168,13 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     expect(openGatewayForProfile).toHaveBeenCalledWith('warm-basic', { speculative: true })
     // Pre-warm must never activate — that's the click's job.
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('pre-warms an agent-scoped backend through its registry connection', () => {
+    prewarmProfileBackend('warm-agent', 'registry-connection')
+
+    expect(openGatewayForAgent).toHaveBeenCalledWith('registry-connection', 'warm-agent', { speculative: true })
+    expect(openGatewayForProfile).not.toHaveBeenCalled()
   })
 
   it('skips the profile the gateway is already on', () => {

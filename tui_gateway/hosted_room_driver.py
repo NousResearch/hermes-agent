@@ -132,7 +132,7 @@ class InternalSessionRPC(Protocol):
     def resume(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
     ) -> Mapping[str, Any]: ...
     def history(
         self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]: ...
@@ -140,6 +140,7 @@ class InternalSessionRPC(Protocol):
     def interrupt(
         self, *, profile: str, session_id: str, source: str, expected_task_id: str,
         expected_task: state.TaskIdentity | None = None, expected_execution_generation: int | None = None,
+        expected_member_id: str | None = None,
     ) -> Mapping[str, Any] | None: ...
 
 
@@ -648,6 +649,7 @@ class HostedRoomRuntime:
             if not _info_is_active_for(
                 info, task["identity"], require_exact=True,
                 execution_generation=int(task["execution_generation"]),
+                member_id=_member_id(task),
             ):
                 return False
             result = admitted_transport.interrupt(
@@ -657,6 +659,7 @@ class HostedRoomRuntime:
                 expected_task_id=task["identity"].task_id,
                 expected_task=task["identity"],
                 expected_execution_generation=int(task["execution_generation"]),
+                expected_member_id=_member_id(task),
             )
             if result is None:
                 return False
@@ -703,12 +706,14 @@ class HostedRoomRuntime:
         if not _info_is_active_for(
             info, task["identity"], require_exact=True,
             execution_generation=int(task["execution_generation"]),
+            member_id=_member_id(task),
         ):
             return False
         result = transport.interrupt(
             **_session_kw(profile, session_id), expected_task_id=task["identity"].task_id,
             expected_task=task["identity"],
-            expected_execution_generation=int(task["execution_generation"]))
+            expected_execution_generation=int(task["execution_generation"]),
+            expected_member_id=_member_id(task))
         return result is not None and (
             result.get("interrupted") is True
             or str(result.get("status") or "") in _STOP_ACK_STATUSES)
@@ -1045,6 +1050,7 @@ class HostedRoomRuntime:
                         task=attempt.identity,
                         execution_generation=attempt.execution_generation,
                         on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt),
+                        member_id=_member_id(task),
                     )
                 finally:
                     _unregister_process_submission(submission_key)
@@ -1576,11 +1582,11 @@ def _info_active(info: Mapping[str, Any]) -> bool:
 
 def _info_is_active_for(
     info: Mapping[str, Any], identity: state.TaskIdentity, *, require_exact: bool = False,
-    execution_generation: int | None = None,
+    execution_generation: int | None = None, member_id: str | None = None,
 ) -> bool:
     if execution_generation is not None:
         return _info_active(info) and info.get("hosted_task") == {
-            **asdict(identity), "execution_generation": execution_generation}
+            **asdict(identity), "execution_generation": execution_generation, "member_id": member_id}
     accepted = (identity.task_id,) if require_exact else (None, identity.task_id)
     return _info_active(info) and info.get("task_id") in accepted
 

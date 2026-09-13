@@ -278,6 +278,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[reset [--force]]"),
     CommandDef("subscription", "View your Nous plan and change it in the browser", "Info",
                cli_only=True, aliases=("upgrade",)),
+    CommandDef("login", "Sign in with a Nous account (keeps your connectors)", "Info",
+               busy_policy="dispatch", desktop="settings"),
     CommandDef("topup", "Show your Nous balance and manage billing on the portal", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]", desktop="advanced"),
@@ -321,6 +323,22 @@ def infer_argument_mode(cmd: CommandDef) -> str | None:
 def command_desktop_meta(cmd: CommandDef) -> dict[str, str | None]:
     """Wire shape for ``commands.catalog`` — reads the CommandDef, nothing else."""
     return {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
+
+
+def desktop_surface_registry() -> dict[str, str]:
+    """``/name`` (and every alias) -> ``desktop`` disposition, for each command that has one.
+
+    The desktop app reads this live from ``commands.catalog``; the copy committed at
+    ``apps/desktop/src/lib/desktop-slash-registry.json`` (``scripts/dump_desktop_slash_registry.py``)
+    is its offline fallback before the catalog answers, so the registry stays the ONLY place a
+    command's desktop disposition is authored. A test on each side fails when the two drift.
+    """
+    return {
+        f"/{key}": cmd.desktop
+        for cmd in COMMAND_REGISTRY
+        if cmd.desktop
+        for key in (cmd.name, *cmd.aliases)
+    }
 
 
 # Every name and alias -> its CommandDef.

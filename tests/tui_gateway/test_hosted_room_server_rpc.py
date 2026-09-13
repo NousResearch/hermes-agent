@@ -65,6 +65,7 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
         task=task,
         execution_generation=2,
         on_terminal=callback,
+        member_id="ops-member",
     )
 
     create = next(params for method, params in calls if method == "session.create")
@@ -86,6 +87,7 @@ def test_routes_exact_hidden_session_and_internal_task_proof():
         "thread_id": "thread",
         "turn_id": "turn",
         "execution_generation": 2,
+        "member_id": "ops-member",
     }
     assert submit["_hosted_terminal_callback"] is callback
 
@@ -121,7 +123,7 @@ def test_info_and_interrupt_are_exact_task_scoped():
     server, calls = _server()
     lock = threading.Lock()
     task = TaskIdentity("room", "task-a", "thread", "turn")
-    proof = {**asdict(task), "execution_generation": 2}
+    proof = {**asdict(task), "execution_generation": 2, "member_id": "ops-member"}
     server._sessions["runtime"] = {
         "history_lock": lock,
         "running": True,
@@ -141,6 +143,7 @@ def test_info_and_interrupt_are_exact_task_scoped():
         expected_task_id="task-a",
         expected_task=task,
         expected_execution_generation=2,
+        expected_member_id="ops-member",
     )
     params = next(params for method, params in calls if method == "session.interrupt")
     assert params["expected_hosted_task_id"] == "task-a"
@@ -209,6 +212,7 @@ def test_prompt_rejection_is_proven_not_admitted():
             task=TaskIdentity("room", "task", "thread", "turn"),
             execution_generation=1,
             on_terminal=lambda _receipt: None,
+            member_id="ops",
         )
 
     assert exc.value.code == 4121

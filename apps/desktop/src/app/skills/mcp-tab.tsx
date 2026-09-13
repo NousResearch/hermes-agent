@@ -1,7 +1,9 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { getApiRequestConnection } from '@/api/client'
 import { type CodeEditorApi } from '@/components/chat/code-editor'
 import { JsonDocumentEditor } from '@/components/chat/json-document-editor'
 import { LogTail } from '@/components/chat/log-tail'
@@ -26,23 +28,29 @@ import {
   type McpCatalogEntry,
   type McpTestResult,
   type ProfileScope,
-  profileScopeKey,
   saveMcpServers,
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { compactNumber } from '@/lib/format'
+import { startCompletionPoll } from '@/lib/completion-poll'
 import { brandFor } from '@/lib/mcp-brands'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { type McpImportEntry, parseMcpImport } from '@/lib/mcp-import'
-import { NEEDS_AUTH_RE, PROBE_TTL_MS, probeCache, probeKey, serverFingerprint } from '@/lib/mcp-probe-cache'
+import {
+  NEEDS_AUTH_RE,
+  PROBE_TTL_MS,
+  probeCache,
+  probeKey,
+  resolveMcpOwner,
+  serverFingerprint
+} from '@/lib/mcp-probe-cache'
 import { getServers, isServerShape, type McpServers, normalizeEntry } from '@/lib/mcp-servers'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $activeSessionId } from '@/store/session'
+import { $activeSessionId, $connection } from '@/store/session'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -357,7 +365,10 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // profile's servers (AGENTS.md scope-in-key). When no override is passed this
   // resolves to $activeGatewayProfile, so behavior is identical to before.
   const appProfile = useStore($activeGatewayProfile)
-  const scopeProfileKey = profile != null ? profileScopeKey(profile) : normalizeProfileKey(appProfile)
+  const connection = useStore($connection)
+  const mcpOwner = resolveMcpOwner(profile ?? undefined, normalizeProfileKey(appProfile), getApiRequestConnection(), connection)
+  const scopeProfileKey = mcpOwner?.key ?? `unowned::${normalizeProfileKey(appProfile)}`
+  const ownerKey = mcpOwner?.key
 
   // Shared config cache (see use-config-record): revisiting the tab paints the
   // cached record instantly; mutations write through `setConfig` and stay
@@ -534,6 +545,18 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     [scopeProfileKey]
   )
 
+  // A same-profile connection switch does not emit the profile-switch event,
+  // but its probe results are still owned by the old gateway. Clear the view
+  // state and invalidate in-flight work before the new owner's cache is read.
+  // eslint-disable-next-line no-restricted-syntax -- connection-owner changes must reset local view state
+  useEffect(() => {
+    profileEpoch.current += 1
+    probesRef.current = {}
+    setProbes({})
+    setToolCalls30d(null)
+    setAuthing(null)
+  }, [scopeProfileKey])
+
   // A profile switch invalidates the config query (see store/profile.ts), which
   // refetches the new backend's mcp.json. Reset ALL per-profile view state — the
   // draft (incl. a dirty one, so profile A's edits can't be saved into B), its
@@ -582,12 +605,16 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   })
 
   const runProbe = async (serverName: string) => {
+    if (!mcpOwner) {
+      return
+    }
+
     const epoch = profileEpoch.current
-    const key = probeKey(serverName, servers[serverName], scopeProfileKey)
+    const key = probeKey(serverName, servers[serverName], mcpOwner.key)
     setProbes(current => ({ ...current, [serverName]: 'probing' }))
 
     try {
-      const result = await testMcpServer(serverName, profile ?? undefined)
+      const result = await testMcpServer(serverName, mcpOwner.request)
 
       // Drop the result if the profile changed mid-probe — it belongs to A.
       if (profileEpoch.current !== epoch) {
@@ -611,6 +638,10 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // token (verified on disk — a friendly tools/list is not proof), then the
   // auth result doubles as the probe (it carries the tool list).
   const authenticate = async (serverName: string) => {
+    if (!mcpOwner) {
+      return
+    }
+
     const epoch = profileEpoch.current
     setAuthing(serverName)
     setProbes(current => ({ ...current, [serverName]: 'probing' }))
@@ -618,7 +649,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
     try {
       const flow = await completeMcpDesktopOAuth({
         serverName,
-        profile,
+        profile: mcpOwner.request,
         cancelled: () => profileEpoch.current !== epoch
       })
 
@@ -633,7 +664,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
       // Cache under the POST-auth fingerprint (auth: oauth) on success — that's
       // the config the mount effect will read back, so it hits this entry.
       const probedConfig = result.ok ? { ...servers[serverName], auth: 'oauth' } : servers[serverName]
-      probeCache.set(probeKey(serverName, probedConfig, scopeProfileKey), { at: Date.now(), result })
+      probeCache.set(probeKey(serverName, probedConfig, mcpOwner.key), { at: Date.now(), result })
 
       if (result.ok) {
         // The endpoint persisted `auth: oauth` — mirror it locally.
@@ -679,12 +710,16 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
   // It should just know: probe enabled servers as config arrives — but through
   // the cache, so revisiting the page doesn't respawn/reconnect the fleet.
   useEffect(() => {
+    if (!mcpOwner) {
+      return
+    }
+
     for (const [serverName, server] of Object.entries(servers)) {
       if (!serverEnabled(server) || probesRef.current[serverName] !== undefined) {
         continue
       }
 
-      const cached = probeCache.get(probeKey(serverName, server, scopeProfileKey))
+      const cached = probeCache.get(probeKey(serverName, server, mcpOwner.key))
 
       if (cached && Date.now() - cached.at < PROBE_TTL_MS) {
         setProbes(current => ({ ...current, [serverName]: cached.result }))
@@ -692,15 +727,21 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
         void runProbe(serverName)
       }
     }
-    // Re-run only when the server set changes; runProbe is recreated every
-    // render and adding it would re-probe the fleet on every keystroke.
+    // Re-run when either the server set or its owner changes; runProbe is
+    // recreated every render and adding it would re-probe on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [servers])
+  }, [mcpOwner?.key, servers, scopeProfileKey])
 
   // Cosmetic 30-day usage counts for the cost overlay — cached module-wide per
   // scope profile, epoch-guarded like the probes so a slow profile-A fetch
   // can't paint into profile B.
   useEffect(() => {
+    if (!ownerKey) {
+      setToolCalls30d(null)
+
+      return
+    }
+
     const epoch = profileEpoch.current
 
     void loadMcpUsage(scopeProfileKey, profile ?? appProfile ?? null).then(value => {
@@ -708,7 +749,7 @@ export function McpTab({ gateway, profile }: { gateway: HermesGateway | null; pr
         setToolCalls30d(value)
       }
     })
-  }, [scopeProfileKey, profile, appProfile])
+  }, [appProfile, ownerKey, profile, scopeProfileKey])
 
   // Overlay inputs for one server: token estimate from its (successful) probe,
   // 30-day uses from analytics. Both halves degrade to null independently.
@@ -1725,36 +1766,25 @@ function McpLogs({
 }) {
   const [lines, setLines] = useState<null | string[]>(null)
   // A profile switch reroutes getLogs to the new backend; keying the effect on
-  // the active profile tears down the old poll (its `cancelled` flag blocks a
-  // late setLines) so profile A's logs never flash in B.
+  // the active profile tears down the old poll (stop suppresses a late
+  // publish) so profile A's logs never flash in B.
   const activeProfile = useStore($activeGatewayProfile)
 
   useEffect(() => {
-    let cancelled = false
+    setLines(null)
 
-    const poll = async () => {
-      try {
+    return startCompletionPoll({
+      delayMs: LOG_POLL_MS,
+      poll: async () => {
         const response =
           source === 'stdio'
             ? await getLogs({ file: 'mcp', lines: 500 })
             : await getLogs({ file: 'agent', lines: 300, search: server ?? 'mcp' })
 
-        if (!cancelled) {
-          setLines(source === 'stdio' && server ? filterStdioSections(response.lines, server) : response.lines)
-        }
-      } catch {
-        // Backend momentarily unavailable — keep the last tail.
-      }
-    }
-
-    setLines(null)
-    void poll()
-    const timer = window.setInterval(() => void poll(), LOG_POLL_MS)
-
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
+        return source === 'stdio' && server ? filterStdioSections(response.lines, server) : response.lines
+      },
+      publish: setLines
+    })
   }, [server, source, activeProfile])
 
   return <LogTail emptyLabel={emptyLabel} lines={lines} />

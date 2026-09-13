@@ -135,7 +135,11 @@ function wslUncBase(distro: string): string {
  * (drvfs mount), any other absolute POSIX path → `\\wsl.localhost\<distro>\...`.
  * Non-absolute or already-Windows paths pass through.
  */
-export function wslPosixToWindowsAccessible(posixPath: string, distro: string = resolveDefaultWslDistro()): string {
+export function wslPosixToWindowsAccessible(
+  posixPath: string,
+  distro?: string,
+  resolveDistro: () => string = resolveDefaultWslDistro
+): string {
   const value = String(posixPath || '').trim()
   const normalized = value.replace(/\\/g, '/')
 
@@ -153,7 +157,7 @@ export function wslPosixToWindowsAccessible(posixPath: string, distro: string = 
 
   const relative = normalized.replace(/^\/+/, '').replace(/\//g, '\\')
 
-  return `${wslUncBase(distro)}\\${relative}`
+  return `${wslUncBase(distro ?? resolveDistro())}\\${relative}`
 }
 
 /** Native folder dialog `defaultPath`: open a WSL cwd in the Windows picker. */
@@ -175,9 +179,7 @@ export function resolvePickerDefaultPath(
 
   const value = String(defaultPath).trim()
 
-  return value.startsWith('/') && !WIN_DRIVE_RE.test(value)
-    ? wslPosixToWindowsAccessible(value, distro ?? resolveDefaultWslDistro())
-    : defaultPath
+  return value.startsWith('/') && !WIN_DRIVE_RE.test(value) ? wslPosixToWindowsAccessible(value, distro) : defaultPath
 }
 
 /** fs read path: on Windows, make a WSL cwd readable via its UNC / drive form. */
@@ -193,6 +195,6 @@ export function resolveLocalReadPath(dirPath: string, distro?: string, profile?:
   }
 
   return IS_WINDOWS && value.startsWith('/') && !WIN_DRIVE_RE.test(value)
-    ? wslPosixToWindowsAccessible(value, distro ?? resolveDefaultWslDistro())
+    ? wslPosixToWindowsAccessible(value, distro)
     : value
 }

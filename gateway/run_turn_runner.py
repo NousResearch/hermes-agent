@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.interrupt_compat import _accepts_keyword
-from agent.replay_cleanup import strip_stale_dangerous_confirmations
+from agent.replay_cleanup import canonicalize_replay_history
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
@@ -33,6 +33,16 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
+
+
+def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
+    """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
+    say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
+    duck types) counts when it defines ``send_exec_approval`` itself."""
+    probe = getattr(adapter_cls, "supports_exec_approval_buttons", None)
+    if callable(probe) and issubclass(adapter_cls, BasePlatformAdapter):
+        return bool(probe())
+    return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -876,7 +886,7 @@ class TurnRunner:
         delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
         stream_delta_cb = None
         if delta_sinks:
-            def stream_delta_cb(text: str) -> None:
+            def stream_delta_cb(text: Optional[str]) -> None:
                 if ctx._run_still_current():
                     for sink in delta_sinks:
                         sink.on_delta(text)
@@ -884,6 +894,12 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            if stts is not None:
+                # Flush accepted deltas; completed commentary is a separate speech segment.
+                stts.on_delta(None)
+                if not already_streamed:
+                    stts.on_delta(text)
+                    stts.on_delta(None)
             if stream_consumer is not None:
                 stream_consumer.on_segment_break() if already_streamed else stream_consumer.on_commentary(text)
             elif not already_streamed and ctx._status_adapter and str(text or "").strip():
@@ -1176,7 +1192,9 @@ class TurnRunner:
                 if pdc is not None:
                     pdc[ctx.session_key] = bg_release
         # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
-        mem_notif = ctx.user_config.get("display", {}).get("memory_notifications")
+        # `display:` present-but-null yields None, not the {} default (same `or {}` guard as
+        # display_config.py / runtime_footer.py).
+        mem_notif = (ctx.user_config.get("display") or {}).get("memory_notifications")
         if isinstance(mem_notif, bool):
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
@@ -1301,7 +1319,7 @@ class TurnRunner:
         desc = approval_data.get("description", "dangerous command")
         flags = {k: approval_data.get(k, d) for k, d in (("allow_permanent", True), ("allow_session", True), ("smart_denied", False))}
         # Check the *class*, not the instance — MagicMock auto-creates attributes in tests.
-        if getattr(type(adapter), "send_exec_approval", None) is not None:
+        if _renders_exec_approval_buttons(type(adapter)):
             try:
                 fut = self._schedule(
                     adapter.send_exec_approval(
@@ -1401,9 +1419,9 @@ class TurnRunner:
                     "conversation context (possible FTS write corruption)",
                     ctx.session_key, len(agent_history), len(selected),
                 )
-                # The live history bypassed _build_gateway_agent_history's cleanup — re-apply the
-                # stale-confirmation expiry so a dangerous confirmation can't slip through.
-                agent_history = strip_stale_dangerous_confirmations(selected, now=time.time())
+                # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
+                # the full canonicalization so no replay transform can slip through.
+                agent_history = canonicalize_replay_history(selected)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 
@@ -1507,6 +1525,10 @@ class TurnRunner:
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
+            if _accepts_keyword(agent.run_conversation, "turn_author"):
+                # Sent on every transport: a provider gating durable writes needs the bot flag in a DM too.
+                kwargs["turn_author"] = {"id": ctx.source.user_id or None, "name": ctx.source.user_name or None,
+                                         "is_bot": bool(getattr(ctx.source, "is_bot", False))}
             if persist_user_message_override is not None:
                 kwargs["persist_user_message"] = persist_user_message_override
             elif observed_group_context:

@@ -154,6 +154,8 @@ test('100 real child processes never exceed twelve simultaneous local slots', as
     })
   )
 
+  // Windows may recycle a PID after a short-lived child exits; completion
+  // count, not PID uniqueness, is the invariant this concurrency test owns.
   assert.equal(completedChildren, 100)
   assert.equal(maxLive, limit)
   assert.equal(liveChildren.size, 0)

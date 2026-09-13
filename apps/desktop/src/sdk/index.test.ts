@@ -1,9 +1,77 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
+
+// The warm path must route through the guarded prewarm resolver, not dial the
+// gateway directly: gateway.ts's openLocalSecondaryCount and pool-limits' cap atom
+// are the two signals prewarmProfileBackend consults, so mocking them lets the
+// tests observe the guard's decision through the ONLY side effect that matters
+// — whether openGatewayForProfile was dialed.
+const warmMocks = vi.hoisted(() => ({
+  openGatewayForAgent: vi.fn(async (_connectionId: null | string, _profile: string) => undefined),
+  openGatewayForProfile: vi.fn(async (_profile: string) => undefined),
+  openLocalSecondaryCount: vi.fn(() => 0)
+}))
+
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  openGatewayForAgent: warmMocks.openGatewayForAgent,
+  openGatewayForProfile: warmMocks.openGatewayForProfile,
+  openLocalSecondaryCount: warmMocks.openLocalSecondaryCount
+}))
+
+vi.mock('@/store/pool-limits', async () => {
+  const { atom } = await import('nanostores')
+
+  return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
+})
+
+describe('host.warmProfile pool-saturation contract', () => {
+  beforeEach(async () => {
+    // Let a resolved warm release its tentative reservation before the next case.
+    await Promise.resolve()
+    await Promise.resolve()
+    warmMocks.openGatewayForAgent.mockClear()
+    warmMocks.openGatewayForProfile.mockClear()
+    warmMocks.openLocalSecondaryCount.mockReturnValue(0)
+  })
+
+  it('dials through the guarded path when a pool slot is free', () => {
+    warmMocks.openLocalSecondaryCount.mockReturnValue(1)
+
+    host.warmProfile('warm-free-slot')
+
+    expect(warmMocks.openGatewayForProfile).toHaveBeenCalledWith('warm-free-slot', { speculative: true })
+  })
+
+  it.each([2, 3])('preserves foreground capacity with %i local backends open', count => {
+    warmMocks.openLocalSecondaryCount.mockReturnValue(count)
+
+    host.warmProfile(`warm-saturated-${count}`)
+
+    expect(warmMocks.openGatewayForProfile).not.toHaveBeenCalled()
+  })
+
+  it('warmAgent reserves local capacity without blocking remote sockets', () => {
+    warmMocks.openLocalSecondaryCount.mockReturnValue(2)
+
+    host.warmAgent('local', 'warm-agent-saturated')
+
+    expect(warmMocks.openGatewayForAgent).not.toHaveBeenCalled()
+
+    host.warmAgent('conn-vps', 'warm-agent-remote')
+
+    expect(warmMocks.openGatewayForAgent).toHaveBeenCalledWith('conn-vps', 'warm-agent-remote', { speculative: true })
+
+    warmMocks.openLocalSecondaryCount.mockReturnValue(1)
+    host.warmAgent('local', 'warm-agent-free')
+
+    expect(warmMocks.openGatewayForAgent).toHaveBeenCalledWith('local', 'warm-agent-free', { speculative: true })
+  })
+})
 
 describe('host.state turn flags', () => {
   afterEach(() => {

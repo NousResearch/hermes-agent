@@ -171,7 +171,7 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
 def test_hosted_session_interrupt_does_not_stop_unrelated_tts(server, monkeypatch):
     calls = []
     proof = {"room_id": "room", "task_id": "hosted-task", "thread_id": "thread",
-             "turn_id": "turn", "execution_generation": 1}
+             "turn_id": "turn", "execution_generation": 1, "member_id": "ops"}
     session = {
         "history_lock": threading.Lock(),
         "running": True,

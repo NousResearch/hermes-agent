@@ -59,7 +59,7 @@ hermes -w -z "Fix issue #123"     # 在 worktree 中以单次查询模式运行
 一个持久状态栏位于输入区域上方，实时更新：
 
 ```
- ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+ ☤ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
 ```
 
 | 元素 | 描述 |
@@ -412,7 +412,7 @@ Hermes 立即确认任务并将提示符还给你：
 后台任务完成时，结果会以面板形式出现在终端中：
 
 ```
-╭─ ⚕ Hermes (background #1) ──────────────────────────────────╮
+╭─ ☤ Hermes (background #1) ──────────────────────────────────╮
 │ Found 3 errors in syslog from today:                         │
 │ 1. OOM killer invoked at 03:22 — killed process nginx        │
 │ 2. Disk I/O error on /dev/sda1 at 07:15                      │

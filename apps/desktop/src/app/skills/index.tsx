@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
@@ -29,12 +30,12 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
-import { compactNumber } from '@/lib/format'
 import { Loader2 } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
+import { cn } from '@/lib/utils'
 import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
 import { $hubActions, installHubSkill, OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 import { notify, notifyError } from '@/store/notifications'
@@ -68,12 +69,12 @@ import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { EmbeddedHubPicker } from './embedded-hub-picker'
 import { McpTab } from './mcp-tab'
+import { PluginsTab } from './plugins-tab'
 import { $skillsSortDesc, $toolsetsSortDesc } from './store'
 
-// 'hub' is gone as a top-level tab — the Skills Hub browser lives inside the
-// Skills tab now (EmbeddedHubPicker below the installed list). Legacy
-// `?tab=hub` links fall back to 'skills' via useRouteEnumParam.
-const SKILLS_MODES = ['skills', 'toolsets', 'mcp'] as const
+// The Hub is a durable page-local tab. Its iframe is mounted on first visit,
+// then kept hidden across tab switches so returning never reloads the docs site.
+const SKILLS_MODES = ['skills', 'toolsets', 'mcp', 'plugins', 'hub'] as const
 
 // Skills + toolsets live in the RQ cache so switching tabs/pages paints the
 // cached lists instantly (no reload flash) and mount only fires a deduped
@@ -249,13 +250,13 @@ export function SkillsView({
   const [query, setQuery] = useState('')
 
   // The hub picker hosts a full docs-site iframe — the single most expensive
-  // thing on this page. It mounts lazily (first time the Skills tab is shown)
+  // thing on this page. It mounts lazily (first time the Hub tab is shown)
   // and then STAYS mounted but hidden across tab switches, so bouncing to
   // Tools/MCP and back never reloads the site. Derived-state pattern: flips
   // once, during render, never back.
-  const [hubMounted, setHubMounted] = useState(mode === 'skills')
+  const [hubMounted, setHubMounted] = useState(mode === 'hub')
 
-  if (mode === 'skills' && !hubMounted) {
+  if (mode === 'hub' && !hubMounted) {
     setHubMounted(true)
   }
 
@@ -849,12 +850,25 @@ export function SkillsView({
   // Browse Hub). Lets the user configure ANY profile's capabilities — on any
   // registered gateway — without switching the whole app. Only meaningful
   // with >1 option; hidden otherwise to avoid clutter.
+  // Plugins embeds the selector in its Agent-column header (compact, no label,
+  // no border): desktop halves on that page are app-level and must not read as
+  // governed by "Configuring: <profile>".
+  const compactSelector = mode === 'plugins'
+  const scopeLabel = scopeOptions.find(option => option.value === scopeSelectValue)?.label
+
   const profileScopeSelector =
     scopeOptions.length > 1 ? (
-      <div className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
-        <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+      <div
+        className={cn(
+          'flex min-w-0 items-center gap-2',
+          compactSelector ? 'flex-1' : 'border-b border-(--ui-stroke-secondary) px-3 py-2'
+        )}
+      >
+        {!compactSelector && (
+          <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
+        )}
         <Select onValueChange={changeScope} value={scopeSelectValue}>
-          <SelectTrigger className="h-7 w-56 text-xs">
+          <SelectTrigger className={cn('text-xs', compactSelector ? 'h-6 w-full max-w-64 px-2' : 'h-7 w-56')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -876,31 +890,51 @@ export function SkillsView({
       onTabChange={id => setMode(id as (typeof SKILLS_MODES)[number])}
       // MCP manages a handful of entries with the editor right there —
       // searching it is noise.
-      searchHidden={mode === 'mcp'}
+      searchHidden={mode === 'mcp' || mode === 'plugins' || mode === 'hub'}
       searchHints={searchHints}
       searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
       searchValue={query}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
-        { id: 'mcp', label: t.skills.tabMcp }
+        { id: 'mcp', label: t.skills.tabMcp },
+        { id: 'plugins', label: t.skills.tabPlugins },
+        { id: 'hub', label: t.skills.tabHub }
       ]}
     >
       {/* One shared column: the scope selector sits above whichever tab is
           active, so Skills / Tools / MCP all read and write the SAME selected
           profile. */}
       <div className="flex h-full flex-col">
-        {profileScopeSelector}
+        {/* Plugins renders the selector INSIDE its agent section: desktop
+            plugins on that page belong to the app, not to any profile, and
+            must not sit under a "Configuring: <profile>" header. */}
+        {mode !== 'plugins' && profileScopeSelector}
         <div className="flex min-h-0 flex-1 flex-col">
-          <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
-            {mode === 'mcp' ? (
+          <div
+            className={
+              mode === 'hub' ? 'hidden' : mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'
+            }
+          >
+            {mode === 'plugins' ? (
+              // Agent plugins for the scoped profile (selector in the section
+              // header), app-level desktop plugins, the live catalog picker
+              // underneath. Keyed on scope so a profile/connection switch
+              // reloads the agent list.
+              <PluginsTab
+                key={`plugins-${scopeKey}`}
+                profile={scopeProfile}
+                scopeLabel={scopeLabel}
+                scopeSelector={profileScopeSelector}
+              />
+            ) : mode === 'mcp' ? (
               // The gateway instance backs ONLY the live `reload.mcp` RPC, and
               // it is the ACTIVE gateway's socket — for a scope pinned to a
               // different backend that RPC would hot-reload the wrong
               // machine's MCP servers, so it is withheld (config edits still
               // apply on that backend's next session).
               <McpTab gateway={crossBackendScope ? null : gateway} key={`mcp-${scopeKey}`} profile={scopeProfile} />
-            ) : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
+            ) : mode === 'hub' ? null : (skillsFailed || toolsetsFailed) && (!skills || !toolsets) ? (
               <PanelEmpty
                 action={
                   <Button onClick={() => void refreshCapabilities()} size="sm">
@@ -1078,13 +1112,18 @@ export function SkillsView({
             )}
           </div>
           {/* Hub picker OUTSIDE the tab ternary: it lazy-mounts the first time
-              Skills is shown, then stays mounted (hidden) across Tools/MCP so
+              Hub is shown, then stays mounted (hidden) across Skills/Tools/MCP so
               the docs-site iframe never reloads on a tab bounce. No scope key
               on purpose — the picker fetches nothing; scope rides the
               `profile` prop into each install call, and remounting on scope
               change would reload the whole site for no data benefit. */}
           {hubMounted && (
-            <EmbeddedHubPicker hidden={mode !== 'skills'} installedNames={installedSkillNames} profile={scopeProfile} />
+            <EmbeddedHubPicker
+              hidden={mode !== 'hub'}
+              installedNames={installedSkillNames}
+              profile={scopeProfile}
+              standalone
+            />
           )}
         </div>
       </div>

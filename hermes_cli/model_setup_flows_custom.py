@@ -30,6 +30,28 @@ def _parse_context_length(text: str):
     return value if value > 0 else None
 
 
+def _report_context_length_detection(model_name: str, base_url: str, api_key: str) -> None:
+    """Tell the user what the auto-detect resolver found for *model_name* at *base_url* (#2513).
+
+    The runtime resolver (``get_model_context_length``) probes /models, local servers and the
+    catalogs, then falls back to ``DEFAULT_FALLBACK_CONTEXT``; without this line a blank
+    context-length prompt gave no hint whether the saved endpoint runs on a detected value or
+    the silent default that shapes compression and cache windows. Feedback only — the value
+    is NOT written to config, which would freeze a probe result into a permanent override.
+    """
+    try:
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
+        from hermes_cli.banner import _format_context_length
+        detected = get_model_context_length(model_name, base_url=base_url, api_key=api_key or "")
+    except Exception:  # a failing probe must never block the save
+        return
+    if detected and detected != DEFAULT_FALLBACK_CONTEXT:
+        print(f"  Context length auto-detected: {_format_context_length(detected)} tokens")
+    else:
+        print(f"  Context length: not detected — using the default {_format_context_length(DEFAULT_FALLBACK_CONTEXT)} tokens "
+              f"(set model.context_length in config.yaml to override)")
+
+
 def _probe_custom_endpoint(effective_key: str, effective_url: str) -> tuple[dict, str]:
     """Verify a custom endpoint via ``probe_api_models`` and report; returns
     ``(probe, effective_url)`` where the URL may be the working fallback base."""
@@ -136,6 +158,8 @@ def _model_flow_custom(config):
         print("\nCancelled.")
         return
     context_length = _parse_context_length(context_length_str)
+    if context_length is None and model_name:
+        _report_context_length_detection(model_name, effective_url, effective_key)
 
     # The key goes to .env and config.yaml only references it. Keyed on host:port
     # so two servers on one machine keep separate credentials.

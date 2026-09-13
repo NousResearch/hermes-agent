@@ -9,6 +9,7 @@ import { configure } from '@testing-library/react'
 // Storage when the global resolves to nothing, before any test module reads it.
 if (typeof (globalThis as any).localStorage === 'undefined') {
   const store = new Map<string, string>()
+
   const storage: Storage = {
     get length() {
       return store.size
@@ -19,6 +20,7 @@ if (typeof (globalThis as any).localStorage === 'undefined') {
     removeItem: (k: string) => void store.delete(String(k)),
     clear: () => store.clear(),
   }
+
   for (const target of [globalThis, (globalThis as any).window].filter(Boolean)) {
     Object.defineProperty(target, 'localStorage', {
       value: storage,
@@ -27,6 +29,18 @@ if (typeof (globalThis as any).localStorage === 'undefined') {
     })
   }
 }
+
+// jsdom has no layout or intersection delivery. Tests of observer behavior
+// supply their own callbacks; ordinary component tests only need the lifecycle.
+globalThis.IntersectionObserver = class {
+  readonly root = null
+  readonly rootMargin = '0px'
+  readonly thresholds = [0]
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords(): IntersectionObserverEntry[] { return [] }
+} as typeof IntersectionObserver
 
 // React 19 + Testing Library 16: opt into the act environment so render(),
 // fireEvent(), and findBy* queries automatically flush state updates without

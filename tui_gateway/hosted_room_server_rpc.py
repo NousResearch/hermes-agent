@@ -84,14 +84,15 @@ class HostedRoomServerRPC:
 
     def submit(
         self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None], member_id: str,
     ) -> Mapping[str, Any]:
         try:
             return self._call("prompt.submit", {
                 "profile": profile, "session_id": session_id, "text": prompt, "source": source,
                 "_hosted_task": {
                     "room_id": task.room_id, "task_id": task.task_id, "thread_id": task.thread_id,
-                    "turn_id": task.turn_id, "execution_generation": execution_generation},
+                    "turn_id": task.turn_id, "execution_generation": execution_generation,
+                    "member_id": member_id},
                 "_hosted_terminal_callback": on_terminal})
         except HostedRoomSessionError as exc:
             # In-process prompt.submit error envelopes come back before the background turn is
@@ -139,11 +140,12 @@ class HostedRoomServerRPC:
 
     def interrupt(
         self, *, profile: str, session_id: str, source: str, expected_task_id: str,
-        expected_task: state.TaskIdentity, expected_execution_generation: int,
+        expected_task: state.TaskIdentity, expected_execution_generation: int, expected_member_id: str,
     ) -> Mapping[str, Any] | None:
         del source
         return self._call("session.interrupt", {
             "profile": profile, "session_id": session_id,
             "expected_hosted_task_id": expected_task_id,
             "_expected_hosted_task": {
-                **asdict(expected_task), "execution_generation": expected_execution_generation}})
+                **asdict(expected_task), "execution_generation": expected_execution_generation,
+                "member_id": expected_member_id}})

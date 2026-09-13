@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 import sys
+from typing import Optional
 
 
 def _die(msg: str, code: int = 1, *, err: bool = False) -> None:
@@ -30,21 +31,10 @@ def _is_active(p, active: str) -> bool:
 
 
 def _env_file_has_key(env_path: Path, key: str) -> bool:
-    """True when *key* is assigned in *env_path*. Read as utf-8-sig: a Notepad-edited .env can
-    carry a BOM that would hide the first key behind U+FEFF. A mis-encoded file (UnicodeDecodeError
-    is a ValueError, not OSError) must not abort the install preview — skip the pre-check."""
-    if not env_path.is_file():
-        return False
-    try:
-        # .env is written as UTF-8 everywhere in the codebase, but a Notepad-edited file can carry a BOM —
-        # read as utf-8-sig so the first key isn't hidden behind U+FEFF (#62617).
-        for raw in env_path.read_text(encoding="utf-8-sig").splitlines():
-            line = raw.strip()
-            if line and not line.startswith("#") and line.split("=", 1)[0].strip() == key:
-                return True
-    except (OSError, UnicodeDecodeError):
-        pass
-    return False
+    """True when *key* is assigned in *env_path* (unreadable/mis-encoded file → False, never aborts)."""
+    from agent.secret_scope import load_env_file
+
+    return key in load_env_file(env_path)
 
 
 def _render_distribution_plan(plan) -> None:
@@ -132,6 +122,29 @@ def _profile_list(args):
         dist = f"{p.distribution_name}@{p.distribution_version or '?'}"[:30] if p.distribution_name else "—"
         print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
     print()
+    for line in _shared_credential_warnings(profiles):
+        print(line)
+
+
+def _shared_credential_warnings(profiles) -> list:
+    """One warning per named profile whose bot credential is byte-identical to the default's
+    (typically an old ``--clone`` that copied .env): the collision that parks a multiplexed
+    adapter or makes two standalone gateways fight over one bot."""
+    from hermes_cli.profile_channels import shared_channel_credentials, shared_credential_warning
+    default = next((p for p in profiles if p.is_default), None)
+    if default is None:
+        return []
+    lines = []
+    for p in profiles:
+        if p.is_default:
+            continue
+        try:
+            shared = shared_channel_credentials(p.path, default.path)
+        except Exception:
+            continue
+        if shared:
+            lines.append(shared_credential_warning(p.name, shared))
+    return lines + ([""] if lines else [])
 
 
 def _profile_use(args):
@@ -142,6 +155,58 @@ def _profile_use(args):
         print("Switched to: default (~/.hermes)" if name == "default" else f"Switched to: {name}")
     except (ValueError, FileNotFoundError) as e:
         _die(f"Error: {e}")
+
+
+def _source_profile_dir(source_label: str) -> Path:
+    from hermes_cli.profiles import get_profile_dir
+    source_dir = get_profile_dir(source_label)
+    if not source_dir.is_dir():
+        raise FileNotFoundError(source_dir)
+    return source_dir
+
+
+def _clone_channels_refusal(source_label: str) -> Optional[str]:
+    """``--clone-channels`` is refused when a live multiplexer already serves the source: the
+    duplicate adapter would be parked at once (same explanation the migrate preflight gives)."""
+    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    from hermes_cli.profile_channels import channel_platforms_configured
+    from hermes_cli.profiles import normalize_profile_name
+    served = recorded_served_profiles()
+    if not served or len(served) < 2 or normalize_profile_name(source_label) not in {
+        normalize_profile_name(p) for p in served
+    }:
+        return None
+    try:
+        platforms = channel_platforms_configured(_source_profile_dir(source_label))
+    except FileNotFoundError:
+        return None
+    if not platforms:
+        return None
+    return (
+        f"Error: --clone-channels would copy {', '.join(platforms)} from '{source_label}', which the running "
+        "multiplexed gateway already serves: the bot can only belong to one profile, so the copy would be "
+        "parked as a duplicate credential. Clone without --clone-channels and give the new profile its own bot "
+        "(hermes -p <name> setup), or route its chats with gateway.profile_routes instead."
+    )
+
+
+def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bool, clone_flag: str) -> None:
+    from hermes_cli.profile_channels import (
+        channel_platforms_configured, format_stripped_notice, shared_channel_credentials,
+        shared_credential_warning,
+    )
+    from hermes_cli.profiles import get_profile_dir
+    try:
+        source_dir = _source_profile_dir(source_label)
+    except FileNotFoundError:
+        return
+    if not clone_channels:
+        for line in format_stripped_notice(name, channel_platforms_configured(source_dir), clone_flag):
+            print(line)
+        return
+    shared = shared_channel_credentials(get_profile_dir(name), source_dir)
+    if shared:
+        print(shared_credential_warning(name, shared, source_label))
 
 
 def _profile_create(args):
@@ -155,29 +220,42 @@ def _profile_create(args):
     no_alias = getattr(args, "no_alias", False)
     no_skills = getattr(args, "no_skills", False)
     clone_from = getattr(args, "clone_from", None)
+    clone_channels = getattr(args, "clone_channels", False)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
+    source_label = clone_from or get_active_profile_name()
+    if clone_channels and cloned:
+        refusal = _clone_channels_refusal(source_label)
+        if refusal:
+            _die(refusal)
     try:
         profile_dir = create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
             no_alias=no_alias, no_skills=no_skills, description=getattr(args, "description", None),
+            clone_channels=clone_channels,
         )
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
     print(f"\nProfile '{name}' created at {profile_dir}")
     if cloned:
-        source_label = clone_from or get_active_profile_name()
         if clone_all:
-            print(f"Full copy from {source_label} (excluding session history, backups, and snapshots).")
+            print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
+        _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
         # Auto-clone Honcho config for the new profile (only with clone operations)
         try:
-            from plugins.memory.honcho.cli import clone_honcho_for_profile
-            if clone_honcho_for_profile(name):
-                print(f"Honcho config cloned (peer: {name})")
+            from plugins.memory.honcho.cli import ConfigWriteRefused, clone_honcho_for_profile
         except Exception:
-            pass  # Honcho plugin not installed or not configured
+            clone_honcho_for_profile = None  # Honcho plugin not installed
+        if clone_honcho_for_profile is not None:
+            try:
+                if clone_honcho_for_profile(name):
+                    print(f"Honcho config cloned (peer: {name})")
+            except ConfigWriteRefused as e:
+                print(f"Honcho config not cloned: {e}")
+            except Exception:
+                pass  # Honcho not configured
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
         result = seed_profile_skills(profile_dir)
@@ -208,7 +286,16 @@ def _profile_create(args):
     print("\nNext steps:")
     print(f"  {name} setup              Configure API keys and model")
     print(f"  {name} chat               Start chatting")
-    print(f"  {name} gateway start      Start the messaging gateway")
+    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from hermes_cli.profiles import normalize_profile_name
+    served = recorded_served_profiles() if live_default_gateway_pid() is not None else None
+    if served is not None and normalize_profile_name(name) in {normalize_profile_name(p) for p in served}:
+        print("  (served now by the running multiplexed gateway — add its bot token and it connects)")
+    elif served is not None:
+        # The multiplexer did not pick the profile up (older gateway or the signal failed): a restart serves it.
+        print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
+    else:
+        print(f"  {name} gateway start      Start the messaging gateway")
     if clone or clone_all:
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")

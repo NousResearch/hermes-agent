@@ -28,6 +28,7 @@ ANSWER = "durable answer"
 RETURNED_ERROR = "provider rejected this turn"
 RAISED_ERROR = "model failed before returning"
 BUILD_ERROR = "model initialization failed before readiness"
+MEMBER_ID = "ops-member"
 
 
 class _Frames:
@@ -90,7 +91,6 @@ class _Model:
 class _Harness:
     def __init__(self, home):
         self.home = home
-        self.db_path = home / "state.db"
         self.outcome = "normal"
         self.answer = ANSWER
         self.model_run = None
@@ -104,7 +104,10 @@ class _Harness:
         self.calls = []
         self.call_errors = []
         self.frames = _Frames()
-        self.service = HostedRoomService(server, db_path=self.db_path)
+        # Exercise the installed coordination-store resolver; session persistence
+        # stays in the separate master/profile state.db files below.
+        self.service = HostedRoomService(server)
+        self.db_path = self.service.db_path
         self.rpc = self.service.rpc
         self.rpc._transport = self.frames
         self.runtime = self.service.runtime
@@ -114,7 +117,7 @@ class _Harness:
         self.runtime.lease_ttl_seconds = 300
         self.service.create_room(
             room_id="receipt-room", name="Receipt recovery",
-            members=[{"member_id": "ops", "profile": "ops", "handle": "ops"},
+            members=[{"member_id": MEMBER_ID, "profile": "ops", "handle": "ops"},
                      {"member_id": "default", "profile": "default", "handle": "default"}],
         )
         self.binding = self.service.bindings()[0]
@@ -350,7 +353,8 @@ def test_installed_terminal_receipt_and_observer_replay(installed_runtime, monke
     marker = read_turn_marker(Path(h.session["profile_home"]), h.session["session_key"])
     if order == "storage-abort":
         assert receipt is None and receipts == [] and marker is not None
-        assert h.session["_hosted_room_task"] == {**asdict(identity), "execution_generation": generation}
+        assert h.session["_hosted_room_task"] == {
+            **asdict(identity), "execution_generation": generation, "member_id": MEMBER_ID}
         assert attempt["status"] == "running"
         assert h.member_replies() == []
         _receipt_trigger(h.db_path, install=False)
@@ -436,7 +440,8 @@ def _submit_attempt(h, attempt):
     h.rpc.submit(
         profile="ops", session_id=sid, prompt="inspect the release", source="bot_room",
         task=attempt.identity, execution_generation=attempt.execution_generation,
-        on_terminal=lambda receipt: h.runtime._on_terminal(h.binding, attempt, receipt))
+        on_terminal=lambda receipt: h.runtime._on_terminal(h.binding, attempt, receipt),
+        member_id=state.get_task(h.db_path, attempt.identity)["payload"]["target_member_id"])
     return sid
 
 
@@ -463,7 +468,7 @@ class _ApprovalTurn:
         return {"final_response": ANSWER, "interrupted": model.interrupted.is_set(), "completed": True}
 
 
-@pytest.mark.parametrize("stale_field", ["execution_generation", "room_id", "thread_id", "turn_id"])
+@pytest.mark.parametrize("stale_field", ["execution_generation", "room_id", "thread_id", "turn_id", "member_id"])
 def test_installed_stop_preserves_replacement_attempt(installed_runtime, stale_field):
     h = installed_runtime
     identity = h.enqueue()
@@ -486,7 +491,7 @@ def test_installed_stop_preserves_replacement_attempt(installed_runtime, stale_f
         assert turn.queued.wait(WAIT)
         from tools.approval import list_gateway_approvals
         session = h.session
-        proof = {**asdict(identity), "execution_generation": current.execution_generation}
+        proof = {**asdict(identity), "execution_generation": current.execution_generation, "member_id": MEMBER_ID}
         info = h.rpc.info(profile="ops", session_id=sid, source="bot_room")
         assert info["hosted_task"] == proof
         # Snapshots cannot mutate the live proof.
@@ -496,13 +501,20 @@ def test_installed_stop_preserves_replacement_attempt(installed_runtime, stale_f
             queued_generation = session.get("_queued_prompt_generation", 0)
         expected_identity = identity
         generation = current.execution_generation
+        member_id = MEMBER_ID
         if stale_field == "execution_generation":
             generation = old.execution_generation
+        elif stale_field == "member_id":
+            member_id = "other-member"
+            task = state.get_task(h.db_path, identity)
+            wrong_member = {**task, "payload": {**task["payload"], "target_member_id": member_id}}
+            assert h.runtime._interrupt_stopping_task(h.binding, wrong_member) is False
         else:
             expected_identity = state.TaskIdentity(**{**asdict(identity), stale_field: "old-coordinate"})
         result = h.rpc.interrupt(
             profile="ops", session_id=sid, source="bot_room", expected_task_id=identity.task_id,
-            expected_task=expected_identity, expected_execution_generation=generation)
+            expected_task=expected_identity, expected_execution_generation=generation,
+            expected_member_id=member_id)
         assert result == {"status": "not_interrupted", "interrupted": False}
         assert session["_hosted_room_task"] == proof and session["running"]
         assert not session["_turn_cancel_requested"]
@@ -516,7 +528,8 @@ def test_installed_stop_preserves_replacement_attempt(installed_runtime, stale_f
         # A concurrent observer/repeated Stop replays the successful claim only.
         assert h.rpc.interrupt(
             profile="ops", session_id=sid, source="bot_room", expected_task_id=identity.task_id,
-            expected_task=identity, expected_execution_generation=current.execution_generation
+            expected_task=identity, expected_execution_generation=current.execution_generation,
+            expected_member_id=MEMBER_ID,
         )["interrupted"] is True
         assert h.models[0].interrupt_calls == 1
         assert session["queued_prompt"] is None
@@ -560,7 +573,8 @@ def test_installed_stop_claim_covers_interrupt_and_queue_cleanup(installed_runti
         try:
             results.append(h.rpc.interrupt(
                 profile="ops", session_id=sid, source="bot_room", expected_task_id=identity.task_id,
-                expected_task=identity, expected_execution_generation=attempt.execution_generation))
+                expected_task=identity, expected_execution_generation=attempt.execution_generation,
+                expected_member_id=MEMBER_ID))
         except BaseException as exc:
             failures.append(exc)
 
@@ -709,7 +723,7 @@ def test_installed_stop_before_worker_keeps_admission_claim(installed_runtime, m
         assert h.runtime.cancel(identity, cancel_id="stop-before-worker")["status"] == "cancelled"
         next_identity = state.TaskIdentity(h.binding.room_id, "replacement", "thread-2", "turn-2")
         state.admit_task(h.db_path, next_identity,
-                         payload={"target_profile": "ops", "target_member_id": "ops",
+                         payload={"target_profile": "ops", "target_member_id": MEMBER_ID,
                                   "source_event_seq": 1, "prompt": "inspect next release"},
                          clock=h.runtime.clock)
         replacement = _start_attempt(h, next_identity)
@@ -718,7 +732,7 @@ def test_installed_stop_before_worker_keeps_admission_claim(installed_runtime, m
         assert busy.value.code == 4091
         assert h.session["running"]
         assert h.session["_hosted_room_task"] == {
-            **asdict(identity), "execution_generation": attempt.execution_generation}
+            **asdict(identity), "execution_generation": attempt.execution_generation, "member_id": MEMBER_ID}
     finally:
         release_submit.set()
         h.allow_build.set()
@@ -801,7 +815,7 @@ def test_cancelled_start_keeps_claim_until_model_restore_finishes(installed_runt
         # API for a separate attempt rather than waiting for discussion policy.
         replacement_identity = state.TaskIdentity(h.binding.room_id, "replacement", "thread-2", "turn-2")
         state.admit_task(h.db_path, replacement_identity,
-                         payload={"target_profile": "ops", "target_member_id": "ops",
+                         payload={"target_profile": "ops", "target_member_id": MEMBER_ID,
                                   "source_event_seq": 1, "prompt": "inspect next release"},
                          clock=h.runtime.clock)
         replacement = _start_attempt(h, replacement_identity)
@@ -810,7 +824,7 @@ def test_cancelled_start_keeps_claim_until_model_restore_finishes(installed_runt
         assert busy.value.code == 4091
         assert h.session["running"]
         assert h.session["_hosted_room_task"] == {
-            **asdict(identity), "execution_generation": attempt.execution_generation}
+            **asdict(identity), "execution_generation": attempt.execution_generation, "member_id": MEMBER_ID}
         assert h.models[0].model == "test-model"
     finally:
         release_admission.set()
@@ -865,7 +879,8 @@ def test_finished_turn_cannot_clear_replacement_task_proof(installed_runtime, mo
         replacement = _start_attempt(h, next_identity)
         sid = _submit_attempt(h, replacement)
         assert next_started.wait(WAIT)
-        proof = {**asdict(next_identity), "execution_generation": replacement.execution_generation}
+        proof = {**asdict(next_identity), "execution_generation": replacement.execution_generation,
+                 "member_id": MEMBER_ID}
         assert h.rpc.info(profile="ops", session_id=sid, source="bot_room")["hosted_task"] == proof
         release_old.set()
         _join(old_thread)

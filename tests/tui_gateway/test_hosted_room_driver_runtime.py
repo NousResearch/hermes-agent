@@ -91,6 +91,7 @@ class FakeSessionRPC:
         title: str = room_session_title(ROOM_ID),
         active: bool = False,
         task_id: str | None = None,
+        member_id: str | None = None,
         history: list[dict[str, Any]] | None = None,
     ) -> str:
         with self._lock:
@@ -102,7 +103,8 @@ class FakeSessionRPC:
                 "active": active,
                 "task_id": task_id,
                 "execution_generation": None,
-                "hosted_task": ({**asdict(_identity(task_id)), "execution_generation": 1}
+                "hosted_task": ({**asdict(_identity(task_id)), "execution_generation": 1,
+                                 "member_id": member_id if member_id is not None else profile}
                                 if task_id else None),
                 "history": list(history or []),
                 "on_terminal": None,
@@ -181,6 +183,7 @@ class FakeSessionRPC:
         task: state.TaskIdentity,
         execution_generation: int,
         on_terminal,
+        member_id="",
     ):
         self._assert_lock(profile)
         params = {
@@ -191,13 +194,15 @@ class FakeSessionRPC:
             "task": task,
             "execution_generation": execution_generation,
             "on_terminal": on_terminal,
+            "member_id": member_id,
         }
         self.calls.append(("submit", params))
         with self._lock:
             self.states[session_id]["active"] = True
             self.states[session_id]["task_id"] = task.task_id
             self.states[session_id]["execution_generation"] = execution_generation
-            self.states[session_id]["hosted_task"] = {**asdict(task), "execution_generation": execution_generation}
+            self.states[session_id]["hosted_task"] = {
+                **asdict(task), "execution_generation": execution_generation, "member_id": member_id}
             self.states[session_id]["on_terminal"] = on_terminal
         self.submitted.set()
         if self.auto_complete:
@@ -249,6 +254,7 @@ class FakeSessionRPC:
         expected_task_id: str,
         expected_task: state.TaskIdentity | None = None,
         expected_execution_generation: int | None = None,
+        expected_member_id: str | None = None,
     ):
         params = {
             "profile": profile,
@@ -259,7 +265,8 @@ class FakeSessionRPC:
         with self._lock:
             current = self.states[session_id]
             exact = expected_task is None or current["hosted_task"] == {
-                **asdict(expected_task), "execution_generation": expected_execution_generation}
+                **asdict(expected_task), "execution_generation": expected_execution_generation,
+                "member_id": expected_member_id}
             if not current["active"] or current["task_id"] != expected_task_id or not exact:
                 self.calls.append(("interrupt_skipped", params))
                 return {"interrupted": False}

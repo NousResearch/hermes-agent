@@ -170,7 +170,9 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     try:  # probe blocks on a dedicated MCP event loop — keep it off the FastAPI loop
         tools, token_present = await asyncio.to_thread(_probe_scoped)
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "tools": []}
+        from hermes_cli.mcp_config import redact_mcp_probe_text
+
+        return {"ok": False, "error": redact_mcp_probe_text(exc), "tools": []}
     if not token_present:
         return {"ok": False, "error": "OAuth authentication required — no token found.", "tools": []}
     # Optional per-tool schema size (chars) for the desktop's cost overlay;

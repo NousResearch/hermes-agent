@@ -9,17 +9,10 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from tools import mcp_tool_config as _mcp_config
-
-
-def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
-    from unittest.mock import MagicMock
-
-    mock_stdin = MagicMock()
-    mock_stdin.isatty.return_value = is_tty
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +59,7 @@ def _seed_config(tmp_path: Path, mcp_servers: dict):
 
     config = {"mcp_servers": mcp_servers, "_config_version": 9}
     config_path = tmp_path / "config.yaml"
-    with open(config_path, "w") as f:
+    with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
 
 
@@ -163,7 +156,7 @@ class TestMcpRemove:
         token_dir = tmp_path / "mcp-tokens"
         token_dir.mkdir()
         token_file = token_dir / "oauth-srv.json"
-        token_file.write_text("{}")
+        token_file.write_text("{}", encoding="utf-8")
 
         from hermes_cli.mcp_config import cmd_mcp_remove
 
@@ -753,12 +746,13 @@ class TestMcpRemoveEvictsManager:
             "hermes_cli.mcp_config.get_hermes_home", lambda: tmp_path
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        _set_interactive_stdin(monkeypatch)
-
         from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
         reset_manager_for_tests()
 
         mgr = get_manager()
+        # Exercise the real cache and removal path without starting an OAuth
+        # flow or depending on a real interactive Windows console.
+        monkeypatch.setattr(mgr, "_build_provider", lambda *_: SimpleNamespace())
         mgr.get_or_build_provider(
             "oauth-srv", "https://example.com/mcp", None,
         )
@@ -824,7 +818,7 @@ class TestMcpLogin:
         def mock_probe(name, cfg, connect_timeout=30):
             seen["connect_timeout"] = connect_timeout
             token_dir.mkdir(exist_ok=True)
-            (token_dir / "realserver.json").write_text('{"access_token": "x"}')
+            (token_dir / "realserver.json").write_text('{"access_token": "x"}', encoding="utf-8")
             return [("a", "d"), ("b", "d"), ("c", "d")]
 
         monkeypatch.setattr(
@@ -898,3 +892,13 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+def test_tool_filters_keeps_explicit_empty_include():
+    """``include: []`` (block-all, as written by an all-unchecked picker) is a filter, not
+    "no filter"; only an absent/non-list key is None (#12865)."""
+    from hermes_cli.mcp_config import _tool_filters
+
+    assert _tool_filters({"tools": {"include": []}}) == ([], None)
+    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
+    assert _tool_filters({}) == (None, None)

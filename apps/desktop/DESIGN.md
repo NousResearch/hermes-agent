@@ -202,6 +202,32 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 - **No dividers between rows** unless the list genuinely needs them; prefer
   spacing. When you do need one, it's a single `--ui-stroke-tertiary` hairline.
 
+## Panel titlebars
+
+Top-edge panels extend into the native titlebar band. Their tab strips remain
+inside their own zones so tab drops, focus, and split boundaries use the same
+geometry. Panels without room beside the measured window controls place their
+tabs on a full-width row below the controls. Minimized row groups use vertical
+restore rails, including groups with multiple tabs. Sidebar buttons and shortcuts
+restore minimized or fully hidden side groups without changing the selected tab.
+Lower panels keep local headers. Empty header space moves the window;
+tabs and actions remain no-drag, with native-control space reserved from the
+existing traffic-light and Window Controls Overlay measurements.
+
+The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
+and the right-sidebar toggle sit on the right; haptics remain in settings.
+Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
+status dots after 400ms, without changing tab widths. Hints follow the same
+binding and hovered/focused-zone resolver as the number shortcuts.
+
+Tab close buttons fade the label with a content mask, not a painted gradient.
+The tab reads its surface token directly so glass tint is painted only once.
+
+Sticky user messages clip covered scrolling content, including the gap above
+them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
+Clipping follows the pinned prompt and its live height without changing layout,
+so glass and message-bubble transparency do not reveal scrolling text.
+
 ## Feedback & empty/error/loading states
 
 - **Loading:** `Loader` (`src/components/ui/loader.tsx`) — animated math/ascii
@@ -245,6 +271,10 @@ Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
   from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Composer status groups start collapsed except todos. Progress updates and queue
+  pause/resume preserve the user's disclosure choice. Error banners meet the
+  stack's top edge without a blank padding strip. File and preview links remain
+  visible at the bottom of the stack, below the queue and all status groups.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
@@ -314,6 +344,9 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
+  Dimming still distinguishes session panes; sidebar navigation must not desaturate
+  the chat or transfer its active highlight to a hidden primary tab.
 - Register global shortcuts through the shared layer, not ad-hoc listeners.
 - One cancel gesture does one thing: cancel the active interaction, or close the
   topmost dismissable surface — never both, never the control underneath.

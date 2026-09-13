@@ -426,6 +426,16 @@ def _npm_lifecycle_env(env: dict[str, str] | None = None) -> dict[str, str]:
     # esbuild treats this as an executable override. If a shell points it at a
     # different release, the pinned package's postinstall rejects that binary.
     run_env.pop("ESBUILD_BINARY_PATH", None)
+    # The repo-root ``.npmrc`` is git-tracked, so the updater's autostash parks
+    # any mirror/proxy line added there and every update reinstalls without it
+    # (restricted networks then prune optional native deps like get-windows and
+    # the rebuild fails). ``$HERMES_HOME`` lives outside the git tree and the
+    # update hand-off already carries ``HERMES_HOME`` down to every npm child.
+    # An explicit ``NPM_CONFIG_USERCONFIG`` wins (#106373).
+    from hermes_constants import get_hermes_home
+    npmrc = get_hermes_home() / "npmrc"
+    if npmrc.is_file():
+        run_env.setdefault("NPM_CONFIG_USERCONFIG", os.fspath(npmrc))
     return run_env
 
 
@@ -805,7 +815,7 @@ def _launch_tui(
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.
     if code == 42:
         from hermes_cli.relaunch import relaunch
-        print("\n⚕ Launching update...\n")
+        print("\n☤ Launching update...\n")
         relaunch(["update"], preserve_inherited=False)
 
     sys.exit(code)

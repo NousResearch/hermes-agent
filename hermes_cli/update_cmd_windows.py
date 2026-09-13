@@ -424,8 +424,14 @@ def _relaunch_stopped_serves(token: dict) -> None:
 
 
 def _is_backend_argv(argv_low: str) -> bool:
-    """Whether a lower-cased argv is a Desktop backend (``hermes_cli.main`` running ``serve``/``dashboard``)."""
-    return "hermes_cli.main" in argv_low and (" serve" in argv_low or " dashboard" in argv_low)
+    """Whether an argv is a DESKTOP backend — feeds ``taskkill /T`` via ``_orphaned_desktop_backend_pids``.
+
+    Same predicate as ``_looks_like_desktop_control_plane``: ``-m hermes_cli.main`` entry shape (the
+    Desktop's only spawn shape, ``apps/desktop/electron/main.ts``) AND the canonical holder classifier says
+    ``serve``/``dashboard``. A user-launched ``hermes.exe serve`` / ``hermes dashboard`` is NOT the
+    Desktop's: the guard refuses on it, never reaps it.
+    """
+    return _looks_like_desktop_control_plane(argv_low)
 
 
 def _live_argv_low(psutil, pid, cmdline: str) -> str | None:

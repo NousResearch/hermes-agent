@@ -197,6 +197,18 @@ class TestModelProviderProbe:
                 False, "register_provider", "no register() function", None,
                 id="swallowed_failed_register_provider",
             ),
+            pytest.param(
+                _MP_MANIFEST,
+                (
+                    "from providers import register_provider\n"
+                    "class Duck:\n"
+                    "    name = 'duck-mp'\n"
+                    "    aliases = ()\n"
+                    "register_provider(Duck())\n"
+                ),
+                False, "ProviderProfile", None, None,
+                id="duck_typed_profile_rejected",
+            ),
         ],
     )
     def test_model_provider_admission(

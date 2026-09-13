@@ -2,13 +2,13 @@
 
 This is the command the plugin-catalog admission CI (and the
 ``.github/actions/plugin-validate`` composite action) runs against a
-candidate plugin. It performs static manifest checks plus a
-subprocess-isolated capability probe: the plugin is imported and its
-``register(ctx)`` called against a minimal recording stub context in a
-scratch child process (with a throwaway ``HERMES_HOME``), so a crashing or
-malicious plugin cannot take down the CLI, and the *actually registered*
-tools/hooks/middleware are compared against the manifest's declared
-``provides_*`` lists.
+candidate plugin. It performs static manifest checks plus a capability
+probe in a scratch child process (throwaway ``HERMES_HOME``). Isolation
+here means a crashing plugin should not take down the parent CLI. It is
+**not** a filesystem, network, or credential sandbox: imported plugin
+code runs with the same interpreter privileges as the child, and the
+child environment is not a proof that the plugin cannot forge probe
+output on stdout.
 """
 
 from __future__ import annotations
@@ -183,8 +183,8 @@ def _check_requires_env(report: ValidationReport, manifest: dict) -> None:
 # Self-contained harness run in a scratch child process. Imports the plugin
 # module using the same file-location mechanics PluginManager uses, calls
 # register() against a recording stub ctx, and prints a sentinel-prefixed
-# JSON line of what was actually registered. Deliberately imports NOTHING
-# from hermes so a hostile plugin only sees a bare interpreter.
+# JSON line of what was actually registered. The child is not a sandbox:
+# plugin code shares the process with this harness and can write stdout.
 _PROBE_SCRIPT = r"""
 import importlib.util
 import json
@@ -279,6 +279,7 @@ def emit(payload):
 
 try:
     import providers as providers_mod
+    from providers.base import ProviderProfile as _ProviderProfile
 except Exception as exc:
     emit({"error": "model-provider probe could not import providers: %s" % exc})
     sys.exit(0)
@@ -287,6 +288,8 @@ calls = []
 _orig = providers_mod.register_provider
 
 def _spy(profile):
+    if not isinstance(profile, _ProviderProfile):
+        raise TypeError("register_provider() requires a ProviderProfile")
     result = _orig(profile)
     name = getattr(profile, "name", None)
     calls.append(str(name) if name is not None else "")

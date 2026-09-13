@@ -1,5 +1,4 @@
 import base64
-import sys
 from pathlib import Path
 
 import pytest
@@ -14,12 +13,6 @@ def _list_entries(client, path) -> list:
     response = client.get("/api/fs/list", params={"path": str(path)})
     assert response.status_code == 200, response.text
     return response.json()["entries"]
-
-
-# Creating symlinks needs elevation (or Developer Mode) on Windows.
-requires_symlinks = pytest.mark.skipif(
-    sys.platform == "win32", reason="Symlinks require elevated privileges on Windows"
-)
 
 
 @pytest.fixture
@@ -58,7 +51,7 @@ def test_fs_list_sorts_and_hides_noise(client, tmp_path):
     assert all(entry["name"] not in {".git", "node_modules"} for entry in entries)
 
 
-@requires_symlinks
+@pytest.mark.require_symlinks
 def test_fs_list_reports_symlinked_directories_as_directories(client, tmp_path):
     """A symlink pointing at a directory must be expandable in the file tree.
 
@@ -86,7 +79,7 @@ def test_fs_list_reports_symlinked_directories_as_directories(client, tmp_path):
     assert entries["broken_link"]["isDirectory"] is False
 
 
-@requires_symlinks
+@pytest.mark.require_symlinks
 def test_fs_list_keeps_symlinked_directories_sorted_with_directories(client, tmp_path):
     root = tmp_path / "project"
     real_dir = root / "zzz_real"

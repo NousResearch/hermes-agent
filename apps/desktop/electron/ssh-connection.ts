@@ -196,6 +196,22 @@ function defaultControlDir() {
     return path.join(os.tmpdir(), 'hermes-desktop-ssh')
   }
 
+  // Linux: prefer the per-user runtime dir — XDG_RUNTIME_DIR is 0700 tmpfs,
+  // exactly what a runtime socket wants, and honoring it keeps a dotdir-free
+  // $HOME (HERMES_HOME living elsewhere, XDG-friendly setup) from being
+  // recreated just for the mux socket. The local mux root is single-party
+  // (both ends are this app on this machine), so there is no writer/reader
+  // negotiation or version skew; the REMOTE token/lock contract
+  // (remote-lifecycle.ts REMOTE_LOCK_DIR) is separate and stays anchored at
+  // ~/.hermes/desktop-ssh unchanged. macOS keeps the classic home anchor
+  // (XDG_RUNTIME_DIR is usually unset there), and the sun_path worst case only
+  // gets shorter: /run/user/<uid>/hermes/desktop-ssh/<16hex>.sock is well
+  // under the ~/.hermes/desktop-ssh/... equivalent.
+  const xdgRuntimeDir = process.env.XDG_RUNTIME_DIR
+  if (process.platform === 'linux' && xdgRuntimeDir && path.isAbsolute(xdgRuntimeDir)) {
+    return path.join(xdgRuntimeDir, 'hermes', 'desktop-ssh')
+  }
+
   return path.join(os.homedir(), '.hermes', 'desktop-ssh')
 }
 

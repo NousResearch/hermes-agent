@@ -2167,6 +2167,37 @@ def _list_processes(task_id) -> dict:
             task_id=task_id, session_key=session_key or None, include_retained=True)]}
 
 
+def _caller_session_key() -> str:
+    with suppress(Exception):
+        # See #29177.
+        from tools.approval_context import get_current_session_key
+        return get_current_session_key(default="") or ""
+    return ""
+
+
+def _session_action_allowed(session: "ProcessSession", task_id: str, session_key: str) -> bool:
+    """Whether the caller may poll/log/wait/kill/write/submit/close ``session``.
+
+    Ownership is the spawning task (``owner_task_id``, or the container
+    ``task_id`` it collapsed to) or the gateway ``session_key`` — a
+    session-scoped process started by a sibling task is still this
+    conversation's to manage (#29177), including through a compression resume.
+    A caller carrying no identity at all is trusted internal plumbing rather
+    than a model call (model calls always pass task_id); a session carrying no
+    identity (unowned/detached) has no owner to violate.
+    """
+    owner = session.owner_task_id or session.task_id
+    if task_id and task_id in (owner, session.task_id):
+        return True
+    if session_key and session.session_key:
+        if session_key == session.session_key:
+            return True
+        from tools.process_registry_results import _owns_result
+        if _owns_result(session_key, session.session_key):
+            return True
+    return not (task_id or session_key) or not (owner or session.session_key)
+
+
 # action -> (handler(session_id, args) -> dict, redact output?). Output-bearing
 # actions are redacted; stdin actions return only status.
 _SESSION_ACTIONS = {
@@ -2234,6 +2265,12 @@ def _handle_process(args, **kw):
     if action in _SESSION_ACTIONS:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
+        session = process_registry.get(session_id)
+        if session is not None and not _session_action_allowed(
+                session, str(kw.get("task_id") or ""), _caller_session_key()):
+            # Same shape as a miss so another conversation's live ids are not
+            # enumerable through the status split.
+            return json.dumps(_not_found(session_id), ensure_ascii=False)
         handler, redact = _SESSION_ACTIONS[action]
         result = handler(session_id, args)
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)

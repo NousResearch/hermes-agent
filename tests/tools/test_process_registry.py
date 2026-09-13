@@ -1280,6 +1280,66 @@ class TestProcessToolHandler:
         assert "error" in result
 
 
+class TestSessionActionOwnership:
+    """process_manage session actions are scoped to the caller's identity.
+
+    A session id is not a capability: another conversation that learns a live
+    id must not poll, kill, or write to it. The caller matches when it owns the
+    process (owner_task_id/task_id) or shares its gateway session_key.
+    """
+
+    def _setup(self, monkeypatch, owner_task_id="task-a", session_key="key-a"):
+        import tools.approval_context as ac
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_owned1", task_id="container-a")
+        sess.owner_task_id = owner_task_id
+        sess.session_key = session_key
+        sess.exited = True
+        sess.exit_code = 0
+        reg._finished[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        return pr, ac, sess
+
+    def _call(self, pr, ac, monkeypatch, task_id, session_key):
+        monkeypatch.setattr(ac, "get_current_session_key", lambda default="": session_key)
+        return json.loads(pr._handle_process(
+            {"action": "poll", "session_id": "proc_owned1"}, task_id=task_id))
+
+    def test_owner_task_id_may_poll(self, monkeypatch):
+        pr, ac, _ = self._setup(monkeypatch)
+        out = self._call(pr, ac, monkeypatch, task_id="task-a", session_key="")
+        assert out["status"] != "not_found"
+
+    def test_foreign_task_gets_not_found(self, monkeypatch):
+        pr, ac, _ = self._setup(monkeypatch)
+        out = self._call(pr, ac, monkeypatch, task_id="task-b", session_key="key-b")
+        assert out["status"] == "not_found"
+
+    def test_same_session_key_may_poll_across_tasks(self, monkeypatch):
+        """A session-scoped process started by a sibling task is still ours (#29177)."""
+        pr, ac, _ = self._setup(monkeypatch)
+        out = self._call(pr, ac, monkeypatch, task_id="task-b", session_key="key-a")
+        assert out["status"] != "not_found"
+
+    def test_container_task_id_may_poll(self, monkeypatch):
+        pr, ac, _ = self._setup(monkeypatch)
+        out = self._call(pr, ac, monkeypatch, task_id="container-a", session_key="")
+        assert out["status"] != "not_found"
+
+    def test_unidentified_caller_passes(self, monkeypatch):
+        """Internal plumbing calls the handler without task_id/session_key."""
+        pr, ac, _ = self._setup(monkeypatch)
+        out = self._call(pr, ac, monkeypatch, task_id="", session_key="")
+        assert out["status"] != "not_found"
+
+    def test_unowned_session_is_actionable(self, monkeypatch):
+        pr, ac, _ = self._setup(monkeypatch, owner_task_id="", session_key="")
+        pr.process_registry._finished["proc_owned1"].task_id = ""
+        out = self._call(pr, ac, monkeypatch, task_id="task-b", session_key="key-b")
+        assert out["status"] != "not_found"
+
+
 # =========================================================================
 # format_process_notification + drain_notifications (shared helpers)
 # =========================================================================

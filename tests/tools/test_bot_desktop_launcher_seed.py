@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
@@ -14,13 +15,22 @@ LAUNCHER = Path(__file__).resolve().parents[2] / "tools" / "bot_desktop" / "laun
 pytestmark = pytest.mark.linux_only
 
 
-def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
+def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "",
+          xauth_probe: tuple[Path, Path] | None = None) -> Path:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name in fake_bins:
         exe = bindir / name
         exe.write_text("#!/bin/sh\n", encoding="utf-8")
         exe.chmod(0o755)
+    if xauth_probe:
+        argv_log, stdin_log = xauth_probe
+        xauth = bindir / "xauth"
+        xauth.write_text(
+            f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\ncat > "{stdin_log}"\n',
+            encoding="utf-8",
+        )
+        xauth.chmod(0o755)
     # The script's own tooling (mkdir, sed, cat, awk...) symlinked in, so PATH need not contain the
     # host's /usr/bin where a real chrome/thunar would leak into the dock under test.
     for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm", "ln", "touch", "chmod", "xauth", "od", "tr", "awk"):
@@ -39,6 +49,18 @@ def _seed(tmp_path: Path, fake_bins: list[str], browser_exec: str = "") -> Path:
     }
     subprocess.run(["bash", str(LAUNCHER)], env=env, check=True, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
     return cfg
+
+
+def test_xauthority_cookie_is_sent_on_stdin_not_process_arguments(tmp_path):
+    argv_log, stdin_log = tmp_path / "xauth-argv", tmp_path / "xauth-stdin"
+    _seed(tmp_path, [], xauth_probe=(argv_log, stdin_log))
+
+    assert argv_log.read_text(encoding="utf-8").splitlines() == [
+        "-q", "-f", str(tmp_path / "Xauthority")
+    ]
+    command = stdin_log.read_text(encoding="utf-8").split()
+    assert command[:3] == ["add", ":99", "MIT-MAGIC-COOKIE-1"]
+    assert len(command) == 4 and re.fullmatch(r"[0-9a-f]{32}", command[3])
 
 
 def test_dock_lists_only_programs_present_on_path(tmp_path):

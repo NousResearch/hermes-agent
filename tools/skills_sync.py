@@ -346,15 +346,30 @@ def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, des
     st.say(f"  ↑ {skill_name} (updated)")
 
 
+def _category_has_skills(category_dir: Path) -> bool:
+    """True if category_dir contains at least one SKILL.md (#34237)."""
+    try:
+        if not category_dir.is_dir():
+            return False
+        return next(category_dir.rglob("SKILL.md"), None) is not None
+    except OSError:
+        return False
+
+
 def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]]) -> None:
     """Copy category DESCRIPTION.md files not already present; ``only_dirs`` restricts
-    seeding to the essential skills' categories on opted-out profiles."""
+    seeding to the essential skills' categories on opted-out profiles.
+
+    Never mkdir a category just to place DESCRIPTION.md (#34237).
+    """
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
         dest_desc = _skills_dir() / desc_md.relative_to(bundled_dir)
-        if (only_dirs is not None and dest_desc.parent not in only_dirs) or dest_desc.exists():
+        category_dir = dest_desc.parent
+        if (only_dirs is not None and category_dir not in only_dirs) or dest_desc.exists():
+            continue
+        if not category_dir.exists() or not _category_has_skills(category_dir):
             continue
         try:
-            dest_desc.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(desc_md, dest_desc)
         except OSError as e:
             logger.debug("Could not copy %s: %s", desc_md, e)

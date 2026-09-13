@@ -111,6 +111,7 @@ def _http_routes(self) -> list[tuple[str, str, Any]]:
         ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
         ("POST", "/v1/runs/{run_id}/clarify", self._handle_run_clarify),
         ("POST", "/v1/runs/{run_id}/steer", self._handle_steer_run),
+        ("POST", "/v1/runs/{run_id}/resolve-unknown", self._handle_resolve_unknown_run),
         ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run)]
 
 
@@ -187,8 +188,10 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
 
 
 # Answering a prompt the run raised is one capability whichever tool asked: approvals
-# and clarify share the grant's ``approve`` permission.
-_ROOM_CONTROL_PERMISSIONS = {"/stop": "stop", "/approval": "approve", "/clarify": "approve"}
+# and clarify share the grant's ``approve`` permission. Acknowledging a lost owner epoch
+# ends the run like a stop, so ``/resolve-unknown`` rides the ``stop`` permission.
+_ROOM_CONTROL_PERMISSIONS = {
+    "/stop": "stop", "/resolve-unknown": "stop", "/approval": "approve", "/clarify": "approve"}
 
 
 def _room_permission_for(request: "web.Request") -> str:
@@ -543,6 +546,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             with self._profile_scope(launch.request_profile):
                 launch.admission = admit_api_turn(self, user_message=launch.user_message,
                     conversation_history=launch.conversation_history, active_run_id=run_id,
+                    run_owner_scope=self._run_owners[run_id],
                     turn_author=launch.turn_author,
                     history_from_session=session_history_delivery,
                     session_history_delivery='1' if session_history_delivery else '',
@@ -772,7 +776,10 @@ def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
     # Run state that exists without an owner stamp is an unanswered authorization question, not a run anyone
     # may control — under gateway.multiplex_profiles every served profile holds a valid key, so admitting it
     # would make the boundary allow-all (#93689).
-    return self._run_idempotency_store.owns_run(scope, run_id)
+    if self._run_idempotency_store.owns_run(scope, run_id):
+        return True
+    from gateway.session_api_turn import owns_api_run
+    return owns_api_run(self, run_id, scope)
 
 
 def _load_owned_run(self, request, *, _api_server, permission: Optional[str], active_fallback: bool):
@@ -1012,6 +1019,28 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
         # run on the same session_id keeps its own); no-op if the run already finished.
         _api_server._reap_disconnected_agent_processes(agent, source="api_server_run_stop")
     return web.json_response({"run_id": run_id, "status": "stopping"})
+
+
+async def _handle_resolve_unknown_run(
+    self, request: "web.Request", *, _api_server
+) -> "web.Response":
+    """POST /v1/runs/{run_id}/resolve-unknown — acknowledge one lost owner epoch."""
+    run_id, _, _, _, err = _load_owned_run(
+        self, request, _api_server=_api_server, permission="stop", active_fallback=False)
+    if err is not None:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    from gateway.platforms.api_server_authority_runs import resolve_unknown_run
+    from hermes_state_runtime import RuntimeStoreError
+    try:
+        result = await resolve_unknown_run(self, run_id, body)
+        return web.json_response({'run_id': run_id, **result})
+    except RuntimeStoreError as exc:
+        return _json_error(
+            _api_server._openai_error, exc.reason, code=exc.reason, status=409)
 
 
 async def _sweep_orphaned_runs(self) -> None:

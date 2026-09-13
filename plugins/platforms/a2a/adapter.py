@@ -33,7 +33,9 @@ from . import protocol, security
 logger = logging.getLogger(__name__)
 
 _DEFAULT_PORT = 9900
-_MIN_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 60  # seconds: orphan grace floor / watchdog period
+# seconds: orphan grace floor / ceiling / watchdog period. The ceiling keeps the sweep
+# meaningful when A2A_REPLY_TIMEOUT is absurd (1e18 would never fail an orphan).
+_MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
@@ -70,8 +72,8 @@ def _reply_timeout() -> float:
 
 
 def _orphan_timeout() -> float:
-    """Orphan grace must never expire before a configured reply window."""
-    return max(float(_MIN_ORPHAN_TIMEOUT), _reply_timeout())
+    """Orphan grace must never expire before a configured reply window, but stays bounded."""
+    return min(float(_MAX_ORPHAN_TIMEOUT), max(float(_MIN_ORPHAN_TIMEOUT), _reply_timeout()))
 
 
 def _default_agent_name() -> str:
@@ -336,6 +338,7 @@ class A2AAdapter(BasePlatformAdapter):
                 self._resolve_locked(tid, protocol.STATE_FAILED, "[agent shutting down]")
             self._pending.clear()
             self._pending_order.clear()
+            self._active_tasks.clear()
 
     def _watchdog_loop(self) -> None:
         """Background thread that fails orphaned tasks (keeps them queryable)."""

@@ -534,6 +534,16 @@ class TestTaskStore:
         adapter._pop_pending("t-live")
         assert adapter._fail_orphans_once() == ["t-live"]
 
+    def test_orphan_timeout_is_bounded_and_disconnect_clears_active_tasks(self, monkeypatch):
+        from plugins.platforms.a2a import adapter as mod
+        monkeypatch.setenv("A2A_REPLY_TIMEOUT", "1e18")
+        assert mod._orphan_timeout() == mod._MAX_ORPHAN_TIMEOUT
+
+        adapter, _base = _make_live_adapter(monkeypatch)
+        adapter._add_pending("t-live", "c1")
+        asyncio.run(adapter.disconnect())
+        assert adapter._active_tasks == set()
+
     def test_watchdog_cannot_race_local_finalization(self, monkeypatch):
         adapter, _base = _make_live_adapter(monkeypatch)
         rec = adapter.tasks.create("t-live", "c1", "peer")

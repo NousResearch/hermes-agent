@@ -28,6 +28,9 @@ export interface CanonicalRoom {
 
 export interface CanonicalPendingAction {
   kind: string
+  control_supported?: boolean
+  admission_id?: string
+  target_execution_generation?: number
   member_id: string
   task_id: string
   execution_generation: number
@@ -148,6 +151,10 @@ export async function actCanonicalGroup(
   action: CanonicalPendingAction,
   choice?: 'once' | 'deny'
 ): Promise<Record<string, unknown>> {
+  if (action.control_supported === false) {
+    throw new Error('Canonical group controls are unavailable on this connection.')
+  }
+
   const methods: Record<string, string> = { retry: 'groups.retry', discard: 'groups.discard', approval: 'groups.approve' }
   const method = Object.hasOwn(methods, action.kind) ? methods[action.kind] : undefined
 

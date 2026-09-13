@@ -1,6 +1,7 @@
-import { host } from '@hermes/plugin-sdk'
+import { gatewayActivationEpoch, host } from '@hermes/plugin-sdk'
 import type { PluginContext } from '@hermes/plugin-sdk'
 
+import { groupExecutionMode } from './canonical-group-capabilities'
 import { $botMeta, $lastRoster, cachedUnionRoster } from './data'
 import {
   createDesktopRoomConsumerId,
@@ -56,6 +57,68 @@ const activeDesktopRoomCommands = new Map<
   string,
   { commandId: string; controller: AbortController; threadId: null | string }
 >()
+
+interface LegacyCommandSource {
+  current: () => boolean
+  check: () => Promise<boolean>
+}
+
+// Evidence belongs to one captured route in one discovery/activation, never a
+// connection-name cache. A later wake must classify again, including old Serve.
+const desktopRoomCommandSources = new WeakMap<ProfileRoute, LegacyCommandSource>()
+
+function desktopCommandSourceCurrent() {
+  const epoch = gatewayActivationEpoch()
+  const connectionId = host.state.connectionId.get()
+  const profile = host.state.profile.get()
+  const open = host.state.gateway.get() === 'open'
+
+  return () => open && gatewayActivationEpoch() === epoch &&
+    host.state.connectionId.get() === connectionId && host.state.profile.get() === profile &&
+    host.state.gateway.get() === 'open'
+}
+
+function legacyCommandSource(route: ProfileRoute, sourceCurrent = desktopCommandSourceCurrent()): LegacyCommandSource {
+  const captured = Object.freeze({ ...route })
+  let legacy = false
+  let revoked = false
+
+  const sourceLive = () => sourceCurrent() &&
+    route.connectionId === captured.connectionId && route.profile === captured.profile &&
+    route.targetProfile === captured.targetProfile && route.mode === captured.mode
+
+  const current = () => !revoked && legacy && sourceLive()
+
+  return {
+    current,
+    check: async () => {
+      if (revoked || !sourceLive() || !captured.connectionId || !captured.profile || !captured.targetProfile) {
+        revoked = true
+
+        return false
+      }
+
+      try {
+        const capability = await host.requestProfile(captured, 'groups.capabilities', { profile: captured.profile })
+
+        // Revocation is sticky for this flow: a late successful read cannot
+        // rescue a failed/canonical read or revive a switched-away activation.
+        if (!sourceLive() || groupExecutionMode(capability) !== 'legacy') { revoked = true }
+        legacy = !revoked
+      } catch {
+        revoked = true
+      }
+
+      return current()
+    }
+  }
+}
+
+function assertLegacyCommandSource(source: LegacyCommandSource) {
+  if (!source.current()) {
+    throw retryableDesktopRoomCommand('Legacy Desktop Group Chat control is unavailable for this source.')
+  }
+}
 
 function desktopRoomEntry(roomId: string, descriptors: DesktopRoomDescriptor[]) {
   const descriptor = descriptors.find(room => room.roomId === roomId)
@@ -127,6 +190,12 @@ async function requestDesktopCommandGateway(route: ProfileRoute, method: string,
     throw retryableDesktopRoomCommand('Desktop Group Chat control has stopped.')
   }
 
+  const source = desktopRoomCommandSources.get(route)
+
+  if (!source || !await source.check()) {
+    throw retryableDesktopRoomCommand('Legacy Desktop Group Chat control is unavailable for this source.')
+  }
+
   if (method === 'groups.desktop.claim' || method === 'groups.desktop.presence') {
     const forSend = method === 'groups.desktop.claim' && Array.isArray(params.actions) && params.actions.includes('send')
     const expected = desktopRoomDescriptors(desktopCommandEligibleRooms(forSend))
@@ -135,6 +204,11 @@ async function requestDesktopCommandGateway(route: ProfileRoute, method: string,
     if (!currentDesktopRuntime(String(params.consumer_id)) || desktopRoomPersistenceBlocked) {
       throw retryableDesktopRoomCommand('Desktop Group Chat control has stopped.')
     }
+
+    // Persistence may span an owner change even when the visible route stays
+    // put. Read capabilities again before publishing authority or claiming work.
+    await source.check()
+    assertLegacyCommandSource(source)
 
     // An async storage read must not authorize a replaced/conflicted room.
     const current = desktopRoomDescriptors(desktopCommandEligibleRooms(forSend))
@@ -165,7 +239,16 @@ async function requestDesktopCommandGateway(route: ProfileRoute, method: string,
     params = { ...params, room_authorities: valid }
   }
 
-  return host.requestProfile(route, method, params)
+  assertLegacyCommandSource(source)
+
+  if (!currentDesktopRuntime(String(params.consumer_id))) {
+    throw retryableDesktopRoomCommand('Desktop Group Chat control has stopped.')
+  }
+
+  const result = await host.requestProfile(route, method, params)
+  assertLegacyCommandSource(source)
+
+  return result
 }
 
 function frozenRecipients(value: unknown): GroupMember[] {
@@ -237,6 +320,7 @@ export async function executeDesktopRoomCommand(
   { signal, request, consumerId, route, leaseValid = () => true }: CommandExecutionContext
 ) {
   const runtimeOwner = desktopRoomCommandDisposed ? null : desktopRoomCommandConsumerId
+  const source = desktopRoomCommandSources.get(route) ?? legacyCommandSource(route)
 
   const assertLiveLease = () => {
     if (
@@ -266,6 +350,7 @@ export async function executeDesktopRoomCommand(
 
   const assertCurrentRoom = () => {
     assertLiveLease()
+    assertLegacyCommandSource(source)
 
     if (!roomValid()) {
       throw new Error('This Group Chat is no longer available on this Desktop.')
@@ -280,6 +365,9 @@ export async function executeDesktopRoomCommand(
       return retained
     }
   }
+
+  await source.check()
+  assertCurrentRoom()
 
   const finishStop = async (result: DesktopCommandResult) => {
     assertCurrentRoom()
@@ -326,10 +414,10 @@ export async function executeDesktopRoomCommand(
 
     const commandId = String(command.command_id || '')
     const localAbort = new AbortController()
-    const fence = beginGroupCommandFence(roomId, commandId, leaseValid, roomValid)
+    const fence = beginGroupCommandFence(roomId, commandId, () => leaseValid() && source.current(), roomValid)
 
-    const cancelTurn = () => {
-      if (localAbort.signal.reason !== 'room-stop') {
+    const cancelTurn = async () => {
+      if (localAbort.signal.reason !== 'room-stop' && await source.check() && source.current()) {
         cancelGroupThreadForLeaseLoss(group, members, fence)
       }
     }
@@ -356,6 +444,7 @@ export async function executeDesktopRoomCommand(
       const claimAttempt = Number.isSafeInteger(rawClaimAttempt) && rawClaimAttempt > 0 ? rawClaimAttempt : 1
 
       for (let driveAttempt = 1; driveAttempt <= DESKTOP_ROOM_DRIVE_ATTEMPTS_PER_CLAIM; driveAttempt += 1) {
+        await source.check()
         assertCurrentRoom()
 
         if (!groupChatContinuityReady($groupChats.get()[group])) {
@@ -417,7 +506,7 @@ export async function executeDesktopRoomCommand(
           return desktopCommandResult(group, $groupChats.get()[group], commandId, 'send')!
         }
 
-        cancelGroupThreadForLeaseLoss(group, members, fence)
+        await cancelTurn()
         throw retryableDesktopRoomCommand('The command moved to another Desktop.')
       }
 
@@ -542,6 +631,7 @@ export async function executeDesktopRoomCommand(
       })
     }
 
+    await source.check()
     assertCurrentRoom()
 
     if (targetCommandId) {
@@ -568,6 +658,8 @@ export async function executeDesktopRoomCommand(
 }
 
 async function desktopRoomCommandConnections() {
+  const sourceCurrent = desktopCommandSourceCurrent()
+  const owner = desktopRoomCommandConsumerId
   const byConnection = new Map<string, ProfileRoute>()
 
   if (typeof host.profileRoutes === 'function') {
@@ -598,10 +690,18 @@ async function desktopRoomCommandConnections() {
     })
   }
 
-  return [...byConnection.entries()].map(([id, route]) => ({
-    id,
-    route
+  if (!sourceCurrent() || !currentDesktopRuntime(owner)) { return [] }
+
+  const connections = await Promise.all([...byConnection.entries()].map(async ([id, candidate]) => {
+    const route = Object.freeze({ ...candidate })
+    const source = legacyCommandSource(route, sourceCurrent)
+    desktopRoomCommandSources.set(route, source)
+    await source.check()
+
+    return { id, route, source }
   }))
+
+  return connections.filter(connection => currentDesktopRuntime(owner) && connection.source.current())
 }
 
 function syncDesktopRoomCommandRetention(connections: Array<{ id: string; route: ProfileRoute }>) {

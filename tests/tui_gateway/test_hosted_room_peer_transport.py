@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
+from gateway.hosted_room_attachments import HostedRoomAttachmentStore
 from gateway.hosted_room_peer import attachment_manifest_digest
 
 from gateway.hosted_room_driver import TaskIdentity
@@ -411,11 +414,32 @@ def test_roomlink_can_fail_over_ambiguous_attachment_staging_before_admission():
     assert client.active_link.name == "relay"
 
 
+def _committed_attachments(
+    tmp_path, files=(("event-brief", "brief.txt", b"brief"),)
+):
+    """Real private source bytes, committed to events and the route recipient."""
+    store = HostedRoomAttachmentStore(tmp_path / "source.db")
+    manifests = []
+    for event_id, name, data in files:
+        saved = store.put(
+            room_id=BINDING.room_id, upload_id=event_id, kind="file",
+            name=name, mime="text/plain", data=data,
+        )
+        item = {key: saved[key] for key in ("attachment_id", "kind", "name", "size", "mime")}
+        store.commit_message(
+            room_id=BINDING.room_id, event_id=event_id, manifest=[item],
+            recipient_member_ids=[ROUTE.member_id], viewer_access=False,
+        )
+        manifests.append({**item, "event_id": event_id})
+    return store, manifests
+
+
 @pytest.mark.parametrize(
     ("failed_method", "not_admitted"),
     [("stage_attachments", False), ("dispatch", True)],
 )
 def test_attachment_failure_leaves_remote_attempt_to_bounded_target_expiry(
+    tmp_path,
     failed_method,
     not_admitted,
 ):
@@ -424,45 +448,28 @@ def test_attachment_failure_leaves_remote_attempt_to_bounded_target_expiry(
         not_admitted=not_admitted,
     )
     task = TaskIdentity("room-1", "task-files", "thread-1", "turn-files")
+    store, manifests = _committed_attachments(tmp_path)
     transport = PeerHostedRoomTransport(
         binding=BINDING,
-        route=ROUTE,
+        route=replace(ROUTE, attachments=True),
         client=client,
         source_event_seq=7,
         task_id=task.task_id,
         execution_generation=3,
+        attachment_store=store,
     )
     transport.create(
         profile="reviewer",
         title="Group: room-1",
         source=ROOM_SESSION_SOURCE,
     )
-    transport.begin_attachment_staging(
-        profile="reviewer",
-        session_id="group-session",
-        source=ROOM_SESSION_SOURCE,
-        execution_generation=3,
-    )
-    transport.stage_attachment(
-        profile="reviewer",
-        session_id="group-session",
-        source=ROOM_SESSION_SOURCE,
-        execution_generation=3,
-        attachment={
-            "attachment_id": "att_11111111111111111111111111111111",
-            "kind": "file",
-            "name": "brief.txt",
-            "size": 5,
-            "mime": "text/plain",
-        },
-        data=b"brief",
-    )
 
-    with pytest.raises(PeerRunsHTTPError):
+    with pytest.raises(PeerRunsHTTPError) as error:
         transport.submit(
             profile="reviewer",
             session_id="group-session",
             prompt="Review the file.",
+            attachments=manifests,
             source=ROOM_SESSION_SOURCE,
             task=task,
             execution_generation=3,
@@ -472,9 +479,18 @@ def test_attachment_failure_leaves_remote_attempt_to_bounded_target_expiry(
     assert not [
         params for method, params in client.calls if method == "discard_attachments"
     ]
+    methods = [method for method, _ in client.calls]
+    assert methods.count("stage_attachments") == 1
+    assert methods.count("dispatch") == (failed_method == "dispatch")
+    if failed_method == "stage_attachments":
+        assert error.value.dispatch_not_attempted is True
+        assert error.value.not_admitted is False
+    else:
+        assert error.value is client.error
+        assert error.value.not_admitted is True
 
 
-def test_nonretryable_attachment_413_terminalizes_without_dispatch_or_requeue():
+def test_nonretryable_attachment_413_terminalizes_without_dispatch_or_requeue(tmp_path):
     class RejectingPeer(FakePeerClient):
         def stage_attachments(self, **kwargs):
             self.calls.append(("stage_attachments", kwargs))
@@ -486,38 +502,20 @@ def test_nonretryable_attachment_413_terminalizes_without_dispatch_or_requeue():
 
     client = RejectingPeer()
     task = TaskIdentity("room-1", "task-too-large", "thread-1", "turn-files")
+    store, manifests = _committed_attachments(tmp_path)
     transport = PeerHostedRoomTransport(
         binding=BINDING,
-        route=ROUTE,
+        route=replace(ROUTE, attachments=True),
         client=client,
         source_event_seq=7,
         task_id=task.task_id,
         execution_generation=3,
+        attachment_store=store,
     )
     transport.create(
         profile="reviewer",
         title="Group: room-1",
         source=ROOM_SESSION_SOURCE,
-    )
-    transport.begin_attachment_staging(
-        profile="reviewer",
-        session_id="group-session",
-        source=ROOM_SESSION_SOURCE,
-        execution_generation=3,
-    )
-    transport.stage_attachment(
-        profile="reviewer",
-        session_id="group-session",
-        source=ROOM_SESSION_SOURCE,
-        execution_generation=3,
-        attachment={
-            "attachment_id": "att_11111111111111111111111111111111",
-            "kind": "file",
-            "name": "brief.txt",
-            "size": 5,
-            "mime": "text/plain",
-        },
-        data=b"brief",
     )
     terminal = []
 
@@ -525,13 +523,15 @@ def test_nonretryable_attachment_413_terminalizes_without_dispatch_or_requeue():
         profile="reviewer",
         session_id="group-session",
         prompt="Review the file.",
+        attachments=manifests,
         source=ROOM_SESSION_SOURCE,
         task=task,
         execution_generation=3,
         on_terminal=terminal.append,
     )
 
-    assert result == terminal[0]
+    assert terminal == [result]
+    assert result["settlement_id"] == "attachment-rejected:task-too-large:3"
     assert result["status"] == "failed"
     assert result["error"] == (
         "A Group Chat file exceeded the peer gateway's upload limit."
@@ -539,49 +539,34 @@ def test_nonretryable_attachment_413_terminalizes_without_dispatch_or_requeue():
     methods = [method for method, _params in client.calls]
     assert "dispatch" not in methods
     assert "discard_attachments" not in methods
+    assert methods.count("stage_attachments") == 1
 
 
-def test_peer_transport_pushes_digest_bound_bytes_before_run_admission():
+def test_peer_transport_pushes_digest_bound_bytes_before_run_admission(tmp_path):
     client = FakePeerClient()
     task = TaskIdentity("room-1", "task-files", "thread-1", "turn-files")
+    files = (("event-brief", "brief.txt", b"brief"), ("event-notes", "notes.txt", b"notes"))
+    store, manifests = _committed_attachments(tmp_path, files)
     transport = PeerHostedRoomTransport(
         binding=BINDING,
-        route=ROUTE,
+        route=replace(ROUTE, attachments=True),
         client=client,
         source_event_seq=7,
         task_id=task.task_id,
         execution_generation=3,
+        attachment_store=store,
     )
     transport.create(
         profile="reviewer",
         title="Group: room-1",
         source=ROOM_SESSION_SOURCE,
     )
-    transport.begin_attachment_staging(
-        profile="reviewer",
-        session_id="group-session",
-        source=ROOM_SESSION_SOURCE,
-        execution_generation=3,
-    )
-    transport.stage_attachment(
-        profile="reviewer",
-        session_id="group-session",
-        source=ROOM_SESSION_SOURCE,
-        execution_generation=3,
-        attachment={
-            "attachment_id": "att_11111111111111111111111111111111",
-            "kind": "file",
-            "name": "brief.txt",
-            "size": 5,
-            "mime": "text/plain",
-        },
-        data=b"brief",
-    )
 
     result = transport.submit(
         profile="reviewer",
         session_id="group-session",
         prompt="Review the file.",
+        attachments=manifests,
         source=ROOM_SESSION_SOURCE,
         task=task,
         execution_generation=3,
@@ -591,14 +576,19 @@ def test_peer_transport_pushes_digest_bound_bytes_before_run_admission():
     assert result["status"] == "accepted"
     methods = [method for method, _params in client.calls]
     assert methods.index("stage_attachments") < methods.index("dispatch")
+    assert methods.count("stage_attachments") == methods.count("dispatch") == 1
     staged = next(params for method, params in client.calls if method == "stage_attachments")
     dispatched = next(params for method, params in client.calls if method == "dispatch")
-    assert staged["attachments"][0]["data"] == b"brief"
+    assert staged["attachments"] == [
+        {key: value for key, value in item.items() if key != "event_id"}
+        | {"sha256": hashlib.sha256(data).hexdigest(), "data": data}
+        for item, (_, _, data) in zip(manifests, files)
+    ]
+    assert staged["dispatch"] == dispatched["dispatch"]
+    assert staged["grant"] == dispatched["grant"] == ROUTE.grant
     manifest = [
-        {
-            key: staged["attachments"][0][key]
-            for key in ("attachment_id", "kind", "name", "size", "mime", "sha256")
-        }
+        {key: item[key] for key in ("attachment_id", "kind", "name", "size", "mime", "sha256")}
+        for item in staged["attachments"]
     ]
     assert dispatched["dispatch"]["attachment_manifest_digest"] == attachment_manifest_digest(manifest)
     assert dispatched["dispatch"]["attachment_manifest_digest"] == staged["dispatch"]["attachment_manifest_digest"]

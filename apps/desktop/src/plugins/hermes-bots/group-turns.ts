@@ -646,6 +646,10 @@ export async function answerGroupClarify(
   member: GroupMember,
   answers: Record<string, string> | string | undefined
 ) {
+  if (entry.controlSupported === false) {
+    throw new Error('Approval controls are unavailable on this connection.')
+  }
+
   let group = entry.group
 
   const binding = followGroupChat(group, name => {

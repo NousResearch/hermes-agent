@@ -103,6 +103,9 @@ def _initialize(conn: sqlite3.Connection) -> None:
                command_text TEXT NOT NULL,
                remember_key TEXT NOT NULL DEFAULT '',
                remember_context TEXT NOT NULL DEFAULT '',
+               control_supported INTEGER NOT NULL DEFAULT 1 CHECK(control_supported IN (0,1)),
+               target_admission_id TEXT NOT NULL DEFAULT '',
+               target_execution_generation INTEGER,
                updated_at REAL NOT NULL,
                PRIMARY KEY (room_id, member_id)
            )"""
@@ -111,7 +114,8 @@ def _initialize(conn: sqlite3.Connection) -> None:
         str(row[1])
         for row in conn.execute("PRAGMA table_info(hosted_room_pending_approvals)")
     }
-    if not {"observer_generation", "observer_lease_generation", "remember_key", "remember_context"} <= pending_columns:
+    if not {"observer_generation", "observer_lease_generation", "remember_key", "remember_context",
+            "control_supported", "target_admission_id", "target_execution_generation"} <= pending_columns:
         try:
             conn.execute("BEGIN IMMEDIATE")
             pending_columns = {
@@ -138,6 +142,12 @@ def _initialize(conn: sqlite3.Connection) -> None:
                 conn.execute(
                     "ALTER TABLE hosted_room_pending_approvals ADD COLUMN remember_context TEXT NOT NULL DEFAULT ''"
                 )
+            if "control_supported" not in pending_columns:
+                conn.execute("ALTER TABLE hosted_room_pending_approvals ADD COLUMN control_supported INTEGER NOT NULL DEFAULT 1 CHECK(control_supported IN (0,1))")
+            if "target_admission_id" not in pending_columns:
+                conn.execute("ALTER TABLE hosted_room_pending_approvals ADD COLUMN target_admission_id TEXT NOT NULL DEFAULT ''")
+            if "target_execution_generation" not in pending_columns:
+                conn.execute("ALTER TABLE hosted_room_pending_approvals ADD COLUMN target_execution_generation INTEGER")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -199,7 +209,7 @@ def _initialize(conn: sqlite3.Connection) -> None:
 
 def _prune_locked(conn: sqlite3.Connection, *, now: float) -> None:
     conn.execute(
-        "DELETE FROM hosted_room_pending_approvals WHERE updated_at<?",
+        "DELETE FROM hosted_room_pending_approvals WHERE control_supported=1 AND updated_at<?",
         (now - PENDING_APPROVAL_TTL_SECONDS,),
     )
     conn.execute(
@@ -265,6 +275,23 @@ def _require_observer_lease(
         raise MessagingApprovalObservationStale("approval observer lease changed")
 
 
+def _pending_control_evidence(action, approval):
+    markers = [value["control_supported"] for value in (action, approval) if "control_supported" in value]
+    if any(type(marker) is not bool for marker in markers):
+        raise MessagingApprovalError("invalid control support observation")
+    if False not in markers:
+        return {}
+    admission = action.get("admission_id") or approval.get("admission_id")
+    generation = action.get("target_execution_generation", approval.get("target_execution_generation"))
+    if type(generation) is not int or generation < 1:
+        raise MessagingApprovalError("invalid target execution generation")
+    if any(value.get("admission_id", admission) != admission
+           or value.get("target_execution_generation", generation) != generation for value in (action, approval)):
+        raise MessagingApprovalError("pending target identity changed")
+    return {"control_supported": False, "admission_id": _identifier(admission, label="admission_id"),
+            "target_execution_generation": generation}
+
+
 def normalize_pending_approval(
     room_id: Any,
     member_id: Any,
@@ -275,8 +302,9 @@ def normalize_pending_approval(
     approval = action.get("approval")
     if not isinstance(approval, Mapping):
         raise MessagingApprovalError("pending approval details are unavailable")
+    evidence = _pending_control_evidence(action, approval)
     choices = {str(choice or "").casefold() for choice in approval.get("choices") or ()}
-    if not {"once", "deny"} <= choices:
+    if not evidence and not {"once", "deny"} <= choices:
         raise MessagingApprovalError("pending approval choices are unsafe")
     generation = int(action.get("execution_generation") or 0)
     if generation < 1:
@@ -288,10 +316,11 @@ def normalize_pending_approval(
 
     remember_key = approval.get("remember_key")
     remember_context = approval.get("remember_context")
-    rememberable = ("remember" in choices and valid_operation_key(remember_key)
+    rememberable = (not evidence and "remember" in choices and valid_operation_key(remember_key)
                    and valid_operation_context(remember_context))
     return {
         "kind": "approval",
+        **evidence,
         "room_id": _identifier(room_id, label="room_id"),
         "authority_gateway_id": _identifier(
             action.get("authority_gateway_id"),
@@ -320,7 +349,8 @@ def normalize_pending_approval(
         "approval": {
             "description": _text(approval.get("description")),
             "command": _text(approval.get("command")),
-            "choices": ["once", "deny", *(["remember"] if rememberable else [])],
+            "choices": [] if evidence else ["once", "deny", *(["remember"] if rememberable else [])],
+            **evidence,
             **({"remember_key": remember_key, "remember_context": remember_context} if rememberable else {}),
         },
     }
@@ -347,8 +377,9 @@ def persist_pending_approval(
                    member_id, task_id, execution_generation,
                    request_id, profile, session_id, description,
                    observer_generation, observer_lease_generation,
-                   command_text, remember_key, remember_context, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   command_text, remember_key, remember_context, updated_at,
+                   control_supported, target_admission_id, target_execution_generation
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(room_id, member_id) DO UPDATE SET
                    authority_gateway_id=excluded.authority_gateway_id,
                    authority_epoch=excluded.authority_epoch,
@@ -363,6 +394,9 @@ def persist_pending_approval(
                    command_text=excluded.command_text,
                     remember_key=excluded.remember_key,
                     remember_context=excluded.remember_context,
+                   control_supported=excluded.control_supported,
+                   target_admission_id=excluded.target_admission_id,
+                   target_execution_generation=excluded.target_execution_generation,
                    updated_at=excluded.updated_at""",
             (
                 pending["room_id"],
@@ -381,6 +415,9 @@ def persist_pending_approval(
                 approval.get("remember_key", ""),
                 approval.get("remember_context", ""),
                 now,
+                int(pending.get("control_supported") is not False),
+                pending.get("admission_id", ""),
+                pending.get("target_execution_generation"),
             ),
         )
         conn.commit()
@@ -461,9 +498,12 @@ def _pending_from_row(row: sqlite3.Row) -> dict[str, Any]:
 
     remember_key = row["remember_key"]
     remember_context = row["remember_context"]
-    rememberable = valid_operation_key(remember_key) and valid_operation_context(remember_context)
+    evidence = _pending_control_evidence({"control_supported": False,
+        "admission_id": row["target_admission_id"], "target_execution_generation": row["target_execution_generation"]}, {}) if not row["control_supported"] else {}
+    rememberable = not evidence and valid_operation_key(remember_key) and valid_operation_context(remember_context)
     return {
         "kind": "approval",
+        **evidence,
         "room_id": str(row["room_id"]),
         "authority_gateway_id": str(row["authority_gateway_id"]),
         "authority_epoch": int(row["authority_epoch"]),
@@ -478,7 +518,8 @@ def _pending_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "approval": {
             "description": str(row["description"]),
             "command": str(row["command_text"]),
-            "choices": ["once", "deny", *(["remember"] if rememberable else [])],
+            "choices": [] if evidence else ["once", "deny", *(["remember"] if rememberable else [])],
+            **evidence,
             **({"remember_key": remember_key, "remember_context": remember_context} if rememberable else {}),
         },
     }
@@ -494,7 +535,7 @@ def list_pending_approvals(
     try:
         rows = conn.execute(
             """SELECT * FROM hosted_room_pending_approvals
-                WHERE room_id=? AND updated_at>=?
+                WHERE room_id=? AND (updated_at>=? OR control_supported=0)
                 ORDER BY updated_at, member_id LIMIT ?""",
             (room, time.time() - PENDING_APPROVAL_TTL_SECONDS, MAX_PENDING_APPROVALS),
         ).fetchall()
@@ -512,7 +553,7 @@ def list_all_pending_approvals(
     try:
         rows = conn.execute(
             """SELECT * FROM hosted_room_pending_approvals
-                WHERE updated_at>=?
+                WHERE updated_at>=? OR control_supported=0
                 ORDER BY updated_at, room_id, member_id LIMIT ?""",
             (
                 time.time() - PENDING_APPROVAL_TTL_SECONDS,
@@ -534,6 +575,8 @@ def begin_approval_command(
 ) -> dict[str, Any]:
     from gateway import hosted_room_approval_rules as rules
 
+    if pending.get("control_supported") is False or pending.get("approval", {}).get("control_supported") is False:
+        raise MessagingApprovalError("Approval controls are unavailable on this connection.")
     command = _identifier(command_id, label="command_id")
     requested_choice = str(choice or "").casefold()
     if requested_choice not in {"once", "deny", "remember"}:
@@ -789,6 +832,8 @@ def apply_pending_decision(
     command_id: str | None = None,
 ) -> Mapping[str, Any]:
     """Journal an exact decision before RPC without holding SQLite over I/O."""
+    if pending.get("control_supported") is False or pending.get("approval", {}).get("control_supported") is False:
+        raise MessagingApprovalError("Approval controls are unavailable on this connection.")
     choice = str(choice or "").casefold()
     if choice not in {"once", "deny"}:
         raise MessagingApprovalError("target approval choice must be once or deny")
@@ -1097,6 +1142,8 @@ def select_pending_approval(
         raise MessagingApprovalError(
             "Choose the approval code shown in the Group Chat."
         )
+    if matches[0][1].get("control_supported") is False:
+        raise MessagingApprovalError("Approval controls are unavailable on this connection.")
     return matches[0]
 
 
@@ -1229,13 +1276,16 @@ def format_pending_approvals(
         detail = description or command or "Command"
         reference = approval_reference(action)
         lines.append(f"{index}. **{label}** · {detail} · `{reference}`")
+        if action.get("control_supported") is False:
+            lines.append("   Controls unavailable here; this is a read-only observation from the execution owner.")
         if command and command != detail:
             lines.append(f"   Command: {command}")
-    lines.extend([
-        f"Actions: `{room_command} {room_reference} approvals`",
-        f"Approve once: `{room_command} {room_reference} approve <approval code>`",
-        f"Deny: `{room_command} {room_reference} deny <approval code>`",
-    ])
+    if any(action.get("control_supported") is not False for action in pending):
+        lines.extend([
+            f"Actions: `{room_command} {room_reference} approvals`",
+            f"Approve once: `{room_command} {room_reference} approve <approval code>`",
+            f"Deny: `{room_command} {room_reference} deny <approval code>`",
+        ])
     if any("remember" in action["approval"].get("choices", []) for action in pending):
         lines.append(f"Always allow in this chat (asks for confirmation): `{room_command} {room_reference} remember <approval code>`")
     return "\n".join(lines)
@@ -1253,9 +1303,12 @@ def format_approval_picker_title(
         description, command = _approval_display_parts(approval)
         prefix = f"{index}. " if len(pending) > 1 else ""
         lines.append(f"{prefix}**{bot}**: {description or command or 'Command'}")
+        if action.get("control_supported") is False:
+            lines.append("   Controls unavailable here; observation only.")
         if command and command != description:
             lines.append(f"   Command: {command}")
-    lines.extend(["", "Allow only if you recognize this command. **Deny** keeps it from running."])
+    if any(action.get("control_supported") is not False for action in pending):
+        lines.extend(["", "Allow only if you recognize this command. **Deny** keeps it from running."])
     return "\n".join(lines)
 
 
@@ -1273,6 +1326,8 @@ def approval_picker_choices(
         return []
     choices: list[dict[str, Any]] = []
     for index, action in enumerate(pending, start=1):
+        if action.get("control_supported") is False:
+            continue
         if selection is not None and selection != index:
             continue
         picker_bot = _approval_member_picker_label(

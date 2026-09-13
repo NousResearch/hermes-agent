@@ -13,6 +13,7 @@ import type { ClipboardEvent } from 'react'
 import { useRef, useState } from 'react'
 
 import { $imagenAvailable, normalizeAvatarImage, pickImageFromDevice, probeImagen } from './avatar-image'
+import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { $botMeta, botHandle, botMentionTag } from './data'
 import { appendGroupChatEntry } from './group-chat'
 import { groupMemberKey } from './group-membership'
@@ -375,6 +376,7 @@ interface GroupClarifyCardProps {
  *    closed choice. Answer sends via the member's own source. */
 export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const b = useBots()
+  const labels = useCanonicalGroupLabels()
   const allMeta = useValue($botMeta)
   const { group } = entry
   const isApproval = entry.kind === 'approval'
@@ -383,6 +385,14 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [picked, setPicked] = useState<Record<string, string[]>>({})
   const [sending, setSending] = useState(false)
+
+  if (entry.controlSupported === false) {
+    return <div className="grid gap-1.5 text-xs" role="status">
+      <span>{entry.question}</span>
+      {entry.command && <code>{entry.command}</code>}
+      <span>{labels.controlUnavailable}</span>
+    </div>
+  }
 
   const questions: GroupClarifyQuestion[] =
     entry.questions && entry.questions.length

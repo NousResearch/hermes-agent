@@ -48,7 +48,8 @@ def share(service, actor, version):
     assert dispatch_group_files(service, actor, "groups.attachment.upload", request) == {**uploaded, "idempotent": True}
     # The parent-owned client fix projects the five manifest fields before Send.
     entry = {key: uploaded[key] for key in ("attachment_id", "kind", "name", "size", "mime")}
-    payload = validate_user_payload(dict(text="Shared", thread_id=f"thread-{version}", attachments=[entry]))
+    payload = validate_user_payload(
+        dict(text="Shared", thread_id=f"thread-{version}", attachments=[entry]), member_ids=["writer"])
     append_user_event(service, room_id="room", event_id=f"event-{version}",
                       payload=payload, gateway_id=gateway, epoch=epoch)
     event = hosted_rooms.read_events(service.db_path, room_id="room")["events"][-1]

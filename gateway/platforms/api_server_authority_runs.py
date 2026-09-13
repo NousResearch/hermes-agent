@@ -28,7 +28,7 @@ def run_projection(adapter, run_id):
     if owned is None:
         return None
     authority, row = owned
-    status = {'queued': 'queued', 'started': 'running', 'unknown': 'interrupted', 'terminal': row['outcome']}.get(row['status'])
+    status = {'queued': 'queued', 'started': 'running', 'unknown': 'unknown', 'terminal': row['outcome']}.get(row['status'])
     saved = admission_result(authority.db, row['admission_id'])
     result = saved.get('result', {}) if saved else {}
     if row['status'] == 'terminal':
@@ -41,6 +41,7 @@ def run_projection(adapter, run_id):
     if live is not None and row['status'] == 'started':
         pending = list(live.controls.snapshot(row['target_session_id'], row['generation']))
     return {'pending_controls': pending, 'run_id': run_id, 'status': status, 'session_id': row['target_session_id'],
+            'execution_state': row['status'], 'settled': row['status'] == 'terminal',
             'admission_id': row['admission_id'], 'execution_generation': row['generation'],
             'output': result.get('final_response', ''), 'usage': saved.get('usage', {}) if saved else {}}
 

@@ -11,7 +11,7 @@ try:
 except ImportError:
     web = None  # type: ignore[assignment]
 
-from gateway.platforms.api_server_room_grants import _json_error
+from gateway.platforms.api_server_room_grants import _canonical_room_peer, _json_error, _room_peer_unavailable
 
 
 def _reserved_room_run_fields(body: Any) -> set[str]:
@@ -22,9 +22,12 @@ def _reserved_room_run_fields(body: Any) -> set[str]:
 
 
 async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
-    """Create or verify the target's canonical hidden group session. The ``Group: <room_id>``
+    """Create or verify a legacy target's hidden group session. The ``Group: <room_id>``
     namespace is reused on purpose (Desktop-assisted -> hosted keeps one transcript); a
     conflicting title under another session id fails closed rather than merging."""
+    if _canonical_room_peer(self, dispatch.target_profile):
+        from hermes_state_runtime import RuntimeStoreError
+        raise RuntimeStoreError('canonical_room_peer_unsupported')
     db = await self._ensure_session_db_async()
     if db is None:
         raise RuntimeError("session database unavailable")
@@ -36,10 +39,10 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     from gateway.session_authorities import active_authority
     authority = active_authority(self.gateway_runner)
     if authority is not None:
-        from gateway.session_api import bind_api_session
-        if db is not authority.db:
-            raise RuntimeError('profile_mismatch')
-        return bind_api_session(authority, session_id, hosted_dispatch=dispatch.as_mapping()).session_id
+        # The database await cannot turn a previously legacy path into a new
+        # canonical binding if authority availability changed in the meantime.
+        from hermes_state_runtime import RuntimeStoreError
+        raise RuntimeStoreError('canonical_room_peer_unsupported')
 
     def atomic(conn):
         row = conn.execute("SELECT id, title, source FROM sessions WHERE id=?", (session_id,)).fetchone()
@@ -94,6 +97,9 @@ async def _normalize_room_dispatch(
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
             raise ValueError("room dispatch target does not match this profile")
+        unsupported = _room_peer_unavailable(self, active_profile, _openai_error=_openai_error)
+        if unsupported is not None:
+            return body, unsupported
         _, catalog_map = _local_room_catalog(self, active_profile, local_install)
         catalog = GatewayRoomCatalog.from_mapping(catalog_map)
         policy = RoomExecutionPolicy.from_mapping(catalog.execution_policy.as_mapping())

@@ -33,6 +33,14 @@ _MIGRATIONS = {
     "acknowledged_at": "REAL"}
 
 
+def run_status_is_terminal(status) -> bool:
+    """Uncertainty cannot authorize reclamation, even with a legacy status label."""
+    if 'execution_state' in status or 'settled' in status:
+        if status.get('execution_state') != 'terminal' or status.get('settled') is not True:
+            return False
+    return status.get('status') in TERMINAL_STATUSES
+
+
 def _encode_status(status: Dict[str, Any]) -> str:
     return json.dumps(status, sort_keys=True, separators=(",", ":"))
 
@@ -177,7 +185,7 @@ class RunIdempotencyStore:
         ).fetchall()
         for stale_scope, stale_key, stale_status in stale:
             try:
-                terminal = json.loads(stale_status).get("status") in TERMINAL_STATUSES
+                terminal = run_status_is_terminal(json.loads(stale_status))
             except Exception:
                 terminal = False
             if terminal:

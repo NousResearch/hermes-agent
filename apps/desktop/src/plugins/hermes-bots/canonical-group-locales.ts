@@ -4,6 +4,7 @@ export interface CanonicalGroupMessages {
   loadingGroups: string
   emptyGroups: string
   driverUnavailable: string
+  controlUnavailable: string
   invalidLogCursor: string
   allowOnce: string
   deny: string
@@ -28,6 +29,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: 'Loading gateway groups…',
     emptyGroups: 'No gateway groups found.',
     driverUnavailable: 'Group driver unavailable. Update or reconnect the owning gateway.',
+    controlUnavailable: 'Controls are unavailable here. This is a read-only observation from the execution owner.',
     invalidLogCursor: 'Invalid room log cursor',
     allowOnce: 'Allow once',
     deny: 'Deny',
@@ -50,6 +52,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: 'ゲートウェイのグループを読み込み中…',
     emptyGroups: 'ゲートウェイのグループが見つかりません。',
     driverUnavailable: 'グループの実行機能を利用できません。管理元のゲートウェイを更新するか、再接続してください。',
+    controlUnavailable: 'この接続では操作できません。実行元からの読み取り専用の状態表示です。',
     invalidLogCursor: 'ルームのログカーソルが無効です',
     allowOnce: '今回のみ許可',
     deny: '拒否',
@@ -72,6 +75,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: '正在加载网关群组…',
     emptyGroups: '未找到网关群组。',
     driverUnavailable: '群组运行程序不可用。请更新或重新连接所属网关。',
+    controlUnavailable: '此处无法操作。这是执行方提供的只读状态。',
     invalidLogCursor: '群组日志游标无效',
     allowOnce: '仅允许一次',
     deny: '拒绝',
@@ -94,6 +98,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: '正在載入閘道群組…',
     emptyGroups: '找不到閘道群組。',
     driverUnavailable: '群組執行程式無法使用。請更新或重新連線至所屬閘道。',
+    controlUnavailable: '此處無法操作。這是執行端提供的唯讀狀態。',
     invalidLogCursor: '群組記錄游標無效',
     allowOnce: '僅允許一次',
     deny: '拒絕',
@@ -116,6 +121,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: 'جارٍ تحميل مجموعات البوابة…',
     emptyGroups: 'لم يتم العثور على مجموعات في البوابة.',
     driverUnavailable: 'مشغّل المجموعة غير متاح. حدّث البوابة المالكة أو أعد الاتصال بها.',
+    controlUnavailable: 'عناصر التحكم غير متاحة هنا. هذه حالة للقراءة فقط من جهة التنفيذ.',
     invalidLogCursor: 'مؤشر سجل الغرفة غير صالح',
     allowOnce: 'السماح مرة واحدة',
     deny: 'رفض',
@@ -139,6 +145,7 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyGroups: 'Группы шлюза не найдены.',
     driverUnavailable:
       'Исполнитель группы недоступен. Обновите шлюз, которому принадлежит группа, или подключитесь к нему заново.',
+    controlUnavailable: 'Управление здесь недоступно. Это состояние только для чтения от владельца выполнения.',
     invalidLogCursor: 'Недопустимый курсор журнала комнаты',
     allowOnce: 'Разрешить один раз',
     deny: 'Отклонить',

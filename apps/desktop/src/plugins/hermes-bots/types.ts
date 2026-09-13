@@ -277,11 +277,14 @@ export interface GroupPromptQuestion {
 export interface GroupPrompt {
   at: number
   choices: string[]
+  controlSupported?: boolean
   command?: string
   group: string
   /** Exact hosted-task identity when the prompt is owned by a Group Chat
    * authority rather than a visible member session. */
   hostedApproval?: {
+    admissionId?: string
+    targetExecutionGeneration?: number
     executionGeneration: number
     memberId: string
     roomId: string

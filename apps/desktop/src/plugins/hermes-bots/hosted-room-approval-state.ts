@@ -78,6 +78,7 @@ export function syncHostedRoomApprovals(
     const memberIndex = serverMembers.findIndex(rawMember => String(record(rawMember)?.member_id || '') === memberId)
     const member = memberIndex >= 0 ? members[memberIndex] : null
     const approval = record(action.approval)
+    const controlSupported = action.control_supported !== false && approval?.control_supported !== false
 
     if (
       !member ||
@@ -97,7 +98,11 @@ export function syncHostedRoomApprovals(
       executionGeneration,
       memberId,
       roomId: String(room.room_id || ''),
-      taskId
+      taskId,
+      ...(!controlSupported ? {
+        admissionId: String(action.admission_id || approval?.admission_id || ''),
+        targetExecutionGeneration: Number(action.target_execution_generation ?? approval?.target_execution_generation)
+      } : {})
     }
 
     const choices = (Array.isArray(approval?.choices) ? approval.choices : [])
@@ -106,6 +111,9 @@ export function syncHostedRoomApprovals(
 
     next[key] =
       prior?.requestId === requestId &&
+      (prior.controlSupported !== false) === controlSupported &&
+      prior.hostedApproval?.admissionId === identity.admissionId &&
+      prior.hostedApproval?.targetExecutionGeneration === identity.targetExecutionGeneration &&
       prior.hostedApproval?.executionGeneration === identity.executionGeneration &&
       prior.hostedApproval.memberId === identity.memberId &&
       prior.hostedApproval.roomId === identity.roomId &&
@@ -113,7 +121,8 @@ export function syncHostedRoomApprovals(
         ? prior
         : {
             at: Date.now(),
-            choices: choices.length ? choices : ['once', 'deny'],
+            choices: controlSupported ? choices.length ? choices : ['once', 'deny'] : [],
+            ...(!controlSupported ? { controlSupported: false } : {}),
             command: typeof approval?.command === 'string' ? approval.command : '',
             group,
             hostedApproval: identity,

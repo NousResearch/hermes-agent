@@ -18,8 +18,6 @@ vi.mock('@hermes/plugin-sdk', async () => {
     useI18n: () => ({ t: en }),
     usePluginI18n: () => (key: string) => CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en] ?? key,
     Button: (p: ComponentProps<'button'>) => <button {...p} />,
-    Codicon: () => <span />,
-    Tip: ({ children }: { children: ReactNode }) => <>{children}</>,
     host: { ...gateway.host, requestProfile: request } }
 })
 import { registerCanonicalGroup } from './canonical-group-registry'

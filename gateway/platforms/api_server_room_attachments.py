@@ -33,6 +33,7 @@ from gateway.hosted_room_peer import (
 from gateway.platforms.api_server_room_grants import (
     RoomGrantReauthorizationRequired,
     _effective_room_profile,
+    _room_peer_unavailable,
 )
 
 
@@ -1028,7 +1029,11 @@ async def _handle_room_attachment_manifest(
         )
         if verified["grant_id"] != claims["grant_id"]:
             raise RoomAttachmentSpoolError("room grant verification changed")
-        _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
+        profile = _effective_room_profile(_api_request_profile)
+        _validate_target_scope(claims, profile)
+        unsupported = _room_peer_unavailable(self, profile, _openai_error=_openai_error)
+        if unsupported is not None:
+            return unsupported
         manifest = canonical_attachment_manifest(body["attachments"])
         if (
             any(item["kind"] == "pdf" for item in manifest)
@@ -1081,7 +1086,11 @@ async def _handle_room_attachment_upload(
 ) -> "web.Response":
     try:
         claims = self._room_grant_claims(request, permission="attachment.stage")
-        _validate_target_scope(claims, _effective_room_profile(_api_request_profile))
+        profile = _effective_room_profile(_api_request_profile)
+        _validate_target_scope(claims, profile)
+        unsupported = _room_peer_unavailable(self, profile, _openai_error=_openai_error)
+        if unsupported is not None:
+            return unsupported
         task_id = str(request.match_info["task_id"])
         generation = int(request.match_info["execution_generation"])
         if generation < 1:

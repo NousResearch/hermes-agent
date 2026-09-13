@@ -71,6 +71,24 @@ def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[
     return profile, installation_id
 
 
+def _canonical_room_peer(self, profile: str) -> bool:
+    """Resolve the target scope; a missing canonical owner is not legacy Serve."""
+    from gateway.session_authorities import active_authority
+    runner = self.gateway_runner
+    with self._profile_scope(profile):
+        return (active_authority(runner) is not None
+                or getattr(runner, 'session_authorities', None) is not None
+                or getattr(runner, 'session_authority', None) is not None)
+
+
+def _room_peer_unavailable(self, profile: str, *, _openai_error):
+    if _canonical_room_peer(self, profile):
+        return _json_error(
+            _openai_error, "Canonical RoomLink execution and controls are not supported.",
+            code="canonical_room_peer_unsupported", status=409)
+    return None
+
+
 def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict, dict]:
     """Return ``(execution_policy, catalog)`` for this gateway's *profile*."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
@@ -78,9 +96,11 @@ def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict,
     from gateway.platforms.api_server_room_attachments import roomlink_attachments_available
     with self._profile_scope(profile):
         execution_policy = execution_policy_mapping(target_profile=profile)
+    supported = not _canonical_room_peer(self, profile)
     catalog = catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,), link_modes=("direct",),
-        persistent_process=True, text=True, attachments=roomlink_attachments_available(), target_profile=profile,
+        persistent_process=True, text=supported,
+        attachments=supported and roomlink_attachments_available(), target_profile=profile,
         execution_policy=execution_policy)
     return execution_policy, catalog
 

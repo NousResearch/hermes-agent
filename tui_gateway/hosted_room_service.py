@@ -201,6 +201,14 @@ class HostedRoomService(HostedRoomArtifactMixin):
     def _room(self, room_id: str) -> dict[str, Any]:
         return hosted_rooms.room_state(self.db_path, room_id=room_id)
 
+    def _owned_authority(self, room_id: str) -> tuple[str, int]:
+        """(gateway_id, epoch) of a room this gateway owns; conflict error otherwise."""
+        gateway_id, epoch = _authority(self._room(room_id))
+        if gateway_id != hosted_rooms.local_authority_gateway_id():
+            raise hosted_rooms.AuthorityConflictError(
+                "This Group Chat is managed by another gateway.")
+        return gateway_id, epoch
+
     def _owned_room(
         self,
         room_id: str,
@@ -429,7 +437,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
                 execution_generation=execution_generation,
             )
         tracked_client = self._tracked_peer_client(binding.room_id, member_id, client, route=route, binding=binding)
-        cleanup_only = task.get("status") in {"running", "stopping"} or (
+        cleanup_only = task.get("status") in {"running", "stopping", "indeterminate"} or (
             hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=binding.room_id))
         if task.get("payload", {}).get("attachments") and not cleanup_only:
             route = self._refresh_peer_attachment_catalog(
@@ -451,6 +459,7 @@ class HostedRoomService(HostedRoomArtifactMixin):
             source_event_seq=int(payload.get("source_event_seq") or 0),
             task_id=getattr(identity, "task_id", None),
             execution_generation=execution_generation,
+            attachment_store=self.attachments,
         )
 
     def _recover_peer_admission(
@@ -465,27 +474,17 @@ class HostedRoomService(HostedRoomArtifactMixin):
             or not isinstance(payload, Mapping) or execution_generation < 1
             or task.get("status") not in {"indeterminate", "stopping"}):
             return
-        receipt_only = task.get("status") == "stopping" or (
-            hosted_room_link_records.room_link_retirement_started(self.db_path, room_id=binding.room_id))
+        # Retained uncertainty is an observation boundary, never a fresh upload
+        # or admission. Missing durable receipts must remain unresolved.
         prompt = payload.get("prompt")
         source_event_seq = int(payload.get("source_event_seq") or 0)
         if not isinstance(prompt, str) or source_event_seq < 1 or not route.trace_id:
             raise RuntimeError("peer room admission identity is unavailable for recovery")
-        attachment_payloads = [
-            {**dict(attachment), "sha256": sha256(data).hexdigest(), "data": data}
-            for attachment, data in self._load_task_attachments(binding, task)] if not receipt_only else []
-        manifest = [{key: value for key, value in item.items() if key != "data"} for item in attachment_payloads]
         dispatch = build_member_dispatch(
             binding=binding, route=route, room_id=identity.room_id, task_id=identity.task_id,
             target_profile=route.target_profile, execution_generation=execution_generation,
-            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id,
-            attachment_digest=attachment_manifest_digest(manifest) if manifest else None)
-        if attachment_payloads:
-            stage = _hook(client, "stage_attachments")
-            if stage is None:
-                raise RuntimeError("The target gateway needs an update before it can receive files in this Group Chat.")
-            stage(dispatch=dispatch.as_mapping(), attachments=attachment_payloads, grant=route.grant)
-        recover(dispatch=dispatch.as_mapping(), grant=route.grant, **({"receipt_only": True} if receipt_only else {}))
+            source_event_seq=source_event_seq, prompt=prompt, trace_id=route.trace_id)
+        recover(dispatch=dispatch.as_mapping(), grant=route.grant, receipt_only=True)
 
     def _member_is_peer(self, room_id: str, member_id: str) -> bool:
         for m in self._room(room_id).get("members") or []:

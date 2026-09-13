@@ -39,7 +39,9 @@ class HostedRoomServerRPC:
         self._attachment_lock = threading.Lock()
         self._staged_attachments: dict[tuple[str, str, int], dict[str, Any]] = {}
         self._attachment_attempts: dict[tuple[str, int], tuple[str, ...]] = {}
-        self._artifact_scopes: dict[tuple[str, int], dict[str, Any]] = {}
+        self._artifact_scopes: dict[
+            tuple[str, int], tuple[state.TaskIdentity, str | None, dict[str, Any]]
+        ] = {}
 
     def _call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         envelope = self.server._methods[method](f"hosted-room-{next(self._ids)}", params)
@@ -109,15 +111,21 @@ class HostedRoomServerRPC:
         task: state.TaskIdentity,
         execution_generation: int,
         on_terminal: Callable[[Mapping[str, Any]], None],
-        member_id: str,
+        member_id: str | None = None,
     ) -> Mapping[str, Any]:
-        artifact_scope = self._artifact_scopes.pop(
+        bound = self._artifact_scopes.pop(
             (task.task_id, execution_generation),
             None,
         )
-        if artifact_scope is None or artifact_scope["member_id"] != member_id:
+        artifact_scope = bound[2] if bound is not None else None
+        # The bound task scope owns identity; direct callers may only assert it.
+        if (bound is None or artifact_scope is None
+                or bound[0] != task
+                or (bound[1] is not None and bound[1] != session_id)
+                or artifact_scope["target_profile"] != profile
+                or (member_id is not None and artifact_scope["member_id"] != member_id)):
             exc = HostedRoomSessionError(
-                "prompt.submit", 4120, "hosted room artifact scope is missing"
+                "prompt.submit", 4120, "hosted room artifact scope is missing or mismatched"
             )
             exc.not_admitted = True
             raise exc
@@ -395,11 +403,12 @@ class HostedRoomServerRPC:
         authority_gateway_id: str,
         authority_epoch: int,
         profile: str,
+        session_id: str | None = None,
     ) -> None:
         """Bind internal publication coordinates before one local submit."""
 
         installation_id = hosted_rooms.local_authority_gateway_id()
-        self._artifact_scopes[(task.task_id, execution_generation)] = {
+        self._artifact_scopes[(task.task_id, execution_generation)] = (task, session_id, {
             "room_id": task.room_id,
             "task_id": task.task_id,
             "execution_generation": execution_generation,
@@ -409,7 +418,7 @@ class HostedRoomServerRPC:
             "target_install_id": installation_id,
             "authority_gateway_id": authority_gateway_id,
             "authority_epoch": authority_epoch,
-        }
+        })
 
 
 def _terminal_artifact_callback(

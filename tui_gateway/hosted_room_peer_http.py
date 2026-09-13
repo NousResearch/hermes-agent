@@ -46,9 +46,14 @@ _RECEIPT_SCOPE_FIELDS = (
     "room_id", "home_install_id", "authority_gateway_id", "authority_epoch",
     "member_id", "target_install_id", "target_profile")
 _TERMINAL_RUN_STATES = frozenset({"completed", "failed", "interrupted", "cancelled"})
-_ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping"})
+_ACTIVE_RUN_STATES = frozenset({"queued", "running", "waiting_for_approval", "stopping", "unknown"})
 _KNOWN_RUN_STATES = _TERMINAL_RUN_STATES | _ACTIVE_RUN_STATES
-_RUN_STATUS_KEYS = ("run_id", "status", "output", "error", "approval", "last_event", "artifacts")
+_RUN_STATUS_KEYS = (
+    "run_id", "status", "output", "error", "approval", "last_event", "artifacts",
+    "execution_state", "settled", "admission_id", "pending_controls", "target_execution_generation")
+_OBSERVATION_KEYS = (
+    "execution_state", "settled", "admission_id", "target_execution_generation",
+    "pending_controls", "last_observed_pending_controls", "control_supported")
 # Older target gateways wrap these inside the generic dispatch error; normalize locally.
 _LEGACY_DISPATCH_MESSAGE_CODES = (
     ("room grant", "invalid_room_grant"),
@@ -244,6 +249,76 @@ def digest_reauthorization_error(
 
 def _run_path(record: Mapping[str, Any], *suffix: str) -> str:
     return "/".join(("/v1/runs", urllib.parse.quote(str(record["run_id"]), safe=""), *suffix))
+
+
+def _run_is_terminal(status: Mapping[str, Any]) -> bool:
+    if 'execution_state' in status or 'settled' in status or 'admission_id' in status:
+        if status.get('execution_state') != 'terminal' or status.get('settled') is not True:
+            return False
+    return status.get('status') in _TERMINAL_RUN_STATES
+
+
+def _checked_run_status(record, full, previous=None) -> dict[str, Any]:
+    """A scoped read is evidence, not settlement. Pin the target's own identity.
+
+    Hosted task generations never stand in for canonical target generations.
+    Old canonical projections lacking a settlement discriminator cannot prove a
+    terminal result; explicitly legacy terminal results retain their contract.
+    """
+    previous = previous or {}
+    if (not isinstance(full, Mapping) or full.get('run_id') != record['run_id']
+            or full.get('status') not in _KNOWN_RUN_STATES):
+        raise PeerRunsHTTPError('peer returned a mismatched run status', ambiguous=True)
+    status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
+    canonical = (any('admission_id' in item for item in (full, record, previous))
+                 or any(key in full for key in ('execution_generation', 'target_execution_generation', 'pending_controls')))
+    if canonical:
+        admission_id = full.get('admission_id')
+        generation = full.get('target_execution_generation', full.get('execution_generation'))
+        state = full.get('execution_state')
+        if (not isinstance(admission_id, str) or not admission_id
+                or state not in {'queued', 'started', 'unknown', 'terminal'}
+                or type(full.get('settled')) is not bool
+                or full['settled'] != (state == 'terminal')
+                or (generation is not None and (type(generation) is not int or generation < 0))
+                or (state in {'started', 'unknown'} and (generation is None or generation < 1))):
+            raise PeerRunsHTTPError('peer canonical execution evidence is incomplete', ambiguous=True)
+        for known in (record, previous):
+            if 'admission_id' in known and known['admission_id'] != admission_id:
+                raise PeerRunsHTTPError('peer admission identity changed', ambiguous=True)
+            expected = known.get('target_execution_generation')
+            if expected is not None and (type(expected) is not int or expected != generation):
+                raise PeerRunsHTTPError('peer target generation changed', ambiguous=True)
+        status['target_execution_generation'] = generation
+        status['control_supported'] = False
+        pending = full.get('pending_controls', [])
+        if not isinstance(pending, list) or any(
+                not isinstance(p, Mapping) or p.get('kind') not in {'approval', 'clarify'}
+                or not isinstance(p.get('prompt_id'), str) or not p['prompt_id']
+                or type(p.get('execution_generation')) is not int or p['execution_generation'] != generation
+                for p in pending):
+            raise PeerRunsHTTPError('peer pending control identity changed', ambiguous=True)
+        status['pending_controls'] = [dict(p) for p in pending]
+        if state == 'unknown':
+            # Last observed prompts remain evidence, not actionable controls.
+            prior = previous.get('pending_controls') or previous.get('last_observed_pending_controls')
+            if prior:
+                status['last_observed_pending_controls'] = prior
+        approval = next((p for p in pending if p['kind'] == 'approval'), None)
+        if approval is not None:
+            status['approval'] = {
+                **{k: v for k, v in approval.items() if k != 'execution_generation'},
+                'request_id': approval['prompt_id'], 'target_execution_generation': generation,
+                'admission_id': admission_id, 'control_supported': False}
+    if status.get('execution_state') == 'unknown' or status['status'] == 'unknown':
+        status.update(status='unknown', execution_state='unknown', settled=False)
+    elif status['status'] in _TERMINAL_RUN_STATES and not _run_is_terminal(status):
+        raise PeerRunsHTTPError('peer terminal settlement is unproven', ambiguous=True)
+    return status
+
+
+def _observation_fields(status) -> dict[str, Any]:
+    return {key: status[key] for key in _OBSERVATION_KEYS if key in status}
 
 
 class PeerRunsHTTPClient:
@@ -577,10 +652,13 @@ class PeerRunsHTTPClient:
         fingerprint = hashlib.sha256(grant.encode()).hexdigest()
         if (cached is not None and getattr(cached.get("error"), "needs_reauthorization", False)
                 and cached.get("grant_sha256") != fingerprint):
-            cached = None  # A retired bearer's refusal must not poison its validated replacement.
+            # Retry a replacement bearer immediately without forgetting the
+            # admission/generation already observed under the retired grant.
+            cached = {**cached, 'error': None, 'next_poll_at': now}
         if cached is not None:
-            status = cached["status"]
-            if status.get("status") in _TERMINAL_RUN_STATES:
+            status = (_checked_run_status(record, cached['status'], cached['status'])
+                      if cached['status'] else {})
+            if _run_is_terminal(status):
                 return status
             if now < float(cached["next_poll_at"]):
                 error = cached.get("error")
@@ -591,17 +669,13 @@ class PeerRunsHTTPClient:
         entry = {"delay": delay, "next_poll_at": now + delay, "grant_sha256": fingerprint}
         try:
             full = self._request(_run_path(record), room_grant=self._require_room_grant(grant))
-            status = {key: full[key] for key in _RUN_STATUS_KEYS if key in full}
-            if (
-                str(status.get("run_id") or "") != run_id
-                or status.get("status") not in _KNOWN_RUN_STATES):
-                raise PeerRunsHTTPError("peer returned a mismatched run status")
+            status = _checked_run_status(record, full, cached['status'] if cached else None)
         except PeerRunsHTTPError as exc:
             previous = cached["status"] if cached is not None else {}
             self._status_cache = {run_id: {"status": previous, "error": exc, **entry}}
             raise
         self._status_cache = {run_id: {"status": status, **entry}}
-        if status.get("status") in _TERMINAL_RUN_STATES:
+        if _run_is_terminal(status):
             self._terminal_receipts.add(
                 (str(record["task_id"]), int(record["execution_generation"])))
         return status
@@ -614,12 +688,13 @@ class PeerRunsHTTPClient:
             return []
         status = self._poll_receipt(receipt, grant=grant)
         state = str(status.get("status") or "")
-        if state not in {"completed", "failed", "interrupted", "cancelled"}:
+        if not _run_is_terminal(status):
             return []
         target_interrupted = state in {"interrupted", "cancelled"}
         return [{
             "role": "assistant", "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
+            **_observation_fields(status),
             "status": "settled" if state == "completed" else "failed",
             "message_id": f"peer-run:{status.get('run_id')}",
             "content": "" if target_interrupted else status.get("output") or status.get("error") or "",
@@ -639,6 +714,7 @@ class PeerRunsHTTPClient:
         return {
             "active": status.get("status") in _ACTIVE_RUN_STATES, "task_id": receipt["task_id"],
             "execution_generation": receipt["execution_generation"],
+            **_observation_fields(status),
             "status": status.get("status"), "run_id": status.get("run_id"),
             "approval": status.get("approval")}
 
@@ -659,8 +735,17 @@ class PeerRunsHTTPClient:
     def _post_run_action(
         self, record: Mapping[str, Any], action: str, *, body: dict[str, Any], grant: str
     ) -> dict[str, Any]:
+        observed = self._poll_receipt(record, grant=grant)
+        if 'admission_id' in observed:
+            raise PeerRunsHTTPError(
+                'Canonical RoomLink controls are not supported.',
+                error_code='canonical_room_peer_unsupported')
+        if observed.get('execution_state') == 'unknown':
+            raise PeerRunsHTTPError('peer execution is unresolved', ambiguous=True, error_code='unknown_execution')
         result = self._request(
             _run_path(record, action), method="POST", body=body, room_grant=grant)
+        if action == 'stop':
+            result = _checked_run_status(record, result, observed)
         self._status_cache.pop(str(record["run_id"]), None)
         return result
 
@@ -678,9 +763,10 @@ class PeerRunsHTTPClient:
             return None
         result = self._post_run_action(
             record, "stop", body={}, grant=self._require_room_grant(grant))
-        if result.get("status") in _TERMINAL_RUN_STATES:
+        result = _checked_run_status(record, result)
+        if _run_is_terminal(result):
             self._terminal_receipts.add((str(task_id), int(execution_generation)))
-        return result
+        return {**result, 'execution_generation': execution_generation}
 
     def issue_invitation(
         self, *, room_id: str, home_install_id: str, authority_gateway_id: str,

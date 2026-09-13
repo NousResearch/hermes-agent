@@ -22,8 +22,9 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
-from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
-from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
+from gateway.platforms.api_server_room_grants import (
+    _effective_room_profile, _json_error, _room_grant_error_response, _room_peer_unavailable)
+from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES, run_status_is_terminal
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -145,7 +146,8 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
     should_persist = (
         status != previous_status
         or status in TERMINAL_STATUSES
-        or bool(field_names & {"output", "error", "usage", "pending_steer", "session_id"}))
+        or bool(field_names & {"output", "error", "usage", "pending_steer", "session_id",
+                               "admission_id", "execution_generation", "execution_state", "settled"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -244,6 +246,12 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
     from gateway.platforms.api_server_authority_runs import run_projection
     canonical = run_projection(self, run_id)
     if canonical is not None:
+        # Reconcile the independent replay record as well as this GET projection.
+        # A prior observer error must not remain a terminal expiry instruction.
+        projected = self._set_run_status(run_id, canonical["status"], **{
+            key: value for key, value in canonical.items() if key not in {"run_id", "status"}})
+        if run_id not in self._run_idempotency_ids:
+            self._run_idempotency_store.update_status(run_id, projected)
         return canonical
     status = self._run_statuses.get(run_id)
     if status is not None:
@@ -257,17 +265,14 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
     if record is None:
         return None
     status = dict(record["status"])
-    if status.get("status") not in TERMINAL_STATUSES and not _owner_alive(
+    if not run_status_is_terminal(status) and not _owner_alive(
         int(record.get("owner_pid") or 0), int(record.get("owner_started") or 0)):
-        if status.get("room_artifact_scope"):
-            from gateway.hosted_room_artifacts import RoomArtifactOutbox, RoomArtifactScope
-            from hermes_constants import get_hermes_home
-
-            RoomArtifactOutbox(get_hermes_home() / "state.db").discard_durably(
-                RoomArtifactScope.from_mapping(status["room_artifact_scope"]))
+        # Owner death is not settlement or publication acknowledgement. Preserve
+        # both the evidence and private outbox bytes for an explicit disposition.
         status.update(
-            status="interrupted", error="The gateway restarted before this run settled.",
-            last_event="run.interrupted", updated_at=time.time())
+            status="unknown", execution_state="unknown", settled=False,
+            error="The gateway restarted before this run settled.",
+            last_event="run.unknown", updated_at=time.time())
         self._run_idempotency_store.update_status(run_id, status)
     self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
@@ -441,6 +446,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         body = await request.json()
     except Exception:
         return _json_error(_openai_error, "Invalid JSON", status=400)
+    if self._room_grant_token(request) or (isinstance(body, dict) and 'hosted_room_dispatch' in body):
+        unsupported = _room_peer_unavailable(
+            self, _effective_room_profile(_api_server._api_request_profile), _openai_error=_openai_error)
+        if unsupported is not None:
+            return unsupported
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
@@ -720,6 +730,24 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Di
     return _approval_notify
 
 
+def _canonical_run_observation(self, run: _RunLaunch) -> dict[str, Any]:
+    """Use captured admission identity when the observer cannot read its owner."""
+    from gateway.platforms.api_server_authority_runs import run_projection
+    _, ref, admitted = run.admission
+    try:
+        with self._profile_scope(run.request_profile):
+            observed = run_projection(self, run.run_id)
+    except Exception:
+        observed = None
+    if (observed is None or observed.get("admission_id") != admitted["admission_id"]
+            or observed.get("session_id") != ref.session_id):
+        return {"status": "unknown", "execution_state": "unknown", "settled": False,
+                "admission_id": admitted["admission_id"], "session_id": ref.session_id,
+                "execution_generation": admitted.get("generation"),
+                "error": "The canonical execution outcome is unavailable."}
+    return dict(observed)
+
+
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
@@ -732,14 +760,29 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
 
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
-        """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
-        extra = extra or {}
-        self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
+        """Publish owner evidence; observer failure is never execution settlement."""
+        details = {**(extra or {}), **fields}
+        if run.admission is not None:
+            observed = _canonical_run_observation(self, run)
+            status = observed.pop("status")
+            observed.pop("run_id", None)
+            if not run_status_is_terminal({"status": status, **observed}):
+                # Preserve partial output already stored; no synthetic empty or
+                # failed result from a cancelled/disconnected observer.
+                observed.pop("output", None)
+                observed.pop("usage", None)
+                details = observed
+            else:
+                details.update(observed)
+        self._set_run_status(run_id, status, last_event=f"run.{status}", **details)
         with suppress(Exception):
-            run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
+            run.put_event(_run_event(run_id, f"run.{status}", **details))
 
     try:
-        self._set_run_status(run_id, "running")
+        if run.admission is not None:
+            _finish("running")
+        else:
+            self._set_run_status(run_id, "running")
         if run_id in self._stopping_run_ids:
             _finish("cancelled")
             return
@@ -853,6 +896,11 @@ def _load_owned_run(self, request, *, _api_server, permission: Optional[str], ac
     run_id = request.match_info["run_id"]
     if not self._request_owns_run(request, run_id):
         return run_id, None, None, None, _run_not_found(_openai_error, run_id)
+    if permission != 'status' and self._room_grant_token(request):
+        unsupported = _room_peer_unavailable(
+            self, _effective_room_profile(_api_server._api_request_profile), _openai_error=_openai_error)
+        if unsupported is not None:
+            return run_id, None, None, None, unsupported
     agent = self._active_run_agents.get(run_id)
     task = self._active_run_tasks.get(run_id)
     status = self._durable_run_status(request, run_id)
@@ -912,7 +960,7 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     finally:
         stream.subscribers.discard(q)
         if (not stream.subscribers
-                and self._run_statuses.get(run_id, {}).get("status") in TERMINAL_STATUSES):
+                and run_status_is_terminal(self._run_statuses.get(run_id, {}))):
             _drop_run_transport(self, run_id)
     return response
 
@@ -1059,6 +1107,9 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
         self, request, _api_server=_api_server, permission="stop", active_fallback=True)
     if err is not None:
         return err
+    if (status.get('execution_state') == 'unknown' or status.get('status') == 'unknown'
+            or (status.get('status') in TERMINAL_STATUSES and not run_status_is_terminal(status))):
+        return _json_error(_openai_error, 'Run execution is unresolved.', code='unknown_execution', status=409)
     if getattr(self.gateway_runner, 'session_authority', None) is not None:
         from gateway.platforms.api_server_authority_runs import stop_run
         from hermes_state_runtime import RuntimeStoreError
@@ -1066,7 +1117,7 @@ async def _handle_stop_run(self, request: "web.Request", *, _api_server) -> "web
             return web.json_response(await stop_run(self, run_id))
         except RuntimeStoreError as exc:
             return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
-    if status.get("status") in TERMINAL_STATUSES:
+    if run_status_is_terminal(status):
         if status.get("status") != "completed" and status.get("room_artifact_scope"):
             try:
                 from gateway.hosted_room_artifacts import RoomArtifactOutbox, RoomArtifactScope
@@ -1136,6 +1187,6 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
             _unregister_approval_notify(self._run_approval_sessions.get(run_id))
             _retire_live_run(self, run_id)
     for run_id, status in list(self._run_statuses.items()):
-        if (status.get("status") in {"completed", "failed", "cancelled"}
+        if (run_status_is_terminal(status) and status.get("status") in {"completed", "failed", "cancelled"}
                 and now - float(status.get("updated_at", 0) or 0) > self._RUN_STATUS_TTL):
             _forget_run(self, run_id, self._run_statuses, self._run_idempotency_ids)

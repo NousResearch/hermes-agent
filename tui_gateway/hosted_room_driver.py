@@ -34,8 +34,8 @@ _TARGET_INTERRUPTION_ERROR = (
 )
 
 
-class InternalSessionRPC(Protocol):
-    """Normalized in-process session operations required by the room driver.
+class SessionOperations(Protocol):
+    """Session operations shared by the two explicit submission contracts.
 
     ``submit`` durably reports one fenced turn's terminal result via ``on_terminal``;
     ``interrupt`` acts only while the current turn still matches ``expected_task_id``.
@@ -45,10 +45,6 @@ class InternalSessionRPC(Protocol):
         self, *, profile: str, title: str, source: str) -> Mapping[str, Any] | None: ...
     def create(self, *, profile: str, title: str, source: str) -> Mapping[str, Any]: ...
     def resume(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
-    def submit(
-        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
-        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
-    ) -> Mapping[str, Any]: ...
     def history(
         self, *, profile: str, session_id: str, source: str) -> Sequence[Mapping[str, Any]]: ...
     def info(self, *, profile: str, session_id: str, source: str) -> Mapping[str, Any]: ...
@@ -56,6 +52,28 @@ class InternalSessionRPC(Protocol):
         self, *, profile: str, session_id: str, source: str, expected_task_id: str,
     ) -> Mapping[str, Any] | None: ...
 
+
+class InternalSessionRPC(SessionOperations, Protocol):
+    """Descriptor-bound submission of original text and complete event references.
+
+    Canonical local/cross-profile and peer transports own input materialization;
+    they do not accept the legacy session's pending-attachment staging protocol.
+    """
+
+    def submit(
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> Mapping[str, Any]: ...
+
+
+class LegacySessionRPC(SessionOperations, Protocol):
+    """Explicit in-process session staging; member proof is bound before submit."""
+
+    def submit(
+        self, *, profile: str, session_id: str, prompt: str, source: str, task: state.TaskIdentity,
+        execution_generation: int, on_terminal: Callable[[Mapping[str, Any]], None],
+    ) -> Mapping[str, Any]: ...
 
     def rollback_attachment_staging(
         self,
@@ -103,7 +121,7 @@ class InternalSessionRPC(Protocol):
         """Stage one verified canonical blob into the local member session."""
 
 
-MemberTransportResolver = Callable[["HostedRoomBinding", Mapping[str, Any]], InternalSessionRPC]
+MemberTransportResolver = Callable[["HostedRoomBinding", Mapping[str, Any]], InternalSessionRPC | LegacySessionRPC]
 
 
 @dataclass(frozen=True)
@@ -148,7 +166,7 @@ class HostedRoomRuntime:
     def __init__(
         self, *, db_path: Path | str,
         rooms: Iterable[HostedRoomBinding] | Callable[[], Iterable[HostedRoomBinding]],
-        turn_lock: Callable[[str], ContextManager[Any]], rpc: InternalSessionRPC | None = None,
+        turn_lock: Callable[[str], ContextManager[Any]], rpc: LegacySessionRPC | None = None,
         transport_resolver: MemberTransportResolver | None = None,
         prepare_room: Callable[[HostedRoomBinding], None] | None = None,
         prepare_leased_room: Callable[[HostedRoomBinding, state.DriverLease], None] | None = None,
@@ -428,7 +446,7 @@ class HostedRoomRuntime:
         return False
 
     def _resume_exact(
-        self, transport: InternalSessionRPC, room_id: str, profile: str) -> str | None:
+        self, transport: SessionOperations, room_id: str, profile: str) -> str | None:
         """Resume the canonical room session and return its runtime id (None when absent).
 
         Probes must use the returned id, not the stored one: resume may hand back another.
@@ -438,7 +456,7 @@ class HostedRoomRuntime:
 
     def _open_session(
         self, binding: HostedRoomBinding, task: Mapping[str, Any], *, peer_only: bool = False
-    ) -> tuple[InternalSessionRPC | None, str | None, str | None]:
+    ) -> tuple[SessionOperations | None, str | None, str | None]:
         """Return ``(transport, profile, resumed session id)``; no id when the transport is
         missing (or local under ``peer_only``) or the session is absent."""
         transport = self._transport_for(binding, task)
@@ -449,7 +467,7 @@ class HostedRoomRuntime:
 
     @staticmethod
     def _terminal_from_history(
-        transport: InternalSessionRPC, profile: str, session_id: str, task: Mapping[str, Any]
+        transport: SessionOperations, profile: str, session_id: str, task: Mapping[str, Any]
     ) -> _TerminalReceipt | None:
         return _find_terminal_receipt(
             transport.history(**_session_kw(profile, session_id)),
@@ -514,6 +532,10 @@ class HostedRoomRuntime:
             payload.get("target_member_id") or payload.get("target_profile") or ""
         )
         approval = info.get("pending_approval") or info.get("approval")
+        if not isinstance(approval, Mapping):
+            approval = next((dict(prompt, request_id=prompt.get("prompt_id"), control_supported=False)
+                             for prompt in info.get("last_observed_pending_controls", [])
+                             if isinstance(prompt, Mapping) and prompt.get("kind") == "approval"), None)
         lease = self._leases.get(task["identity"].room_id)
         observer_lease_generation = (
             lease.lease_generation
@@ -537,11 +559,12 @@ class HostedRoomRuntime:
             from tools.approval_operation import valid_operation_context, valid_operation_key
 
             safe_approval = dict(approval)
+            unsupported = info.get("control_supported") is False or safe_approval.get("control_supported") is False
             remember_key = safe_approval.get("remember_key")
             offered_choices = safe_approval.get("choices")
             offered_choices = offered_choices if isinstance(offered_choices, (list, tuple)) else ()
             rememberable = (
-                valid_operation_key(remember_key)
+                not unsupported and valid_operation_key(remember_key)
                 and valid_operation_context(safe_approval.get("remember_context"))
                 and "always" in offered_choices
                 and safe_approval.get("allow_permanent") is True
@@ -553,7 +576,13 @@ class HostedRoomRuntime:
                 for choice in offered_choices
                 if choice in {"once", "deny"}
             ]
-            safe_approval["choices"] = choices or ["once", "deny"]
+            safe_approval["choices"] = [] if unsupported else choices or ["once", "deny"]
+            evidence = ({"control_supported": False,
+                         "admission_id": info.get("admission_id") or safe_approval.get("admission_id"),
+                         "target_execution_generation": info.get("target_execution_generation")
+                         or safe_approval.get("target_execution_generation")
+                         or safe_approval.get("execution_generation")} if unsupported else {})
+            safe_approval.update(evidence)
             if rememberable:
                 safe_approval["choices"].append("remember")
             else:
@@ -571,6 +600,7 @@ class HostedRoomRuntime:
                 "observer_lease_generation": observer_lease_generation,
                 "request_id": safe_approval.get("request_id"),
                 "approval": safe_approval,
+                **evidence,
             }
         self.pending_action(task["identity"].room_id, member_id, action)
 
@@ -778,10 +808,10 @@ class HostedRoomRuntime:
                 session_id = _session_id(session)
                 prompt = str(task["payload"]["prompt"])
                 manifests = task["payload"].get("attachments") or []
-                if manifests:
+                if manifests and transport is self.rpc:
                     if self.attachment_loader is None:
                         raise RuntimeError("hosted attachments are unavailable for this member transport")
-                    transport.begin_attachment_staging(
+                    cast(LegacySessionRPC, transport).begin_attachment_staging(
                         **_session_kw(profile, session_id), execution_generation=attempt.execution_generation)
                     attachment_staging_active = True
                     attachment_session_id = session_id
@@ -792,12 +822,12 @@ class HostedRoomRuntime:
                         if (loaded_count > len(expected_ids)
                                 or str(attachment.get("attachment_id") or "") != expected_ids[loaded_count - 1]):
                             raise RuntimeError("hosted attachment ownership did not match the task manifest")
-                        staged = transport.stage_attachment(
+                        staged = cast(LegacySessionRPC, transport).stage_attachment(
                             **_session_kw(profile, session_id), attachment=attachment, data=data,
                             execution_generation=attempt.execution_generation)
                         if attachment.get("kind") == "file":
                             ref = str(staged.get("ref_text") or "").strip()
-                            if not ref and transport is self.rpc:
+                            if not ref:
                                 raise RuntimeError("hosted file attachment returned no staged reference")
                             if ref:
                                 file_refs.append(f"{attachment['name']}: {ref}")
@@ -811,22 +841,27 @@ class HostedRoomRuntime:
                 # A submit should fail before admission or return after it; an unexpected
                 # exception at that boundary is ambiguous, never a proven failure.
                 submit_attempted = True
-                bind_artifact_scope = getattr(transport, "bind_artifact_scope", None)
+                bind_artifact_scope = (
+                    getattr(transport, "bind_artifact_scope", None) if transport is self.rpc else None)
                 if callable(bind_artifact_scope):
                     bind_artifact_scope(
                         task=attempt.identity, execution_generation=attempt.execution_generation,
                         member_id=str(task["payload"].get("target_member_id") or profile),
                         authority_gateway_id=binding.gateway_id, authority_epoch=binding.authority_epoch,
-                        profile=profile,
+                        profile=profile, session_id=session_id,
                     )
                 deadline_monotonic = time.monotonic() + self.turn_timeout_seconds
-                transport.submit(
+                submit_params: dict[str, Any] = dict(
                     **_session_kw(profile, session_id), prompt=prompt,
                     task=attempt.identity, execution_generation=attempt.execution_generation,
-                    **({"attachments": task["payload"]["attachments"]} if task["payload"].get("attachments") else {}),
                     on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
+                if transport is self.rpc:
+                    cast(LegacySessionRPC, transport).submit(**submit_params)
+                else:
+                    cast(InternalSessionRPC, transport).submit(
+                        **submit_params, attachments=task["payload"].get("attachments"))
                 if attachment_staging_active:
-                    transport.commit_attachment_staging(
+                    cast(LegacySessionRPC, transport).commit_attachment_staging(
                         **_session_kw(profile, session_id), execution_generation=attempt.execution_generation)
                     attachment_staging_active = False
                 self._unavailable_route_retries.pop(
@@ -840,7 +875,7 @@ class HostedRoomRuntime:
         except (state.StaleLeaseError, state.StaleTaskError) as exc:
             if transport is not None and attachment_staging_active and attachment_session_id is not None:
                 self._finish_attachment_staging_after_error(
-                    transport=transport, profile=profile, session_id=attachment_session_id,
+                    transport=cast(LegacySessionRPC, transport), profile=profile, session_id=attachment_session_id,
                     execution_generation=attempt.execution_generation, submit_attempted=submit_attempted)
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
@@ -856,7 +891,7 @@ class HostedRoomRuntime:
             )
             if transport is not None and attachment_staging_active and attachment_session_id is not None:
                 self._finish_attachment_staging_after_error(
-                    transport=transport, profile=profile, session_id=attachment_session_id,
+                    transport=cast(LegacySessionRPC, transport), profile=profile, session_id=attachment_session_id,
                     execution_generation=attempt.execution_generation, submit_attempted=submit_attempted,
                     not_admitted=bool(getattr(exc, "not_admitted", False)) or fresh_preflight_failure)
             if (local_transport_unavailable or bool(getattr(exc, "not_admitted", False))
@@ -963,7 +998,7 @@ class HostedRoomRuntime:
 
     def _wait_for_terminal(
         self, binding: HostedRoomBinding, *, profile: str, session_id: str,
-        attempt: state.TaskAttempt, transport: InternalSessionRPC, deadline_monotonic: float,
+        attempt: state.TaskAttempt, transport: SessionOperations, deadline_monotonic: float,
     ) -> _TerminalReceipt | None:
         lease = attempt.lease
         while not self._stop.is_set():
@@ -1048,7 +1083,7 @@ class HostedRoomRuntime:
                 raise state.LeaseHeldError("recovered session turn is still active")
 
     def _inspect_session(
-        self, binding: HostedRoomBinding, transport: InternalSessionRPC, task: Mapping[str, Any], session_id: str,
+        self, binding: HostedRoomBinding, transport: SessionOperations, task: Mapping[str, Any], session_id: str,
         *, read_history: bool, target_side: bool = False) -> _RecoveryInspection:
         """Probe one resolved session: optional terminal receipt from history, then live info."""
         profile = task["payload"]["target_profile"]
@@ -1168,7 +1203,7 @@ class HostedRoomRuntime:
         return next((b for b in self._rooms_provider() if b.room_id == room_id), None)
 
     def _transport_for(
-        self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> InternalSessionRPC:
+        self, binding: HostedRoomBinding, task: Mapping[str, Any]) -> InternalSessionRPC | LegacySessionRPC:
         if self.transport_resolver is not None:
             return self.transport_resolver(binding, task)
         if self.rpc is None:
@@ -1176,7 +1211,7 @@ class HostedRoomRuntime:
         return self.rpc
 
     def _resolve_or_create(
-        self, transport: InternalSessionRPC, profile: str, room_id: str, *, create: bool = True
+        self, transport: SessionOperations, profile: str, room_id: str, *, create: bool = True
     ) -> Mapping[str, Any] | None:
         """Resolve + resume the canonical room session; create it (or return None) when absent."""
         coords = {
@@ -1205,7 +1240,7 @@ class HostedRoomRuntime:
     def _finish_attachment_staging_after_error(
         self,
         *,
-        transport: InternalSessionRPC,
+        transport: LegacySessionRPC,
         profile: str,
         session_id: str,
         execution_generation: int,
@@ -1217,7 +1252,7 @@ class HostedRoomRuntime:
         An unclassified submit exception remains ambiguous and keeps staged
         bytes available to a turn that may have been accepted. Positive
         ``not_admitted`` proof rolls back just like a pre-submit failure, so a
-        refused turn cannot leak attachments into the next canonical prompt.
+        refused legacy turn cannot leak attachments into the next prompt.
         """
 
         try:

@@ -29,9 +29,12 @@ async function loadRuntime() {
     onEvent: vi.fn(() => () => undefined),
     profileRoutes: async () => [],
     request: vi.fn(async () => ({})),
-    requestProfile: vi.fn(async () => ({})),
+    requestProfile: vi.fn(async (_route, method) => method === 'groups.capabilities'
+      ? { driver: false, persistent_process: false } : {}),
     retainProfileSocket: vi.fn(() => () => undefined),
     state: {
+      profile: { get: () => 'default' },
+      gateway: { get: () => 'open' },
       connectionId: {
         get: () => 'gateway-a',
         listen: () => () => undefined
@@ -97,7 +100,8 @@ describe('classic Group Chat command runtime', () => {
     requests.mockClear()
     await loaded.runtime.startDesktopRoomCommandRuntime(scriptedStorage(stored).storage)
     await vi.advanceTimersByTimeAsync(0)
-    const secondId = String((requests.mock.calls[0]?.[2] as Record<string, unknown>)?.consumer_id || '')
+    const firstControl = requests.mock.calls.find(([, method]) => String(method).startsWith('groups.desktop.'))
+    const secondId = String((firstControl?.[2] as Record<string, unknown>)?.consumer_id || '')
     expect(secondId).toMatch(/^desktop:/)
     expect(secondId).not.toBe(firstIds[0])
     loaded.runtime.stopDesktopRoomCommandRuntime()
@@ -118,6 +122,10 @@ describe('classic Group Chat command runtime', () => {
       { connectionId: 'gateway-a', mode: 'remote', profile: 'default', targetProfile: 'default' }
     ]
     requests.mockImplementation(async (_route, method) => {
+      if (method === 'groups.capabilities') {
+        return { driver: false, persistent_process: false }
+      }
+
       if (method === 'profiles.list') {
         return { profiles: [{ name: 'default', ui_meta: {} }] }
       }

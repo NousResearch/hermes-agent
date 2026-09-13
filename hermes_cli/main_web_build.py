@@ -325,6 +325,11 @@ def _run_npm_install_deterministic(
     ``package-lock.json``. Without it, an out-of-sync lockfile gets rewritten by the fallback, which drifts
     the committed lockfile and makes every future ``npm ci`` fail — a self-reinforcing cycle where web
     devDeps never install and a stale dist is served on every update (PR #65595).
+
+    ``npm ci`` also pins ``--legacy-peer-deps=false``. The lockfile already resolved every peer, but a
+    ``legacy-peer-deps=true`` left in the user's ``~/.npmrc`` (the usual ERESOLVE workaround, e.g. #75503)
+    makes ``npm ci`` skip those peers and exit 0 over a tree the desktop build cannot finish. Only the
+    lockfile path is pinned: the ``npm install`` fallback re-resolves, so it keeps honouring that workaround.
     """
     # CI=1 no-ops unicode-animations' postinstall that animates to /dev/tty.
     run_env = _npm_lifecycle_env(env)
@@ -335,7 +340,7 @@ def _run_npm_install_deterministic(
                 [npm_exe, *args, "--include=dev", *extra_args], cwd=cwd, env=run_env, capture_output=capture_output,
             )
         if (cwd / "package-lock.json").exists():
-            ci_result = _run(["ci"])
+            ci_result = _run(["ci", "--legacy-peer-deps=false"])
             if ci_result.returncode == 0:
                 return ci_result
         return _run(["install", "--no-save"])

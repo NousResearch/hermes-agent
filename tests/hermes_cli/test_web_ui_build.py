@@ -146,10 +146,29 @@ class TestBuildWebUISkipsWhenFresh:
         args, kwargs = mock_run.call_args
         assert "--workspace" not in args[0]
         assert Path(args[0][0]).name in {"npm", "npm.cmd"}
-        assert args[0][1:] == ["ci", "--include=dev", "--silent", "--prefer-offline"]
+        assert args[0][1:] == ["ci", "--legacy-peer-deps=false", "--include=dev", "--silent", "--prefer-offline"]
         assert kwargs["cwd"] == web_dir
         assert "ESBUILD_BINARY_PATH" not in kwargs["env"]
         assert "ESBUILD_BINARY_PATH" not in mock_build.call_args.kwargs["env"]
+
+    def test_ci_pins_legacy_peer_deps_off_but_install_fallback_does_not(self, tmp_path):
+        """A ``legacy-peer-deps=true`` left in ~/.npmrc makes ``npm ci`` skip the peers the
+        lockfile resolved and exit 0 over a tree the build cannot finish, so ``ci`` pins it
+        off. The ``npm install`` fallback re-resolves and must keep honouring the user's
+        setting — it is the documented ERESOLVE workaround (#75503)."""
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        failed = __import__("subprocess").CompletedProcess([], 1, stdout="", stderr="")
+        ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch(
+            "hermes_cli.main_web_build._run_npm_watching_for_engine_failure", side_effect=[failed, ok]
+        ) as mock_npm:
+            result = _run_npm_install_deterministic("npm", tmp_path)
+
+        assert result.returncode == 0
+        ci_argv, install_argv = (call.args[0] for call in mock_npm.call_args_list)
+        assert ci_argv[:3] == ["npm", "ci", "--legacy-peer-deps=false"]
+        assert install_argv[:3] == ["npm", "install", "--no-save"]
+        assert not any("legacy-peer-deps" in arg for arg in install_argv)
 
     def test_workspace_root_install_names_update_closure(self, tmp_path, monkeypatch):
         """From the workspace root, _build_web_ui must install the SAME

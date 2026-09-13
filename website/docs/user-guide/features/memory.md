@@ -176,7 +176,16 @@ located at ~/code/api. I discovered it uses Go version 1.22 and...
 
 ## Duplicate Prevention
 
-The memory system automatically rejects exact duplicate entries. If you try to add content that already exists, it returns success with a "no duplicate added" message.
+The memory system rejects two kinds of duplicate on `add`:
+
+- **Exact duplicates** — the entry already exists verbatim. Returns success with a "no duplicate added" message.
+- **Near-duplicates** — the entry only rewords an existing one (case, punctuation, or whitespace differ, or the shorter entry is nearly all of the longer one). Returns success with an "it rewrites an existing entry" message naming the entry it matched. Nothing is stored.
+
+Both are a terminal no-op rather than an error: the store already holds the fact, so the turn doesn't fail and the agent isn't invited to retry. To update a near-duplicate instead, use `replace` with `old_text` — that path is deliberately not gated.
+
+Set `memory.near_duplicate_detection: false` to keep only the exact-equality gate (the pre-#103920 behaviour), e.g. when a store intentionally keeps deliberately reworded variants.
+
+Near-duplicate detection only applies to **new writes**. Loading a file never drops entries, so reworded variants that arrived by an edit outside the tool stay on disk until the agent consolidates them.
 
 ## Security Scanning
 
@@ -238,6 +247,7 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  near_duplicate_detection: true   # false = reject exact duplicates only (pre-#103920)
 ```
 
 Setting **both** `memory_enabled` and `user_profile_enabled` to `false` turns the

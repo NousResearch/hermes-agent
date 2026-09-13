@@ -63,6 +63,50 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     return (matches[0] if matches else None), False
 
 
+# Near-duplicate detection on the WRITE path (issue #103920, slice 1). The only
+# mechanical gate was exact equality, so the same fact arrives reworded ("User
+# prefers Python 3.12" / "user prefers python3.12!", "Note: deploys ship from the
+# release branch" / "Deploys ship from the release branch") and long-lived stores
+# clone entries across sessions. Two conservative signals only — normalized equality,
+# and near-total containment (the shorter entry is most of the longer one).
+#
+# Ceiling: a reworded restatement that neither equals nor contains the other (a
+# typo'd variant, synonyms) still gets through. A global character-similarity ratio
+# was tried and rejected — it flags entries distinguished by one token
+# ("server A runs nginx" / "server B runs nginx"), which is a real different fact.
+# Upgrade path: token-level ratio with a distinguishing-token carve-out, if a
+# mis-wording class shows up in practice. The negative control in
+# tests/tools/test_memory_tool.py::TestMemoryStoreNearDuplicate pins both directions.
+_NEAR_DUP_CONTAINMENT = 0.85  # shorter normalized text must cover this much of the longer
+
+
+def _normalize_for_dedup(text: str) -> str:
+    """Lowercase, alphanumerics only — case, punctuation, and whitespace fold away.
+    CJK characters count as alphanumeric, so Chinese entries normalize too."""
+    return "".join(c for c in text.lower() if c.isalnum())
+
+
+def _near_duplicate_reason(candidate: str, entries: List[str]) -> Optional[str]:
+    """The existing entry *candidate* near-duplicates, or None if it is genuinely new.
+
+    O(len(entries)) containment checks on normalized text — entries are char-budget
+    bounded and this runs only on writes, so no index is kept.
+    """
+    norm = _normalize_for_dedup(candidate)
+    if not norm:
+        return None
+    for entry in entries:
+        other = _normalize_for_dedup(entry)
+        if not other:
+            continue
+        if norm == other:
+            return entry
+        short, long_ = (norm, other) if len(norm) <= len(other) else (other, norm)
+        if short in long_ and len(short) / len(long_) >= _NEAR_DUP_CONTAINMENT:
+            return entry
+    return None
+
+
 class MemoryStore:
     """Bounded curated memory with file persistence; one instance per AIAgent.
     ``_system_prompt_snapshot`` is frozen at load time (prefix-cache stable);
@@ -75,11 +119,15 @@ class MemoryStore:
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375, *,
-                 memory_enabled: bool = True, user_profile_enabled: bool = True):
+                 memory_enabled: bool = True, user_profile_enabled: bool = True,
+                 near_duplicate_detection: bool = True):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
+        # memory.near_duplicate_detection (config): refuse a write that only rewords an
+        # existing entry. Off = exact-equality gate only, the pre-#103920 behaviour.
+        self.near_duplicate_detection = near_duplicate_detection
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
@@ -91,6 +139,13 @@ class MemoryStore:
     def reset_consolidation_failures(self) -> None:
         """Call at turn start."""
         self._consolidation_failures = 0
+
+    def _near_duplicate(self, entries: List[str], content: str) -> Optional[str]:
+        """Existing entry *content* only rewrites, or None. No-op when disabled via
+        ``memory.near_duplicate_detection``."""
+        if not self.near_duplicate_detection:
+            return None
+        return _near_duplicate_reason(content, entries)
 
     def _consolidation_failure(self, response: Dict[str, Any]) -> Dict[str, Any]:
         """Count a consolidation failure: under the per-turn cap return ``response``
@@ -229,6 +284,13 @@ class MemoryStore:
         def _add(entries, limit):
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
+            if (existing := self._near_duplicate(entries, content)) is not None:
+                # Success, not an error: the store already holds this fact, and a terminal
+                # no-op must not fail the batch/turn (same shape as the exact-dup gate).
+                shown = existing[:60] + ("…" if len(existing) > 60 else "")
+                return self._success_response(target, (
+                    f"Entry not added: it rewrites an existing entry (\"{shown}\"). "
+                    f"No duplicate stored — use 'replace' with old_text to update that entry instead."))
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars. Adding this entry "
@@ -280,13 +342,13 @@ class MemoryStore:
             return replaced, "Entry replaced."
         return self._mutate(target, _apply)
 
-    @staticmethod
-    def _apply_batch_op(working: List[str], act: str, content: str, old_text: str, pos: str) -> Optional[str]:
+    def _apply_batch_op(self, working: List[str], act: str, content: str, old_text: str, pos: str) -> Optional[str]:
         """Apply one batch op to *working* in place; return an error message or None."""
         if act == "add":
             if not content:
                 return f"{pos}: content is required."
-            if content not in working:  # idempotent -- skip duplicate, don't fail the batch
+            # Idempotent -- skip duplicate, don't fail the batch (exact or near-duplicate).
+            if content not in working and self._near_duplicate(working, content) is None:
                 working.append(content)
             return None
         if act not in ("replace", "remove"):

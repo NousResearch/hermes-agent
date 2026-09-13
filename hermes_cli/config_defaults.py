@@ -1213,6 +1213,10 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Refuse an add whose content only rewords an entry already in that store
+        # (case/punctuation-normalized equality, or near-total containment). False =
+        # exact-equality gate only.
+        "near_duplicate_detection": True,
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
         # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",

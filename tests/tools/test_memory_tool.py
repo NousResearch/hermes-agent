@@ -144,6 +144,84 @@ class TestMemoryStoreAdd:
         assert "Blocked" in result["error"]
 
 
+class TestMemoryStoreNearDuplicate:
+    """Write-time near-duplicate detection (#103920 slice 1): a reworded restatement of
+    an entry already in that store is not written; a genuinely different fact still is."""
+
+    def test_reworded_entry_is_not_stored(self, store):
+        assert store.add("memory", "User prefers Python 3.12")["success"] is True
+        result = store.add("memory", "  user prefers python3.12!  ")
+        assert result["success"] is True  # terminal no-op, not a turn-failing error
+        assert store.memory_entries == ["User prefers Python 3.12"]
+        assert "rewrites an existing entry" in result["message"]
+
+    def test_single_token_difference_is_not_a_duplicate(self, store):
+        """Negative control: differing by one distinguishing token is a different fact.
+        A global similarity ratio flagged these, which is why the gate is containment-only."""
+        assert store.add("memory", "server A runs nginx")["success"] is True
+        assert store.add("memory", "server B runs nginx")["success"] is True
+        assert len(store.memory_entries) == 2
+
+    def test_containment_variant_is_not_stored(self, store):
+        store.add("memory", "Always run the test suite with run_tests.sh before committing")
+        store.add("memory", "Run the test suite with run_tests.sh before committing")
+        assert len(store.memory_entries) == 1
+
+    def test_chinese_reword_is_not_stored(self, store):
+        store.add("memory", "用户使用中文交流")
+        store.add("memory", "用户使用中文交流。")
+        assert store.memory_entries == ["用户使用中文交流"]
+
+    def test_distinct_facts_still_stored(self, store):
+        """Negative control: unrelated facts — and two that share a shape but not a
+        fact — must all get through."""
+        for entry in ("Deploys ship from the release branch", "The user's name is Finn",
+                      "Uses uv for Python packaging", "Uses pnpm for JS packaging",
+                      "用户偏好深色主题"):
+            result = store.add("memory", entry)
+            assert result["success"] is True, (entry, result)
+        assert len(store.memory_entries) == 5
+
+    def test_flag_off_falls_back_to_exact_gate_only(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        s = MemoryStore(memory_char_limit=500, user_char_limit=300, near_duplicate_detection=False)
+        s.load_from_disk()
+        s.add("memory", "User prefers Python 3.12")
+        assert s.add("memory", "user prefers python3.12!")["success"] is True
+        assert len(s.memory_entries) == 2
+
+    def test_batch_near_duplicate_add_is_noop_not_failure(self, store):
+        store.add("memory", "Deploys ship from the release branch")
+        result = json.loads(memory_tool(
+            target="memory",
+            operations=[
+                {"action": "add", "content": "deploys ship from the Release Branch."},
+                {"action": "add", "content": "Uses uv for Python packaging"},
+            ],
+            store=store,
+        ))
+        assert result["success"] is True
+        assert len(store.memory_entries) == 2
+        assert "Uses uv for Python packaging" in store.memory_entries
+
+    def test_replace_is_not_gated(self, store):
+        """Scope: new writes only. replace stays the deliberate merge/edit path."""
+        store.add("memory", "Alpha fact")
+        store.add("memory", "Beta fact")
+        assert store.replace("memory", "Alpha", "beta fact")["success"] is True
+        assert store.memory_entries == ["beta fact", "Beta fact"]
+
+    def test_load_does_not_drop_near_duplicates(self, tmp_path, monkeypatch):
+        """External near-dups stay on disk — load must not silently discard content the
+        tool never wrote."""
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / "MEMORY.md").write_text(
+            "User prefers Python 3.12\n§\nuser prefers python3.12!", encoding="utf-8")
+        s = MemoryStore()
+        s.load_from_disk()
+        assert len(s.memory_entries) == 2
+
+
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
         store.add("memory", "Python 3.11 project")

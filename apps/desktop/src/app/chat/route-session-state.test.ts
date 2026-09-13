@@ -24,6 +24,20 @@ describe('isRouteSessionMismatch', () => {
     expect(isRouteSessionMismatch(null, 'same', [])).toBe(false)
   })
 
+  it('keeps the same-session route visible while a context switch is in flight', () => {
+    const sessions = [{ id: 'a', _lineage_root_id: null }]
+
+    expect(
+      isRouteSessionMismatch('a', 'a', sessions, {
+        activeRuntimeId: 'r',
+        contextSwitching: true,
+        messagesEmpty: false,
+        transcriptStoredSessionId: 'a'
+      }),
+      'a profile swap while route == selected must not blank the chat to the splash'
+    ).toBe(false)
+  })
+
   it('keeps only the routed chat whose active view owns an existing transcript during selection churn', () => {
     const routedSessionId = routeSessionId(sessionRoute('session-a'))
 

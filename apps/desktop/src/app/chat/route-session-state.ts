@@ -28,10 +28,6 @@ export function isRouteSessionMismatch(
     return false
   }
 
-  if (activeTranscript?.contextSwitching) {
-    return true
-  }
-
   const matchesRoute = (storedSessionId: null | string) =>
     storedSessionId === routedSessionId ||
     Boolean(
@@ -42,8 +38,16 @@ export function isRouteSessionMismatch(
         )
     )
 
+  // The selected view already owns the routed conversation: a profile or
+  // connection switch must not blank it to the splash.
   if (matchesRoute(selectedSessionId)) {
     return false
+  }
+
+  // Only the transcript-retention fallback below must be denied while a
+  // context switch is in flight; the prior context must not be retained.
+  if (activeTranscript?.contextSwitching) {
+    return true
   }
 
   return !(

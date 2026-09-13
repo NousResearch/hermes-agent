@@ -59,6 +59,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
+| `hermes autodevelop` | BYOK drain of a maintainer-curated GitHub issue queue (`list`, `prompt`, `claim`, `park`, `sync-kanban`, `run`). See [Contribute compute](../user-guide/features/autodevelop.md). |
 | `hermes project` | Manage named, multi-folder workspaces (projects). Anchors desktop session grouping and, when bound to a kanban board, gives tasks a deterministic worktree + branch convention. State is per-profile. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes hooks` | Inspect, approve, or remove shell-script hooks declared in `config.yaml`. |

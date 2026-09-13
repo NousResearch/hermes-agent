@@ -168,7 +168,7 @@ API 格式的工具调用（含 `tool_call_id`、函数名、JSON 字符串形�
 
 ## 加载轨迹
 
-轨迹为标准 JSONL 格式——可用任意 JSON lines 读取器加载：
+轨迹默认为 gzip 压缩的 JSONL 格式：
 
 ```python
 import json
@@ -176,7 +176,9 @@ import json
 def load_trajectories(path: str):
     """Load trajectory entries from a JSONL file."""
     entries = []
-    with open(path, "r", encoding="utf-8") as f:
+    import gzip
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:

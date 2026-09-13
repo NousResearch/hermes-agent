@@ -46,8 +46,10 @@ _EXCLUDED_EXACT_PATHS = {
 _EXCLUDED_PATH_TREES = (
     "/api/actions",
     "/api/auth",
+    "/api/audio/voice-config",
     "/api/config",
     "/api/mcp/oauth",
+    "/api/mcp/servers",
     "/api/messaging/telegram/onboarding",
     "/api/messaging/whatsapp/onboarding",
     "/api/pairing",

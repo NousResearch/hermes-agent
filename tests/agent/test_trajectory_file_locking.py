@@ -58,6 +58,26 @@ def test_concurrent_gzip_appends_stay_decompressible(tmp_path):
     }
 
 
+def test_interrupted_gzip_member_never_reaches_destination(tmp_path):
+    """A worker killed while buffering cannot leave a truncated member behind."""
+    target = tmp_path / "interrupted-trajectory.jsonl.gz"
+    script = textwrap.dedent(f"""
+        import os, sys
+        sys.path.insert(0, {_REPO_ROOT!r})
+        import agent.trajectory as trajectory
+        trajectory._build_gzip_member = lambda _line: os._exit(99)
+        trajectory.save_trajectory([{{"from": "human", "value": "interrupted"}}],
+                                   model="m", completed=True, filename={str(target)!r})
+    """)
+    process = subprocess.run([sys.executable, "-c", script], check=False)
+    assert process.returncode == 99
+    assert not target.exists() or target.stat().st_size == 0
+
+    save_trajectory([{"from": "human", "value": "after-interruption"}], "m", True, str(target))
+    with gzip.open(target, "rt", encoding="utf-8") as stream:
+        assert json.loads(stream.readline())["conversations"][0]["value"] == "after-interruption"
+
+
 @pytest.mark.windows_only
 def test_concurrent_gzip_appends_are_serialized_on_windows(tmp_path):
     """Windows must serialize gzip members through one stable raw descriptor lock."""

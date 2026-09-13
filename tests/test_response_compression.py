@@ -30,6 +30,8 @@ def test_compression_allowlist_accepts_json_variants_only():
 def test_sensitive_dashboard_routes_are_never_compressed():
     assert _is_excluded_path("/api/config/raw") is True
     assert _is_excluded_path("/api/auth/session") is True
+    assert _is_excluded_path("/api/audio/voice-config") is True
+    assert _is_excluded_path("/api/mcp/servers/example/auth") is True
     assert _is_excluded_path("/api/configuration") is False
     assert _is_excluded_path("/api/status") is False
 

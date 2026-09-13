@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, spawn_context_thread
 from agent.secret_scope import get_secret, is_multiplex_active
 from tools.registry import tool_error
 
@@ -55,8 +55,8 @@ def _sanitize_tag(raw: str) -> str:
 
 
 def _resolve_base_url(config_value: Any = "") -> str:
-    """config > SUPERMEMORY_BASE_URL env var > default (self-hosted support)."""
-    raw = str(config_value or "").strip() or os.environ.get("SUPERMEMORY_BASE_URL", "").strip()
+    """config > SUPERMEMORY_BASE_URL (profile-scoped) > default (self-hosted support)."""
+    raw = str(config_value or "").strip() or (get_secret("SUPERMEMORY_BASE_URL", "") or "").strip()
     return (raw or _DEFAULT_BASE_URL).rstrip("/") or _DEFAULT_BASE_URL
 
 
@@ -247,8 +247,10 @@ def _build_client(api_key: str, config: dict, container_tag: str) -> _Supermemor
 
 
 def _resolve_container_tag(config_tag: str, identity: str) -> str:
-    """SUPERMEMORY_CONTAINER_TAG env > config > default; {identity} expands to the agent identity, then sanitize."""
-    raw_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip() or config_tag
+    """SUPERMEMORY_CONTAINER_TAG (profile-scoped) > config > default; {identity} expands to the agent
+    identity, then sanitize. The container is the data partition, so it must never be borrowed from
+    the default profile's environ under multiplexing."""
+    raw_tag = (get_secret("SUPERMEMORY_CONTAINER_TAG", "") or "").strip() or config_tag
     return _sanitize_tag(raw_tag.replace("{identity}", identity))
 
 
@@ -447,8 +449,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return
         if self._write_thread and self._write_thread.is_alive():
             self._write_thread.join(timeout=2.0)
-        self._write_thread = threading.Thread(
-            target=_quietly, daemon=False, name="supermemory-memory-write",
+        self._write_thread = spawn_context_thread(
+            _quietly, daemon=False, name="supermemory-memory-write",
             args=(lambda: self._client.add_memory(content.strip(), metadata={"target": target, "type": "explicit_memory"},
                                                   entity_context=self._entity_context), "Supermemory on_memory_write failed"))
         self._write_thread.start()

@@ -134,7 +134,7 @@ def _missing_provider_error(configured: Optional[str]) -> str:
             error_type="provider_not_registered", provider=configured))
     return json.dumps(error_response(
         error=("No video generation backend is configured. Run `hermes tools` → "
-               "Video Generation to enable one (xAI, FAL, or Google Veo)."),
+               "Video Generation to enable one (xAI, FAL, OpenRouter, or DeepInfra)."),
         error_type="no_provider_configured"))
 
 

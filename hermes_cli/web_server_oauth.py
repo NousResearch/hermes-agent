@@ -2,6 +2,7 @@
 Anthropic/Copilot/Claude-Code status probes.
 """
 
+import contextlib
 import logging
 import functools
 import os
@@ -198,8 +199,15 @@ def _oauth_poller(label: str):
             try:
                 fn(session_id, sess)
                 with _oauth_sessions_lock:
-                    sess["status"] = "approved"
-                _log.info("oauth/device: %s login completed (session=%s)", label, session_id)
+                    # A body that already settled the session (a sign-in the user declined in the
+                    # browser is ``denied`` with a ``reason``) keeps its verdict.
+                    settled = sess["status"] != "pending"
+                    if not settled:
+                        sess["status"] = "approved"
+                if settled:
+                    _log.info("oauth/device: %s login ended %s (session=%s)", label, sess["status"], session_id)
+                else:
+                    _log.info("oauth/device: %s login completed (session=%s)", label, session_id)
             except Exception as e:
                 _log.warning("%s device-code poll failed (session=%s): %s", label, session_id, e)
                 with _oauth_sessions_lock:
@@ -209,19 +217,108 @@ def _oauth_poller(label: str):
     return deco
 
 
+def _record_sign_in_state(sess: Dict[str, Any], state: Any) -> None:
+    """Write one ``anon_auth.SignInState`` onto the dashboard session, under the sessions lock.
+
+    The whole desktop mapping lives here: the state carries its own copy, so nothing below turns a
+    reason into a string. ``completed`` deliberately leaves ``status`` on ``"pending"`` so the
+    :func:`_oauth_poller` wrapper stamps ``"approved"`` when the poller returns.
+    """
+    kind = getattr(state, "kind", "")
+    if kind in ("code", "waiting"):
+        return          # the start route already published the code
+    with _oauth_sessions_lock:
+        if kind == "completed":
+            sess["account_email"] = state.email or None
+            # None when the config was left on the user's own model, as the poll route documents.
+            sess["model"] = state.model if state.model_changed else None
+            return
+        if kind == "declined":
+            sess["status"], sess["reason"] = "denied", "user_declined"
+            sess["error_message"] = state.copy
+            return
+        if kind == "timed_out":
+            sess["status"], sess["reason"] = "error", "timeout"
+            # The enriched device-auth guidance, which the dashboard has room for.
+            sess["error_message"] = state.detail or state.copy
+            return
+        if kind == "retired":
+            sess["status"], sess["reason"] = "error", "account_retired"
+            sess["error_message"] = state.copy
+            return
+        if kind == "superseded":
+            # Two producers, two screens: the user's own DELETE is a cancellation, while a sign-in
+            # started somewhere else (a chat, the terminal) voided this code and is an error the
+            # renderer has a dedicated screen for.
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+            else:
+                sess["status"], sess["reason"] = "error", "superseded"
+                sess["error_message"] = state.copy
+            return
+        if kind == "failed":
+            sess["status"] = "error"
+            sess["reason"] = state.reason or "error"
+            sess["error_message"] = state.copy    # the chat form: no raw exception reaches the UI
+            return
+        # already_signed_in / unavailable: the start route refuses these, so this is unreachable
+        # through the dashboard; record rather than crash.
+        sess["status"] = "error"
+        sess["reason"] = kind or "error"
+        sess["error_message"] = state.copy
+
+
 @_oauth_poller("nous")
-def _nous_poller(session_id: str, sess: Dict[str, Any]) -> None:
-    """Background poller that drives a Nous device-code flow to completion."""
+def _nous_promotion_poller(session_id: str, sess: Dict[str, Any]) -> None:
+    """Drain the sign-in the start route began: one shared flow, rendered onto the session.
+
+    The generator was created and advanced to its ``Code`` state by ``_start_nous_device_code``, so
+    it is already holding the transfer's codes and its HTTP client. Nothing here is wrapped in
+    ``_profile_scope``: that context manager holds a process-global lock and swaps module
+    attributes across its ``yield``, and this loop can last the sign-in code's whole expiry. The
+    generator scopes its own short config/auth-store sections instead.
+    """
+    gen = sess.get("_sign_in")
+    if gen is None:
+        return
+    try:
+        for state in gen:
+            _record_sign_in_state(sess, state)
+    finally:
+        with contextlib.suppress(Exception):
+            gen.close()     # unwinds the suspended HTTP client if we leave early
+
+
+@_oauth_poller("nous")
+def _nous_plain_poller(session_id: str, sess: Dict[str, Any]) -> None:
+    """Background poller for a plain Nous device-code login (no free-tier identity to transfer).
+
+    A sign-in that carries the free tier's connectors runs through ``anon_auth.run_sign_in`` and
+    ``_nous_promotion_poller`` instead; this is the "connect another Nous account" path.
+    """
     from hermes_cli.web_server_profiles import _profile_scope
     from hermes_cli.auth import _poll_for_token, persist_nous_credentials, refresh_nous_oauth_from_state
+    from hermes_cli import anon_auth
     import httpx
     portal_base_url, client_id = sess["portal_base_url"], sess["client_id"]
+
+    def _cancelled() -> bool:
+        # The user abandoned this sign-in (DELETE /sessions/{id}) while this thread was blocked
+        # on the portal: nothing it learns afterwards may reach the auth store.
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+                return True
+            return False
+
     with httpx.Client(timeout=httpx.Timeout(15.0), headers={"Accept": "application/json"}) as client:
         token_data = _poll_for_token(
             client=client, portal_base_url=portal_base_url, client_id=client_id,
             device_code=sess["device_code"], expires_in=max(60, int(sess["expires_at"] - time.time())),
             poll_interval=sess["interval"],
         )
+    if _cancelled():
+        return
     # Same post-processing as _nous_device_code_login (validate/refresh JWT)
     now = datetime.now(timezone.utc)
     token_ttl = int(token_data.get("expires_in") or 0)
@@ -242,7 +339,18 @@ def _nous_poller(session_id: str, sess: Dict[str, Any]) -> None:
     }
     with _profile_scope(_oauth_session_profile(session_id)):
         full_state = refresh_nous_oauth_from_state(auth_state, timeout_seconds=15.0, force_refresh=False)
-        persist_nous_credentials(full_state)
+        # The final cancellation check and the save share the session lock, so a cancel cannot
+        # land between them.
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+                return
+            persist_nous_credentials(full_state)
+        # A config left on the free tier's route by a retired identity still has to move.
+        settled = anon_auth.settle_after_upgrade(full_state)
+    with _oauth_sessions_lock:
+        sess["account_email"] = None
+        sess["model"] = settled.get("model") or None
 
 
 @_oauth_poller("minimax")

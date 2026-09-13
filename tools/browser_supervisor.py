@@ -257,6 +257,55 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             value = result_obj.get("description") or result_obj.get("unserializableValue")
         return {"ok": True, "result": value, "result_type": result_type}
 
+    def focus_page(self, origin: str, *, accept: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
+        """Re-attach the supervisor's page session to an open page target on ``origin``
+        (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
+        that open their own tabs (browser_exec) put the login form somewhere else. With
+        ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
+        so a login and a checkout tab on one site resolve to the right one. Returns
+        ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return _fail("supervisor loop is not running")
+
+        async def _attach(target_id: str) -> str:
+            attach = await self._cdp("Target.attachToTarget", {"targetId": target_id, "flatten": True}, timeout=timeout)
+            sid = attach["result"]["sessionId"]
+            await self._enable_page_domains(sid, timeout=timeout)
+            await self._install_dialog_bridge(sid)
+            return sid
+
+        async def _focus() -> Dict[str, Any]:
+            from agent.vault_store import normalize_origin
+            targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
+            candidates = []
+            for t in targets:
+                url = str(t.get("url") or "")
+                try:
+                    # origin="" = any http(s) page (used to FIND the login tab before its origin is known)
+                    if t.get("type") == "page" and url.startswith(("http://", "https://")) \
+                            and (not origin or normalize_origin(url) == origin):
+                        candidates.append((t["targetId"], url))
+                except Exception:
+                    continue
+            for target_id, url in candidates:
+                sid = await _attach(target_id)
+                if accept:
+                    probe = await self._cdp("Runtime.evaluate", {"expression": accept, "returnByValue": True},
+                                            session_id=sid, timeout=timeout)
+                    if not probe.get("result", {}).get("result", {}).get("value"):
+                        await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
+                        continue
+                with self._state_lock:
+                    self._page_session_id = sid
+                return {"ok": True, "url": url}
+            return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
+
+        try:
+            return _schedule(_focus(), loop, timeout=timeout + 1)
+        except Exception as exc:
+            return _err(exc)
+
     # ── Supervisor loop internals ────────────────────────────────────────────
 
     def _thread_main(self) -> None:

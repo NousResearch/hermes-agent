@@ -6,12 +6,21 @@ Stickers are described via the vision tool once and cached by file_unique_id
 
 import json
 import time
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
 
 CACHE_PATH = get_hermes_home() / "sticker_cache.json"
+_CACHE_PATH_AT_IMPORT = CACHE_PATH
+
+
+def _resolve_cache_path() -> Path:
+    """Active profile's cache file at call time: the patched ``CACHE_PATH`` when a test changed
+    it, else live profile-scoped HERMES_HOME — under the multiplexed gateway one process serves
+    every profile, so the import-time constant would pin every profile to the launch home."""
+    return CACHE_PATH if CACHE_PATH != _CACHE_PATH_AT_IMPORT else get_hermes_home() / "sticker_cache.json"
 
 # Kept concise to save tokens.
 STICKER_VISION_PROMPT = (
@@ -22,13 +31,13 @@ STICKER_VISION_PROMPT = (
 
 def _load_cache() -> dict:
     try:
-        return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+        return json.loads(_resolve_cache_path().read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
 
 def _save_cache(cache: dict) -> None:
-    atomic_json_write(CACHE_PATH, cache)
+    atomic_json_write(_resolve_cache_path(), cache)
 
 
 def get_cached_description(file_unique_id: str) -> Optional[dict]:

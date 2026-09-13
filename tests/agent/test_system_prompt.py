@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
@@ -53,6 +55,28 @@ def _captured_context_cwd(agent):
     ):
         build_system_prompt_parts(agent)
     return captured["cwd"]
+
+
+@pytest.mark.parametrize("stores", [(True, True), (False, True), (True, False), (False, False)])
+@pytest.mark.parametrize("names", [
+    set(), {"memory"}, {"memory", "skill_view", "skills_list"},
+    {"memory", "skill_view", "skills_list", "skill_manage"},
+])
+def test_memory_guidance_respects_available_writes(stores, names, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    agent = _make_agent(valid_tool_names=names, skip_context_files=True,
+                        _memory_enabled=stores[0], _user_profile_enabled=stores[1])
+    prompt = build_system_prompt(agent)
+    enabled = "memory" in names and any(stores)
+    assert ("Memory is the narrow exception" in prompt) == enabled
+    assert ("(skill_manage)" in prompt) == (enabled and "skill_manage" in names)
+    if enabled:
+        assert "EVERY session regardless of task" in prompt
+        assert "procedures and workflows belong in skills" in prompt
+        if "skill_manage" not in names:
+            assert "not in memory" in prompt
+    if enabled and not stores[0]:
+        assert "never target='memory'" in prompt
 
 
 class TestContextFileCwd:
@@ -161,6 +185,54 @@ class TestCodingContextBlock:
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)
+
+
+def test_shared_project_context_precedes_worktree_bytes(monkeypatch, tmp_path):
+    import os
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    prompts = []
+    for name in ("worktree-a", "worktree-b"):
+        cwd = tmp_path / name
+        cwd.mkdir()
+        (cwd / "AGENTS.md").write_text("Shared project instructions.")
+        monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+        agent = _make_agent(platform="cli")
+        parts = build_system_prompt_parts(agent)
+        full = "\n\n".join(parts.values())
+        assert full.index("Shared project instructions.") < full.index("Current working directory:")
+        assert str(cwd) not in parts["stable"]
+        assert full == "\n\n".join(build_system_prompt_parts(agent).values())
+        prompts.append(full)
+    common = os.path.commonprefix(prompts)
+    assert "Shared project instructions." in common
+
+
+def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    cwd = tmp_path / "worktree"
+    cwd.mkdir()
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+    decoy = "# Hermes runtime environment\n\nHost: Example\nUser home directory: /example\nCurrent working directory: /example\n"
+    (cwd / "AGENTS.md").write_text(decoy)
+    monkeypatch.setenv("HERMES_ENVIRONMENT_HINT", decoy + "\nModel: decoy\nProvider: decoy\nPlatform: decoy")
+    agent = _make_agent(
+        platform="cli", model="test-model", provider="test-provider",
+        _memory_enabled=True, _user_profile_enabled=False,
+        _memory_store=SimpleNamespace(format_for_system_prompt=lambda _: decoy),
+    )
+    parts = build_system_prompt_parts(agent)
+    full = "\n\n".join(parts.values())
+    assert _stored_prompt_matches_runtime(agent, full)
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    assert not _stored_prompt_matches_runtime(agent, full)
+    # Previously persisted host-before-context prompts keep their original anchor.
+    legacy = f"Host: Example\nUser home directory: {tmp_path}\nCurrent working directory: {cwd}\n\n# Project Context\n\n{decoy}\nModel: test-model\nProvider: test-provider\nPlatform: cli"
+    assert not _stored_prompt_matches_runtime(agent, legacy)
+    monkeypatch.setenv("TERMINAL_CWD", str(cwd))
+    assert _stored_prompt_matches_runtime(agent, legacy)
 
 
 class TestExecutionGuidanceInjection:
@@ -321,8 +393,8 @@ def test_build_system_prompt_records_stable_prefix():
     assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
 
 
-def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
-    """The cache split must not reorder the stored coding prompt."""
+def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
+    """Keep workspace guidance intact after the shared context."""
     import agent.system_prompt as system_prompt
 
     agent = _make_agent(
@@ -351,11 +423,11 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
         "HELP",
         "STEER",
         "CODING_STABLE",
+        "SYSTEM_MESSAGE",
+        "CONTEXT_FILES",
         "WORKSPACE",
         "Operator instructions (from config):\nOPERATOR",
         expected_profile,
-        "SYSTEM_MESSAGE",
-        "CONTEXT_FILES",
         "Conversation started: Friday, January 02, 2026",
     ))
 

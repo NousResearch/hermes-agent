@@ -13,7 +13,7 @@ delivery platform — must be blocked BEFORE any agent machinery is constructed:
 proceeds to resolution and fails loudly every tick).
 
 Related precedent: #27948 (fail-loud for hidden tools — same fail-before-run
-spirit, different check) and #44585 (drift guard: skip-run-no-spend shape).
+spirit, different check).
 """
 
 import json

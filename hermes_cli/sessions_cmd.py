@@ -97,7 +97,7 @@ def _cmd_repair(args):
         return
     print(f"✗ {db_path} does not open cleanly: {reason}")
     if getattr(args, "check_only", False):
-        return
+        return 1
     print("Repairing (a backup copy is made first)…")
     report = repair_state_db_schema(db_path, backup=not getattr(args, "no_backup", False))
     if report.get("repaired"):
@@ -273,7 +273,7 @@ def _cmd_list(db, args):
         return ((os.path.basename(key.rstrip("/\\")) or key) if key else "—")[:16]
     _title = lambda s, n: (s.get("title") or "—")[:n]  # noqa: E731
     _preview = lambda s, n: s.get("preview", "")[:n]  # noqa: E731
-    _ago = lambda s: _relative_time(s.get("last_active"))  # noqa: E731
+    _ago = lambda s: _relative_time(s.get("last_active"), session_id=s["id"])  # noqa: E731
     layouts = {  # (has_ws, has_titles): header, rule width, row formatter
         (True, True): (f"{'Title':<28} {'Workspace':<18} {'Last Active':<13} {'ID'}", 110,
                        lambda s: f"{_title(s, 26):<28} {_ws(s):<18} {_ago(s):<13} {s['id']}"),
@@ -727,7 +727,7 @@ def _cmd_pinned(db, args):
     print(f"{'Title':<32} {'Last Active':<13} {'Src':<9} {'ID'}\n" + "─" * 100)
     for s in pinned_rows:
         title = (s.get("title") or s.get("preview", "") or "—")[:30]
-        print(f"{title:<32} {_relative_time(s.get('last_active')):<13} {(s.get('source') or '-'):<9} {s['id']}")
+        print(f"{title:<32} {_relative_time(s.get('last_active'), session_id=s['id']):<13} {(s.get('source') or '-'):<9} {s['id']}")
 
 
 def _cmd_retitle_skills(db, args):

@@ -132,6 +132,9 @@ class _KanbanDispatcher:
         self.kb = kb
         self.settings = settings
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
+        # slug -> the budget reason this board was last refused for, so the
+        # refusal line logs on the transition instead of on every tick.
+        self.deferred_boards: dict[str, str] = {}
 
     def _board_slugs(self) -> list:
         return _board_slugs(self.kb)
@@ -291,8 +294,22 @@ class _KanbanDispatcher:
         return 1
 
 
-def _log_spawn_results(results: Optional[list]) -> bool:
-    """Log per-board spawn summaries; returns whether any board spawned."""
+def _log_spawn_results(results: Optional[list], deferred_boards: Optional[dict] = None) -> bool:
+    """Log per-board spawn summaries; returns whether any board spawned.
+
+    A board refused the shared spawn budget logs a line naming the reason, the
+    cap that refused it and the work queued behind it: without that a starved
+    board looks exactly like an idle one — the tick spawned nothing, no
+    ``skipped_*`` bucket is populated, and the only warning is host-wide and
+    names no board.
+
+    Refusals log on the TRANSITION only (the first refusal after a served tick,
+    and the first serve after refusals). The dispatcher ticks on ``interval``
+    (60s by default) and a capped host can stay capped for hours, so a line per
+    refused tick would bury the very event it exists to surface. Pass the
+    dispatcher's long-lived ``slug -> reason`` map as ``deferred_boards``;
+    omitting it disables refusal logging.
+    """
     any_spawned = False
     for slug, res in (results or []):
         if res is not None and getattr(res, "spawned", None):
@@ -306,5 +323,36 @@ def _log_spawn_results(results: Optional[list]) -> bool:
                 len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                 res.promoted,
                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+            )
+        # ``res is None``: the board was quarantined or its tick raised — that is
+        # not a budget change, so leave any deferred state alone.
+        if deferred_boards is None or res is None:
+            continue
+        refused = getattr(res, "budget_blocked", None)
+        if refused:
+            if deferred_boards.get(slug) == refused:
+                continue  # steady state: already reported
+            deferred_boards[slug] = refused
+            cap = getattr(res, "budget_blocked_cap", None)
+            own = getattr(res, "budget_blocked_own", None) or 0
+            other = getattr(res, "budget_blocked_other", None) or 0
+            pending = getattr(res, "budget_blocked_pending", None)
+            scope = (
+                f"own={own}/{cap}"
+                if refused == "max_spawn"
+                else f"own={own} other={other} total={own + other}/{cap}"
+            )
+            logger.warning(
+                "kanban dispatcher [%s]: deferred — spawn budget full at the %s "
+                "cap (%s), unclaimed=%s; work stays queued for a later tick",
+                slug,
+                refused,
+                scope,
+                "?" if pending is None else pending,
+            )
+        elif deferred_boards.pop(slug, None):
+            logger.info(
+                "kanban dispatcher [%s]: spawn budget available again",
+                slug,
             )
     return any_spawned

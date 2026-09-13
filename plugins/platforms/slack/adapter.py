@@ -2263,6 +2263,12 @@ class SlackAdapter(BasePlatformAdapter):
         """Return whether Slack's native stream can preserve configured behavior."""
         if self._native_stream_unsupported:
             return False
+        # Native streams accept appended markdown text, but cannot preserve
+        # the structural fallback semantics of rich_blocks. This also wins
+        # when markdown_blocks is enabled so an unrenderable markdown block
+        # can still fall through to the rich renderer on the edit path.
+        if self._extra_flag("rich_blocks"):
+            return False
         # chat.*Stream has no unfurl controls; configured unfurl behavior needs
         # the edit-based transport whose chat.postMessage carries them.
         if _slack_unfurl_kwargs(self.config.extra):
@@ -2387,20 +2393,18 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         self._active_streams.pop(chat_id, None)
         ts = stream["ts"]
-        ok = await self._seal_stream(chat_id, stream, final_text=text)
+        blocks = (
+            [self._feedback_block()] if self._extra_flag("feedback_buttons") else None
+        )
+        ok = await self._seal_stream(
+            chat_id,
+            stream,
+            final_text=text,
+            blocks=blocks,
+        )
         if not ok:
             # Stop failed — post normally; the dangling stream times out on Slack's side.
             return None
-        # Streams render markdown natively; rich blocks are applied via
-        # chat_update on the sealed message (mirrors edit_message finalize).
-        blocks = self._maybe_blocks(text)
-        if blocks:
-            try:
-                await self._get_client(chat_id).chat_update(
-                    channel=chat_id, ts=ts, text=self.format_message(text), blocks=blocks)
-            except Exception as e:
-                logger.debug(
-                    "[Slack] Post-stream Block Kit update failed (markdown fallback stands): %s", e)
         await self.stop_typing(chat_id)
         return SendResult(success=True, message_id=ts)
 

@@ -879,9 +879,14 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             if gate_err:
                 fail_msg[tid] = gate_err
                 return False
-            fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
-            return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
-                                    expected_run_id=_worker_run_id_for(tid))
+            ok, refusal = kb.complete_task_with_reason(
+                conn, tid, result=args.result, summary=summary, metadata=metadata,
+                expected_run_id=_worker_run_id_for(tid))
+            if refusal is not None:
+                fail_msg[tid] = refusal.message(tid)
+            elif not ok:
+                fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
+            return ok
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)
 

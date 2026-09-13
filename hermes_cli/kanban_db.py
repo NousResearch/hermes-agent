@@ -2533,26 +2533,69 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
-def complete_task(
+PARENTS_NOT_SATISFIED = "parents_not_satisfied"
+UNKNOWN_TASK = "unknown_task"
+TERMINAL_STATE = "terminal_state"
+RUN_MISMATCH = "run_mismatch"
+ACCEPTANCE_REFUSED = "acceptance_refused"
+
+
+@dataclass(frozen=True)
+class CompletionRefusal:
+    """Why :func:`complete_task` refused: a reason code plus the blocking
+    parents (id, status) when the code is ``parents_not_satisfied``."""
+
+    code: str
+    blocking_parents: tuple = ()
+
+    def message(self, task_id: str) -> str:
+        """Human-readable refusal phrased for the operator who ran the command."""
+        if self.code == PARENTS_NOT_SATISFIED:
+            listed = ", ".join(
+                f"{pid} ({status})" for pid, status in self.blocking_parents
+            )
+            return (
+                f"cannot complete {task_id}: unsatisfied parent dependencies: {listed}; "
+                f"complete the parents first (done or archived)"
+            )
+        if self.code == UNKNOWN_TASK:
+            return f"cannot complete {task_id}: no such task"
+        if self.code == TERMINAL_STATE:
+            return f"cannot complete {task_id}: task is already done or archived"
+        if self.code == RUN_MISMATCH:
+            return f"cannot complete {task_id}: run changed since this session claimed it (stale run)"
+        return f"cannot complete {task_id}: PR acceptance gate refused the completion"
+
+
+def _blocking_parents(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, str]]:
+    """Direct parents of ``task_id`` that are not ``done``/``archived``, in a
+    deterministic order (parent id)."""
+    rows = conn.execute(
+        "SELECT p.id, p.status FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') "
+        "ORDER BY p.id",
+        (task_id,),
+    ).fetchall()
+    return [(row["id"], row["status"]) for row in rows]
+
+
+def complete_task_with_reason(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True,
-) -> bool:
-    """``running|ready|blocked|review -> done``; records ``result``.
-
-    ``ready`` is accepted for manual CLI completion, ``review`` for human
-    approval; with no active run the handoff fields survive via
-    :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
-    ``metadata`` land on the closing run for :func:`build_worker_context`.
-    ``created_cards`` are verified first — a phantom id raises
-    :class:`HallucinatedCardsError` after an auditable event; afterwards the
-    prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
-    """
+) -> tuple[bool, Optional[CompletionRefusal]]:
+    """Structured variant of :func:`complete_task`: on refusal returns the
+    reason code and, for unsatisfied parents, the blocking parent ids with
+    statuses. The dependency invariant is untouched — this only reports it."""
     now = int(time.time())
+    if _task_status(conn, task_id) is None:
+        return False, CompletionRefusal(UNKNOWN_TASK)
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
-    if not _parents_satisfied(conn, task_id):
-        return False
+    parents = _blocking_parents(conn, task_id)
+    if parents:
+        return False, CompletionRefusal(PARENTS_NOT_SATISFIED, tuple(parents))
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     metadata = _merge_completion_prose_artifacts(
@@ -2561,14 +2604,15 @@ def complete_task(
     handoff_summary = summary if summary is not None else result
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
-        return False
+        return False, CompletionRefusal(ACCEPTANCE_REFUSED)
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
-        if not _parents_satisfied(conn, task_id):
-            return False
+        parents = _blocking_parents(conn, task_id)
+        if parents:
+            return False, CompletionRefusal(PARENTS_NOT_SATISFIED, tuple(parents))
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
-            return False
+            return False, CompletionRefusal(ACCEPTANCE_REFUSED)
         prior_status = _task_status(conn, task_id)
         sql = """
                 UPDATE tasks
@@ -2582,13 +2626,18 @@ def complete_task(
                        block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked', 'review')
-                """
+            """
         params: tuple = (result, now, task_id)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
             params = (*params, int(expected_run_id))
         if conn.execute(sql, params).rowcount != 1:
-            return False
+            # Inside the txn the only surviving causes are terminal state and
+            # run fencing: the task row was verified to exist above.
+            run_now = _current_run_id(conn, task_id)
+            if expected_run_id is not None and run_now != expected_run_id:
+                return False, CompletionRefusal(RUN_MISMATCH)
+            return False, CompletionRefusal(TERMINAL_STATE)
         if isinstance(metadata, dict):
             _stage_completion_artifacts(conn, task_id, metadata, now)
         run_id = _end_run(
@@ -2620,7 +2669,32 @@ def complete_task(
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
         _fire_task_hook("kanban_task_completed", _done_task, task_id, run_id, summary=handoff_summary)
-    return True
+    return True, None
+
+
+def complete_task(
+    conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
+    summary: Optional[str] = None, metadata: Optional[dict] = None,
+    created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
+    fire_lifecycle_hook: bool = True,
+) -> bool:
+    """``running|ready|blocked|review -> done``; records ``result``.
+
+    ``ready`` is accepted for manual CLI completion, ``review`` for human
+    approval; with no active run the handoff fields survive via
+    :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
+    ``metadata`` land on the closing run for :func:`build_worker_context`.
+    ``created_cards`` are verified first — a phantom id raises
+    :class:`HallucinatedCardsError` after an auditable event; afterwards the
+    prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
+    Refusals are booleans here; call :func:`complete_task_with_reason` for
+    the structured reason.
+    """
+    return complete_task_with_reason(
+        conn, task_id, result=result, summary=summary, metadata=metadata,
+        created_cards=created_cards, expected_run_id=expected_run_id,
+        fire_lifecycle_hook=fire_lifecycle_hook,
+    )[0]
 
 
 _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."

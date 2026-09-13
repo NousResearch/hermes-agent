@@ -156,4 +156,35 @@ describe('ProjectDialog', () => {
 
     expect(createProject.mock.calls[0]?.[0]).toMatchObject({ dropPlacement: undefined })
   })
+
+  it('strips invisible characters from the name before creating', async () => {
+    const { createProject } = vi.mocked(await import('@/store/projects'))
+
+    vi.mocked(createProject).mockClear()
+    render(<ProjectDialog />)
+    fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'AttendanceSync\u200cBot' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add folder' }))
+    await screen.findByText('/Users/test/my-folder')
+
+    const create = screen.getByRole('button', { name: 'Create' }) as HTMLButtonElement
+    await waitFor(() => expect(create.disabled).toBe(false))
+    fireEvent.click(create)
+
+    await waitFor(() => expect(createProject).toHaveBeenCalledOnce())
+    expect(createProject.mock.calls[0]?.[0]).toMatchObject({ name: 'AttendanceSyncBot' })
+  })
+
+  it('sanitizes a legacy name prefilled into the rename dialog', async () => {
+    const { renameProject } = vi.mocked(await import('@/store/projects'))
+
+    vi.mocked(renameProject).mockClear()
+    $projectDialog.set({ mode: 'rename', name: 'Old\u200bName', projectId: 'p1' })
+    render(<ProjectDialog />)
+
+    await waitFor(() => expect((screen.getByPlaceholderText('Project name') as HTMLInputElement).value).toBe('OldName'))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(renameProject).toHaveBeenCalledOnce())
+    expect(renameProject).toHaveBeenCalledWith('p1', 'OldName')
+  })
 })

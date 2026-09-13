@@ -112,16 +112,49 @@ export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
 
 function scrollToPrompt(root: HTMLElement | null, id: string) {
   const viewport = ownViewport(root)
-  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 
-  if (!viewport || !node) {
+  if (!viewport) {
     return
   }
 
-  const top = viewport.scrollTop + (node.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
+  const find = () => viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 
-  triggerHaptic('selection')
-  jumpScroll(viewport, Math.max(0, top))
+  const jumpTo = (node: HTMLElement) => {
+    const top = viewport.scrollTop + (node.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
+
+    triggerHaptic('selection')
+    jumpScroll(viewport, Math.max(0, top))
+  }
+
+  const node = find()
+
+  if (node) {
+    jumpTo(node)
+
+    return
+  }
+
+  // Target not rendered: the transcript is budget-windowed from the bottom
+  // (see list.tsx renderBudget), so early prompts have no DOM node yet and a
+  // plain lookup silently fails — on long transcripts most ticks were dead.
+  // Ask the list to widen its render window to this message (it listens for
+  // this event and raises the budget just enough), then poll for the node and
+  // jump once it lands. Give up after 3s if the id no longer exists.
+  viewport.dispatchEvent(new CustomEvent('hermes:reveal-message', { bubbles: true, detail: { id } }))
+
+  const deadline = performance.now() + 3000
+
+  const poll = () => {
+    const revealed = find()
+
+    if (revealed) {
+      jumpTo(revealed)
+    } else if (performance.now() < deadline) {
+      requestAnimationFrame(poll)
+    }
+  }
+
+  requestAnimationFrame(poll)
 }
 
 /**

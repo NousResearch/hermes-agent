@@ -1,6 +1,10 @@
 // IPC surface for the pop-out pet overlay (mascot window). Extracted from
 // main.ts; window handles stay injected because main.ts owns their lifecycle.
-import { type BrowserWindow, ipcMain } from 'electron'
+import { type BrowserWindow, ipcMain, screen } from 'electron'
+
+import { overlayWindowBoundsToDip } from './pet-overlay-geometry'
+import { captureVisualLedgeBelow } from './pet-overlay-visual-surfaces'
+import { enumerateWindowsFrontToBack, enumerationFailed } from './window-below'
 
 export interface PetOverlayIpcDeps {
   getMainWindow: () => BrowserWindow | null
@@ -15,6 +19,17 @@ export function registerPetOverlayIpc({
   openPetOverlay,
   closePetOverlay
 }: PetOverlayIpcDeps) {
+  let cachedRoamWindows:
+    | {
+        capturedAt: number
+        displayId: string
+        revision: number
+        windows: Array<{ height: number; width: number; x: number; y: number }>
+      }
+    | undefined
+
+  let roamWindowRevision = 0
+
   // `request` is `{ bounds, screen }`. A fresh pop-out passes viewport-space
   // bounds (screen=false): convert to screen space by adding the main window's
   // content origin so the pet lands where it sat in-window. A remembered/dragged
@@ -49,6 +64,98 @@ export function registerPetOverlayIpc({
 
     return { ok: true }
   })
+  // Native roam geometry for the display currently containing the pet. Window
+  // enumeration is already shared with read_window_below and the HUD; expose
+  // bounds only (never app names, titles, or pixels). If the platform cannot
+  // enumerate other apps, an empty list leaves the work-area floor available.
+  ipcMain.handle('hermes:pet-overlay:roam-environment', async (_event, probe) => {
+    const petOverlayWindow = getPetOverlayWindow()
+
+    if (!petOverlayWindow || petOverlayWindow.isDestroyed()) {
+      return null
+    }
+
+    const display = screen.getDisplayMatching(petOverlayWindow.getBounds())
+    const workArea = display.workArea
+    const reuseCapture = Boolean(probe?.reuseCapture)
+    const requestedMaxAge = Number(probe?.maxCacheAgeMs)
+
+    const maximumCacheAgeMs = Number.isFinite(requestedMaxAge)
+      ? Math.max(0, Math.min(2000, Math.round(requestedMaxAge)))
+      : 750
+
+    const displayId = String(display.id)
+
+    const cachedWindowsAreFresh =
+      reuseCapture &&
+      cachedRoamWindows?.displayId === displayId &&
+      Date.now() - cachedRoamWindows.capturedAt <= maximumCacheAgeMs
+
+    const scanMode = reuseCapture
+      ? probe?.scanMode === 'support'
+        ? 'support'
+        : 'landing'
+      : probe?.scanMode === 'destination'
+        ? 'destination'
+        : 'landing'
+
+    const [enumerated, visualCapture] = await Promise.all([
+      cachedWindowsAreFresh ? Promise.resolve(undefined) : enumerateWindowsFrontToBack(process.pid, false),
+      captureVisualLedgeBelow(
+        petOverlayWindow,
+        probe?.petWidth,
+        reuseCapture,
+        scanMode,
+        probe?.petHeight,
+        maximumCacheAgeMs
+      )
+    ])
+
+    let windows = cachedRoamWindows?.displayId === displayId ? cachedRoamWindows.windows : []
+    let windowRevision = cachedRoamWindows?.displayId === displayId ? cachedRoamWindows.revision : roamWindowRevision
+
+    if (enumerated !== undefined) {
+      windowRevision = ++roamWindowRevision
+
+      if (enumerationFailed(enumerated)) {
+        cachedRoamWindows = undefined
+        windows = []
+      } else {
+        const right = workArea.x + workArea.width
+        const bottom = workArea.y + workArea.height
+
+        windows = enumerated
+          .map(windowInfo => ({
+            ...windowInfo,
+            bounds: overlayWindowBoundsToDip(windowInfo.bounds, process.platform, bounds =>
+              screen.screenToDipRect(null, bounds)
+            )
+          }))
+          .filter(({ bounds, pid }) => {
+            if (pid === process.pid || bounds.width <= 0 || bounds.height <= 0) {
+              return false
+            }
+
+            return (
+              bounds.x < right &&
+              bounds.x + bounds.width > workArea.x &&
+              bounds.y < bottom &&
+              bounds.y + bounds.height > workArea.y
+            )
+          })
+          .map(({ bounds }) => bounds)
+
+        cachedRoamWindows = { capturedAt: Date.now(), displayId, revision: windowRevision, windows }
+      }
+    }
+
+    return {
+      sceneRevision: `${windowRevision}:${visualCapture.revision}`,
+      visualLedges: visualCapture.ledges,
+      windows,
+      workArea
+    }
+  })
   // Drag/resize: the overlay reports new absolute screen bounds (it already knows
   // the pointer's screen coords). Drag keeps the size constant; the wheel-to-scale
   // gesture grows/shrinks it so the sprite is never cropped by the window edge.
@@ -63,6 +170,8 @@ export function registerPetOverlayIpc({
     }
 
     const win = petOverlayWindow
+    const x = Math.round(bounds.x)
+    const y = Math.round(bounds.y)
     const width = Math.max(80, Math.round(bounds.width))
     const height = Math.max(80, Math.round(bounds.height))
     const [curW, curH] = win.getSize()
@@ -72,7 +181,13 @@ export function registerPetOverlayIpc({
       win.setResizable(true)
     }
 
-    win.setBounds({ x: Math.round(bounds.x), y: Math.round(bounds.y), width, height })
+    if (resizing) {
+      win.setBounds({ x, y, width, height })
+    } else {
+      // Roaming only changes position. Avoid asking Windows to renegotiate the
+      // whole transparent window rectangle on every animation frame.
+      win.setPosition(x, y)
+    }
 
     if (resizing) {
       win.setResizable(false)

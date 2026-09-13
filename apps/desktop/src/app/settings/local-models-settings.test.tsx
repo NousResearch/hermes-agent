@@ -272,6 +272,33 @@ describe('LocalModelsSettings', () => {
     )
   })
 
+  it('does not call a CPU runtime model GPU-resident', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({
+      ...BASE_STATUS,
+      runtime_installed: true,
+      runtime_backend: 'cpu'
+    })
+    await renderFullPane()
+
+    expect(screen.queryByText('Fits your GPU')).toBeNull()
+    expect(screen.getAllByText('Uses system RAM').length).toBeGreaterThan(0)
+  })
+
+  it('renders unified memory once instead of as both GPU memory and RAM', async () => {
+    mocked.getLocalHardware.mockResolvedValue({
+      ...BASE_HARDWARE,
+      uma: true,
+      vram_total_bytes: 32 * 2 ** 30,
+      ram_total_bytes: 32 * 2 ** 30
+    })
+    await renderFullPane()
+
+    expect(await screen.findByText(/Unified memory/)).toBeTruthy()
+    expect(screen.queryByText(/32\.0 GB GPU memory/)).toBeNull()
+    expect(screen.queryByText(/32\.0 GB RAM/)).toBeNull()
+    expect(screen.getByText(/Unified memory \(32\.0 GB\)/)).toBeTruthy()
+  })
+
   it('enables downloads only once the runtime is installed', async () => {
     mocked.getLocalModelsStatus.mockResolvedValue({
       ...BASE_STATUS,

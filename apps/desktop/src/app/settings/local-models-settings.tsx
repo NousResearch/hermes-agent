@@ -530,17 +530,24 @@ export function LocalModelsSettings() {
               </span>
             )}
 
-            <span className="inline-flex items-center gap-1.5">
-              <Cpu className="size-3.5" />
-              {copy.vram(gbLabel(hardware.vram_total_bytes))}
-            </span>
+            {hardware.uma ? (
+              <span className="inline-flex items-center gap-1.5">
+                <Cpu className="size-3.5" />
+                {copy.unifiedMemory} ({gbLabel(hardware.vram_total_bytes)})
+              </span>
+            ) : (
+              <>
+                <span className="inline-flex items-center gap-1.5">
+                  <Cpu className="size-3.5" />
+                  {copy.vram(gbLabel(hardware.vram_total_bytes))}
+                </span>
 
-            <span className="inline-flex items-center gap-1.5">
-              <Package className="size-3.5" />
-              {copy.ram(gbLabel(hardware.ram_total_bytes))}
-            </span>
-
-            {hardware.uma && <Pill>{copy.unifiedMemory}</Pill>}
+                <span className="inline-flex items-center gap-1.5">
+                  <Package className="size-3.5" />
+                  {copy.ram(gbLabel(hardware.ram_total_bytes))}
+                </span>
+              </>
+            )}
           </div>
         ) : (
           <p className="py-1 text-[length:var(--conversation-caption-font-size)] text-muted-foreground">
@@ -693,7 +700,7 @@ export function LocalModelsSettings() {
                             {copy.pillTooBig}
                           </Pill>
                         </Tip>
-                      ) : model.spilled ? (
+                      ) : model.spilled || status.runtime_backend === 'cpu' ? (
                         <Tip label={model.quant_reason ?? model.fit_summary}>
                           <Pill tone="warn">
                             <Cpu className="mr-1 size-3" />

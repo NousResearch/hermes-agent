@@ -306,10 +306,17 @@ class GatewayAuthorizationMixin:
         adapter_ref = getattr(source, "_transport_adapter_ref", None)
         adapter = adapter_ref() if callable(adapter_ref) else None
         platform = getattr(source, "platform", None)
-        if adapter is None or platform is None:
+        if platform is None:
             return None
-        registered, profile = self._owning_profile(adapter, platform)
-        return (adapter, profile) if registered else None
+        if adapter is not None:
+            registered, profile = self._owning_profile(adapter, platform)
+            if registered:
+                return adapter, profile
+        if hasattr(source, "_transport_adapter_profile"):
+            owner_profile = getattr(source, "_transport_adapter_profile", None)
+            current = self._adapters_for_profile(owner_profile).get(platform)
+            return (current, owner_profile) if current is not None else None
+        return None
 
     def _authorization_home_for_source(self, source: SessionSource):
         """HERMES_HOME whose allowlist admits *source*: the ingress-stamped transport home, else the home of

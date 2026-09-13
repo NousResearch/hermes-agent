@@ -389,7 +389,7 @@ class GatewayTopicThreadsMixin:
             relay_info = await self._await_relay_auto_thread_info(source)
             if relay_info is None:
                 return
-        adapter = self._adapter_for_source(source) if getattr(self, "adapters", None) else None
+        adapter = getattr(self, "_adapter_for_source", lambda _source: None)(source)
         rename_thread = getattr(adapter, "rename_thread", None)
         if rename_thread is None:
             return
@@ -435,11 +435,9 @@ class GatewayTopicThreadsMixin:
         copied_source = source
         with suppress(Exception):
             copied_source = dataclasses.replace(source)
-            # Keep the live transport owner; multiplex routes may run under a
-            # profile that does not own the Discord adapter/token.
-            transport_ref = getattr(source, "_transport_adapter_ref", None)
-            if transport_ref is not None:
-                setattr(copied_source, "_transport_adapter_ref", transport_ref)
+            for attr in ("_transport_adapter_ref", "_transport_adapter_profile"):
+                if hasattr(source, attr):
+                    setattr(copied_source, attr, getattr(source, attr))
         future = safe_schedule_threadsafe(
             make_coro(copied_source), loop, logger=logger, log_message=f"{label} failed to schedule",
         )

@@ -4193,7 +4193,8 @@ class BasePlatformAdapter(ABC):
                                auto_thread_initial_name=auto_thread_initial_name)
         # Transport-only, kept out of to_dict(): the receiving adapter is authoritative this turn
         # even if profile_routes picks another runtime; the reject flag is consumed before auth.
-        source._transport_adapter_ref = weakref.ref(self)
+        setattr(source, "_transport_adapter_ref", weakref.ref(self))
+        setattr(source, "_transport_adapter_profile", owner_profile)
         source.profile_route_rejected = profile_route_rejected
         return source
 

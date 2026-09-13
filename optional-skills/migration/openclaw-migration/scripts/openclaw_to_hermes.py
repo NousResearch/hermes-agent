@@ -147,7 +147,7 @@ MIGRATION_OPTION_METADATA: Dict[str, Dict[str, str]] = {
     },
     "session-config": {
         "label": "Session configuration",
-        "description": "Import session reset policies (daily/idle) into Hermes session_reset config.",
+        "description": "Archive advanced session settings; automatic reset timers are not imported.",
     },
     "full-providers": {
         "label": "Full model provider definitions",
@@ -915,7 +915,6 @@ class Migrator:
         "hooks-config",
         "agent-config",
         "gateway-config",
-        "session-config",
         "full-providers",
         "deep-channels",
         "browser-config",
@@ -2573,48 +2572,9 @@ class Migrator:
             self.record("session-config", None, None, "skipped", "No session configuration found")
             return
 
-        hermes_cfg_path = self.target_root / "config.yaml"
-        hermes_cfg = load_yaml_file(hermes_cfg_path)
-        sr = hermes_cfg.get("session_reset") or {}
-        changes = False
-
-        # OpenClaw uses session.reset (structured) and session.resetTriggers (string array)
-        reset = session.get("reset") or {}
-        reset_triggers = session.get("resetTriggers") or session.get("reset_triggers") or []
-
-        if reset:
-            # Structured reset config: has mode, atHour, idleMinutes
-            mode = reset.get("mode", "")
-            if mode == "daily":
-                sr["mode"] = "daily"
-            elif mode == "idle":
-                sr["mode"] = "idle"
-            else:
-                sr["mode"] = mode or "none"
-            if reset.get("atHour") is not None:
-                sr["at_hour"] = reset["atHour"]
-            if reset.get("idleMinutes"):
-                sr["idle_minutes"] = reset["idleMinutes"]
-            changes = True
-        elif isinstance(reset_triggers, list) and reset_triggers:
-            # Simple string triggers: ["daily", "idle"]
-            has_daily = "daily" in reset_triggers
-            has_idle = "idle" in reset_triggers
-            if has_daily and has_idle:
-                sr["mode"] = "both"
-            elif has_daily:
-                sr["mode"] = "daily"
-            elif has_idle:
-                sr["mode"] = "idle"
-            changes = True
-
-        if changes:
-            hermes_cfg["session_reset"] = sr
-            if self.execute:
-                self.maybe_backup(hermes_cfg_path)
-                dump_yaml_file(hermes_cfg_path, hermes_cfg)
-            self.record("session-config", "openclaw.json session.resetTriggers",
-                        "config.yaml session_reset", "migrated")
+        if session.get("reset") or session.get("resetTriggers") or session.get("reset_triggers"):
+            self.record("session-config", "session reset timers", None, "skipped",
+                        "Hermes conversations do not reset on idle or daily timers")
 
         # Archive full session config (identity links, thread bindings, etc.)
         complex_keys = {"identityLinks", "threadBindings", "maintenance", "scope", "sendPolicy"}

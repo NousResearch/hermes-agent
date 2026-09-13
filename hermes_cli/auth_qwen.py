@@ -43,9 +43,9 @@ def _read_qwen_cli_tokens() -> Dict[str, Any]:
 
 
 def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
-    from hermes_cli.auth import _qwen_cli_auth_path, _write_private_file_atomic
+    from hermes_cli.auth import _qwen_cli_auth_path, _save_private_json
     auth_path = _qwen_cli_auth_path()
-    _write_private_file_atomic(auth_path, json.dumps(tokens, indent=2, sort_keys=True) + "\n")
+    _save_private_json(auth_path, tokens, sort_keys=True)
     return auth_path
 
 

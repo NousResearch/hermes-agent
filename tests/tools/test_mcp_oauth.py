@@ -161,15 +161,34 @@ class TestHermesTokenStorage:
 
 
     def test_corrupt_tokens_returns_none(self, tmp_path, monkeypatch):
+        import asyncio
+        from mcp.shared.auth import OAuthMetadata
+        from tools.mcp_oauth_device import DeviceOAuthMetadata
+
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("bad-server")
-
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
         (d / "bad-server.json").write_text("NOT VALID JSON{{{")
-
-        import asyncio
         assert asyncio.run(storage.get_tokens()) is None
+        for raw in ('NOT VALID JSON{{{', '[]', 'null', '"cached-secret"', '42', 'true', '{}'):
+            path = d / "bad-server.meta.json"
+            path.write_text(raw)
+            assert storage.load_oauth_metadata() is None
+            assert path.read_text() == raw
+
+        metadata = {"issuer": "https://example.com", "token_endpoint": "https://example.com/token",
+                    "response_types_supported": ["code"], "authorization_endpoint": "https://example.com/auth"}
+        for device in (False, True):
+            if device:
+                metadata.pop("authorization_endpoint")
+                metadata["device_authorization_endpoint"] = "https://example.com/device"
+            path = d / "bad-server.meta.json"
+            path.write_text(json.dumps(metadata))
+            loaded = storage.load_oauth_metadata()
+            assert type(loaded) is (DeviceOAuthMetadata if device else OAuthMetadata)
+            assert str(loaded.token_endpoint) == metadata["token_endpoint"]
+            assert json.loads(path.read_text()) == metadata
 
     def test_corrupt_tokens_warning_never_echoes_the_token_material(self, tmp_path, monkeypatch, caplog):
         """A pydantic ValidationError's str() includes the raw input; the corrupt-store warning must

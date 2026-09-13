@@ -224,7 +224,7 @@ describe('toChatMessages', () => {
 
     expect(toolPart?.result).toMatchObject({ image: 'https://cdn.example/cat.png', success: true })
     // The duplicated image is stripped, but the agent's words survive.
-    expect(chatMessageText(message)).toBe('Here you go.')
+    expect(chatMessageText(message)).toBe('Here you go.\n\n')
   })
 
   it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
@@ -270,7 +270,7 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect(chatMessageText(message)).toBe('what is in this photo?\n')
     expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
   })
 

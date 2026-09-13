@@ -90,8 +90,11 @@ def run_preflight_gate(
     return run_preflight_compression(
         agent, v, compressor=_compressor, request_pressure_tokens=request_pressure_tokens,
         provider_overflow_preflight=_provider_overflow_preflight,
-        defer_preflight=getattr(
-            _compressor, "should_defer_preflight_to_real_usage", lambda _t: False
+        # An anchored figure is real usage + delta: never deferred. Only a whole-context rough
+        # estimate waits for the provider's count.
+        defer_preflight=(
+            (lambda _t: False) if getattr(agent, "_request_pressure_anchored", False)
+            else getattr(_compressor, "should_defer_preflight_to_real_usage", lambda _t: False)
         ),
         moa_prepared_request=_moa_prepared_request, system_message=system_message,
         user_message=user_message, max_compression_attempts=max_compression_attempts,

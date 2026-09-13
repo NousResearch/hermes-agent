@@ -4,7 +4,6 @@ import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
 import { type FC, lazy, Suspense, useMemo } from 'react'
 
 import { CodeCard, CodeCardBody } from '@/components/chat/code-card'
-import { ExpandableBlock } from '@/components/chat/expandable-block'
 // Theme constants live in shiki-config (dependency-free) so the lazy shiki
 // chunk can import them without pulling this module into the shiki bundle.
 import { SHIKI_COLOR_REPLACEMENTS } from '@/components/chat/shiki-config'
@@ -149,15 +148,13 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
         text={content}
       />
       <CodeCardBody className="[&_pre]:px-3 [&_pre]:py-2.5">
-        <ExpandableBlock>
-          <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
-            {plain ? (
-              <PlainCode code={content} />
-            ) : (
-              <LazyShiki code={content} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
-            )}
-          </Pre>
-        </ExpandableBlock>
+        <Pre className="aui-shiki m-0 max-w-none overflow-x-auto overflow-y-visible bg-transparent p-0">
+          {plain ? (
+            <PlainCode code={content} />
+          ) : (
+            <LazyShiki code={content} colorReplacements={SHIKI_COLOR_REPLACEMENTS} language={language || 'text'} />
+          )}
+        </Pre>
       </CodeCardBody>
     </CodeCard>
   )

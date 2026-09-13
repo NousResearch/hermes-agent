@@ -515,7 +515,7 @@ class GatewayTurnMixin:
             hs.model = _model_cfg
         elif isinstance(_model_cfg, dict):
             hs.model = _model_cfg.get("default") or _model_cfg.get("model") or hs.model
-            _raw_ctx = _model_cfg.get("context_length")
+            _raw_ctx = _model_cfg.get("context_length") or _model_cfg.get("context_window")
             if _raw_ctx is not None:
                 with suppress(TypeError, ValueError):
                     hs.config_context_length = int(_raw_ctx)

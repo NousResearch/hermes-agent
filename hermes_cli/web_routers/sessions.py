@@ -18,7 +18,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 from hermes_cli.web_deps import late
-from hermes_cli.web_server_gateway import _strip_session_list_rows
+from hermes_cli.web_server_gateway import (
+    _project_session_response,
+    _strip_session_list_rows,
+)
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
@@ -484,7 +487,25 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         # clients resolve them to whichever gateway happened to be active.
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
-        return session
+        if not session.get("last_active"):
+            # Sessions created before the column existed (or never touched
+            # since) still need a sortable activity timestamp in the detail
+            # view — fall back to the newest stored message, then started_at
+            # (mirrors the list handlers' activity derivation).
+            derived = None
+            try:
+                msgs = db.get_messages(sid)
+                if msgs:
+                    last = msgs[-1]
+                    derived = last.get("timestamp") if isinstance(last, dict) else None
+            except Exception:
+                derived = None
+            session["last_active"] = derived or session.get("started_at")
+        if "is_active" not in session or session.get("is_active") is None:
+            # Derived flag: active within the same window the list handlers use.
+            last = session.get("last_active") or session.get("started_at") or 0
+            session["is_active"] = bool(last) and (time.time() - last) < _ACTIVE_WINDOW_S
+        return _project_session_response(session, detail=True)
 
     return _with_db(profile, _detail, read_only=True)
 

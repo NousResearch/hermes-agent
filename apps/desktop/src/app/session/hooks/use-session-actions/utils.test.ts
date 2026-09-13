@@ -1680,6 +1680,35 @@ describe('removeRepresentedLocalLiveProjection', () => {
 })
 
 describe('overlayConcurrentMessageChanges', () => {
+  it.each([false, true])('projects only concurrent content from a suppressed baseline (shared authoritative id: %s)', sharedId => {
+    const oldTool = { type: 'tool-call' as const, toolCallId: 'work', toolName: 'shell', args: {}, argsText: '{}', result: { output: 'old result' } }
+
+    const baseline = [{ ...msg('runtime', 'assistant', 'Old prefix'), pending: true,
+      parts: [{ type: 'text' as const, text: 'Old prefix' }, oldTool] }]
+
+    const current = [{ ...baseline[0], pending: false, parts: [
+      { type: 'text' as const, text: 'Old prefix + new text', completedAt: 10 },
+      { ...oldTool, result: { output: 'new result' }, completedAt: 10 },
+      { type: 'text' as const, text: 'New part' }
+    ] }]
+
+    const authoritative = [msg(sharedId ? 'runtime' : 'verified', 'assistant', 'Verified history')]
+    const result = overlayConcurrentMessageChanges(authoritative, baseline, current, { baselineSuppressed: true })
+    expect(result.flatMap(row => row.parts)).toEqual([
+      { type: 'text', text: 'Verified history' },
+      { type: 'text', text: ' + new text', completedAt: 10 },
+      { ...oldTool, result: { output: 'new result' }, completedAt: 10 },
+      { type: 'text', text: 'New part' }
+    ])
+    expect(result.at(-1)?.pending).toBe(false)
+
+    const onlySettled = [{ ...baseline[0], pending: false,
+      parts: [{ ...baseline[0].parts[0], completedAt: 10 }, oldTool] }]
+
+    expect(overlayConcurrentMessageChanges(authoritative, baseline, onlySettled, { baselineSuppressed: true })
+      .flatMap(row => row.parts)).toEqual(authoritative.flatMap(row => row.parts))
+  })
+
   it('does not replace an authoritative row with an unchanged baseline cache row', () => {
     const baseline = [msg('shared-assistant', 'assistant', 'stale cached answer')]
     const authoritative = [msg('shared-assistant', 'assistant', 'completed persisted answer')]

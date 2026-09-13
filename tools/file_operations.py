@@ -2881,34 +2881,43 @@ class ShellFileOperations(FileOperations):
         merged.warning = note
         return merged
 
+    @staticmethod
+    def _zero_match_tally(stdout: str) -> tuple[int, list[str]]:
+        """Parse ``path:count`` lines from rg --count-matches or grep -c."""
+        total = 0
+        per_file: list[str] = []
+        for line in (stdout or "").strip().splitlines():
+            p, _sep, n = line.rpartition(":")
+            if n.isdigit():
+                total += int(n)
+                per_file.append(p)
+        return total, per_file
+
+    @staticmethod
+    def _zero_match_paths_note(per_file: list[str], cap: int = 5) -> str:
+        shown = ", ".join(per_file[:cap])
+        extra = len(per_file) - cap
+        return shown + (f" (+{extra} more)" if extra > 0 else "")
+
     def _zero_match_probe(self, pattern: str, path: str,
                           file_glob: Optional[str]) -> Optional[str]:
         """Return a hint for a 0-match content search, or None.
 
         13.9% of production content searches return zero matches and give
-        the model nothing to steer by. Run ONE cheap case-insensitive count
-        probe; if it hits, say so. If the pattern contains regex
-        metacharacters, also probe it as a fixed string. Bounded: two rg
-        invocations max, count-only output.
+        the model nothing to steer by. Run cheap count probes for near-misses
+        (wrong casing, hidden-only matches, unescaped regex metacharacters).
+        Prefer ripgrep; fall back to grep when rg is unavailable.
         """
-        if not self._has_command('rg'):
-            return None
+        if self._has_command('rg'):
+            return self._zero_match_probe_rg(pattern, path, file_glob)
+        if self._has_command('grep'):
+            return self._zero_match_probe_grep(pattern, path, file_glob)
+        return None
 
-        def _tally(stdout: str):
-            """Parse ``path:count`` lines from rg --count-matches."""
-            total = 0
-            per_file = []
-            for line in (stdout or "").strip().splitlines():
-                p, _sep, n = line.rpartition(":")
-                if n.isdigit():
-                    total += int(n)
-                    per_file.append(p)
-            return total, per_file
-
-        def _paths_note(per_file, cap: int = 5) -> str:
-            shown = ", ".join(per_file[:cap])
-            extra = len(per_file) - cap
-            return shown + (f" (+{extra} more)" if extra > 0 else "")
+    def _zero_match_probe_rg(self, pattern: str, path: str,
+                            file_glob: Optional[str]) -> Optional[str]:
+        _tally = self._zero_match_tally
+        _paths_note = self._zero_match_paths_note
 
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
@@ -2924,10 +2933,6 @@ class ShellFileOperations(FileOperations):
                 f"in {len(ci_paths)} file(s): {_paths_note(ci_paths)} — "
                 "the pattern's casing may be wrong."
             )
-        # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
-        # default. When the pattern exists only there, say so instead of
-        # returning a bare zero (bench case: match in .hidden/ silently
-        # missing from results).
         hidden = self._exec(
             f"rg --hidden --no-ignore --count-matches{glob_expr} "
             f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
@@ -2957,6 +2962,114 @@ class ShellFileOperations(FileOperations):
                     "escaping (or pass a simpler substring)."
                 )
         return None
+
+    def _zero_match_probe_grep(self, pattern: str, path: str,
+                               file_glob: Optional[str]) -> Optional[str]:
+        """grep fallback when ripgrep is not installed."""
+        _tally = self._zero_match_tally
+        _paths_note = self._zero_match_paths_note
+        glob_expr = (
+            f" --include={self._escape_shell_arg(file_glob)}" if file_glob else ""
+        )
+        path_arg = self._escape_native_tool_arg(path)
+        pat_arg = self._escape_shell_arg(pattern)
+        # Match the main grep search path: skip hidden directories by default.
+        visible_exclude = "--exclude-dir='.*'"
+
+        probe = self._exec(
+            f"grep -r -i -c {visible_exclude}{glob_expr} {pat_arg} {path_arg} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        ci_total, ci_paths = _tally(probe.stdout)
+        if ci_total > 0:
+            return (
+                f"0 exact matches, but {ci_total} case-insensitive match(es) "
+                f"in {len(ci_paths)} file(s): {_paths_note(ci_paths)} — "
+                "the pattern's casing may be wrong."
+            )
+        hidden = self._exec(
+            f"grep -r -i -c{glob_expr} {pat_arg} {path_arg} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        h_total, h_paths = _tally(hidden.stdout)
+        if h_total > 0:
+            return (
+                f"0 matches in visible files, but {h_total} match(es) in "
+                f"{len(h_paths)} hidden or gitignored file(s): "
+                f"{_paths_note(h_paths)} — these are excluded by default."
+            )
+        if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
+            fixed = self._exec(
+                f"grep -r -F -c {visible_exclude}{glob_expr} {pat_arg} {path_arg} "
+                f"2>/dev/null | head -50",
+                timeout=30,
+            )
+            f_total, f_paths = _tally(fixed.stdout)
+            if f_total > 0:
+                return (
+                    f"0 regex matches, but {f_total} literal match(es) in "
+                    f"{len(f_paths)} file(s): {_paths_note(f_paths)} — the "
+                    "pattern contains regex metacharacters that likely need "
+                    "escaping (or pass a simpler substring)."
+                )
+        return None
+
+    def _grep_supports_perl(self) -> bool:
+        """Return True when grep accepts -P (PCRE multiline probes)."""
+        cache_key = "grep_perl"
+        if cache_key not in self._command_cache:
+            result = self._exec("echo | grep -P '' >/dev/null 2>&1 && echo yes || echo no")
+            self._command_cache[cache_key] = result.stdout.strip() == 'yes'
+        return self._command_cache[cache_key]
+
+    def _search_with_grep_multiline(self, pattern: str, path: str,
+                                    file_glob: Optional[str], limit: int,
+                                    offset: int, context: int) -> Optional[SearchResult]:
+        """grep -P multiline fallback when ripgrep is unavailable."""
+        glob_expr = (
+            f" --include={self._escape_shell_arg(file_glob)}" if file_glob else ""
+        )
+        path_arg = self._escape_native_tool_arg(path)
+        pat_arg = self._escape_shell_arg(pattern)
+        fetch_limit = limit + offset + (200 if context > 0 else 0)
+        cmd = (
+            f"set -o pipefail; grep -PHn{glob_expr} {pat_arg} {path_arg} "
+            f"2>/dev/null | head -n {fetch_limit}"
+        )
+        result = self._exec(cmd, timeout=60)
+        stdout, limit_reason = _search_stdout_and_limit(result)
+        diagnostics, payload = _split_tool_diagnostics(stdout)
+        if result.exit_code == 2 and not payload.strip():
+            error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
+            return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
+
+        _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+        matches: list[SearchMatch] = []
+        for line in payload.strip().split('\n'):
+            if not line:
+                continue
+            m = _match_re.match(line)
+            if m:
+                matches.append(SearchMatch(
+                    path=(m.group(1) or '') + m.group(2),
+                    line_number=int(m.group(3)),
+                    content=m.group(4)[:500],
+                ))
+        total = len(matches)
+        page = matches[offset:offset + limit]
+        ml_note = (
+            "Pattern contains \\n — multiline mode (-P) was enabled automatically "
+            "so the regex can match across line boundaries."
+        )
+        return SearchResult(
+            matches=page,
+            total_count=total,
+            truncated=total > offset + limit or bool(limit_reason),
+            limit_reason=limit_reason,
+            warning=ml_note,
+        )
 
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
@@ -3275,6 +3388,14 @@ class ShellFileOperations(FileOperations):
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
+        multiline = _pattern_has_regex_newline(pattern)
+        if multiline and output_mode == "content" and self._grep_supports_perl():
+            ml_result = self._search_with_grep_multiline(
+                pattern, path, file_glob, limit, offset, context,
+            )
+            if ml_result is not None:
+                return ml_result
+
         cmd_parts = ["grep", "-rnHE"]  # -H forces filenames; -E matches rg regex behavior
         
         # Exclude hidden directories (matching ripgrep's default behavior).

@@ -761,6 +761,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     (unadvertised in the schema; the mirror rejection error teaches it — the
     cross-PROFILE guard it was named for no longer exists).
     """
+    # The duplicated-drive-prefix refusal lives in the shared path guard
+    # (``_check_sensitive_path``) so that patch_tool cannot bypass it; see
+    # ``_DUPLICATED_DRIVE_PREFIX_RE``.
     # write_file checks the binary-document guard before the mirror guard.
     err = (_check_sensitive_path(path, task_id)
            or _check_binary_document_write(path, task_id)

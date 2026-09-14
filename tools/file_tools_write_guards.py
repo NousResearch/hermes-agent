@@ -10,10 +10,25 @@ deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
 
 import fnmatch
 import os
+import re
 from pathlib import Path
 
 from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
 from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
+
+# A write path that already contains a duplicated drive prefix — ``C:\Foo\C:\Foo``, produced by a
+# cwd+prepend bug somewhere upstream. Refused before anything touches the filesystem, because the
+# path would resolve into an unintended directory and land the write in the wrong place. This lives
+# in the shared path guard rather than in ``write_file_tool`` alone so that ``patch_tool`` (which
+# reaches the same guard through ``_write_precheck_error``) cannot be used as a bypass for the same
+# malformed path.
+#
+# The drive letter is matched case-insensitively and either separator is accepted, because on
+# Windows ``C:\Foo``, ``c:\Foo`` and ``C:/Foo`` are the same directory. A literal backreference to a
+# captured ``<letter>:<separator>`` only caught the verbatim duplicate, so mixed forms such as
+# ``C:\Foo\c:\Foo`` or ``C:\Foo\C:/Foo`` slipped through the fail-closed check even though they
+# resolve into exactly the unintended directory this guard exists to refuse.
+_DUPLICATED_DRIVE_PREFIX_RE = re.compile(r"^([A-Za-z]):[\\/].*?\1:[\\/]", re.IGNORECASE)
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -108,6 +123,13 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
+    # Fail closed on a malformed path before any filesystem work: nothing below should try to
+    # resolve or realpath a path that already carries two drive prefixes.
+    if _DUPLICATED_DRIVE_PREFIX_RE.search(filepath or ""):
+        return (
+            f"write_file: path contains a duplicated drive prefix: {filepath!r}. "
+            "This usually means a cwd+path prepending bug somewhere upstream. "
+            "Use an absolute path that does not start with the same drive letter.")
     candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (

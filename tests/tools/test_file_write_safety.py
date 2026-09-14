@@ -751,3 +751,166 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+class TestDuplicateDrivePrefixGuard:
+    """Fail-closed guard on a path that already contains a duplicated drive
+    prefix (e.g., ``C:\\Foo\\C:\\Foo`` from a cwd+path prepending bug somewhere
+    upstream). Better to refuse the write than to silently land a file in the
+    wrong place. See path-pollution issue #108508 follow-up.
+
+    The check lives in ``write_file_tool`` before any state-mutating call; the
+    purpose here is to lock in the rule and fail loudly if it ever regresses.
+    """
+
+    def test_clean_absolute_path_passes(self, tmp_path):
+        # Bypass any stale .pyc that may have been written before the guard
+        # landed. Future-proof: the guard lives in the shared path guard, so
+        # reimporting is the only thing that gets the patched code.
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # Hermetic target under tmp_path rather than a fixed synthetic root: on
+        # Windows this is still a drive-rooted absolute path (so the check is
+        # exercised for real — asserted below) while never pointing at a path
+        # outside the test's own sandbox. On POSIX there is no drive prefix to
+        # match, so the assertion is trivially satisfied there; the Windows lane
+        # is where this guard has meaning.
+        target = tmp_path / "test-clean.py"
+        import os as _os
+        from tools.file_tools_write_guards import _DUPLICATED_DRIVE_PREFIX_RE
+        assert _DUPLICATED_DRIVE_PREFIX_RE.pattern
+        if _os.name == "nt":
+            assert str(target)[1:2] == ":", "expected a drive-rooted path on Windows"
+        result = write_file_tool(
+            path=str(target),
+            content="x",
+            cross_profile=True,
+        )
+        # The guard short-circuits BEFORE any tool error/success; it must NOT
+        # mention the duplicated drive prefix.
+        assert "duplicated drive prefix" not in (result or ""), (
+            f"Clean absolute path was incorrectly flagged: {result!r}"
+        )
+
+    def test_patch_path_is_covered_by_the_same_guard(self, tmp_path):
+        """patch must not be a bypass for the malformed path write_file refuses.
+
+        patch_tool reaches the shared guard through ``_write_precheck_error``, and the duplicated
+        drive-prefix check lives there (not in write_file_tool alone) precisely so this holds.
+        """
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        victim = tmp_path / "victim.py"
+        victim.write_text("original\n", encoding="utf-8")
+        mangled = (
+            str(tmp_path)
+            + f"\\{tmp_path}\\test-mangled.py"
+        )
+        result = _ft.patch_tool(
+            mode="replace", path=mangled, old_string="original", new_string="changed",
+        )
+        assert "duplicated drive prefix" in (result or ""), (
+            f"patch was not blocked by the shared guard: {result!r}"
+        )
+        assert victim.read_text(encoding="utf-8") == "original\n"
+
+    def test_mangled_path_is_rejected(self):
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # This is the exact pattern observed in the 2026-09-11 path-pollution
+        # bug: the agent sent an absolute path and the kernel/cwd logic
+        # prepended the cwd, producing a duplicated-drive prefix. Synthetic root
+        # so the fixture is not tied to a contributor's machine — what matters to
+        # the guard is that the drive prefix appears twice.
+        mangled = (
+            r"C:\hermes-ci\acceptance"
+            r"\C:\hermes-ci\acceptance\test-mangled.py"
+        )
+        result = write_file_tool(
+            path=mangled,
+            content="x",
+            cross_profile=True,
+        )
+        assert result is not None
+        assert "duplicated drive prefix" in result, (
+            f"Mangled path was NOT rejected by the guard: {result!r}"
+        )
+        # The actual destination must NOT have been created on disk.
+        import os
+        assert not os.path.exists(mangled), (
+            f"File was created at the wrong path: {mangled!r}"
+        )
+
+    def test_relative_path_passes(self, tmp_path, monkeypatch):
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # Relative paths still resolve against cwd; they don't look duplicated.
+        # Run from a temp cwd: a relative write lands in the process cwd, so
+        # without this the test drops test-relative.py into whatever directory
+        # pytest was invoked from (the checkout), leaving an untracked file
+        # behind and making the suite depend on its execution directory.
+        monkeypatch.chdir(tmp_path)
+        result = write_file_tool(
+            path="test-relative.py",
+            content="x",
+            cross_profile=True,
+        )
+        assert "duplicated drive prefix" not in (result or "")
+        # Hermetic by construction now: the relative write must have landed in
+        # the sandbox we chdir'd into, not beside the repository.
+        assert (tmp_path / "test-relative.py").exists(), (
+            f"relative write did not land in the temp cwd: {result!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "mangled",
+        [
+            r"C:\Foo\C:\Foo",      # verbatim: the pollution shape actually observed
+            r"C:/Foo/C:/Foo",      # verbatim, forward slashes
+            r"c:\bar\c:\bar\x",    # verbatim, lowercase
+            r"C:\Foo\c:\Foo",      # mixed case — the same directory on Windows
+            r"C:\Foo\C:/Foo",      # mixed separator — the same directory on Windows
+        ],
+    )
+    def test_duplicate_drive_prefix_forms_are_refused(self, mangled):
+        """Every spelling of the duplicated prefix is refused, not just the verbatim one.
+
+        Drive letters are case-insensitive on Windows and ``/`` and ``\\`` are
+        interchangeable, so a guard that only matches a literal ``<letter>:<sep>``
+        backreference lets ``C:\\Foo\\c:\\Foo`` and ``C:\\Foo\\C:/Foo`` through to
+        exactly the unintended directory it exists to refuse.
+        """
+        from tools.file_tools_write_guards import _DUPLICATED_DRIVE_PREFIX_RE
+
+        assert _DUPLICATED_DRIVE_PREFIX_RE.search(mangled), (
+            f"duplicated drive prefix was not detected: {mangled!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "clean",
+        [
+            r"C:\Users\Admin\foo.py",
+            r"C:\Foo\bar.py",
+            "test-relative.py",
+            r"\\server\share\x.py",
+            "/opt/Foo/bin/x",
+        ],
+    )
+    def test_legitimate_paths_are_not_refused(self, clean):
+        """Fail-closed must not mean fail-often: no repeated drive prefix, no match."""
+        from tools.file_tools_write_guards import _DUPLICATED_DRIVE_PREFIX_RE
+
+        assert not _DUPLICATED_DRIVE_PREFIX_RE.search(clean), (
+            f"legitimate path was incorrectly flagged: {clean!r}"
+        )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

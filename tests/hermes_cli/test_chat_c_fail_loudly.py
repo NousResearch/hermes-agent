@@ -85,6 +85,47 @@ class TestCreateTitledSession:
         finally:
             db.close()
 
+    def test_created_session_records_launch_cwd(self, isolated_home, tmp_path, monkeypatch):
+        """The created session binds to the effective launch cwd (what `--in DIR`
+        chdir'd into), so it is workspace-scoped like a normal new CLI session and
+        `sessions list --workspace <dir>` can find it (#106016)."""
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        workspace = tmp_path / "hermes-workspace"
+        workspace.mkdir()
+        monkeypatch.chdir(workspace)  # stands in for `--in DIR`, which chdir's first
+
+        sid = _create_titled_session("Bot Chat")
+        assert sid
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(sid)
+            assert session is not None
+            # cwd is the effective launch dir, not NULL/unbound.
+            assert (session.get("cwd") or "").rstrip("/\\") == str(workspace).rstrip("/\\")
+        finally:
+            db.close()
+
+    def test_created_session_unstamped_for_nonlocal_backend(self, isolated_home, monkeypatch):
+        """Gateway/cron backends have no stable host cwd, so the row is left
+        cwd-less (mirrors run_agent._launch_cwd_for_session's guard)."""
+        monkeypatch.setenv("TERMINAL_ENV", "gateway")
+
+        sid = _create_titled_session("Bot Chat")
+        assert sid
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            session = db.get_session(sid)
+            assert session is not None
+            assert not (session.get("cwd") or "")
+        finally:
+            db.close()
+
 
 class TestChatCFailLoudlyOnStderr:
     """Behavior-level: run the real cmd_chat path and inspect channels."""

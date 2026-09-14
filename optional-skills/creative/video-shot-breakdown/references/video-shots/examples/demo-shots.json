@@ -1,0 +1,1105 @@
+{
+  "source": "demo-video.mp4",
+  "title": "啥是AI",
+  "lang": "zh",
+  "meta": {
+    "durationSeconds": 202.9,
+    "fps": 30,
+    "width": 1680,
+    "height": 720,
+    "aspect": "7:3",
+    "codec": "h264",
+    "hasAudio": true
+  },
+  "params": {
+    "sceneThreshold": 0.15,
+    "minShotSeconds": 0.3
+  },
+  "seedCuts": [
+    0.9,
+    1.23,
+    1.4,
+    2.97,
+    7.13,
+    10.77,
+    19.27,
+    21.77,
+    33.57,
+    37.33,
+    45.63,
+    45.97,
+    46.03,
+    46.13,
+    46.2,
+    46.73,
+    48.2,
+    48.9,
+    50.37,
+    50.8,
+    51.63,
+    57.7,
+    59.6,
+    61.67,
+    69.03,
+    72.77,
+    75.93,
+    79.43,
+    83.23,
+    90.7,
+    92.33,
+    100.8,
+    105.3,
+    108.37,
+    114.03,
+    116.73,
+    121.13,
+    130.07,
+    135.1,
+    142.17,
+    145.57,
+    148.07,
+    156.47,
+    172.53,
+    176.33,
+    180.63
+  ],
+  "manualCuts": [
+    63.5,
+    127.37,
+    133.83,
+    183.23,
+    186.07,
+    190.33,
+    193.3,
+    195.87,
+    198,
+    199.73
+  ],
+  "cast": [
+    {
+      "id": "P1",
+      "name": "老太太",
+      "note": "主角，儿子在城里的农村母亲"
+    },
+    {
+      "id": "P2",
+      "name": "老中医",
+      "note": "村里药铺坐堂"
+    },
+    {
+      "id": "P3",
+      "name": "屠夫",
+      "note": "雪地肉摊"
+    },
+    {
+      "id": "P4",
+      "name": "神婆",
+      "note": "烛台八卦图前算命"
+    },
+    {
+      "id": "P5",
+      "name": "村里男人",
+      "note": "帮老太太看手机的中年男人"
+    },
+    {
+      "id": "P6",
+      "name": "儿子",
+      "note": "城里戴眼镜的年轻人，双屏电脑前"
+    }
+  ],
+  "shots": [
+    {
+      "id": "S01",
+      "start": 0,
+      "end": 0.9,
+      "seconds": 0.9,
+      "motion": 27.8,
+      "size": "wide",
+      "category": "subject",
+      "camera": "tracking",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "土屋门洞逆光，老太太扶着门框往外冲，门板和灶台在前景糊成虚影",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "hook",
+      "rhythmNote": "0.9 秒的背影狂奔，连脸都不给——先让人问她要去哪"
+    },
+    {
+      "id": "S02",
+      "start": 0.9,
+      "end": 1.23,
+      "seconds": 0.33,
+      "motion": 39.9,
+      "size": "wide",
+      "category": "subject",
+      "camera": "tracking",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "雪坡土路上老太太弓背小跑，镜头贴在她侧后方跟着，人和雪面都拖出动态模糊",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "hook",
+      "rhythmNote": "雪地里弓背小跑，动势顶满，问题从「去哪」变成「出什么事了」"
+    },
+    {
+      "id": "S03",
+      "start": 1.23,
+      "end": 2.97,
+      "seconds": 1.74,
+      "motion": 15.5,
+      "size": "wide",
+      "category": "establishing",
+      "camera": "tracking",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1",
+        "P2"
+      ],
+      "frame": "药铺内景，老太太背对镜头跑向柜台，柜台后老中医低头写方，左侧炉上水壶冒白汽",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "setup",
+      "rhythmNote": "冲进药铺，交代她奔的是哪儿、要找的是谁"
+    },
+    {
+      "id": "S04",
+      "start": 2.97,
+      "end": 7.13,
+      "seconds": 4.16,
+      "motion": 2.2,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1",
+        "P2"
+      ],
+      "frame": "越过老中医的肩头拍老太太，她双手撑在柜台上探身往前说话，身后是结霜的木窗",
+      "onscreenText": "",
+      "audio": "老太太：老李，给我拿最猛的药。我儿子在城里染上 AI 了",
+      "rhythm": "hook",
+      "rhythmNote": "「我儿子在城里染上 AI 了」——荒诞前提砸出来，整条片子的钩子是这句台词"
+    },
+    {
+      "id": "S05",
+      "start": 7.13,
+      "end": 10.77,
+      "seconds": 3.64,
+      "motion": 2.1,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P2"
+      ],
+      "frame": "老中医坐在中药柜前，钢笔停在处方纸上，抬眼从眼镜上方看过来",
+      "onscreenText": "",
+      "audio": "老中医：咳？还是癌？",
+      "rhythm": "beat",
+      "rhythmNote": "老中医一句「咳？还是癌？」把误会坐实，观众开始等下一句"
+    },
+    {
+      "id": "S06",
+      "start": 10.77,
+      "end": 19.27,
+      "seconds": 8.5,
+      "motion": 1.1,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太伏在柜台边上，一只手按着台面，嘴张着还在往下说，窗外是雪地反光",
+      "onscreenText": "",
+      "audio": "老太太：他说天天喂它。／旁白：事情的起因，来自我的一通电话",
+      "rhythm": "setup",
+      "rhythmNote": "她接着说「天天喂它」，旁白把片子转向一通电话，交代回溯"
+    },
+    {
+      "id": "S07",
+      "start": 19.27,
+      "end": 21.77,
+      "seconds": 2.5,
+      "motion": 8.55,
+      "size": "wide",
+      "category": "establishing",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "黑白画面，村口空地上老太太举斧劈柴，左上角压着时间字幕",
+      "onscreenText": "十分钟前",
+      "audio": "",
+      "rhythm": "setup",
+      "rhythmNote": "黑白加「十分钟前」字幕，明说这是倒回去的十分钟"
+    },
+    {
+      "id": "S08",
+      "start": 21.77,
+      "end": 33.57,
+      "seconds": 11.8,
+      "motion": 4.7,
+      "size": "medium",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "黑白画面，老太太站在断墙和雪地之间，手机贴着耳朵笑，肩上还扛着刚才的柴",
+      "onscreenText": "",
+      "audio": "儿子（电话）：妈，最近换了新工作……我最近可忙",
+      "rhythm": "setup",
+      "rhythmNote": "电话里儿子说换了新工作、最近忙——误会的种子埋在这句敷衍里"
+    },
+    {
+      "id": "S09",
+      "start": 33.57,
+      "end": 37.33,
+      "seconds": 3.76,
+      "motion": 1.6,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1",
+        "P2"
+      ],
+      "frame": "老太太侧脸对着柜台，眉头拧着，前景是老中医虚化的手臂",
+      "onscreenText": "",
+      "audio": "老太太：你说俺儿子要是治不好，可咋办呢",
+      "rhythm": "build",
+      "rhythmNote": "回到药铺，问题从「什么病」升级成「治不好可咋办」"
+    },
+    {
+      "id": "S10",
+      "start": 37.33,
+      "end": 45.63,
+      "seconds": 8.3,
+      "motion": 1.7,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P2"
+      ],
+      "frame": "老中医摘下眼镜停在半空，嘴角下撇，背景是砖墙上剥落的蓝漆",
+      "onscreenText": "",
+      "audio": "老中医：那到底啥是 AI 啊",
+      "rhythm": "build",
+      "rhythmNote": "老中医反问「到底啥是 AI」，全片的核心问题第一次被问出口"
+    },
+    {
+      "id": "S11",
+      "start": 45.63,
+      "end": 45.97,
+      "seconds": 0.34,
+      "motion": 53.7,
+      "size": "wide",
+      "category": "subject",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P3"
+      ],
+      "frame": "雪后山村的露天肉摊，屠夫站在木架前把砍刀高高扬起，身后是灰白山坡和平房",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "build",
+      "rhythmNote": "换到雪地肉摊，她开始挨个人问，场景从室内推到山坡"
+    },
+    {
+      "id": "S12",
+      "start": 45.97,
+      "end": 46.73,
+      "seconds": 0.76,
+      "motion": 6.4,
+      "size": "close",
+      "category": "insert",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [],
+      "frame": "案板上整扇猪肉被刀背压住，刀刃切进肥膘，肉面弹了一下",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "beat",
+      "rhythmNote": "砍刀切进肥膘，肉面弹了一下——一记实音把节奏砸实"
+    },
+    {
+      "id": "S13",
+      "start": 46.73,
+      "end": 48.2,
+      "seconds": 1.47,
+      "motion": 3.4,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太站在挂满猪肉的架子中间，两侧的肉块把她框在中央",
+      "onscreenText": "",
+      "audio": "老太太：没身子",
+      "rhythm": "build",
+      "rhythmNote": "她转述儿子的话「没身子」，线索加一条"
+    },
+    {
+      "id": "S14",
+      "start": 48.2,
+      "end": 48.9,
+      "seconds": 0.7,
+      "motion": 7.1,
+      "size": "medium-wide",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P3"
+      ],
+      "frame": "屠夫隔着肉架把刀举过头顶，嘴里还在应话，远处是雪山轮廓",
+      "onscreenText": "",
+      "audio": "屠夫：天天喂",
+      "rhythm": "beat",
+      "rhythmNote": "屠夫举着刀接话「天天喂」，荒诞在不同人嘴里滚雪球"
+    },
+    {
+      "id": "S15",
+      "start": 48.9,
+      "end": 50.37,
+      "seconds": 1.47,
+      "motion": 2.7,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太仰起下巴追问，视线越过镜头看向画外的屠夫，身后的肉块轻轻晃",
+      "onscreenText": "",
+      "audio": "老太太：还能替人干活",
+      "rhythm": "build",
+      "rhythmNote": "「还能替人干活」，传闻又长一截"
+    },
+    {
+      "id": "S16",
+      "start": 50.37,
+      "end": 50.8,
+      "seconds": 0.43,
+      "motion": 33.9,
+      "size": "close",
+      "category": "insert",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [],
+      "frame": "圆木墩上一根带血的猪骨，砍刀从画面右侧劈下来钉在骨头旁边",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "beat",
+      "rhythmNote": "砍刀劈在带血的骨头旁，声音和画面一起砸下来"
+    },
+    {
+      "id": "S17",
+      "start": 50.8,
+      "end": 51.63,
+      "seconds": 0.83,
+      "motion": 5.6,
+      "size": "medium-close",
+      "category": "reaction",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太在同一机位上抿住嘴点头，眼睛往下瞟，没再说话",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "breath",
+      "rhythmNote": "她抿嘴点头不出声，让刚才那串传闻落地"
+    },
+    {
+      "id": "S18",
+      "start": 51.63,
+      "end": 57.7,
+      "seconds": 6.07,
+      "motion": 0.4,
+      "size": "medium",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P3"
+      ],
+      "frame": "屠夫把刀尖朝镜头点了两下，围裙上全是血污，身后山坡上是成排的平房",
+      "onscreenText": "",
+      "audio": "屠夫：你得找人看看",
+      "rhythm": "turn",
+      "rhythmNote": "屠夫刀尖一点「你得找人看看」，把她推去求神——路线在这儿拐弯"
+    },
+    {
+      "id": "S19",
+      "start": 57.7,
+      "end": 59.6,
+      "seconds": 1.9,
+      "motion": 1,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P4"
+      ],
+      "frame": "神婆坐在昏暗屋里，背后墙上挂着阴阳八卦图，画面左下角一支红烛",
+      "onscreenText": "",
+      "audio": "神婆：你儿子说那玩意叫啥",
+      "rhythm": "build",
+      "rhythmNote": "神婆开口问「那玩意叫啥」，问题被转了个方向"
+    },
+    {
+      "id": "S20",
+      "start": 59.6,
+      "end": 61.67,
+      "seconds": 2.07,
+      "motion": 0.9,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太在斜射的光柱里侧坐着，空气里全是浮尘，脸只被照亮一半",
+      "onscreenText": "",
+      "audio": "老太太：说是叫啥……哎",
+      "rhythm": "build",
+      "rhythmNote": "光柱里她答不上来——她自己也不知道 AI 是什么"
+    },
+    {
+      "id": "S21",
+      "start": 61.67,
+      "end": 63.5,
+      "seconds": 1.83,
+      "motion": 8.3,
+      "size": "close",
+      "category": "insert",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P4"
+      ],
+      "frame": "烛台边的旧书和放大镜，神婆枯瘦的手按在纸面上一寸寸往前推",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "beat",
+      "rhythmNote": "枯瘦的手在书页上一寸寸往前推，仪式把悬疑拉满"
+    },
+    {
+      "id": "S22",
+      "start": 63.5,
+      "end": 69.03,
+      "seconds": 5.53,
+      "motion": 3.1,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P4"
+      ],
+      "frame": "神婆在烛火后抬起脸，眼白外翻，嘴张开停在半路",
+      "onscreenText": "",
+      "audio": "神婆：挨啊……这是被缠上了",
+      "rhythm": "turn",
+      "rhythmNote": "神婆一句「这是被缠上了」，荒诞被推到顶点"
+    },
+    {
+      "id": "S23",
+      "start": 69.03,
+      "end": 72.77,
+      "seconds": 3.74,
+      "motion": 4.1,
+      "size": "medium-close",
+      "category": "reaction",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太双手撑在桌沿上整个人往前扑，眼睛瞪圆，额头青筋鼓出来",
+      "onscreenText": "",
+      "audio": "老太太：啥？这可咋办啊",
+      "rhythm": "payoff",
+      "rhythmNote": "她整个人扑上桌瞪着眼喊「这可咋办啊」，前面攒的误会在这儿炸开"
+    },
+    {
+      "id": "S24",
+      "start": 72.77,
+      "end": 75.93,
+      "seconds": 3.16,
+      "motion": 7.25,
+      "size": "wide",
+      "category": "subject",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "冬天的田埂小路上老太太独自站着，手里捏着一张折过的纸条，远处是光秃的树和电线杆",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "breath",
+      "rhythmNote": "田埂上她独自捏着纸条，给刚才那记爆发留一口气"
+    },
+    {
+      "id": "S25",
+      "start": 75.93,
+      "end": 79.43,
+      "seconds": 3.5,
+      "motion": 0.2,
+      "size": "medium",
+      "category": "establishing",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P5"
+      ],
+      "frame": "农家堂屋里，男人斜坐在方桌后面低头刷手机，窗台上摆着一只老式台灯和一台旧秤",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "setup",
+      "rhythmNote": "换场到堂屋，男人低头刷手机，新的信息源出现"
+    },
+    {
+      "id": "S26",
+      "start": 79.43,
+      "end": 83.23,
+      "seconds": 3.8,
+      "motion": 4.7,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太贴着糊满旧报纸的木窗往外看，窗玻璃上结着厚霜",
+      "onscreenText": "",
+      "audio": "旁白：他刚刚用 AI 提示词生成了一个身价过亿的美女",
+      "rhythm": "build",
+      "rhythmNote": "旁白「他刚用 AI 生成了一个身价过亿的美女」，传闻再歪一层"
+    },
+    {
+      "id": "S27",
+      "start": 83.23,
+      "end": 90.7,
+      "seconds": 7.47,
+      "motion": 3.4,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1",
+        "P5"
+      ],
+      "frame": "老太太和男人凑在一部手机两侧，两张脸挤进同一个画面，手机屏幕的光打在下巴上",
+      "onscreenText": "",
+      "audio": "村里男人：啊，人工智能嘛",
+      "rhythm": "build",
+      "rhythmNote": "两张脸挤在一部手机两侧，她第一次真的看见 AI"
+    },
+    {
+      "id": "S28",
+      "start": 90.7,
+      "end": 92.33,
+      "seconds": 1.63,
+      "motion": 5.1,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太把手机举到镜头前，屏幕正对观众，她的脸退到手机后面半明半暗",
+      "onscreenText": "",
+      "audio": "老太太：它靠啥活着呀",
+      "rhythm": "build",
+      "rhythmNote": "她把手机怼到镜头前问「它靠啥活着呀」，问题还是回到吃喝"
+    },
+    {
+      "id": "S29",
+      "start": 92.33,
+      "end": 100.8,
+      "seconds": 8.47,
+      "motion": 1.4,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P5"
+      ],
+      "frame": "男人站在斑驳的土墙前抬头答话，棉袄领子立着，墙面的石灰大片脱落",
+      "onscreenText": "",
+      "audio": "村里男人：靠……靠算呗。他就给你画出来",
+      "rhythm": "build",
+      "rhythmNote": "男人答「靠算呗，他就给你画出来」，答案给得越多她越糊涂"
+    },
+    {
+      "id": "S30",
+      "start": 100.8,
+      "end": 105.3,
+      "seconds": 4.5,
+      "motion": 1.9,
+      "size": "medium-close",
+      "category": "reaction",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太侧对镜头盯着手边的手机，屏幕的冷光只照亮她鼻梁一侧",
+      "onscreenText": "",
+      "audio": "村里男人（画外）：他啥都能造",
+      "rhythm": "breath",
+      "rhythmNote": "她盯着手机不说话，冷光只照亮鼻梁一侧，信息在这一镜沉下去"
+    },
+    {
+      "id": "S31",
+      "start": 105.3,
+      "end": 108.37,
+      "seconds": 3.07,
+      "motion": 9,
+      "size": "extreme-close",
+      "category": "insert",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "手写拼音表上一根粗糙的手指压着字母，指甲缝里有泥，纸面起了毛边",
+      "onscreenText": "d a i",
+      "audio": "",
+      "rhythm": "beat",
+      "rhythmNote": "沾泥的粗手指压在手写拼音表上——她不再问人，开始自己学"
+    },
+    {
+      "id": "S32",
+      "start": 108.37,
+      "end": 114.03,
+      "seconds": 5.66,
+      "motion": 0.5,
+      "size": "wide",
+      "category": "establishing",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "土屋里一束光从破瓦缝打下来，老太太的身影缩在光柱边缘，屋里堆着柴草",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "setup",
+      "rhythmNote": "破瓦缝漏下的光柱里她缩成一小团，交代她一个人的处境"
+    },
+    {
+      "id": "S33",
+      "start": 114.03,
+      "end": 116.73,
+      "seconds": 2.7,
+      "motion": 0.5,
+      "size": "medium-close",
+      "category": "insert",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "老太太伏在一台泛黄的旧键盘上，手指悬在按键上方不敢落下",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "build",
+      "rhythmNote": "她伏在泛黄的旧键盘上，手指悬着不敢落下"
+    },
+    {
+      "id": "S34",
+      "start": 116.73,
+      "end": 121.13,
+      "seconds": 4.4,
+      "motion": 14.4,
+      "size": "wide",
+      "category": "subject",
+      "camera": "push-in",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "夜里的小卖部门口，老太太抱着纸箱迈进门槛，镜头跟着推进店内，炉火在右下角发红",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "build",
+      "rhythmNote": "夜里抱着纸箱迈进小卖部，她要往城里寄东西了"
+    },
+    {
+      "id": "S35",
+      "start": 121.13,
+      "end": 127.37,
+      "seconds": 6.24,
+      "motion": 1.1,
+      "size": "medium-close",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "货架前老太太越过前景的人肩说话，身后是堆到顶的杂货和纸箱",
+      "onscreenText": "",
+      "audio": "老太太：你跟我儿说……他就啥都不用怕了",
+      "rhythm": "turn",
+      "rhythmNote": "「你跟我儿说……他就啥都不用怕了」——动机从治病翻成护儿，片子在这儿转身"
+    },
+    {
+      "id": "S36",
+      "start": 127.37,
+      "end": 130.07,
+      "seconds": 2.7,
+      "motion": 0.1,
+      "size": "wide",
+      "category": "establishing",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "城里出租屋，双屏电脑亮着代码和游戏画面，儿子背对镜头缩在椅子里，桌上一排饮料罐",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "setup",
+      "rhythmNote": "切到城里出租屋，双屏亮着，儿子背对镜头缩在椅子里"
+    },
+    {
+      "id": "S37",
+      "start": 130.07,
+      "end": 133.83,
+      "seconds": 3.76,
+      "motion": 0.9,
+      "size": "wide",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "同一张电脑桌，儿子转身朝门口，屏幕蓝光把整间屋子染成青色",
+      "onscreenText": "",
+      "audio": "快递员（画外）：你的快递",
+      "rhythm": "setup",
+      "rhythmNote": "门口一声「你的快递」，把两地接上"
+    },
+    {
+      "id": "S38",
+      "start": 133.83,
+      "end": 135.1,
+      "seconds": 1.27,
+      "motion": 1.35,
+      "size": "none",
+      "category": "transition",
+      "camera": "static",
+      "transitionIn": "fade-out",
+      "subjects": [],
+      "frame": "整幅黑场，末尾隐约透出下一场屋内的一点暖光",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "breath",
+      "rhythmNote": "整幅黑场，两地之间换一口气"
+    },
+    {
+      "id": "S39",
+      "start": 135.1,
+      "end": 142.17,
+      "seconds": 7.07,
+      "motion": 9.7,
+      "size": "close",
+      "category": "insert",
+      "camera": "handheld",
+      "transitionIn": "fade-in",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "一双手把纸箱推到桌面中央拆开，从里面抽出一张折起来的手写纸条",
+      "onscreenText": "你一按",
+      "audio": "",
+      "rhythm": "beat",
+      "rhythmNote": "一双手拆开纸箱，抽出一张折起来的手写纸条"
+    },
+    {
+      "id": "S40",
+      "start": 142.17,
+      "end": 145.57,
+      "seconds": 3.4,
+      "motion": 1.3,
+      "size": "close",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "儿子戴着反光的眼镜低头念纸条，嘴角先扬起来又压下去",
+      "onscreenText": "",
+      "audio": "老太太（画外）：它就自己生出来",
+      "rhythm": "build",
+      "rhythmNote": "他念着纸条，嘴角先扬起来又压下去"
+    },
+    {
+      "id": "S41",
+      "start": 145.57,
+      "end": 148.07,
+      "seconds": 2.5,
+      "motion": 1.6,
+      "size": "extreme-close",
+      "category": "insert",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "旧键盘上贴着一张手写的红箭头标签，一根手指按下箭头指着的那颗键",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "beat",
+      "rhythmNote": "键盘上贴着手写红箭头，一根手指按下那颗键"
+    },
+    {
+      "id": "S42",
+      "start": 148.07,
+      "end": 156.47,
+      "seconds": 8.4,
+      "motion": 0.6,
+      "size": "close",
+      "category": "reaction",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "儿子的脸被屏幕照亮，眼镜片上映出跳动的界面，他慢慢笑了一下",
+      "onscreenText": "",
+      "audio": "老太太（画外）：那个叫 AI 的",
+      "rhythm": "build",
+      "rhythmNote": "屏幕的光打在脸上，他慢慢笑了一下，情绪开始往上走"
+    },
+    {
+      "id": "S43",
+      "start": 156.47,
+      "end": 172.53,
+      "seconds": 16.06,
+      "motion": 0.3,
+      "size": "medium",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P1"
+      ],
+      "frame": "破屋里老太太站在光柱中央，双手捧着手机贴近嘴边，尘埃在光里翻滚，头顶吊着一只灯泡",
+      "onscreenText": "AI",
+      "audio": "老太太：AI……你给我听好了",
+      "rhythm": "payoff",
+      "rhythmNote": "16 秒长镜：她捧着手机对着光柱说「AI，你给我听好了」——全片最重的一击"
+    },
+    {
+      "id": "S44",
+      "start": 172.53,
+      "end": 176.33,
+      "seconds": 3.8,
+      "motion": 0.5,
+      "size": "close",
+      "category": "reaction",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "儿子的侧脸贴在屏幕前，镜片里叠着彩色的界面光，眼眶发红没有出声",
+      "onscreenText": "",
+      "audio": "",
+      "rhythm": "payoff",
+      "rhythmNote": "儿子眼眶发红却一声不出，母亲那句话在这张脸上兑现"
+    },
+    {
+      "id": "S45",
+      "start": 176.33,
+      "end": 180.63,
+      "seconds": 4.3,
+      "motion": 1.25,
+      "size": "wide",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "拉开看整间出租屋，儿子缩在电脑椅里背对镜头，屏幕的光把他的影子投在墙上",
+      "onscreenText": "",
+      "audio": "老太太（画外）：能懂这字吗……要是它真那么灵",
+      "rhythm": "build",
+      "rhythmNote": "拉开看整间屋子，画外音「要是它真那么灵」，请求还没说出口"
+    },
+    {
+      "id": "S46",
+      "start": 180.63,
+      "end": 183.23,
+      "seconds": 2.6,
+      "motion": 12.3,
+      "size": "close",
+      "category": "dialogue",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "儿子俯身贴向桌面，肩膀塌下去，脸埋进屏幕的光里",
+      "onscreenText": "",
+      "audio": "老太太（画外）：你让它把我给你生成过去",
+      "rhythm": "payoff",
+      "rhythmNote": "「你让它把我给你生成过去」——她真正要的东西终于说出来"
+    },
+    {
+      "id": "S47",
+      "start": 183.23,
+      "end": 186.07,
+      "seconds": 2.84,
+      "motion": 3.1,
+      "size": "close",
+      "category": "subject",
+      "camera": "handheld",
+      "transitionIn": "cut",
+      "subjects": [
+        "P6"
+      ],
+      "frame": "儿子侧躺在床上抱着被子，屋里只剩一盏暖光小灯，画面大半是暗的",
+      "onscreenText": "",
+      "audio": "老太太（画外）：妈想去看看你",
+      "rhythm": "payoff",
+      "rhythmNote": "「妈想去看看你」落在被窝里的侧脸上，情绪到底"
+    },
+    {
+      "id": "S48",
+      "start": 186.07,
+      "end": 190.33,
+      "seconds": 4.26,
+      "motion": 0,
+      "size": "none",
+      "category": "text-card",
+      "camera": "static",
+      "transitionIn": "fade-out",
+      "subjects": [],
+      "frame": "黑场上淡入两行居中的白色宋体字，字号很小，四周留出大片黑",
+      "onscreenText": "最强悍的算力，也算不出最朴拙的牵挂",
+      "audio": "",
+      "rhythm": "close",
+      "rhythmNote": "黑场淡入两行字：最强悍的算力，也算不出最朴拙的牵挂"
+    },
+    {
+      "id": "S49",
+      "start": 190.33,
+      "end": 193.3,
+      "seconds": 2.97,
+      "motion": 0,
+      "size": "none",
+      "category": "text-card",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [],
+      "frame": "黑场正中一行加大的白字，字距被拉开，句号单独占一格",
+      "onscreenText": "AI 读作爱。",
+      "audio": "",
+      "rhythm": "close",
+      "rhythmNote": "「AI 读作爱。」——全片题眼，一行字收掉所有误会"
+    },
+    {
+      "id": "S50",
+      "start": 193.3,
+      "end": 195.87,
+      "seconds": 2.57,
+      "motion": 0,
+      "size": "none",
+      "category": "text-card",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [],
+      "frame": "黑场正中一行祝福语，字号比上一张小一号，位置仍居中",
+      "onscreenText": "祝愿天下母亲身体健康",
+      "audio": "",
+      "rhythm": "close",
+      "rhythmNote": "一句祝天下母亲身体健康，把片子递还给观众"
+    },
+    {
+      "id": "S51",
+      "start": 195.87,
+      "end": 198,
+      "seconds": 2.13,
+      "motion": 0,
+      "size": "none",
+      "category": "text-card",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [],
+      "frame": "黑场偏下一行制作说明，字号最小，灰白色",
+      "onscreenText": "全片生成 seedance2.5",
+      "audio": "",
+      "rhythm": "close",
+      "rhythmNote": "制作说明字卡，节奏已经完全落平"
+    },
+    {
+      "id": "S52",
+      "start": 198,
+      "end": 199.73,
+      "seconds": 1.73,
+      "motion": 0,
+      "size": "none",
+      "category": "text-card",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [],
+      "frame": "黑场偏下一行版权说明，与上一张同样的字号和位置",
+      "onscreenText": "MUSIC:青春纪念碑（杨洪清）侵权请联系我",
+      "audio": "",
+      "rhythm": "close",
+      "rhythmNote": "版权声明字卡，留给还没划走的人"
+    },
+    {
+      "id": "S53",
+      "start": 199.73,
+      "end": 202.9,
+      "seconds": 3.17,
+      "motion": 0,
+      "size": "none",
+      "category": "text-card",
+      "camera": "static",
+      "transitionIn": "cut",
+      "subjects": [],
+      "frame": "黑场正中是加粗的片名，下面一行小字署导演名",
+      "onscreenText": "啥是AI／导演 李幻枫",
+      "audio": "",
+      "rhythm": "close",
+      "rhythmNote": "片名与导演署名压在最后一张黑场上"
+    }
+  ]
+}

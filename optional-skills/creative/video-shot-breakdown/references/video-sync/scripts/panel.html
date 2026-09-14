@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="__LANG__">
+<head>
+<meta charset="utf-8">
+<title>__TITLE__ · panel</title>
+<style>
+/* 页面本身的复位：面板的样式全在 panel.css 里，那份文件一条规则都不碰 body */
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#12160f;overflow:hidden}
+</style>
+<style>
+/*__CSS__*/
+</style>
+</head>
+<body>
+<div class="panel" id="panel">
+  <div class="listhead" id="listhead"></div>
+
+  <section class="list" id="list">
+    <div class="rows" id="rows"></div>
+  </section>
+
+  <footer class="strip" id="strip"></footer>
+</div>
+
+<script>
+const DATA = "__DATA__";
+const LAYOUT = "__LAYOUT__";
+const W = DATA.words;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/*
+ * 三种模式，靠 hash 切（导出时各截一张，合成时由 ffmpeg 拼起来）：
+ *   #tall     只出镜头表、全部压暗，页面高 = 整张表的高——滚动用的底图
+ *   #tall-lit 同上，但每行都按「当前镜头」的样子渲——高亮条就是从它上面裁一条
+ *   #static 只出表头与进度条，中间留空——这是不动的底板
+ *   #measure 正常渲染，另外把每行的位置量出来吐进 #measure，供合成算表达式
+ *   其它（含 #S07）  正常渲染，给人预览
+ */
+const MODE = (location.hash.slice(1).match(/^(tall|tall-lit|static|measure)$/) || [])[1] || '';
+
+/* 版式与字号：面板多大，字就多大——导出的是视频，字小了等于没有 */
+document.getElementById('panel').classList.add(LAYOUT.portrait ? 'portrait' : 'landscape');
+const base = Math.max(12, Math.min(26, Math.min(LAYOUT.panel.width / 38, LAYOUT.panel.height / 26)));
+document.documentElement.style.fontSize = base + 'px';
+document.body.style.width = LAYOUT.panel.width + 'px';
+if (!MODE.startsWith('tall')) document.body.style.height = LAYOUT.panel.height + 'px';
+document.getElementById('panel').classList.add(...(MODE ? MODE.split('-') : ['live']));
+
+const shots = DATA.shots;
+const current = () => {
+  const id = decodeURIComponent(location.hash.slice(1));
+  return shots.find((s) => s.id === id) ?? shots[0];
+};
+
+/* 镜头表：整张都渲出来，再把当前那行滚到固定位置——截图时滚动位置就是「滚动」 */
+$('listhead').innerHTML = [W.headShot, W.headFrame, W.headDesc, W.rhythm]
+  .map((h) => `<span>${esc(h)}</span>`).join('');
+
+$('rows').innerHTML = shots.map((s) => `
+  <div class="row" data-id="${esc(s.id)}">
+    <span class="rno mono">${esc(s.id)}</span>
+    <span class="rinfo">
+      <span class="rtime mono">${esc(s.startText)}<i>${esc(s.seconds)}s</i></span>
+      <span class="rtags"><i class="dot" style="background:${DATA.colors[s.sizeKey] || '#c4cfaa'}"></i>${esc(s.size)} · ${esc(s.camera)}</span>
+    </span>
+    ${s.thumb ? `<img class="thumb" src="file://${esc(s.thumb)}" alt="">` : '<span class="thumb blank"></span>'}
+    <span class="rdesc">${esc(s.frame)}</span>
+    <span class="rbeat">${s.rhythm
+      ? `<i class="beat-tag" style="color:${DATA.rhythmColors[s.rhythmKey] || '#9fb488'}">[${esc(s.rhythm)}]</i>${esc(s.rhythmNote)}`
+      : ''}</span>
+  </div>`).join('');
+
+$('strip').innerHTML = shots.map((s) => `
+  <span class="seg" data-id="${esc(s.id)}"
+        style="width:${(s.seconds / DATA.total * 100).toFixed(3)}%;background:${DATA.colors[s.sizeKey] || '#c4cfaa'}"></span>`).join('');
+
+function paint() {
+  const s = current();
+  const index = shots.indexOf(s);
+
+  for (const row of document.querySelectorAll('.row')) {
+    const i = shots.findIndex((x) => x.id === row.dataset.id);
+    row.classList.toggle('on', row.dataset.id === s.id);
+    row.classList.toggle('done', i < index);
+  }
+  for (const seg of document.querySelectorAll('.seg')) {
+    const i = shots.findIndex((x) => x.id === seg.dataset.id);
+    seg.classList.toggle('on', seg.dataset.id === s.id);
+    seg.classList.toggle('done', i < index);
+  }
+
+  // 当前行钉在列表的固定位置（默认第二行），前后不够就贴边——不留空白
+  const row = document.querySelector('.row.on');
+  const list = $('list');
+  const rows = $('rows');
+  if (row) {
+    const anchor = list.clientHeight * 0.28;
+    const max = Math.max(0, rows.scrollHeight - list.clientHeight);
+    const offset = Math.min(max, Math.max(0, row.offsetTop - anchor));
+    rows.style.transform = `translateY(${-offset}px)`;
+  }
+  document.title = s.id;
+}
+
+if (MODE === 'measure') {
+  // 位置由浏览器量，合成端不猜：行高是 CSS 排出来的，脚本没法推
+  const list = $('list');
+  const rows = [...document.querySelectorAll('#rows .row')].map((r) => ({
+    id: r.dataset.id, top: Math.round(r.offsetTop), height: Math.round(r.offsetHeight),
+  }));
+  const box = list.getBoundingClientRect();
+  const pre = document.createElement('pre');
+  pre.id = 'measure';
+  pre.textContent = JSON.stringify({
+    panel: LAYOUT.panel,
+    view: {
+      x: Math.round(box.left), y: Math.round(box.top),
+      width: Math.round(box.width), height: Math.round(box.height),
+    },
+    content: Math.round($('rows').scrollHeight),
+    rows,
+  });
+  document.body.appendChild(pre);
+} else if (MODE.startsWith('tall')) {
+  // 长图：整张表铺开，行不做明暗区分——明暗与高亮由 ffmpeg 画
+  document.documentElement.style.height = 'auto';
+  $('rows').style.transform = 'none';
+} else {
+  paint();
+  window.addEventListener('hashchange', paint);
+}
+</script>
+</body>
+</html>

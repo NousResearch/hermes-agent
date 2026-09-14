@@ -1,0 +1,157 @@
+/* video-sync 信息面板的样式表。
+ *
+ * **这份文件就是面板的布局本身**——改它就能改版式，不用碰 video-sync.mjs，
+ * 也不用重新截图逻辑：改完重跑 `panels` 就是新版面。
+ *
+ * 面板现在只剩两块：镜头表 + 进度条，两种版式的网格相同。
+ * .panel 身上仍挂着 .landscape / .portrait（挂在 panel 上而不是 body 上，
+ * 调参台里才能把两种版式并排摆着看），要给某一版式单独改样式就用它们起头。
+ *
+ * 字号跟着面板尺寸走（JS 设面板的 font-size），所以这里**一律用 rem**，
+ * 写死 px 的地方只有边框和圆角。
+ *
+ * **每条规则都收在 .panel 作用域里**：这份 CSS 会被整段注进别的页面（调参台就是），
+ * 写裸的 .row / body 会串到人家的控件上——踩过。
+ */
+
+.panel{
+  --bg:#12160f;
+  --panel:#1a1f16;
+  --line:#2c3427;
+  --ink:#eef2e9;
+  --mute:#97a18c;
+  --lime:#dceba7;
+  --accent:#b9d07a;
+  --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+
+  width:100%;height:100%;
+  background:var(--bg);
+  color:var(--ink);
+  overflow:hidden;
+  font:1rem/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;
+  font-variant-numeric:tabular-nums;
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:auto minmax(0,1fr) auto;
+  grid-template-areas:"listhead" "list" "strip";
+  gap:0.7rem 1.1rem;
+  padding:0.9rem 1.2rem;
+}
+
+.panel .mono{font-family:var(--mono)}
+
+/* 镜头表：整张渲出来，靠 transform 滚动 ---------------------------- */
+.panel .list{grid-area:list;min-width:0;min-height:0;overflow:hidden;position:relative}
+.panel .list:after{
+  content:"";position:absolute;left:0;right:0;bottom:0;height:2.2rem;pointer-events:none;
+  background:linear-gradient(to bottom,#12160f00,var(--bg));
+}
+.panel .rows{display:flex;flex-direction:column;gap:0.3rem}
+/* 只有浏览器预览里才做补间——导出时滚动由 ffmpeg 按同样的 0.45 秒缓动画，
+   截图阶段必须是静止状态，不然会截到动画中间 */
+.panel.live .rows{transition:transform .45s cubic-bezier(.22,.61,.36,1)}
+.panel.live .row{transition:opacity .45s ease,background-color .45s ease}
+.panel.tall .rows,.panel.static .rows{transition:none}
+.panel .row{
+  position:relative;                 /* 镜号靠绝对定位钉在左上角 */
+  display:grid;
+  grid-template-columns:8.6rem 7.4rem minmax(0,1.15fr) minmax(0,1fr);
+  align-items:start;
+  gap:0.2rem 1rem;
+  padding:0.55rem 0.55rem;border-radius:0.35rem;
+  opacity:.42;
+}
+.panel .row.done{opacity:.28}
+.panel .row.on{
+  opacity:1;background:#232b1c;
+  box-shadow:inset 0.16rem 0 0 var(--lime);
+}
+.panel .rno{
+  position:absolute;left:0.55rem;top:0.45rem;
+  font-size:1rem;line-height:1.2;color:var(--lime);
+}
+.panel .row.on .rno{font-weight:600}
+
+/* 表头：与行同一套列宽，改列宽两处一起改 */
+.panel .listhead span{overflow:hidden;text-overflow:ellipsis}
+.panel .listhead{
+  grid-area:listhead;
+  display:grid;
+  grid-template-columns:8.6rem 7.4rem minmax(0,1.15fr) minmax(0,1fr);
+  gap:0.2rem 1rem;
+  padding:0 0.55rem 0.4rem;
+  border-bottom:1px solid var(--line);
+  font-size:0.86rem;letter-spacing:0.04em;color:var(--mute);
+  white-space:nowrap;
+}
+
+/* 第二格：缩略图 */
+.panel .thumb{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:0.2rem;display:block;align-self:start}
+.panel .thumb.blank{background:#222a1d}
+
+/* 时间与镜头信息并成一格 */
+.panel .rinfo{display:flex;flex-direction:column;gap:0.12rem;min-width:0;padding-top:1.3rem}
+.panel .rtime{font-size:0.8rem;color:var(--mute);line-height:1.35}
+.panel .rtime i{font-style:normal;color:#c3ccb6;margin-left:0.35rem}
+/* 景别 · 运镜：**让它换行，不要截断**。中文词短（「中近景 · 手持微晃」）怎么排都够，
+   英文词长（"medium close · handheld"）一截就变成 "hand"，等于把这一格的信息扔了。 */
+.panel .rtags{
+  font-size:0.86rem;color:#bcc6ad;line-height:1.35;
+  overflow-wrap:break-word;
+}
+.panel .dot{
+  display:inline-block;width:0.46rem;height:0.46rem;border-radius:50%;
+  margin-right:0.28rem;flex-shrink:0;
+}
+
+/* 画面描述与节奏分析**不截断**：内容多就把行撑高，行高由内容决定
+   （合成端按量到的每行高度分层画高亮条，所以这里可以随便长） */
+.panel .rdesc{font-size:1.12rem;line-height:1.55;color:#d3dac8}
+.panel .row.on .rdesc{color:var(--ink)}
+
+/* 第四格：节奏分析。角色直接用 [钩子] 写在句首，和描述一样大——
+   这一格是给人读的判断，不是标签墙。 */
+.panel .rbeat{min-width:0;font-size:1.12rem;line-height:1.55;color:#bcc6ad}
+.panel .beat-tag{font-style:normal;font-weight:600;margin-right:0.35rem}
+.panel .row.on .rbeat{color:#d3dac8}
+.panel.no-beat .rbeat{display:none}
+.panel.no-beat .row,.panel.no-beat .listhead{grid-template-columns:8.6rem 7.4rem minmax(0,1fr)}
+.panel.no-beat .listhead span:nth-child(4){display:none}
+
+/* 进度条 ---------------------------------------------------------- */
+.panel .strip{
+  grid-area:strip;display:flex;gap:1px;height:0.55rem;
+  border-radius:0.3rem;overflow:hidden;background:#0c0f09;
+}
+.panel .seg{display:block;height:100%;opacity:.22}
+.panel .seg.done{opacity:.5}
+.panel .seg.on{opacity:1}
+
+/* 内容开关：给 .panel 加这些 class 就能关掉对应的块。
+ * 调参台的「内容开关」按钮切的就是它们——想永久去掉某一块，
+ * 把对应的 class 写进 panel.html 的 <div class="panel"> 上即可。 */
+.panel.no-strip .strip{display:none}
+.panel.no-thumb .thumb{display:none}
+.panel.no-thumb .row{grid-template-columns:8.6rem minmax(0,1.15fr) minmax(0,1fr)}
+.panel.no-thumb .listhead{grid-template-columns:8.6rem minmax(0,1.15fr) minmax(0,1fr)}
+.panel.no-thumb .listhead span:nth-child(2){display:none}
+.panel.no-tags .rtags{display:none}
+.panel.no-desc .rdesc{display:none}
+.panel.no-time .rtime{display:none}
+
+/* 导出用的三种模式 ------------------------------------------------ */
+/* 长图：只留镜头表，铺开到整张表的高度，所有行一样亮
+   （谁亮谁暗由 ffmpeg 按时间画，一张图就能滚起来） */
+.panel.tall{height:auto;grid-template-rows:auto;grid-template-areas:"list";padding-top:0;padding-bottom:0}
+.panel.tall .listhead,.panel.tall .strip{display:none}
+.panel.tall .list{overflow:visible;min-height:0}
+.panel.tall .list:after{display:none}
+.panel.tall .row{opacity:.42}
+.panel.tall .row.on{background:none;box-shadow:none}
+/* 亮条长图：每行都按「当前镜头」的样子渲，合成时只裁其中一行盖上去 */
+.panel.tall.lit .row{opacity:1;background:#232b1c;box-shadow:inset 0.16rem 0 0 var(--lime)}
+.panel.tall.lit .rdesc,.panel.tall.lit .rbeat{color:#e7ecdf}
+
+/* 底板：表头与进度条留着，镜头表位置留空，等长图盖上来 */
+.panel.static .rows{visibility:hidden}
+.panel.static .list:after{display:none}

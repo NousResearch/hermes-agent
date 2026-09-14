@@ -8,6 +8,7 @@ thread-safely onto the loop.
 
 import asyncio
 import logging
+import uuid
 from collections import deque
 from typing import Any, Callable, Deque, Dict
 
@@ -135,25 +136,21 @@ class AssistantMessageIdAllocator:
     that replaces "the current assistant message" on each chunk collapses
     separate autonomous turns into one bubble.
 
-    One allocator lives per ACP session so the sequence is monotonic across
-    turns — two different turns must never reuse an id. A contiguous run of
-    deltas shares ``current()``; ``close()`` marks the message finished so the
-    next delta allocates a fresh id. Ported from
-    PrimeIntellect-ai/prime-agent#1781 (``prime-agent-assistant-N``).
+    One allocator lives per ACP session; a contiguous run of deltas shares
+    ``current()`` and ``close()`` marks the message finished so the next delta
+    allocates a fresh id. Ids are UUID4 strings because the ACP schema requires
+    UUID-format message ids, and a fresh UUID can never collide with an earlier
+    turn's id.
     """
 
-    def __init__(self, prefix: str = "hermes-assistant") -> None:
-        self._prefix = prefix
-        self._sequence = 0
+    def __init__(self) -> None:
         self._active: str | None = None
         self._last: str | None = None
 
     def current(self) -> str:
         """Return the active message id, allocating one if none is open."""
         if self._active is None:
-            self._sequence += 1
-            self._active = f"{self._prefix}-{self._sequence}"
-            self._last = self._active
+            self._active = self._last = str(uuid.uuid4())
         return self._active
 
     def last(self) -> str | None:

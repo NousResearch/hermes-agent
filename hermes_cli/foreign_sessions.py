@@ -338,17 +338,26 @@ def _diverted_record_identity(record: Dict[str, Any]) -> Tuple[Any, ...]:
     )
 
 
+def _is_ordered_subsequence(haystack: List[Tuple[Any, ...]], needle: List[Tuple[Any, ...]]) -> bool:
+    """True when *needle* appears in order in *haystack* (gaps from ordinary turns allowed)."""
+    if not needle:
+        return True
+    i = 0
+    for item in haystack:
+        if item == needle[i]:
+            i += 1
+            if i == len(needle):
+                return True
+    return False
+
+
 def _longest_prefix_subsequence(haystack: List[Tuple[Any, ...]], needle: List[Tuple[Any, ...]]) -> int:
-    """How much of *needle*'s prefix already appears as a contiguous run in *haystack*."""
+    """How much of *needle*'s prefix already appears in order in the destination transcript."""
     if not needle:
         return 0
-    n, m = len(haystack), len(needle)
-    for k in range(m, 0, -1):
-        prefix = needle[:k]
-        plen = len(prefix)
-        for i in range(0, n - plen + 1):
-            if haystack[i : i + plen] == prefix:
-                return k
+    for k in range(len(needle), 0, -1):
+        if _is_ordered_subsequence(haystack, needle[:k]):
+            return k
     return 0
 
 
@@ -378,10 +387,11 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
 
     Does not replace ``state.db``. Opens SessionDB only when applying. Inspect-only
     prints the path and non-empty line count. Skip is bound to the destination
-    transcript: a prefix already present as a contiguous run is not appended
-    again, so a rebuilt database or another session can still restore the file,
-    and a retry after a partial apply only writes the missing tail. Native
-    tool_calls / tool_call_id rows are preserved. Empty unusable lines are skipped.
+    transcript: a source prefix already present in order (ordinary turns may
+    sit between recovered runs) is not appended again. A rebuilt database or
+    another session can still restore the file, and a retry after a partial
+    apply only writes the missing tail. Native tool_calls / tool_call_id rows
+    are preserved. Empty unusable lines are skipped.
     """
     sid = (session_id or "").strip()
     jsonl = Path(path).expanduser()

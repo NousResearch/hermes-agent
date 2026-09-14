@@ -283,3 +283,56 @@ def test_retry_after_partial_apply_does_not_duplicate():
         ]
     finally:
         db.close()
+
+
+def test_reimport_after_intervening_turns_does_not_duplicate_later_divert():
+    """Recovered A/B, ordinary C/D, then diverted E/F must not re-append E/F on retry."""
+    from hermes_state import divert_session_transcript_jsonl
+
+    home = get_hermes_home()
+    session_id = "sess-diverted-gap"
+    jsonl = _write_diverted(
+        home / "sessions" / f"{session_id}.jsonl",
+        [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": "B"},
+        ],
+    )
+    db = SessionDB()
+    try:
+        db.create_session(session_id, "cli")
+    finally:
+        db.close()
+    assert _apply_diverted(jsonl, session_id) == session_id
+
+    db = SessionDB()
+    try:
+        db.append_message(session_id, "user", "C")
+        db.append_message(session_id, "assistant", "D")
+    finally:
+        db.close()
+
+    appended = divert_session_transcript_jsonl(
+        session_id,
+        [
+            {"role": "user", "content": "E"},
+            {"role": "assistant", "content": "F"},
+        ],
+    )
+    assert appended == jsonl
+    assert _apply_diverted(jsonl, session_id) == session_id
+    assert _apply_diverted(jsonl, session_id) == session_id
+
+    db = SessionDB()
+    try:
+        pairs = [(m.get("role"), m.get("content")) for m in db.get_messages(session_id)]
+        assert pairs == [
+            ("user", "A"),
+            ("assistant", "B"),
+            ("user", "C"),
+            ("assistant", "D"),
+            ("user", "E"),
+            ("assistant", "F"),
+        ]
+    finally:
+        db.close()

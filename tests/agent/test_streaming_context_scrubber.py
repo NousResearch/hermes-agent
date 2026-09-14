@@ -182,3 +182,17 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
         assert not any("pre-wrapped" in rec.message for rec in caplog.records)
         assert "plain fact about user" in out
+
+
+def test_stream_scrubber_flush_rearms_the_block_boundary_for_the_next_stream():
+    """Two API calls in one turn share the scrubber, and stream delivery flushes between them.
+    A memory block at the head of the second stream must be scrubbed even when the first stream's
+    visible text ended mid-line — the leak: the block streamed to the UI in full."""
+    from agent.memory_manager import StreamingContextScrubber
+
+    scrubber = StreamingContextScrubber()
+    scrubber.reset()
+    assert scrubber.feed("Checking that now.") + scrubber.flush() == "Checking that now."
+
+    block = "<memory-context>\nSECRET-FROM-MEMORY\n</memory-context>\n"
+    assert scrubber.feed(block + "Visible reply.") + scrubber.flush() == "\nVisible reply."

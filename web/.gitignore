@@ -1,0 +1,5 @@
+.npm-cache/
+.playwright-browsers/
+.browser-home/
+playwright-report/
+test-results/

@@ -91,3 +91,15 @@ export function shouldScrollChatIntoView(
   if (inIframe) return nextInsetPx > 0;
   return nextInsetPx > 0 && chatTopPx > CHAT_AT_TOP_PX;
 }
+
+/** Pixels to `window.scrollBy` so the composer (host bottom) sits on the
+ * visible bottom of the visual viewport — just above the keyboard. */
+export function keyboardRevealScrollDelta(
+  composerBottomPx: number,
+  visual: ViewportGeometry,
+): number {
+  if (!Number.isFinite(composerBottomPx) || !Number.isFinite(visual.height) || !Number.isFinite(visual.offsetTop)) {
+    return 0;
+  }
+  return Math.round(composerBottomPx - (visual.offsetTop + visual.height));
+}

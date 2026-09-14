@@ -469,10 +469,12 @@ class _Resume:
         ``overrides`` restores the stored model/provider/reasoning/tier so the deferred build matches eager."""
         if overrides is not None:
             extra.update(model_override=overrides.get("model_override"), resume_runtime_overrides=overrides or None)
-        return _deferred_session_record(
+        record = _deferred_session_record(
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        _initialize_browser_ownership(record, self.params, current_transport())
+        return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
@@ -527,15 +529,19 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
         if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
             return refusal
         live["last_active"] = time.time()
+        ownership = {}
         if (transport := current_transport()) is not None:
             with live.setdefault("history_lock", threading.Lock()):
-                _rebind_live_transport(live_sid, live, transport)
+                refusal, ownership = _attach_browser_resume(
+                    ctx.rid, live_sid, live, ctx.params, transport)
+            if refusal is not None:
+                return refusal
         else:
             _cancel_ws_orphan_reap(live_sid)
     history = live.get("history") or []
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
-        "message_count": len(history), "messages": ctx.messages(history),
+        "message_count": len(history), "messages": ctx.messages(history), **ownership,
         "info": {"model": _resolve_model(), "lazy": True, "profile_name": ctx.profile or ""}}, live))
 
 
@@ -637,9 +643,15 @@ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
     """Reuse with _session_resume_lock already held (including the eager double-check)."""
     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
         return refusal
+    transport = current_transport() or _stdio_transport
+    with session["history_lock"]:
+        refusal, ownership = _attach_browser_resume(ctx.rid, sid, session, ctx.params, transport)
+    if refusal is not None:
+        return refusal
     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                    transport=current_transport() or _stdio_transport)
+                                    transport=None)
+    payload.update(ownership)
     payload["resumed"] = ctx.target
     if ctx.defer_history:
         payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
@@ -663,7 +675,8 @@ def _resume_response(
     payload = {"session_id": sid, "resumed": ctx.target, "message_count": message_count, "messages": messages,
                **({"messages_omitted": ctx.omit_messages} if hydrating is None else {"hydrating": hydrating}),
                "info": info, "inflight": None, "running": running, "session_key": ctx.target,
-               "started_at": record["created_at"] if started_at is None else started_at, "status": status}
+               "started_at": record["created_at"] if started_at is None else started_at, "status": status,
+               **_browser_ownership_payload(record)}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
     return _ok(ctx.rid, _attach_todo_state(payload, record))
@@ -766,6 +779,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                     _transfer_db_to_agent(agent, ctx.db)
                 ctx.owns_db = False
             if (session := _sessions.get(sid)) is not None:
+                _initialize_browser_ownership(session, ctx.params, current_transport())
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
@@ -790,6 +804,8 @@ def _resume_eager(ctx: _Resume) -> dict:
 def _(rid, params: dict) -> dict:
     if not (target := params.get("session_id", "")):
         return _err(rid, 4006, "session_id required")
+    if (error := _browser_resume_request_error(rid, params)) is not None:
+        return error
     ctx = _Resume(rid, params, target)
     # Profile scope: a DEDICATED handle we own until the agent takes it; else the shared launch db.
     ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
@@ -1647,18 +1663,10 @@ def _(rid, params: dict, session: dict) -> dict:
 
 @_session_method("session.history")
 def _(rid, params: dict, session: dict) -> dict:
-    history = list(session.get("history", []))
-    if session.get("session_key"):
-        with _session_db(session) as db:
-            if db is not None:
-                # include_row_ids: the durable row id is how clients address a persisted turn (reactions,
-                # truncation targets); _history_to_messages forwards it.
-                with contextlib.suppress(Exception):
-                    # The projection in _history_to_messages only forwards row_id when the row carries a
-                    # stamp, so an unstamped read here silently strips the one durable address clients can
-                    # use. See #87059.
-                    history = db.get_messages_as_conversation(
-                        session["session_key"], include_ancestors=True, include_row_ids=True)
+    with session["history_lock"]:
+        in_memory = list(session.get("display_history_prefix") or []) + list(session.get("history") or [])
+    with _session_db(session) as db:
+        history = _live_visible_history(session, db, in_memory)
     return _ok(rid, {"count": len(history), "messages": _history_to_messages(history)})
 
 
@@ -1937,10 +1945,12 @@ def _(rid, params: dict, session: dict) -> dict:
 # ── interrupt / steer / redirect ─────────────────────────────────────
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
-    _tts_stream_stop()  # keypress barge-in also silences streaming TTS (voice is process-global)
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    if (fenced := _browser_mutation_fence(rid, params, session)) is not None:
+        return fenced
+    _tts_stream_stop()  # keypress barge-in also silences streaming TTS (voice is process-global)
     if expected := _str_param(params, "expected_hosted_task_id"):
         with session["history_lock"]:
             task = session.get("_hosted_room_task")

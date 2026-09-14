@@ -65,6 +65,7 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
     body = r.json()
     assert body["auth_required"] is True
     assert body["auth_providers"] == ["stub"]
+    assert body["capabilities"]["structured_chat"] is True
 
 
 

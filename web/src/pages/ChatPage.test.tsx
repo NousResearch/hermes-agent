@@ -17,7 +17,12 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
   options: Record<string, unknown>;
+  element: HTMLElement = document.createElement("div");
+  textarea = document.createElement("textarea");
+  dataListeners = new Set<(data: string) => void>();
+  pasteCalls: string[] = [];
   rows = 24;
   cols = 80;
   parser = {
@@ -27,6 +32,7 @@ class FakeTerminal {
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
@@ -49,9 +55,18 @@ class FakeTerminal {
 
   loadAddon() {}
 
-  onData() {
-    return { dispose() {} };
+  onData(listener: (data: string) => void) {
+    this.dataListeners.add(listener);
+    return { dispose: () => this.dataListeners.delete(listener) };
   }
+
+  input(data: string) { for (const listener of this.dataListeners) listener(data); }
+
+  hasSelection() { return false; }
+
+  onSelectionChange() { return { dispose() {} }; }
+
+  onRender() { return { dispose() {} }; }
 
   onResize() {
     return { dispose() {} };
@@ -69,9 +84,17 @@ class FakeTerminal {
 
   scrollToBottom() {}
 
-  open() {}
+  scrollLines() {}
 
-  paste() {}
+  open(host: HTMLElement) {
+    const screen = document.createElement("div");
+    screen.className = "xterm-screen";
+    this.element = host;
+    host.append(screen);
+    host.append(this.textarea);
+  }
+
+  paste(data: string) { this.pasteCalls.push(data); }
 
   refresh() {}
 
@@ -81,6 +104,14 @@ class FakeTerminal {
 const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
+}));
+const imageMocks = vi.hoisted(() => ({
+  uploadChatImage: vi.fn(async () => ({
+    path: "/tmp/pasted.png",
+    bytes: 3,
+    name: "pasted.png",
+    mime_type: "image/png",
+  })),
 }));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
@@ -125,6 +156,10 @@ vi.mock("@/lib/api", () => ({
   api: apiMocks,
   buildWsUrl: apiMocks.buildWsUrl,
 }));
+vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
+  uploadChatImage: imageMocks.uploadChatImage,
+}));
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -146,7 +181,8 @@ class FakeWebSocket {
     this.readyState = 3;
   }
 
-  send() {}
+  sent: string[] = [];
+  send(data: string) { this.sent.push(data); }
 }
 
 type CloseEventLike = {
@@ -190,7 +226,9 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  FakeTerminal.instances = [];
   FakeWebSocket.instances = [];
+  imageMocks.uploadChatImage.mockClear();
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
   apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
@@ -255,6 +293,72 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("prepares the xterm helper textarea for Safari dictation", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(<MemoryRouter><ChatPage isActive /></MemoryRouter>);
+    await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
+    const textarea = FakeTerminal.instances[0].textarea;
+    expect(textarea.getAttribute("inputmode")).toBe("text");
+    expect(textarea.getAttribute("autocapitalize")).toBe("sentences");
+    expect(textarea.style.fontSize).toBe("16px");
+    expect(Number.parseFloat(textarea.style.opacity)).toBeGreaterThan(0);
+  });
+
+  it("gives an image-bearing paste exclusive ownership while text-only paste reaches the adapter", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(<MemoryRouter><ChatPage isActive /></MemoryRouter>);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    await act(async () => FakeWebSocket.instances[0].onopen?.());
+    const textarea = container.querySelector("textarea")!;
+    const terminal = FakeTerminal.instances[0];
+    const dispatchPaste = (clipboardData: DataTransfer) => {
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", { value: clipboardData });
+      textarea.dispatchEvent(event);
+      return event;
+    };
+
+    const transfer = (text: string, file?: File) => ({
+      files: file ? [file] : [],
+      items: file ? [{ kind: "file", type: file.type, getAsFile: () => file }] : [],
+      getData: (type: string) => type === "text/plain" ? text : "",
+    }) as unknown as DataTransfer;
+    const mixed = transfer(
+      "duplicate text",
+      new File(["png"], "pasted.png", { type: "image/png" }),
+    );
+    expect(dispatchPaste(mixed).defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(imageMocks.uploadChatImage).toHaveBeenCalledTimes(1));
+    expect(terminal.pasteCalls).toEqual([]);
+
+    const text = transfer("text only");
+    expect(dispatchPaste(text).defaultPrevented).toBe(true);
+    expect(terminal.pasteCalls).toEqual(["text only"]);
+  });
+
+  it("forwards browser replacements to the PTY socket without downstream word normalization", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(<MemoryRouter><ChatPage isActive /></MemoryRouter>);
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const ws = FakeWebSocket.instances[0];
+    const textarea = container.querySelector("textarea")!;
+    const edit = (value: string, data: string, inputType = "insertText") => {
+      textarea.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, inputType, data }));
+      textarea.value = value;
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, inputType, data }));
+    };
+    // Input rejected while connecting must not become an acknowledged suffix.
+    edit("discarded", "discarded");
+    expect(textarea.value).toBe("");
+    await act(async () => ws.onopen?.());
+    ws.sent = [];
+    edit("hello", "hello");
+    edit("hello hello", " hello");
+    textarea.setSelectionRange(0, 11);
+    edit("Hello hello!", "Hello hello!", "insertReplacementText");
+    expect(ws.sent.join("")).toBe("hello hello" + "\x7f".repeat(11) + "Hello hello!");
+  });
+
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
     const { default: ChatPage } = await import("./ChatPage");
 

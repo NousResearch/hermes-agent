@@ -142,7 +142,25 @@ export function replaceStructuredChatHistory(
       text: body,
     }];
   });
-  return { ...state, items, streamingMessageId: undefined };
+  const pending = state.items.filter((item) => item.status === "pending" && item.role === "user");
+  const kept = pending.filter((item) => !items.some((row) => row.role === "user" && row.text === item.text));
+  return { ...state, items: [...items, ...kept], streamingMessageId: undefined };
+}
+
+export function appendPendingUserMessage(state: StructuredChatState, body: string): StructuredChatState {
+  const textValue = body.trim();
+  if (!textValue) return state;
+  return {
+    ...state,
+    lastSeq: state.lastSeq + 1,
+    items: [...state.items, {
+      id: `pending-user-${state.lastSeq + 1}`,
+      kind: "message",
+      role: "user",
+      text: textValue,
+      status: "pending",
+    }],
+  };
 }
 
 export function reduceStructuredChatEvent(

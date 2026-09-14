@@ -540,15 +540,17 @@ def _(rid, params: dict) -> dict:
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    if (fenced := _browser_mutation_fence(rid, params, session)) is not None:
+        return fenced
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
         from tools.tts_streaming import mark_speech_interrupted
         mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
     hosted_task = params.get("_hosted_task")
     hosted_terminal_callback = params.get("_hosted_terminal_callback")
     internal_hosted_submit = hosted_task is not None or hosted_terminal_callback is not None
@@ -1080,6 +1082,8 @@ def _(rid, params: dict) -> dict:
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
+    if (fenced := _browser_pending_mutation_fence(rid, params)) is not None:
+        return fenced
     if proxied := _respond_compute_host_clarify(rid, params):
         return proxied
     return _respond(rid, params, "answer", allow_expired=True)
@@ -1089,8 +1093,14 @@ _LATE_RESPOND_KEYS = {
     "terminal.read.respond": "text", "preview.read.respond": "text", "preview.act.respond": "text",
     "window.read.respond": "text", "tour.respond": "text", "mcp.setup.respond": "result",
     "sudo.respond": "password", "secret.respond": "value"}
+def _late_respond(rid, params: dict, key: str) -> dict:
+    if (fenced := _browser_pending_mutation_fence(rid, params)) is not None:
+        return fenced
+    return _respond(rid, params, key, allow_expired=True)
+
+
 for _name, _key in _LATE_RESPOND_KEYS.items():
-    method(_name)(lambda rid, params, _k=_key: _respond(rid, params, _k, allow_expired=True))
+    method(_name)(lambda rid, params, _k=_key: _late_respond(rid, params, _k))
 del _name, _key
 
 
@@ -1165,6 +1175,8 @@ def _(rid, params: dict) -> dict:
         session = _approval_respond_session_fallback(params)
         if session is None:
             return err
+    if (fenced := _browser_mutation_fence(rid, params, session)) is not None:
+        return fenced
     return _approval_reply(
         rid, "resolved",
         lambda a: a.resolve_gateway_approval(

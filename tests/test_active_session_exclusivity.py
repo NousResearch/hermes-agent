@@ -56,15 +56,17 @@ def acquire(session_id, config=None, surface="tui", live_id=None):
     )
 
 
-def test_no_cap_configured_still_fences_one_session():
+def test_no_cap_configured_still_fences_one_session(monkeypatch):
     """The case the old code got wrong, and the reason this fence exists.
 
     ``max_concurrent_sessions`` unset must not mean "anyone may write to any
-    session at any time".
+    session at any time". Two *processes* (distinct pids) must still refuse.
     """
     lease_a, refused = acquire("S")
     assert lease_a is not None and refused is None
 
+    owner = os.getpid()
+    monkeypatch.setattr("hermes_cli.active_sessions.os.getpid", lambda: owner + 7919)
     lease_b, refusal = acquire("S")
     assert lease_b is None, "a second live owner of one session must be refused"
     assert refusal.reason == SESSION_NOT_OWNED
@@ -73,6 +75,17 @@ def test_no_cap_configured_still_fences_one_session():
 
     # And exactly one holder is recorded -- a refusal must not leave a slot behind.
     assert len(active_session_registry_snapshot()) == 1
+
+
+def test_same_process_reattaches_the_same_session_with_a_new_live_id():
+    """Dashboard PTY and /api/ws share one pid. A second live_session_id is
+    re-entrancy in that process, not a second agent."""
+    lease_a, refused_a = acquire("S", live_id="pty-child")
+    lease_b, refused_b = acquire("S", live_id="dashboard-ws")
+    assert lease_a is not None and refused_a is None
+    assert lease_b is not None and refused_b is None
+    assert len(active_session_registry_snapshot()) == 1
+    assert active_session_registry_snapshot()[0]["metadata"]["live_session_id"] == "dashboard-ws"
 
 
 def test_different_sessions_still_run_concurrently():
@@ -103,10 +116,12 @@ def test_global_capacity_still_applies_independently():
     assert "active session limit (2/2)" in str(refusal)
 
 
-def test_capacity_and_exclusivity_are_not_the_same_switch():
+def test_capacity_and_exclusivity_are_not_the_same_switch(monkeypatch):
     """Both refusals exist under a configured cap, and say different things."""
     config = {"max_concurrent_sessions": 4}
     assert acquire("S", config)[0] is not None
+    owner = os.getpid()
+    monkeypatch.setattr("hermes_cli.active_sessions.os.getpid", lambda: owner + 7919)
     lease, refusal = acquire("S", config)
     assert lease is None
     assert refusal.reason == SESSION_NOT_OWNED, (
@@ -159,11 +174,14 @@ def test_a_recycled_pid_does_not_keep_a_lease_alive():
     assert successor is not None, f"a recycled pid must not hold a session: {refusal}"
 
 
-def test_release_lets_the_next_owner_in():
+def test_release_lets_the_next_owner_in(monkeypatch):
     """The ordinary handoff: A finishes, B proceeds."""
     lease_a, _ = acquire("S")
     assert lease_a is not None
+    owner = os.getpid()
+    monkeypatch.setattr("hermes_cli.active_sessions.os.getpid", lambda: owner + 7919)
     assert acquire("S")[0] is None
+    monkeypatch.setattr("hermes_cli.active_sessions.os.getpid", lambda: owner)
 
     release_active_session(lease_a)
     assert active_session_registry_snapshot() == []
@@ -211,12 +229,6 @@ def test_the_same_live_session_may_re_acquire_its_own_lease():
     again, refusal = acquire("S", live_id="tab-1")
     assert again is not None, f"a writer must not be fenced out by its own leak: {refusal}"
     assert len(active_session_registry_snapshot()) == 1, "and it must not double-book"
-
-    # A DIFFERENT live session in the same process is still a second writer: each
-    # holds its own snapshot of the transcript, so the hazard is unchanged.
-    other, refusal = acquire("S", live_id="tab-2")
-    assert other is None
-    assert refusal.reason == SESSION_NOT_OWNED
 
 
 def test_the_capability_is_advertised_because_the_check_exists():

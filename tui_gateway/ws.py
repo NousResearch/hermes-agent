@@ -80,6 +80,10 @@ class WSTransport:
     socket (pool workers marshal onto the loop and block on the future); from the loop thread itself it would
     deadlock, so it detects that and fires-and-forgets. Loop-thread callers needing completion use ``write_async``."""
 
+    # A takeover may revoke this exact peer. Stdio, PTY adapters, and generic
+    # transports intentionally do not expose this capability and fail closed.
+    supports_session_takeover = True
+
     def __init__(self, ws: Any, loop: asyncio.AbstractEventLoop, *, peer: str = "unknown",
                  auth_identity: dict | None = None) -> None:
         self._ws = ws

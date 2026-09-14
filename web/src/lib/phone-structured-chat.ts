@@ -1,23 +1,29 @@
-export function shouldUseStructuredChatOnPhone(input: {
+export function shouldUseStructuredChatOnPhone(_input: {
   maxTouchPoints?: number;
   pointerCoarse?: boolean;
 }): boolean {
-  return Boolean(input.pointerCoarse);
+  return false;
 }
 
 export function shouldRedirectChatToStructured(
-  input: { maxTouchPoints?: number; pointerCoarse?: boolean },
-  search: string,
+  _input: { maxTouchPoints?: number; pointerCoarse?: boolean },
+  _search: string,
 ): boolean {
-  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
-  if (params.get("pty") === "1") return false;
-  return shouldUseStructuredChatOnPhone(input);
+  return false;
+}
+
+export function shouldRedirectStructuredToChat(pathname: string): boolean {
+  const path = pathname.replace(/\/$/, "") || "/";
+  return path === "/chat/structured";
+}
+
+export function chatLocationFromStructured(pathname: string, search: string): string {
+  if (!shouldRedirectStructuredToChat(pathname)) return `${pathname}${search}`;
+  return `/chat${search}`;
 }
 
 export function structuredChatLocationFromChat(pathname: string, search: string): string {
-  const path = pathname.replace(/\/$/, "") || "/";
-  if (path !== "/chat") return `${pathname}${search}`;
-  return `/chat/structured${search}`;
+  return `${pathname}${search}`;
 }
 
 export function ptyChatHref(sessionId: string, profile = ""): string {

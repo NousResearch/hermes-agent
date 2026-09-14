@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 const appSource = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
 
 describe("structured chat dashboard route", () => {
-  it("registers /chat/structured independently from the persistent PTY host", () => {
-    expect(appSource).toContain('const StructuredChatPage = lazy(() => import("@/pages/StructuredChatPage"));');
-    expect(appSource).toContain('"/chat/structured": StructuredChatPage');
-    expect(appSource).toContain('const isChatSurface = isChatRoute || normalizedPath === "/chat/structured";');
+  it("sends /chat/structured to the persistent PTY host", () => {
+    expect(appSource).toContain("shouldRedirectStructuredToChat");
+    expect(appSource).toContain("chatLocationFromStructured");
+    expect(appSource).toContain('normalizedPath === "/chat/structured"');
   });
 });

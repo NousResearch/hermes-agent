@@ -107,9 +107,8 @@ import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
 import {
-  readPhonePointer,
-  shouldRedirectChatToStructured,
-  structuredChatLocationFromChat,
+  chatLocationFromStructured,
+  shouldRedirectStructuredToChat,
 } from "@/lib/phone-structured-chat";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
@@ -408,18 +407,17 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const isChatSurface = isChatRoute || normalizedPath === "/chat/structured";
-  const phoneStructuredChat = shouldRedirectChatToStructured(readPhonePointer(), search);
+  const structuredToChat = shouldRedirectStructuredToChat(pathname);
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
   // PTY survives later tab switches.
   const [chatHostMounted, setChatHostMounted] = useState(
-    () => normalizedPath === "/chat" && !shouldRedirectChatToStructured(readPhonePointer(), search),
+    () => normalizedPath === "/chat",
   );
   useEffect(() => {
-    if (phoneStructuredChat) return;
     setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
-  }, [isChatRoute, phoneStructuredChat]);
+  }, [isChatRoute]);
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -800,8 +798,8 @@ export default function App() {
                   </Suspense>
                 </ProfileKeyedRoutes>
 
-                {isChatRoute && phoneStructuredChat ? (
-                  <Navigate to={structuredChatLocationFromChat(pathname, search)} replace />
+                {structuredToChat ? (
+                  <Navigate to={chatLocationFromStructured(pathname, search)} replace />
                 ) : embeddedChat &&
                   !chatOverriddenByPlugin &&
                   (pluginsLoading ? (

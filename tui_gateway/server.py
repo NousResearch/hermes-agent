@@ -564,13 +564,24 @@ def write_json(obj: dict) -> bool:
     if obj.get("method") == "event":
         params = obj.get("params")
         sid = ((params or {}).get("session_id")) if isinstance(params, dict) else ""
-        if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
-            return t.write(obj)
+        if sid and (session := _sessions.get(sid)) is not None and (t := session.get("transport")) is not None:
+            # Browser observers receive the exact same stamped frame, but can
+            # never become the mutation transport through event delivery.
+            targets = [t, *(session.get("observers") or set())]
+            wrote = False
+            for target in dict.fromkeys(targets):
+                try:
+                    wrote = target.write(obj) or wrote
+                except Exception:
+                    logger.debug("session-event observer write failed sid=%s", sid, exc_info=True)
+            return wrote
     return (current_transport() or _stdio_transport).write(obj)
 
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
     params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+    if session := _sessions.get(sid):
+        params["ownership_epoch"] = int(session.get("ownership_epoch") or 0)
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
@@ -3026,9 +3037,11 @@ def _respond(rid, params, key, *, allow_expired=False):
             batch["answers"][question_id] = params.get(key, "")
             if not (remaining := [qid for qid in batch["qids"] if qid not in batch["answers"]]):
                 ev.set()
+                _pending.pop(r, None)
             return _ok(rid, {"status": "ok", "remaining": remaining})
         _answers[r] = params.get(key, "")
         ev.set()
+        _pending.pop(r, None)
     return _ok(rid, {"status": "ok"})
 
 
@@ -3187,7 +3200,8 @@ from . import (  # noqa: E402
     tool_progress as _tool_progress, change_watcher as _change_watcher,
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
-    session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
+    session_lifecycle as _session_lifecycle, session_ownership as _session_ownership,
+    session_reaper as _session_reaper,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
@@ -3197,7 +3211,7 @@ from . import (  # noqa: E402
     methods_session_control as _methods_session_control)
 
 for _m in (
-    _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
+    _session_reaper, _session_lifecycle, _session_ownership, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,

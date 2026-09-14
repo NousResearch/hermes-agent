@@ -134,17 +134,16 @@ def format_refusal_stderr(message: str) -> str:
 
 
 def _is_same_writer(entry: dict[str, Any], metadata: Optional[dict[str, Any]]) -> bool:
-    """True when an existing lease belongs to the very caller re-acquiring it.
-    Identity is (pid, live_session_id): pid alone lets two live sessions in one process
-    steal each other's lease; the live id alone lets another process with an equal id."""
+    """True when an existing lease belongs to this process.
+
+    The caller already matched ``session_id``. Distinct live_session_id values
+    in one pid are one dashboard attaching PTY and /api/ws, not two agents.
+    A second process still fails the pid check.
+    """
     try:
-        if int(entry.get("pid") or -1) != os.getpid():
-            return False
+        return int(entry.get("pid") or -1) == os.getpid()
     except (TypeError, ValueError):
         return False
-    existing_live = str((entry.get("metadata") or {}).get("live_session_id") or "")
-    incoming_live = str((metadata or {}).get("live_session_id") or "")
-    return bool(existing_live and incoming_live) and existing_live == incoming_live
 
 
 def session_already_owned_message(session_id: str, entry: dict[str, Any]) -> str:

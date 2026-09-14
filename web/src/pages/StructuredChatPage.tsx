@@ -8,6 +8,7 @@ import {
   pinTranscriptToBottom,
   reduceStructuredChatEvent,
   replaceStructuredChatHistory,
+  appendPendingUserMessage,
   STRUCTURED_HISTORY_POLL_MS,
   type StructuredChatState,
   type StructuredGatewayEvent,
@@ -165,6 +166,7 @@ export default function StructuredChatPage({
   const [runtimeId, setRuntimeId] = useState("");
   const [connection, setConnection] = useState<ConnectionState>("idle");
   const [composer, setComposer] = useState("");
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [readOnly, setReadOnly] = useState(!durableSessionId);
   const [ownerId] = useState(browserOwnerId);
@@ -273,9 +275,18 @@ export default function StructuredChatPage({
   }, [timeline.items]);
 
   const submit = useCallback(async () => {
-    const value = composer;
+    const value = (composerRef.current?.value ?? composer).trim();
     const runtimeId = runtimeIdRef.current;
-    if (!value.trim() || !runtimeId || !clientRef.current || submitting || readOnly || connection !== "open") return;
+    if (!value) return;
+    if (readOnly) {
+      setError("Diese Session schreibt noch in der TUI. Übernimm sie, sonst kommt die Nachricht nicht an.");
+      return;
+    }
+    if (connection !== "open" || !runtimeId || !clientRef.current) {
+      setError("Keine Verbindung zum Gateway. Die Nachricht wurde nicht gesendet.");
+      return;
+    }
+    if (submitting) return;
     setSubmitting(true);
     setError("");
     try {
@@ -286,6 +297,8 @@ export default function StructuredChatPage({
         ownership_epoch: ownershipEpoch,
       });
       setComposer("");
+      if (composerRef.current) composerRef.current.value = "";
+      setTimeline((current) => appendPendingUserMessage(current, value));
     } catch (cause) {
       setReadOnly(true);
       setError(describeGatewayError(cause));
@@ -363,7 +376,7 @@ export default function StructuredChatPage({
       <header className="flex flex-wrap items-center gap-2 border-b border-current/20 py-3">
         <h1 className="font-semibold">Hermes Chat</h1>
         <code className="text-xs">{durableSessionId || "keine Session"}</code>
-        <span role="status">{readOnly ? "Nur Lesen" : connection === "open" ? "Schreibend" : "Verbinden…"}</span>
+        <span role="status">{readOnly ? "Nur Lesen — TUI schreibt. Übernehmen, sonst kommt nichts an." : connection === "open" ? "Schreibend" : "Verbinden…"}</span>
         {readOnly && runtimeId && connection === "open" && (
           <button type="button" onClick={() => void takeover()}>Session übernehmen</button>
         )}
@@ -401,6 +414,7 @@ export default function StructuredChatPage({
         <label className="sr-only" htmlFor="structured-chat-composer">Nachricht</label>
         <textarea
           id="structured-chat-composer"
+          ref={composerRef}
           value={composer}
           onChange={(event) => setComposer(event.currentTarget.value)}
           onKeyDown={onComposerKeyDown}

@@ -295,9 +295,35 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     return _ws_auth_reason(ws)[0] is None
 
 
+# OAuth Abos only. ``openai`` is the API-key route and must never be selected
+# from a Werkbank Abo button.
+_OAUTH_ABO_PROVIDERS = frozenset({"xai-oauth", "anthropic", "openai-codex"})
+_CHATGPT_MODE_MODELS = {"chat": "gpt-5.4", "codex": "gpt-5.6-terra"}
+
+
+def _bind_oauth_abo_env(env: dict, *, resume, provider, model, chatgpt_mode) -> None:
+    """Pin a new dashboard PTY to an OAuth Abo. Resume keeps the stored session."""
+    if resume:
+        return
+    slug = (provider or "").strip()
+    if slug not in _OAUTH_ABO_PROVIDERS:
+        return
+    chosen_model = (model or "").strip()
+    mode = (chatgpt_mode or "").strip()
+    if not chosen_model and slug == "openai-codex":
+        chosen_model = _CHATGPT_MODE_MODELS.get(mode, "")
+    env["HERMES_TUI_PROVIDER"] = slug
+    env["HERMES_INFERENCE_PROVIDER"] = slug
+    if chosen_model:
+        env["HERMES_MODEL"] = chosen_model
+        env["HERMES_INFERENCE_MODEL"] = chosen_model
+
+
 def _resolve_chat_argv(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
-    active_session_file: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    active_session_file: Optional[str] = None, provider: Optional[str] = None,
+    model: Optional[str] = None, chatgpt_mode: Optional[str] = None,
+) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY (what ``hermes --tui`` runs).
 
     Tests monkeypatch this with a tiny fake command.  Env contract: resume goes
@@ -374,6 +400,9 @@ def _resolve_chat_argv(
     if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url()):
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
+    _bind_oauth_abo_env(
+        env, resume=resume, provider=provider, model=model, chatgpt_mode=chatgpt_mode)
+
     return list(argv), str(cwd) if cwd else None, env
 
 
@@ -430,11 +459,14 @@ def _build_sidecar_url(channel: str) -> Optional[str]:
 
 async def _resolve_chat_argv_async(
     resume: Optional[str] = None, sidecar_url: Optional[str] = None, profile: Optional[str] = None,
-    active_session_file: Optional[str] = None) -> tuple[list[str], Optional[str], Optional[dict]]:
+    active_session_file: Optional[str] = None, provider: Optional[str] = None,
+    model: Optional[str] = None, chatgpt_mode: Optional[str] = None,
+) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv off the event loop (it may run ``npm run build``); the
     async lock keeps one-build-at-a-time without parking worker threads."""
     from hermes_cli.web_server import _get_chat_argv_lock, app
-    kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
+    kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile,
+              "provider": provider, "model": model, "chatgpt_mode": chatgpt_mode}
     if active_session_file is not None:
         kwargs["active_session_file"] = active_session_file
 

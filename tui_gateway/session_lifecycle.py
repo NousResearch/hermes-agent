@@ -593,6 +593,13 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
     re-point the rest at the detached transport (later emits miss the dead socket) for the grace-windowed WS-orphan
     reaper. Returns ``(reaped, detached)`` counts."""
     with _sessions_lock:
+        # Observers never own teardown. Remove this exact socket from every
+        # session first; a takeover may already have installed a newer owner
+        # generation while the revoked socket's disconnect was in flight.
+        for current in _sessions.values():
+            (current.get("observers") or set()).discard(transport)
+            if current.get("transport") is not transport:
+                (current.get("viewers") or {}).pop(transport, None)
         owned = [(sid, s) for sid, s in _sessions.items() if s.get("transport") is transport]
     reaped = detached = 0
     for sid, session in owned:
@@ -610,6 +617,19 @@ def _close_sessions_for_transport(transport, *, end_reason: str = "ws_disconnect
                 continue
             if current.get("close_on_disconnect"):
                 claimed_for_teardown = _pop_session_by_id(sid)
+            elif current.get("owner_id"):
+                # A fenced browser session may only be rebound by the same
+                # owner_id on resume or by confirmed takeover. Never promote a
+                # passive viewer/observer during disconnect cleanup.
+                (current.get("viewers") or {}).pop(transport, None)
+                current["transport"] = _detached_ws_transport
+                if current.get("owner_transport") is transport:
+                    current["owner_transport"] = _detached_ws_transport
+                current.pop("_client_gone_interrupt_requested", None)
+                current.pop("_client_gone_interrupt_polls", None)
+                should_schedule_reap = True
+                with contextlib.suppress(Exception):
+                    _schedule_ws_orphan_reap(sid)
             else:
                 # Point at the drop sentinel (NOT real stdio) so _ws_session_is_orphaned recognizes it; standalone
                 # `hermes --tui` keeps real _stdio. UNLESS another window (pop-out viewer) still shows the session:

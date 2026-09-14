@@ -105,6 +105,7 @@ describe("StructuredChatPage", () => {
 
     await act(async () => acceptSubmit?.());
     expect(composer.value).toBe("");
+    expect(container?.textContent).toContain("Diktierter Text");
     expect(eventHandler).toBeTypeOf("function");
   });
 

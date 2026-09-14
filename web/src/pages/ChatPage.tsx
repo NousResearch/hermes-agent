@@ -39,6 +39,8 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { installPtyBrowserInput } from "@/lib/pty-browser-input";
+import { preparePtyTextareaForDictation } from "@/lib/pty-ios-textarea";
+import { shouldDropPtyMouseReport } from "@/lib/pty-mouse";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
@@ -57,7 +59,7 @@ import {
   shouldFinishResumeHydrationOnChunk,
   shouldShowResumeLoadingOverlay,
 } from "@/lib/pty-resume-loading";
-import { computeKeyboardInset, shouldPinScroll } from "@/lib/keyboard-inset";
+import { computeKeyboardInset, keyboardRevealScrollDelta, shouldScrollChatIntoView } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
@@ -67,6 +69,8 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
+import { advanceTouchAnchor, isTouchPan, touchLineTravel, touchScrollLines, wheelScrollLines } from "@/lib/pty-touch-scroll";
+import { ptyAboOauthChannelKey, ptyAboOauthParams } from "@/lib/pty-abo-oauth";
 import {
   imageFilesFromTransfer,
   transferMayContainImage,
@@ -346,9 +350,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  const aboOauthKey = ptyAboOauthChannelKey(searchParams);
   const channel = useMemo(
-    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
-    [resumeParam, scopedProfile],
+    () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}\0${aboOauthKey}`),
+    [resumeParam, scopedProfile, aboOauthKey],
   );
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
@@ -780,21 +785,103 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
+    let lastTouchScrollAt = 0;
+    const coarsePointer =
+      typeof window !== "undefined" &&
+      window.matchMedia("(pointer: coarse)").matches;
+
     // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
+    // mouse-wheel protocol bytes through the PTY. iPhone Safari synthesizes
+    // wheel from the same finger as touchmove — ignore wheel on coarse
+    // pointers so the caret and the viewport are not both yanked.
     term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
+      if (coarsePointer || Date.now() - lastTouchScrollAt < 450) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return false;
+      }
+      const lines = wheelScrollLines(ev.deltaY);
+      if (!lines) {
         return false;
       }
 
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
+      term.scrollLines(lines);
 
       ev.preventDefault();
       ev.stopPropagation();
       return false;
     });
+
+    // xterm's custom wheel hook does not receive touch drags. On a phone this
+    // otherwise leaves the browser trying to scroll its fixed dashboard chrome
+    // while the terminal history remains stuck. Keep one active finger and
+    // translate each movement into whole terminal rows.
+    let touchId: number | null = null;
+    let touchY: number | null = null;
+    let touchOriginY: number | null = null;
+    let touchPanning = false;
+    let suppressClickAfterPan = false;
+    host.style.touchAction = "none";
+    const activeTouch = (list: TouchList) => {
+      for (let i = 0; i < list.length; i += 1) {
+        if (list[i].identifier === touchId) return list[i];
+      }
+      return null;
+    };
+    const onTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1) {
+        touchId = null;
+        touchY = null;
+        touchOriginY = null;
+        touchPanning = false;
+        return;
+      }
+      touchId = ev.touches[0].identifier;
+      touchY = ev.touches[0].clientY;
+      touchOriginY = ev.touches[0].clientY;
+      touchPanning = false;
+    };
+    const onTouchMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 1 || touchId === null || touchY === null || touchOriginY === null) return;
+      const touch = activeTouch(ev.touches);
+      if (!touch) return;
+      if (!touchPanning && !isTouchPan(touchOriginY, touch.clientY)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      touchPanning = true;
+      const rowHeight = Math.max(1, host.clientHeight / Math.max(1, term.rows));
+      const lines = touchScrollLines(touchY, touch.clientY, rowHeight);
+      if (lines) {
+        touchY = advanceTouchAnchor(touchY, lines, touchLineTravel(rowHeight));
+        term.scrollLines(lines);
+        lastTouchScrollAt = Date.now();
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    const onTouchEnd = (ev: TouchEvent) => {
+      if (!activeTouch(ev.touches)) {
+        if (touchPanning) suppressClickAfterPan = true;
+        touchId = null;
+        touchY = null;
+        touchOriginY = null;
+        touchPanning = false;
+      }
+    };
+    const onSuppressedClick = (ev: Event) => {
+      if (!suppressClickAfterPan) return;
+      suppressClickAfterPan = false;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd, { passive: true });
+    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    host.addEventListener("mousedown", onSuppressedClick, true);
+    host.addEventListener("click", onSuppressedClick, true);
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -808,14 +895,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       !shouldBlockPtyInput(ptyStateRef.current),
     );
     const textarea = term.textarea;
-    if (textarea) {
-      textarea.setAttribute("autocomplete", "on");
-      textarea.setAttribute("autocorrect", "on");
-      textarea.setAttribute("autocapitalize", "sentences");
-      textarea.setAttribute("spellcheck", "true");
-      textarea.setAttribute("enterkeyhint", "send");
-      textarea.setAttribute("inputmode", "text");
-    }
+    if (textarea) preparePtyTextareaForDictation(textarea);
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -932,31 +1012,36 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         vv ? { height: vv.height, offsetTop: vv.offsetTop } : null,
         window.innerHeight,
       );
-      if (shouldPinScroll(inset)) {
-        // iOS auto-scrolls the page to reveal xterm's hidden textarea when
-        // the keyboard opens. The shell is a fixed h-dvh column that must
-        // never scroll — pin it back so the terminal chrome stays put.
-        window.scrollTo(0, 0);
-        const scroller = document.scrollingElement;
-        if (scroller && scroller.scrollTop !== 0) scroller.scrollTop = 0;
+      const chatTop = wrap.getBoundingClientRect().top;
+      const inIframe = window.self !== window.top;
+      if (inset !== appliedKeyboardInset) {
+        appliedKeyboardInset = inset;
+        wrap.style.paddingBottom = inset > 0 ? `${inset}px` : "";
+        scheduleHostSync();
       }
-      if (inset === appliedKeyboardInset) return;
-      appliedKeyboardInset = inset;
-      if (inset > 0) {
-        wrap.style.paddingBottom = `${inset}px`;
-        // Keep the freshly-resized input line in view.
+      if (shouldScrollChatIntoView(inset, chatTop, inIframe)) {
+        wrap.scrollIntoView({ block: "end", inline: "nearest" });
+      }
+      const revealComposer = () => {
+        if (inset <= 0 || !vv) return;
         try {
           term.scrollToBottom();
         } catch {
           /* ignore */
         }
-      } else {
-        wrap.style.paddingBottom = "";
+        const delta = keyboardRevealScrollDelta(host.getBoundingClientRect().bottom, {
+          height: vv.height,
+          offsetTop: vv.offsetTop,
+        });
+        if (delta) window.scrollBy(0, delta);
+      };
+      if (inset > 0) {
+        revealComposer();
+        requestAnimationFrame(() => {
+          revealComposer();
+          requestAnimationFrame(revealComposer);
+        });
       }
-      // The wrapper padding change resizes the host; the ResizeObserver
-      // will refit, but schedule one explicitly in case the observer
-      // coalesces with an in-flight frame.
-      scheduleHostSync();
     };
     const onViewportChange = () => {
       syncKeyboardInset();
@@ -974,6 +1059,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       appliedKeyboardInset = 0;
       if (termWrap) termWrap.style.paddingBottom = "";
     };
+    let keyboardRevealTimer = 0;
+    const onTerminalFocus = () => {
+      onViewportChange();
+      window.clearTimeout(keyboardRevealTimer);
+      keyboardRevealTimer = window.setTimeout(onViewportChange, 350);
+    };
+    term.textarea?.addEventListener("focus", onTerminalFocus);
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -1107,6 +1199,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
       if (scopedProfile) params.profile = scopedProfile;
+      Object.assign(params, ptyAboOauthParams(searchParams));
 
       ticketTimer = setTimeout(() => {
         ticketTimer = null;
@@ -1367,17 +1460,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
     // ordinary bytes to the backend.
     //
-    // For the browser embed we prefer input stability over terminal-style
-    // mouse reporting, so we drop SGR mouse reports entirely instead of
-    // forwarding them into Hermes. Keyboard input, paste, and resize still
-    // behave normally.
-      // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
-      const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
+    // Wheel/motion SGR must not reach the PTY (stray digits, reconnect
+    // notices). Left-click press/release must, so Ink can move its caret.
       const forwardPtyData = (data: string) => {
-        // Mouse reports (scroll wheel etc.) are not typed input — swallow
-        // them before the blocked-input check so scrolling a disconnected
-        // terminal doesn't trip the "reconnecting" notice.
-        if (SGR_MOUSE_RE.test(data)) {
+        if (shouldDropPtyMouseReport(data)) {
           return;
         }
 
@@ -1430,8 +1516,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
+      host.removeEventListener("mousedown", onSuppressedClick, true);
+      host.removeEventListener("click", onSuppressedClick, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
+      window.clearTimeout(keyboardRevealTimer);
+      term.textarea?.removeEventListener("focus", onTerminalFocus);
       keyboardInsetSyncRef.current = null;
       keyboardInsetResetRef.current = null;
       const wrap = termWrap;
@@ -1753,6 +1847,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
+          {(sessionTitle || resumeParam) && (
+            <div className="mb-1 flex min-w-0 items-center gap-2 px-1 text-xs text-text-secondary">
+              <span className="truncate">{sessionTitle || "Chat"}</span>
+              {resumeParam && (
+                <code className="shrink-0 select-all">{resumeParam}</code>
+              )}
+            </div>
+          )}
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"

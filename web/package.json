@@ -10,8 +10,9 @@
     "lint:fix": "eslint . --fix",
     "fix": "npm run lint:fix",
     "preview": "vite preview",
-    "typecheck": "tsc -p . --noEmit",
+    "typecheck": "tsc -b",
     "test": "vitest run",
+    "test:browser": "playwright test",
     "check": "npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
   },
   "devDependencies": {
     "@babel/core": "8.0.1",
+    "@playwright/test": "1.58.2",
     "@rolldown/plugin-babel": "0.2.3",
     "@types/babel__core": "7.20.5",
     "@types/node": "22.20.1",
@@ -50,6 +52,7 @@
     "@vitejs/plugin-react": "6.0.3",
     "babel-plugin-react-compiler": "1.0.0",
     "eslint-plugin-react-refresh": "0.5.3",
+    "jsdom": "29.1.1",
     "three": "0.180.0",
     "typescript": "6.0.3",
     "vite": "8.2.0",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  appendPendingUserMessage,
   createStructuredChatState,
   isTranscriptPinnedToBottom,
   parseStructuredGatewayEvent,
@@ -136,5 +137,22 @@ describe("structured chat timeline", () => {
   it("treats a transcript near the bottom as pinned and otherwise not", () => {
     expect(isTranscriptPinnedToBottom({ scrollTop: 900, scrollHeight: 1000, clientHeight: 100 })).toBe(true);
     expect(isTranscriptPinnedToBottom({ scrollTop: 0, scrollHeight: 1000, clientHeight: 100 })).toBe(false);
+  });
+
+  it("keeps a pending user send visible until history includes it", () => {
+    const pending = appendPendingUserMessage(createStructuredChatState("runtime-1"), "Hallo aus dem Composer");
+    expect(pending.items.at(-1)).toEqual(expect.objectContaining({
+      kind: "message",
+      role: "user",
+      text: "Hallo aus dem Composer",
+      status: "pending",
+    }));
+    const stillPending = replaceStructuredChatHistory(pending, [{ role: "assistant", text: "Alt" }]);
+    expect(stillPending.items.map((item) => item.text)).toEqual(["Alt", "Hallo aus dem Composer"]);
+    const arrived = replaceStructuredChatHistory(stillPending, [
+      { role: "assistant", text: "Alt" },
+      { role: "user", text: "Hallo aus dem Composer" },
+    ]);
+    expect(arrived.items.filter((item) => item.role === "user")).toHaveLength(1);
   });
 });

@@ -469,6 +469,9 @@ async def pty_ws(ws: WebSocket) -> None:
     raw_resume = ws.query_params.get("resume") or None
     resume = raw_resume
     profile = ws.query_params.get("profile") or None
+    provider = ws.query_params.get("provider") or None
+    model = ws.query_params.get("model") or None
+    chatgpt_mode = ws.query_params.get("chatgpt_mode") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -491,7 +494,8 @@ async def pty_ws(ws: WebSocket) -> None:
                 # See #93518.
                 await ws.send_json({"type": "resume", "id": resume})
 
-    resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
+    resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile,
+                      "provider": provider, "model": model, "chatgpt_mode": chatgpt_mode}
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
 
@@ -511,6 +515,8 @@ async def pty_ws(ws: WebSocket) -> None:
     if attach_token is not None and (registry_resume or profile):
         # Key explicit resumes on their canonical target, never the active-session fallback.
         attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
+    if attach_token is not None and (provider or model or chatgpt_mode):
+        attach_token = f"{attach_token}\0{provider or ''}\0{model or ''}\0{chatgpt_mode or ''}"
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)

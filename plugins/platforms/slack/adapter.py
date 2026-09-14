@@ -3292,8 +3292,7 @@ class SlackAdapter(BasePlatformAdapter):
             newest = sorted(self._processed_message_ts.items(), key=lambda item: item[1])
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
 
-    @staticmethod
-    def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
+    def _event_team_id(self, event: dict, body: Optional[dict] = None) -> str:
         """Resolve a workspace ID from the event plus Bolt's outer payload.
         Bolt passes only the inner ``event``; Slack puts ``team_id`` on the outer payload."""
         for payload in (event, body or {}):
@@ -3308,6 +3307,14 @@ class SlackAdapter(BasePlatformAdapter):
         for authorization in authorizations or []:
             if isinstance(authorization, dict) and authorization.get("team_id"):
                 return str(authorization["team_id"])
+        # Bolt can invoke both the ``message`` and ``app_mention`` listeners for one Slack
+        # message.  Some listener payload shapes omit the outer team_id; without this fallback
+        # the same ts is deduped once as ``T…:ts`` and once as bare ``ts``, producing two turns.
+        # A single connected workspace is unambiguous.  Multi-workspace adapters still fail
+        # closed rather than guessing across workspace-local IDs.
+        team_clients = getattr(self, "_team_clients", {})
+        if len(team_clients) == 1:
+            return str(next(iter(team_clients)))
         return ""
 
     @staticmethod

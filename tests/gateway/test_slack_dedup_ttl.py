@@ -48,6 +48,7 @@ _slack_mod.SLACK_AVAILABLE = True
 
 from gateway.platforms.helpers import MessageDeduplicator  # noqa: E402
 from plugins.platforms.slack.adapter import _slack_dedup_ttl_seconds  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 def test_default_ttl_outlasts_slack_reconnect_redelivery_window():
@@ -60,5 +61,24 @@ def test_default_ttl_outlasts_slack_reconnect_redelivery_window():
 def test_env_override_is_respected():
     with patch.dict(os.environ, {"SLACK_DEDUP_TTL_SECONDS": "120"}, clear=True):
         assert _slack_dedup_ttl_seconds() == 120.0
+
+
+def test_missing_outer_team_uses_only_connected_workspace_for_same_event_key():
+    adapter = SlackAdapter.__new__(SlackAdapter)
+    adapter._team_clients = {"T_WORKSPACE": object()}
+
+    assert adapter._event_team_id({"ts": "123.456"}, {}) == "T_WORKSPACE"
+    assert adapter._workspace_event_id(
+        adapter._event_team_id({"ts": "123.456"}, {}), "123.456"
+    ) == adapter._workspace_event_id(
+        adapter._event_team_id({"ts": "123.456"}, {"team_id": "T_WORKSPACE"}), "123.456"
+    )
+
+
+def test_missing_outer_team_remains_unknown_for_multiple_workspaces():
+    adapter = SlackAdapter.__new__(SlackAdapter)
+    adapter._team_clients = {"T_ONE": object(), "T_TWO": object()}
+
+    assert adapter._event_team_id({"ts": "123.456"}, {}) == ""
 
 

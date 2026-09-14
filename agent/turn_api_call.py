@@ -15,6 +15,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.message_metadata import append_message
+from utils import env_var_enabled
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -147,6 +148,15 @@ def perform_api_call(
         else:
             interrupted = True
         return _verdict("break")
+    # Capture the provider's response on the success boundary so paired
+    # request+response dumps are available when requested.
+    if env_var_enabled("HERMES_DUMP_REQUESTS") and response is not None:
+        agent._dump_api_response_debug(
+            response=response,
+            status=getattr(response, "status_code", None),
+            headers=getattr(response, "headers", None),
+            reason="success",
+        )
     return _verdict("fallthrough")
 
 

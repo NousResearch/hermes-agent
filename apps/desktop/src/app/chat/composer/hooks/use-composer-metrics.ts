@@ -114,8 +114,16 @@ export function useComposerMetrics({
   // would re-register the observation.
   const poppedOutRef = useRef(poppedOut)
   poppedOutRef.current = poppedOut
+  // #99889: ResizeObserver loop guard — setSurfaceVar mutates a CSS var that
+  // can change layout (thread clearance), which re-triggers the observer that
+  // just wrote it. Without a frame gate the observer fires again inside the
+  // same frame with undelivered notifications (see desktop.log) and the trace
+  // shows ForcedStyleAndLayout UpdateTime 17k events. Coalesce all
+  // measurements in one frame to a single rAF so at most one style invalidation
+  // is scheduled per frame.
+  const rafIdRef = useRef<number | null>(null)
 
-  const syncComposerMetrics = useCallback(() => {
+  const doSyncComposerMetrics = useCallback(() => {
     const composer = composerRef.current
     // The dock is the full docked footprint — strips, status stack, composer —
     // so it, not the composer alone, is what the thread has to clear.
@@ -183,7 +191,29 @@ export function useComposerMetrics({
     }
   }, [composerDockRef, composerRef, composerSurfaceRef, editorRef])
 
+  const syncComposerMetrics = useCallback(() => {
+    if (rafIdRef.current !== null) {
+      return
+    }
+
+    rafIdRef.current = window.requestAnimationFrame(() => {
+      rafIdRef.current = null
+      doSyncComposerMetrics()
+    })
+  }, [doSyncComposerMetrics])
+
   useResizeObserver(syncComposerMetrics, composerDockRef, composerRef, composerSurfaceRef, editorRef)
+
+  // Cancel any pending rAF on unmount so a late frame doesn't write after detach
+  // eslint-disable-next-line no-restricted-syntax -- rAF handle, not an atom mirror (see eslint rule comment)
+  useEffect(() => {
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current)
+        rafIdRef.current = null
+      }
+    }
+  }, [])
 
   // Toggling pop-out changes whether the composer reserves thread clearance.
   // The ResizeObserver may not fire (the box can keep the same box size), so

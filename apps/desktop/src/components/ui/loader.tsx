@@ -328,15 +328,59 @@ export function Loader({
   const groupRef = useRef<SVGGElement | null>(null)
   const particleRefs = useRef<Array<SVGCircleElement | null>>([])
   const pathRef = useRef<SVGPathElement | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
 
   useEffect(() => {
     let animationFrame = 0
+    let hiddenTime = 0
     const startedAt = performance.now()
     const phaseOffset = Math.random()
     particleRefs.current.length = config.particleCount
 
+    const shouldPause = () => {
+      // Pause when the document is hidden, the global renderer-pause flag is
+      // set, or the host prefers reduced motion — same gates the compositor
+      // animations in styles.css use. Also pause when the SVG is off-screen /
+      // content-visibility skips it (intersection check is free inside rAF).
+      if (typeof document !== 'undefined') {
+        if (document.hidden) {
+          return true
+        }
+
+        if (document.documentElement?.hasAttribute('data-renderer-animations-paused')) {
+          return true
+        }
+
+        if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+          return true
+        }
+      }
+
+      const svg = svgRef.current
+
+      if (svg) {
+        const rect = svg.getBoundingClientRect()
+
+        // Zero-size means hidden by keep-alive tab (visibility:hidden but still
+        // in DOM) or content-visibility skip — don't burn 60 fps updating it.
+        if (rect.width === 0 && rect.height === 0) {
+          return true
+        }
+      }
+
+      return false
+    }
+
     const render = (now: number) => {
-      const time = now - startedAt
+      if (shouldPause()) {
+        // Accumulate paused time so progress doesn't jump on resume.
+        hiddenTime += 16
+        animationFrame = window.requestAnimationFrame(render)
+
+        return
+      }
+
+      const time = now - startedAt - hiddenTime
       const progress = ((time + phaseOffset * config.durationMs) % config.durationMs) / config.durationMs
       const detailScale = detailScaleFor(time, config, phaseOffset)
       const rotation = rotationFor(time, config, phaseOffset)
@@ -371,7 +415,13 @@ export function Loader({
       className={cn('inline-grid size-10 place-items-center text-primary', className)}
       role={role}
     >
-      <svg aria-hidden="true" className="size-full overflow-visible" fill="none" viewBox="0 0 100 100">
+      <svg
+        aria-hidden="true"
+        className="loader-svg size-full overflow-visible"
+        fill="none"
+        ref={svgRef}
+        viewBox="0 0 100 100"
+      >
         <g ref={groupRef}>
           <path
             opacity="0.1"

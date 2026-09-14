@@ -9,14 +9,23 @@ process, so threads exercise the true kernel-lock semantics.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
+import sys
 import threading
 import time
 
 import pytest
+
+if sys.platform == "win32":  # pragma: no cover - POSIX-only behaviour
+    # ``acquire_turn_lock`` documents a no-op degradation without ``fcntl``, so
+    # there is no cross-process turn lock to exercise here. Skip at module level:
+    # a bare ``import fcntl`` is a COLLECTION error that aborts the whole
+    # ``tests/tools`` run, not just this file.
+    pytest.skip("bot turn lock is POSIX-only (fcntl.flock)", allow_module_level=True)
+
+import fcntl
 
 from tools import bot_mode_dm, bot_relay
 from tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path

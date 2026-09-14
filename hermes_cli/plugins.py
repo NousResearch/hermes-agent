@@ -501,6 +501,20 @@ class PluginContext:
                      " (override)" if override else "")
         return handle
 
+    def session_toolset(self, session_key: str, *, name: str, description: str = "",
+                        direct: bool = True):
+        """Open a session-owned toolset: a context manager yielding a registrar whose tools
+        are visible only to *session_key*'s turns and removed wholesale at teardown
+        (#110515). Session tools bypass the toolset selection entirely — no TOOLSETS
+        mutation, no ``_HERMES_CORE_TOOLS`` copying, no tool_search indirection with
+        ``direct=True`` (the default) — so the owning session's catalog rides on every
+        request while sibling sessions (and the CLI, outside any session) never see it.
+
+        Registration must complete before the session's first model request; later
+        mutations are rejected to keep the conversation's prompt prefix cache-stable."""
+        from hermes_cli.plugins_session_tools import session_toolset as _session_toolset
+        return _session_toolset(self, session_key, name=name, description=description, direct=direct)
+
     # -- capability probing (#64228) -----------------------------------------
     def has_capability(self, capability: str) -> bool:
         """True when *capability* is live for this plugin (probe, then degrade gracefully). Bundled

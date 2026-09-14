@@ -274,6 +274,7 @@ def _tool_defs_cache_key(
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope,
+        registry.current_session_key(),
     )
 
 
@@ -496,6 +497,13 @@ def _compute_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disa
     from tools.kanban_toolset_context import scoped_kanban_toolset_selection
     with scoped_kanban_toolset_selection(enabled_toolsets):
         filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+    # Session-owned plugin tools (plugins.session_toolset): outside the toolset selection
+    # by design — the owning session gets its catalog regardless of enabled/disabled
+    # config (the session gate IS the surface gate), and serving arms the registry's
+    # late-mutation freeze so the prompt prefix stays cache-stable for the conversation.
+    session_defs = registry.session_tool_definitions()
+    if session_defs:
+        filtered_tools = filtered_tools + session_defs
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 

@@ -139,6 +139,16 @@ _DEFAULT_DEFERRED_TOOLS = frozenset({
     "apply_layout", "read_terminal", "read_window_below", "focus_pane"})
 
 
+def _registry_session_tool_direct(name: str) -> Optional[bool]:
+    """Session-direct verdict for *name* from the registry (None when not a session tool
+    of the live session). Lazy + fail-open: tool_search works without session context."""
+    try:
+        from tools.registry import registry
+        return registry.session_tool_is_direct(name)
+    except Exception:
+        return None
+
+
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
     """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
     user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
@@ -149,6 +159,12 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
         return True
     if name in _core_tool_names():
         return False
+    # Session-owned plugin tools: direct=True (the default) means the owning session's
+    # catalog stays inline — deferring client-supplied tools behind a discovery bridge
+    # would break the session contract that put them on every request.
+    session_direct = _registry_session_tool_direct(name)
+    if session_direct is not None:
+        return not session_direct
     toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
     return toolset is not None and (
         toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)

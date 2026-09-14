@@ -384,6 +384,17 @@ class ToolRegistry:
         self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        # Session-owned tools (plugins.session_toolset): keyed by (profile scope, session
+        # key). Deliberately OUTSIDE the global/profile merged view — they surface only in
+        # schema building and dispatch for the owning gateway session, and the whole slot
+        # is dropped at teardown so sibling sessions never see a trace of them.
+        self._session_tools: Dict[tuple, Dict[str, ToolEntry]] = {}
+        # Session slots whose catalog has been served to the model; frozen against late
+        # mutation (prompt-cache safety: the tool list must be byte-stable per conversation).
+        self._session_served: Set[tuple] = set()
+        # (slot_key, tool name) pairs registered with direct=False — eligible for tool_search
+        # deferral like ordinary plugin tools (direct=True, the default, stays always-inline).
+        self._session_indirect: Set[tuple] = set()
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
@@ -442,9 +453,121 @@ class ToolRegistry:
         return any(not e.check_fn or _memo_check(e.check_fn, memo) for e in members)
 
     def get_entry(self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:
-        """Active profile's entry by name, falling back to global."""
+        """Active profile's entry by name, falling back to global. Session-owned tools of the
+        live session shadow both: the owning session explicitly registered them for this
+        conversation (outside a session-bound turn the session slot is simply absent)."""
         with self._lock:
+            slot_key = self._session_slot_key()
+            if slot_key is not None:
+                entry = self._session_tools.get(slot_key, {}).get(name)
+                if entry is not None:
+                    return entry
             return self._merged_tools(scope).get(name)
+
+    # ---- Session-owned tools (plugins.session_toolset) ----------------
+
+    @staticmethod
+    def current_session_key() -> str:
+        """Live gateway session key, or "" outside a session-bound turn (CLI one-shots,
+        plugin-load threads). Lazy import: registry.py stays at the bottom of the dep chain."""
+        try:
+            from gateway.session_context import get_session_env
+            return str(get_session_env("HERMES_SESSION_KEY", "") or "").strip()
+        except Exception:
+            return ""
+
+    def _session_slot_key(self, session_key: Optional[str] = None) -> Optional[tuple]:
+        key = self.current_session_key() if session_key is None else str(session_key or "").strip()
+        return (self.current_scope_key(), key) if key else None
+
+    def register_session_tool(
+            self, session_key: str, name: str, toolset: str, schema: dict, handler: Callable, *,
+            check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
+            description: str = "", emoji: str = "", direct: bool = True) -> None:
+        """Register a tool visible only inside *session_key*'s turns. Profile isolation rides
+        on the scope key, so multiplexed profiles with colliding session keys stay separate.
+
+        Raises RuntimeError when that session's catalog was already served to the model —
+        late mutation would retroactively change a cached prompt prefix — and ValueError on
+        schema/duplicate problems, mirroring :meth:`register`'s fail-loud contract."""
+        if not isinstance(schema, dict):
+            raise ValueError(f"Session tool {name!r}: schema must be a dict, got {type(schema).__name__}")
+        params = schema.get("parameters")
+        if params is not None and not isinstance(params, dict):
+            raise ValueError(
+                f"Session tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
+                f"got {type(params).__name__}")
+        slot_key = self._session_slot_key(session_key)
+        if slot_key is None:
+            raise ValueError("Session tool registration requires a non-empty session_key")
+        with self._lock:
+            if slot_key in self._session_served:
+                raise RuntimeError(
+                    f"Session {session_key!r} tool catalog was already served to the model; "
+                    "late mutations are rejected to keep the prompt prefix cache-stable — "
+                    "register before the session's first model request.")
+            slot = self._session_tools.setdefault(slot_key, {})
+            if name in slot:
+                raise ValueError(f"Tool {name!r} is already registered in session {session_key!r}")
+            slot[name] = ToolEntry(
+                name=name, toolset=toolset, schema=schema, handler=handler, check_fn=check_fn,
+                requires_env=list(requires_env or []), is_async=is_async, description=description,
+                emoji=emoji)
+            if not direct:
+                self._session_indirect.add((slot_key, name))
+            self._generation += 1
+
+    def remove_session_tools(self, session_key: str, *, scope: Optional[str] = None) -> int:
+        """Drop every session-owned tool for *session_key* (session teardown). Sibling
+        sessions are untouched. Returns the removed count."""
+        slot_key = (scope if scope is not None else self.current_scope_key(), str(session_key or "").strip())
+        if not slot_key[1]:
+            return 0
+        with self._lock:
+            removed = self._session_tools.pop(slot_key, {})
+            self._session_served.discard(slot_key)
+            self._session_indirect.difference_update({(slot_key, n) for n in removed})
+            if removed:
+                self._generation += 1
+            return len(removed)
+
+    def session_entries(self, session_key: Optional[str] = None) -> List[ToolEntry]:
+        """Session-owned entries for the live (or explicit) session; [] outside sessions."""
+        slot_key = self._session_slot_key(session_key)
+        if slot_key is None:
+            return []
+        with self._lock:
+            return list(self._session_tools.get(slot_key, {}).values())
+
+    def session_tool_definitions(self, session_key: Optional[str] = None) -> List[dict]:
+        """Provider tool-defs for the session-owned catalog (same shape as
+        :meth:`get_definitions`, check_fn-gated). Serving arms the mutation freeze."""
+        entries = self.session_entries(session_key)
+        if not entries:
+            return []
+        slot_key = self._session_slot_key(session_key)
+        result = []
+        check_results: Dict[Callable, bool] = {}
+        for entry in sorted(entries, key=lambda e: e.name):
+            if entry.check_fn and not _memo_check(entry.check_fn, check_results):
+                continue
+            result.append({"type": "function", "function": {**entry.schema, "name": entry.name}})
+        if result:
+            with self._lock:
+                self._session_served.add(slot_key)
+        return result
+
+    def session_tool_is_direct(self, name: str) -> Optional[bool]:
+        """Direct-visibility verdict for a session tool: True (never defer), False
+        (deferral-eligible like ordinary plugin tools), None when *name* is not a
+        session-owned tool of the live session."""
+        slot_key = self._session_slot_key()
+        if slot_key is None:
+            return None
+        with self._lock:
+            if name not in self._session_tools.get(slot_key, {}):
+                return None
+            return (slot_key, name) not in self._session_indirect
 
     def snapshot_registration(
         self, name: str, *, scope: Optional[str] = None) -> Optional[ToolEntry]:

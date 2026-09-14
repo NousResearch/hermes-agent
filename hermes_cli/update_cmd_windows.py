@@ -887,9 +887,11 @@ def _pause_windows_gateways_for_update() -> dict | None:
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
         token = _windows_cold_start_plan()
-        if token is not None:
-            _record_attested_cold_start_profiles(token, set())
-        return token
+        # Other profiles may hold a dead attestation even when the active profile owes nothing
+        # (clean exit, autostart not installed): give them a token to ride on.
+        probe = token if token is not None else {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": []}
+        _record_attested_cold_start_profiles(probe, set())
+        return probe if probe.get("cold_start_profiles") else token
     profiles, mapped_pids, socket_acks = _request_socket_pauses(running_pids, profile_processes, service_gateway_pids)
     # Resolve venv-side launchers BEFORE draining: a dead worker's parent cannot be recovered (NoSuchProcess).
     # The launcher keeps ``.pyd`` mapped and would trip the venv-holder guard; it is killed with the survivors.
@@ -962,14 +964,17 @@ def _cold_start_attested_profiles(token: dict) -> None:
     for name, generation in sorted(pending.items()):
         home = Path(get_profile_dir(name))
         with _best_effort(f"Could not cold-start Windows gateway profile {name} after update: %s"):
-            pid = gateway_windows._spawn_detached(home=home)
-            if not pid:
-                raise RuntimeError("cold-start did not return a process ID")
-            ready_pids = gateway_windows._wait_for_gateway_ready(all_profiles=True)
+            if not gateway_windows._live_gateway_pids(home=home):  # a concurrent autostart must not be doubled
+                pid = gateway_windows._spawn_detached(home=home)
+                if not pid:
+                    raise RuntimeError("cold-start did not return a process ID")
+            ready_pids = gateway_windows._wait_for_gateway_ready(home=home)
             if not ready_pids:
-                raise RuntimeError(f"PID {pid} did not become ready")
+                raise RuntimeError(f"gateway profile {name} did not become ready")
             gateway_windows._consume_start_attestation(generation, home=home)
-            print(f"\n✓ Gateway profile {name} started via cold-start after update (PID: {pid})")
+            # Keep the attestation chain: a death after this CLI exits must be visible to the next update.
+            gateway_windows._write_start_attestation(ready_pids, f"cold-start after update (profile {name})", home=home)
+            print(f"\n✓ Gateway profile {name} started via cold-start after update (PID: {ready_pids[0]})")
             token["cold_start_profiles"].pop(name, None)
     if not token["cold_start_profiles"]:
         token.pop("cold_start_profiles", None)
@@ -1203,16 +1208,18 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
     # autostart entry comes back on the current design at next login too.
     _m()._refresh_windows_gateway_launchers()
     _resume_windows_services(token)
-    _cold_start_attested_profiles(token)
     profiles = token.get("profiles") or {}
     unmapped = token.get("unmapped") or []
     if not profiles and not any(u.get("argv") for u in unmapped):
         if token.get("cold_start_if_installed"):
+            # Before the per-profile spawns: this guard is fleet-wide (any live gateway ⇒ done).
             if not _m()._cold_start_windows_gateway_after_update(token):
                 raise RuntimeError("Windows gateway cold-start was not verified")
             token["cold_start_if_installed"] = False
+        _cold_start_attested_profiles(token)
         token["resume_needed"] = False
         return
+    _cold_start_attested_profiles(token)
     relaunched, unmapped_relaunched = _relaunch_paused_gateways(token, profiles, unmapped)
     if relaunched or unmapped_relaunched:
         _verify_relaunched_gateways_alive(token, profiles, unmapped)

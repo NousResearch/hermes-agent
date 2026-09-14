@@ -812,7 +812,23 @@ def install(
     raise RuntimeError(f"Windows gateway install failed: {detail}")
 
 
-def _confirm_gateway_stable(initial_pids: list[int], confirm_s: float, interval_s: float, all_profiles: bool = False) -> list[int]:
+def _live_gateway_pids(all_profiles: bool = False, home: Path | None = None) -> list[int]:
+    """Live gateway PIDs for the readiness poll. ``home`` scopes the probe to ONE profile's identity
+    files (a still-running sibling must not vouch for a per-profile spawn, #110959); otherwise the
+    process-table discovery for the active profile or the whole fleet."""
+    if home is not None:
+        from gateway.status import get_running_pid
+
+        pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
+        return [pid] if pid else []
+    from hermes_cli.gateway import find_gateway_pids
+
+    return list(find_gateway_pids(all_profiles=all_profiles))
+
+
+def _confirm_gateway_stable(
+    initial_pids: list[int], confirm_s: float, interval_s: float, all_profiles: bool = False, home: Path | None = None,
+) -> list[int]:
     """Re-check a freshly detected gateway for ``confirm_s`` seconds: one process-table hit proves
     the child was *created*, not that it survived startup (or a parent Job Object teardown).
 
@@ -824,13 +840,11 @@ def _confirm_gateway_stable(initial_pids: list[int], confirm_s: float, interval_
     """
     if confirm_s <= 0:
         return initial_pids
-    from hermes_cli.gateway import find_gateway_pids
-
     pids = initial_pids
     confirm_deadline = time.monotonic() + confirm_s
     while time.monotonic() < confirm_deadline:
         time.sleep(interval_s)
-        pids = list(find_gateway_pids(all_profiles=all_profiles))
+        pids = _live_gateway_pids(all_profiles, home)
         if not pids:
             return []
     return pids
@@ -838,16 +852,15 @@ def _confirm_gateway_stable(initial_pids: list[int], confirm_s: float, interval_
 
 def _wait_for_gateway_ready(
     timeout_s: float = 6.0, interval_s: float = 0.4, confirm_s: float = 2.0, all_profiles: bool = False,
+    home: Path | None = None,
 ) -> list[int]:
     """Poll for a live gateway for up to ``timeout_s``; a first hit is provisional until the gateway
     stays visible for ``confirm_s`` more seconds (a child that dies right after spawn earns no ✓)."""
-    from hermes_cli.gateway import find_gateway_pids
-
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        pids = list(find_gateway_pids(all_profiles=all_profiles))
+        pids = _live_gateway_pids(all_profiles, home)
         if pids:
-            confirmed = _confirm_gateway_stable(pids, confirm_s, interval_s, all_profiles=all_profiles)
+            confirmed = _confirm_gateway_stable(pids, confirm_s, interval_s, all_profiles=all_profiles, home=home)
             if confirmed:
                 return confirmed
             continue  # died during confirmation — keep polling until deadline
@@ -872,14 +885,14 @@ def _start_attestation_path(home: Path | None = None) -> Path:
     return (home if home is not None else _hermes_home()).joinpath(*_START_ATTESTATION_RELATIVE)
 
 
-def _write_start_attestation(pids: list[int], via: str) -> None:
+def _write_start_attestation(pids: list[int], via: str, home: Path | None = None) -> None:
     """Persist the PIDs a ✓ vouched for. Best-effort, never raises.
 
     ``generation`` identifies this marker instance: the update resume token records the generation
     whose death authorized a cold-start, so execution consumes exactly that marker and never a
     newer one written by a concurrent ``hermes gateway start`` (#110020 review)."""
     try:
-        path = _start_attestation_path()
+        path = _start_attestation_path(home)
         path.parent.mkdir(parents=True, exist_ok=True)
         from hermes_cli.process_identity import _process_create_time
 

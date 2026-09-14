@@ -253,12 +253,14 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "_venv_launcher_ancestors", lambda pids: [])
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, timeout: set())
     monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex: list(homes.items()))
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex: [(n, h) for n, h in homes.items() if n in ("default", "beta")])
     monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: homes[name])
     # Resume side.
     monkeypatch.setattr(cli_main, "_refresh_windows_gateway_launchers", lambda: None)
     monkeypatch.setattr(hermes_gateway, "launch_detached_profile_gateway_restart", lambda p, o: True)
-    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: [4242])
+    ready_probes: list = []
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: ready_probes.append(k) or [4242])
+    homes["_ready_probes"] = ready_probes
     return homes
 
 
@@ -280,11 +282,15 @@ def test_dead_attested_default_is_cold_started_beside_running_beta(monkeypatch, 
 
     spawned = []
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: spawned.append(k) or 4242)
-    monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *a, **k: None)
     update_cmd._resume_windows_gateways_after_update(token)
 
     assert spawned == [{"home": homes["default"]}]
-    assert not marker.exists()  # consumed with the default profile's home
+    # Readiness is probed in the default profile's own home: live ``beta`` must not vouch for it.
+    assert {"home": homes["default"]} in homes["_ready_probes"]
+    # The authorizing generation is consumed and the NEW PID is attested in the same profile home,
+    # so a death after this CLI exits stays visible to the next update.
+    reattested = json.loads(marker.read_text(encoding="utf-8"))
+    assert (reattested["pids"], reattested["generation"] != generation) == ([4242], True)
     assert "cold_start_profiles" not in token
     assert token["relaunched_profiles"] == ["beta"]
     assert token["resume_needed"] is False
@@ -305,3 +311,29 @@ def test_no_attested_profile_leaves_the_pause_token_unchanged(monkeypatch, tmp_p
     update_cmd._resume_windows_gateways_after_update(token)
     assert spawned == []
     assert token["relaunched_profiles"] == ["beta"]
+
+
+def test_every_dead_attested_profile_is_cold_started_when_nothing_runs(monkeypatch, tmp_path):
+    """Nothing running, active profile exited cleanly (plan → None), ``beta`` dead-attested: beta still
+    gets a token and a spawn. And when BOTH owe a spawn, the fleet-wide active cold-start runs FIRST —
+    a beta spawned earlier would satisfy its any-live-gateway guard and the active profile would stay down."""
+    homes = _running_beta_pause_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({}, [], set(), []))
+    monkeypatch.setattr(update_cmd_windows, "_windows_cold_start_plan", lambda: None)
+    gateway_windows._write_start_attestation([556], "direct spawn (PID 556)", home=homes["beta"])
+    beta_marker = homes["beta"] / "state" / "gateway.start-attestation.json"
+    beta_generation = json.loads(beta_marker.read_text(encoding="utf-8"))["generation"]
+
+    token = update_cmd._pause_windows_gateways_for_update()
+    assert token["cold_start_profiles"] == {"beta": beta_generation}
+    assert token["profiles"] == {}
+
+    order = []
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: order.append(k.get("home")) or 4242)
+    monkeypatch.setattr(
+        cli_main, "_cold_start_windows_gateway_after_update", lambda token=None: order.append("active") or True)
+    token["cold_start_if_installed"] = True  # both owe a spawn
+    update_cmd._resume_windows_gateways_after_update(token)
+    assert order == ["active", homes["beta"]]
+    assert json.loads(beta_marker.read_text(encoding="utf-8"))["generation"] != beta_generation
+    assert token["resume_needed"] is False

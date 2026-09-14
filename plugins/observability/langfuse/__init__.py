@@ -547,7 +547,12 @@ def _usage_and_cost(response: Any, *, provider: str, model: str, base_url: str, 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse,
                       turn_id: str = "", api_request_id: str = "") -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+    # Session IDs deliberately group Langfuse traces, but cannot also identify
+    # a trace: gateway and hosted-room turns retain one session across many
+    # replies.  Prefer the unique turn ID (then request ID for hook callers
+    # without a turn boundary) so every emitted root has a distinct Cloud ID.
+    trace_scope = turn_id or api_request_id or task_id or task_key
+    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{trace_scope}")
     last_user = next((m for m in reversed(messages) if isinstance(m, dict) and m.get("role") == "user"), None) \
         if isinstance(messages, list) else None
     trace_input = None if last_user is None else {"role": "user", "content": _capture_content(last_user.get("content"))}

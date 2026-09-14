@@ -34,6 +34,7 @@ describe('PreviewStatusRow', () => {
     const decoration = content?.firstElementChild
 
     expect(content).not.toBeNull()
+    expect(content?.classList.contains('text-pretty')).toBe(true)
     expect(view.container.contains(content)).toBe(false)
     // The decoration's per-line background only wraps inline FLOW. A flex box
     // (block or inline-flex) under it lights the first line and leaves the

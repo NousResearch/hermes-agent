@@ -148,3 +148,73 @@ describe('Install from Git entry flow', () => {
     )
   })
 })
+
+// The backend's scan gate answers with a JSON-RPC error whose `data` carries
+// the verdict + findings (tui_gateway.methods_tools._plugins_install).
+describe('Security scan verdicts', () => {
+  const finding = {
+    pattern_id: 'sudo_usage',
+    severity: 'high',
+    category: 'privilege_escalation',
+    file: 'src/push.py',
+    line: 54,
+    description: 'uses sudo (privilege escalation)'
+  }
+
+  const scanBlock = (verdict: string) =>
+    Object.assign(new Error('Security scan blocked plugin install'), {
+      data: { scan_blocked: true, scan_verdict: verdict, scan_findings: [finding] }
+    })
+
+  it('shows caution findings, holds the desktop half, and retries with allow_caution on "Install anyway"', async () => {
+    $connection.set({ mode: 'remote' } as NonNullable<ReturnType<typeof $connection.get>>)
+    installDesktopPlugin.mockResolvedValue({ ok: true, pluginName: 'plugin' })
+    requestGateway.mockImplementation(async (method, params) => {
+      if (method !== 'plugins.manage' || params?.action !== 'install') {
+        return { plugins: [] }
+      }
+
+      if (params.allow_caution === true) {
+        return { ok: true, plugin_name: 'plugin' }
+      }
+
+      throw scanBlock('caution')
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Install' }))
+    expect(await screen.findByText('Security scan flagged this plugin')).toBeTruthy()
+    expect(screen.getByText(/sudo_usage · src\/push\.py:54/)).toBeTruthy()
+    // Nothing of an unreviewed package lands: the desktop half waits for the decision.
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Install' })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install anyway' }))
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'install', allow_caution: true, force: false })
+      )
+    )
+    await waitFor(() => expect(installDesktopPlugin).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect($pluginInstallRequest.get()).toBeNull())
+  })
+
+  it('offers no override for a dangerous verdict', async () => {
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+    requestGateway.mockImplementation(async (method, params) => {
+      if (method === 'plugins.manage' && params?.action === 'install') {
+        throw scanBlock('dangerous')
+      }
+
+      return { plugins: [] }
+    })
+    renderFlow()
+    act(() => openPluginInstallRequest({ repo: 'https://github.com/example/plugin' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Install' }))
+    expect(await screen.findByText('Security scan blocked this plugin')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Install anyway' })).toBeNull()
+    expect((screen.getByRole('button', { name: 'Install' }) as HTMLButtonElement).disabled).toBe(true)
+    expect($pluginInstallRequest.get()).not.toBeNull()
+  })
+})

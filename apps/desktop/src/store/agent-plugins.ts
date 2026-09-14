@@ -192,6 +192,43 @@ export interface AgentPluginInstallResult {
   warnings?: string[]
   missingEnv?: string[]
   error?: string
+  /** The install-time security scan refused the plugin. A `caution` verdict
+   *  can be accepted by retrying with `allowCaution`; `dangerous` never can. */
+  scanBlocked?: boolean
+  scanVerdict?: string
+  scanFindings?: AgentPluginScanFinding[]
+}
+
+/** One scanner hit, as `tools.skills_guard.Finding` is serialised by
+ *  `hermes_cli.plugins_cmd.dashboard_install_plugin`. */
+export interface AgentPluginScanFinding {
+  pattern_id: string
+  severity: string
+  category: string
+  file: string
+  line: number
+  description: string
+}
+
+/** A scan block travels as a JSON-RPC error whose `data` carries the verdict
+ *  and findings (`tui_gateway.methods_tools._plugins_install`); anything else
+ *  is an ordinary failure. */
+function scanBlockFromError(
+  e: unknown
+): Pick<AgentPluginInstallResult, 'scanBlocked' | 'scanVerdict' | 'scanFindings'> | null {
+  const data = (e as { data?: unknown } | null)?.data
+
+  if (!data || typeof data !== 'object' || !('scan_blocked' in data) || !data.scan_blocked) {
+    return null
+  }
+
+  const { scan_verdict, scan_findings } = data as { scan_verdict?: unknown; scan_findings?: unknown }
+
+  return {
+    scanBlocked: true,
+    scanVerdict: typeof scan_verdict === 'string' ? scan_verdict : 'dangerous',
+    scanFindings: Array.isArray(scan_findings) ? (scan_findings as AgentPluginScanFinding[]) : []
+  }
 }
 
 export async function installAgentPlugin(
@@ -207,6 +244,10 @@ export async function installAgentPlugin(
     ref?: string
     /** Target profile's HERMES_HOME (null/undefined = backend launch profile). */
     profile?: string | null
+    /** Accept a `caution` scan verdict — the CLI's "Install anyway? [y/N]".
+     *  Not a force: `dangerous` stays blocked, and an existing install is
+     *  still only replaced by `force`. */
+    allowCaution?: boolean
   }
 ): Promise<AgentPluginInstallResult> {
   try {
@@ -225,7 +266,8 @@ export async function installAgentPlugin(
           force: Boolean(opts.force),
           enable: opts.enable ?? true,
           ...(opts.catalogName ? { catalog_name: opts.catalogName } : {}),
-          ...(opts.ref ? { ref: opts.ref } : {})
+          ...(opts.ref ? { ref: opts.ref } : {}),
+          ...(opts.allowCaution ? { allow_caution: true } : {})
         },
         opts.profile
       )
@@ -242,7 +284,9 @@ export async function installAgentPlugin(
       missingEnv: result.missing_env
     }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    const error = e instanceof Error ? e.message : String(e)
+
+    return { ok: false, error, ...(scanBlockFromError(e) ?? {}) }
   }
 }
 

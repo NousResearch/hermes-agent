@@ -1702,14 +1702,18 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
-    ref: Optional[str] = None,
+    ref: Optional[str] = None, allow_caution: bool = False,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins a custom source to one full commit SHA (same
-    contract as ``--ref``); every path enforces the kill list (no GUI bypass)."""
+    contract as ``--ref``); every path enforces the kill list (no GUI bypass).
+    *allow_caution* is the GUI's "Install anyway": it accepts a ``caution`` scan verdict the way the
+    CLI's ``[y/N]`` prompt does and nothing more — ``dangerous`` stays blocked, and an existing
+    install is still only replaced by *force*."""
     from hermes_cli import plugins_cmd_catalog as catalog
     warnings: list[str] = []
     entry = None
+    scan_decision_cb = (lambda _result: True) if allow_caution else None
     if catalog_name:
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
@@ -1729,10 +1733,11 @@ def dashboard_install_plugin(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, allow_removed=True)
+                entry, force=force, allow_removed=True, scan_decision_cb=scan_decision_cb)
         else:
             target, installed_manifest, installed_name = _install_plugin_core(
-                identifier, force=force, ref=(ref or "").strip() or None)
+                identifier, force=force, ref=(ref or "").strip() or None,
+                scan_decision_cb=scan_decision_cb)
     except PluginScanBlocked as exc:
         fields = ("pattern_id", "severity", "category", "file", "line", "description")
         return {

@@ -547,7 +547,14 @@ export const en: Translations = {
         desktopSuccess: name => `Desktop plugin ${name} installed`,
         agentFailed: 'Agent plugin install failed',
         desktopFailed: 'Desktop plugin install failed',
-        missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`
+        missingEnv: vars => `Missing env vars: ${vars}. Add them in Settings → Keys.`,
+        scanCautionHeading: 'Security scan flagged this plugin',
+        scanCautionIntro:
+          'Hermes found patterns worth a second look before anything runs. Review them and continue only if you trust the source — Install anyway accepts them, exactly like the prompt in the CLI.',
+        scanDangerousHeading: 'Security scan blocked this plugin',
+        scanDangerousIntro:
+          'A critical finding blocks this install and cannot be overridden here. Review the source or contact the author.',
+        installAnyway: 'Install anyway'
       }
     },
     vault: {

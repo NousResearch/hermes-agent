@@ -9,6 +9,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Bell, Play } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $completionSoundVariantId, setCompletionSoundVariantId } from '@/store/completion-sound'
+import { $hapticsMuted, setHapticsMuted } from '@/store/haptics'
 import {
   $nativeNotifyPrefs,
   NATIVE_NOTIFICATION_KINDS,
@@ -30,6 +31,7 @@ function Caption({ children, className }: { children: ReactNode; className?: str
 export function NotificationsSettings() {
   const { t } = useI18n()
   const prefs = useStore($nativeNotifyPrefs)
+  const hapticsMuted = useStore($hapticsMuted)
   const completionSoundVariantId = useStore($completionSoundVariantId)
   const copy = t.settings.notifications
 
@@ -61,6 +63,13 @@ export function NotificationsSettings() {
           onChange={on => setNativeNotifyKind(kind, on)}
         />
       ))}
+
+      <ToggleRow
+        checked={!hapticsMuted}
+        description={copy.enableAppSoundsDesc}
+        label={copy.enableAppSounds}
+        onChange={enabled => setHapticsMuted(!enabled)}
+      />
 
       <ListRow
         action={

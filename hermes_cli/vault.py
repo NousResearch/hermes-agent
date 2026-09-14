@@ -113,7 +113,9 @@ def _cmd_list(args) -> None:
     """Local items always; external managers only for the lifetime of this CLI process (a
     `hermes vault list` unlock does not carry into a chat session — unlock there when asked)."""
     from agent.vault_backends import enabled_backends
+    from hermes_cli.plugins import discover_plugins
 
+    discover_plugins()
     c = _console()
     rows, locked = [], []
     for backend in enabled_backends():
@@ -143,7 +145,9 @@ def _cmd_sources(args) -> None:
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.base import external_backend_classes, is_installed
     from hermes_cli.config import _ensure_dict, load_config, save_config
+    from hermes_cli.plugins import discover_plugins
 
+    discover_plugins()
     c = _console()
     classes = {cls.name: cls for cls in external_backend_classes()}
     if args.enable or args.disable:

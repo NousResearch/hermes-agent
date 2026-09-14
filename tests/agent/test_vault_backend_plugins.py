@@ -67,3 +67,55 @@ def test_plugin_backend_cannot_shadow_builtin_name_or_handle_prefix():
         assert context.register_login_backend(OverlapsBitwarden) is None
     finally:
         manager.unload("collision")
+
+
+def test_plugin_backend_rejects_malformed_names_without_aborting_registration():
+    class MissingName(LoginBackend):
+        display_name = "Missing Name"
+        prefix = "missing:"
+
+        def list_items(self):
+            return []
+
+        def get_meta(self, handle):
+            return None
+
+        def resolve_password(self, handle):
+            return "secret"
+
+    class NonStringName(PluginBackend):
+        name = 7
+
+    manager = PluginManager()
+    context = PluginContext(PluginManifest(name="malformed", key="malformed"), manager)
+    try:
+        assert context.register_login_backend(MissingName) is None
+        assert context.register_login_backend(NonStringName) is None
+    finally:
+        manager.unload("malformed")
+
+
+def test_plugin_backend_availability_wins_over_existing_binary_path(monkeypatch, tmp_path):
+    class UnavailableBackend(PluginBackend):
+        name = "unavailable"
+        prefix = "unavailable:"
+
+        def is_available(self):
+            return False
+
+    binary = tmp_path / "manager-cli"
+    binary.write_text("present", encoding="utf-8")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"vault": {"unavailable": {"binary_path": str(binary)}}},
+    )
+    manager = PluginManager()
+    context = PluginContext(PluginManifest(name="unavailable", key="unavailable"), manager)
+    assert context.register_login_backend(UnavailableBackend) is not None
+    try:
+        from agent.vault_backends.base import is_installed
+
+        assert is_installed("unavailable") is False
+        assert "unavailable" not in {backend.name for backend in enabled_backends()}
+    finally:
+        manager.unload("unavailable")

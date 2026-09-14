@@ -364,7 +364,8 @@ class PluginContext:
                 return None
         elif self._wrong_type(provider, base_class, label, article):
             return None
-        registry_name = provider.name if normalize is None else normalize(provider.name)
+        raw_name = getattr(provider, "name", "") if class_registration else provider.name
+        registry_name = raw_name if normalize is None else normalize(raw_name)
         scope = self._manager.scope_key
         previous = registry.snapshot_registration(registry_name, scope=scope)
         try:

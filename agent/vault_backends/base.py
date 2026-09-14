@@ -114,12 +114,14 @@ def is_installed(name: str) -> bool:
     import shutil
     section = _cfg().get(name) or {}
     explicit = str(section.get("binary_path") or "") if isinstance(section, dict) else ""
-    if explicit:
-        return Path(explicit).is_file()
     if name == "onepassword":
+        if explicit:
+            return Path(explicit).is_file()
         from agent.secret_sources.onepassword import find_op
         return find_op() is not None
     if name == "bitwarden":
+        if explicit:
+            return Path(explicit).is_file()
         return shutil.which("bw") is not None
     cls = next((candidate for candidate in external_backend_classes() if candidate.name == name), None)
     if cls is None:

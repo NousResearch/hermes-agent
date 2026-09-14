@@ -117,8 +117,10 @@ def _get_backend() -> str:
         ("exa", _has_env("EXA_API_KEY")),
         ("parallel", _has_env("PARALLEL_API_KEY")), ("keenable", _has_env("KEENABLE_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
-        ("firecrawl", _is_tool_gateway_ready()), ("searxng", _has_env("SEARXNG_URL")),
-        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")), ("ddgs", _ddgs_package_importable()),
+        ("firecrawl", _is_tool_gateway_ready()),
+        ("searxng", _is_backend_available("searxng")),
+        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
+        ("ddgs", _ddgs_package_importable()),
     )
     for backend, available in backend_candidates:
         if available:
@@ -173,6 +175,18 @@ def _xai_available() -> bool:
         return False
 
 
+def _searxng_provider_available() -> bool:
+    """Config-only detection: fall through to the plugin's ``is_available()`` when the
+    ``SEARXNG_URL`` env var is unset, so a ``web.searxng.url`` config URL alone selects it.
+    Returns False when the registry has no searxng provider (discovery not yet run)."""
+    provider = _registered_web_provider("searxng")
+    if provider is not None:
+        available = _probe(provider, "is_available")
+        if available is not None:
+            return available
+    return False
+
+
 # Built-in backends -> cheap availability probes; any other name is a plugin provider resolved via the
 # registry's ``is_available()``. Lambdas so test patches of module-level helpers (_ddgs_package_importable,
 # check_firecrawl_api_key) are honored at call time. ``xai`` is probed via has_xai_credentials(), not a
@@ -185,7 +199,7 @@ _BUILTIN_AVAILABILITY = {
     "tavily": lambda: _has_env("TAVILY_API_KEY")
     or any(_configured_backend(k) == "tavily" for k in ("backend", "search_backend", "extract_backend")),
     "perplexity": lambda: _has_env("PERPLEXITY_API_KEY"),
-    "searxng": lambda: _has_env("SEARXNG_URL"),
+    "searxng": lambda: _has_env("SEARXNG_URL") or _searxng_provider_available(),
     "brave-free": lambda: _has_env("BRAVE_SEARCH_API_KEY"),
     "ddgs": lambda: _ddgs_package_importable(),
     "xai": _xai_available,

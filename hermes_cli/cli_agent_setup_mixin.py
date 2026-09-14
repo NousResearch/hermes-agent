@@ -300,7 +300,7 @@ class CLIAgentSetupMixin:
             if not _fb_provider or not _fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
                 _fb_kwargs = {"requested": _fb_provider}
                 if _fb.get("base_url"):
                     _fb_kwargs["explicit_base_url"] = _fb["base_url"]
@@ -308,6 +308,10 @@ class CLIAgentSetupMixin:
                 if _fb_api_key:
                     _fb_kwargs["explicit_api_key"] = _fb_api_key
                 runtime = resolve_runtime_provider(**_fb_kwargs)
+                # Named custom entries resolve to the bare "custom" billing class; persist the
+                # configured identity so the session banner/turn metadata match the manual-switch
+                # path, same as the gateway/cron/tui_gateway fallback resolvers (#98739).
+                runtime["provider"] = effective_runtime_provider(_fb, runtime)
                 logger.warning(
                     "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                     primary_exc, _fb_provider, _fb_model)

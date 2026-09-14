@@ -438,6 +438,18 @@ class TestUpdate:
         assert (plan.target_dir / "skills" / "user-created" / "SKILL.md").read_text() == "keep this skill\n"
         assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "updated demo\n"
 
+    def test_update_keeps_user_added_cron_root(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="cron_safe")
+
+        (plan.target_dir / "cron" / "mine.json").write_text('{"schedule": "* * * * *"}\n')
+        (staged / "cron" / "daily.json").write_text('{"schedule": "0 10 * * *"}\n')
+
+        update_distribution("cron_safe")
+
+        assert (plan.target_dir / "cron" / "mine.json").read_text() == '{"schedule": "* * * * *"}\n'
+        assert (plan.target_dir / "cron" / "daily.json").read_text() == '{"schedule": "0 10 * * *"}\n'
+
     def test_update_preserves_skills_when_distribution_uses_explicit_allowlist(self, profile_env):
         mf = DistributionManifest(name="skills_allowlist", version="0.1.0", distribution_owned=["skills"])
         staged = _make_staging_dir(profile_env, "src", manifest=mf)

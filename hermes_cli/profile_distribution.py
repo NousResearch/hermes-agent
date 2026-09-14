@@ -28,7 +28,7 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 
 # Default distribution-owned paths (relative to profile root). Authors may override via
 # ``distribution_owned:``. config.yaml is dist-owned but preserved on update by default.
-DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "cron", MANIFEST_FILENAME)
+DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "skills", "cron", MANIFEST_FILENAME)
 
 # Paths NEVER part of a distribution: user-owned, protected on update. Keep consistent with
 # ``profiles.py`` export exclusions plus the ``local/`` convention for user customizations.
@@ -356,70 +356,49 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             yield src, rel_parts
 
 
-def _copy_dist_payload(
-    staged: Path,
-    target: Path,
-    manifest: DistributionManifest,
-    preserve_config: bool,
-    preserve_skills: bool = False,
-) -> None:
+def _remove_existing(path: Path) -> None:
+    """Remove one destination entry without following a destination symlink."""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _replace_entry(src: Path, dest: Path) -> None:
+    """Replace *dest* with *src* wholesale so files retired upstream disappear and
+    file<->directory transitions cannot raise or leave stale content behind."""
+    _remove_existing(dest)
+    if src.is_dir():
+        shutil.copytree(src, dest)
+    else:
+        shutil.copy2(src, dest)
+
+
+def _real_dir(base: Path, parts: Tuple[str, ...]) -> Path:
+    """Return ``base/parts`` as a chain of real directories.
+
+    A user could have swapped any ancestor for a symlink or a file; writing through it
+    would land the payload outside the profile, so each is replaced by a real directory."""
+    path = base
+    for part in parts:
+        path = path / part
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            _remove_existing(path)
+        path.mkdir(exist_ok=True)
+    return path
+
+
+def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
     """Copy distribution-owned files (see ``_owned_entries``) from *staged* into *target*.
 
     User-owned paths are never touched. ``config.yaml`` is replaced only when
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
-    as ``.env.EXAMPLE`` so it never shadows a real ``.env``. During an update,
-    the skills tree is merged so skills that are not in the new distribution
-    are left alone."""
+    as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
+
+    A top-level owned directory (``skills/``, ``cron/``, ...) is a container of roots: only
+    the roots the payload ships are replaced, so roots the user added (or that an older
+    version shipped) survive an update or forced reinstall."""
     target.mkdir(parents=True, exist_ok=True)
-    staged_resolved = staged.resolve()
-
-    def _remove_existing(path: Path) -> None:
-        """Remove one destination entry without following a destination symlink."""
-        if path.is_symlink() or path.is_file():
-            path.unlink()
-        elif path.is_dir():
-            shutil.rmtree(path)
-
-    def _replace_entry(src: Path, dest: Path, *, ignore=None) -> None:
-        """Replace one distribution entry, handling file/directory changes safely."""
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        _remove_existing(dest)
-        if src.is_dir():
-            shutil.copytree(src, dest, ignore=ignore)
-        else:
-            shutil.copy2(src, dest)
-
-    def _ensure_skill_parent(parts: Tuple[str, ...]) -> Path:
-        """Create a real skills path and never write through a user symlink."""
-        skills_target = target / "skills"
-        if skills_target.is_symlink() or (skills_target.exists() and not skills_target.is_dir()):
-            _remove_existing(skills_target)
-        skills_target.mkdir(parents=True, exist_ok=True)
-        parent = skills_target
-        for part in parts:
-            parent /= part
-            if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
-                _remove_existing(parent)
-            parent.mkdir(parents=True, exist_ok=True)
-        return parent
-
-    def _copy_skill_entry(src: Path, rel_parts: Tuple[str, ...]) -> None:
-        """Replace an explicitly owned skill root or nested skill path."""
-        skill_parts = rel_parts[1:]
-        if not skill_parts:
-            skills_target = _ensure_skill_parent(())
-            if src.is_dir():
-                for child in src.iterdir():
-                    _replace_entry(child, skills_target / child.name)
-            else:
-                _replace_entry(src, skills_target)
-            return
-        dest_parent = _ensure_skill_parent(skill_parts[:-1])
-        _replace_entry(src, dest_parent / skill_parts[-1])
-
-    def _ignore_user_owned(d, names):
-        # Only the staged root's direct children are filtered.
-        return [n for n in names if n in USER_OWNED_EXCLUDE] if Path(d).resolve() == staged_resolved else []
 
     for src, rel_parts in _owned_entries(staged, manifest):
         if len(rel_parts) == 1:
@@ -429,16 +408,13 @@ def _copy_dist_payload(
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
-        dest = target.joinpath(*rel_parts)
-        if preserve_skills and rel_parts[0] == "skills":
-            # A skill directory is the ownership boundary. Replace roots shipped by the
-            # distribution so removed files disappear, while roots absent from the new
-            # payload stay available for user-created skills.
-            _copy_skill_entry(src, rel_parts)
-        elif src.is_dir():
-            _replace_entry(src, dest, ignore=_ignore_user_owned)
-        else:
-            _replace_entry(src, dest)
+            if src.is_dir():
+                container = _real_dir(target, rel_parts)
+                for child in src.iterdir():
+                    _replace_entry(child, container / child.name)
+                continue
+        parent = _real_dir(target, rel_parts[:-1])
+        _replace_entry(src, parent / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():
@@ -469,16 +445,10 @@ def install_distribution(
                 "Use `hermes profile update` to upgrade in place, or pass --force to overwrite."
             )
 
-        # A forced reinstall still keeps skill roots that are not in the new payload.
-        # config.yaml is the one user-editable distribution file intentionally reset here.
+        # Fresh install (or --force): config.yaml comes from the distribution. Roots the
+        # payload does not ship are left alone either way, so --force keeps user skills.
         _bootstrap_user_dirs(plan.target_dir)
-        _copy_dist_payload(
-            plan.staged_dir,
-            plan.target_dir,
-            plan.manifest,
-            preserve_config=False,
-            preserve_skills=plan.existing,
-        )
+        _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
         if create_alias and check_alias_collision(plan.manifest.name) is None:
             create_wrapper_script(plan.manifest.name)
         return plan
@@ -512,8 +482,7 @@ def update_distribution(profile_name: str, force_config: bool = False) -> Instal
     with tempfile.TemporaryDirectory(prefix="hermes_dist_update_") as tmp:
         plan = plan_install(existing_manifest.source, Path(tmp), override_name=canon)
         plan.preserves_config = not force_config
-        _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest,
-                           preserve_config=plan.preserves_config, preserve_skills=True)
+        _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=plan.preserves_config)
         return plan
 
 

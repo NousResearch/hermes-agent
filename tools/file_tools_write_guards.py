@@ -255,15 +255,21 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
 def _protected_instruction_approval_target(
         filepath: str, task_id: str = "default") -> tuple[str, str, bool]:
     """Return canonical identity, qualified display, and alias status."""
+    container_paths = _uses_container_paths(task_id)
     try:
         requested = _qualified_lexical_path(filepath, task_id)
     except (OSError, ValueError, RuntimeError):
         requested = os.path.abspath(os.path.normpath(_expand_tilde(filepath)))
-    canonical = os.path.realpath(requested)
-    is_alias = os.path.normcase(requested) != os.path.normcase(canonical)
+    # Container paths belong to the remote namespace. Host realpath would
+    # rewrite (or invent) a different target and misidentify the approved file.
+    canonical = requested if container_paths else os.path.realpath(requested)
+    is_alias = (
+        not container_paths
+        and os.path.normcase(requested) != os.path.normcase(canonical)
+    )
     display = f"{requested} -> {canonical}" if is_alias else requested
     return (
-        os.path.normcase(canonical),
+        canonical if container_paths else os.path.normcase(canonical),
         json.dumps(display, ensure_ascii=False),
         is_alias,
     )

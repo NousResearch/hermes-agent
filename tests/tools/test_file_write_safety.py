@@ -661,6 +661,28 @@ class TestProtectedInstructionFiles:
         assert displayed in command
         assert target.read_text(encoding="utf-8") == "original"
 
+    def test_container_approval_target_stays_in_container_namespace(
+        self, monkeypatch
+    ):
+        from pathlib import PurePosixPath
+
+        import tools.file_tools_write_guards as ft
+
+        monkeypatch.setattr(ft, "_uses_container_paths", lambda task_id: True)
+        monkeypatch.setattr(
+            ft,
+            "_resolve_base_dir",
+            lambda task_id, container_paths=None: PurePosixPath("/workspace"),
+        )
+
+        identity, display, is_alias = ft._protected_instruction_approval_target(
+            "AGENTS.md", "container-task"
+        )
+
+        assert identity == "/workspace/AGENTS.md"
+        assert display == json.dumps("/workspace/AGENTS.md")
+        assert is_alias is False
+
     def test_extra_pattern_in_real_hermes_home_is_gated(
         self, tmp_path, approvals, monkeypatch
     ):

@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import json
 import logging
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from agent.i18n import t
@@ -33,6 +35,29 @@ _FAST_SELECTIONS = {
 
 # /reasoning display-toggle arguments -> show_reasoning value.
 _REASONING_DISPLAY_TOGGLES = {"show": True, "on": True, "hide": False, "off": False}
+
+def _configured_provider_routing_line(routing: dict, model: str) -> Optional[str]:
+    """Render validated request routing without implying which provider served."""
+    from agent.chat_completion_helpers import _provider_preferences_for_agent
+
+    if not isinstance(routing, dict):
+        return None
+    effective = _provider_preferences_for_agent(SimpleNamespace(
+        model=model,
+        providers_allowed=routing.get("only"),
+        providers_ignored=routing.get("ignore"),
+        providers_order=routing.get("order"),
+        provider_sort=routing.get("sort"),
+        provider_require_parameters=routing.get("require_parameters"),
+        provider_data_collection=routing.get("data_collection"),
+    ))
+    if not effective:
+        return None
+    try:
+        encoded = json.dumps(effective, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return None
+    return f"provider_routing: {encoded}"
 
 
 def _model_switch_skew_guard() -> Optional[str]:
@@ -273,14 +298,26 @@ class GatewayModelCommandsMixin:
         ]
         # Provider-aware chain: Codex OAuth, Copilot and Nous caps win over the raw models.dev entry.
         mi = result.model_info
+        gateway_cfg: dict = {}
         model_cfg: dict = {}
         config_ctx = None
         with contextlib.suppress(Exception):  # fail-open on config read errors
-            model_cfg = _load_gateway_config().get("model", {})
+            gateway_cfg = _load_gateway_config()
+            model_cfg = gateway_cfg.get("model", {})
             if isinstance(model_cfg, dict) and model_cfg.get("context_length") is not None:
                 config_ctx = int(model_cfg["context_length"])
         if not isinstance(model_cfg, dict):
             model_cfg = {}
+        if (
+            result.target_provider == "openrouter"
+            or base_url_host_matches(result.base_url or "", "openrouter.ai")
+        ):
+            routing_line = _configured_provider_routing_line(
+                getattr(self, "_provider_routing", {}),
+                result.new_model,
+            )
+            if routing_line:
+                lines.append(routing_line)
         ctx_len = await resolve_display_context_length_async(
             result.new_model, result.target_provider,
             base_url=result.base_url or ctx.current_base_url or "",

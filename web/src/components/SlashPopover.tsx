@@ -133,7 +133,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
 
     return (
       <div
-        className="absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-xl text-sm"
+        className="absolute bottom-full inset-x-0 mb-2 max-h-64 overflow-y-auto rounded-md border border-border bg-popover shadow-xl text-sm"
         role="listbox"
       >
         {items.map((it, i) => {

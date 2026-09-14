@@ -23,7 +23,7 @@ export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
       to="/sessions"
       title={t.app.statusOverview}
       className={cn(
-        "block text-left",
+        "block text-start",
         "px-5 pb-2 pt-0.5",
         "text-text-secondary",
         "transition-colors hover:text-midground",

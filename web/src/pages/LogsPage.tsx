@@ -109,7 +109,7 @@ export default function LogsPage() {
           />
           {autoRefresh && (
             <Badge tone="success" className="text-xs">
-              <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+              <span className="me-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
               {t.common.live}
             </Badge>
           )}

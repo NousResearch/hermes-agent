@@ -366,7 +366,7 @@ export default function ProfileBuilderPage() {
                   <button
                     onClick={() => setModelChoice("")}
                     className={cn(
-                      "block w-full rounded px-3 py-2 text-left text-sm",
+                      "block w-full rounded px-3 py-2 text-start text-sm",
                       modelChoice === "" ? "bg-primary/10" : "hover:bg-muted",
                     )}
                   >
@@ -379,7 +379,7 @@ export default function ProfileBuilderPage() {
                         key={key}
                         onClick={() => setModelChoice(key)}
                         className={cn(
-                          "block w-full rounded px-3 py-2 text-left text-sm",
+                          "block w-full rounded px-3 py-2 text-start text-sm",
                           modelChoice === key
                             ? "bg-primary/10"
                             : "hover:bg-muted",
@@ -434,7 +434,7 @@ export default function ProfileBuilderPage() {
                           <span className="flex-1">
                             <span className="font-medium">{s.name}</span>
                             {s.category && (
-                              <Badge tone="secondary" className="ml-2">
+                              <Badge tone="secondary" className="ms-2">
                                 {s.category}
                               </Badge>
                             )}
@@ -482,7 +482,7 @@ export default function ProfileBuilderPage() {
                       >
                         <span className="flex-1">
                           <span className="font-medium">{r.name}</span>
-                          <Badge tone="secondary" className="ml-2">
+                          <Badge tone="secondary" className="ms-2">
                             {r.source}
                           </Badge>
                           {r.description && (
@@ -504,7 +504,7 @@ export default function ProfileBuilderPage() {
                       <Badge key={r.identifier} className="gap-1">
                         {r.name}
                         <button
-                          className="ml-1 text-xs"
+                          className="ms-1 text-xs"
                           onClick={() => removeHubSkill(r.identifier)}
                           aria-label={`Remove ${r.name}`}
                         >
@@ -770,7 +770,7 @@ export default function ProfileBuilderPage() {
                 }
               />
               {!keepAll && hubSkills.length > 0 && (
-                <p className="pl-24 text-xs text-muted-foreground">
+                <p className="ps-24 text-xs text-muted-foreground">
                   Hub: {hubSkills.map((s) => s.name).join(", ")}
                 </p>
               )}

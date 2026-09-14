@@ -199,7 +199,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
           ghost
           size="icon"
           onClick={handleClose}
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
           aria-label={t.common.close}
         >
           <X />

@@ -287,7 +287,7 @@ function UseAsMenu({
         Use as <ChevronDown className="h-3 w-3" />
       </Button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
+        <div className="absolute end-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
           <button
             type="button"
             onClick={() => assign("main", "")}
@@ -442,7 +442,7 @@ function ModelCard({
           </div>
           <div className="flex flex-col items-end gap-1 shrink-0">
             {showTokens ? (
-              <div className="text-right">
+              <div className="text-end">
                 <div className="text-xs font-mono font-semibold">
                   {formatTokens(totalTokens)}
                 </div>
@@ -452,7 +452,7 @@ function ModelCard({
               </div>
             ) : (
               entry.sessions > 0 && (
-                <div className="text-right">
+                <div className="text-end">
                   <div className="text-xs font-mono font-semibold">
                     {entry.sessions}
                   </div>
@@ -593,14 +593,14 @@ function AuxiliaryTasksModal({
           ghost
           size="icon"
           onClick={onClose}
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+          className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
           aria-label="Close"
         >
           <X />
         </Button>
 
         <header className="p-5 pb-3 border-b border-border">
-          <div className="flex items-center justify-between gap-3 pr-8">
+          <div className="flex items-center justify-between gap-3 pe-8">
             <h2
               id="aux-modal-title"
               className="font-mondwest text-display text-base tracking-wider"

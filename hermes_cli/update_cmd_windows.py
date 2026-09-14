@@ -752,9 +752,15 @@ def _windows_cold_start_plan() -> dict | None:
         if not gateway_windows.is_installed():
             return None
         with _best_effort('Could not check Desktop gateway-lifecycle ownership before update: %s'):
-            if _desktop_owns_gateway_lifecycle() and not gateway_windows.attested_gateway_died():
-                logger.debug("Skipping Windows gateway cold-start plan: Desktop owns gateway lifecycle")
-                return None
+            if _desktop_owns_gateway_lifecycle():
+                # Default to the ownership refusal and override it only on a successful probe: a marker we
+                # cannot read (or any probe failure) is "unknown", never "a gateway died here".
+                attested_dead = False
+                with _best_effort('Could not probe the gateway start attestation before update: %s'):
+                    attested_dead = gateway_windows.attested_gateway_died()
+                if not attested_dead:
+                    logger.debug("Skipping Windows gateway cold-start plan: Desktop owns gateway lifecycle")
+                    return None
         return {"resume_needed": True, "profiles": {}, "unmapped_pids": [], "unmapped": [], "cold_start_if_installed": True}
     return None
 
@@ -936,9 +942,15 @@ def _cold_start_windows_gateway_after_update() -> bool:
         if list(find_gateway_pids(all_profiles=True)):
             return True
     with _abort_on_error("Could not re-check Desktop gateway-lifecycle ownership before cold-start"):
-        if _desktop_owns_gateway_lifecycle() and not gateway_windows.attested_gateway_died():
-            logger.debug("Skipping Windows gateway cold-start: Desktop owns gateway lifecycle")
-            return True
+        if _desktop_owns_gateway_lifecycle():
+            # Same default-and-override as the plan-time check: only a successful probe may authorize the
+            # spawn under Desktop ownership, and no probe failure can abort the recovery (#109538 review).
+            attested_dead = False
+            with _best_effort('Could not probe the gateway start attestation before cold-start: %s'):
+                attested_dead = gateway_windows.attested_gateway_died()
+            if not attested_dead:
+                logger.debug("Skipping Windows gateway cold-start: Desktop owns gateway lifecycle")
+                return True
     with _abort_on_error("Could not cold-start Windows gateway after update"):
         pid = gateway_windows._spawn_detached()
     if not pid:

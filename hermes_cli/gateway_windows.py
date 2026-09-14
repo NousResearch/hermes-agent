@@ -897,11 +897,40 @@ def _read_start_attestation() -> object | None:
         return None
 
 
-def _attested_pids_from(data: object) -> list[int]:
-    """PID list from an attestation payload; empty for anything malformed."""
+_ATTESTATION_OK = "ok"
+_ATTESTATION_MISSING = "missing"
+_ATTESTATION_CORRUPT = "corrupt"
+
+
+def _attestation_state(data: object) -> tuple[str, list[int]]:
+    """Classify an attestation payload as ``(state, pids)`` with ``state`` one of ok/missing/corrupt.
+
+    Strict on purpose: the update path uses this payload as *lifecycle authority* (#109538), so only a
+    well-formed PID list may ever be read as "a gateway is vouched for". Everything else is corrupt or
+    missing, and callers must treat those as "unknown" — ``unknown`` must never read as ``dead``, and a
+    marker that cannot be read is evidence to preserve, not garbage to delete. ``isinstance(True, int)``
+    is True in Python, so bools are rejected explicitly.
+    """
+    if data is None:
+        return _ATTESTATION_MISSING, []
     if not isinstance(data, dict):
-        return []
-    return [p for p in data.get("pids", []) if isinstance(p, int)]
+        return _ATTESTATION_CORRUPT, []
+    if "pids" not in data:
+        return _ATTESTATION_MISSING, []
+    pids = data["pids"]
+    if not isinstance(pids, list):
+        return _ATTESTATION_CORRUPT, []
+    if not pids:
+        return _ATTESTATION_MISSING, []
+    if any(isinstance(p, bool) or not isinstance(p, int) for p in pids):
+        return _ATTESTATION_CORRUPT, []
+    return _ATTESTATION_OK, list(pids)
+
+
+def _attested_pids_from(data: object) -> list[int]:
+    """PID list from an attestation payload; empty unless the payload is well-formed."""
+    state, pids = _attestation_state(data)
+    return pids if state == _ATTESTATION_OK else []
 
 
 def _attested_pid_exited_cleanly(pid: int) -> bool:
@@ -920,20 +949,25 @@ def attested_gateway_died(current_pids: list[int] | None = None) -> bool:
 
     Read-only twin of :func:`check_start_attestation` for callers that must not consume the
     one-shot marker — ``hermes update`` consults it to decide whether a Desktop-owned install
-    still owes a gateway cold-start (#109538). ``False`` for anything undecidable (no marker, a
-    gateway running now, a clean ledger exit, or discovery failure): "unknown" must never read
-    as "dead"."""
-    attested = _attested_pids_from(_read_start_attestation())
-    if not attested:
-        return False
-    if current_pids is None:
-        try:
+    still owes a gateway cold-start (#109538).
+
+    ``False`` for *anything* undecidable — no marker, an unreadable/malformed payload, a gateway running
+    now, a clean ledger exit, or discovery/probe failure: "unknown" must never read as "dead", so this
+    probe never raises. Callers on the update path rely on that guarantee: an exception here used to be
+    swallowed by ``_best_effort`` (which then kept the cold-start plan it was meant to suppress) and
+    re-raised by ``_abort_on_error`` at spawn time (which aborted the recovery entirely)."""
+    try:
+        state, attested = _attestation_state(_read_start_attestation())
+        if state != _ATTESTATION_OK or not attested:
+            return False
+        if current_pids is None:
             from hermes_cli.gateway import find_gateway_pids
 
             current_pids = list(find_gateway_pids())
-        except Exception:
-            return False
-    return not current_pids and not any(_attested_pid_exited_cleanly(pid) for pid in attested)
+        return not current_pids and not any(_attested_pid_exited_cleanly(pid) for pid in attested)
+    except Exception:
+        logger.debug("Gateway start-attestation death probe failed; treating it as unknown", exc_info=True)
+        return False
 
 
 def check_start_attestation(current_pids: list[int] | None = None) -> str | None:
@@ -942,9 +976,16 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
     data = _read_start_attestation()
     if data is None:
         return None
-    attested = _attested_pids_from(data)
+    state, attested = _attestation_state(data)
+    if state == _ATTESTATION_CORRUPT:
+        # A marker we cannot read is evidence, not garbage: leave it on disk for inspection instead of
+        # consuming it as if it had merely been empty (#109538 review).
+        logger.debug("Ignoring a malformed gateway start attestation; leaving it in place: %r", data)
+        return None
     if not attested:
         _clear_start_attestation()
+        return None
+    if not isinstance(data, dict):  # state == ok implies dict; keeps the narrowing explicit for callers
         return None
 
     if current_pids is None:

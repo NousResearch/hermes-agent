@@ -222,3 +222,57 @@ def test_attested_probe_is_read_only_and_never_reads_unknown_as_dead(attest_home
     )
     gateway_windows._write_start_attestation([556], "cold-start after update")
     assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # planned stop
+
+
+# ---------------------------------------------------------------------------
+# #109538 review: a marker we cannot read is "unknown", never "dead"
+# ---------------------------------------------------------------------------
+
+
+_CORRUPT_ATTESTATION_PAYLOADS = (
+    '{"pids": null}',  # pre-fix: TypeError while iterating
+    '{"pids": 555}',  # pre-fix: TypeError (int is not iterable)
+    '{"pids": "123"}',  # pre-fix: iterated the STRING, read as empty, deleted the marker
+    '{"pids": {}}',
+    '{"pids": [null]}',
+    '{"pids": [1, "x"]}',  # pre-fix: partial trust — the int was enough to read "dead"
+    '{"pids": [true]}',  # bool is an int subclass, but not a PID
+    '["not", "a", "dict"]',
+    '"just a scalar"',
+)
+
+_EMPTY_ATTESTATION_PAYLOADS = ('{"pids": []}', '{"via": "direct spawn"}', '{}')
+
+
+def test_corrupt_attestation_reads_unknown_and_is_preserved(attest_home):
+    """The update path uses this payload as lifecycle authority (#109538), so anything unparseable must
+    read "unknown": the read-only death probe stays False (it can never authorize a cold start) and the
+    consuming CLI path leaves the unreadable marker on disk instead of deleting the evidence.
+
+    Before: ``{"pids": null}`` raised ``TypeError`` — swallowed by ``_best_effort`` at plan time (which
+    then KEPT the very cold-start plan the Desktop-ownership check meant to suppress) and re-raised by
+    ``_abort_on_error`` at spawn time (which aborted the recovery), while ``{"pids": "123"}`` iterated
+    the string, looked empty, and had the marker deleted.
+    """
+    marker = attest_home / "state" / "gateway.start-attestation.json"
+    marker.parent.mkdir(exist_ok=True)
+
+    for payload in _CORRUPT_ATTESTATION_PAYLOADS:
+        marker.write_text(payload, encoding="utf-8")
+        assert gateway_windows.attested_gateway_died(current_pids=[]) is False, payload
+        assert gateway_windows.attested_gateway_died() is False, payload
+        assert gateway_windows.check_start_attestation(current_pids=[]) is None, payload
+        assert marker.exists(), payload
+
+
+def test_empty_attestation_is_still_consumed(attest_home):
+    """No behaviour change for the shapes that were already readable: a marker with no PID list has
+    nothing to report, so the CLI path still clears it."""
+    marker = attest_home / "state" / "gateway.start-attestation.json"
+    marker.parent.mkdir(exist_ok=True)
+
+    for payload in _EMPTY_ATTESTATION_PAYLOADS:
+        marker.write_text(payload, encoding="utf-8")
+        assert gateway_windows.attested_gateway_died(current_pids=[]) is False, payload
+        assert gateway_windows.check_start_attestation(current_pids=[]) is None, payload
+        assert not marker.exists(), payload

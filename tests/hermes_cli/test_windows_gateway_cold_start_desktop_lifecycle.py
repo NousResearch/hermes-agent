@@ -195,3 +195,36 @@ def test_cold_start_restores_attested_dead_gateway_despite_desktop_ownership(mon
         "Gateway started via cold-start after update (PID: 4242)"
         in capsys.readouterr().out
     )
+
+
+def test_malformed_attestation_keeps_desktop_refusal_and_never_aborts_the_cold_start(
+    monkeypatch, tmp_path
+):
+    """#109538 review: an unreadable marker must not swing either ownership check.
+
+    Uses the REAL marker file and the REAL probe (only ownership/liveness are stubbed), so the parse
+    path the reviewer flagged is actually exercised: pre-fix the plan-time probe raised ``TypeError``
+    inside ``_best_effort`` — keeping the cold-start plan the Desktop-ownership check meant to suppress —
+    and the spawn-time probe re-raised it through ``_abort_on_error``, aborting the recovery outright
+    while the bot stayed offline. Both checks must now keep the Desktop refusal: no plan, no spawn,
+    no abort, marker preserved.
+    """
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(cli_main, "_is_windows", lambda: True)
+    monkeypatch.setattr(main_install_repair, "_is_windows", lambda: True)
+    monkeypatch.setattr(hermes_gateway, "find_gateway_pids", lambda **_k: [])
+    monkeypatch.setattr(hermes_gateway, "find_windows_gateway_services", lambda **_k: [])
+    monkeypatch.setattr(gateway_windows, "is_installed", lambda: True)
+    monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
+    monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
+    spawned = []
+    monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawned.append(1) or 4242)
+
+    marker = tmp_path / "state" / "gateway.start-attestation.json"
+    marker.parent.mkdir(exist_ok=True)
+    marker.write_text('{"pids": null}', encoding="utf-8")
+
+    assert update_cmd._pause_windows_gateways_for_update() is None  # Desktop refusal kept
+    assert update_cmd._cold_start_windows_gateway_after_update() is True  # no abort, no spawn
+    assert spawned == []
+    assert marker.exists()  # evidence preserved for inspection

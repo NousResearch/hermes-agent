@@ -11,6 +11,7 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from urllib.parse import urlsplit, urlunsplit
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
@@ -27,7 +28,13 @@ def _classify_responses_issuer(
     for flag, kind in ((is_xai_responses, "xai_responses"), (is_github_responses, "github_responses"), (is_codex_backend, "codex_backend")):
         if flag:
             return kind
-    return f"other:{base_url}" if base_url else "other"
+    if not base_url:
+        return "other"
+    # The openai SDK appends a trailing slash to ``client.base_url`` and hosts are case-insensitive, so the
+    # aux adapter and the main transport must canonicalise the same endpoint to one kind or aux calls drop
+    # every main-minted blob.
+    parts = urlsplit(str(base_url).strip().rstrip("/"))
+    return f"other:{urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, parts.fragment))}"
 
 
 # Per-process throttle for the cross-issuer skip warning.

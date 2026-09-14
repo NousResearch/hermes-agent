@@ -5,6 +5,7 @@ import pytest
 from agent.codex_responses_adapter import (
     _chat_content_to_responses_parts,
     _chat_messages_to_responses_input,
+    _classify_responses_issuer,
     _sanitize_replayed_fn_name,
     _format_responses_error,
     _normalize_codex_response,
@@ -608,6 +609,15 @@ def test_legacy_endpoint_stamped_item_without_model_replays_on_same_issuer():
         _reasoning_history(legacy), current_issuer_kind="codex_backend", current_issuer_model="gpt-5.6-sol"
     )
     assert not any(i.get("type") == "reasoning" for i in foreign)
+
+
+def test_issuer_kind_is_canonical_across_trailing_slash_and_host_case():
+    # The openai SDK stores ``client.base_url`` with a trailing slash; the aux adapter and the main
+    # transport must agree on one issuer kind or aux calls drop every main-minted blob.
+    canonical = _classify_responses_issuer(base_url="https://h/v1")
+    assert _classify_responses_issuer(base_url="https://h/v1/") == canonical
+    assert _classify_responses_issuer(base_url=" HTTPS://H/v1 ") == canonical
+    assert _classify_responses_issuer(base_url="https://other/v1") != canonical
 
 
 def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():

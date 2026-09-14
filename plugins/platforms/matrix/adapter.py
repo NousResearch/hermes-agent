@@ -195,6 +195,8 @@ def _strip_reply_fallback(body: str) -> str:
                 continue
         stripped.append(line)
     return "\n".join(stripped) if stripped else body
+
+
 # Auth errcodes that genuinely require re-authentication (never retried).
 _MATRIX_PERMANENT_ERRCODES = frozenset({
     "m_unknown_token",

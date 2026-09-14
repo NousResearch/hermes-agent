@@ -1486,6 +1486,25 @@ def _live_system_guard(request, monkeypatch):
         low = cmd_str.lower()
         return any(tok in low for tok in _HERMES_TOKENS)
 
+    def _invokes_hermes_update(cmd) -> bool:
+        # The updater is `update` as the subcommand IMMEDIATELY after the
+        # hermes entrypoint. Matching any later `update` token would also
+        # catch kanban verbs like `hermes kanban update` (AGENTS.md: match
+        # full cmdlines, never argv substrings).
+        tokens = list(cmd) if isinstance(cmd, (list, tuple)) else None
+        if tokens is not None:
+            for i in range(len(tokens) - 1):
+                head = str(tokens[i]).rsplit("/", 1)[-1]
+                if head in ("hermes", "hermes_cli.main") and str(tokens[i + 1]) == "update":
+                    return True
+            # Free-form shell strings (bash -c "..."): the phrase lives
+            # inside one token; block it conservatively.
+            return any(
+                " " in str(tok) and "hermes update" in str(tok).lower()
+                for tok in tokens
+            )
+        return "hermes update" in _cmd_to_string(cmd).lower()
+
     def _is_blocked_systemctl(cmd) -> bool:
         cmd_str = _cmd_to_string(cmd)
         if "systemctl" not in cmd_str:
@@ -1560,16 +1579,7 @@ def _live_system_guard(request, monkeypatch):
         # the update-spawn path must mock subprocess.Popen explicitly.
         cmd_str = _cmd_to_string(cmd)
         low = cmd_str.lower()
-        if "update" in low and (
-            # hermes update / hermes update --gateway / setsid bash -c ... hermes update
-            ("hermes" in low and "update" in low.split())
-            or
-            # python -m hermes_cli.main update --gateway
-            ("hermes_cli" in low and "update" in low.split())
-            or
-            # venv/bin/hermes update  (absolute path variant used in tests)
-            (".venv/bin/hermes" in low and "update" in low)
-        ):
+        if "update" in low and _invokes_hermes_update(cmd):
             raise RuntimeError(
                 f"tests/conftest.py live-system guard: blocked "
                 f"subprocess.{name}({cmd!r}) — this command would run "

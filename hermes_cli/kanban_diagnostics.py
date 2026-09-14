@@ -637,6 +637,16 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     if not assignee.strip():
         return []
 
+    # Held-resource exemption: a card whose key is held by a running card is
+    # queued behind a physical resource, not stranded — the dispatcher defers
+    # it (stays ready) and picks it up when the holder leaves running.
+    # ``or set()`` is load-bearing: ``frozenset() & None`` would TypeError and
+    # the rule loop's except would silently disable the whole rule.
+    from hermes_cli.kanban_db import parse_task_resources
+    task_resources = parse_task_resources(_task_field(task, "resources"))
+    if task_resources and (set(task_resources) & (cfg.get("_held_resources") or set())):
+        return []
+
     # Most recent event that put the task into ready; with none (old task /
     # truncated events) fall back to created_at — over-flagging an ancient
     # task beats missing a stranded one.
@@ -668,9 +678,9 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         kind="stranded_in_ready", severity=severity,
         title=f"Ready for {age_str} with no worker",
         detail=f"This task has been ready for {age_str} but nothing has claimed it. Common causes: "
-               f"assignee {assignee!r} is misspelled, the profile was deleted, or the external worker "
-               f"pool for this lane is down. Confirm the assignee is correct and that a worker is "
-               f"actually polling for it.",
+               f"assignee {assignee!r} is misspelled, the profile was deleted, the external worker "
+               f"pool for this lane is down, or waiting on a held resource. Confirm the assignee is "
+               f"correct and that a worker is actually polling for it.",
         actions=actions,
         first_seen_at=last_ready_ts, last_seen_at=last_ready_ts, count=1,
         data={"ready_since": last_ready_ts, "age_seconds": int(age_seconds),
@@ -751,14 +761,19 @@ def compute_task_diagnostics(
     now: Optional[int] = None,
     config: Optional[dict] = None,
     graph: Optional[dict] = None,
+    held_resources: Optional[frozenset[str]] = None,
 ) -> list[Diagnostic]:
     """Run every rule for one task; critical first, then error, warning; ties
-    broken by most-recent ``last_seen_at``."""
+    broken by most-recent ``last_seen_at``. ``held_resources`` is the union of
+    resource keys currently held by running cards (``kanban_db.
+    running_task_resources``) so ``stranded_in_ready`` can tell "queued behind
+    a physical resource" from "stuck"."""
     now_ts = int(now if now is not None else time.time())
     config = config or {}
     cfg = {**DEFAULT_CONFIG, **config}
     if graph is not None:
         cfg["_graph"] = graph
+    cfg["_held_resources"] = held_resources or frozenset()
     if not _has_explicit_threshold(config) and "failure_limit" in config:
         cfg["failure_threshold"] = _positive_int(
             config.get("failure_limit"), DEFAULT_CONFIG["failure_threshold"],

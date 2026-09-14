@@ -359,6 +359,13 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
+    # Normalize (and reject bad tokens) BEFORE the write so an invalid
+    # --resources never creates the card. normalize_resources strips/dedupes.
+    raw_resources = getattr(args, "resources", None)
+    try:
+        resources = kb.normalize_resources(raw_resources.split(",") if raw_resources else None)
+    except ValueError as exc:
+        return _err(f"kanban: --resources: {exc}", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
             conn, title=args.title, body=args.body, assignee=args.assignee,
@@ -368,6 +375,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
             idempotency_key=getattr(args, "idempotency_key", None),
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
+            resources=resources,
             max_retries=max_retries, model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
@@ -489,6 +497,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         latest_summary = kb.latest_summary(conn, args.task_id)
         if not want_json:
             graph = kb.task_graph_context(conn, task.id)
+        # Query inside the with-block: conn is closed by the time diagnostics run.
+        held_resources = kb.running_task_resources(conn)
 
     if want_json:
         _print_json({
@@ -512,6 +522,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         field("branch", task.branch_name)
     if task.skills:
         field("skills", ", ".join(task.skills))
+    if task.resources:
+        field("resources", ", ".join(task.resources))
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
         field("model", f"{task.model_override}{_prov}")
@@ -528,7 +540,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     # Diagnostics up top so CLI users see distress signals before scrolling.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
+    diags = kd.compute_task_diagnostics(task, events, runs, graph=graph,
+                                        held_resources=held_resources)
     if diags:
         print(f"\n  Diagnostics ({len(diags)}):")
         _print_diagnostics(diags, "    ", with_kind=False)
@@ -597,6 +610,25 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_update(args: argparse.Namespace) -> int:
+    """``hermes kanban update <task_id> --resources …`` — currently the only
+    mutable surface here is the exclusive resource-key set (empty string
+    clears). Applies on the next dispatch."""
+    tokens = [t for t in (p.strip() for p in args.resources.split(",")) if t]
+    try:
+        with kbc.connect_closing() as conn:
+            ok = kb.set_task_resources(conn, args.task_id, tokens)
+    except (ValueError, RuntimeError) as exc:
+        return _err(f"kanban: {exc}", 2)
+    if not ok:
+        return _err(f"no such task: {args.task_id}")
+    if tokens:
+        print(f"Set resources on {args.task_id}: {','.join(tokens)} (applies on next dispatch)")
+    else:
+        print(f"Cleared resources on {args.task_id}")
+    return 0
+
+
 def _cmd_reclaim(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))
@@ -638,6 +670,8 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     diag_config = kd.config_from_runtime_config(load_config())
 
     with kbc.connect_closing() as conn:
+        # Resources held by running cards: stranded-in-ready exemption input.
+        held_resources = kb.running_task_resources(conn)
         # Either one-task mode or fleet mode.
         if getattr(args, "task", None):
             task = kb.get_task(conn, args.task)
@@ -645,7 +679,8 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 return _err(f"no such task: {args.task}")
             diags_by_task = {args.task: kd.compute_task_diagnostics(
                 task, kb.list_events(conn, args.task), kb.list_runs(conn, args.task),
-                graph=kb.task_graph_context(conn, args.task), config=diag_config)}
+                graph=kb.task_graph_context(conn, args.task), config=diag_config,
+                held_resources=held_resources)}
         else:
             # Fleet mode: pull all non-archived tasks + their events/runs.
             rows = list(conn.execute("SELECT * FROM tasks WHERE status != 'archived'").fetchall())
@@ -658,7 +693,8 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 for r in rows:
                     tid = r["id"]
                     dl = kd.compute_task_diagnostics(r, ev_by.get(tid, []), run_by.get(tid, []),
-                                                     graph=graph_by.get(tid), config=diag_config)
+                                                     graph=graph_by.get(tid), config=diag_config,
+                                                     held_resources=held_resources)
                     if dl:
                         diags_by_task[tid] = dl
 
@@ -1233,6 +1269,7 @@ _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
     "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "update": _cmd_update,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,

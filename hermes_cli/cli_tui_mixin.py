@@ -479,79 +479,8 @@ class CLITuiMixin:
                 time.sleep(0.2)
 
     def _get_clarify_batch_display_fragments(self, state):
-        """Batch (multi-question) clarify panel: "N questions" header, one status line per question
-        (✓ answered → answer / ▸ active / · pending), and the active question's numbered choices
-        (+ Other) expanded beneath its status line."""
-        from cli import _panel_box_width, _wrap_panel_text
-        questions_list = state.get("questions") or []
-        answers = state.get("answers") or {}
-        answer_meta = state.get("answer_meta") or {}
-        active = state.get("active", 0)
-        choices = state.get("choices") or []
-        selected = state.get("selected", 0)
-        multi_select = state.get("multi_select", False)
-        selected_indices = state.get("selected_indices", set()) if multi_select else set()
-        freetext = self._clarify_freetext
-        title = "Hermes needs your input"
-        header = f"{len(questions_list)} questions"
-
-        def _status_rows(width):
-            rows = []
-            for idx, entry in enumerate(questions_list):
-                answered = entry["qid"] in answers
-                marker = "✓" if answered else ("▸" if idx == active else "·")
-                row_style = 'class:clarify-selected' if idx == active else 'class:clarify-choice'
-                for wrapped in _wrap_panel_text(f"{marker} {entry['question']}", width, subsequent_indent="  "):
-                    rows.append((row_style, wrapped))
-                if answered:
-                    # Locked answer on its own line/color so it stays readable while Tab-walking.
-                    answer = f"    {answers[entry['qid']]}"
-                    for wrapped in _wrap_panel_text(answer, width, subsequent_indent="    "):
-                        rows.append(('class:clarify-answer', wrapped))
-                if idx != active:
-                    continue
-                for i, choice in enumerate(choices):
-                    cursor = "❯" if i == selected and not freetext else " "
-                    cb = ("[x] " if i in selected_indices else "[ ] ") if multi_select else ""
-                    style = 'class:clarify-selected' if i == selected and not freetext else 'class:clarify-choice'
-                    label = f"  {cursor} {cb}{_num_prefix(i)}. {choice}"
-                    for wrapped in _wrap_panel_text(label, width, subsequent_indent="      "):
-                        rows.append((style, wrapped))
-                if choices:
-                    other_idx = len(choices)
-                    mid = _num_prefix(other_idx)
-                    if multi_select:
-                        mid = f"{'[x]' if other_idx in selected_indices else '[ ]'} {mid}"
-                    # An earlier typed answer stays visible next to Other; Enter on it edits
-                    # (the composer is prefilled).
-                    other_text = (answer_meta.get(entry["qid"]) or {}).get("other_text") or ""
-                    other_suffix = f"Other: {other_text}" if other_text else None
-                    if freetext:
-                        other_label = f"  ❯ {mid}. " + (other_suffix or "Other (type below)")
-                        other_style = 'class:clarify-active-other'
-                    elif selected == other_idx:
-                        other_label = f"  ❯ {mid}. " + (other_suffix or "Other (type your answer)")
-                        other_style = 'class:clarify-selected'
-                    else:
-                        other_label = f"    {mid}. " + (other_suffix or "Other (type your answer)")
-                        other_style = 'class:clarify-choice'
-                    for wrapped in _wrap_panel_text(other_label, width, subsequent_indent="      "):
-                        rows.append((other_style, wrapped))
-                elif freetext:
-                    guidance = "  Type your answer in the prompt below, then press Enter."
-                    for wrapped in _wrap_panel_text(guidance, width):
-                        rows.append(('class:clarify-active-other', wrapped))
-            return rows
-
-        preview_rows = _status_rows(60)
-        box_width = _panel_box_width(title, [header] + [text for _, text in preview_rows])
-        rows = _status_rows(max(8, box_width - 2))
-
-        panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
-        panel.row('class:clarify-question', header)
-        for style, text in rows:
-            panel.row(style, text)
-        return panel.close()
+        from hermes_cli.cli_clarify_panel import render_batch
+        return render_batch(self, state)
 
     def _get_clarify_display_fragments(self):
         """Clarify question/choices panel.
@@ -839,7 +768,9 @@ class CLITuiMixin:
             if self._clarify_freetext:
                 hint = '  type your answer and press Enter'
             elif self._clarify_state.get("questions"):
-                hint = '  ↑/↓ to select, Enter to lock, Tab next question'
+                hint = ('  Enter to submit all · Tab / Shift-Tab to edit'
+                        if self._clarify_state.get("reviewing")
+                        else '  ↑/↓ select · Enter save · Tab / Shift-Tab switch')
             else:
                 hint = '  ↑/↓ to select, Enter to confirm'
             return [('class:hint', hint), ('class:clarify-countdown', countdown)]
@@ -1052,7 +983,7 @@ class CLITuiMixin:
     def _tui_make_clarify_number_handler(self, idx):
         def handler(event):
             state = self._clarify_state
-            if not state or self._clarify_freetext:
+            if not state or self._clarify_freetext or state.get("reviewing"):
                 return
             choices = state.get("choices") or []
             if idx > len(choices):
@@ -1063,12 +994,13 @@ class CLITuiMixin:
                 indices.symmetric_difference_update({idx})
                 event.app.invalidate()
                 return
+            if state.get("questions"):
+                state["selected"] = idx
+                self._tui_enter_clarify_choice(event)
+                return
             if idx == len(choices):
                 # "Other" → freetext
                 self._clarify_freetext = True
-            elif state.get("questions"):
-                # Batch mode: lock the numbered choice for the active question only.
-                self._clarify_batch_lock(state, choices[idx])
             else:
                 state["response_queue"].put(choices[idx])
                 self._clarify_state = None
@@ -1341,7 +1273,10 @@ class CLITuiMixin:
     def _tui_clarify_batch_step(self, event, delta: int):
         state = self._clarify_state
         if state and state.get("questions"):
+            from hermes_cli.cli_clarify_panel import save_draft, fill_composer
+            save_draft(self, state, event.app.current_buffer)
             self._clarify_batch_set_active(state, (state["active"] + delta) % len(state["questions"]))
+            fill_composer(self, event.app.current_buffer)
             event.app.invalidate()
 
     def _tui_clarify_batch_tab(self, event):
@@ -1626,6 +1561,7 @@ class CLITuiMixin:
         state = self._clarify_state
         base = getattr(self, '_clarify_multi_base', None)
         if state.get("questions"):
+            state.get("drafts", {}).pop(state["active"], None)
             # Batch mode: lock the typed answer for the active question. Multi-select "Other"
             # appends the typed answer to the checked labels as a JSON array string.
             if base is not None:
@@ -1646,14 +1582,21 @@ class CLITuiMixin:
             state["response_queue"].put(text)
             self._clarify_state = None
             self._clarify_freetext = False
-        buf.reset()
+        from hermes_cli.cli_clarify_panel import fill_composer
+        fill_composer(self, buf)
         event.app.invalidate()
 
     def _tui_enter_clarify_choice(self, event) -> None:
         """Clarify choice mode: confirm the highlighted selection."""
         state = self._clarify_state
         if state.get("questions"):
-            # Batch mode: lock the active question's answer and advance to the next unanswered.
+            if state.get("reviewing"):
+                self._clarify_batch_submit(state)
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+            # Discard the draft being committed, not drafts on other tabs.
+            state.get("drafts", {}).pop(state["active"], None)
             self._clarify_batch_enter(state)
             # Editing an earlier "Other" answer: prefill the composer with the previous text.
             if self._clarify_freetext and self._clarify_prefill:
@@ -2019,8 +1962,7 @@ class CLITuiMixin:
         """Clarify / approval / slash-confirm / model picker / command palette navigation keys."""
         _clarify_nav = Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext)
         _clarify_batch = Condition(
-            lambda: bool(self._clarify_state) and bool(self._clarify_state.get("questions"))
-            and not self._clarify_freetext)
+            lambda: bool(self._clarify_state) and bool(self._clarify_state.get("questions")))
         kb.add('up', filter=_clarify_nav)(self._tui_clarify_up)
         kb.add('down', filter=_clarify_nav)(self._tui_clarify_down)
         # Multi-select: Space toggles the checkbox under the cursor.

@@ -111,7 +111,8 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
 
 
 def _resolve_openrouter_runtime(
-    *, requested_provider: str, explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None
+    *, requested_provider: str, explicit_api_key: Optional[str] = None, explicit_base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Terminal resolver: OpenRouter, or a bare/aliased ``custom`` endpoint. base_url precedence:
     explicit > CUSTOM_BASE_URL > trusted ``model.base_url`` > OPENROUTER_BASE_URL > default.
@@ -119,7 +120,7 @@ def _resolve_openrouter_runtime(
     endpoint URLs. OpenRouter contexts prefer OPENROUTER_API_KEY; custom endpoints never receive the
     OpenRouter key and only get env keys gated on their authoritative hosts."""
     rp = _rp()
-    model_cfg = rp._get_model_config()
+    model_cfg = rp._get_model_config(**({} if config is None else {"config": config}))
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
     cfg_provider = (model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else "").strip().lower()
     cfg_api_key = next((v.strip() for v in (model_cfg.get("api_key"), model_cfg.get("api")) if isinstance(v, str) and v.strip()), "")
@@ -177,7 +178,8 @@ def _resolve_openrouter_runtime(
 # ── AWS Bedrock ────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: Optional[str]) -> Dict[str, Any]:
+def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any], target_model: Optional[str], *,
+                             config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """AWS Bedrock with triple-path routing: OpenAI models → Bedrock Mantle's Responses endpoint;
     Claude → AnthropicBedrock SDK (prompt caching, thinking budgets); others → Converse API.
     AWS_BEARER_TOKEN_BEDROCK auth is unsupported by AnthropicBedrock (SigV4 only), so bearer users
@@ -199,7 +201,7 @@ def _resolve_bedrock_runtime(requested_provider: str, model_cfg: Dict[str, Any],
             "Or run 'aws configure' to set up credentials.",
             code="no_aws_credentials",
         )
-    bedrock_cfg = load_config().get("bedrock", {})
+    bedrock_cfg = (load_config() if config is None else config).get("bedrock", {})
     # Region priority (config.yaml bedrock.region → env → us-east-1) lives in the adapter.
     region = resolve_bedrock_runtime_region({"bedrock": bedrock_cfg})
     auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"

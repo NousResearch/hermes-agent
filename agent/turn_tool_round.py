@@ -159,6 +159,20 @@ def run_tool_round(
         failed = True
         return _verdict("break")
 
+    # A dispatcher-owned worker is done as soon as its lifecycle transition is
+    # durably accepted. The tool-call turn was persisted before execution and
+    # each result is incrementally persisted by _execute_tool_calls, so another
+    # provider turn adds cost and can leave the worker alive after block/complete.
+    # Failures, foreign task ids, and stale results do not match this boundary.
+    from agent.kanban_stop import successful_kanban_terminal_transition
+    terminal_transition = successful_kanban_terminal_transition(
+        assistant_message.tool_calls, messages
+    )
+    if terminal_transition is not None:
+        _turn_exit_reason = "kanban_terminal_transition"
+        final_response = f"Kanban lifecycle transition completed via `{terminal_transition}`."
+        return _verdict("break")
+
     if agent._tool_guardrail_halt_decision is not None:
         decision = agent._tool_guardrail_halt_decision
         _turn_exit_reason = "guardrail_halt"

@@ -63,6 +63,11 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+# Capacity failures are retried on a deterministic capped ladder.  Counting
+# trailing capacity runs (rather than task failures) keeps this state durable
+# across dispatcher restarts without consuming the crash-strike counter.
+_CAPACITY_BACKOFF_SECONDS = (300, 900, 3600)
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -705,7 +710,7 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     ).fetchall()
     for row in rows:
         outcome = row["outcome"] or ""
-        if outcome == "rate_limited":
+        if outcome in ("rate_limited", "capacity_failure"):
             continue
         if outcome == "crashed" and (
             _kb._json_dict(row["metadata"]).get("protocol_violation")
@@ -745,9 +750,8 @@ class _DeadWorker:
 
     @property
     def run_outcome(self) -> str:
-        # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        # Capacity exhaustion is operationally distinct from a task crash.
+        return "capacity_failure" if self.rate_limited else "crashed"
 
 
 def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
@@ -771,7 +775,7 @@ def _classify_dead_worker(pid: int, claimer: Optional[str]) -> _DeadWorker:
         return _DeadWorker(
             kind, code,
             f"pid {pid} exited rate-limited (quota wall) — requeued without counting a failure",
-            "rate_limited",
+            "capacity_failure",
             {"pid": pid, "claimer": claimer, "exit_code": code},
             rate_limited=True,
         )
@@ -861,7 +865,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection) -> _CrashSweep:
                 # ``_record_task_failure`` (which stamps this column), yet the
                 # board UI and retry worker need the corrective message.
                 conn.execute(
-                    "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                    "UPDATE tasks SET last_failure_error = "
+                    "COALESCE(last_failure_error, ?) WHERE id = ?",
                     (dead.error_text[:500], row["id"]),
                 )
             if dead.rate_limited:
@@ -1128,10 +1133,12 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
+    ``"capacity_backoff"`` (latest runs are ``capacity_failure`` within the
+    deterministic 5m/15m/60m ladder) or legacy ``"rate_limit_cooldown"``;
+    checked BEFORE ``blocker_auth`` because the requeue retains quota-flavored
+    ``last_failure_error`` evidence that would otherwise park the task forever.
+    Neither capacity path increments ``consecutive_failures``. Then
+    ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
@@ -1148,23 +1155,41 @@ def check_respawn_guard(
 
     now = int(time.time())
 
-    # 1. Rate-limit cooldown — see docstring for why this precedes blocker_auth.
-    #    LATEST run only: a newer crash/completion supersedes the rate-limit run.
-    rl_cooldown = _kb._resolve_rate_limit_cooldown_seconds()
+    # 1. Capacity backoff — see docstring for why this precedes blocker_auth.
+    # Count only the trailing capacity-failure streak.  A genuine run outcome
+    # resets the ladder; legacy ``rate_limited`` rows remain compatible.
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if latest_run is not None and latest_run["outcome"] == "rate_limited":
-        if rl_cooldown <= 0:
-            # Cooldown disabled — respawn immediately, skipping blocker_auth so
-            # the stamped rate-limit text doesn't re-trap the task.
+    if latest_run is not None and latest_run["outcome"] in ("rate_limited", "capacity_failure"):
+        if latest_run["outcome"] == "rate_limited":
+            wait_seconds = _kb._resolve_rate_limit_cooldown_seconds()
+        else:
+            rows = conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id = ? "
+                "AND ended_at IS NOT NULL ORDER BY id DESC",
+                (task_id,),
+            ).fetchall()
+            streak = 0
+            for run in rows:
+                if run["outcome"] != "capacity_failure":
+                    break
+                streak += 1
+            wait_seconds = _CAPACITY_BACKOFF_SECONDS[
+                min(max(streak, 1), len(_CAPACITY_BACKOFF_SECONDS)) - 1
+            ]
+        if wait_seconds <= 0:
             return None
         ended_at = latest_run["ended_at"]
-        if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
-            return "rate_limit_cooldown"
+        if ended_at is not None and (now - int(ended_at)) < wait_seconds:
+            return (
+                "rate_limit_cooldown"
+                if latest_run["outcome"] == "rate_limited"
+                else "capacity_backoff"
+            )
         # Cooldown elapsed — return early so blocker_auth doesn't catch the
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.

@@ -240,6 +240,11 @@ class SlashCommandsMixin:
         request = parse_compress_args(args)
         if request.aggressive:
             return AGGRESSIVE_UNSUPPORTED
+        expects_durable_commit = getattr(agent, "_session_db", None) is not None
+        if expects_durable_commit:
+            # Slash commands do not pass through the ordinary per-turn reset.
+            # Clear a prior success before using this as the current commit receipt.
+            agent._last_compaction_in_place = False
         try:
             result = compress_now(
                 agent, state.history, request, system_message=getattr(agent, "_cached_system_prompt", "") or "",
@@ -248,9 +253,7 @@ class SlashCommandsMixin:
             return f"Compression failed: {e}"
         if result.status != "compressed":
             return "\n".join(render_compress_result(result))
-        if getattr(agent, "_session_db", None) is not None and getattr(
-            agent, "_last_compaction_in_place", False
-        ) is not True:
+        if expects_durable_commit and getattr(agent, "_last_compaction_in_place", False) is not True:
             finalize_context_engine_compression_notification(agent, committed=False)
             return "Compression failed: compacted history was not committed."
         state.history = result.after_messages

@@ -707,6 +707,9 @@ class TestSlashCommands:
         live_agent._session_db = db
         live_agent._session_db_created = True
         live_agent.compression_in_place = True
+        # A previous manual compaction may have succeeded on this long-lived
+        # ACP agent. The next command must require a fresh commit receipt.
+        live_agent._last_compaction_in_place = True
 
         original = [
             {"role": "user", "content": "one"},
@@ -718,10 +721,18 @@ class TestSlashCommands:
         for message in original:
             db.append_message(state.session_id, message["role"], message["content"])
 
-        monkeypatch.setattr(db, "archive_and_compact", MagicMock(side_effect=RuntimeError("write failed")))
+        # Fail after archive_and_compact has issued its archival UPDATE but
+        # before it can insert the compacted rows. The real write transaction
+        # must roll the UPDATE back.
+        monkeypatch.setattr(
+            db,
+            "_insert_message_rows",
+            MagicMock(side_effect=RuntimeError("write failed")),
+        )
         result = HermesACPAgent(session_manager=manager)._handle_slash_command("/compress", state)
 
         assert result == "Compression failed: compacted history was not committed."
+        assert live_agent._last_compaction_in_place is False
         assert state.history == original
         restarted_db = SessionDB(db_path=db_path)
         restarted = SessionManager(

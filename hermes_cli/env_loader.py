@@ -247,16 +247,27 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
+def _sanitize_env_lines_local(lines: list[str]) -> list[str]:
+    """Local copy of hermes_cli.config._sanitize_env_lines — duplicated here so
+    _sanitize_env_file_if_needed() does not need to import hermes_cli.config
+    before .env has been applied. Importing config eagerly runs
+    _inject_profile_env_vars() which discovers and imports every provider entry
+    point, violating the contract that the environment is fully assembled before
+    any plugin code is imported (see #110084)."""
+    sanitized: list[str] = []
+    for line in lines:
+        raw = line.rstrip("\r\n")
+        stripped = raw.strip()
+        sanitized.append((raw if not stripped or stripped.startswith("#") else stripped) + "\n")
+    return sanitized
+
+
 def _sanitize_env_file_if_needed(path: Path) -> None:
     """Pre-sanitize a .env file before python-dotenv reads it. Sniffs a leading BOM *before* any text
     decode: UTF-16 (Notepad "Unicode") is rewritten as clean UTF-8; UTF-32 is refused (left untouched) so
     we never fall through to the errors=replace corruption path."""
     if not path.exists():
         return
-    try:
-        from hermes_cli.config import _sanitize_env_lines
-    except ImportError:
-        return  # early bootstrap — config module not available yet
 
     try:
         raw = path.read_bytes()
@@ -298,7 +309,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     try:
         # Strip NULs (os.environ raises ValueError on them); also repairs BOM-less UTF-16 (NUL-padded ASCII).
         stripped = [line.replace("\x00", "") for line in original]
-        sanitized = _sanitize_env_lines(stripped)
+        sanitized = _sanitize_env_lines_local(stripped)
         if sanitized != original or force_utf8_rewrite:
             import tempfile
             fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".env_")

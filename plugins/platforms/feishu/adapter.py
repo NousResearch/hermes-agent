@@ -3441,10 +3441,12 @@ class FeishuAdapter(BasePlatformAdapter):
             while len(self._seen_message_order) > self._dedup_cache_size:
                 self._seen_message_ids.pop(self._seen_message_order.pop(0), None)
         # atomic_json_write() fsyncs; this runs on the event loop for every inbound message, so
-        # offload the flush. The lock keeps flushes in mutation order (the snapshot inside the
-        # worker is taken under _dedup_lock, but the write itself is not).
+        # offload the flush onto the adapter-owned pool: the loop's default executor may already
+        # be torn down by a dead background loop, which used to wedge every inbound message in
+        # the dedup gate (#111020). The lock keeps flushes in mutation order (the snapshot
+        # inside the worker is taken under _dedup_lock, but the write itself is not).
         async with self._dedup_persist_lock_or_create():
-            await asyncio.to_thread(self._persist_seen_message_ids)
+            await self._run_blocking(self._persist_seen_message_ids)
         return False
 
     def _dedup_persist_lock_or_create(self) -> asyncio.Lock:

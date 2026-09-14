@@ -213,10 +213,23 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
         install_path = _resolve_lock_install_path(entry.get("install_path", ""), skill_name)
     except ValueError as exc:
         return False, f"Refusing to uninstall '{skill_name}': {exc}"
+    uninstall_provenance = None
+    try:
+        from tools.skill_usage import telemetry_provenance
+        uninstall_provenance = telemetry_provenance(skill_name)
+    except Exception as exc:
+        logger.debug("Unable to capture provenance for %s before uninstall: %s", skill_name, exc, exc_info=True)
     if install_path.exists():
         shutil.rmtree(install_path)
     lock.record_uninstall(skill_name)
     append_audit_log("UNINSTALL", skill_name, entry["source"], entry["trust_level"], "n/a", "user_request")
+    try:
+        from tools.skill_usage import forget_with_lifecycle
+        forget_with_lifecycle(
+            skill_name, lifecycle_action="uninstalled", provenance=uninstall_provenance,
+            caller_note="hub uninstall")
+    except Exception:
+        logger.debug("Unable to record skill uninstall lifecycle for %s", skill_name, exc_info=True)
     return True, f"Uninstalled '{skill_name}' from {entry['install_path']}"
 
 

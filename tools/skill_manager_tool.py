@@ -700,7 +700,7 @@ _REQUIRED_ARGS = {
 
 
 def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
-                    session_id, ledger_before) -> None:
+                    session_id, ledger_before, delete_provenance=None) -> None:
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry, debounced sync push."""
     with suppress(Exception):
@@ -720,7 +720,7 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
     # (foreground creates belong to the user). A recoverable curator archive keeps its
     # record as STATE_ARCHIVED (`hermes curator status`/`restore`); only a hard delete forgets.
     with suppress(Exception):
-        from tools.skill_usage import bump_patch, forget, record_created
+        from tools.skill_usage import bump_patch, forget_with_lifecycle, record_created
         # During the curator consolidation pass, a verified consolidation must be RECOVERABLE: archival into
         # ~/.hermes/skills/.archive/ is documented as the maximum destructive action the curator may take,
         # and `hermes curator restore` promises the skill can be brought back. Route through the recoverable
@@ -733,7 +733,9 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
         elif action in {"patch", "edit", "write_file", "remove_file"}:
             bump_patch(name, action=action, task_id=task_id, session_id=session_id)
         elif action == "delete" and not result.get("_archived"):
-            forget(name)
+            forget_with_lifecycle(
+                name, lifecycle_action="deleted", provenance=delete_provenance,
+                task_id=task_id, session_id=session_id, caller_note="skill_manage delete")
     # Only AFTER the write gate passed (staged writes returned early): never push un-reviewed content.
     with suppress(Exception):
         _maybe_debounced_sync_push(name)
@@ -772,6 +774,13 @@ def skill_manage(
     for arg, missing, message in _REQUIRED_ARGS.get(action, ()):
         if missing(args[arg]):
             return tool_error(message, success=False)
+    delete_provenance = None
+    if action == "delete":
+        try:
+            from tools.skill_usage import telemetry_provenance
+            delete_provenance = telemetry_provenance(name)
+        except Exception as exc:
+            logger.debug("Unable to capture provenance for %s before delete: %s", name, exc, exc_info=True)
     handler = _ACTION_HANDLERS.get(action, lambda a: _err(
         f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
     result = handler({"name": name, **args})
@@ -780,7 +789,8 @@ def skill_manage(
     if result.get("success"):
         _record_success(
             action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-            task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+            task_id=task_id, session_id=session_id, ledger_before=_ledger_before,
+            delete_provenance=delete_provenance)
     return json.dumps(result, ensure_ascii=False)
 
 

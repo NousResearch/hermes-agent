@@ -435,14 +435,15 @@ def telemetry_provenance(skill_name: str, record: Optional[Dict[str, Any]] = Non
 
 
 def _emit_skill_lifecycle(skill_name: str, action: str, *, record: Optional[Dict[str, Any]] = None,
-                          task_id: Optional[str] = None, session_id: Optional[str] = None) -> None:
+                          provenance: Optional[str] = None, task_id: Optional[str] = None,
+                          session_id: Optional[str] = None) -> None:
     """Best-effort lifecycle hook after an authoritative state change; facts absent from *record* go as None."""
     facts = record or {}
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook
         if has_hook("on_skill_lifecycle"):
             invoke_hook("on_skill_lifecycle", action=action, skill_name=skill_name,
-                        provenance=telemetry_provenance(skill_name, record), task_id=task_id or "",
+                        provenance=provenance or telemetry_provenance(skill_name, record), task_id=task_id or "",
                         session_id=session_id or "", use_count=facts.get("use_count"), reused=facts.get("reused"),
                         reuse_after_patch=facts.get("reuse_after_patch"))
     except Exception:
@@ -548,9 +549,39 @@ def is_sync_enabled(skill_name: str) -> bool:
     return get_record(skill_name).get("sync") is True
 
 
-def forget(skill_name: str) -> None:
-    if skill_name:
-        _locked_update(skill_name, lambda d: (None, d.pop(skill_name, None) is not None), "skill_usage.forget(%s) failed: %s")
+def forget(skill_name: str, *, lifecycle_action: Optional[str] = None,
+           provenance: Optional[str] = None, task_id: Optional[str] = None,
+           session_id: Optional[str] = None) -> None:
+    """Drop a usage entry and optionally emit a successful removal lifecycle event.
+
+    Removal callers invoke this only after their authoritative filesystem mutation
+    succeeds. The event still fires if sidecar cleanup cannot commit because that
+    telemetry failure cannot undo a completed delete/uninstall.
+    """
+    if not skill_name:
+        return
+
+    def _drop(data: Dict[str, Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], bool]:
+        raw = data.pop(skill_name, None)
+        return (dict(raw) if isinstance(raw, dict) else None), raw is not None
+
+    prior_record = _locked_update(skill_name, _drop, "skill_usage.forget(%s) failed: %s")
+    if lifecycle_action:
+        _emit_skill_lifecycle(
+            skill_name, lifecycle_action, record=prior_record, provenance=provenance,
+            task_id=task_id, session_id=session_id)
+
+
+def forget_with_lifecycle(skill_name: str, *, lifecycle_action: Optional[str] = None,
+                          provenance: Optional[str] = None, task_id: Optional[str] = None,
+                          session_id: Optional[str] = None, caller_note: str = "") -> None:
+    """Best-effort shared removal wrapper for hard delete and Hub uninstall."""
+    try:
+        forget(skill_name, lifecycle_action=lifecycle_action, provenance=provenance,
+               task_id=task_id, session_id=session_id)
+    except Exception as e:
+        logger.debug("Unable to record %s lifecycle for %s%s: %s", lifecycle_action or "skill", skill_name,
+                     f" ({caller_note})" if caller_note else "", e, exc_info=True)
 
 
 # --- Archive / restore ---

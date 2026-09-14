@@ -257,6 +257,16 @@ def _classify_write_denial(path: str) -> Optional[str]:
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
         return "safe_root"
 
+    from tools.write_safe_root_scope import (
+        get_process_write_safe_roots,
+        is_write_safe_root_scope_bound,
+    )
+    if is_write_safe_root_scope_bound():
+        inherited = get_process_write_safe_roots()
+        if inherited and not any(_is_under(resolved, root) for root in safe_roots):
+            if any(_is_under(resolved, root) for root in inherited):
+                return "safe_root"
+
     return None
 
 

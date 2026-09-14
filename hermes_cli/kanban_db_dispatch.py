@@ -72,6 +72,10 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+_REVIEW_CORRECTION_EVENT_KINDS = ("review_reopened", "changes_requested")
+_REVIEW_CORRECTION_CONSUMED_BY = ("completed", "review_requested")
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass.
@@ -1122,6 +1126,56 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _authorized_comment_bound(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[int]:
+    """Highest ``task_comments.id`` an outstanding review correction authorizes
+    a re-run over, or None when there is no such authority.
+
+    The boundary is not derived here: it is the value
+    :func:`~hermes_cli.kanban_db.reopen_review_task` /
+    :func:`~hermes_cli.kanban_db.request_changes` captured inside their own
+    IMMEDIATE write txn, so it names exactly the comments the correction acted
+    on. Comparisons stay within ``task_comments`` ids (the boundary) and
+    ``task_events`` ids (correction vs. what answered it); no clock is read and
+    no cross-table ids are compared.
+
+    None — withhold authority, the card keeps the ordinary PR guard — when:
+
+    * there is no correction event at all;
+    * the newest correction is a LEGACY event with no captured boundary (or a
+      malformed one). Reconstructing what the reviewer saw after the fact would
+      be inventing authority; the operator re-authorizes that card explicitly
+      with ``hermes kanban reopen-review <id> --reauthorize-legacy``, which
+      re-states the existing correction with today's boundary without claiming
+      the work is finished (see
+      :func:`~hermes_cli.kanban_db.review_reauthorization_blocker`);
+    * the correction was already ANSWERED — a ``completed`` or
+      ``review_requested`` event with a higher ``task_events.id``. A later
+      re-queue is then an ordinary re-run, not this correction's re-run.
+    """
+    placeholders = ", ".join("?" for _ in _REVIEW_CORRECTION_EVENT_KINDS)
+    row = conn.execute(
+        f"SELECT id, payload FROM task_events WHERE task_id = ? "
+        f"AND kind IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+        (task_id, *_REVIEW_CORRECTION_EVENT_KINDS),
+    ).fetchone()
+    if row is None:
+        return None
+    bound = _kb.reviewed_comment_bound(
+        row["payload"], conn=conn, task_id=task_id,
+    )
+    if bound is None:
+        return None
+    consumed_placeholders = ", ".join("?" for _ in _REVIEW_CORRECTION_CONSUMED_BY)
+    answered = conn.execute(
+        f"SELECT 1 FROM task_events WHERE task_id = ? AND id > ? "
+        f"AND kind IN ({consumed_placeholders}) LIMIT 1",
+        (task_id, int(row["id"]), *_REVIEW_CORRECTION_CONSUMED_BY),
+    ).fetchone()
+    return None if answered else bound
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1204,13 +1258,18 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # A captured correction authorizes only comments at or below its boundary.
+    authorized_bound = _authorized_comment_bound(conn, task_id)
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT id, body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
+            continue
+        if authorized_bound is not None and int(c["id"]) <= authorized_bound:
+            continue
+        return "active_pr"
 
     return None
 
@@ -1487,6 +1546,64 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _claim_dispatch_task(
+    conn: sqlite3.Connection, task_id: str, *, lane: str,
+    ttl_seconds: Optional[int],
+) -> tuple[Optional[Task], Optional[str]]:
+    """Check the respawn guard and claim in one serialized write transaction.
+
+    The guard is only preflight if it runs in a separate transaction: a new PR
+    comment can commit after the check and before ``claim_task``. Keeping both
+    operations under the same SQLite IMMEDIATE transaction makes the ordering
+    authoritative; a competing comment writer commits either before the guard
+    read or after the claim.
+    """
+    now = int(time.time())
+    lock = _kb._claimer_id()
+    expires = now + _kb._resolve_claim_ttl_seconds(ttl_seconds)
+    with _kb.write_txn(conn):
+        guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+        if guard_reason is not None:
+            return None, guard_reason
+        if lane == "review":
+            if not _kb._parents_satisfied(conn, task_id):
+                demoted = conn.execute(
+                    "UPDATE tasks SET status = 'todo' "
+                    "WHERE id = ? AND status = 'review' AND claim_lock IS NULL",
+                    (task_id,),
+                )
+                if demoted.rowcount == 1:
+                    _kb._append_event(
+                        conn, task_id, "dependency_wait",
+                        {"reason": "parent_reopened", "source_status": "review"},
+                    )
+                return None, None
+            source_status = "review"
+            extra = {"source_status": "review"}
+        else:
+            if not _kb._parents_satisfied(conn, task_id):
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                    (task_id,),
+                )
+                _kb._append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
+                return None, None
+            _kb._reclaim_dangling_run(
+                conn, task_id, statuses=("ready",), now=now,
+                note="invariant recovery on re-claim",
+            )
+            source_status = "ready"
+            extra = None
+        run_id = _kb._claim_and_open_run(
+            conn, task_id, source_status, lock, expires, now, event_extra=extra,
+        )
+        if run_id is None:
+            return None, None
+        claimed = _kb.get_task(conn, task_id)
+    _kb._fire_task_hook("kanban_task_claimed", claimed, task_id, run_id)
+    return claimed, None
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1522,7 +1639,7 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
-    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+    guard_reason = check_respawn_guard(conn, task_id, lane=lane) if dry_run else None
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
@@ -1547,8 +1664,14 @@ def _dispatch_lane_task(
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
-    claim = _kb.claim_review_task if lane == "review" else _kb.claim_task
-    claimed = claim(conn, task_id, ttl_seconds=ttl_seconds)
+    claimed, guard_reason = _claim_dispatch_task(
+        conn, task_id, lane=lane, ttl_seconds=ttl_seconds,
+    )
+    if guard_reason is not None:
+        result.respawn_guarded.append((task_id, guard_reason))
+        with _kb.write_txn(conn):
+            _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
+        return False
     if claimed is None:
         return False
     try:

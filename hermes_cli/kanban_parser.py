@@ -324,6 +324,9 @@ _SPECS = [
     _cmd("reopen-review", [
         _TASK_IDS,
         _reason("Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons."),
+        _arg("--reauthorize-legacy", action="store_true",
+             help="Recovery for a card already 'ready' from a pre-boundary correction: re-state that "
+                  "correction with today's comment boundary. Claims nothing about the work being done."),
     ], help="Send one or more review tasks back for changes (review -> ready/todo)"),
     _cmd("promote", [
         _TASK_ID,

@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile)
 // Types
 // ---------------------------------------------------------------------------
 
-export type VenvBlockerKind = 'local-preview' | 'other'
+export type VenvBlockerKind = 'local-preview' | 'other' | 'pool-backend'
 
 export interface VenvBlockerProcess {
   pid: number
@@ -63,12 +63,26 @@ function classifyVenvBlocker(
   const isPython = /^python(?:w)?(?:\.exe)?$/i.test(process.name)
   const hintedCreateTime = typeof hints?.createTime === 'number' ? hints.createTime : undefined
 
+  const trustedCreateTime =
+    hintedCreateTime !== undefined && Number.isFinite(hintedCreateTime) && hintedCreateTime > 0
+
+  const trustedPoolBackend =
+    hints?.kind === 'pool-backend' && hints.safeToStop === true && trustedCreateTime
+
+  if (trustedPoolBackend) {
+    const hintedLabel = typeof hints?.label === 'string' ? hints.label.trim() : ''
+
+    return {
+      ...process,
+      kind: 'pool-backend',
+      safeToStop: true,
+      ...(hintedLabel ? { label: hintedLabel } : {}),
+      createTime: hintedCreateTime
+    }
+  }
+
   const trustedScannerIdentity =
-    hints?.kind === 'local-preview' &&
-    hints.safeToStop === true &&
-    hintedCreateTime !== undefined &&
-    Number.isFinite(hintedCreateTime) &&
-    hintedCreateTime > 0
+    hints?.kind === 'local-preview' && hints.safeToStop === true && trustedCreateTime
 
   if (!isPython || !moduleMatch || !trustedScannerIdentity) {
     return { ...process, kind: 'other', safeToStop: false }
@@ -97,9 +111,14 @@ function classifyVenvBlocker(
   }
 }
 
+function isSafeStopKind(kind: VenvBlockerKind): boolean {
+  return kind === 'local-preview' || kind === 'pool-backend'
+}
+
 /**
- * Stop only blockers that the fresh scanner identified as Python static-file
- * preview servers. Unknown Python/Hermes processes are deliberately ignored.
+ * Stop blockers the fresh scanner identified as Python static-file preview
+ * servers or leftover Desktop ``hermes serve`` pool backends. Unknown
+ * Python/Hermes processes are deliberately ignored.
  */
 export async function stopSafeVenvBlockers(
   updateRoot: string,
@@ -116,11 +135,11 @@ export async function stopSafeVenvBlockers(
     if (
       !pythonPath ||
       !process.safeToStop ||
-      process.kind !== 'local-preview' ||
+      !isSafeStopKind(process.kind) ||
       !process.createTime ||
       !Number.isFinite(process.createTime)
     ) {
-      if (process.safeToStop && process.kind === 'local-preview') {
+      if (process.safeToStop && isSafeStopKind(process.kind)) {
         failed.push(process.pid)
       }
 

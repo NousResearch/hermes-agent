@@ -89,6 +89,16 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
+def _record_supplied_names(report) -> set[str]:
+    """Every name *report*'s sources supplied — applied, or skipped because a value already existed —
+    recorded into ``_SOURCE_SUPPLIED_NAMES`` so the routed-child scrub knows the source owns it."""
+    supplied = set(report.provenance)
+    for src in report.sources:
+        supplied.update(src.skipped_existing)
+    _SOURCE_SUPPLIED_NAMES.update(supplied)
+    return supplied
+
+
 def secret_source_names() -> tuple[str, ...]:
     """Every env-var name some profile's external secret source supplied (names only — the map is
     process-wide, so a value must be resolved through the active profile's secret scope). Includes names
@@ -170,10 +180,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # Same ownership bookkeeping as the process-global path: a name this profile's source supplied — applied,
     # or skipped because the private mapping already had it — is a source-owned name the routed-child scrub
     # must know about, or a sibling still inherits the launch value for it (review on f5f88d5058).
-    supplied = set(report.provenance)
-    for src in report.sources:
-        supplied.update(src.skipped_existing)
-    _SOURCE_SUPPLIED_NAMES.update(supplied)
+    _record_supplied_names(report)
     values: dict[str, str] = {}
     for name, applied in report.provenance.items():
         value = local_env.get(name)
@@ -537,10 +544,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # ``EnvironmentFile=``. Under multiplex the scope is the only credential source, so an empty
     # snapshot failed every default-profile turn for the process lifetime (#102041).
     values: dict[str, str] = {}
-    supplied = set(report.provenance)
-    for src in report.sources:
-        supplied.update(src.skipped_existing)
-    _SOURCE_SUPPLIED_NAMES.update(supplied)
+    supplied = _record_supplied_names(report)
     for name in supplied:
         if name in os.environ:
             values[name] = os.environ[name]

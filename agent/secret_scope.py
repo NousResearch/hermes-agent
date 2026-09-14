@@ -266,6 +266,8 @@ def refresh_installed_secret_scope(hermes_home: Path) -> bool:
     # stopped supplying (rotated, revoked, source removed) must disappear from the fire's scope
     # rather than survive as the stale value dict.update() would keep.
     rebuilt = build_profile_secret_scope(hermes_home)
-    scope.clear()
+    # Update first, then drop what is gone: a concurrent reader never sees an emptied scope.
     scope.update(rebuilt)
+    for name in [n for n in scope if n not in rebuilt]:
+        scope.pop(name, None)
     return True

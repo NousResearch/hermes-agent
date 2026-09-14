@@ -653,6 +653,27 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+_BOT_CHAT_STREAM_TAIL = 500
+
+
+def _format_failure_streams(result) -> str:
+    """Labeled stderr+stdout tails for a failed delivery turn ("": none).
+
+    ``-Q`` reports the resume banner and ``session_id:`` on stderr while the
+    response rides stdout, so ``stderr or stdout`` discards half the signal —
+    and when stderr is empty and stdout holds only the banner, the recorded
+    error carries zero diagnostics (#104056). Both tails are kept, capped.
+    """
+    err = (getattr(result, "stderr", None) or "").strip()
+    out = (getattr(result, "stdout", None) or "").strip()
+    parts = []
+    if err:
+        parts.append(f"stderr: {err[-_BOT_CHAT_STREAM_TAIL:]}")
+    if out:
+        parts.append(f"stdout: {out[-_BOT_CHAT_STREAM_TAIL:]}")
+    return (": " + " | ".join(parts)) if parts else ""
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
@@ -759,10 +780,9 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]
             argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
             creationflags=windows_hide_flags())
         if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
             return _fail(
                 f"bot-chat delivery to profile '{profile_label}' failed (exit {result.returncode})"
-                + (f": {tail}" if tail else ""))
+                + _format_failure_streams(result))
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
     except subprocess.TimeoutExpired:

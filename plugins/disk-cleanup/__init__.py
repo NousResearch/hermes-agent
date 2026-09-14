@@ -62,10 +62,10 @@ def _on_post_tool_call(tool_name: str = "", args: Optional[Dict[str, Any]] = Non
         try:
             p = Path(path_str).expanduser()
             category = dg.guess_category(p) if p.exists() else None
+            if category is not None:
+                dg.track(str(p), category, silent=True, owner=owner)
         except (OSError, RuntimeError, ValueError):
             continue
-        if category is not None:
-            dg.track(str(p), category, silent=True, owner=owner)
 
 
 def _on_session_end(

@@ -8,6 +8,7 @@ Arbitrary workspace and platform-temp paths are never inferred to be disposable 
 from __future__ import annotations
 
 import contextlib
+import errno
 import functools
 import json
 import logging
@@ -15,6 +16,7 @@ import os
 import shutil
 import stat
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
@@ -26,11 +28,96 @@ logger = logging.getLogger(__name__)
 _LARGE_FILE_BYTES = 500 * 1024 * 1024
 _DELETE_LOCK = threading.Lock()
 _STATE_LOCK = threading.RLock()
+_STATE_LOCK_TIMEOUT_SECONDS = 5.0
+_LOCK_CONTENTION_ERRNOS = {
+    errno.EACCES,
+    errno.EAGAIN,
+    errno.EDEADLK,
+    errno.EWOULDBLOCK,
+}
 
 
 def _state_file(name: str) -> Path:
     """``$HERMES_HOME/disk-cleanup/<name>`` — deliberately outside ``$HERMES_HOME/logs/``."""
     return get_hermes_home() / "disk-cleanup" / name
+
+
+def _try_lock_state(handle) -> bool:
+    """Take the profile-state lock once without blocking."""
+    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        import msvcrt
+
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno not in _LOCK_CONTENTION_ERRNOS:
+                raise
+            return False
+    else:
+        import fcntl
+
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno not in _LOCK_CONTENTION_ERRNOS:
+                raise
+            return False
+    return True
+
+
+def _unlock_state(handle) -> None:
+    if os.name == "nt":  # pragma: no cover - exercised on Windows CI
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _open_state_lock(path: Path):
+    """Open the lock as a real regular file; POSIX refuses symlink traversal."""
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if os.name == "nt":  # no O_NOFOLLOW; reject an already-present reparse link
+        if path.is_symlink():  # pragma: no cover - exercised on Windows CI
+            raise RuntimeError("disk-cleanup state lock must not be a symlink")
+    else:
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise RuntimeError("disk-cleanup state lock must be a regular file")
+        return os.fdopen(descriptor, "r+b", buffering=0)
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+@contextlib.contextmanager
+def _state_transaction() -> Iterator[None]:
+    """Serialize one tracking transaction across gateway and worker processes."""
+    with _STATE_LOCK:
+        lock_path = _state_file("tracked.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with _open_state_lock(lock_path) as handle:
+            if os.name == "nt" and os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b"\0")
+                handle.flush()
+            deadline = time.monotonic() + _STATE_LOCK_TIMEOUT_SECONDS
+            while not _try_lock_state(handle):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("disk-cleanup state lock timed out")
+                time.sleep(0.05)
+            try:
+                yield
+            finally:
+                with contextlib.suppress(OSError):
+                    _unlock_state(handle)
 
 
 def is_safe_path(path: Path) -> bool:
@@ -57,38 +144,46 @@ def _log(message: str) -> None:
             f.write(f"[{ts}] {message}\n")
 
 
-def load_tracked() -> List[Dict[str, Any]]:
-    """Load tracked.json.  Restores from ``.bak`` on corruption."""
-    with _STATE_LOCK:
-        tf = _state_file("tracked.json")
-        tf.parent.mkdir(parents=True, exist_ok=True)
-        if not tf.exists():
-            return []
-        with contextlib.suppress(ValueError, OSError):
-            data = json.loads(tf.read_text(encoding="utf-8"))
-            if isinstance(data, list):
-                return data
-        bak = tf.with_suffix(".json.bak")
-        if bak.exists():
-            with contextlib.suppress(Exception):
-                data = json.loads(bak.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    _log("WARN: tracked.json corrupted — restored from .bak")
-                    return data
-        _log("WARN: tracked.json corrupted, no backup — starting fresh")
+def _load_tracked_unlocked() -> List[Dict[str, Any]]:
+    tf = _state_file("tracked.json")
+    tf.parent.mkdir(parents=True, exist_ok=True)
+    if not tf.exists():
         return []
+    with contextlib.suppress(ValueError, OSError):
+        data = json.loads(tf.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+    bak = tf.with_suffix(".json.bak")
+    if bak.exists():
+        with contextlib.suppress(Exception):
+            data = json.loads(bak.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                _log("WARN: tracked.json corrupted — restored from .bak")
+                return data
+    _log("WARN: tracked.json corrupted, no backup — starting fresh")
+    return []
+
+
+def load_tracked() -> List[Dict[str, Any]]:
+    """Load tracked.json under the shared profile-state lock."""
+    with _state_transaction():
+        return _load_tracked_unlocked()
+
+
+def _save_tracked_unlocked(tracked: List[Dict[str, Any]]) -> None:
+    tf = _state_file("tracked.json")
+    tf.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tf.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
+    if tf.exists():
+        shutil.copy2(tf, tf.with_suffix(".json.bak"))
+    tmp.replace(tf)
 
 
 def save_tracked(tracked: List[Dict[str, Any]]) -> None:
-    """Atomic write: ``.tmp`` → backup old → rename."""
-    with _STATE_LOCK:
-        tf = _state_file("tracked.json")
-        tf.parent.mkdir(parents=True, exist_ok=True)
-        tmp = tf.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(tracked, indent=2), encoding="utf-8")
-        if tf.exists():
-            shutil.copy2(tf, tf.with_suffix(".json.bak"))
-        tmp.replace(tf)
+    """Atomically replace tracked.json under the shared profile-state lock."""
+    with _state_transaction():
+        _save_tracked_unlocked(tracked)
 
 
 ALLOWED_CATEGORIES = {
@@ -272,8 +367,8 @@ def track(
         _log(f"REJECT: {path} ({category} has no owned generation receipt)")
         return False
     size = receipt["generation_size"]
-    with _STATE_LOCK:
-        tracked = load_tracked()
+    with _state_transaction():
+        tracked = _load_tracked_unlocked()
         if any(
             isinstance(item, dict)
             and item.get("path") == str(path)
@@ -291,7 +386,7 @@ def track(
             **receipt,
             **({"owner": owner} if owner else {}),
         })
-        save_tracked(tracked)
+        _save_tracked_unlocked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")
     if not silent:
         print(f"Tracked: {path} ({category}, {fmt_size(size)})")
@@ -301,8 +396,8 @@ def track(
 def forget(path_str: str) -> int:
     """Remove a path from tracking without deleting the file."""
     p = Path(path_str).resolve()
-    with _STATE_LOCK:
-        tracked = load_tracked()
+    with _state_transaction():
+        tracked = _load_tracked_unlocked()
         kept = []
         for item in tracked:
             try:
@@ -313,7 +408,7 @@ def forget(path_str: str) -> int:
                 kept.append(item)
         removed = len(tracked) - len(kept)
         if removed:
-            save_tracked(kept)
+            _save_tracked_unlocked(kept)
             _log(f"FORGOT: {p} ({removed} entries)")
     return removed
 
@@ -500,7 +595,7 @@ def quick(
     immediate_owner: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Safe cleanup; ``immediate_owner`` scopes immediate files, not aged retention."""
-    with _STATE_LOCK:
+    with _state_transaction():
         return _quick_locked(only_paths, immediate_owner=immediate_owner)
 
 
@@ -523,7 +618,9 @@ def _quick_locked(
         if selected is None and immediate_owner is None
         else set()
     )
-    for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc), log_stale=True):
+    for item, p, age in _live_items(
+        _load_tracked_unlocked(), datetime.now(timezone.utc), log_stale=True
+    ):
         try:
             item_path = str(p.resolve())
         except (OSError, RuntimeError):
@@ -555,7 +652,7 @@ def _quick_locked(
             errors.append(err)
             new_tracked.append(item)
     empty_removed = sum(_sweep_empty_dirs(root) for root in sweep_roots)
-    save_tracked(new_tracked)
+    _save_tracked_unlocked(new_tracked)
     _log(f"QUICK_SUMMARY: {deleted} files, {empty_removed} dirs, {fmt_size(freed)}")
     return {"deleted": deleted, "empty_dirs": empty_removed, "freed": freed, "errors": errors}
 

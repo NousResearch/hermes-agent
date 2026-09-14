@@ -13,6 +13,8 @@ Covers the bundled plugin at ``plugins/disk-cleanup/``:
 
 import importlib
 import json
+import multiprocessing
+import os
 import shutil
 import subprocess
 import sys
@@ -88,6 +90,35 @@ def _load_plugin_init():
     sys.modules["hermes_plugins.disk_cleanup"] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def _hold_state_transaction(home, entered, contender_started, release, results):
+    os.environ["HERMES_HOME"] = home
+    try:
+        dg = _load_lib()
+        with dg._state_transaction():
+            entered.set()
+            if not contender_started.wait(10):
+                raise RuntimeError("contender did not start")
+            if not release.wait(10):
+                raise RuntimeError("holder was not released")
+    except Exception as exc:
+        results.put(repr(exc))
+    else:
+        results.put(None)
+
+
+def _enter_state_transaction(home, started, entered, results):
+    os.environ["HERMES_HOME"] = home
+    try:
+        dg = _load_lib()
+        started.set()
+        with dg._state_transaction():
+            entered.set()
+    except Exception as exc:
+        results.put(repr(exc))
+    else:
+        results.put(None)
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +577,24 @@ class TestPostToolCallHook:
         assert len(data) == 1
         assert data[0]["category"] == "test"
 
+    def test_tracking_lock_timeout_remains_best_effort(
+        self, _isolate_env, monkeypatch
+    ):
+        pi = _load_plugin_init()
+        p = _owned_test_root(pi.dg, _isolate_env) / "created.py"
+        p.write_text("x", encoding="utf-8")
+
+        def _timeout(*_args, **_kwargs):
+            raise RuntimeError("disk-cleanup state lock timed out")
+
+        monkeypatch.setattr(pi.dg, "track", _timeout)
+        pi._on_post_tool_call(
+            tool_name="write_file",
+            args={"path": str(p), "content": "x"},
+            result="OK",
+            task_id="t1", session_id="s1", turn_id="turn-1",
+        )
+
 
     def test_terminal_command_picks_up_paths(self, _isolate_env):
         pi = _load_plugin_init()
@@ -575,6 +624,41 @@ class TestPostToolCallHook:
 
 
 class TestOnSessionEndHook:
+    def test_state_transaction_serializes_gateway_and_kanban_processes(
+        self, _isolate_env
+    ):
+        ctx = multiprocessing.get_context("spawn")
+        holder_entered = ctx.Event()
+        contender_started = ctx.Event()
+        contender_entered = ctx.Event()
+        release = ctx.Event()
+        results = ctx.Queue()
+        home = str(_isolate_env)
+
+        holder = ctx.Process(
+            target=_hold_state_transaction,
+            args=(home, holder_entered, contender_started, release, results),
+        )
+        contender = ctx.Process(
+            target=_enter_state_transaction,
+            args=(home, contender_started, contender_entered, results),
+        )
+        holder.start()
+        assert holder_entered.wait(10)
+        contender.start()
+        assert contender_started.wait(10)
+        assert not contender_entered.wait(2), (
+            "a Kanban worker entered the profile-state transaction while the "
+            "gateway process still owned it"
+        )
+        release.set()
+        assert contender_entered.wait(10)
+        holder.join(10)
+        contender.join(10)
+        assert holder.exitcode == 0
+        assert contender.exitcode == 0
+        assert [results.get(timeout=10) for _ in range(2)] == [None, None]
+
     def test_each_turn_runs_aged_owned_root_retention(self, _isolate_env):
         from datetime import datetime, timedelta, timezone
 

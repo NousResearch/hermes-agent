@@ -84,6 +84,7 @@ import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { SuggestionPills } from './suggestion-pills'
 import { extractClipboardImageBlobs, openDirectiveScope } from './text-utils'
+import { extractClipboardDocumentCandidates } from '../hooks/use-composer-actions'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
 import { isRedoShortcut, isUndoShortcut } from './undo-history'
@@ -515,6 +516,24 @@ export function ChatBar({
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    // A Finder file copy (⌘C on a PDF) puts the file's ICON on the pasteboard
+    // alongside the file. The icon is an `image/*` blob, so the image path below
+    // would attach a generic document glyph and the document itself would never
+    // be read. Prefer the real file and hand it to the drag/drop pipeline, which
+    // already stages documents and renders PDFs.
+    if (onAttachDroppedItems) {
+      const documents = extractClipboardDocumentCandidates(event.clipboardData)
+
+      if (documents.length > 0) {
+        triggerHaptic('selection')
+        event.preventDefault()
+
+        void onAttachDroppedItems(documents)
+
+        return
+      }
+    }
+
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
     if (imageBlobs.length > 0 && onAttachImageBlob) {

@@ -241,6 +241,37 @@ export function extractDroppedFiles(transfer: DataTransfer): DroppedFile[] {
   return result
 }
 
+/** Image MIME prefix — the only kind `extractClipboardImageBlobs` collects. */
+const IMAGE_MIME_PREFIX = 'image/'
+
+/**
+ * Documents on the clipboard that were copied as FILES, not as pictures.
+ *
+ * Copying a file in Finder (⌘C) puts BOTH the file and a rendered ICON of it on
+ * the pasteboard. Chromium surfaces that icon as `image/png`, which is exactly
+ * what `extractClipboardImageBlobs` collects — and because its `files` fallback
+ * is guarded by `blobs.length === 0`, the icon permanently shadows the document.
+ * A pasted PDF therefore arrived as a 1024×1024 generic document glyph and the
+ * real bytes were never read.
+ *
+ * Returning the real file here lets the paste handler route it through the same
+ * dropped-items pipeline a drag already uses, so a pasted PDF attaches as a PDF.
+ * Screenshot pastes carry no non-image file, so they still take the image path.
+ */
+export function extractClipboardDocumentCandidates(transfer: DataTransfer): DroppedFile[] {
+  return extractDroppedFiles(transfer).filter((candidate) => {
+    const { file } = candidate
+
+    // A clipboard paste always carries File handles; path-only entries are
+    // in-app drags and are not documents the user copied.
+    if (!file) {
+      return false
+    }
+
+    return !file.type.startsWith(IMAGE_MIME_PREFIX)
+  })
+}
+
 /**
  * Split dropped entries by origin. OS/Finder drops carry a native `File`
  * handle; in-app drags (project tree, gutter line refs) are path-only.

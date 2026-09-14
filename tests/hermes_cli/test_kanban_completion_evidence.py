@@ -80,6 +80,17 @@ def test_path_proof_rejects_workspace_container(kanban_home: Path, tmp_path: Pat
         assert kb.get_task(conn, tid).status != "done"
 
 
+def test_path_proof_rejects_oversized_file(kanban_home: Path, tmp_path: Path) -> None:
+    artifact = tmp_path / "oversized.bin"
+    with artifact.open("wb") as handle:
+        handle.truncate(kb.KANBAN_ATTACHMENT_MAX_BYTES + 1)
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="gated", completion_contract="evidence")
+        with pytest.raises(CompletionEvidenceError, match="evidence limit"):
+            kb.complete_task(conn, tid, proof=[f"path:{artifact}"])
+        assert kb.get_task(conn, tid).status != "done"
+
+
 def test_url_proof_rejects_reusable_credentials_before_persistence(kanban_home: Path) -> None:
     secret = "super-secret-value"
     with kbc.connect_closing() as conn:

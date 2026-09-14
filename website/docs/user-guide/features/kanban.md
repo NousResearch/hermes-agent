@@ -96,8 +96,9 @@ hermes kanban complete t_abcd --summary "report generated" \
 
 Supported types are `path`, `url`, `task`, and `attachment`. Relative paths resolve
 against the card's persisted `workspace_path`; absolute paths continue to work.
-Path receipts must identify files; they include a size and SHA-256 digest so the durable
-record identifies the observed content rather than only a pathname. Task references must
+Path receipts must identify files no larger than the 25 MB Kanban attachment limit; they
+include a size and SHA-256 digest so the durable record identifies the observed content
+rather than only a pathname. Task references must
 identify a different, completed card directly linked to the card being closed, and
 attachment IDs must belong to the card being closed. URL receipts containing reusable
 credentials are rejected rather than persisted to board state.

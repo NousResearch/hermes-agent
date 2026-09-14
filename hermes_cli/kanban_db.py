@@ -2565,6 +2565,7 @@ def complete_task(
     )
     prepared_proof = prepare_completion_evidence(
         conn, task, proof, accept_unproven=accept_unproven,
+        max_path_bytes=KANBAN_ATTACHMENT_MAX_BYTES,
     )
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):

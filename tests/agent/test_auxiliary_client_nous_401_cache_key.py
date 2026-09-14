@@ -74,7 +74,7 @@ def test_call_llm_auto_provider_evicts_stale_client_end_to_end(monkeypatch):
     # The 401 refresh rebuilds a fresh client from refreshed runtime creds.
     monkeypatch.setattr(
         ac, "_resolve_nous_runtime_api",
-        lambda *, force_refresh=False: ("fresh-key", NOUS_BASE_URL),
+        lambda *, force_refresh=False, stale_access_token=None: ("fresh-key", NOUS_BASE_URL),
     )
     monkeypatch.setattr(
         ac, "_create_openai_client",
@@ -123,7 +123,7 @@ async def test_async_call_llm_auto_provider_evicts_stale_client_end_to_end(monke
     )
     monkeypatch.setattr(
         ac, "_resolve_nous_runtime_api",
-        lambda *, force_refresh=False: ("fresh-key", NOUS_BASE_URL),
+        lambda *, force_refresh=False, stale_access_token=None: ("fresh-key", NOUS_BASE_URL),
     )
     # Async refresh builds a sync client then wraps it; patch the wrap to `fresh`.
     monkeypatch.setattr(

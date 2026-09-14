@@ -29,7 +29,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment, _popen_bash, get_sandbox_dir
+from tools.environments.base import BaseEnvironment, get_sandbox_dir
+from tools.environments.base_output import _popen_bash
 
 logger = logging.getLogger(__name__)
 

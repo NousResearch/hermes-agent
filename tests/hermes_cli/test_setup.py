@@ -4,6 +4,7 @@ import os
 import json
 import types
 
+import pytest
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli import setup as setup_mod
@@ -129,7 +130,7 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
 
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
@@ -146,9 +147,8 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: next(prompt_values))
-    monkeypatch.setattr("hermes_cli.setup._prompt_container_resources", lambda config: None)
     monkeypatch.setattr(
-        "hermes_cli.setup.get_nous_subscription_features",
+        "hermes_cli.nous_subscription.get_nous_subscription_features",
         lambda config: type("Features", (), {"nous_auth_present": True})(),
     )
     monkeypatch.setitem(
@@ -266,10 +266,8 @@ def test_apple_container_setup_on_supported_host_is_non_mutating(
             return choices.index(label)
         raise AssertionError(f"Unexpected prompt: {question}")
 
-    monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin", raising=False)
-    monkeypatch.setattr(setup_mod.platform, "machine", lambda: "arm64", raising=False)
     monkeypatch.setattr(
-        setup_mod.platform, "mac_ver", lambda: ("26.0", ("", "", ""), "")
+        "tools.environments.apple_container.is_apple_container_supported_host", lambda: True
     )
     monkeypatch.setattr(setup_mod, "prompt_choice", choose)
     monkeypatch.setattr("tools.environments.apple_container.find_container_cli", lambda: "/container")
@@ -295,35 +293,17 @@ def test_apple_container_setup_on_supported_host_is_non_mutating(
     assert "container system start" in capsys.readouterr().out
 
 
-def test_apple_container_choice_is_omitted_on_unsupported_host(monkeypatch):
+@pytest.mark.parametrize("keep_current", [False, True])
+def test_apple_container_choice_is_omitted_on_unsupported_host(monkeypatch, keep_current):
     config = load_config()
     seen = []
 
     def choose(question, choices, default=0):
         seen.extend(choices)
-        return len(choices) - 1
+        return len(choices) - 1 if keep_current else 0
 
-    monkeypatch.setattr(setup_mod.platform, "system", lambda: "Linux", raising=False)
-    monkeypatch.setattr(setup_mod.platform, "machine", lambda: "x86_64", raising=False)
-    monkeypatch.setattr(setup_mod, "prompt_choice", choose)
-
-    setup_mod.setup_terminal_backend(config)
-
-    assert not any(label.startswith("Apple Container") for label in seen)
-
-
-def test_apple_container_choice_is_omitted_on_macos_25_arm64(monkeypatch):
-    config = load_config()
-    seen = []
-
-    def choose(question, choices, default=0):
-        seen.extend(choices)
-        return 0
-
-    monkeypatch.setattr(setup_mod.platform, "system", lambda: "Darwin")
-    monkeypatch.setattr(setup_mod.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(
-        setup_mod.platform, "mac_ver", lambda: ("25.6", ("", "", ""), "")
+        "tools.environments.apple_container.is_apple_container_supported_host", lambda: False
     )
     monkeypatch.setattr(setup_mod, "prompt_choice", choose)
 

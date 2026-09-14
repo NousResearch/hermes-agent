@@ -3,7 +3,13 @@
 import threading
 from unittest.mock import MagicMock, patch
 
-import tools.file_tools as file_tools
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _load_tool(_isolate_hermes_home):
+    global file_tools
+    import tools.file_tools as file_tools
 
 
 def _config() -> dict:
@@ -35,12 +41,13 @@ def test_file_factory_passes_apple_container_configuration():
          patch("tools.terminal_tool._last_activity", {}), \
          patch("tools.terminal_tool._creation_locks", {}), \
          patch("tools.terminal_tool._creation_locks_lock", threading.Lock()), \
-         patch("tools.terminal_tool._create_environment", side_effect=create), \
+         patch("tools.terminal_tool_backends._create_environment", side_effect=create), \
          patch("tools.terminal_tool._start_cleanup_thread"), \
          patch("tools.file_tools._file_ops_cache", {}), \
          patch("tools.file_tools._file_ops_lock", threading.Lock()):
-        file_tools._get_file_ops("apple-files")
+        file_ops = file_tools._get_file_ops("apple-files")
 
+    assert file_ops.env is environment
     assert captured["env_type"] == "apple_container"
     assert captured["image"] == "python:3.12-slim"
     assert captured["container_config"]["apple_container_image"] == "python:3.12-slim"
@@ -58,7 +65,7 @@ def test_file_ops_reuses_apple_environment_for_same_task():
     with patch("tools.terminal_tool._get_env_config", side_effect=_config), \
          patch("tools.terminal_tool._active_environments", {"default": environment}), \
          patch("tools.terminal_tool._last_activity", {"default": 0}), \
-         patch("tools.terminal_tool._create_environment", creation), \
+         patch("tools.terminal_tool_backends._create_environment", creation), \
          patch("tools.file_tools._file_ops_cache", {}), \
          patch("tools.file_tools._file_ops_lock", threading.Lock()):
         first = file_tools._get_file_ops("apple-files")

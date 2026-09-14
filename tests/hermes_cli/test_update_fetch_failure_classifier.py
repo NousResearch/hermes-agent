@@ -105,7 +105,10 @@ def test_update_network_git_calls_never_prompt_for_credentials():
     # configured so a private-fork origin still authenticates.
     assert "GIT_CONFIG_COUNT" not in kw["env"] or kw["env"]["GIT_CONFIG_COUNT"] == os.environ.get("GIT_CONFIG_COUNT")
 
-    src = inspect.getsource(update_cmd)
+    from hermes_cli import update_cmd_git
+
+    # Network git calls live in the origin (``_git_run``) and the split git module.
+    src = inspect.getsource(update_cmd) + inspect.getsource(update_cmd_git)
     # Every subprocess.run(...) whose argv is a fetch/pull must spread the kwargs.
     calls = []
     for m in re.finditer(r"subprocess\.run\(", src):

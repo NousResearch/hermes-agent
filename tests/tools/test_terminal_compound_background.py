@@ -17,7 +17,7 @@ import subprocess
 
 import pytest
 
-from tools.terminal_tool import _rewrite_compound_background as rewrite
+from tools.terminal_tool_sudo import _rewrite_compound_background as rewrite
 
 
 class TestRewrites:

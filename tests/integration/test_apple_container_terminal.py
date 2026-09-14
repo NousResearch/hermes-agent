@@ -65,6 +65,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
     import tools.credential_files as credential_files
     import tools.file_tools as file_tools
     import tools.terminal_tool as terminal
+    from tools.terminal_tool_lifecycle import get_active_env
     from tools.code_execution_tool import execute_code
     from tools.environments import apple_container
 
@@ -105,7 +106,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_CONTAINER_MEMORY", "1024")
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
     monkeypatch.setattr(terminal, "_terminal_config_bridge_attempted", True)
-    credential_files._config_files = None
+    monkeypatch.setattr(credential_files, "_config_files", {})
     terminal.register_task_env_overrides(
         task_id, {"apple_container_image": "python:3.11-slim-bookworm"}
     )
@@ -114,7 +115,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         identity_raw = terminal.terminal_tool(
             command="uname -s && uname -m", task_id=task_id
         )
-        environment = terminal.get_active_env(task_id)
+        environment = get_active_env(task_id)
         assert isinstance(environment, apple_container.AppleContainerEnvironment)
         container_name = environment._container_name
         assert container_name and container_name.startswith("hermes-")
@@ -150,6 +151,11 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         assert execute_result["status"] == "success", execute_result
         assert "from-file-tool" in execute_result["output"]
 
+        mounted = _terminal_result(terminal.terminal_tool(
+            command="cat /root/.hermes/native-readonly-token.txt", task_id=task_id
+        ))
+        assert "native-readonly-fixture" in mounted["output"]
+
         readonly_result = json.loads(
             terminal.terminal_tool(
                 command=(
@@ -162,7 +168,7 @@ def test_native_apple_container_cross_tool_lifecycle(monkeypatch, tmp_path):
         assert credential.read_bytes() == b"native-readonly-fixture\n"
     finally:
         if environment is None:
-            environment = terminal.get_active_env(task_id)
+            environment = get_active_env(task_id)
             if isinstance(environment, apple_container.AppleContainerEnvironment):
                 container_name = environment._container_name
         if environment is not None:

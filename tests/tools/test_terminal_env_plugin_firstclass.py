@@ -7,7 +7,7 @@ plugin-registered backend (``is_container=True``, ``skip_container_guards``,
 
 1. ``tools.file_tools`` per-task cwd override guard
 2. ``tools.approval._should_skip_container_guards``
-3. ``tools.terminal_tool._container_config_from_config`` key pass-through
+3. ``tools.terminal_tool_backends._container_config_from_config`` key pass-through
 4. ``tools.credential_files.from_agent_visible_cache_path`` reverse translation
 """
 
@@ -62,13 +62,13 @@ class TestContainerBackendClassification:
     """The predicate the file-tool cwd guard now relies on is registry-aware."""
 
     def test_is_container_backend_true_for_plugin_backend(self):
-        import tools.terminal_tool as tt
+        import tools.terminal_tool_config as tt
 
         _register()
         assert tt._is_container_backend("testbox") is True
 
     def test_is_container_backend_false_when_provider_says_no(self):
-        import tools.terminal_tool as tt
+        import tools.terminal_tool_config as tt
 
         _register(is_container=False)
         assert tt._is_container_backend("testbox") is False
@@ -99,7 +99,7 @@ class TestContainerConfigPassthrough:
     """_container_config_from_config carries unknown (plugin) keys through."""
 
     def test_plugin_keys_ride_container_config(self):
-        import tools.terminal_tool as tt
+        import tools.terminal_tool_backends as tt
 
         config = {
             "container_cpu": 2,
@@ -111,7 +111,7 @@ class TestContainerConfigPassthrough:
         assert cc["testbox_region"] == "eu-west"
 
     def test_known_keys_still_defaulted(self):
-        import tools.terminal_tool as tt
+        import tools.terminal_tool_backends as tt
 
         cc = tt._container_config_from_config({})
         assert cc["container_cpu"] == 1

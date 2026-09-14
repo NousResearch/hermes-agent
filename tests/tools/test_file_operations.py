@@ -1,23 +1,21 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import os
-import re
 import pytest
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
+from tools.environments.local import _find_bash, _msys_to_windows_path, LocalEnvironment
+from agent.file_safety import is_write_denied as _is_write_denied
+from tools.file_operations_common import LintResult, SearchMatch
 from tools.file_operations import (
-    _is_write_denied,
     ReadResult,
     WriteResult,
     PatchResult,
     SearchResult,
-    SearchMatch,
-    LintResult,
     ShellFileOperations,
-    MAX_LINE_LENGTH,
     normalize_read_pagination,
     normalize_search_pagination,
 )
@@ -156,10 +154,16 @@ class TestSearchResult:
         assert d["matches"][0]["path"] == "a.py"
 
 
-    def test_truncated_flag(self):
+    def test_truncated_flag_marks_total_as_lower_bound(self):
         r = SearchResult(total_count=100, truncated=True)
         d = r.to_dict()
         assert d["truncated"] is True
+        assert d["total_count_is_lower_bound"] is True
+
+    def test_untruncated_total_omits_lower_bound_flag(self):
+        r = SearchResult(total_count=100)
+        d = r.to_dict()
+        assert "total_count_is_lower_bound" not in d
 
 
 class TestSearchResultDensify:
@@ -256,16 +260,29 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     env.cwd = cwd
 
     def execute(command, **kwargs):
+        stdin_data = kwargs.get("stdin_data")
+        is_windows = os.name == "nt"
+        if is_windows:
+            # Match LocalEnvironment: commands are POSIX scripts executed by
+            # Git Bash, and stdin bytes must bypass Windows newline rewriting.
+            command = [_find_bash(), "-c", command]
         completed = subprocess.run(
             command,
-            shell=True,
-            text=True,
+            shell=not is_windows,
+            text=not is_windows,
             capture_output=True,
-            input=kwargs.get("stdin_data"),
+            input=(stdin_data.encode("utf-8", "surrogateescape")
+                   if is_windows and stdin_data is not None else stdin_data),
         )
-        output = completed.stdout
+        output = (
+            completed.stdout.decode("utf-8", "replace")
+            if is_windows else completed.stdout
+        )
         if include_stderr:
-            output += completed.stderr
+            output += (
+                completed.stderr.decode("utf-8", "replace")
+                if is_windows else completed.stderr
+            )
         return {
             "output": output,
             "returncode": completed.returncode,
@@ -401,6 +418,34 @@ class TestShellFileOpsHelpers:
         assert result.error is None
         assert result.content == "alpha\n"
 
+    def test_newline_terminated_content_has_no_phantom_line(self, file_ops):
+        # A file ending in a newline (the normal, well-formed case) has its
+        # last line terminated, NOT followed by an empty line. The gutter must
+        # match `cat -n`: three lines in, three numbered lines out.
+        result = file_ops._add_line_numbers("line1\nline2\nline3\n")
+        assert result == "1|line1\n2|line2\n3|line3"
+        assert "4|" not in result
+        assert len(result.split("\n")) == 3
+
+    def test_non_terminated_content_still_numbered_correctly(self, file_ops):
+        # Content with no trailing newline was already correct; guard it.
+        result = file_ops._add_line_numbers("line1\nline2\nline3")
+        assert result == "1|line1\n2|line2\n3|line3"
+
+    def test_trailing_blank_line_is_kept(self, file_ops):
+        # "a" then a genuine blank line, then the terminating newline: that is
+        # two lines (a, blank), so only the single terminator is dropped.
+        result = file_ops._add_line_numbers("a\n\n")
+        assert result == "1|a\n2|"
+        assert "3|" not in result
+
+    def test_newline_terminated_with_offset_has_no_phantom_line(self, file_ops):
+        # A truncated page (offset>1) that ends on a newline must not append a
+        # phantom numbered line at the page boundary.
+        result = file_ops._add_line_numbers("def f():\n    return 1\n", start_line=10)
+        assert result == "10|def f():\n11|    return 1"
+        assert "12|" not in result
+
 
 class TestSearchPathValidation:
     """Test that search() returns an error for non-existent paths."""
@@ -440,7 +485,7 @@ class TestSearchPathValidation:
 
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
-        return make_real_subprocess_env("/")
+        return LocalEnvironment("/")
 
     def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
         """Fallback find should include visible files when path is inside hidden root."""

@@ -127,7 +127,7 @@ class TestPreflightForeignRuntimeNoLeak:
         monkeypatch.setattr(gateway_cli, "_ensure_user_systemd_env", lambda: None)
         # Both socket paths resolve under the leaked /run/user/0 and are 0700 root.
         monkeypatch.setattr(Path, "exists", _eacces)
-        monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda: (False, ""))
+        monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda username=None: (False, ""))
         monkeypatch.setattr(gateway_cli.shutil, "which", lambda _: "/usr/bin/loginctl")
 
         class _Denied:

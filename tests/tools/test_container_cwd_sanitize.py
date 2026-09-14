@@ -31,10 +31,10 @@ class TestIsUnusableContainerCwd:
         assert tt._is_unusable_container_cwd("/home/ben/projects") is True
 
 
-    def test_container_backends_set(self):
-        assert tt._CONTAINER_BACKENDS == frozenset(
-            {"docker", "singularity", "modal", "daytona", "vercel_sandbox", "apple_container"}
-        )
+    def test_container_backends_have_registered_builders(self):
+        from tools.terminal_tool_backends import _ENV_BUILDERS
+        from tools.terminal_tool_config import _CONTAINER_BACKENDS
+        assert _CONTAINER_BACKENDS <= _ENV_BUILDERS.keys()
 
 
 class TestOverrideCwdSanitizedAtCallSite:
@@ -88,7 +88,7 @@ class TestOverrideCwdSanitizedAtCallSite:
         monkeypatch.setattr(tt, "_get_env_config", lambda: config)
         monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
         monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: {"approved": True})
-        monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
         # Force a fresh environment build so _create_environment is invoked.
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})
@@ -196,7 +196,7 @@ class TestFileOpsCwdSanitizedAtCallSite:
 
         monkeypatch.setattr(tt, "_get_env_config", lambda: config)
         monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
-        monkeypatch.setattr(tt, "_create_environment", fake_create_environment)
+        monkeypatch.setattr("tools.terminal_tool_backends._create_environment", fake_create_environment)
         # Force a fresh environment build.
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})

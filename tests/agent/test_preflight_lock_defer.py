@@ -1,6 +1,6 @@
 """Preflight lock-defer must not arm the insufficient-progress blocker.
 
-Companion to ``tests/run_agent/test_compression_lock_defer.py`` — pins the
+Companion to ``tests/agent/test_compression_lock_defer.py`` — pins the
 ``build_turn_context`` preflight loop's handling of a lock-contended
 compression no-op (#69870 lock-skip signal, consumer salvaged from #49874):
 

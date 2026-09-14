@@ -253,3 +253,21 @@ class TestConnectivityChecks:
         assert ok is True
 
 
+
+
+def test_discovery_loaded_setup_module_exposes_post_setup(monkeypatch):
+    """`hermes memory setup mem0` reaches the wizard when the package is first imported by plugin
+    discovery, which execs sibling modules before ``__init__`` (#103078). The invariant is on the
+    module the loader actually cached, not on a normal top-level import."""
+    from plugins.memory import load_memory_provider
+
+    saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k.startswith("plugins.memory.mem0")}
+    try:
+        provider = load_memory_provider("mem0", register_skills=False)
+        assert provider is not None
+        assert hasattr(sys.modules["plugins.memory.mem0._setup"], "post_setup")
+    finally:
+        for k in list(sys.modules):
+            if k.startswith("plugins.memory.mem0"):
+                del sys.modules[k]
+        sys.modules.update(saved)

@@ -154,15 +154,79 @@ def _extract_message_body(msg: dict) -> str:
     return body
 
 
-def _extract_doc_text(doc: dict) -> str:
+def _extract_body_text(body: dict) -> str:
     text_parts = []
-    for element in doc.get("body", {}).get("content", []):
+    for element in body.get("content", []):
         paragraph = element.get("paragraph", {})
         for pe in paragraph.get("elements", []):
             text_run = pe.get("textRun", {})
             if text_run.get("content"):
                 text_parts.append(text_run["content"])
     return "".join(text_parts)
+
+
+def _extract_doc_text(doc: dict) -> str:
+    return _extract_body_text(doc.get("body", {}))
+
+
+def _flatten_doc_tabs(doc: dict) -> list[dict]:
+    """Flatten Google's recursive ``tabs``/``childTabs`` tree (preorder).
+
+    A tabbed Doc keeps each tab's content in its own body with an independent
+    index space; the legacy top-level ``body`` only carries the first tab, so
+    reads and writes that ignore ``tabs`` silently drop or mistarget content.
+    Returns [] for the legacy single-body response shape (no ``tabs`` field).
+    """
+    flat: list[dict] = []
+
+    def visit(tabs, level):
+        for tab in tabs or []:
+            props = tab.get("tabProperties") or {}
+            doc_tab = tab.get("documentTab") or {}
+            flat.append({
+                "tabId": props.get("tabId", ""),
+                "title": props.get("title", ""),
+                "level": level,
+                "body": doc_tab.get("body") or {},
+            })
+            visit(tab.get("childTabs"), level + 1)
+
+    visit(doc.get("tabs"), 0)
+    return flat
+
+
+def _resolve_write_tab(doc: dict, tab_arg: str | None) -> tuple[str | None, dict]:
+    """Pick exactly one tab body for a write; never merge index spaces.
+
+    Legacy docs (no ``tabs``) return (None, body) — the write carries no tabId.
+    A multi-tab doc requires an explicit --tab; an unknown ID errors instead of
+    quietly falling back to the first tab.
+    """
+    tabs = _flatten_doc_tabs(doc)
+    if not tabs:
+        return None, doc.get("body", {})
+    if tab_arg:
+        for tab in tabs:
+            if tab["tabId"] == tab_arg:
+                return tab["tabId"], tab["body"]
+        print(
+            json.dumps({
+                "error": f"unknown tab ID {tab_arg!r}",
+                "tabs": [{"tabId": t["tabId"], "title": t["title"]} for t in tabs],
+            }, indent=2, ensure_ascii=False),
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if len(tabs) == 1:
+        return tabs[0]["tabId"], tabs[0]["body"]
+    print(
+        json.dumps({
+            "error": f"document has {len(tabs)} tabs; pass --tab <tabId> to pick one",
+            "tabs": [{"tabId": t["tabId"], "title": t["title"]} for t in tabs],
+        }, indent=2, ensure_ascii=False),
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 def _datetime_with_timezone(value: str) -> str:
@@ -953,23 +1017,41 @@ def sheets_create(args):
 
 
 def docs_get(args):
+    tab_arg = getattr(args, "tab", None)
+    params = {"documentId": args.doc_id, "includeTabsContent": True}
     if _gws_binary():
-        doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
-        result = {
-            "title": doc.get("title", ""),
-            "documentId": doc.get("documentId", ""),
-            "body": _extract_doc_text(doc),
-        }
-        print(json.dumps(result, indent=2, ensure_ascii=False))
-        return
+        doc = _run_gws(["docs", "documents", "get"], params=params)
+    else:
+        service = build_service("docs", "v1")
+        doc = service.documents().get(
+            documentId=args.doc_id, includeTabsContent=True,
+        ).execute()
 
-    service = build_service("docs", "v1")
-    doc = service.documents().get(documentId=args.doc_id).execute()
     result = {
         "title": doc.get("title", ""),
         "documentId": doc.get("documentId", ""),
-        "body": _extract_doc_text(doc),
     }
+    tabs = _flatten_doc_tabs(doc)
+    if not tabs:
+        # Legacy single-body response shape.
+        result["body"] = _extract_doc_text(doc)
+    elif tab_arg:
+        _, body = _resolve_write_tab(doc, tab_arg)
+        result["tab"] = tab_arg
+        result["body"] = _extract_body_text(body)
+    else:
+        result["tabs"] = [
+            {
+                "tabId": t["tabId"],
+                "title": t["title"],
+                "level": t["level"],
+                "body": _extract_body_text(t["body"]),
+            }
+            for t in tabs
+        ]
+        # Keep "body" populated for single-tab docs so existing callers work.
+        if len(tabs) == 1:
+            result["body"] = result["tabs"][0]["body"]
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
@@ -997,17 +1079,25 @@ def docs_create(args):
 
 
 def docs_append(args):
-    """Append text to the end of an existing Doc."""
+    """Append text to the end of an existing Doc (one tab of it, if tabbed)."""
     if _gws_binary():
-        doc = _run_gws(["docs", "documents", "get"], params={"documentId": args.doc_id})
+        doc = _run_gws(
+            ["docs", "documents", "get"],
+            params={"documentId": args.doc_id, "includeTabsContent": True},
+        )
     else:
         service = build_service("docs", "v1")
-        doc = service.documents().get(documentId=args.doc_id).execute()
+        doc = service.documents().get(
+            documentId=args.doc_id, includeTabsContent=True,
+        ).execute()
+
+    tab_id, body = _resolve_write_tab(doc, getattr(args, "tab", None))
 
     # The end-of-body index is one less than the segment endIndex of the body
     # (trailing newline is always at length-1). Docs indexes are 1-based; use
-    # endIndex - 1 to insert before the final newline.
-    content = doc.get("body", {}).get("content", [])
+    # endIndex - 1 to insert before the final newline. Each tab has its own
+    # index space, so the write location must carry the tab ID.
+    content = body.get("content", [])
     end_index = 1
     for element in content:
         ei = element.get("endIndex")
@@ -1016,21 +1106,27 @@ def docs_append(args):
     insert_index = max(end_index - 1, 1)
 
     text = args.text if args.text.endswith("\n") else args.text + "\n"
-    _docs_insert_text(args.doc_id, text, index=insert_index)
+    _docs_insert_text(args.doc_id, text, index=insert_index, tab_id=tab_id)
 
-    print(json.dumps({
+    result = {
         "status": "appended",
         "documentId": args.doc_id,
         "inserted_at": insert_index,
         "characters": len(text),
-    }, indent=2, ensure_ascii=False))
+    }
+    if tab_id:
+        result["tab"] = tab_id
+    print(json.dumps(result, indent=2, ensure_ascii=False))
 
 
-def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
+def _docs_insert_text(doc_id: str, text: str, index: int, tab_id: str | None = None) -> None:
     """Send a batchUpdate with a single insertText request."""
+    location: dict = {"index": index}
+    if tab_id:
+        location["tabId"] = tab_id
     requests = [{
         "insertText": {
-            "location": {"index": index},
+            "location": location,
             "text": text,
         }
     }]
@@ -1205,6 +1301,7 @@ def main():
 
     p = docs_sub.add_parser("get")
     p.add_argument("doc_id")
+    p.add_argument("--tab", default=None, help="Tab ID to read (tabbed Docs)")
     p.set_defaults(func=docs_get)
 
     p = docs_sub.add_parser("create")
@@ -1215,6 +1312,7 @@ def main():
     p = docs_sub.add_parser("append")
     p.add_argument("doc_id")
     p.add_argument("--text", required=True, help="Text to append to the end of the document")
+    p.add_argument("--tab", default=None, help="Tab ID to append to (required for multi-tab Docs)")
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()

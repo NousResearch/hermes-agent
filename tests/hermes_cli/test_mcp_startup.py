@@ -21,11 +21,11 @@ def _reset_mcp_startup_state():
     saved_started = mcp_startup._mcp_discovery_started
     saved_thread = mcp_startup._mcp_discovery_thread
     try:
-        mcp_startup._mcp_discovery_started = False
-        mcp_startup._mcp_discovery_thread = None
+        mcp_startup._mcp_discovery_started = set()
+        mcp_startup._mcp_discovery_thread = {}
         yield
     finally:
-        thread = mcp_startup._mcp_discovery_thread
+        thread = mcp_startup._current_home_thread()
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
         mcp_startup._mcp_discovery_started = saved_started
@@ -83,7 +83,7 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
+        "tools.mcp_tool_discovery",
         types.SimpleNamespace(discover_mcp_tools=_blocking_discover),
     )
 
@@ -96,8 +96,9 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         while calls["mcp"] == 0 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert calls["mcp"] == 1
-        assert mcp_startup._mcp_discovery_thread is not None
-        assert mcp_startup._mcp_discovery_thread.is_alive()
+        thread = mcp_startup._current_home_thread()
+        assert thread is not None
+        assert thread.is_alive()
     finally:
         stop.set()
 
@@ -139,7 +140,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
+        "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
         ),
@@ -149,7 +150,7 @@ def test_prepare_agent_startup_skips_discovery_when_chat_resolves_to_tui(
 
     assert calls["background"] == 0
     assert calls["inline"] == 0
-    assert mcp_startup._mcp_discovery_thread is None
+    assert mcp_startup._current_home_thread() is None
 
 
 def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
@@ -181,7 +182,7 @@ def test_prepare_agent_startup_keeps_discovery_for_non_chat_commands(
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
+        "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("inline", calls["inline"] + 1),
         ),
@@ -221,7 +222,7 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
+        "tools.mcp_tool_discovery",
         types.SimpleNamespace(discover_mcp_tools=_discover),
     )
 
@@ -229,11 +230,53 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
         logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
         thread_name="test-mcp-discovery",
     )
-    assert mcp_startup._mcp_discovery_thread is not None
-    mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+    thread = mcp_startup._current_home_thread()
+    assert thread is not None
+    thread.join(timeout=1.0)
 
     assert state["during_discover"] is True
     assert state["active"] is False
+
+
+def test_background_mcp_discovery_propagates_profile_secret_scope(monkeypatch):
+    """A dashboard-profile discovery thread must retain that profile's secrets."""
+    from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
+
+    seen = []
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"url": "https://mcp.example.test/mcp"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool_discovery",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: seen.append(dict(current_secret_scope() or {})),
+        ),
+    )
+
+    expected_scope = {"MCP_DEMO_TOKEN": "profile-only-secret"}
+    token = set_secret_scope(expected_scope)
+    try:
+        mcp_startup.start_background_mcp_discovery(
+            logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
+            thread_name="test-mcp-discovery",
+        )
+        thread = mcp_startup._current_home_thread()
+        assert thread is not None
+        thread.join(timeout=1.0)
+    finally:
+        reset_secret_scope(token)
+
+    assert seen == [expected_scope]
 
 
 def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
@@ -281,7 +324,7 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
+        "tools.mcp_tool_discovery",
         types.SimpleNamespace(
             discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
             get_mcp_status=lambda: [{"connected": connected}],
@@ -323,6 +366,9 @@ def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
     """The filter must narrow the spawn set before any server is connected;
     built-in toolset names in the list are ignored."""
     from tools import mcp_tool
+    from tools import mcp_tool_config as _mcp_config
+    from tools import mcp_tool_discovery as _mcp_discovery
+    from tools import mcp_tool_loop as _mcp_loop
 
     servers = {
         "code-mcp": {"command": "true"},
@@ -336,33 +382,33 @@ def test_discover_mcp_tools_spawns_only_allowed_servers(monkeypatch):
         sdk_probes["n"] += 1
         return True
 
-    monkeypatch.setattr(mcp_tool, "_load_mcp_config", lambda: dict(servers))
+    monkeypatch.setattr(_mcp_config, "_load_mcp_config", lambda: dict(servers))
     monkeypatch.setattr(mcp_tool, "_ensure_mcp_sdk", _fake_ensure_sdk)
-    monkeypatch.setattr(mcp_tool, "_try_acquire_mcp_discovery_lock", lambda: mcp_tool._LOCK_UNAVAILABLE)
+    monkeypatch.setattr(_mcp_loop, "_try_acquire_mcp_discovery_lock", lambda: mcp_tool._LOCK_UNAVAILABLE)
     monkeypatch.setattr(mcp_tool, "_release_mcp_discovery_lock", lambda *_a, **_k: None, raising=False)
 
     def _fake_register(cfgs):
         seen.update(cfgs)
         return []
 
-    monkeypatch.setattr(mcp_tool, "register_mcp_servers", _fake_register)
+    monkeypatch.setattr(_mcp_discovery, "register_mcp_servers", _fake_register)
     monkeypatch.setattr(mcp_tool, "_servers", {})
     monkeypatch.setattr(mcp_tool, "_server_connecting", set())
 
     # Everything (no filter) — both would be registered.
-    mcp_tool.discover_mcp_tools()
+    _mcp_discovery.discover_mcp_tools()
     assert set(seen) == {"code-mcp", "docs-mcp"}
 
     # `-t terminal,code-mcp` — only the matching server; "terminal" is a no-op.
     seen.clear()
-    mcp_tool.discover_mcp_tools(allowed_mcp_names=["terminal", "code-mcp"])
+    _mcp_discovery.discover_mcp_tools(allowed_mcp_names=["terminal", "code-mcp"])
     assert set(seen) == {"code-mcp"}
 
     # `-t terminal` — no MCP server in the filter: skip the whole MCP load,
     # including the ~260ms `mcp` SDK import.
     seen.clear()
     sdk_probes["n"] = 0
-    assert mcp_tool.discover_mcp_tools(allowed_mcp_names=["terminal"]) == []
+    assert _mcp_discovery.discover_mcp_tools(allowed_mcp_names=["terminal"]) == []
     assert seen == {}
     assert sdk_probes["n"] == 0
 
@@ -371,7 +417,7 @@ def test_background_discovery_honors_server_filter(monkeypatch, _reset_mcp_serve
     calls: list = []
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool",
+        "tools.mcp_tool_discovery",
         types.SimpleNamespace(discover_mcp_tools=lambda allowed_mcp_names=None: calls.append(allowed_mcp_names)),
     )
     monkeypatch.setitem(

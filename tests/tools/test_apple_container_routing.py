@@ -2,8 +2,15 @@
 
 from unittest.mock import Mock
 
-import tools.environments.apple_container as apple
-import tools.terminal_tool as terminal_tool
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _load_backend_modules(_isolate_hermes_home):
+    global apple, terminal_tool, backends
+    import tools.environments.apple_container as apple
+    import tools.terminal_tool as terminal_tool
+    import tools.terminal_tool_backends as backends
 
 
 def _config() -> dict:
@@ -29,7 +36,7 @@ def test_factory_passes_all_apple_container_settings(monkeypatch):
     fake = Mock(return_value=object())
     monkeypatch.setattr(apple, "AppleContainerEnvironment", fake)
 
-    result = terminal_tool._create_environment(
+    result = backends._create_environment(
         env_type="apple_container",
         image="python:3.12-slim",
         cwd="/workspace",
@@ -73,7 +80,7 @@ def test_terminal_creation_passes_apple_specific_config(monkeypatch):
         return DummyEnvironment()
 
     monkeypatch.setattr(terminal_tool, "_get_env_config", _config)
-    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(backends, "_create_environment", fake_create_environment)
     monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
     monkeypatch.setattr(terminal_tool, "_check_all_guards", lambda *args, **kwargs: {"approved": True})
     monkeypatch.setattr(terminal_tool, "_active_environments", {})

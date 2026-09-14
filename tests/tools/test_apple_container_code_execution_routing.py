@@ -3,7 +3,13 @@
 import threading
 from unittest.mock import MagicMock, patch
 
-import tools.code_execution_tool as code_execution
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _load_tool(_isolate_hermes_home):
+    global code_execution
+    import tools.code_execution_tool as code_execution
 
 
 def _config() -> dict:
@@ -36,9 +42,11 @@ def _capture(task_overrides=None):
          patch("tools.terminal_tool._creation_locks", {}), \
          patch("tools.terminal_tool._creation_locks_lock", threading.Lock()), \
          patch("tools.terminal_tool._task_env_overrides", task_overrides or {}), \
-         patch("tools.terminal_tool._create_environment", side_effect=create), \
+         patch("tools.terminal_tool_backends._create_environment", side_effect=create), \
          patch("tools.terminal_tool._start_cleanup_thread"):
-        code_execution._get_or_create_env("apple-execute")
+        env, env_type = code_execution._get_or_create_env("apple-execute")
+        assert env is environment
+        assert env_type == "apple_container"
     return captured
 
 

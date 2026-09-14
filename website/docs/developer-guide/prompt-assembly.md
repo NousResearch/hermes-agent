@@ -214,7 +214,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
     # Priority: first match wins — only ONE project context loaded
     project_context = (
         _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
-        or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
+        or _load_agents_md(cwd_path)    # 2. AGENTS.md (git root → cwd chain)
         or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
         or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
     )
@@ -245,7 +245,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 | Priority | Files | Search scope | Notes |
 |----------|-------|-------------|-------|
 | 1 | `.hermes.md`, `HERMES.md` | CWD up to git root | Hermes-native project config |
-| 2 | `AGENTS.md` | CWD only | Common agent instruction file |
+| 2 | `AGENTS.md` | Git root → CWD (merged directory chain) | Common agent instruction file |
 | 3 | `CLAUDE.md` | CWD only | Claude Code compatibility |
 | 4 | `.cursorrules`, `.cursor/rules/*.mdc` | CWD only | Cursor compatibility |
 
@@ -276,7 +276,7 @@ Local memory and user profile data are captured in the system prompt's **volatil
 `agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
 
 1. `.hermes.md` / `HERMES.md` (walks to git root)
-2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
+2. `AGENTS.md` (git root → CWD chain at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 

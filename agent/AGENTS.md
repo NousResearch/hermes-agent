@@ -63,7 +63,9 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   after a tool result (`assistant(tool_calls) → tool → user` is legal on every provider path) —
   never smeared onto the already-persisted tool row, which append-only persistence would leave
   divergent from the live request. Cron deliveries live in their own session for this reason.
-- **Context files** (`agent/prompt_builder.py`) load from the CWD only at startup and are capped
+- **Context files** (`agent/prompt_builder.py`) load at startup — `.hermes.md` walks to the git root,
+  `AGENTS.override.md` takes precedence over `AGENTS.md` per directory, whose files merge along the
+  git-root → cwd chain; `CLAUDE.md` / `.cursorrules` are cwd-only — and are capped
   (`CONTEXT_FILE_MAX_CHARS` / dynamic cap from the context window / `context_file_max_chars`).
   Never load an install-tree `AGENTS.md` as project context (PR #64611); subdirectory hints reject
   paths outside the working dir so `~/.codex/AGENTS.md` / `~/.claude/CLAUDE.md` never mix in.

@@ -18,6 +18,7 @@ import time
 import urllib.parse
 import urllib.request
 from collections import deque
+from contextvars import copy_context
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +33,7 @@ from . import protocol, security
 
 logger = logging.getLogger(__name__)
 
+_BACKGROUND_WAIT_SECONDS = 24 * 60 * 60
 _DEFAULT_PORT = 9900
 # seconds: orphan grace floor / ceiling / watchdog period. The ceiling keeps the sweep
 # meaningful when A2A_REPLY_TIMEOUT is absurd (1e18 would never fail an orphan).
@@ -525,7 +527,7 @@ class A2AAdapter(BasePlatformAdapter):
         protocol.metrics.tasks_failed += state == protocol.STATE_FAILED
         return protocol.build_task(rec["task_id"], rec["context_id"], state, text, created_at=rec["created_iso"]), None
 
-    def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None) -> tuple[Optional[dict], Optional[dict]]:
+    def _prepare_task(self, params: dict, peer: str, agent: Optional[dict] = None, *, defer_forward: bool = False) -> tuple[Optional[dict], Optional[dict]]:
         """Validate, register, and dispatch an inbound message (HTTP worker thread). Returns
         (terminal_task, None) when it ends immediately, else (None, pending) with the future to wait on."""
         agent = agent or self._agents[""]
@@ -549,6 +551,11 @@ class A2AAdapter(BasePlatformAdapter):
         self._register_inline_push(task_id, params, agent=agent)
         if not agent.get("local", True):
             self._activate_task(task_id)
+            if defer_forward:
+                self.tasks.set_state(task_id, protocol.STATE_WORKING)
+                return None, {"task_id": task_id, "context_id": context_id, "peer": peer,
+                              "created_iso": rec["created_iso"], "started": time.time(),
+                              "forward": ({**agent, "timeout": _BACKGROUND_WAIT_SECONDS}, peer, context_id, framed)}
             try:
                 reply, state = self._forward_to_profile(agent, peer, context_id, framed)
                 self._record_outcome(task_id, context_id, peer, state, reply)
@@ -626,6 +633,10 @@ class A2AAdapter(BasePlatformAdapter):
         """Record a dispatched task's outcome; returns (state, reply) after redaction and
         input-required detection (a leading marker flags a clarification request)."""
         task_id, context_id, peer = pending["task_id"], pending["context_id"], pending["peer"]
+        rec = self.tasks.get(task_id)
+        if rec and rec["state"] in protocol.TERMINAL_STATES:
+            self._pop_pending(task_id)
+            return rec["state"], rec.get("reply") or ""
         try:
             reply = security.redact_outbound(reply or "")
             stripped = reply.lstrip()
@@ -658,8 +669,73 @@ class A2AAdapter(BasePlatformAdapter):
         return self._await_future(pending["future"], pending["started"] + _reply_timeout(), keepalive,
                                   (protocol.STATE_FAILED, "[agent did not reply in time]"))
 
+    @staticmethod
+    def _config_return_immediately(params: dict) -> bool:
+        """True when the caller asked for a task id now, not a blocking wait.
+
+        A2A v1.0 uses configuration.returnImmediately. Older peers used
+        configuration.blocking = false. Either one is enough.
+        """
+        cfg = params.get("configuration") if isinstance(params, dict) else None
+        if not isinstance(cfg, dict):
+            return False
+        if cfg.get("returnImmediately") is True or cfg.get("return_immediately") is True:
+            return True
+        if cfg.get("blocking") is False:
+            return True
+        return False
+
+    def _wait_in_background(self, pending: dict) -> None:
+        """Wait for the agent, then record the result.
+
+        Used when returnImmediately is set. The HTTP caller already has the
+        working task. A2A_REPLY_TIMEOUT applies only to blocking callers.
+        The wait still stops after _BACKGROUND_WAIT_SECONDS so a hung
+        gateway turn cannot pin a daemon thread and a forever-WORKING task.
+        """
+
+        def _run() -> None:
+            try:
+                try:
+                    if "forward" in pending:
+                        reply, state = self._forward_to_profile(*pending["forward"])
+                    else:
+                        state, reply = pending["future"].result(timeout=_BACKGROUND_WAIT_SECONDS)
+                except FuturesTimeout:
+                    logger.warning(
+                        "A2A: background waiter for task %s hit the %ss ceiling",
+                        pending.get("task_id"),
+                        _BACKGROUND_WAIT_SECONDS,
+                    )
+                    state, reply = (
+                        protocol.STATE_FAILED,
+                        "[agent did not reply in time]",
+                    )
+                except Exception:
+                    state, reply = protocol.STATE_FAILED, "[agent did not reply]"
+                self._finalize_task(pending, state, reply)
+            except Exception:
+                logger.debug("A2A: background waiter failed", exc_info=True)
+                try:
+                    self._finalize_task(
+                        pending, protocol.STATE_FAILED, "[agent did not reply]")
+                except Exception:
+                    pass
+
+        threading.Thread(
+            target=copy_context().run,
+            args=(_run,),
+            name=f"a2a-wait-{pending['task_id'][:12]}",
+            daemon=True,
+        ).start()
+
     def _rpc_message_send(self, req_id: Any, params: dict, peer: str, agent: Optional[dict] = None, v1_response: bool = False) -> dict:
-        task, pending = self._prepare_task(params, peer, agent=agent)
+        options = {"defer_forward": True} if agent and not agent.get("local", True) and self._config_return_immediately(params) else {}
+        task, pending = self._prepare_task(params, peer, agent=agent, **options)
+        if task is None and self._config_return_immediately(params):
+            self._wait_in_background(pending)
+            task = protocol.build_task(pending["task_id"], pending["context_id"], protocol.STATE_WORKING,
+                                       created_at=pending["created_iso"])
         if task is None:
             state, reply = self._finalize_task(pending, *self._await_reply(pending))
             task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])

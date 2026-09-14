@@ -2147,6 +2147,16 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _on_invite(self, event: Any) -> None:
         """Auto-join rooms when invited, recording DM rooms in m.direct."""
         room_id = str(getattr(event, "room_id", ""))
+        # Membership invite events are addressed to one user via state_key. In bridged
+        # rooms the sync stream carries invites for OTHER users (e.g. a Discord ghost
+        # inviting the Matrix owner) — those are not ours to answer. Skip only when the
+        # target is positively someone else (state_key present and different); an
+        # unresolved target stays fail-closed. Skip quietly (debug, not warning:
+        # known-benign), and only enforce once our own user id is known.
+        target = getattr(event, "state_key", "")
+        if self._user_id and target and target != self._user_id:
+            logger.debug("Matrix: ignoring invite to %s addressed to %s", room_id, target)
+            return
         is_direct = bool(getattr(getattr(event, "content", None), "is_direct", False))
         inviter = str(getattr(event, "sender", ""))
         # Only authorized inviters — otherwise any federated user could pull the bot into rooms.

@@ -178,30 +178,64 @@ class DurableTurnLease:
 
         The holder-qualified UPDATE fences a late refresher from a successor lease. The façade's
         finally sets ``stop`` before releasing, so a holder-fenced miss observed after stop is not
-        a loss."""
+        a loss.
+
+        Transient write-lock contention (a sibling holding state.db's write lock 20s+) must NOT
+        kill a still-owned turn: the write-side fence (SessionTurnLeaseLostError on the next
+        append) is the real correctness boundary. A refresh that fails with a writable-store
+        error first verifies ownership read-only; only a verifiably-lost lease interrupts.
+        """
         if self.stop.is_set():
             return False
         try:
-            if self.db.refresh_session_turn_lease(
+            refreshed = self.db.refresh_session_turn_lease(
                 self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS
-            ):
-                return None
-            if self.stop.is_set():
-                return False
-            logger.error(
-                "Lost session turn lease while turn is active: %s", self._current_session_id()
             )
-            self._interrupt_turn("Session turn lease lost; stopping to protect the transcript.")
         except Exception:
             if self.stop.is_set():
                 return False
-            logger.warning(
-                "Failed to refresh session turn lease: %s", self._current_session_id(), exc_info=True,
+            # Writable-store failure (e.g. database is locked) is NOT proof of lease loss:
+            # verify ownership read-only before deciding. Previous behavior interrupted the
+            # turn here, so a healthy turn died behind a sibling's lock hold (#turn-lease-fix).
+            if self._lease_still_verifiably_ours():
+                logger.warning(
+                    "Session turn lease refresh contended by another writer; still owner — "
+                    "continuing turn: %s", self._current_session_id(),
+                )
+                return None
+            logger.error(
+                "Lost session turn lease while turn is active: %s", self._current_session_id()
             )
             self._interrupt_turn(
                 "Session turn lease could not be refreshed; stopping to protect the transcript."
             )
+            return False
+        if refreshed:
+            return None
+        if self.stop.is_set():
+            return False
+        logger.error(
+            "Lost session turn lease while turn is active: %s", self._current_session_id()
+        )
+        self._interrupt_turn("Session turn lease lost; stopping to protect the transcript.")
         return False
+
+    def _lease_still_verifiably_ours(self) -> bool:
+        """Read-only ownership check after a failed refresh (never takes the write lock)."""
+        try:
+            owner = self.db.get_session_turn_lease_owner(self._current_session_id())
+        except Exception:
+            # Cannot even read the lease row — the store is unreachable, not merely busy;
+            # fail closed (treat as lost) rather than run unsynchronized.
+            logger.warning(
+                "Could not verify session turn lease ownership after refresh failure: %s",
+                self._current_session_id(), exc_info=True,
+            )
+            return False
+        if owner is None:
+            return False
+        holder, _expires_at = owner
+        return holder == self.holder
 
 
 @dataclass

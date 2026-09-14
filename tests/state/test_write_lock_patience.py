@@ -109,6 +109,33 @@ class TestTranscriptWritePatience:
         db.append_message(session_id="s2", role="user", content="fast")
         assert time.monotonic() - t0 < 5.0  # loose: no patience-length stall
 
+    def test_exhausted_patience_logs_who_holds_the_lock(self, db, monkeypatch, caplog):
+        """On patience exhaustion the error is logged WITH the blocking holder identity,
+        so an operator can find the culprit instead of a bare 'database is locked'."""
+        monkeypatch.setattr(SessionDB, "_WRITE_PATIENCE_S", 0.2)
+        foreign = [(424242, "/proc/424242/fd/3")]  # synthetic open-file scan result
+        monkeypatch.setattr(
+            db, "_foreign_state_db_holders", lambda: foreign
+        )
+
+        started = threading.Event()
+        holder = threading.Thread(
+            target=_hold_write_lock, args=(db.db_path, 2.0, started)
+        )
+        holder.start()
+        try:
+            assert started.wait(5.0)
+            with pytest.raises(sqlite3.OperationalError):
+                db.set_meta("k", "v")
+        finally:
+            holder.join(timeout=10.0)
+
+        assert any("state.db write lock contended" in r.message for r in caplog.records)
+        assert any(
+            "424242" in r.message
+            and "foreign holders" in r.message for r in caplog.records
+        )
+
 
 class TestOpenLockPatience:
     def test_open_survives_multi_second_lock_hold(self, tmp_path):

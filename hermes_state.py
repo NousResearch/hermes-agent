@@ -880,6 +880,7 @@ class SessionDB(
                         if self._sleep_before_write_retry(deadline, patience_s):
                             continue
                         # Say what actually happened, not disk/permission damage.
+                        self._log_write_lock_holders(patience_s, fn)
                         raise sqlite3.OperationalError(
                             f"database is locked (another Hermes process held the "
                             f"state.db write lock for over {patience_s:.0f}s — "
@@ -1237,6 +1238,49 @@ class SessionDB(
     def _foreign_state_db_holders(self) -> List[Tuple[int, str]]:
         """Foreign processes holding this DB or its WAL sidecars (see hermes_state_holders)."""
         return _foreign_state_db_holders(self.db_path)
+
+    def _log_write_lock_holders(self, patience_s: float, fn) -> None:
+        """Log WHO plausibly holds the state.db write lock once patience is exhausted.
+
+        Runs only on the exhausted-patience path (rare and pathological), so a
+        best-effort open-file scan is affordable. Cross-references foreign DB
+        holders against live turn leases so the operator can map a blocking pid
+        to its session instead of staring at a bare 'database is locked'.
+        """
+        try:
+            holders = self._foreign_state_db_holders()
+            holder_pids = {pid for pid, _path in holders if pid and pid > 0}
+            try:
+                leases = self._read_all(
+                    "SELECT conversation_id, holder, expires_at "
+                    "FROM session_turn_leases ORDER BY expires_at"
+                )
+            except Exception:
+                leases = []
+            lease_refs = []
+            for row in leases:
+                holder = str(row["holder"] or "")
+                pid = None
+                if holder.startswith("pid="):
+                    pid_str = holder.split(":", 1)[0][4:]
+                    if pid_str.isdigit():
+                        pid = int(pid_str)
+                if pid in holder_pids:
+                    lease_refs.append(
+                        f"{row['conversation_id']}->{holder[:60]}"
+                        f"(exp {float(row['expires_at']):.0f})"
+                    )
+            if holders or lease_refs:
+                logger.warning(
+                    "state.db write lock contended for >%.0fs while running %s; "
+                    "foreign holders: %s; matching turn leases: %s",
+                    patience_s,
+                    getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                    sorted(holders)[:8] or "none",
+                    lease_refs[:8] or "none",
+                )
+        except Exception:
+            logger.debug("write-lock holder scan failed", exc_info=True)
 
     def _quarantine_reason(self) -> Optional[str]:
         """Why this handle must not checkpoint or run in-file repair, or None. A corrupted image has

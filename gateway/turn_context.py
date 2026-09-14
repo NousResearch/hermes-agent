@@ -68,6 +68,9 @@ class TurnContext:
     result_holder: list = field(default_factory=lambda: [None])
     tools_holder: list = field(default_factory=lambda: [None])
     stream_consumer_holder: list = field(default_factory=lambda: [None])
+    # Set only after turn persistence has completed successfully; the outer async
+    # consumer must not perform external delivery before this gate opens.
+    stream_release_event: Any = None
     streaming_tts_consumer_holder: list = field(default_factory=lambda: [None])
     # voice-ack wiring
     _voice_ack_fired: list = field(default_factory=lambda: [False])

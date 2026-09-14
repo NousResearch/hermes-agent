@@ -525,8 +525,18 @@ class CLIChatTurnMixin:
                         all_parts.append(extra)
                 except queue.Empty:
                     break
-            combined = "\n".join(all_parts)
-            preview = combined[:50] + ("..." if len(combined) > 50 else "")
+            text_parts = []
+            images = []
+            for part in all_parts:
+                if isinstance(part, tuple):
+                    text, part_images = part
+                    text_parts.append(text)
+                    images.extend(part_images)
+                else:
+                    text_parts.append(part)
+            combined_text = "\n".join(text_parts)
+            combined = (combined_text, images) if images else combined_text
+            preview = combined_text[:50] + ("..." if len(combined_text) > 50 else "")
             if len(all_parts) > 1:
                 print(f"\n⚡ Sending {len(all_parts)} messages after interrupt: '{preview}'")
             else:

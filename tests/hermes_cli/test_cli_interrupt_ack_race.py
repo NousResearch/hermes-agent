@@ -154,6 +154,30 @@ def test_unacknowledged_interrupt_message_is_requeued_not_dropped():
     assert agent.clear_calls >= 1
 
 
+def test_unacknowledged_interrupt_preserves_text_and_image_payload():
+    cli = _make_cli()
+    agent = _StubAgent(cli.session_id)
+    cli.agent = agent
+    image = object()
+    payload = ("inspect this image", [image])
+
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+    cli._interrupt_queue.put(payload)
+
+    with patch.object(cli, "_ensure_runtime_credentials", return_value=True), \
+         patch.object(cli, "_resolve_turn_agent_config", return_value={
+             "signature": cli._active_agent_route_signature,
+             "model": None, "runtime": None, "request_overrides": None,
+         }), \
+         patch.object(cli, "_init_agent", return_value=True):
+        cli.chat("original")
+
+    assert agent.interrupt_calls == [payload]
+    assert cli._pending_input.get_nowait() == payload
+    assert cli._pending_input.empty()
+
+
 
 
 def test_chat_persists_clean_input_when_a_queued_note_changes_api_message():

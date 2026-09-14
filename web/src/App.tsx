@@ -72,6 +72,7 @@ import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
+import { filterApplicableNav } from "@/lib/nav-applicability";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
 import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
 import { SharedMetricsConsentBanner } from "@/components/SharedMetricsConsentBanner";
@@ -193,7 +194,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Sessions",
     icon: MessageSquare,
   },
-  { path: "/files", label: "Files", icon: FolderOpen },
+  { path: "/files", label: "Files", icon: FolderOpen, machineLevel: true },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -206,10 +207,10 @@ const BUILTIN_NAV_REST: NavItem[] = [
     label: "Models",
     icon: Cpu,
   },
-  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
+  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText, machineLevel: true },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
+  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle, machineLevel: true },
   { path: "/mcp", label: "MCP", icon: Plug },
   { path: "/channels", label: "Channels", icon: Radio },
   { path: "/webhooks", label: "Webhooks", icon: Webhook },
@@ -217,7 +218,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", label: "System", icon: Wrench },
+  { path: "/system", label: "System", icon: Wrench, machineLevel: true },
   {
     path: "/docs",
     labelKey: "documentation",
@@ -659,16 +660,13 @@ export default function App() {
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    collapsed={isDesktopCollapsed}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                    tooltipWarmRef={tooltipWarmRef}
-                  />
-                ))}
+                <SidebarNavItems
+                  closeMobile={closeMobile}
+                  collapsed={isDesktopCollapsed}
+                  items={sidebarNav.coreItems}
+                  t={t}
+                  tooltipWarmRef={tooltipWarmRef}
+                />
               </ul>
 
               {sidebarNav.pluginItems.length > 0 && (
@@ -689,16 +687,13 @@ export default function App() {
                   </span>
 
                   <ul className="flex flex-col">
-                    {sidebarNav.pluginItems.map((item) => (
-                      <SidebarNavLink
-                        closeMobile={closeMobile}
-                        collapsed={isDesktopCollapsed}
-                        item={item}
-                        key={item.path}
-                        t={t}
-                        tooltipWarmRef={tooltipWarmRef}
-                      />
-                    ))}
+                    <SidebarNavItems
+                      closeMobile={closeMobile}
+                      collapsed={isDesktopCollapsed}
+                      items={sidebarNav.pluginItems}
+                      t={t}
+                      tooltipWarmRef={tooltipWarmRef}
+                    />
                   </ul>
                 </div>
               )}
@@ -849,6 +844,39 @@ export default function App() {
 function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
   const { profile } = useProfileScope();
   return <div key={profile || "__own__"} className="contents">{children}</div>;
+}
+
+/**
+ * Sidebar nav entries for the current management scope.
+ *
+ * Rendered inside <ProfileProvider> (the sidebar is its child), so it can read
+ * the selected profile and drop the machine-level pages while the switcher is
+ * scoped to another profile — see `lib/nav-applicability.ts` for why those
+ * entries cannot honour the scope.
+ */
+function SidebarNavItems({
+  closeMobile,
+  collapsed,
+  items,
+  t,
+  tooltipWarmRef,
+}: SidebarNavItemsProps) {
+  const { profile } = useProfileScope();
+
+  return (
+    <>
+      {filterApplicableNav(items, profile).map((item) => (
+        <SidebarNavLink
+          closeMobile={closeMobile}
+          collapsed={collapsed}
+          item={item}
+          key={item.path}
+          t={t}
+          tooltipWarmRef={tooltipWarmRef}
+        />
+      ))}
+    </>
+  );
 }
 
 function SidebarNavLink({
@@ -1358,6 +1386,12 @@ interface NavItem {
   icon: ComponentType<{ className?: string }>;
   label: string;
   labelKey?: string;
+  /**
+   * Page has no per-profile dimension (it acts on the dashboard process, the
+   * install, or the host filesystem). Hidden while the ProfileSwitcher is
+   * scoped to another profile — see lib/nav-applicability.ts.
+   */
+  machineLevel?: boolean;
   path: string;
 }
 
@@ -1365,6 +1399,14 @@ interface SidebarIconWithTooltipProps {
   children: ReactNode;
   collapsed: boolean;
   label: string;
+  tooltipWarmRef: TooltipWarmRef;
+}
+
+interface SidebarNavItemsProps {
+  closeMobile: () => void;
+  collapsed: boolean;
+  items: NavItem[];
+  t: Translations;
   tooltipWarmRef: TooltipWarmRef;
 }
 

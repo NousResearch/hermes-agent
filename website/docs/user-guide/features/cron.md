@@ -949,13 +949,27 @@ cron:
   catch_up_missed: false   # default: true
 ```
 
-Or run `hermes config set cron.catch_up_missed false`. With this opt-out, a recurring
-job later than its existing grace window (half its period, clamped to 120 seconds–2
-hours) is re-anchored to its next future occurrence without firing now. The skip is
-logged. Jobs inside grace and explicit manual triggers still run normally; if the
-next occurrence cannot be computed, the existing run-once fallback is preserved.
-This does not change one-shot expiry, resume behavior, or the hosted-provider sweep
-below. There is no per-job override.
+Or run `hermes config set cron.catch_up_missed false`. A job can override that default:
+
+```bash
+hermes cron create '0 7 * * 1-5' 'Prepare the morning brief' --skip-missed --misfire-grace-seconds 1800
+hermes cron edit JOB_ID --catch-up --misfire-grace-seconds 7200
+```
+
+The `cronjob` tool exposes the same `catch_up` and `misfire_grace_seconds` fields. If
+neither is set, old and new jobs retain the existing behavior: grace is half the
+period, clamped to 120 seconds–2 hours, and `cron.catch_up_missed` decides whether a
+past-grace occurrence runs once or is skipped. Explicit manual triggers still run.
+If the next occurrence cannot be computed, the existing run-once fallback is
+preserved.
+
+`hermes cron list` shows each job's effective policy, grace source, and latest
+misfire decision. Every late run and stale skip is also appended to
+`~/.hermes/cron/misfires.jsonl` with the scheduled and observed times, lateness,
+grace, action, and whether the job or global config supplied the policy. The legacy
+`catch_up_occurrences` counter counts past-grace occurrences that were coalesced and
+run once; it does not count skipped occurrences or every slot in the collapsed
+backlog.
 
 ### Misfire catch-up
 

@@ -38,6 +38,7 @@ class ApiCallVerdict:
     response: Any
     thinking_spinner: Any
     interrupted: Any
+    dispatched_credential_pool_entry_id: Any
 
 
 def _should_stream(agent: Any) -> bool:
@@ -66,11 +67,16 @@ def perform_api_call(
 ) -> ApiCallVerdict:
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
+    # Capture the opaque pool reference when this attempt is dispatched. Reading
+    # the mutable agent attribute after the response can misattribute a later
+    # credential recovery or concurrent turn.
+    dispatched_credential_pool_entry_id = None
 
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(
             action=action, response=response, thinking_spinner=thinking_spinner,
             interrupted=interrupted,
+            dispatched_credential_pool_entry_id=dispatched_credential_pool_entry_id,
         )
 
     def _stop_spinner():
@@ -123,6 +129,8 @@ def perform_api_call(
         if _model_request_active is not None:
             _model_request_active.set()
     try:
+        entry_id = getattr(agent, "_credential_pool_entry_id", None)
+        dispatched_credential_pool_entry_id = entry_id if isinstance(entry_id, str) and entry_id else None
         response = run_llm_execution_middleware(
             api_kwargs, _perform_api_call, original_request=_original_api_kwargs,
             task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,

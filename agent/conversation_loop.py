@@ -1352,6 +1352,7 @@ class _LoopState:
     _llm_middleware_trace: Any = None
     api_duration: Any = None
     assistant_message: Any = None
+    dispatched_credential_pool_entry_id: Any = None
 
 
 # _LoopState fields seeded from TurnContext (same name minus the leading underscore).
@@ -1527,6 +1528,7 @@ def _run_conversation_turn(
 
         s.api_start_time, s.retry_count, s.max_retries = time.time(), 0, agent._api_max_retries
         s._retry, s.finish_reason, s.response, s.api_kwargs = TurnRetryState(), "stop", None, None
+        s.dispatched_credential_pool_entry_id = None
         s.api_request_id = agent._current_api_request_id = f"{s.turn_id}:api:{s.api_call_count}"
 
         early_result = _run_api_retry_loop(agent, s)

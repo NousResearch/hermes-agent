@@ -215,7 +215,9 @@ def collapse_const_unions(schema: Any) -> Any:
 
 _BARE_TYPE_NAMES = frozenset({"object", "string", "number", "integer", "boolean", "array", "null"})
 # Values that are NOT schemas (recursing would treat a required name like "path" as a bare schema).
-_NON_SCHEMA_LIST_KEYS = frozenset({"required", "enum", "examples", "dependentRequired"})
+# ``default``/``const`` hold a single literal instance value of any JSON type, so a container-valued
+# ``default`` of ["read", "write"] must never be walked as a schema node.
+_NON_SCHEMA_LIST_KEYS = frozenset({"required", "enum", "examples", "dependentRequired", "default", "const"})
 _SCHEMA_MAP_KEYS = frozenset({"properties", "$defs", "definitions", "patternProperties", "dependentSchemas"})
 _SCHEMA_CHILD_KEYS = frozenset({
     "items", "additionalItems", "additionalProperties", "unevaluatedItems", "unevaluatedProperties",

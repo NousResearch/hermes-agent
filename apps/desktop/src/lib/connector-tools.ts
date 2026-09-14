@@ -161,7 +161,7 @@ export function connectorCalls(name: string, args: ToolCallMessagePart['result']
     return [{ name, arguments: args }]
   }
 
-  if (name !== 'tool_call') {
+  if (name !== 'invoke_tool' && name !== 'tool_call') {
     return []
   }
 

@@ -58,7 +58,7 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
 
     assert (name in call("tool_search", {"queries": ["send mail"]})["tools"]) is allowed
     assert (name in call("tool_describe", {"names": [name]})["tools"]) is allowed
-    result = call("tool_call", {"calls": [{"name": name, "arguments": {}}]})
+    result = call("invoke_tool", {"calls": [{"name": name, "arguments": {}}]})
     direct = call(name, {})
     status = call("manage_connections", {"action": "status"})
     if allowed:

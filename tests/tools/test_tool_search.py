@@ -752,7 +752,7 @@ class TestDeferredCallSchemaProbe:
 
         self._register("mcp_probe_valid_op", "mcp-probe-valid")
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": "mcp_probe_valid_op",
                            "arguments": {"document_id": "abc"}},
             enabled_toolsets=["mcp-probe-valid"],
@@ -775,7 +775,7 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": name, "arguments": {"priority": "urgent"}},
             enabled_toolsets=[toolset],
         ))
@@ -845,7 +845,7 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": name, "arguments": {"count": "42"}},
             enabled_toolsets=[toolset],
         ))
@@ -866,7 +866,7 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": name, "arguments": {"value": None}},
             enabled_toolsets=[toolset],
         ))
@@ -900,7 +900,7 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         result = json.loads(model_tools.handle_function_call(
-            function_name="tool_call",
+            function_name="invoke_tool",
             function_args={"name": name, "arguments": {"value": "kept"}},
             enabled_toolsets=[toolset],
         ))

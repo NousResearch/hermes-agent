@@ -240,10 +240,11 @@ def _tool_labels(name: str, args: dict) -> list[dict] | None:
 
 def _connector_tool_lifecycle(name: str, args: dict) -> bool:
     from tools.connectors import is_connector_name
+    from tools.tool_search_catalog import TOOL_CALL_NAME
 
     if name == "manage_connections" or is_connector_name(name):
         return True
-    if name != "tool_call" or not isinstance(args, dict):
+    if name != TOOL_CALL_NAME or not isinstance(args, dict):
         return False
     calls = args.get("calls") if isinstance(args.get("calls"), list) else [args]
     return any(isinstance(call, dict) and (call.get("name") == "manage_connections"

@@ -1,6 +1,6 @@
 """Progressive tool disclosure ("tool search"): MCP/plugin tools and a curated set of
 event-triggered core tools are replaced in the model-visible array by three bridge tools —
-tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
+tool_search / tool_describe / invoke_tool. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
 and session-gated GUI toolsets never defer unless named in ``defer``; ANY deferrable tool
 activates the bridge (the listing scales with budget, not activation); the catalog is
 stateless — rebuilt from the live tool-defs every assembly (a session-keyed one drifts and
@@ -544,7 +544,7 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
 
 def scoped_deferrable_names(tool_defs: list[dict[str, Any]]) -> frozenset[str]:
     """Deferrable names in the *pre-assembly* ``tool_defs`` of the session scope — the
-    universe ``tool_call`` may reach. Gates bridge dispatch AND the executor unwrap so a
+    universe ``invoke_tool`` may reach. Gates bridge dispatch AND the executor unwrap so a
     restricted session cannot invoke an out-of-scope tool via the bridge."""
     defer_tools = load_config_readonly().effective_defer_tools
     return frozenset(n for n in _tool_def_names(tool_defs)
@@ -567,7 +567,7 @@ def out_of_scope_reason(name: str) -> Optional[str]:
 
 
 def scope_block_reason(name: str) -> str:
-    """Block message for a ``tool_call`` naming a tool outside the session's scope. A core tool
+    """Block message for a ``invoke_tool`` naming a tool outside the session's scope. A core tool
     (deferred by ``defer:`` or not) names its real reason, since tool_search cannot surface it
     here; anything else keeps the search hint."""
     return (out_of_scope_reason(name)
@@ -578,7 +578,7 @@ def scope_block_reason(name: str) -> str:
 
 def resolve_underlying_call(args: dict[str, Any], session_tool_names: Optional[Iterable[str]] = None,
                             ) -> tuple[Optional[str], dict[str, Any], Optional[str]]:
-    """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
+    """Parse a ``invoke_tool`` invocation into (underlying_name, args, error_msg).
 
     Used by:
     * the dispatcher in ``model_tools.handle_function_call``,

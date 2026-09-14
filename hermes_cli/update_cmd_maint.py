@@ -18,6 +18,9 @@ from typing import Optional
 from hermes_constants import venv_python_path
 
 from hermes_cli.update_cmd_common import _best_effort
+from hermes_module_staleness import (
+    PURGE_PROTECTED as _STALE_PURGE_PROTECTED, PURGE_PROTECTED_PREFIX as _STALE_PURGE_PROTECTED_PREFIX,
+    STALE_MODULE_PREFIXES as _STALE_PURGE_PREFIXES, purge_stale_modules as _purge_stale_modules)
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.update_cmd")
@@ -27,18 +30,16 @@ _UPDATE_RUNTIME_RELOAD_MODULES = "hermes_constants", "tools.environments.local",
 
 #: Package prefixes whose cached modules go stale when the checkout changes under this
 #: process; purged (not reloaded) so any LATER import chain resolves against fresh source.
-_STALE_PURGE_PREFIXES = "hermes_cli", "gateway", "tools", "tui_gateway", "agent"
-
+#: Canonical values live in ``hermes_module_staleness`` (shared with long-lived non-updater
+#: processes — TUI/desktop ``hermes serve``, dashboards); the underscore aliases keep the
+#: historical names re-exported by ``update_cmd``/``main`` and referenced by tests.
 #: Modules EXECUTING the update survive the purge: evicting them buys nothing (running frames
 #: keep them alive) and reloading them mid-flight is the one genuinely unsafe move.
-_STALE_PURGE_PROTECTED = frozenset({"hermes_cli", "hermes_cli.main", "hermes_cli.hermes_logging"})
-
 #: The updater's own module family (``update_cmd*``, ``update_receipt``, ``update_inventory``,
 #: ``update_lock``, ...) is protected as a prefix: these hold per-run state — the open receipt
 #: singleton, the pre-update plan's ``RuntimeRecord`` class identity, the lock — and evicting
 #: one swaps in a fresh module whose ``_current`` is None (receipt silently never written) or
 #: whose dataclass fails every ``isinstance`` against the plan built before the purge.
-_STALE_PURGE_PROTECTED_PREFIX = "hermes_cli.update_"
 
 _PRE_UPDATE_SNAPSHOT_KEEP = 1
 
@@ -78,18 +79,8 @@ def _purge_stale_hermes_modules() -> None:
     module. Purging (unlike reload) only drops the ``sys.modules`` entry — running frames keep
     their module objects — so later imports rebuild a self-consistent graph from the new tree.
     """
-    from hermes_cli.update_cmd import _m
     with _best_effort('Could not purge stale Hermes modules: %s'):
-        importlib.invalidate_caches()
-        modules = _m().sys.modules
-        purged = [
-            name for name in list(modules)
-            if name not in _STALE_PURGE_PROTECTED
-            and not name.startswith(_STALE_PURGE_PROTECTED_PREFIX)
-            # Root-package check: startswith() alone also matches unrelated ``gateway_foo``.
-            and name.split(".", 1)[0] in _STALE_PURGE_PREFIXES
-            and modules.pop(name, None) is not None
-        ]
+        purged = _purge_stale_modules()
         if purged:
             logger.debug("Purged %d stale Hermes module(s) after checkout update", len(purged))
 

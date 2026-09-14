@@ -664,8 +664,11 @@ def _approval_request_payload(data: dict | None) -> dict:
                 choices.append("always")
         payload["choices"] = choices + ["deny"]
     if "command" in payload:
-        from gateway.run import _redact_approval_command
-        payload["command"] = _redact_approval_command(payload.get("command"))
+        # Same stale-module hazard as ``session_compression._tui_compression_config_signature``:
+        # this process outlives ``hermes update``, so the lazy import heals its own cache.
+        from hermes_module_staleness import import_symbol
+        redact = import_symbol("gateway.run", "_redact_approval_command")
+        payload["command"] = redact(payload.get("command"))
     return payload
 
 

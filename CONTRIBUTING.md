@@ -950,6 +950,8 @@ Include:
 - **What platforms** you tested on
 - Reference any related issues
 
+For the prose itself (PR body, commit message, `CONTRIBUTING.md`, `AGENTS.md`, `website/docs/`), load the bundled `technical-writing` skill at `skills/software-development/technical-writing/SKILL.md`. It is the checklist for document mode, one thought per sentence, and repo-grounded paths. It is not for product UI copy.
+
 ### Commit messages
 
 We use [Conventional Commits](https://www.conventionalcommits.org/):

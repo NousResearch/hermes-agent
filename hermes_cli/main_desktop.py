@@ -1484,6 +1484,23 @@ def _check_desktop_skip_build(
         print(f"→ Skipping desktop package build (--skip-build); using {packaged_executable}")
 
 
+def _is_windows_sac_blocked(exc: OSError) -> bool:
+    """True when *exc* was raised because Windows Smart App Control (or a WDAC/AppLocker
+    policy) blocked CreateProcess on an unsigned executable.
+
+    winerror 4551 = ERROR_APPLICATION_CONTROL_POLICY_BLOCKED (SAC enforcement mode).
+    winerror 1260 = ERROR_ACCESS_DISABLED_BY_POLICY (WDAC / AppLocker policy).
+    The string fallback handles cases where the error crossed a boundary that stripped winerror.
+    """
+    if sys.platform != "win32":
+        return False
+    winerr = getattr(exc, "winerror", None)
+    if winerr in (4551, 1260):
+        return True
+    msg = (exc.strerror or str(exc)).lower()
+    return "4551" in msg or "1260" in msg or "application control policy" in msg
+
+
 def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     """``[exe, *sandbox flags]`` after the Linux sandbox fixup; exits when the sandbox can't be configured."""
     launch_command = [str(packaged_executable)]
@@ -1582,5 +1599,28 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.append("--local")
     if not source_mode:
         print(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
-    launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
+    try:
+        launch_result = subprocess.run(launch_command, cwd=desktop_dir, env=env, check=False)
+    except OSError as exc:
+        if _is_windows_sac_blocked(exc):
+            print(
+                "\n✗ Windows Smart App Control (or a WDAC policy) blocked Hermes from launching.\n"
+                "\n"
+                "  SAC blocks unsigned executables with no cloud reputation. Locally-built\n"
+                "  Hermes Desktop binaries are not Authenticode-signed, so SAC treats them as\n"
+                "  untrusted regardless of the source.\n"
+                "\n"
+                "  Options:\n"
+                "    • Use the official Hermes installer from https://nousresearch.com/hermes\n"
+                "      — CI builds carry a valid Nous Research Authenticode signature.\n"
+                "    • Disable Smart App Control (Settings → Privacy & security → Windows\n"
+                "      Security → App & browser control → Smart App Control). Note: SAC\n"
+                "      cannot be re-enabled once turned off without resetting Windows.\n"
+                "\n"
+                f"  Blocked path: {launch_command[0]}\n"
+                f"  Windows error: {exc.strerror} (winerror {exc.winerror})\n"
+                f"  Tracking: https://github.com/NousResearch/hermes-agent/issues/70544\n"
+            )
+            sys.exit(1)
+        raise
     sys.exit(launch_result.returncode)

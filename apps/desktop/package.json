@@ -285,7 +285,8 @@
         "nsis",
         "msi"
       ],
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "customSign": "scripts/sign-windows.mjs"
     },
     "linux": {
       "category": "Development",

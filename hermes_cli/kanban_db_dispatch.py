@@ -1181,33 +1181,61 @@ def check_respawn_guard(
         return None
 
     # 3. Completed run within guard window. Exception: an explicit re-queue
-    #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
-    #    a deliberate "run it again" — otherwise a manual done→ready would sit
-    #    silently held until the window elapses.
+    #    AFTER that success. Event ids provide transaction order; wall-clock
+    #    seconds cannot distinguish same-second writes.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
     recent_completed = conn.execute(
-        "SELECT ended_at FROM task_runs "
+        "SELECT id, ended_at FROM task_runs "
         "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
-        "ORDER BY ended_at DESC LIMIT 1",
+        "ORDER BY id DESC LIMIT 1",
         (task_id, cutoff),
     ).fetchone()
     if recent_completed:
-        completed_at = int(recent_completed["ended_at"] or 0)
-        requeued_after = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
-            "LIMIT 1",
-            (task_id, completed_at),
+        completed_event = conn.execute(
+            "SELECT id FROM task_events WHERE task_id = ? "
+            "AND kind = 'completed' AND run_id = ? ORDER BY id DESC LIMIT 1",
+            (task_id, int(recent_completed["id"])),
         ).fetchone()
+        if completed_event is not None:
+            requeued_after = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? AND id > ? "
+                "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed', "
+                "'completion_reopened') LIMIT 1",
+                (task_id, int(completed_event["id"])),
+            ).fetchone()
+        else:
+            # Legacy/malformed success records fail closed unless explicitly
+            # named by a completion-reopen event.
+            requeued_after = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? "
+                "AND kind = 'completion_reopened' AND run_id = ? LIMIT 1",
+                (task_id, int(recent_completed["id"])),
+            ).fetchone()
         if not requeued_after:
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # A reopen captures the comment boundary in the same transaction. Older
+    # PR comments are retracted history; comments after the boundary remain a
+    # duplicate-work signal. The id predicate handles same-second comments.
+    comment_cursor = 0
+    reopen_row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? "
+        "AND kind = 'completion_reopened' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if reopen_row is not None:
+        try:
+            comment_cursor = max(
+                0, int(_kb._json_dict(reopen_row["payload"]).get("comment_cursor", 0))
+            )
+        except (TypeError, ValueError):
+            comment_cursor = 0
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
+        "SELECT body FROM task_comments WHERE task_id = ? AND id > ? "
+        "AND created_at >= ?",
+        (task_id, comment_cursor, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
             return "active_pr"

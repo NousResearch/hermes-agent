@@ -3481,6 +3481,163 @@ def invalidate_descendants_for_parent_reopen(
     return {"invalidated": invalidated, "terminations": terminations}
 
 
+_REOPEN_LANDINGS = {"blocked", "todo", "ready"}
+
+
+def reopen_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    landing: str = "ready",
+    kind: Optional[str] = None,
+    author: str = "operator",
+) -> bool:
+    """Reopen a completed task: ``done`` -> ``landing`` (``blocked``/``todo``/``ready``).
+
+    The single domain implementation for undoing a completion. ``complete_task``
+    commits before any observer can react (kanban hooks are observer-only), so
+    nothing else in the public API can take a done card backward; verify/scratch
+    gates, operator "wrongly closed" corrections, and future dashboard reopen
+    surfaces all route here instead of hand-rolling raw SQL.
+
+    All changes commit in one write txn:
+
+    * Source must be ``done`` (idempotent CAS — rowcount 1 or no-op False). An
+      ``archived`` card is deliberately excluded: un-archiving is a board move,
+      not a completion undo.
+    * ``completed_at`` and ``result`` are cleared: the card no longer claims to
+      have completed.
+    * ``landing='ready'`` is parent-gated via ``_landing_status_after_parents``
+      and falls back to ``todo`` when a parent is still open, so the dispatcher
+      never spawns a child whose upstream is unfinished.
+    * ``landing='blocked'`` records a sticky ``blocked`` event (newest
+      blocked/unblocked event wins) so ``recompute_ready`` cannot auto-promote
+      it back into the pool; ``kind`` (default ``needs_input``) seeds a fresh
+      block-loop recurrence just like :func:`block_task`. The blocked event also
+      feeds watcher notify subscriptions.
+    * ``landing='todo'``/``'ready'`` record a ``status`` event with the reason.
+    * Descendants that were promoted or completed on the strength of this card's
+      result are invalidated through
+      :func:`invalidate_descendants_for_parent_reopen` (demoted to ``todo``,
+      comments naming the ancestor); any running descendants are terminated
+      strictly post-commit.
+    * ``consecutive_failures`` resets and ``block_kind``/``block_recurrences``
+      clear — a deliberate reopen is a fresh start (mirrors unblock).
+
+    Fires ``kanban_task_blocked`` post-commit when ``landing='blocked'`` so
+    observers see the veto exactly like a :func:`block_task` block.
+    """
+    _assert_not_delegated_child_mutation()
+    if landing not in _REOPEN_LANDINGS:
+        raise ValueError(f"landing must be one of {sorted(_REOPEN_LANDINGS)}")
+    if kind is not None and kind not in VALID_BLOCK_KINDS:
+        raise ValueError(f"kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
+    now = int(time.time())
+    effective_kind = kind if landing == "blocked" else None
+    if landing == "blocked" and effective_kind is None:
+        effective_kind = "needs_input"
+    terminations: list[tuple[Optional[int], Optional[str]]] = []
+    with write_txn(conn):
+        prev = conn.execute(
+            "SELECT status, completed_at, result, block_kind, block_recurrences, "
+            "consecutive_failures, assignee, "
+            "(SELECT MAX(id) FROM task_runs WHERE task_id = tasks.id) AS run_cursor "
+            "FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if prev is None or prev["status"] != "done":
+            return False
+        # Never put a card back into the pool while a parent is still open.
+        target = _landing_status_after_parents(conn, task_id)
+        new_status = landing
+        if landing == "ready":
+            new_status = "ready" if target == "ready" else "todo"
+        # Status columns, completion evidence, and the retry/loop breakers all
+        # reset: a reopen is a deliberate operator/veto action.
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status             = ?,
+                   completed_at       = NULL,
+                   result             = NULL,
+                   block_kind         = NULL,
+                   block_recurrences  = 0,
+                   consecutive_failures = 0,
+                   claim_lock         = NULL,
+                   claim_expires      = NULL,
+                   worker_pid         = NULL
+             WHERE id = ?
+               AND status = 'done'
+            """,
+            (new_status, task_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        # The audit reason is part of the same transaction as the retraction.
+        # Capture its id after insertion: later comments are new evidence, while
+        # all earlier comments belong to the retracted attempt.
+        if reason:
+            _insert_comment(
+                conn, task_id, author or "operator",
+                f"COMPLETION REOPENED: {reason}", now,
+            )
+        comment_row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_comments WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        comment_cursor = int(comment_row["cursor"] if comment_row is not None else 0)
+        run_cursor = prev["run_cursor"]
+        _append_event(
+            conn, task_id, "completion_reopened",
+            {
+                "reason": reason,
+                "prior_status": "done",
+                "status": new_status,
+                "retracted_run_id": run_cursor,
+                "retracted_through_run_id": run_cursor,
+                "comment_cursor": comment_cursor,
+            },
+            run_id=run_cursor,
+        )
+        if new_status == "blocked":
+            # Sticky + notify + block-loop bookkeeping, mirroring
+            # block_task/_route_block for a needs_input-style veto.
+            conn.execute(
+                "UPDATE tasks SET block_kind = ?, block_recurrences = 1 WHERE id = ?",
+                (effective_kind, task_id),
+            )
+            conn.execute(
+                "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                "VALUES (?, NULL, 'blocked', ?, ?)",
+                (task_id, _json_or_null(
+                    {"reason": reason, "kind": effective_kind, "recurrences": 1,
+                     "source_status": "done"}),
+                 now),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+                "VALUES (?, NULL, 'status', ?, ?)",
+                (task_id, _json_or_null(
+                    {"status": new_status, "reason": reason,
+                     "requested_status": landing, "source_status": "done"}),
+                 now),
+            )
+        # Retract everything that assumed this card's completion.
+        result = invalidate_descendants_for_parent_reopen(
+            conn, task_id, author=author,
+        )
+        terminations.extend(result["terminations"])
+    for pid, claim_lock in terminations:
+        _terminate_reclaimed_worker(pid, claim_lock)
+    if new_status == "blocked":
+        _done_task = get_task(conn, task_id)
+        _fire_task_hook(
+            "kanban_task_blocked", _done_task, task_id, None, reason=reason,
+        )
+    return True
+
+
 def specify_triage_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, assignee: Optional[str] = None, author: Optional[str] = None,
@@ -4067,12 +4224,36 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
 
 
 def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
-    """Newest non-empty run summary, or None. Workers hand off via ``summary`` and
-    leave ``tasks.result`` NULL, so views need this or a done task looks empty."""
+    """Newest non-empty non-retracted run summary, or None.
+
+    Completion reopen deliberately keeps immutable run history, but a summary
+    from the retracted run must not remain current in task views.
+    """
     row = conn.execute(
-        "SELECT summary FROM task_runs "
-        "WHERE task_id = ? AND summary IS NOT NULL AND summary != '' "
-        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1", (task_id,),
+        """
+        WITH latest_reopen AS (
+            SELECT payload
+              FROM task_events
+             WHERE task_id = ? AND kind = 'completion_reopened'
+             ORDER BY id DESC LIMIT 1
+        ), reopen_boundary AS (
+            SELECT 1 AS has_reopen,
+                   CASE WHEN json_valid(payload) THEN
+                       CASE WHEN json_type(payload, '$.retracted_through_run_id') = 'integer'
+                                  AND json_extract(payload, '$.retracted_through_run_id') >= 0
+                            THEN json_extract(payload, '$.retracted_through_run_id')
+                       END
+                   END AS boundary
+              FROM latest_reopen
+        )
+        SELECT r.summary
+          FROM task_runs r
+          LEFT JOIN reopen_boundary b ON 1 = 1
+         WHERE r.task_id = ? AND r.summary IS NOT NULL AND r.summary != ''
+           AND (COALESCE(b.has_reopen, 0) = 0 OR (b.boundary IS NOT NULL AND r.id > b.boundary))
+         ORDER BY COALESCE(r.ended_at, r.started_at) DESC, r.id DESC LIMIT 1
+        """,
+        (task_id, task_id),
     ).fetchone()
     return row["summary"] if row else None
 
@@ -4086,18 +4267,36 @@ def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        SELECT task_id, summary FROM (
-            SELECT task_id, summary,
+        WITH latest_reopen AS (
+            SELECT task_id, payload,
+                   ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
+              FROM task_events
+             WHERE task_id IN ({placeholders}) AND kind = 'completion_reopened'
+        ), reopen_boundary AS (
+            SELECT task_id, 1 AS has_reopen,
+                   CASE WHEN json_valid(payload) THEN
+                       CASE WHEN json_type(payload, '$.retracted_through_run_id') = 'integer'
+                                  AND json_extract(payload, '$.retracted_through_run_id') >= 0
+                            THEN json_extract(payload, '$.retracted_through_run_id')
+                       END
+                   END AS boundary
+              FROM latest_reopen
+             WHERE rn = 1
+        ), ranked_runs AS (
+            SELECT r.task_id, r.summary,
                    ROW_NUMBER() OVER (
-                       PARTITION BY task_id
-                       ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+                       PARTITION BY r.task_id
+                       ORDER BY COALESCE(r.ended_at, r.started_at) DESC, r.id DESC
                    ) AS rn
-              FROM task_runs
-             WHERE task_id IN ({placeholders})
-               AND summary IS NOT NULL AND summary != ''
-        ) WHERE rn = 1
+              FROM task_runs r
+              LEFT JOIN reopen_boundary b ON b.task_id = r.task_id
+             WHERE r.task_id IN ({placeholders})
+               AND r.summary IS NOT NULL AND r.summary != ''
+               AND (COALESCE(b.has_reopen, 0) = 0 OR (b.boundary IS NOT NULL AND r.id > b.boundary))
+        )
+        SELECT task_id, summary FROM ranked_runs WHERE rn = 1
         """,
-        ids,
+        (*ids, *ids),
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
 

@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import httpx
 
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import AuthError, resolve_codex_runtime_credentials
+from hermes_cli.auth_constants import _decode_jwt_claims
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 if TYPE_CHECKING:
@@ -293,42 +294,53 @@ def _codex_backend_urls(base_url: str) -> tuple[str, str, str]:
 
 
 def _resolve_codex_usage_credentials(
-    base_url: Optional[str], api_key: Optional[str], *, force_refresh: bool = False,
+    base_url: Optional[str], api_key: Optional[str], *,
+    force_refresh: bool = False, rejected_token: Optional[str] = None,
 ) -> tuple[str, str, Optional[str]]:
     """Codex quota credentials: explicit live-agent creds → native runtime resolver (itself pool-aware) → direct
     pool select. Native OAuth stores device-code logins in the pool, so the singleton store alone is not enough."""
     explicit_key = str(api_key or "").strip()
+    if force_refresh:
+        from agent.credential_pool import load_pool
+        refreshed = load_pool("openai-codex").refresh_matching_api_key(rejected_token)
+        if refreshed is None:
+            raise RuntimeError("Rejected Codex credential could not be refreshed without switching accounts")
+        token = refreshed.runtime_api_key
+        return (
+            token,
+            str(refreshed.runtime_base_url or base_url or "").strip(),
+            _codex_token_account_id(token),
+        )
     if explicit_key and not force_refresh:
-        return explicit_key, str(base_url or "").strip(), None
+        return explicit_key, str(base_url or "").strip(), _codex_token_account_id(explicit_key)
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
-    # account_id is best-effort: a partial singleton store must not sink a usable credential.
     try:
         # Tier 2: the native runtime resolver. It ALREADY falls back to the credential pool when the
         # singleton is empty (see ``resolve_codex_runtime_credentials`` — issue #32992), so in a pool-only
         # setup this returns a usable ``source="credential_pool"`` token. A refresh/network error must
         # propagate — the outer ``fetch_account_usage`` guard fails open (shows nothing this turn) rather
         # than reporting the wrong account.
-        resolve_kwargs = {"refresh_if_expiring": True}
-        if force_refresh:
-            resolve_kwargs["force_refresh"] = True
-        creds = resolve_codex_runtime_credentials(**resolve_kwargs)
-        account_id: Optional[str] = None
-        try:
-            tokens = _read_codex_tokens().get("tokens") or {}
-            account_id = str(tokens.get("account_id", "") or "").strip() or None
-        except AuthError:
-            # Pool-only creds carry no singleton account_id; header is optional.
-            logger.debug("codex ▸ /usage account_id read failed (best-effort)", exc_info=True)
-        return creds["api_key"], str(creds.get("base_url", "") or "").strip(), account_id
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        token = creds["api_key"]
+        return token, str(creds.get("base_url", "") or "").strip(), _codex_token_account_id(token)
     except AuthError:
         logger.debug("codex ▸ /usage runtime resolver returned no creds; trying pool", exc_info=True)
-    # Tier 3: pool credentials have no account_id concept → header omitted.
+    # Tier 3: use the selected pool row as one atomic token/route identity.
     from agent.credential_pool import load_pool
     entry = load_pool("openai-codex").select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
-    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+    token = entry.runtime_api_key
+    return token, str(entry.runtime_base_url or base_url or "").strip(), _codex_token_account_id(token)
+
+
+def _codex_token_account_id(token: str) -> Optional[str]:
+    """Return the ChatGPT account header bound to the same JWT as ``token``."""
+    claims = _decode_jwt_claims(token)
+    auth_claims = claims.get("https://api.openai.com/auth")
+    account_id = auth_claims.get("chatgpt_account_id") if isinstance(auth_claims, dict) else None
+    return str(account_id).strip() if account_id else None
 
 
 def _codex_banked_resets(payload: dict) -> int:
@@ -381,7 +393,7 @@ def _fetch_codex_account_usage(
         if exc.response.status_code != 401:
             raise
         token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
-            base_url, api_key, force_refresh=True,
+            base_url, api_key, force_refresh=True, rejected_token=token,
         )
         payload = _get_json(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
@@ -508,7 +520,7 @@ def redeem_codex_reset_credit(
                 if exc.response.status_code != 401 or attempt > 0:
                     raise
                 token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
-                    base_url, api_key, force_refresh=True,
+                    base_url, api_key, force_refresh=True, rejected_token=token,
                 )
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code

@@ -304,6 +304,17 @@ def label_from_token(token: str, fallback: str) -> str:
     return fallback
 
 
+def _oauth_token_identity(token: str) -> Optional[str]:
+    """Stable OAuth account identity carried by a JWT, when available."""
+    claims = _decode_jwt_claims(token)
+    nested = claims.get("https://api.openai.com/auth")
+    account_id = nested.get("chatgpt_account_id") if isinstance(nested, dict) else None
+    for value in (account_id, claims.get("sub"), claims.get("email")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def _next_priority(entries: List[PooledCredential]) -> int:
     return max((entry.priority for entry in entries), default=-1) + 1
 
@@ -996,6 +1007,37 @@ class CredentialPool(CredentialPoolAdminMixin):
             matches = [e for e in self._entries if e.runtime_api_key == api_key_hint]
             return matches[0].id if len(matches) == 1 else None
 
+    def refresh_matching_api_key(self, api_key_hint: Any) -> Optional[PooledCredential]:
+        """Refresh only the OAuth credential that supplied ``api_key_hint``.
+
+        A peer may already have rotated the rejected JWT. In that case, adopt
+        the unique pool row with the same stable OAuth identity instead of
+        spending its new refresh token again. Ambiguous or unidentifiable
+        credentials fail closed rather than selecting a different account.
+        """
+        stale_key = str(api_key_hint or "").strip()
+        if not stale_key:
+            return None
+
+        with self._lock:
+            exact = [entry for entry in self._entries if entry.runtime_api_key == stale_key]
+            if len(exact) == 1:
+                target = exact[0]
+            else:
+                identity = _oauth_token_identity(stale_key)
+                matches = [
+                    entry for entry in self._entries
+                    if identity and _oauth_token_identity(entry.runtime_api_key) == identity
+                ]
+                if len(matches) != 1:
+                    return None
+                target = matches[0]
+        if target.auth_type != AUTH_TYPE_OAUTH or not target.refresh_token:
+            return None
+        if target.runtime_api_key != stale_key:
+            return target
+        return self._refresh_entry(target, force=True)
+
     # ---- mutation primitives (self-locking) --------------------------------
 
     def _replace_entry(self, old: PooledCredential, new: PooledCredential) -> None:
@@ -1369,9 +1411,18 @@ class CredentialPool(CredentialPoolAdminMixin):
         # the winner's rotated token and skips the POST.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
-                synced = self._sync_entry_from_auth_store(entry)
-                if synced is not entry and not force and not self._entry_needs_refresh(synced):
-                    return synced
+                synced = (
+                    self._sync_entry_from_auth_store(entry)
+                    if entry.source == "device_code"
+                    else self._sync_entry_from_pool_store(entry)
+                )
+                if synced is not entry:
+                    if entry.source != "device_code" or not force:
+                        return synced
+                    stale_identity = _oauth_token_identity(entry.runtime_api_key)
+                    if stale_identity and _oauth_token_identity(synced.runtime_api_key) == stale_identity:
+                        return synced
+                    return None
                 return self._refresh_entry_impl(synced, force=force)
             synced = self._sync_entry_from_pool_store(entry)
             if self.provider == "anthropic" and synced.source == "claude_code":

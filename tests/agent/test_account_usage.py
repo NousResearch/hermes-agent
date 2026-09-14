@@ -1,9 +1,22 @@
+import base64
+import json
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
 from agent import account_usage
+
+
+def _codex_jwt(account_id, marker):
+    def part(value):
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    claims = {
+        "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+        "marker": marker,
+    }
+    return f"{part({'alg': 'none'})}.{part(claims)}.sig"
 
 
 class _FakeResponse:
@@ -125,10 +138,8 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
 
 
 
-def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, codex_usage_payload):
-    """When the resolver succeeds but the separate account_id read raises, the
-    working singleton token must still be used (best-effort account_id), NOT
-    abandoned in favor of a header-less pool credential."""
+def test_codex_usage_token_without_account_claim_keeps_singleton_token(monkeypatch, codex_usage_payload):
+    """A token without an account claim stays usable without an account header."""
     calls = []
     monkeypatch.setattr(
         account_usage.httpx,
@@ -143,14 +154,6 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
             "base_url": "https://chatgpt.com/backend-api/codex",
         },
     )
-    monkeypatch.setattr(
-        account_usage,
-        "_read_codex_tokens",
-        lambda *a, **k: (_ for _ in ()).throw(
-            account_usage.AuthError("partial store", provider="openai-codex", code="codex_auth_invalid_shape")
-        ),
-    )
-
     import agent.credential_pool as credential_pool
 
     monkeypatch.setattr(
@@ -163,19 +166,23 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
 
     assert snapshot is not None
     assert calls[0]["headers"]["Authorization"] == "Bearer singleton-token"
-    # account_id read failed → header omitted, but the singleton token is kept.
+    # No JWT account claim → header omitted, but the singleton token is kept.
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
 def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_payload):
-    credential_calls = []
     request_calls = []
     responses = [_FakeResponse({}, status_code=401), _FakeResponse(codex_usage_payload)]
-
-    def resolve(**kwargs):
-        credential_calls.append(kwargs)
-        token = "fresh-token" if kwargs.get("force_refresh") else "revoked-token"
-        return {"api_key": token, "base_url": "https://chatgpt.com/backend-api/codex"}
+    stale_token = _codex_jwt("account-a", "stale")
+    fresh_token = _codex_jwt("account-a", "fresh")
+    refreshed = SimpleNamespace(
+        runtime_api_key=fresh_token,
+        runtime_base_url="https://account-a.example/backend-api/codex",
+    )
+    refresh_calls = []
+    pool = SimpleNamespace(
+        refresh_matching_api_key=lambda token: refresh_calls.append(token) or refreshed,
+    )
 
     class Client:
         def __enter__(self):
@@ -185,22 +192,31 @@ def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_pa
             return False
 
         def get(self, url, headers):
-            request_calls.append(headers["Authorization"])
+            request_calls.append((headers["Authorization"], headers.get("ChatGPT-Account-Id")))
             return responses.pop(0)
 
-    monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials", resolve)
-    monkeypatch.setattr(account_usage, "_read_codex_tokens", lambda: {"tokens": {}})
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("global account B must not be selected")),
+    )
+    import agent.credential_pool as credential_pool
+    monkeypatch.setattr(credential_pool, "load_pool", lambda provider: pool)
     monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: Client())
 
-    snapshot = account_usage.fetch_account_usage("openai-codex")
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://account-a.example/backend-api/codex",
+        api_key=stale_token,
+    )
 
     assert snapshot is not None
     assert snapshot.windows[0].label == "Session"
-    assert credential_calls == [
-        {"refresh_if_expiring": True},
-        {"refresh_if_expiring": True, "force_refresh": True},
+    assert refresh_calls == [stale_token]
+    assert request_calls == [
+        (f"Bearer {stale_token}", "account-a"),
+        (f"Bearer {fresh_token}", "account-a"),
     ]
-    assert request_calls == ["Bearer revoked-token", "Bearer fresh-token"]
 
 
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────
@@ -256,25 +272,30 @@ def _usage_payload_with_resets(primary_used, secondary_used, banked):
 
 
 def test_redeem_retries_401_with_forced_refresh(monkeypatch):
-    credential_calls = []
     request_calls = []
     client_count = 0
     payload = _usage_payload_with_resets(100, 40, 1)
+    stale_token = _codex_jwt("account-a", "stale")
+    fresh_token = _codex_jwt("account-a", "fresh")
 
-    def resolve(base_url, api_key, *, force_refresh=False):
-        credential_calls.append(force_refresh)
-        token = "fresh-token" if force_refresh else "revoked-token"
-        return token, "https://chatgpt.com/backend-api/codex", None
+    refreshed = SimpleNamespace(
+        runtime_api_key=fresh_token,
+        runtime_base_url="https://account-a.example/backend-api/codex",
+    )
+    refresh_calls = []
+    pool = SimpleNamespace(
+        refresh_matching_api_key=lambda token: refresh_calls.append(token) or refreshed,
+    )
 
     class Client(_FakeResetClient):
         def get(self, url, headers):
-            request_calls.append(("GET", headers["Authorization"]))
-            if headers["Authorization"] == "Bearer revoked-token":
+            request_calls.append(("GET", headers["Authorization"], headers.get("ChatGPT-Account-Id")))
+            if headers["Authorization"] == f"Bearer {stale_token}":
                 return _FakeResponse({}, status_code=401)
             return _FakeResponse(payload)
 
         def post(self, url, headers=None, json=None):
-            request_calls.append(("POST", headers["Authorization"]))
+            request_calls.append(("POST", headers["Authorization"], headers.get("ChatGPT-Account-Id")))
             return _FakeResponse({"code": "reset", "windows_reset": 2})
 
     def client_factory(timeout):
@@ -282,17 +303,26 @@ def test_redeem_retries_401_with_forced_refresh(monkeypatch):
         client_count += 1
         return Client([], payload)
 
-    monkeypatch.setattr(account_usage, "_resolve_codex_usage_credentials", resolve)
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("global account B must not be selected")),
+    )
+    import agent.credential_pool as credential_pool
+    monkeypatch.setattr(credential_pool, "load_pool", lambda provider: pool)
     monkeypatch.setattr(account_usage.httpx, "Client", client_factory)
 
-    result = account_usage.redeem_codex_reset_credit()
+    result = account_usage.redeem_codex_reset_credit(
+        base_url="https://account-a.example/backend-api/codex",
+        api_key=stale_token,
+    )
 
     assert result.status == "reset"
-    assert credential_calls == [False, True]
+    assert refresh_calls == [stale_token]
     assert request_calls == [
-        ("GET", "Bearer revoked-token"),
-        ("GET", "Bearer fresh-token"),
-        ("POST", "Bearer fresh-token"),
+        ("GET", f"Bearer {stale_token}", "account-a"),
+        ("GET", f"Bearer {fresh_token}", "account-a"),
+        ("POST", f"Bearer {fresh_token}", "account-a"),
     ]
     assert client_count == 2
 

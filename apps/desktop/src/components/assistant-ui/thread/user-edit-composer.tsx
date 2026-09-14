@@ -46,7 +46,7 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
-import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
+import { isCoalescableTypingInput, isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
 import {
   extractDroppedFiles,
@@ -590,7 +590,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       return
     }
 
-    recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
+    recordUndoPoint({ coalesce: isCoalescableTypingInput(inputType) })
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {

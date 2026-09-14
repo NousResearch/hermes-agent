@@ -34,16 +34,16 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
 
 ## Hermes adaptations (read first)
 
-- **Skill dir resolution** — upstream hardcoded `~/.codex/skills/...`. In
-  Hermes resolve it once per session:
+- **Skill dir resolution** — upstream hardcoded its own agent's skills path.
+  In Hermes the loader expands `${HERMES_SKILL_DIR}` to this skill's installed
+  directory, so every command below uses that token directly:
 
   ```bash
-  SKILL_DIR="$(dirname "$(find ~/.hermes/skills ~/.hermes/hermes-agent/optional-skills -path '*/ai-presenter-video/SKILL.md' 2>/dev/null | head -1)")"
-  [ -f "$SKILL_DIR/SKILL.md" ] || echo "skill dir not found — locate ai-presenter-video/SKILL.md manually and set SKILL_DIR to its directory"
+  SKILL_DIR="${HERMES_SKILL_DIR}"
   ```
 
-  Shell variables do not persist between tool calls — re-paste the resolution
-  line (or the expanded path) in each terminal call that uses it.
+  Shell variables do not persist between tool calls — re-paste the assignment
+  (or the expanded path) in each terminal call that uses it.
 - **Capability mapping** — where the references say "a voice generation
   capability", use `text_to_speech` (OpenAI/Edge/ElevenLabs per user config);
   "presenter/avatar generation" → FAL image-to-video families (Kling, Wan,

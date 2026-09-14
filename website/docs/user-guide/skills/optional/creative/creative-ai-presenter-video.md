@@ -21,7 +21,7 @@ Make a verified AI presenter video from script + image.
 | License | MIT |
 | Platforms | linux, macos |
 | Tags | `video`, `presenter`, `avatar`, `lipsync`, `tts`, `captions`, `creative` |
-| Related skills | [`hyperframes`](/docs/user-guide/skills/optional/creative/creative-hyperframes), [`kanban-video-orchestrator`](/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator), [`comfyui`](/docs/user-guide/skills/bundled/creative/creative-comfyui) |
+| Related skills | [`hyperframes`](/docs/user-guide/skills/optional/creative/creative-hyperframes), [`kanban-video-orchestrator`](/docs/user-guide/skills/optional/creative/creative-kanban-video-orchestrator), [`comfyui`](/docs/user-guide/skills/optional/creative/creative-comfyui) |
 
 ## Reference: full SKILL.md
 
@@ -49,15 +49,16 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
 
 ## Hermes adaptations (read first)
 
-- **Skill dir resolution** — upstream hardcoded `~/.codex/skills/...`. In
-  Hermes resolve it once per session:
+- **Skill dir resolution** — upstream hardcoded its own agent's skills path.
+  In Hermes the loader expands `${HERMES_SKILL_DIR}` to this skill's installed
+  directory, so every command below uses that token directly:
 
   ```bash
-  SKILL_DIR="$(dirname "$(find ~/.hermes/skills ~/.hermes/hermes-agent/optional-skills -path '*/ai-presenter-video/SKILL.md' 2>/dev/null | head -1)")"
+  SKILL_DIR="${HERMES_SKILL_DIR}"
   ```
 
-  Shell variables do not persist between tool calls — re-paste the resolution
-  line (or the expanded path) in each terminal call that uses it.
+  Shell variables do not persist between tool calls — re-paste the assignment
+  (or the expanded path) in each terminal call that uses it.
 - **Capability mapping** — where the references say "a voice generation
   capability", use `text_to_speech` (OpenAI/Edge/ElevenLabs per user config);
   "presenter/avatar generation" → FAL image-to-video families (Kling, Wan,
@@ -104,14 +105,30 @@ the whisper/STT tooling, ffmpeg for everything deterministic).
 
 2. **Manual input review.** Actually look at the presenter image
    (`vision_analyze`) and listen to any voice sample; record findings by
-   setting the `manual_input_review` booleans in `job.json`. Then gate:
+   setting the `manual_input_review` booleans in `job.json`, e.g.:
+
+   ```bash
+   python3 - <<'PY'
+   import json
+   p = "~/Videos/my-presenter-video/job.json"  # expand ~ or use an absolute path
+   import os; p = os.path.expanduser(p)
+   j = json.load(open(p))
+   j["manual_input_review"].update(image_viewed=True, single_clear_face=True,
+                                   image_has_no_unwanted_text=True)
+   json.dump(j, open(p, "w"), indent=2)
+   PY
+   ```
+
+   Then gate:
 
    ```bash
    python3 "$SKILL_DIR/scripts/preflight.py" ~/Videos/my-presenter-video/job.json
    ```
 
    Proceed only when `ok: true`; do remote generation only when
-   `remote_ready: true`.
+   `remote_ready: true`. Note: preflight also updates `job.json` in place
+   (records the report path) — re-read it after running rather than editing
+   a stale copy.
 
 3. **Lock content and audio** — read `references/generation.md`. Script →
    full narration via `text_to_speech` → ASR-verify the narration against the

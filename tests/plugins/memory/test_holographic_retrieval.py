@@ -215,11 +215,18 @@ def test_probe_encodes_role_atom_once(hoisted_retriever, monkeypatch):
     calls = _counting_spy(monkeypatch, "encode_atom")
     results = hoisted_retriever.probe("entity_1")
     assert results
-    role_content_calls = [a for a in calls
+    role_entity_calls = [a for a in calls
+                         if a and a[0] == "__hrr_role_entity__"]
+    content_role_calls = [a for a in calls
                           if a and a[0] == "__hrr_role_content__"]
-    assert len(role_content_calls) == 1, (
-        f"role_content atom encoded {len(role_content_calls)}x in one "
+    assert len(role_entity_calls) == 1, (
+        f"role_entity atom encoded {len(role_entity_calls)}x in one "
         "probe() — loop-invariant hoist regressed"
+    )
+    # The probe compares fact vectors directly against bind(entity, ROLE_ENTITY); it never needs the content
+    # role (encoding one would be dead work).
+    assert content_role_calls == [], (
+        "probe() encoded __hrr_role_content__; direct-similarity probe needs only the entity role"
     )
 
 
@@ -238,3 +245,69 @@ def test_search_without_vectors_never_encodes(hoisted_retriever, monkeypatch):
         f"encode_text called {len(calls)}x with zero vector candidates — "
         "lazy hoist regressed to eager"
     )
+
+
+# ---------------------------------------------------------------------------
+# HRR entity-probe scoring
+#
+# probe()/related()/reason() score fact vectors directly against a role-bound
+# entity key and rank by max(sim, 0) * trust_score. Two regressions are guarded
+# here: unbind-through-bundle (which leaves noise for every fact) and the
+# (sim + 1) / 2 shift (which gives noise a ~0.5 baseline that high trust then
+# promotes above real signal).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def probe_retriever(tmp_path):
+    """An entity-linked target fact at default trust, plus a high-trust unrelated distractor."""
+    store = MemoryStore(str(tmp_path / "probe_facts.db"))
+    target = store.add_fact("Sierra renewal intake is a greenfield project.", category="project")
+    distractor = store.add_fact("The office kettle boils in four minutes.", category="general")
+    store.update_fact(distractor, trust_delta=0.45)  # 0.95 trust, zero structural signal
+    retriever = FactRetriever(store=store)
+    yield store, retriever, target, distractor
+    store.close()
+
+
+def test_probe_ranks_linked_fact_above_high_trust_noise(probe_retriever):
+    """High-trust noise must not outrank genuine low-trust signal."""
+    _store, retriever, target, _distractor = probe_retriever
+    assert [r["fact_id"] for r in retriever.probe("Sierra")][0] == target
+
+
+def test_probe_category_uses_the_same_scoring_path(probe_retriever):
+    """Regression: a populated category bank used to route probe() through unbind-through-bundle."""
+    store, retriever, target, _distractor = probe_retriever
+    assert store._one("SELECT bank_name FROM memory_banks WHERE bank_name = 'cat:project'") is not None
+    assert [r["fact_id"] for r in retriever.probe("Sierra", category="project")] == [target]
+
+
+def test_rank_by_vector_zeroes_negative_similarity(probe_retriever):
+    """max(sim, 0): negative similarity is noise, so it scores zero rather than ~0.5 * trust."""
+    _store, retriever, _target, _distractor = probe_retriever
+    rows = retriever._vector_rows(None)
+    assert [r["score"] for r in retriever._rank_by_vector(rows, lambda _f, _v: -0.4, limit=10)] == [0.0, 0.0]
+
+
+def test_rank_by_vector_scales_positive_similarity_by_trust(probe_retriever):
+    _store, retriever, _target, _distractor = probe_retriever
+    rows = retriever._vector_rows(None)
+    scored = retriever._rank_by_vector(rows, lambda _f, _v: 0.5, limit=10)
+    assert [r["score"] for r in scored] == pytest.approx([0.5 * r["trust_score"] for r in scored])
+
+
+def test_rank_by_vector_orders_by_trust_at_equal_similarity(probe_retriever):
+    """Both trust orderings: at equal structural signal, higher trust still ranks first."""
+    _store, retriever, _target, _distractor = probe_retriever
+    rows = retriever._vector_rows(None)
+    scored = retriever._rank_by_vector(rows, lambda _f, _v: 0.5, limit=10)
+    trusts = [r["trust_score"] for r in scored]
+    assert trusts == sorted(trusts, reverse=True)
+    assert scored[0]["trust_score"] > scored[-1]["trust_score"]
+
+
+def test_reason_intersects_entities(probe_retriever):
+    """reason() keeps AND semantics: a fact carrying both entities outranks one carrying only the first."""
+    store, retriever, target, _distractor = probe_retriever
+    both = store.add_fact("Sierra runs its Meridian deployment nightly.", category="project")
+    assert [r["fact_id"] for r in retriever.reason(["Sierra", "Meridian"])][0] == both

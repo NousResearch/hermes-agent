@@ -315,6 +315,95 @@ class TestSegmentBreakOnToolBoundary:
     """Verify that on_delta(None) finalizes the current message and starts a
     new one so the final response appears below tool-progress messages."""
 
+    # ── Telegram single-message streaming (opt-in, #110564) ──────────────
+
+    def test_single_message_display_option_gates_telegram_quiet_progress(self, monkeypatch):
+        """Opt-in applies on Telegram only, and accepts both quiet text-progress
+        modes (off/log — the same pair the gateway treats as quiet elsewhere)."""
+        from gateway.config import Platform
+        from gateway.run_turn import GatewayTurnMixin
+
+        streaming = SimpleNamespace(
+            cursor=" ▉", edit_interval=0.5, buffer_threshold=20,
+            fresh_final_after_seconds=0, transport="edit",
+        )
+        source = SimpleNamespace(platform=Platform.TELEGRAM, chat_id="chat_123", chat_type="dm")
+
+        def _config_for(tool_progress, platform="telegram"):
+            return {"display": {"platforms": {platform: {
+                "streaming_single_message": True, "tool_progress": tool_progress,
+            }}}}
+
+        for tool_progress, expected in (("off", True), ("log", True), ("new", False)):
+            monkeypatch.setattr(
+                "gateway.run._load_gateway_config",
+                lambda tp=tool_progress: _config_for(tp),
+            )
+            config, _ = GatewayTurnMixin._build_stream_consumer_config(
+                None, source, streaming, MagicMock(), on_missing_cursor="raise",
+            )
+            assert config.single_message_per_turn is expected, (
+                f"tool_progress={tool_progress!r}: expected {expected}"
+            )
+
+        # Other platforms keep their segment-boundary semantics.
+        discord_source = SimpleNamespace(platform=Platform.DISCORD, chat_id="chat_9", chat_type="dm")
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: _config_for("off", platform="discord"),
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, discord_source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_per_turn is False
+
+    @pytest.mark.asyncio
+    async def test_single_message_mode_keeps_one_preview_across_tool_boundaries(self):
+        """One opt-in preview survives two tool boundaries; the final authoritative
+        text lands as the last in-place edit (no sealed fragments)."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, single_message_per_turn=True),
+        )
+        consumer.on_delta("First, let me check. ")
+        consumer.on_delta(None)
+        consumer.on_delta("Checking once more... ")
+        consumer.on_delta(None)
+        consumer.on_delta("Here is the answer.")
+        consumer.finish("Here is the answer.")
+        await consumer.run()
+
+        assert adapter.send.await_count == 1
+        assert adapter.edit_message.call_args_list[-1].kwargs["content"] == "Here is the answer."
+
+    @pytest.mark.asyncio
+    async def test_single_message_mode_keeps_preview_across_commentary(self):
+        """Mid-turn commentary goes out as its own message; the evolving preview is
+        NOT reset (no fresh segment) and keeps editing the same message id."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, single_message_per_turn=True),
+        )
+        consumer.on_delta("Working on it. ")
+        consumer.on_commentary("A short note.")
+        consumer.on_delta("Done.")
+        consumer.finish("Done.")
+        await consumer.run()
+
+        # preview send + commentary send; every edit still targets the preview message.
+        assert adapter.send.await_count == 2
+        assert adapter.edit_message.call_args_list[-1].kwargs["message_id"] == "msg_1"
+
 
     @pytest.mark.asyncio
     async def test_segment_break_removes_cursor(self):

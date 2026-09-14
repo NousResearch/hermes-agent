@@ -19,6 +19,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "reasoning_style": "code",  # "code" (💭 **Reasoning:** + fence), "blockquote" ("> "), "subtext" ("-# " Discord)
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # Telegram-only opt-in: keep the editable streaming preview across tool boundaries.
+    # Active while text tool-progress is quiet (off/log), preserving existing chronology
+    # otherwise. See #110564.
+    "streaming_single_message": False,
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "long_running_notifications": True,
@@ -151,6 +155,7 @@ _NORMALISERS: dict[str, Any] = {
     "tool_progress": _norm_tristate("all", "off", {"off", "new", "all", "verbose", "log"}),
     "show_reasoning": _norm_bool,
     "streaming": _norm_bool,
+    "streaming_single_message": _norm_bool,
     "interim_assistant_messages": _norm_bool,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,

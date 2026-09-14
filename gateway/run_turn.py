@@ -2461,11 +2461,27 @@ class GatewayTurnMixin:
             float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
             if source.platform == Platform.TELEGRAM else 0.0
         )
+        # Preserve the established text↔tool-progress chronology unless progress is quiet.
+        # ``log`` emits no chat bubbles either — the gateway's own tool_progress_enabled
+        # treats {"off", "log"} as quiet — so both modes can host one evolving message.
+        # Telegram-only: other adapters keep their current segment-boundary semantics.
+        from gateway.run import _load_gateway_config, _platform_config_key
+        from gateway.display_config import resolve_display_setting
+        _user_config = _load_gateway_config()
+        _platform_key = _platform_config_key(source.platform)
+        _single_message_per_turn = (
+            source.platform == Platform.TELEGRAM
+            and bool(resolve_display_setting(
+                _user_config, _platform_key, "streaming_single_message", False,
+            ))
+            and resolve_display_setting(_user_config, _platform_key, "tool_progress") in ("off", "log")
+        )
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor, buffer_only=_buffer_only,
             fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
             chat_type=getattr(source, "chat_type", "") or "",
+            single_message_per_turn=_single_message_per_turn,
         )
         return _consumer_cfg, _pause_typing_before_finalize
 

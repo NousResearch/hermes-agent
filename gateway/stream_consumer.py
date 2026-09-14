@@ -74,6 +74,10 @@ class StreamConsumerConfig:
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
     chat_type: str = ""  # originating chat type; gates platform-specific drafts
+    # Keep an edit-based preview alive across tool boundaries (and mid-turn commentary)
+    # for the whole turn. The gateway enables this only for Telegram while text
+    # tool-progress is quiet (off/log). See #110564.
+    single_message_per_turn: bool = False
 
 
 @dataclass
@@ -878,14 +882,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         return stream_draft or self._use_native_streaming
 
     async def _deliver_commentary(self, commentary_text: str) -> None:
-        """Post commentary as its own message.  Cumulative transports keep the stream going —
-        resetting _accumulated would break the append-only invariant / lose text."""
-        cumulative = self._cumulative_transport()
-        if not cumulative:
+        """Post commentary as its own message.  Cumulative transports and the single-message
+        mode keep the stream going — resetting _accumulated would break the append-only
+        invariant / lose the evolving preview."""
+        keep_stream = self._cumulative_transport() or self.cfg.single_message_per_turn
+        if not keep_stream:
             self._reset_segment_state()
         await self._send_commentary(commentary_text)
         self._last_edit_time = time.monotonic()
-        if not cumulative:
+        if not keep_stream:
             self._reset_segment_state()
 
     async def _end_segment(self, tick: "_Tick") -> None:
@@ -894,8 +899,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         non-prefix snapshot and the connector re-appends the whole answer.  preserve_no_edit:
         "__no_edit__" (platform never returned a real id — Signal, github_comment webhook)
         must keep its sentinel or every tool boundary posts a new message; the
-        continuation goes out once via _send_fallback_final."""
-        if self._cumulative_transport():
+        continuation goes out once via _send_fallback_final.  Single-message mode
+        (Telegram, quiet progress) skips the reset so one preview spans the turn."""
+        if self._cumulative_transport() or self.cfg.single_message_per_turn:
             return
         # If the segment-break edit didn't land (flood control / fallback mode),
         # _accumulated holds unseen pre-boundary text — flush it before the reset.

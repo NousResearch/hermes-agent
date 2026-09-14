@@ -1726,6 +1726,20 @@ display:
   #         cleanup_progress: true
   cleanup_progress: false
 
+  # Telegram: keep one editable streaming preview across tool calls instead of
+  # starting a new message at each tool boundary. Only takes effect when
+  # streaming is enabled (streaming.enabled / display.platforms.telegram.streaming)
+  # and text tool-progress is quiet (tool_progress: off or log).
+  # Default false. Per-platform override: display.platforms.telegram.streaming_single_message
+  #   true:  One streaming message per turn
+  #   false: New streaming segment after each tool (default)
+  # Example:
+  #   display:
+  #     platforms:
+  #       telegram:
+  #         streaming_single_message: true
+  streaming_single_message: false
+
   # Natural mid-turn assistant updates.
   # On gateway platforms, when true, completed assistant status messages are
   # sent as separate chat messages. On the Desktop app, when true, mid-turn

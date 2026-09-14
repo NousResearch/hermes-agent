@@ -795,7 +795,12 @@ display:
       # Or quiet them entirely
       interim_assistant_messages: false
       long_running_notifications: false
+      # Keep one editable streaming preview across tool calls
+      # (needs streaming enabled; quiet tool_progress: off or log)
+      streaming_single_message: true
 ```
+
+With streaming enabled (`streaming.enabled` / `display.platforms.telegram.streaming`), `streaming_single_message: true` keeps one editable preview alive for the whole turn — text emitted on both sides of tool calls keeps updating the same message instead of starting a new one at every tool boundary. It applies while text tool-progress is quiet (`off` or `log`).
 
 ### Progress bubble cleanup (opt-in)
 

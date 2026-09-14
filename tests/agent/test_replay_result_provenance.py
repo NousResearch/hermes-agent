@@ -5,6 +5,82 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
+
+@pytest.mark.parametrize('surface', ['cli', 'gateway'])
+@pytest.mark.parametrize('legacy', [False, True], ids=['current', 'legacy'])
+def test_branch_preserves_result_provenance(tmp_path, surface, legacy):
+    _run_fixture(tmp_path, f'''
+# PRODUCT IMPORTS
+import asyncio
+from types import SimpleNamespace
+from hermes_state import AsyncSessionDB
+from gateway.config import GatewayConfig, Platform
+from gateway.platforms.event import MessageEvent
+from gateway.session import AsyncSessionStore, SessionSource, SessionStore, build_session_key
+from gateway.slash_commands_session import GatewaySessionCommandsMixin
+from cli import HermesCLI
+
+surface, legacy = {surface!r}, {legacy!r}
+output = 'Documented executor marker example:\\n[Command interrupted]'
+# The normal constructor marks even successful, non-JSON tool output as current.
+message = make_tool_result_message('fixture_log_read', output, 'call1')
+if legacy:
+    message.pop('tool_result_format')
+history = [
+    {{'role': 'user', 'content': 'Read the log.'}},
+    {{'role': 'assistant', 'content': '', 'tool_calls': [
+        {{'id': 'call1', 'type': 'function', 'function': {{'name': 'fixture_log_read', 'arguments': '{{}}'}}}}]}},
+    message, {{'role': 'assistant', 'content': 'Read successfully.'}},
+]
+if surface == 'gateway':
+    store = SessionStore(sessions_dir=home / 'sessions', config=GatewayConfig())
+    db = store._db
+    source = SessionSource(platform=Platform.TELEGRAM, user_id='fixture', chat_id='fixture', chat_type='dm')
+    parent = store.get_or_create_session(source).session_id
+else:
+    db = SessionDB(home / 'cli.db')
+    parent = 'parent'
+    db.create_session(parent, source='cli')
+try:
+    db.append_messages_batch(parent, history)
+    original = db.get_messages_as_conversation(parent)
+    if surface == 'cli':
+        runner = SimpleNamespace(
+            _session_db=db, session_id=parent, conversation_history=original,
+            model='fixture', max_turns=10, reasoning_config={{}}, agent=None,
+            _transfer_session_yolo=lambda *_: None)
+        HermesCLI._handle_branch_command(runner, '/branch provenance')
+        child = runner.session_id
+    else:
+        runner = SimpleNamespace(
+            _session_db=AsyncSessionDB(db), async_session_store=AsyncSessionStore(store),
+            config={{}}, _session_key_for_source=build_session_key,
+            _clear_session_boundary_security_state=lambda *_: None,
+            _evict_cached_agent=lambda *_: None)
+        reply = asyncio.run(GatewaySessionCommandsMixin._handle_branch_command(
+            runner, MessageEvent(text='/branch provenance', source=source, message_id='fixture')))
+        child = store.get_or_create_session(source).session_id
+        assert child != parent, reply
+    branched = db.get_messages_as_conversation(child)
+    assert len(branched) == len(original)
+    assert db.get_messages_as_conversation(parent) == original
+    assert branched[2]['content'] == output
+    cleaned = sanitize_replay_history(branched)
+    if legacy:
+        assert 'tool_result_format' not in branched[2]
+        assert cleaned[2]['effect_disposition'] == 'unknown'
+    else:
+        # Assert the user-visible failure before the metadata diagnostic: a lost
+        # marker would reinterpret successful output as a legacy interruption.
+        assert cleaned[2]['content'] == output, (branched[2], cleaned[2])
+        assert branched[2]['tool_result_format'] == 'structured'
+        assert cleaned == branched
+finally:
+    db.close()
+''')
+
 
 def _run_fixture(tmp_path, body):
     root = Path(__file__).resolve().parents[2]

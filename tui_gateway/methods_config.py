@@ -40,39 +40,42 @@ def _reconcile_repo_discovery(pdb, conn, policy, policy_key):
 
 
 @_projects_handler("projects.discover_repos")
-def _(rid, params: dict) -> dict:
-    """Repos for the desktop overview: scanned-from-disk (cached) ∪ session-derived."""
+def _(rid, params) -> "ProjectsDiscoverReposResult | dict":
+    from tui_gateway.contracts.projects_pets import (
+        DiscoveredRepo, ProjectsDiscoverReposParams, ProjectsDiscoverReposResult, RepoDiscoveryPolicy,
+    )
+    assert isinstance(params, ProjectsDiscoverReposParams)
     with _profile_db(params) as db:
         if db is None:
-            return _ok(rid, {"repos": []})
+            return ProjectsDiscoverReposResult(repos=[], discovery_policy=None)
         from hermes_cli import projects_db as pdb
         policy = _repo_discovery_policy()
         with pdb.connect_closing() as conn:
             _reconcile_repo_discovery(pdb, conn, policy, _repo_discovery_policy_key(policy))
-            # `scan=true` (remote-gateway desktop): its native scan only sees its own filesystem,
-            # so the host scans the policy roots so zero-session repos surface.
-            # See #81723.
-            if params.get("scan") and policy["enabled"]:
+            if params.scan and policy["enabled"]:
                 _scan_discovered_repos_remote(conn, policy)
             repos = _discover_repos_payload(db, conn=conn, include_cached=policy["enabled"])
-        return _ok(rid, {"repos": repos, "discovery_policy": policy})
+        return ProjectsDiscoverReposResult(
+            repos=[DiscoveredRepo.model_validate(repo) for repo in repos],
+            discovery_policy=RepoDiscoveryPolicy.model_validate(policy),
+        )
 
 
 @_projects_handler("projects.record_repos")
-def _(rid, params: dict) -> dict:
-    """Persist repo roots found by the client's (desktop-side) scan; return the merged list."""
+def _(rid, params) -> "ProjectsRecordReposResult | dict":
+    from tui_gateway.contracts.projects_pets import (
+        DiscoveredRepo, ProjectsRecordReposParams, ProjectsRecordReposResult, RepoDiscoveryPolicy,
+    )
+    assert isinstance(params, ProjectsRecordReposParams)
     from hermes_cli import projects_db as pdb
     policy = _repo_discovery_policy()
     policy_key = _repo_discovery_policy_key(policy)
-    incoming = params.get("discovery_policy")
-    if isinstance(incoming, dict):
-        accepted = _repo_discovery_policy_key(_repo_discovery_policy(incoming)) == policy_key
-    else:
-        accepted = _repo_discovery_policy_is_default(policy)  # legacy client without a policy
+    incoming = params.discovery_policy
+    accepted = (
+        _repo_discovery_policy_key(_repo_discovery_policy(incoming.model_dump(mode="json"))) == policy_key
+        if incoming is not None else _repo_discovery_policy_is_default(policy))
     accepted = bool(policy["enabled"] and accepted)
-    pairs = [(item, None) if isinstance(item, str) else (str(item["root"]), item.get("label"))
-             for item in params.get("repos") or []
-             if isinstance(item, str) or (isinstance(item, dict) and item.get("root"))]
+    pairs = [(repo, None) if isinstance(repo, str) else (repo.root, repo.label) for repo in params.repos or []]
     with pdb.connect_closing() as conn:
         _reconcile_repo_discovery(pdb, conn, policy, policy_key)
         if accepted:
@@ -81,46 +84,51 @@ def _(rid, params: dict) -> dict:
             pdb.clear_discovered_repos(conn, policy_key=policy_key)
     with _profile_db(params) as db:
         repos = [] if db is None else _discover_repos_payload(db, include_cached=policy["enabled"])
-        return _ok(rid, {"repos": repos, "accepted": accepted, "discovery_policy": policy})
+        return ProjectsRecordReposResult(
+            repos=[DiscoveredRepo.model_validate(repo) for repo in repos], accepted=accepted,
+            discovery_policy=RepoDiscoveryPolicy.model_validate(policy),
+        )
 
 
 def _stamped_project_tree(db, params, **kwargs):
     """``_build_project_tree`` + profile stamping shared by the two tree RPCs."""
     from tui_gateway.project_tree import stamp_profile
     tree, active_id = _build_project_tree(db, **kwargs)
-    stamp_profile(tree["projects"], _response_profile_name(params.get("profile")))
+    stamp_profile(tree["projects"], _response_profile_name(params.profile))
     return tree, active_id
 
 
 @_projects_handler("projects.tree")
-def _(rid, params: dict) -> dict:
-    """Project -> repo -> lane overview with counts + a few preview sessions per project, plus the
-    flat set of session ids claimed by any project (excluded from flat Recents). Lanes carry no
-    session rows; drill-in uses ``projects.project_sessions``."""
+def _(rid, params) -> "ProjectsTreeResult | dict":
+    from tui_gateway.contracts.projects_pets import ProjectsTreeNode, ProjectsTreeParams, ProjectsTreeResult
+    assert isinstance(params, ProjectsTreeParams)
     with _profile_db(params) as db:
         if db is None:
-            return _ok(rid, {"projects": [], "active_id": None, "scoped_session_ids": []})
+            return ProjectsTreeResult(projects=[], active_id=None, scoped_session_ids=[])
         tree, active_id = _stamped_project_tree(
-            db, params, preview_limit=int(params.get("preview_limit") or 3), hydrate=False,
-            session_limit=int(params.get("session_limit") or 2000), include_discovered=True)
-        return _ok(rid, {"projects": tree["projects"], "active_id": active_id,
-                         "scoped_session_ids": tree["scoped_session_ids"]})
+            db, params, preview_limit=params.preview_limit or 3, hydrate=True,
+            session_limit=params.session_limit or 2000, include_discovered=True)
+        return ProjectsTreeResult(
+            projects=[ProjectsTreeNode.model_validate(project) for project in tree["projects"]],
+            active_id=active_id, scoped_session_ids=tree["scoped_session_ids"],
+        )
 
 
 @_projects_handler("projects.project_sessions")
-def _(rid, params: dict) -> dict:
-    """Fully hydrated lanes for one project, from the same grouping as ``projects.tree``."""
-    project_id = str(params.get("project_id") or "")
-    if not project_id:
-        return _err(rid, 5063, "project_id required")
+def _(rid, params) -> "ProjectsProjectSessionsResult | dict":
+    from tui_gateway.contracts.projects_pets import (
+        ProjectsProjectSessionsParams, ProjectsProjectSessionsResult, ProjectsTreeNode,
+    )
+    assert isinstance(params, ProjectsProjectSessionsParams)
     with _profile_db(params) as db:
         if db is None:
-            return _ok(rid, {"project": None})
-        # Drill-in only needs the entered project: skip the zero-session discovery tier.
+            return ProjectsProjectSessionsResult(project=None)
         tree, _active = _stamped_project_tree(
             db, params, preview_limit=0, hydrate=True,
-            session_limit=int(params.get("session_limit") or 5000), include_discovered=False)
-        return _ok(rid, {"project": next((p for p in tree["projects"] if p["id"] == project_id), None)})
+            session_limit=params.session_limit or 5000, include_discovered=False)
+        project = next((item for item in tree["projects"] if item["id"] == params.project_id), None)
+        return ProjectsProjectSessionsResult(
+            project=ProjectsTreeNode.model_validate(project) if project else None)
 
 
 # ── config.get — one getter per key returning the result payload.

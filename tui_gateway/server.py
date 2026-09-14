@@ -38,10 +38,11 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: 
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.contracts.base import Params, Payload, Result
-from tui_gateway.contracts.common import SessionLiveInfo, Usage
+from tui_gateway.contracts.common import ProjectRef, SessionLiveInfo, Usage
 from tui_gateway.contracts.events import (
     ErrorPayload, NotificationClearPayload, NotificationShowPayload, ReviewSummaryPayload,
-    SessionResumeProgressPayload, SessionUsagePayload, StatusUpdatePayload)
+    SessionInfoPayload, SessionResumeProgressPayload, SessionUsagePayload, StatusUpdatePayload)
+from tui_gateway.contracts.sessions import LiveSessionSnapshot
 from tui_gateway.contracts.server_requests import (
     ApprovalRequestParams, ClarifyAnswer, ClarifyAnswers, ClarifyBatch, ClarifyQuestion,
     ClarifySingle, EmptyRequestParams, McpSetupRequestParams, PreviewActRequestParams,
@@ -1081,10 +1082,12 @@ def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
         seed_credits_at_session_start(agent)
     _start_session_services(sid, key, current)
     info = _session_info(agent, current)
+    config_warning = None
     if cfg_warn := _probe_config_health(_load_cfg()):
-        info["config_warning"] = cfg_warn
+        config_warning = cfg_warn
         logger.warning(cfg_warn)
-    _emit("session.info", sid, SessionLiveInfo.model_validate(info))
+    _emit("session.info", sid, SessionInfoPayload(
+        **info.model_dump(mode="json"), config_warning=config_warning))
     _schedule_mcp_late_refresh(sid, agent)  # servers slower than the bounded discovery wait land here
 
 
@@ -1971,7 +1974,7 @@ def _restart_slash_worker(sid: str, session: dict):
     _attach_worker(sid, session, new_worker)
 
 
-def _get_usage(agent) -> dict:
+def _get_usage(agent) -> Usage:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
         "model": getattr(agent, "model", "") or "",
@@ -2016,7 +2019,7 @@ def _get_usage(agent) -> dict:
             spent = agent.get_credits_spent_micros()
             if spent is not None:
                 usage["dev_credits_spent_micros"] = int(spent)
-    return usage
+    return Usage.model_validate(usage)
 
 
 def _probe_credentials(agent) -> str:
@@ -2065,15 +2068,15 @@ def _current_profile_name() -> str:
 DESKTOP_BACKEND_CONTRACT = 7
 
 
-def _session_usage_snapshot(session: dict | None) -> dict:
+def _session_usage_snapshot(session: dict | None) -> Usage:
     sess = session or {}
     mirror_usage = _metadata_mirror(session).get("usage")
     if sess.get("agent") is not None and not (sess.get("_compute_host_active") and isinstance(mirror_usage, dict)):
         return _get_usage(sess["agent"])
-    return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
+    return Usage.model_validate(mirror_usage) if isinstance(mirror_usage, dict) else Usage()
 
 
-def _project_info_for_cwd(cwd: str) -> dict | None:
+def _project_info_for_cwd(cwd: str) -> ProjectRef | None:
     """The first-class Project owning ``cwd`` (per-profile projects.db) so TUI status, desktop status bar and
     ``/status`` name the workspace identically. Only explicit named projects resolve."""
     if not str(cwd or "").strip():
@@ -2082,8 +2085,8 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
         from hermes_cli import projects_db as pdb
         with pdb.connect_closing() as conn:
             project = pdb.project_for_path(conn, cwd)
-        return None if project is None else {
-            "id": project.id, "slug": project.slug, "name": project.name, "primary_path": project.primary_path}
+        return None if project is None else ProjectRef(
+            id=project.id, slug=project.slug, name=project.name, primary_path=project.primary_path)
     except Exception:
         logger.debug("failed to resolve project for cwd", exc_info=True)
         return None
@@ -2095,7 +2098,7 @@ def _turn_started_at(session: dict | None) -> float | None:
     return float(inflight["started_at"]) if isinstance(inflight, dict) and inflight.get("started_at") else None
 
 
-def _session_info(agent, session: dict | None = None) -> dict:
+def _session_info(agent, session: dict | None = None) -> SessionLiveInfo:
     if session is None:
         session = next((c for c in _sessions.values() if c.get("agent") is agent), None)
     sess = session or {}
@@ -2143,7 +2146,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "stored_session_id": session_key or "", "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "", "release_date": "", "update_behind": None, "update_command": "",
         "usage": _session_usage_snapshot(session),
-        "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
+        "profile_name": str(profile_name_for_home(sess.get("profile_home")) or _current_profile_name() or ""),
     }
     with contextlib.suppress(Exception):
         from hermes_cli import __version__, __release_date__
@@ -2175,7 +2178,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         info["update_command"] = recommended_update_command()
     if live_agent and (warn := _probe_credentials(agent)):
         info["credential_warning"] = warn
-    return info
+    return SessionLiveInfo.model_validate(info)
 
 
 def _tool_ctx(name: str, args: dict) -> str:
@@ -2191,7 +2194,7 @@ def _emit_session_info_for_session(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is not None or _metadata_mirror(session):
         with contextlib.suppress(Exception):
-            _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, session)))
+            _emit("session.info", sid, SessionInfoPayload(**_session_info(agent, session).model_dump(mode="json")))
 
 
 def broadcast_session_info() -> None:
@@ -2233,7 +2236,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             if not added:
                 return  # discovery added nothing → don't churn the client
             info = _session_info(agent, session)
-        _emit("session.info", sid, SessionLiveInfo.model_validate(info))  # outside the lock — write_json must not block under _sessions_lock
+        _emit("session.info", sid, SessionInfoPayload(**info.model_dump(mode="json")))  # outside the lock — write_json must not block under _sessions_lock
     threading.Thread(target=_wait_then_refresh, name=f"tui-mcp-late-refresh-{sid}", daemon=True).start()
 
 
@@ -2469,7 +2472,8 @@ def _init_session(
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
     _start_session_services(sid, key, _sessions.get(sid, {}))
-    _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, _sessions.get(sid, {}))))
+    _emit("session.info", sid, SessionInfoPayload(**_session_info(
+        agent, _sessions.get(sid, {})).model_dump(mode="json")))
     _schedule_mcp_late_refresh(sid, agent)
 
 
@@ -2495,14 +2499,13 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 # ── Methods: session ─────────────────────────────────────────────────
 
 
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
+def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> SessionLiveInfo:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _resolve_model(), "tools": {}, "skills": {}, "lazy": True,
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
-        **({"provider": provider} if provider else {}),
-    }
+    return SessionLiveInfo(
+        cwd=cwd, branch=git_probe.branch(cwd), project=_project_info_for_cwd(cwd),
+        model=model or _resolve_model(), tools={}, skills={}, lazy=True,
+        desktop_contract=DESKTOP_BACKEND_CONTRACT, profile_name=_response_profile_name(profile), provider=provider,
+    )
 
 
 def _deferred_session_record(
@@ -2749,7 +2752,7 @@ def _find_live_session_by_key(session_key: str, profile_home=_ANY_PROFILE) -> tu
     return None
 
 
-def _fallback_session_info(session: dict) -> dict:
+def _fallback_session_info(session: dict) -> SessionLiveInfo:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
@@ -2761,10 +2764,10 @@ def _fallback_session_info(session: dict) -> dict:
     # so a client can clear a stale label instead of retaining it — the same contract `_lazy_session_info`
     # above already follows.
     cwd = _session_cwd(session)
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
-    }
+    return SessionLiveInfo(
+        cwd=cwd, branch=git_probe.branch(cwd), project=_project_info_for_cwd(cwd), lazy=True,
+        model=_resolve_model(), skills={}, tools={}, desktop_contract=DESKTOP_BACKEND_CONTRACT,
+    )
 
 
 def _reconcile_display_with_live(db_display: list[dict], in_memory: list[dict]) -> list[dict]:
@@ -2806,7 +2809,7 @@ def _live_visible_history(session: dict, db, in_memory_fallback: list[dict]) -> 
 
 def _live_session_payload(
     sid: str, session: dict, *, cols: int | None = None, touch: bool = False,
-    transport: Transport | None = None, omit_messages: bool = False) -> dict:
+    transport: Transport | None = None, omit_messages: bool = False) -> LiveSessionSnapshot:
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
@@ -2843,7 +2846,7 @@ def _live_session_payload(
                        ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
-    return _attach_todo_state(payload, session)
+    return LiveSessionSnapshot.model_validate(_attach_todo_state(payload, session))
 
 
 def _main_runtime_from_agent(agent) -> dict | None:

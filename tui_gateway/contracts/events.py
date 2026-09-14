@@ -378,10 +378,12 @@ event("tip.show", TipShowPayload, doc="Point at a desktop element with a one-lin
 # ── session lifecycle ─────────────────────────────────────────────────────────────────────────
 
 
-# SessionLiveInfo is a Result (it is also the ``info`` of create/resume/activate); the registry only
-# needs ``model_validate`` and the generator renders one TS type either way.
-event("session.info", SessionLiveInfo,  # type: ignore[arg-type]
-      doc="Live session settings snapshot (``server._session_info``); also the ``info`` of create/resume/activate.")
+class SessionInfoPayload(Payload, SessionLiveInfo):
+    """Payload counterpart to the method-result model; shared fields stay single-sourced."""
+
+
+event("session.info", SessionInfoPayload,
+      doc="Live session settings snapshot (``server._session_info``); method results use SessionLiveInfo.")
 
 
 class ResumePhaseStatus(WireEnum):
@@ -777,8 +779,8 @@ __all__ = [
     "PaneRevealPayload", "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload",
     "PreviewClosePayload", "PreviewOpenPayload", "PreviewRestartCompletePayload", "PreviewRestartProgressLevel",
     "PreviewRestartProgressPayload", "ReactionPayload", "ResumePhaseStatus", "ReviewSummaryPayload", "SessionControlSnapshot",
-    "SessionControlUpdatePayload", "SessionReclaimReason", "SessionReclaimedPayload", "SessionResumeProgressPayload", "SessionTitlePayload",
-    "SessionUsagePayload", "SetupReadyPayload", "SkinPayload", "StatusUpdatePayload", "StreamDeltaPayload",
+    "SessionControlUpdatePayload", "SessionInfoPayload", "SessionReclaimReason", "SessionReclaimedPayload", "SessionResumeProgressPayload",
+    "SessionTitlePayload", "SessionUsagePayload", "SetupReadyPayload", "SkinPayload", "StatusUpdatePayload", "StreamDeltaPayload",
     "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload", "TerminalOutputPayload",
     "StatusUpdateKind", "TipShowPayload", "TodoItem", "TodoStatus", "TodoUpdatedPayload", "ToolCompletePayload",
     "ToolGeneratingPayload", "ToolOutputRiskLevel", "ToolOutputRiskPayload", "ToolStartPayload", "TurnStatus",

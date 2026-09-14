@@ -286,9 +286,17 @@ class BillingPendingChangeResult(BillingEnvelope):
     """``_billing_pending_change``: ``message`` + the raw NAS body in ``payload`` on success."""
 
 
-method("subscription.change", params=SubscriptionChangeParams, result=BillingPendingChangeResult,
+class SubscriptionChangeResult(BillingPendingChangeResult):
+    pass
+
+
+class SubscriptionResumeResult(BillingPendingChangeResult):
+    pass
+
+
+method("subscription.change", params=SubscriptionChangeParams, result=SubscriptionChangeResult,
        doc="Schedule a downgrade / same-price change or a period-end cancellation.")
-method("subscription.resume", params=ProfileParams, result=BillingPendingChangeResult,
+method("subscription.resume", params=ProfileParams, result=SubscriptionResumeResult,
        doc="Clear a scheduled downgrade / cancellation (re-enables recurring spend).")
 
 

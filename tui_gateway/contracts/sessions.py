@@ -5,6 +5,8 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
+from pydantic import Field
+
 from .base import JsonValue, Params, Result, WireEnum
 from .common import (PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage, Usage)
 from .connectors_operation import ConnectionRequestPayload
@@ -137,6 +139,7 @@ class SeedMessage(Params):
     content: str | None = None
     text: str | None = None
     display_kind: str | None = None
+    row_id: int | None = Field(default=None, alias="_row_id")  # in-process branch seeds retain their durable row address.
 
 
 class SessionCreateParams(ProfileParams):

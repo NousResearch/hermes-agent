@@ -327,3 +327,15 @@ class TestLiveStatusSetting:
         assert resolve_display_setting({}, "slack", "live_status") == "full"
 
 
+
+
+def test_explicit_full_resolution_preserves_platform_and_legacy_precedence():
+    from gateway.display_config import resolve_display_setting
+
+    config = {"display": {"tool_progress": "full", "platforms": {"slack": {"tool_progress": "off"}}}}
+    assert resolve_display_setting(config, "telegram", "tool_progress") == "full"
+    assert resolve_display_setting(config, "slack", "tool_progress") == "off"
+    config["display"]["platforms"]["slack"]["tool_progress"] = "full"
+    assert resolve_display_setting(config, "slack", "tool_progress") == "full"
+    config = {"display": {"tool_progress_overrides": {"telegram": "full"}}}
+    assert resolve_display_setting(config, "telegram", "tool_progress") == "full"

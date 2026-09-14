@@ -2793,7 +2793,7 @@ class GatewayTurnMixin:
         # ordinary text tool_progress off by default (requiring both flags would silently leave the native
         # feature inactive).
         _native_slack_task_cards = False
-        if source.platform == Platform.SLACK and hasattr(adapter, "native_task_cards_enabled"):
+        if progress_mode != "full" and source.platform == Platform.SLACK and hasattr(adapter, "native_task_cards_enabled"):
             try:
                 _native_slack_task_cards = bool(adapter.native_task_cards_enabled())
             except Exception:

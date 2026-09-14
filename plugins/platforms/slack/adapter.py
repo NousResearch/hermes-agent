@@ -2062,6 +2062,8 @@ class SlackAdapter(BasePlatformAdapter):
         blocked = self._outbound_blocked(chat_id, "outbound generic send to")
         if blocked:
             return blocked
+        metadata = dict(metadata) if metadata is not None else None
+        interim = metadata.pop("_interim_send", False) if metadata is not None else False
         chat_id = await self._dm_target(chat_id, metadata)
         thread_ts = None
         try:
@@ -2070,10 +2072,12 @@ class SlackAdapter(BasePlatformAdapter):
             if slash_ctx:
                 return await self._send_slash_reply(chat_id, slash_ctx, content, metadata)
             # An active native stream that this content finalizes IS the final
-            # message: seal it instead of posting a duplicate.
-            stream_result = await self._try_finalize_stream(chat_id, content)
-            if stream_result is not None:
-                return stream_result
+            # message: seal it instead of posting a duplicate. Interim progress
+            # can share its prefix without owning the answer stream.
+            if not interim:
+                stream_result = await self._try_finalize_stream(chat_id, content)
+                if stream_result is not None:
+                    return stream_result
             formatted = self.format_message(content)
             if not formatted or not formatted.strip():
                 # Slack returns ``no_text`` for blank posts; still the end of a

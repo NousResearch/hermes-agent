@@ -1973,7 +1973,7 @@ This controls both the `text_to_speech` tool and spoken replies in voice mode (`
 
 ```yaml
 display:
-  tool_progress: all      # off | new | all | verbose
+  tool_progress: all      # off | new | all | verbose; gateway also accepts full | log
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   focus_view: false       # CLI focus view (/focus) — reduced output, display-only
   platforms: {}           # Per-platform display overrides (see below)
@@ -2086,9 +2086,15 @@ display:
 | `off` | Silent — just the final response |
 | `new` | Tool indicator only when the tool changes |
 | `all` | Every tool call with a short preview (default) |
-| `verbose` | Full args, results, and debug logs |
+| `verbose` | CLI: full args, results, and debug logs. Gateway: detailed previews using `display.tool_preview_length` |
+| `full` | Gateway: complete redacted JSON arguments, split across messages without truncation |
+| `log` | Gateway: silent in chat; tool calls written to `~/.hermes/logs/tool_calls.log` |
 
-In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
+In the classic CLI, `/verbose` cycles `off -> new -> all -> verbose`. To enable the command on messaging platforms, set `display.tool_progress_command: true`. The gateway cycles `off -> new -> all -> verbose -> full -> log` and saves the choice for the current platform.
+
+Select `display.tool_progress: full`, or use a per-platform override such as `display.platforms.telegram.tool_progress: full`, for complete JSON arguments. Full mode masks recognized secrets recursively before JSON serialization, even when general sensitive-data redaction is disabled. It leaves executed and persisted arguments unchanged and ignores `display.tool_preview_length`. Oversized entries are split using the adapter's message-length measurement.
+
+On Slack, explicit `full` uses text progress instead of native task cards so argument detail remains visible. Other modes keep their existing task-card behavior. The classic CLI maps a shared `full` setting to `all` before capturing focus-view state.
 
 Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
 

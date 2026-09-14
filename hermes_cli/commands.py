@@ -169,7 +169,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("diff", "Show git changes in the working directory", "Info",
                args_hint="[staged|all|session] [--stat] [path...]",
                subcommands=("staged", "all", "session")),
-    CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
+    CommandDef("verbose", "Cycle tool progress: off -> new -> all -> verbose (gateway also supports full and log)",
                "Configuration", cli_only=True, gateway_config_gate="display.tool_progress_command",
                busy_policy="dispatch", desktop="terminal"),
     CommandDef("focus", "Toggle focus view — show only your prompt and the final response",

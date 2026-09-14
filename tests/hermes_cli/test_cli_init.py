@@ -106,6 +106,14 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
 
 
+@pytest.mark.parametrize("focus", [False, True])
+def test_gateway_full_config_uses_cli_all_before_focus_capture(focus):
+    cli = _make_cli(config_overrides={"display": {"tool_progress": "full", "focus_view": focus}})
+    assert cli.tool_progress_mode == ("off" if focus else "all")
+    if focus:
+        assert cli._focus_saved_tool_progress == "all"
+
+
 class TestFallbackChainInit:
     def test_merges_new_and_legacy_fallback_config(self):
         cli = _make_cli(config_overrides={

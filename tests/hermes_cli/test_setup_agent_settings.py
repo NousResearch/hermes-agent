@@ -74,3 +74,27 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
     assert "Press Enter to keep 60." not in out
     # And the stale .env entry gets cleaned up
     assert "HERMES_MAX_ITERATIONS" in removed_keys
+
+
+def test_setup_agent_settings_saves_full_progress(tmp_path, monkeypatch, capsys):
+    from copy import deepcopy
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = {
+        "agent": {"max_turns": 90},
+        "display": {"tool_progress": "all"},
+        "compression": {"threshold": 0.5},
+    }
+    answers = iter(["90", "full", "0.5"])
+    saved = []
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *a, **kw: next(answers))
+    monkeypatch.setattr("hermes_cli.setup.remove_env_value", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda value: saved.append(deepcopy(value)))
+
+    setup_agent_settings(config)
+
+    assert config["display"]["tool_progress"] == "full"
+    assert saved[-1]["display"]["tool_progress"] == "full"
+    output = capsys.readouterr().out
+    assert "Unknown mode" not in output
+    assert "full" in output and "gateway only" in output

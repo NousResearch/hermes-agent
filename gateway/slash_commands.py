@@ -904,7 +904,7 @@ class GatewaySlashCommandsMixin(
         return EphemeralReply(t("gateway.yolo.enabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
-        """Handle /verbose — cycle tool progress display mode (off → new → all → verbose → log) per
+        """Handle /verbose — cycle tool progress display mode (off → new → all → verbose → full → log) per
         *current platform*, saved to ``display.platforms.<platform>.tool_progress``. Gated by
         ``display.tool_progress_command`` (default off)."""
         from gateway.run import _load_gateway_config
@@ -919,7 +919,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.verbose.not_enabled")
         # Cycle mode (per-platform), reading the current effective mode via the resolver.
         from gateway.display_config import resolve_display_setting
-        cycle = ["off", "new", "all", "verbose", "log"]
+        cycle = ["off", "new", "all", "verbose", "full", "log"]
         current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
         new_mode = cycle[(cycle.index(current if current in cycle else "all") + 1) % len(cycle)]
         description = t(f"gateway.verbose.mode_{new_mode}")

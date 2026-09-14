@@ -425,7 +425,7 @@ The CLI shows animated feedback as the agent works:
   ┊ 📄 web_extract (2.1s)
 ```
 
-Cycle through display modes with `/verbose`: `off → new → all → verbose`. This command can also be enabled for messaging platforms — see [configuration](/user-guide/configuration#display-settings).
+The classic CLI cycles display modes with `/verbose`: `off -> new -> all -> verbose`. With the command enabled on messaging platforms, the gateway cycles `off -> new -> all -> verbose -> full -> log`. Gateway `full` shows complete redacted JSON arguments without preview truncation; the classic CLI maps a shared `full` setting to `all`, including before focus-view state is saved. See [configuration](/user-guide/configuration#display-settings).
 
 ### Tool Preview Length
 

@@ -853,6 +853,7 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # enable /verbose command in messaging gateway
         # display.tool_progress_overrides is deprecated (use display.platforms); a user-set value is
         # still honored at runtime and folded into platforms by migration.
+        # Gateway full mode preserves complete redacted JSON arguments independently of this limit.
         "tool_preview_length": 0,  # max chars for tool call previews (0 = no limit)
         # Human-phrased status labels for built-in tools ("Reading <file>") in CLI spinner and
         # gateway/desktop tool-progress; custom/plugin/MCP tools use the raw preview.

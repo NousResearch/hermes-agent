@@ -18,12 +18,20 @@ Behaviour contract:
   * disconnect(): dangling streams sealed.
 """
 
+import asyncio
+import copy
+import json
+import queue
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
+from gateway.run_turn_runner import TurnRunner
+from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
 from plugins.platforms.slack.adapter import SlackAdapter
+from tests.gateway.test_run_progress_topics import _make_runner
 
 
 def _make_adapter(extra=None):
@@ -167,6 +175,77 @@ class TestFeatureGateFallback:
 
 class TestSendFinalization:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("oversized", [False, True], ids=["small", "oversized"])
+    async def test_full_progress_leaves_answer_stream_open(self, oversized):
+        adapter, client = _make_adapter()
+        metadata = {**META, "slack_team_id": "T123", "caller_value": {"keep": True}}
+        original_metadata = copy.deepcopy(metadata)
+        progress_attempted = asyncio.Event()
+        post_ids = []
+
+        def post_message(**kwargs):
+            post_ids.append(f"999.{len(post_ids) + 1:03d}")
+            progress_attempted.set()
+            return {"ok": True, "ts": post_ids[-1]}
+
+        def stop_stream(**kwargs):
+            progress_attempted.set()  # Wake RED on the erroneous early seal too.
+            return {"ok": True}
+
+        client.chat_postMessage.side_effect = post_message
+        client.chat_stopStream.side_effect = stop_stream
+        ctx = TurnContext(
+            source=SessionSource(platform=Platform.SLACK, chat_id="D1", chat_type="dm"),
+            _run_still_current=lambda: True,
+            progress_mode="full", tool_progress_enabled=True,
+            progress_queue=queue.Queue(), _progress_metadata=metadata,
+            _cleanup_progress=True,
+        )
+        runner = TurnRunner(_make_runner(adapter), ctx)
+        # An acknowledged, nonempty prefix also matches the unknown tool's emoji.
+        draft = await adapter.send_draft("D1", 7, "⚙️", metadata=metadata)
+        assert draft.success and draft.message_id == "123.456"
+        client.chat_startStream.assert_awaited_once()
+        arguments = {"value": "x" * (adapter.MAX_MESSAGE_LENGTH + 1000 if oversized else 10)}
+        runner.progress_callback("tool.started", "full_native_slack", args=arguments)
+        sender = asyncio.create_task(runner.send_progress_messages())
+        try:
+            await asyncio.wait_for(progress_attempted.wait(), timeout=2)
+        finally:
+            sender.cancel()
+            await asyncio.wait_for(sender, timeout=2)
+
+        client.chat_stopStream.assert_not_awaited()
+        posts = [call.kwargs for call in client.chat_postMessage.await_args_list]
+        assert len(posts) > 1 if oversized else len(posts) == 1
+        header, _, body = "".join(post["text"] for post in posts).partition("\n")
+        assert header == "⚙️ full_native_slack"
+        assert json.loads(body) == arguments
+        assert all(post["channel"] == "D1" and post["thread_ts"] == META["thread_id"] for post in posts)
+        assert ctx._cleanup_msg_ids == post_ids
+        assert draft.message_id not in ctx._cleanup_msg_ids
+        assert ctx._progress_metadata is metadata
+        assert metadata == original_metadata
+        client.chat_update.assert_not_awaited()
+
+        extended = await adapter.send_draft("D1", 7, "⚙️ Answer continues", metadata=metadata)
+        assert extended.success and extended.message_id == draft.message_id
+        client.chat_startStream.assert_awaited_once()
+        client.chat_appendStream.assert_awaited_once_with(
+            channel="D1", ts=draft.message_id, markdown_text=" Answer continues",
+        )
+        client.chat_stopStream.assert_not_awaited()
+        final = await adapter.send("D1", "⚙️ Answer continues. Done.", metadata=metadata)
+        assert final.success and final.message_id == draft.message_id
+        client.chat_stopStream.assert_awaited_once_with(
+            channel="D1", ts=draft.message_id, markdown_text=". Done.",
+        )
+        assert client.chat_postMessage.await_count == len(posts)
+        assert "D1" not in adapter._active_streams
+        assert metadata == original_metadata
+        assert all("_interim_send" not in call.kwargs for call in client.mock_calls)
+
+    @pytest.mark.asyncio
     async def test_final_send_seals_stream_no_duplicate_post(self):
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Hello wo", metadata=META)
@@ -189,12 +268,19 @@ class TestSendFinalization:
         client.chat_postMessage.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_unrelated_send_passes_through(self):
+    @pytest.mark.parametrize(
+        "metadata",
+        [None, {}, META, {**META, "_interim_send": True}, {**META, "_interim_send": False}],
+    )
+    async def test_unrelated_send_passes_through(self, metadata):
         adapter, client = _make_adapter()
+        original_metadata = copy.deepcopy(metadata)
         await adapter.send_draft("D1", 7, "Streaming text here", metadata=META)
-        result = await adapter.send("D1", "Unrelated notice", metadata=META)
+        result = await adapter.send("D1", "Unrelated notice", metadata=metadata)
         assert result.success
         client.chat_postMessage.assert_awaited()
+        assert metadata == original_metadata
+        assert "_interim_send" not in client.chat_postMessage.await_args.kwargs
         # Stream stays open for its own finalization.
         assert "D1" in adapter._active_streams
 

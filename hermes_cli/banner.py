@@ -509,20 +509,18 @@ def _daemon(name: Optional[str], target) -> None:
 def _skip_background_prefetch() -> bool:
     """True when the banner's background prefetch threads must not start.
 
-    Under pytest the prefetch daemon threads shell out to git
-    (``fetch``/``rev-parse``/``rev-list``) at an arbitrary point after import,
-    and any test that patches the process-wide ``subprocess`` singleton
-    (``patch("subprocess.run")`` / ``patch("subprocess.Popen")`` — note
-    ``subprocess.run`` calls ``subprocess.Popen`` internally, so a Popen patch
-    captures run() spawns too) can record that stray git spawn instead of —
-    or in addition to — the call it meant to pin.  That cross-talk
-    manufactured CI flakes in tests/tui_gateway/test_subprocess_encoding.py
-    (``encoding=None`` from the update thread's un-encoded ``git fetch``) and
-    tests/tui_gateway/test_bot_relay_methods.py (``argv == ['rev-parse',
-    'FETCH_HEAD']`` from the shallow-checkout path), both of which import
-    ``tui_gateway.server`` — which starts this prefetch at import time.
+    Under pytest the prefetch daemon threads shell out to git (``rev-parse``,
+    ``remote get-url``, the banner's git state) at an arbitrary point after
+    import, and any test that patches the process-wide ``subprocess`` singleton
+    (``patch("subprocess.run")`` / ``patch("subprocess.Popen")``) can record
+    that stray spawn in place of the call it meant to pin.  Importing
+    ``tui_gateway.server`` starts this prefetch, which is what flaked
+    tests/tui_gateway/test_subprocess_encoding.py and test_bot_relay_methods.py.
     Nothing under pytest needs a live update check; tests that exercise the
     prefetch itself monkeypatch this predicate to False.
+
+    ``PYTEST_CURRENT_TEST`` is only set while a test runs, not during
+    collection-time imports, hence the ``sys.modules`` check as well.
     """
     return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
 

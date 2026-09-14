@@ -242,6 +242,22 @@ losing unsaved tabs), then retries. If the profile is still locked after that
 to fully quit the browser — it won't loop or kill again on its own.
 :::
 
+:::warning macOS: the snapshot browser can block opening Chrome
+While a snapshot browser is alive, macOS sees it as a running Chrome instance
+(it uses your real Chrome binary — above), and LaunchServices can't tell it
+apart from your visible Chrome. Clicking Chrome in the Dock, or opening a Chrome
+link from another app, can then be a **silent no-op** — no window, no dialog,
+no error. To get a visible window right away, force a separate instance:
+
+```bash
+open -na "Google Chrome"
+```
+
+This macOS Chrome bundle-identity collision is tracked in
+[#33155](https://github.com/NousResearch/hermes-agent/issues/33155) and
+[#108387](https://github.com/NousResearch/hermes-agent/issues/108387).
+:::
+
 - **Supported browsers:** Chrome, Edge, Brave, Brave Origin, Chromium (whichever is your OS
   default). A non-Chromium default (e.g. Firefox) fails closed with a clear
   message rather than guessing.

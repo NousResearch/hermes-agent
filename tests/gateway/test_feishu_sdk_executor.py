@@ -6,9 +6,11 @@ subsequent send failed permanently with "Executor shutdown has been called"
 and the gateway became a zombie. The adapter now owns its own
 ThreadPoolExecutor and recreates it on demand if it has been shut down.
 
-Covers: #10849
+Covers: #10849, #111020
 """
+import asyncio
 import concurrent.futures
+import json
 
 import pytest
 
@@ -55,5 +57,37 @@ async def test_run_blocking_executes_on_owned_pool():
     # Ran on the adapter-owned pool, not the default executor.
     assert captured["thread"].startswith("hermes-feishu-sdk")
     adapter._shutdown_sdk_executor()
+
+
+@pytest.mark.asyncio
+async def test_is_duplicate_flush_survives_default_executor_teardown(tmp_path, monkeypatch):
+    """The inbound dedup flush must not ride the loop's default executor.
+
+    After the adapter's background event loop dies, its teardown shuts the
+    default executor down; every subsequent inbound message was then dropped
+    inside the dedup gate with a RuntimeError out of asyncio.to_thread
+    (#111020). The flush now runs on the adapter-owned pool, mirroring the
+    outbound SDK calls (#10849).
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.config import PlatformConfig
+
+    adapter = FeishuAdapter(PlatformConfig())
+    try:
+        loop = asyncio.get_running_loop()
+        torn_down = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        loop.set_default_executor(torn_down)
+        torn_down.shutdown(wait=True)
+
+        # Scenario premise: with the default executor torn down, to_thread fails.
+        with pytest.raises(RuntimeError):
+            await asyncio.to_thread(lambda: None)
+
+        # The dedup gate must still admit the message and flush it to disk.
+        assert await adapter._is_duplicate("om_after_executor_teardown") is False
+        state = json.loads((tmp_path / "feishu_seen_message_ids.json").read_text(encoding="utf-8"))
+        assert "om_after_executor_teardown" in state["message_ids"]
+    finally:
+        adapter._shutdown_sdk_executor()
 
 

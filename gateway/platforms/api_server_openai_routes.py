@@ -539,11 +539,19 @@ class OpenAICompatRoutesMixin:
                 _stream_q.put_threadsafe(("__tool_progress__", {
                     "tool": function_name, "toolCallId": tool_call_id, "status": "completed"}))
 
+            def _on_reasoning(text):
+                """Real reasoning deltas ride the same queue, tagged so the writer can tell them
+                apart from content and emit ``delta.reasoning_content`` — what OpenAI-compatible
+                clients for thinking models (GLM / DeepSeek / Kimi / Qwen) read."""
+                if text:
+                    _stream_q.put_threadsafe(("__reasoning__", text))
+
             # tool_progress_callback deliberately NOT wired: it would duplicate the structured
             # start/complete callbacks (which carry the tool_call id).
             agent_task, agent_ref = self._spawn_stream_agent(
                 _stream_q, tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete, **run_kwargs)
+                tool_complete_callback=_on_tool_complete, reasoning_callback=_on_reasoning,
+                **run_kwargs)
             # #13437 identity contract: an explicit-header client keeps addressing the id it
             # sent; the response echoes that stable id while reads/writes adopt the live tip,
             # so a rotation mid-turn (after these headers are prepared) never changes what the
@@ -673,6 +681,9 @@ class OpenAICompatRoutesMixin:
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__reasoning__":
+                    # Reasoning rides its own delta field, never mixed into content.
+                    await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
                 else:
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or

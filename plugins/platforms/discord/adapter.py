@@ -1287,9 +1287,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # ``socket_event_type`` for every parsed DISPATCH frame on every connection and it
                 # is NOT gated behind ``enable_debug_events`` (unlike ``on_socket_raw_receive`` —
                 # verified against discord.py 2.7.1 ``gateway.py``: ``received_message`` calls
-                # ``self._dispatch('socket_event_type', event)`` before the op-code switch).
-                # Heartbeat ACKs return before that dispatch, so an ACKing-but-deaf socket leaves
-                # this stamp frozen while every transport-side check reads healthy.
+                # ``self._dispatch('socket_event_type', event)`` before the op-code switch, gated
+                # on a non-null ``t``). Heartbeat ACK frames carry ``t: null`` and skip that
+                # dispatch, so an ACKing-but-deaf socket leaves this stamp frozen while every
+                # transport-side check reads healthy.
                 adapter_self._last_dispatched_event_monotonic = time.perf_counter()
 
             @self._client.event

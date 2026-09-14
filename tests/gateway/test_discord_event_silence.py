@@ -111,8 +111,16 @@ async def test_zero_silence_bound_disables_only_that_dimension(monkeypatch):
 
     await _connect(adapter, monkeypatch, _dispatching_bot)
     bot = adapter._client
-    _transport_healthy(bot, ack_age=120.0)
     adapter._last_dispatched_event_monotonic = time.perf_counter() - 1000.0
+
+    # Knob at 0: a stale stamp alone must read healthy (the dimension is off),
+    # with every transport-side sample green.
+    _transport_healthy(bot)
+    assert adapter._read_websocket_health(bot) == (True, "healthy")
+
+    # Same stale stamp, now with a stale heartbeat ACK: the transport guards
+    # still trip, and only the ack-age dimension is named.
+    _transport_healthy(bot, ack_age=120.0)
 
     await _wait_until(lambda: handler.await_count, "probe did not run with the knob at 0", timeout=8.0)
     assert adapter._fatal_error_code == "discord_websocket_health_stale"

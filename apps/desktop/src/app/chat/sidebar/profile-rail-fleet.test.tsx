@@ -253,6 +253,18 @@ describe('ProfileRail fleet mode', () => {
     expect(within(local).getByRole('button', { name: 'default · This device' })).toBeTruthy()
     expect(within(local).getByRole('button', { name: 'omer · This device' })).toBeTruthy()
 
+    // The local default pill must not read as a plain "default profile" home
+    // shortcut — clicking it can silently trigger a first-launch install
+    // (#102826), so it carries a distinct glyph from every other gateway's
+    // default pill.
+    const localHome = within(local).getByRole('button', { name: 'default · This device' })
+    expect(localHome.querySelector('.codicon-device-desktop')).toBeTruthy()
+    expect(localHome.querySelector('.codicon-home')).toBeNull()
+
+    const vps = container.querySelector('[data-slot="profile-rail-gateway"][data-connection-id="vps"]') as HTMLElement
+    const vpsHome = within(vps).getByRole('button', { name: 'default · VPS' })
+    expect(vpsHome.querySelector('.codicon-home')).toBeTruthy()
+
     // The active gateway's own squares are unchanged and unqualified.
     expect(screen.getByRole('button', { name: 'scout' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'default' })).toBeTruthy()

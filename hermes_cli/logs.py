@@ -4,6 +4,7 @@
 ``hermes logs list`` shows the available files.
 """
 
+import io
 import re
 import sys
 import time
@@ -203,8 +204,10 @@ def _read_last_n_lines(path: Path, n: int) -> list:
                 else:
                     lines = chunk_lines
                 chunk_size = min(chunk_size * 2, 65536)
-            decoded = [raw.decode("utf-8", errors="replace") + "\n" for raw in lines if raw.strip()]
-            return decoded[-n:]
+            # Match text-mode readlines(): preserve blank lines and an unterminated
+            # final line, and normalize CRLF just like the small-file path.
+            text = b"\n".join(lines).decode("utf-8", errors="replace")
+            return io.StringIO(text, newline=None).readlines()[-n:]
     except Exception:
         return _read_all_lines(path)[-n:]
 

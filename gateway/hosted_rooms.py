@@ -907,16 +907,25 @@ def peer_room_is_reserved(db_path: DbPath, *, room_id: str, target_profile: str,
 
 
 def peer_room_grant_is_current(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
-    """Require a grant to match the target's current live reservation."""
-    timestamp = _now(now)
-    return _read_one(
-        db_path, """SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND member_id=?
+    with _transaction(db_path) as conn:
+        return peer_room_grant_is_current_on_conn(conn, claims=claims, now=now)
+
+
+def peer_room_grant_is_current_on_conn(conn: sqlite3.Connection, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
+    """Read current reservation on a caller-owned transaction, without reacquisition."""
+    return conn.execute(
+        """SELECT 1 FROM hosted_room_peer_reservations WHERE room_id=? AND member_id=?
             AND target_profile=? AND authority_gateway_id=? AND authority_epoch=?
-            AND expires_at>? AND revoked_at IS NULL LIMIT 1""", (*_reservation_claims(claims), timestamp)) is not None
+            AND expires_at>? AND revoked_at IS NULL LIMIT 1""", (*_reservation_claims(claims), _now(now))).fetchone() is not None
 
 
-def room_grant_is_revoked(
-    db_path: Path | str,
+def room_grant_is_revoked(db_path: DbPath, *, claims: Mapping[str, Any], now: float | None = None) -> bool:
+    with _transaction(db_path) as conn:
+        return room_grant_is_revoked_on_conn(conn, claims=claims, now=now)
+
+
+def room_grant_is_revoked_on_conn(
+    conn: sqlite3.Connection,
     *,
     claims: Mapping[str, Any],
     now: float | None = None,
@@ -926,28 +935,27 @@ def room_grant_is_revoked(
     scope_key = _room_grant_scope_key(claims)
     issued_at = float(claims.get("issued_at") or 0)
     grant_id = _room_grant_id(claims)
-    with _transaction(db_path) as conn:
-        exact_token = conn.execute(
-            """SELECT 1 FROM hosted_room_revoked_grant_tokens
-                 WHERE scope_key=? AND token_sha256=? AND expires_at>?""",
-            (scope_key, str(claims.get("_token_sha256") or ""), timestamp),
-        ).fetchone()
-        if exact_token is not None:
-            return True
-        # Pre-migration rows lack token identity; retain their deny semantics
-        # until expiry rather than silently reactivating revoked credentials.
-        exact = conn.execute(
-            """SELECT 1 FROM hosted_room_revoked_grant_ids
-                 WHERE scope_key=? AND grant_id=? AND expires_at>?""",
-            (scope_key, grant_id, timestamp),
-        ).fetchone()
-        if exact is not None:
-            return True
-        row = conn.execute(
-            """SELECT revoked_before FROM hosted_room_revoked_grants
-                 WHERE scope_key=? AND expires_at>?""",
-            (scope_key, timestamp),
-        ).fetchone()
+    exact_token = conn.execute(
+        """SELECT 1 FROM hosted_room_revoked_grant_tokens
+             WHERE scope_key=? AND token_sha256=? AND expires_at>?""",
+        (scope_key, str(claims.get("_token_sha256") or ""), timestamp),
+    ).fetchone()
+    if exact_token is not None:
+        return True
+    # Pre-migration rows lack token identity; retain their deny semantics
+    # until expiry rather than silently reactivating revoked credentials.
+    exact = conn.execute(
+        """SELECT 1 FROM hosted_room_revoked_grant_ids
+             WHERE scope_key=? AND grant_id=? AND expires_at>?""",
+        (scope_key, grant_id, timestamp),
+    ).fetchone()
+    if exact is not None:
+        return True
+    row = conn.execute(
+        """SELECT revoked_before FROM hosted_room_revoked_grants
+             WHERE scope_key=? AND expires_at>?""",
+        (scope_key, timestamp),
+    ).fetchone()
     return row is not None and issued_at <= float(row["revoked_before"])
 
 

@@ -12,6 +12,9 @@ GROUP_METHODS = {
     'groups.log': 'session:read',
     'groups.create': 'session:control',
     'groups.peer.register': 'session:control',
+    'groups.peer.invite': 'session:operator',
+    'groups.peer.revoke': 'session:operator',
+    'groups.peer.revoke_exact': 'session:operator',
     'groups.rename': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
@@ -31,6 +34,10 @@ _FIELDS = {
     'groups.peer.register': {'request_id', 'room_id', 'member_id', 'target_url',
                              'target_profile', 'grant', 'catalog', 'cancellation_scope_id',
                              'trace_id', 'expected_grant_sha256'},
+    'groups.peer.invite': {'request_id', 'room_id', 'home_install_id', 'authority_gateway_id',
+                           'authority_epoch', 'member_id', 'grant_id', 'ttl_seconds', 'status_ttl_seconds'},
+    'groups.peer.revoke': {'grant'},
+    'groups.peer.revoke_exact': {'grant'},
     'groups.rename': {'room_id', 'event_id', 'name'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
@@ -72,6 +79,9 @@ async def dispatch_group_control(connection, method, params):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
+                if method in {'groups.peer.invite', 'groups.peer.revoke', 'groups.peer.revoke_exact'}:
+                    from gateway.session_group_peers import dispatch_group_peer
+                    return dispatch_group_peer(connection, method, supplied)
                 return _group(authority, actor, home, method, supplied)
             except RuntimeStoreError:
                 raise

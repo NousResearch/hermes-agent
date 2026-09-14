@@ -108,8 +108,9 @@ async def test_completed_registration_replay_requires_exact_binding(setup_owner,
     if capabilities and 'result' in capabilities:
         assert capabilities['result']['room_link']['enabled'] is False
         assert 'groups.peer.register' in capabilities['result']['methods']
-        assert not any(m in capabilities['result']['methods'] for m in (
-            'groups.peer.invite', 'groups.peer.revoke', 'groups.peer.revoke_exact'))
+        for method in ('groups.peer.invite', 'groups.peer.revoke', 'groups.peer.revoke_exact'):
+            denied = await s.connection.dispatch({'method': method, 'params': {}})
+            assert denied['error']['message'] == 'permission_denied'
 
 
 @pytest.mark.asyncio

@@ -70,35 +70,42 @@ def _local_target(claims: dict[str, Any] | None, _api_request_profile) -> tuple[
 
 def _canonical_room_peer(self, profile: str) -> bool:
     """A missing canonical owner must not fall back to legacy Serve."""
-    from gateway.session_authorities import active_authority
-    runner = self.gateway_runner
-    with self._profile_scope(profile):
-        return (active_authority(runner) is not None
-                or getattr(runner, 'session_authorities', None) is not None
-                or getattr(runner, 'session_authority', None) is not None)
+    # Only standalone Serve has no gateway runner. A bound gateway missing its
+    # owner is unavailable, never permission to select Serve's executor.
+    return self.gateway_runner is not None
 
 
 def _room_peer_unavailable(self, profile: str, *, _openai_error):
     if _canonical_room_peer(self, profile):
-        return _json_error(
-            _openai_error, 'Canonical RoomLink execution and controls are not supported.',
-            code='canonical_room_peer_unsupported', status=409)
+        from gateway.session_peer_target import target_policy
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            target_policy(self, profile)
+        except RuntimeStoreError as exc:
+            return _json_error(_openai_error, exc.reason,
+                               code='canonical_room_peer_unsupported', status=409)
     return None
 
 
-def _local_room_catalog(self, profile: str, installation_id: str) -> tuple[dict, dict]:
-    """Return ``(execution_policy, catalog)`` for this gateway's *profile*."""
+def _local_room_catalog(self, profile: str, installation_id: str, *, _connection=None) -> tuple[dict, dict]:
+    """One bound target policy for invitation, normalization and execution."""
     from gateway.hosted_room_peer import PROTOCOL_VERSION, catalog_mapping
     from gateway.hosted_room_execution_policy import execution_policy_mapping
+    from hermes_state_runtime import RuntimeStoreError
     with self._profile_scope(profile):
         execution_policy = execution_policy_mapping(target_profile=profile)
+        text = True
+        if _canonical_room_peer(self, profile):
+            from gateway.session_peer_target import target_policy
+            try:
+                _, _, execution_policy = target_policy(self, profile, connection=_connection)
+            except RuntimeStoreError:
+                text = False
     catalog = catalog_mapping(
         installation_id=installation_id, protocol_versions=(PROTOCOL_VERSION,), link_modes=("direct",),
-        persistent_process=True, text=not _canonical_room_peer(self, profile),
-        attachments=False, target_profile=profile,
+        persistent_process=True, text=text, attachments=False, target_profile=profile,
         execution_policy=execution_policy)
     return execution_policy, catalog
-
 
 def _http_routes(self) -> list[tuple[str, str, Any]]:
     async def revoke_exact(request):
@@ -158,11 +165,15 @@ def _decode_request_grant(self, request: "web.Request", *, permission: str) -> d
 def _room_grant_claims(self, request: "web.Request", *, permission: str) -> dict[str, Any]:
     claims = _decode_request_grant(self, request, permission=permission)
     from gateway import hosted_rooms
-    db_path = hosted_rooms.default_db_path()
-    if hosted_rooms.room_grant_is_revoked(db_path, claims=claims):
-        raise RoomGrantReauthorizationRequired("room grant is revoked")
-    if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
-        raise RoomGrantReauthorizationRequired("room grant is no longer current")
+    paths = (hosted_rooms.default_db_path(),)
+    if _canonical_room_peer(self, claims['target_profile']):
+        from gateway.hosted_room_grant_state import grant_state_db_paths
+        paths = grant_state_db_paths()
+    for db_path in paths:
+        if hosted_rooms.room_grant_is_revoked(db_path, claims=claims):
+            raise RoomGrantReauthorizationRequired("room grant is revoked")
+        if not hosted_rooms.peer_room_grant_is_current(db_path, claims=claims):
+            raise RoomGrantReauthorizationRequired("room grant is no longer current")
     return claims
 
 
@@ -198,47 +209,24 @@ async def _handle_room_member_invitation(
         )
     try:
         from gateway import hosted_rooms
-        from gateway.hosted_room_peer import (
-            PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
-            catalog_mapping,
-            decode_room_grant,
-            issue_room_grant,
-        )
-        from gateway.hosted_room_execution_policy import execution_policy_mapping
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant, _DISPATCH_FIELDS
+        from gateway.session_group_peers import invitation_lifetimes
 
         profile = _effective_room_profile(_api_request_profile)
         unavailable = _room_peer_unavailable(self, profile, _openai_error=_openai_error)
         if unavailable is not None:
             return unavailable
         target_install_id = hosted_rooms.local_authority_gateway_id()
-        ttl = float(body.get("ttl_seconds", 3600))
-        if not 60 <= ttl <= 24 * 60 * 60:
-            raise ValueError("ttl_seconds must be between 60 and 86400")
-        status_ttl = float(body.get("status_ttl_seconds", ttl))
-        if not ttl <= status_ttl <= 30 * 24 * 60 * 60:
-            raise ValueError(
-                "status_ttl_seconds must be at least ttl_seconds and no more than 2592000"
-            )
-        with self._profile_scope(profile):
-            execution_policy = execution_policy_mapping(target_profile=profile)
-        catalog = catalog_mapping(
-            installation_id=target_install_id,
-            protocol_versions=(ROOM_LINK_PROTOCOL_VERSION,),
-            link_modes=("direct",),
-            persistent_process=True,
-            text=True,
-            attachments=False,
-            target_profile=profile,
-            execution_policy=execution_policy,
-        )
+        ttl, status_ttl = invitation_lifetimes(body)
+        identity = {name: _DISPATCH_FIELDS[name](body[name], field=name) for name in _ROOM_IDENTITY_FIELDS}
+        execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
+        if not catalog['text'] or execution_policy['approval_mode'] == 'off':
+            raise ValueError('remote room execution requires an enabled approval policy')
         token = issue_room_grant(
             self._room_grant_secret(),
             grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
-            room_id=str(body["room_id"]),
-            home_install_id=str(body["home_install_id"]),
-            authority_gateway_id=str(body["authority_gateway_id"]),
-            authority_epoch=int(body["authority_epoch"]),
-            member_id=str(body["member_id"]),
+            **identity,
+            permissions=("approve", "dispatch", "status", "stop"),
             target_install_id=target_install_id,
             target_profile=profile,
             execution_policy_digest=execution_policy["policy_digest"],
@@ -259,6 +247,16 @@ async def _handle_room_member_invitation(
             claims=claims,
             expires_at=float(claims.get("status_expires_at", claims["expires_at"])),
         )
+        if _canonical_room_peer(self, profile):
+            from gateway.session_peer_target import grant_fence, target_policy, require_current_grant
+            with grant_fence(self, profile) as (authority, shared):
+                def confirm(conn):
+                    _, _, current_policy = target_policy(self, profile, connection=conn)
+                    if current_policy != execution_policy:
+                        raise ValueError('room execution policy changed')
+                    require_current_grant(shared, claims)
+                    require_current_grant(conn, claims)
+                authority.db._execute_write(confirm)
     except Exception as exc:
         return web.json_response(
             _openai_error(str(exc), code="invalid_room_invitation"),

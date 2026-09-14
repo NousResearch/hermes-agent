@@ -140,6 +140,22 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
+def _hook_call_identity(kwargs: Dict[str, Any]) -> Any:
+    """Identity of the call this callback fires for, or ``None`` when the event has none.
+
+    Concurrent invocations of the same tool in one session must not collapse into one
+    gate key: they are different work, and treating the second as a duplicate drops the
+    hook as if a callback had timed out (upstream #98382). The identity is already in the
+    payload; nothing new is plumbed. Deliberately not ``api_request_id`` — one API request
+    carries many tool calls, which would re-collapse the keys.
+    """
+    for field in ("tool_call_id", "turn_id"):
+        value = kwargs.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
     """Whether *hook_name* should run under the non-blocking timeout path."""
     if timeout <= 0 or hook_name in _HOOK_CALLER_THREAD_HOOKS:
@@ -211,19 +227,22 @@ class PluginDispatchMixin:
         suppressed, still running, timed out (worker abandoned, never joined), or the worker
         could not be started. Exceptions propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
-        callback_key = (hook_name, id(cb))
+        # Suppression is a fact about the CALLBACK — a hung one must keep its back-off —
+        # so that key stays coarse. The gate must instead tell CONCURRENT CALLS apart.
+        suppression_key = (hook_name, id(cb))
+        gate_key = (*suppression_key, _hook_call_identity(kwargs))
         token = object()
         with self._hook_timeout_lock:
-            suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
-            running = callback_key in self._hook_running_callbacks
+            suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
+            running = gate_key in self._hook_running_callbacks
             if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
                 logger.warning(
                     "Hook '%s' callback %s skipped after previous "
                     "timeout or while still running", hook_name, callback_name)
                 return _HOOK_SKIPPED
             if suppressed_until is not None:
-                self._hook_timeout_suppressed_until.pop(callback_key, None)
-            self._hook_running_callbacks[callback_key] = token
+                self._hook_timeout_suppressed_until.pop(suppression_key, None)
+            self._hook_running_callbacks[gate_key] = token
 
         context = contextvars.copy_context()
         done = threading.Event()
@@ -232,8 +251,8 @@ class PluginDispatchMixin:
 
         def _release_token() -> None:
             with self._hook_timeout_lock:
-                if self._hook_running_callbacks.get(callback_key) is token:
-                    self._hook_running_callbacks.pop(callback_key, None)
+                if self._hook_running_callbacks.get(gate_key) is token:
+                    self._hook_running_callbacks.pop(gate_key, None)
 
         def _runner() -> None:
             try:
@@ -256,7 +275,7 @@ class PluginDispatchMixin:
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
             with self._hook_timeout_lock:
                 # See #6622.
-                self._hook_timeout_suppressed_until[callback_key] = (
+                self._hook_timeout_suppressed_until[suppression_key] = (
                     time.monotonic() + self._hook_timeout_suppression_seconds)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)

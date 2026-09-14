@@ -167,7 +167,7 @@ def get_sessions(
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "created", source: str = None, sources: str = None,
     exclude_sources: str = None, cwd_prefix: str = None, full: bool = False,
-    profile: Optional[str] = None):
+    profile: Optional[str] = None, include_spawned: bool = False):
     """List sessions.
 
     ``order=recent`` sorts by latest activity across the compression chain, so
@@ -207,6 +207,11 @@ def get_sessions(
                 compact_rows=not full,
                 include_pinned=True,
                 **scope)
+            if include_spawned:
+                sessions.extend(db.list_spawned_session_descendants(
+                    sessions, compact_rows=not full,
+                    include_archived=include_archived, archived_only=archived_only,
+                ))
             total = db.session_count(exclude_children=True, **scope)
             now = time.time()
             row_profile = profile_name or _cron_default_profile()

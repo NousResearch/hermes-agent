@@ -62,7 +62,10 @@ def client(monkeypatch, profiles_on_disk):
     return c
 
 
-def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None):
+def _seed_session(
+    home, session_id, *, source, cwd=None, tokens=None, cost=None,
+    parent_session_id=None, model_config=None,
+):
     """One session with a message, so it clears the sidebar's min_messages=1.
 
     ``cwd`` is what attaches it to a project — without one it lands in Home.
@@ -75,7 +78,10 @@ def _seed_session(home, session_id, *, source, cwd=None, tokens=None, cost=None)
 
     db = SessionDB(db_path=home / "state.db")
     try:
-        db.create_session(session_id, source=source, cwd=str(cwd) if cwd else None)
+        db.create_session(
+            session_id, source=source, cwd=str(cwd) if cwd else None,
+            parent_session_id=parent_session_id, model_config=model_config,
+        )
         db.append_message(session_id=session_id, role="user", content="hi")
     finally:
         db.close()
@@ -106,6 +112,84 @@ def _slice_ids(payload, slice_name):
 
 
 class TestSidebarScope:
+
+    def test_spawned_tree_follows_cron_parent_slice(self, client, profiles_on_disk):
+        home = profiles_on_disk["default"]
+        _seed_session(home, "cron-root", source="cron")
+        _seed_session(
+            home, "cron-child", source="external-agent", parent_session_id="cron-root",
+            model_config={"_delegate_from": "cron-root"},
+        )
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "default", "include_spawned": "true"},
+        ).json()
+        assert _slice_ids(payload, "cron") == {"cron-root", "cron-child"}
+        child = next(row for row in payload["cron"]["sessions"] if row["id"] == "cron-child")
+        assert child["spawned_by_session_id"] == "cron-root"
+
+    def test_spawned_tree_is_opt_in_and_provider_neutral(self, client, profiles_on_disk):
+        home = profiles_on_disk["default"]
+        marker = lambda parent: {"_delegate_from": parent}
+        _seed_session(home, "root", source="cli")
+        _seed_session(
+            home, "child-root", source="acp-claude", parent_session_id="root",
+            model_config=marker("root"),
+        )
+
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            db.end_session("child-root", "compression")
+        finally:
+            db.close()
+        _seed_session(
+            home, "child-tip", source="acp-claude", parent_session_id="child-root",
+        )
+        _seed_session(
+            home, "grandchild", source="another-provider", parent_session_id="child-tip",
+            model_config=marker("child-tip"),
+        )
+        _seed_session(
+            home, "branch", source="cli", parent_session_id="root",
+            model_config={"_branched_from": "root"},
+        )
+
+        params = {"recents_profile": "default", "recents_exclude": "cron,tool"}
+        plain = client.get("/api/profiles/sessions/sidebar", params=params).json()["recents"]["sessions"]
+        nested = client.get(
+            "/api/profiles/sessions/sidebar", params={**params, "include_spawned": "true"},
+        ).json()["recents"]["sessions"]
+        remote_compatible = client.get(
+            "/api/sessions", params={"include_spawned": "true", "order": "recent"},
+        ).json()["sessions"]
+
+        assert {row["id"] for row in plain} == {"root", "branch"}
+        assert {row["id"] for row in nested} == {"root", "branch", "child-tip", "grandchild"}
+        assert {row["id"] for row in remote_compatible} == {
+            "root", "branch", "child-tip", "grandchild",
+        }
+        by_id = {row["id"]: row for row in nested}
+        assert by_id["child-tip"]["spawned_by_session_id"] == "root"
+        assert by_id["child-tip"]["_lineage_ids"] == ["child-root", "child-tip"]
+        assert by_id["grandchild"]["spawned_by_session_id"] == "child-tip"
+        assert all("model_config" not in row for row in nested)
+
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            for session_id in ("root", "branch", "child-tip", "grandchild"):
+                db.set_session_archived(session_id, True)
+        finally:
+            db.close()
+        archived = client.get(
+            "/api/sessions",
+            params={"archived": "only", "include_spawned": "true", "order": "recent"},
+        ).json()["sessions"]
+        assert {row["id"] for row in archived} == {
+            "root", "branch", "child-tip", "grandchild",
+        }
 
     def test_concrete_profile_sees_only_its_own_slices(self, client, profiles_on_disk):
         _seed_session(profiles_on_disk["default"], "default-chat", source="cli")

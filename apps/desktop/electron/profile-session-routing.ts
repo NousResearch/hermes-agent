@@ -82,30 +82,37 @@ function isPinned(row: unknown): boolean {
   return Boolean(row && typeof row === 'object' && 'pinned' in row && row.pinned)
 }
 
-function profileSessionId(row: unknown): string | null {
-  const id = sessionId(row)
+export function mergeProfileSessionWindow(rows: unknown[], offset: number, limit: number): unknown[] {
+  const spawnedKey = (session: Record<string, unknown>, id: unknown): string | null => {
+    if (typeof id !== 'string') {
+      return null
+    }
 
-  if (!id) {
-    return null
+    const connection = typeof session.connection_id === 'string' ? session.connection_id.trim() : ''
+    const profile = typeof session.profile === 'string' ? session.profile : ''
+
+    return `${!connection || connection === 'local' ? 'local' : connection}\0${profile}\0${id}`
   }
 
-  const profile =
-    row && typeof row === 'object' && 'profile' in row && typeof row.profile === 'string' ? row.profile : ''
+  const roots = rows.filter(
+    row => !row || typeof row !== 'object' || !('spawned_by_session_id' in row) || !row.spawned_by_session_id
+  )
 
-  return `${profile}\0${id}`
-}
-
-export function mergeProfileSessionWindow(rows: unknown[], offset: number, limit: number): unknown[] {
-  const window = rows.slice(offset, offset + limit)
+  const window = roots.slice(offset, offset + limit)
   const seenRows = new Set(window)
-  const seenIds = new Set(window.map(profileSessionId).filter((id): id is string => id !== null))
 
-  for (const row of rows.slice(offset + limit)) {
+  const seenIds = new Set(
+    window
+      .map(row => (row && typeof row === 'object' ? spawnedKey(row as Record<string, unknown>, sessionId(row)) : null))
+      .filter((id): id is string => id !== null)
+  )
+
+  for (const row of roots.slice(offset + limit)) {
     if (!isPinned(row)) {
       continue
     }
 
-    const id = profileSessionId(row)
+    const id = row && typeof row === 'object' ? spawnedKey(row as Record<string, unknown>, sessionId(row)) : null
 
     if ((id && seenIds.has(id)) || (!id && seenRows.has(row))) {
       continue
@@ -118,6 +125,54 @@ export function mergeProfileSessionWindow(rows: unknown[], offset: number, limit
     }
 
     window.push(row)
+  }
+
+  const visible = new Set<string>()
+
+  for (const row of window) {
+    if (!row || typeof row !== 'object') {
+      continue
+    }
+
+    const session = row as Record<string, unknown>
+    const ids = Array.isArray(session._lineage_ids) ? session._lineage_ids : [session.id]
+
+    for (const id of ids) {
+      const key = spawnedKey(session, id)
+
+      if (key) {
+        visible.add(key)
+      }
+    }
+  }
+
+  const pending = rows.filter(
+    row => row && typeof row === 'object' && 'spawned_by_session_id' in row && row.spawned_by_session_id
+  )
+
+  while (pending.length) {
+    const index = pending.findIndex(row => {
+      const session = row as Record<string, unknown>
+
+      return visible.has(spawnedKey(session, session.spawned_by_session_id) ?? '')
+    })
+
+    if (index === -1) {
+      break
+    }
+
+    const [row] = pending.splice(index, 1)
+    const session = row as Record<string, unknown>
+    const ids = Array.isArray(session._lineage_ids) ? session._lineage_ids : [session.id]
+    window.push(row)
+
+    for (const id of ids) {
+      const key = spawnedKey(session, id)
+
+      if (key) {
+        visible.add(key)
+      }
+    }
   }
 
   return window
@@ -157,8 +212,17 @@ export function buildSidebarSessionSliceParams(searchParams: URLSearchParams): S
     messaging.set('exclude_sources', messagingExclude)
   }
 
+  const cron = slice('cron_limit', '50', { profile, source: 'cron' })
+  const includeSpawned = searchParams.get('include_spawned')
+
+  if (includeSpawned) {
+    for (const params of [recents, cron, messaging]) {
+      params.set('include_spawned', includeSpawned)
+    }
+  }
+
   return {
-    cron: slice('cron_limit', '50', { profile, source: 'cron' }),
+    cron,
     messaging,
     recents
   }

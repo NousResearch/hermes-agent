@@ -46,6 +46,12 @@ describe('sameCronSignature', () => {
     expect(sameCronSignature(a, b)).toBe(false)
   })
 
+  it('is false when only the spawned-session parent changed', () => {
+    const a = [session('a', 't')]
+    const b = [session('a', 't', { spawned_by_session_id: 'parent' })]
+    expect(sameCronSignature(a, b)).toBe(false)
+  })
+
   it('is true when both flags match', () => {
     const a = [session('a', 't', { archived: false, pinned: true })]
     const b = [session('a', 't', { archived: false, pinned: true })]

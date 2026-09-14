@@ -21,7 +21,8 @@ test('remote sidebar slices all follow the selected profile', () => {
       cron_limit: '40',
       messaging_limit: '50',
       recents_exclude: 'cron,signal',
-      messaging_exclude: 'desktop,cron'
+      messaging_exclude: 'desktop,cron',
+      include_spawned: 'true'
     })
   )
 
@@ -29,6 +30,9 @@ test('remote sidebar slices all follow the selected profile', () => {
   assert.equal(slices.cron.get('profile'), 'work-vps')
   assert.equal(slices.messaging.get('profile'), 'work-vps')
   assert.equal(slices.recents.get('exclude_sources'), 'cron,signal')
+  assert.equal(slices.recents.get('include_spawned'), 'true')
+  assert.equal(slices.cron.get('include_spawned'), 'true')
+  assert.equal(slices.messaging.get('include_spawned'), 'true')
   assert.equal(slices.cron.get('source'), 'cron')
   assert.equal(slices.messaging.get('exclude_sources'), 'desktop,cron')
 })
@@ -193,17 +197,40 @@ test('remote paging treats malformed totals as unknown instead of truncating the
   }
 })
 
-test('merged profile windows retain pinned rows outside the recency window', () => {
+test('merged profile windows retain pinned roots and spawned descendants outside the recency window', () => {
   const rows = [
     { id: 'recent-default', profile: 'default', pinned: false },
     { id: 'shared-id', profile: 'default', pinned: false },
     { id: 'recent-remote', profile: 'remote-work', pinned: false },
+    { id: 'spawned', profile: 'default', spawned_by_session_id: 'recent-default' },
     { id: 'shared-id', profile: 'remote-work', pinned: true },
     { id: 'old-remote', profile: 'remote-work', pinned: true },
-    { id: 'old-unpinned', profile: 'remote-work', pinned: false }
+    { id: 'old-unpinned', profile: 'remote-work', pinned: false },
+    {
+      connection_id: 'remote',
+      id: 'wrong-owner-child',
+      profile: 'default',
+      spawned_by_session_id: 'recent-default'
+    },
+    { connection_id: 'remote', id: 'shared-id', pinned: true, profile: 'default' },
+    {
+      connection_id: 'remote',
+      id: 'remote-twin-child',
+      profile: 'default',
+      spawned_by_session_id: 'shared-id'
+    }
   ]
 
-  assert.deepEqual(mergeProfileSessionWindow(rows, 0, 3), [rows[0], rows[1], rows[2], rows[3], rows[4]])
+  assert.deepEqual(mergeProfileSessionWindow(rows, 0, 3), [
+    rows[0],
+    rows[1],
+    rows[2],
+    rows[4],
+    rows[5],
+    rows[8],
+    rows[3],
+    rows[9]
+  ])
 })
 
 test('remote session reads keep small requests on one call', async () => {

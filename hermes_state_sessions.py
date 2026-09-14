@@ -994,6 +994,73 @@ class SessionSessionsMixin:
             projected.append(merged)
         return projected
 
+    def list_spawned_session_descendants(
+        self, parents: List[Dict[str, Any]], *, compact_rows: bool = True,
+        include_archived: bool = False, archived_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Visible delegated descendants of *parents*, projected to compression tips.
+
+        ``_delegate_from`` is the durable producer marker today; callers receive the
+        provider-neutral ``spawned_by_session_id`` relationship. Branch, reset and
+        compression children therefore never enter the spawned-agent tree.
+        """
+        parent_ids = {
+            session_id
+            for parent in parents
+            for session_id in (parent.get("_lineage_ids") or [parent.get("id")])
+            if session_id
+        }
+        if not parent_ids:
+            return []
+
+        search_ids = set(parent_ids)
+        descendant_ids = set()
+        while True:
+            with self._read_ctx() as conn:
+                discovered = set(_collect_delegate_child_ids(conn, list(search_ids)))
+            discovered -= descendant_ids
+            if not discovered:
+                break
+            descendant_ids.update(discovered)
+            discovered_rows = self._get_session_rich_rows_batch(discovered, compact_rows=True)
+            for row in discovered_rows.values():
+                spawned_by = str(_parse_model_config(row.get("model_config")).get("_delegate_from") or "")
+                if spawned_by == str(row.get("parent_session_id") or ""):
+                    search_ids.update(self.get_compression_chain(row["id"]))
+
+        rows_by_id = self._get_session_rich_rows_batch(descendant_ids, compact_rows=compact_rows)
+        roots = []
+        for row in rows_by_id.values():
+            spawned_by = str(_parse_model_config(row.get("model_config")).get("_delegate_from") or "")
+            if spawned_by and spawned_by == str(row.get("parent_session_id") or ""):
+                row["spawned_by_session_id"] = spawned_by
+                roots.append(row)
+
+        projected = self._project_compression_tips(roots, compact_rows)
+        visible_ids = set(parent_ids)
+        pending = [
+            row for row in projected
+            if not row.get("hidden") and (
+                bool(row.get("archived")) if archived_only
+                else include_archived or not row.get("archived")
+            )
+        ]
+        result = []
+        while pending:
+            admitted = [row for row in pending if row["spawned_by_session_id"] in visible_ids]
+            if not admitted:
+                break
+            admitted_ids = {id(row) for row in admitted}
+            pending = [row for row in pending if id(row) not in admitted_ids]
+            for row in admitted:
+                result.append(row)
+                visible_ids.update(row.get("_lineage_ids") or [row["id"]])
+
+        result.sort(key=lambda row: row.get("last_active") or row.get("started_at") or 0, reverse=True)
+        for row in result:
+            row["unread"] = self.session_unread(row)
+        return result
+
     def list_recent_sessions_bounded(
         self,
         *,

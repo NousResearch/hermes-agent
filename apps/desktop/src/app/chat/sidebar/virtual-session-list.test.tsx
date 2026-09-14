@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, fireEvent, render } from '@testing-library/react'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -43,9 +43,24 @@ vi.mock('./chrome', () => ({
   )
 }))
 
-vi.mock('./session-row', () => ({ SidebarSessionRow: () => null }))
+const sessionRowPropsHistory = vi.hoisted(() => [] as Array<Record<string, unknown>>)
 
-afterEach(cleanup)
+vi.mock('./session-row', () => ({
+  SidebarSessionRow: (props: Record<string, unknown>) => {
+    sessionRowPropsHistory.push(props)
+
+    const session = props.session as { id: string }
+
+    return props.onToggleTree ? (
+      <button data-testid={`tree-toggle-${session.id}`} onClick={props.onToggleTree as () => void} type="button" />
+    ) : null
+  }
+}))
+
+afterEach(() => {
+  cleanup()
+  sessionRowPropsHistory.length = 0
+})
 
 const rows: SidebarListRow[] = [
   { key: 'today', kind: 'divider', label: 'Today' },
@@ -109,5 +124,37 @@ describe('VirtualSessionList', () => {
     // scroller keeps overscroll-contain.
     expect(scroller?.className).toContain('overflow-y-auto')
     expect(scroller?.className).not.toContain('overscroll-contain')
+  })
+
+  it('renders the virtualized parent with its collapse state and toggle behavior', () => {
+    const onToggle = vi.fn()
+    const parent = { id: 'parent', profile: 'default', started_at: 1 } as never
+    const child = { id: 'child', profile: 'default', started_at: 1 } as never
+
+    const sessionRows: SidebarListRow[] = [
+      { entry: { hasChildren: true, session: parent }, kind: 'session' },
+      { entry: { branchDepth: 1, branchStem: '└─ ', session: child }, kind: 'session' }
+    ]
+
+    const { getByTestId } = render(
+      <VirtualSessionList
+        activeSessionId={null}
+        onArchiveSession={noop}
+        onDeleteSession={noop}
+        onResumeSession={noop}
+        onTogglePin={noop}
+        onToggleUnread={noop}
+        pinned={false}
+        rows={sessionRows}
+        sortable={false}
+        treeToggle={{ onToggle, open: () => false }}
+      />
+    )
+
+    expect(sessionRowPropsHistory[0]).toMatchObject({ treeOpen: false })
+    expect(sessionRowPropsHistory[1]?.onToggleTree).toBeUndefined()
+
+    fireEvent.click(getByTestId('tree-toggle-parent'))
+    expect(onToggle).toHaveBeenCalledWith(parent)
   })
 })

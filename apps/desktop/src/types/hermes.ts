@@ -505,6 +505,10 @@ export interface SessionInfo {
   output_tokens: number
   /** Parent conversation when this row is a /branch fork. */
   parent_session_id?: null | string
+  /** Provider-neutral parent for a delegated child session. The backend derives
+   *  this from its durable spawn relationship; clients must not infer it from
+   *  source, model, provider, or executable names. */
+  spawned_by_session_id?: null | string
   /** Durable server-side pin flag (`sessions.pinned`). The list endpoints
    *  back-fill pinned conversations past their LIMIT, so a pinned row is
    *  always present in a page — which makes this authoritative for the

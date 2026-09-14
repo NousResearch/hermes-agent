@@ -444,8 +444,16 @@ describe('refreshSessions identity + loading hygiene', () => {
 describe('refreshSessions batches slices into one request', () => {
   it('makes a single sidebar call and distributes recents / cron / messaging', async () => {
     const recents = [row('a'), row('b')]
-    const cron = [row('c1', { source: 'cron', title: 'nightly' })]
-    const messaging = [row('m1', { source: 'telegram', title: 'tg chat' })]
+
+    const cron = [
+      row('c1', { source: 'cron', title: 'nightly' }),
+      row('c1-child', { source: 'subagent', spawned_by_session_id: 'c1' })
+    ]
+
+    const messaging = [
+      row('m1', { source: 'telegram', title: 'tg chat' }),
+      row('m1-child', { source: 'subagent', spawned_by_session_id: 'm1' })
+    ]
 
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: recents }, cron, messaging))
 
@@ -461,8 +469,8 @@ describe('refreshSessions batches slices into one request', () => {
 
     // Each slice landed in its own store.
     expect($sessions.get().map(s => s.id)).toEqual(['a', 'b'])
-    expect($cronSessions.get().map(s => s.id)).toEqual(['c1'])
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
+    expect($cronSessions.get().map(s => s.id)).toEqual(['c1', 'c1-child'])
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1', 'm1-child'])
   })
 
   it('forwards the active profile scope + section limits to the batched call', async () => {

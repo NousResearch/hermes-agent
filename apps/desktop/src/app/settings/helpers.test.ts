@@ -18,6 +18,22 @@ import {
 } from './helpers'
 
 describe('settings helpers', () => {
+  it('surfaces Codex threshold auto-raise controls with user-facing copy', () => {
+    const config: HermesConfigRecord = {
+      compression: { codex_gpt55_autoraise: true, codex_gpt55_autoraise_notice: true }
+    }
+    const fields = new Map(sectionFieldEntries({}, config).get('memory') ?? [])
+
+    for (const key of [
+      'compression.codex_gpt55_autoraise',
+      'compression.codex_gpt55_autoraise_notice'
+    ]) {
+      expect(fields.get(key)?.type).toBe('boolean')
+      expect(fieldCopyForSchemaKey(FIELD_LABELS, key)).toBeTruthy()
+      expect(fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, key)).toBeTruthy()
+    }
+  })
+
   it('surfaces repository discovery config in Workspace with user-facing copy', () => {
     const workspace = SECTIONS.find(section => section.id === 'workspace')
 

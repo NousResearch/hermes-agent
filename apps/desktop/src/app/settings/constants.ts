@@ -552,6 +552,8 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   compression: {
     enabled: 'Auto-Compression',
     threshold: 'Compression Threshold',
+    codexGpt55Autoraise: 'Codex Threshold Auto-Raise',
+    codexGpt55AutoraiseNotice: 'Codex Auto-Raise Notice',
     targetRatio: 'Compression Target',
     protectLastN: 'Protected Recent Messages'
   },
@@ -621,7 +623,11 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     engine: 'Strategy for managing long conversations near the context limit.'
   },
   compression: {
-    enabled: 'Summarize older context when conversations get large.'
+    enabled: 'Summarize older context when conversations get large.',
+    codexGpt55Autoraise:
+      'Raise the compression threshold to 85% for supported models on the ChatGPT Codex OAuth route. Turn off to always use the global threshold.',
+    codexGpt55AutoraiseNotice:
+      'Show a one-time notice when Codex raises the effective threshold. Turning this off does not disable the auto-raise.'
   },
   voice: {
     autoTts: 'Automatically speak assistant responses.',
@@ -728,6 +734,8 @@ export const SECTIONS: DesktopConfigSection[] = [
       'context.engine',
       'compression.enabled',
       'compression.threshold',
+      'compression.codex_gpt55_autoraise',
+      'compression.codex_gpt55_autoraise_notice',
       'compression.target_ratio',
       'compression.protect_last_n'
     ]

@@ -202,6 +202,63 @@ print(json.dumps(results))
             assert "unrecognized arguments" not in entry["stderr"]
 
 
+class TestYoloOnGatewaySubparsers:
+    """`--yolo` must parse at every gateway position (#110147).
+
+    The gateway is the headless/systemd entry point where approval prompts
+    can't be answered — exactly --yolo's case — but only the root parser and
+    `chat` declared the flag, so `hermes gateway --yolo` failed with
+    `unrecognized arguments`. All positions share the top-level `yolo` dest
+    via SUPPRESS defaults, like --accept-hooks."""
+
+    ARGVS = [
+        ["gateway", "--yolo"],
+        ["gateway", "--yolo", "run"],
+        ["gateway", "run", "--yolo"],
+        ["--yolo", "gateway", "run"],
+        ["gateway", "run"],  # control: flag absent keeps the top-level False
+    ]
+
+    # Parse with the real tree (gateway subparsers live on main's parser, not
+    # build_top_level_parser) in one subprocess — hermes_cli.main is heavy.
+    _DRIVER = r"""
+import json, sys
+from hermes_cli.main import _build_cli_parser
+parser, _ = _build_cli_parser()
+out = []
+for argv in json.loads(sys.argv[1]):
+    try:
+        args = parser.parse_args(argv)
+        out.append({"argv": argv, "yolo": getattr(args, "yolo", None)})
+    except SystemExit as exc:
+        out.append({"argv": argv, "error": int(exc.code or 0)})
+print(json.dumps(out))
+"""
+
+    def test_yolo_accepted_at_every_gateway_position(self):
+        import json
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-c", self._DRIVER, json.dumps(self.ARGVS)],
+            capture_output=True, text=True, timeout=180,
+        )
+        assert result.returncode == 0, (
+            f"driver failed rc={result.returncode}\n"
+            f"stdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}"
+        )
+        entries = json.loads(result.stdout.strip().splitlines()[-1])
+        by_argv = {}
+        for entry in entries:
+            assert "error" not in entry, (
+                f"argv={entry['argv']!r} exited {entry['error']} "
+                "(unrecognized arguments?)"
+            )
+            by_argv[tuple(entry["argv"])] = entry["yolo"]
+        assert by_argv[("gateway", "run")] is False
+        for argv in self.ARGVS[:-1]:
+            assert by_argv[tuple(argv)] is True, f"argv={argv!r}: yolo not set"
+
+
 class TestChatSubparserInheritedValueFlags:
     """Verify -t/--toolsets, -m/--model and --provider survive parent→chat
     subparser dispatch.

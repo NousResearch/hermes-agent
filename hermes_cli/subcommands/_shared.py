@@ -16,6 +16,13 @@ def add_accept_hooks_flag(parser: argparse.ArgumentParser) -> None:
             "(equivalent to HERMES_ACCEPT_HOOKS=1 / hooks_auto_accept: true).")
 
 
+def add_yolo_flag(parser: argparse.ArgumentParser) -> None:
+    """Attach ``--yolo`` (SUPPRESS default so it coexists with the top-level flag at any position)."""
+    parser.add_argument(
+        "--yolo", action="store_true", default=argparse.SUPPRESS,
+        help="Bypass all dangerous command approval prompts (use at your own risk)")
+
+
 def add_yes_flag(parser: argparse.ArgumentParser, help: str = "Skip confirmation prompt") -> None:
     """Attach ``--yes/-y`` (store_true) with the given help text."""
     parser.add_argument("--yes", "-y", action="store_true", help=help)

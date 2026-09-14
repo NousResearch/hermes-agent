@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Callable
 
-from hermes_cli.subcommands._shared import add_accept_hooks_flag
+from hermes_cli.subcommands._shared import add_accept_hooks_flag, add_yolo_flag
 
 
 # `start`/`restart` on a named profile refuse while the default multiplexer serves it (a second gateway
@@ -67,6 +67,10 @@ def build_gateway_parser(
             "launchd/systemd wrapper strips its native environment markers.")
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
+    # --yolo at both positions (#110147): the gateway is the headless/systemd entry
+    # point where approval prompts can't be answered — exactly --yolo's case.
+    add_yolo_flag(gateway_run)
+    add_yolo_flag(gateway_parser)
 
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")

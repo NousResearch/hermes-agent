@@ -20,7 +20,7 @@ from agent.conversation_compression import (
     compression_skipped_due_to_lock, context_compression_timed_out,
 )
 from agent.error_classifier import FailoverReason
-from agent.message_sanitization import serialized_messages_bytes
+from agent.message_sanitization import compression_recovery_progress, serialized_messages_bytes
 from agent.model_metadata import (
     get_context_length_from_provider_error, is_output_cap_error,
     parse_available_output_tokens_from_error,
@@ -249,7 +249,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     messages = st.messages
     st.approx_tokens = estimate_messages_tokens_rough(messages)
     new_bytes = serialized_messages_bytes(messages)
-    if len(messages) < original_len or (new_bytes > 0 and new_bytes < original_bytes * 0.95):
+    if compression_recovery_progress(original_len, len(messages), original_bytes, new_bytes):
         if len(messages) < original_len:
             agent._buffer_status(COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE.format(before=original_len, after=len(messages)))
         else:

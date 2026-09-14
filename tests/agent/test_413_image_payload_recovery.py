@@ -18,7 +18,7 @@ estimate.  These tests assert that invariant directly.
 
 import pytest
 
-from agent.message_sanitization import serialized_messages_bytes
+from agent.message_sanitization import compression_recovery_progress, serialized_messages_bytes
 from agent.model_metadata import estimate_messages_tokens_rough
 
 
@@ -114,15 +114,22 @@ class TestByteScoredProgressCheck:
     """
 
     def _decision(self, before: list, after: list, *, metric: str) -> bool:
-        if len(after) < len(before):
-            return True
+        """The REAL gate the loop uses, fed with the metric under test.
+
+        For the bytes metric this is exactly what
+        ``turn_overflow``'s 413 branch calls
+        (``compression_recovery_progress``), imported rather than
+        reimplemented so the loop and the tests cannot drift. The tokens
+        metric feeds the same gate token estimates, reproducing the
+        pre-#88960 behavior the first test pins as the bug."""
+        new_len, original_len = len(after), len(before)
         if metric == "tokens":
             o = estimate_messages_tokens_rough(before)
             n = estimate_messages_tokens_rough(after)
         else:
             o = serialized_messages_bytes(before)
             n = serialized_messages_bytes(after)
-        return n > 0 and n < o * 0.95
+        return compression_recovery_progress(original_len, new_len, o, n)
 
     def _image_dominated_session(self):
         """The real-world shape that wedged a session: ~190 substantive text
@@ -191,27 +198,26 @@ class TestByteScoredProgressCheck:
         assert self._decision(before, after, metric="bytes") is False
 
 
-class TestConversationLoopWiring:
-    """The handler really uses the byte metric (source-level contract)."""
+class TestRecoveryProgressGate:
+    """The 413 branch's progress gate, called directly. This is the same
+    function conversation_loop imports (compression_recovery_progress),
+    so the loop's decision and these assertions cannot drift apart."""
 
-    def test_413_branch_scores_bytes_not_tokens(self):
-        import inspect
+    def test_message_count_shrink_alone_is_progress(self):
+        assert compression_recovery_progress(50, 10, 1_000_000, 1_000_000)
 
-        import agent.turn_overflow as loop  # 413 handler lives in recover_from_overflow
+    def test_byte_shrink_is_progress(self):
+        assert compression_recovery_progress(50, 50, 1_000_000, 500_000)
 
-        src = inspect.getsource(loop)
-        # The byte measurement is taken before and after the 413 compression
-        # pass and drives the progress decision.
-        assert "original_bytes = serialized_messages_bytes(messages)" in src
-        assert "new_bytes = serialized_messages_bytes(messages)" in src
-        assert "new_bytes < original_bytes * 0.95" in src
-        # The old token-scored expression is gone from the 413 branch's
-        # decision. Isolate the 413 handler region: from its status line to
-        # its terminal error. (Token scoring survives in the
-        # context-overflow branches, which ARE token-budget errors.)
-        start = src.index("Request payload too large (413) — compression attempt")
-        end = src.index("Payload too large and cannot compress further")
-        branch = src[start:end]
-        assert "new_tokens < original_tokens * 0.95" not in branch
-        assert "original_bytes = serialized_messages_bytes" in branch
-        assert "new_bytes = serialized_messages_bytes" in branch
+    def test_boundary_exactly_five_percent_is_not_progress(self):
+        assert not compression_recovery_progress(50, 50, 1_000_000, 950_000)
+
+    def test_zero_new_bytes_is_not_progress(self):
+        # Empty payload must not count: it cannot be a real retry body.
+        assert not compression_recovery_progress(50, 50, 1_000_000, 0)
+
+    def test_identical_payload_is_not_progress(self):
+        assert not compression_recovery_progress(50, 50, 1_000_000, 1_000_000)
+
+    def test_growth_is_not_progress(self):
+        assert not compression_recovery_progress(50, 50, 1_000_000, 1_200_000)

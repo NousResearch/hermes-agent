@@ -78,29 +78,107 @@ class TestCompactionWiring(unittest.TestCase):
         m.assert_called_once_with(agent, content_aware=True)
 
     def test_commit_path_calls_helper_and_survives_failure(self):
-        """The commit boundary invokes the refresh and a raising refresh
-        must not break compaction (wrapped in try/except at the call site).
-        Pin the call-site contract by source: the helper call sits between
-        _invalidate_system_prompt and the always-rebuild of the prompt
-        (post-#95681: the keep-prompt containment branch is gone — the
-        rebuilt prompt is compared byte-for-byte and only object identity
-        is preserved on equality)."""
-        import inspect
-        from agent import conversation_compression as cc
+        """The commit boundary invokes the refresh after prompt
+        invalidation, a raising refresh must not break compaction, and the
+        usage anchor is cleared. Drives the real commit path with a real
+        AIAgent and a stub compressor (harness proven by
+        tests/agent/test_compression_logging_session_context.py)."""
+        import tempfile
+        from pathlib import Path
 
-        src = inspect.getsource(cc)
-        i_invalidate = src.find("agent._invalidate_system_prompt()")
-        i_refresh = src.find("_refresh_agent_tool_definitions(agent)",
-                             i_invalidate)
-        i_rebuild = src.find("rebuilt_system_prompt = agent._build_system_prompt(",
-                             i_refresh)
-        self.assertGreater(i_refresh, i_invalidate,
-                           "refresh must follow prompt invalidation")
-        self.assertGreater(i_rebuild, i_refresh,
-                           "refresh must precede the prompt rebuild")
-        guard_window = src[i_refresh - 400:i_refresh]
-        self.assertIn("try:", guard_window,
-                      "refresh call must be exception-guarded")
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "state.db")
+            try:
+                self._commit_path_contract(db)
+            finally:
+                db.close()
+
+    def _commit_path_contract(self, db):
+        from unittest.mock import MagicMock, patch
+
+        db.create_session("COMMIT_REFRESH_SESSION", source="cli")
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                api_key="test-key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                session_db=db,
+                session_id="COMMIT_REFRESH_SESSION",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        compressor = MagicMock()
+        compressor.compress.return_value = [
+            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+        ]
+        compressor.compression_count = 1
+        compressor.last_prompt_tokens = 0
+        compressor.last_completion_tokens = 0
+        compressor._last_summary_error = None
+        compressor._last_compress_aborted = False
+        compressor._last_aux_model_failure_model = None
+        compressor._last_aux_model_failure_error = None
+        agent.context_compressor = compressor
+        agent.compression_in_place = False
+
+        events = []
+        invalidated_before_refresh = {}
+        original_invalidate = agent._invalidate_system_prompt
+
+        def _recording_invalidate():
+            events.append("invalidate")
+            invalidated_before_refresh["done"] = True
+            original_invalidate()
+
+        original_build = agent._build_system_prompt
+
+        def _recording_build(*args, **kwargs):
+            events.append("rebuild")
+            return original_build(*args, **kwargs)
+
+        agent._build_system_prompt = _recording_build
+        agent._invalidate_system_prompt = _recording_invalidate
+        agent._usage_anchor = {"prompt_tokens": 1}
+
+        messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
+
+        seen = {}
+
+        def _refresh(a):
+            events.append("refresh")
+            seen["after_invalidation"] = invalidated_before_refresh.get(
+                "done", False
+            )
+
+        with patch("agent.conversation_compression._refresh_agent_tool_definitions",
+                   side_effect=_refresh):
+            agent._compress_context(messages, "sys", approx_tokens=120_000)
+        self.assertLess(events.index("invalidate"), events.index("refresh"))
+        self.assertLess(events.index("refresh"), events.index("rebuild", events.index("refresh")))
+        self.assertTrue(seen.get("after_invalidation"),
+                        "refresh must run after prompt invalidation")
+        self.assertIsNone(agent._usage_anchor,
+                          "the commit path clears the usage anchor")
+
+        # A raising refresh must not break compaction. After the first
+        # compress the session id rotated, and compression already created
+        # that row, so no re-registration is needed.
+        agent._invalidate_system_prompt = _recording_invalidate
+        with patch("agent.conversation_compression._refresh_agent_tool_definitions",
+                   side_effect=RuntimeError("refresh exploded")) as refresh:
+            try:
+                result, _ = agent._compress_context(messages, "sys", approx_tokens=120_000)
+                refresh.assert_called_once_with(agent)
+                self.assertEqual(result, compressor.compress.return_value)
+            except RuntimeError as exc:
+                raise AssertionError(
+                    "a raising tool refresh must not escape compaction"
+                ) from exc
 
 
 if __name__ == "__main__":

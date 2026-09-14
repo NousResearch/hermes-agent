@@ -63,7 +63,7 @@ def test_persist_disabled_fork_skips_session_and_turn_lifecycle_hooks():
 
     lifecycle_hook.assert_not_called()
     assert context == ""
-    assert output_calls == ["transform_llm_output"]
+    assert output_calls == ["transform_llm_output", "pre_delivery"]
     assert response == "transformed"
     assert transformed is True
 
@@ -102,4 +102,4 @@ def test_persisted_agent_still_fires_session_and_turn_lifecycle_hooks():
         "pre_llm_call",
     ]
     assert context == "plugin context"
-    assert output_calls == ["transform_llm_output", "post_llm_call"]
+    assert output_calls == ["transform_llm_output", "pre_delivery", "post_llm_call"]

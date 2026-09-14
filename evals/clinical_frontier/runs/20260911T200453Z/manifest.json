@@ -1,0 +1,11 @@
+{
+  "run_id": "20260911T200453Z",
+  "created_at": "2026-09-11T20:05:07.646833+00:00",
+  "seed": 20260911,
+  "case_count": 1,
+  "provider_count": 1,
+  "response_count": 1,
+  "completed_ok": 1,
+  "comparison_complete": false,
+  "note": "Requires blinded clinical ratings and adjudication before comparison."
+}

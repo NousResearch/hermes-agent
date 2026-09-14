@@ -121,6 +121,7 @@ def test_resolve_provider_client_kimi_coding_wraps_anthropic(monkeypatch, tmp_pa
     generation 404s on every Kimi Coding Plan user after the "main model
     for every user" aux design shipped.
     """
+    pytest.importorskip("anthropic")
     from agent.auxiliary_client import (
         resolve_provider_client,
         AnthropicAuxiliaryClient,

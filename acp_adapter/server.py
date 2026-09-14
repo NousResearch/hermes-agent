@@ -912,6 +912,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         interrupted = bool(result.get("interrupted")) or cancelled
         suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
         # Send the final text unless already streamed — or if a plugin hook transformed it after.
+        delivery_outcome = "suppressed" if suppress else "failed"
         if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
             update = acp.update_agent_message_text(final_response)
             if state.message_ids is not None:
@@ -923,6 +924,11 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     update.message_id = state.message_ids.current()
                 state.message_ids.close()
             await conn.session_update(session_id, update)
+            delivery_outcome = "delivered"
+        elif final_response and streamed_message and not suppress:
+            delivery_outcome = "delivered"
+        from agent.clinical_trace import delivery as record_clinical_delivery
+        record_clinical_delivery(result.get("clinical_delivery_trace"), outcome=delivery_outcome)
 
         # Go idle before draining so recursive prompt() calls can acquire the session.
         with state.runtime_lock:

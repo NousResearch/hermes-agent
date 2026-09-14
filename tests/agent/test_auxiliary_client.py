@@ -75,9 +75,11 @@ def _clean_env(monkeypatch):
     # cache for later ones, causing _resolve_auto_route to skip providers
     # that the test patched to return valid clients.
     import agent.auxiliary_client as _aux_mod
+    _aux_mod.clear_runtime_main()
     _aux_mod._aux_unhealthy_until.clear()
     _aux_mod._aux_unhealthy_logged_at.clear()
     yield
+    _aux_mod.clear_runtime_main()
     _aux_mod._aux_unhealthy_until.clear()
     _aux_mod._aux_unhealthy_logged_at.clear()
 
@@ -1185,7 +1187,8 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_auto_route", return_value=(None, None, "")):
             client, model = get_text_auxiliary_client()
         assert client is None
         assert model is None
@@ -1195,9 +1198,12 @@ class TestGetTextAuxiliaryClient:
                    return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
              patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=None), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
              patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client()
+            client, model = get_text_auxiliary_client(
+                main_runtime={"provider": "custom", "model": "gpt-5.3-codex"}
+            )
 
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
@@ -1602,7 +1608,9 @@ class TestTryPaymentFallback:
         with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
              patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
              patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
-            client, model, label = _try_payment_fallback("openrouter", task="compression")
+            client, model, label = _try_payment_fallback(
+                "openrouter", task="compression", main_runtime={"provider": "auto"}
+            )
         assert client is mock_client
         assert model == "nous-model"
         assert label == "nous"
@@ -1620,7 +1628,9 @@ class TestTryPaymentFallback:
              patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_main_provider", return_value="auto"):
-            client, model, label = _try_payment_fallback("openrouter")
+            client, model, label = _try_payment_fallback(
+                "openrouter", main_runtime={"provider": "auto"}
+            )
         assert client is None
         assert model is None
         assert label == ""

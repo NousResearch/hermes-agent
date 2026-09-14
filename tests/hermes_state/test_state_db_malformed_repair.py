@@ -501,8 +501,13 @@ def test_repair_reports_success_when_the_holder_already_healed_the_db(
 _REPAIR_SCRIPT = """
 import sys, json
 sys.path.insert(0, {root!r})
-from hermes_state_repair import repair_state_db_schema
-print(json.dumps(repair_state_db_schema({db!r})), flush=True)
+import hermes_state_repair
+# This test exercises cross-process ownership, not the host volume's free-space
+# policy. Keep subprocesses deterministic when parallel tests consume temporary
+# disk and trip the production fail-closed headroom gate.
+hermes_state_repair._backup_free_space_error = lambda _db_path: None
+hermes_state_repair._repair_scratch_space_error = lambda _db_path: None
+print(json.dumps(hermes_state_repair.repair_state_db_schema({db!r})), flush=True)
 """
 
 

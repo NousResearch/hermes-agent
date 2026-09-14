@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "id": "alfred_openai",
+      "enabled": true,
+      "model": "gpt-5.6-sol",
+      "command": ["hermes","chat","--query-file","{prompt_file}","--oneshot","-Q","--source","tool","--max-turns","12","--run-budget","180","--provider","openai-codex","--model","gpt-5.6-sol","--ignore-user-config","--ignore-rules","--skills","clinical-response-delivery,clinical-evidence-engineering"]
+    },
+    {
+      "id": "generic_openai",
+      "enabled": true,
+      "model": "gpt-5.6-sol",
+      "command": ["hermes","chat","--query-file","{prompt_file}","--oneshot","-Q","--source","tool","--max-turns","12","--run-budget","180","--provider","openai-codex","--model","gpt-5.6-sol","--safe-mode"]
+    },
+    {
+      "id": "generic_gemini",
+      "enabled": true,
+      "model": "gemini-3.1-pro-preview",
+      "command": ["hermes","chat","--query-file","{prompt_file}","--oneshot","-Q","--source","tool","--max-turns","12","--run-budget","180","--provider","gemini","--model","gemini-3.1-pro-preview","--safe-mode"]
+    }
+  ],
+  "forbidden_providers": ["anthropic","claude"]
+}

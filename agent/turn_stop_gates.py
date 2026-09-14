@@ -11,6 +11,7 @@ module level (cycle).
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -19,6 +20,41 @@ from typing import Any, Dict, List, Optional
 from agent.message_metadata import append_message
 
 logger = logging.getLogger("agent.conversation_loop")
+
+_MAX_PRE_DELIVERY_REPAIR_ATTEMPTS = 4
+_USE_FINAL_RESPONSE_AS_FALLBACK = object()
+_PRE_DELIVERY_REASON_MAX_CHARS = 2_000
+_PRE_DELIVERY_TERMINAL_RESPONSE = (
+    "No pude completar una respuesta verificable en este turno."
+)
+
+
+def _build_pre_delivery_repair_directive(*, attempt: int, reason: str) -> str:
+    """Build the bounded instruction shared by every pre-delivery repair path."""
+    if not 1 <= attempt <= _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS:
+        raise ValueError("pre-delivery repair attempt is outside the bounded retry budget")
+    research_stages = (
+        "Ejecuta la ruta clínica seleccionada y recupera fuentes primarias pertinentes.",
+        "Repite la búsqueda con términos equivalentes y proveedores alternativos.",
+        "Profundiza hasta el texto completo por publisher/OA, Unpaywall o PMC y sus fallbacks.",
+        "Ejecuta descubrimiento ampliado con índices biomédicos adicionales y verifica las citas.",
+    )
+    stage = research_stages[min(max(attempt, 1) - 1, len(research_stages) - 1)]
+
+    repair_contract = {
+        "gate": "pre_delivery",
+        "action": "repair",
+        "attempt": attempt,
+        "mode": "standard",
+        "reason": (reason or "policy_block")[:_PRE_DELIVERY_REASON_MAX_CHARS],
+        "required": (
+            "Retén la respuesta anterior. " + stage + " Regenera una respuesta específica "
+            "y completa, y vuelve a someterla a pre_delivery."
+        ),
+    }
+    return "[PRE_DELIVERY_REPAIR]\n" + json.dumps(
+        repair_contract, ensure_ascii=False, sort_keys=True
+    )
 
 
 @dataclass
@@ -104,14 +140,18 @@ def _append_interim_answer(agent, final_msg, messages, conversation_history, flu
 def apply_stop_gates(
     agent: Any, final_msg: Dict[str, Any], *, final_response: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, pending_verification_response: Any,
-    pending_verification_response_previewed: Any,
+    pending_verification_response_previewed: Any, effective_task_id: str = "",
+    turn_id: str = "", original_user_message: Any = None,
 ) -> StopGateVerdict:
     """Run verify-on-stop → pre_verify hook → kanban stop guard, in that order. Nudges
     are user-role rows appended only after the assistant answer row, so role alternation
     holds. Hook lookups are imported lazily from their origin modules (tests patch them
     there)."""
 
-    def _continue(nudge: str, flag: str) -> StopGateVerdict:
+    def _continue(
+        nudge: str, flag: str, *, fallback_response: Any = _USE_FINAL_RESPONSE_AS_FALLBACK,
+        fallback_previewed: Optional[bool] = None,
+    ) -> StopGateVerdict:
         """Append the synthetic nudge row and hand the turn back to the loop."""
         append_message(messages, {"role": "user", "content": nudge, flag: True})
         agent._session_messages = messages
@@ -120,11 +160,103 @@ def apply_stop_gates(
         # candidate is reused (#61631).
         return StopGateVerdict(
             continue_turn=True, final_response=None,
-            pending_verification_response=final_response,
-            pending_verification_response_previewed=agent._interim_content_was_streamed(
-                final_response or ""
+            pending_verification_response=(
+                final_response
+                if fallback_response is _USE_FINAL_RESPONSE_AS_FALLBACK
+                else fallback_response
+            ),
+            pending_verification_response_previewed=(
+                agent._interim_content_was_streamed(final_response or "")
+                if fallback_previewed is None else fallback_previewed
             ),
         )
+
+    # A delivery gate runs while the candidate is still private. A block does not become a
+    # terminal generic refusal: feed a structured repair request back into the same agent
+    # turn so it can gather evidence/use tools/regenerate. Neither the blocked candidate nor this
+    # nudge is emitted or persisted; both are stripped once the next candidate arrives.
+    try:
+        from hermes_cli.plugins import has_hook
+
+        _has_pre_delivery = has_hook("pre_delivery")
+    except Exception:
+        logger.warning("pre_delivery hook lookup failed", exc_info=True)
+        # Lookup uncertainty is not permission to bypass a potentially installed
+        # delivery boundary. Dispatch below normalizes the failure fail-closed.
+        _has_pre_delivery = True
+    if _has_pre_delivery:
+        from agent.turn_finalizer import _prepare_output_for_delivery
+
+        decision = _prepare_output_for_delivery(
+            agent, final_response, logger,
+            platform=getattr(agent, "platform", "") or "",
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            original_user_message=(
+                original_user_message if original_user_message is not None else ""
+            ),
+            messages=messages,
+        )
+        if decision.action != "block":
+            final_response = decision.response_text
+            final_msg["content"] = final_response
+            agent._pre_delivery_output_cache = {
+                "transformed": decision.transformed,
+                "pre_transform": decision.pre_transform_response,
+                "response_text": final_response,
+            }
+            release = getattr(agent, "_release_pre_delivery_text", None)
+            if callable(release):
+                release(final_response)
+        else:
+            attempt = int(getattr(agent, "_pre_delivery_repair_attempts", 0) or 0)
+            # A policy block is private recovery state, never a user-facing answer. Once the
+            # bounded repair budget is exhausted, terminate with a fixed content-free line;
+            # never re-inject another repair directive or publish any text from the decision.
+            if attempt >= _MAX_PRE_DELIVERY_REPAIR_ATTEMPTS:
+                final_response = _PRE_DELIVERY_TERMINAL_RESPONSE
+                final_msg["content"] = final_response
+                final_msg["finish_reason"] = "pre_delivery_repair_exhausted"
+                agent._pre_delivery_output_cache = {
+                    "transformed": True,
+                    "pre_transform": None,
+                    "response_text": final_response,
+                }
+                from agent.clinical_trace import emit
+                emit(agent, "repair", outcome="failed", repair_count=attempt)
+                release = getattr(agent, "_release_pre_delivery_text", None)
+                if callable(release):
+                    release(final_response)
+                return StopGateVerdict(
+                    continue_turn=False,
+                    final_response=final_response,
+                    pending_verification_response=None,
+                    pending_verification_response_previewed=False,
+                )
+            agent._pre_delivery_repair_attempts = attempt + 1
+            from agent.clinical_trace import emit
+            emit(
+                agent, "repair", outcome="block",
+                repair_count=agent._pre_delivery_repair_attempts,
+            )
+            final_msg["finish_reason"] = "pre_delivery_repair_required"
+            final_msg["_pre_delivery_repair_synthetic"] = True
+            append_message(messages, final_msg)
+            from agent.turn_finalizer import _pre_delivery_reason_codes
+            reason = _pre_delivery_reason_codes(decision.reason)[0]
+            nudge = _build_pre_delivery_repair_directive(
+                attempt=agent._pre_delivery_repair_attempts,
+                reason=reason,
+            )
+            verdict = _continue(
+                nudge, "_pre_delivery_repair_synthetic",
+                fallback_response=None, fallback_previewed=False,
+            )
+            logger.info(
+                "pre_delivery repair nudge issued (attempt %d)",
+                agent._pre_delivery_repair_attempts,
+            )
+            return verdict
 
     _verify_nudge = _verify_on_stop_nudge(agent)
     if _verify_nudge:

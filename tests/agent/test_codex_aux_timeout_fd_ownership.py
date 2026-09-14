@@ -72,10 +72,11 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
         adapter's ``finally``."""
 
         def _stalled():
-            deadline = time.monotonic() + 30.0
-            while time.monotonic() < deadline:
-                time.sleep(0.02)
-                yield SimpleNamespace(type="response.in_progress")
+            deadline = time.monotonic() + 5.0
+            while not any(action == "shutdown" for action, _ in events):
+                assert time.monotonic() < deadline, "watchdog did not shut down the stream"
+                time.sleep(0.01)
+            yield SimpleNamespace(type="response.in_progress")
 
         adapter, events = _adapter_with_recording_client(_stalled())
         owner_tid = threading.get_ident()

@@ -35,7 +35,10 @@ class _SlowUnwindingChild:
         # Model the real child turn's finally path: it still performs session
         # activity/SQLite cleanup after the parent requests interruption.
         self.unwinding.set()
-        assert self.allow_finish.wait(timeout=2)
+        # The test owns this release event.  A wall-clock timeout made the
+        # double finish by itself under a loaded parallel suite, after which a
+        # legitimate close looked like a close-while-running race.
+        self.allow_finish.wait()
         self.finished.set()
         return {
             "final_response": "",

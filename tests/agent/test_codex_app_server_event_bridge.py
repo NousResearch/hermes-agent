@@ -176,6 +176,25 @@ class TestStreamDeltaDispatch:
         agent._fire_reasoning_delta.assert_called_once_with("thinking...")
         agent._fire_stream_delta.assert_not_called()
 
+    def test_protected_turn_suppresses_every_observable_callback(self):
+        agent = _make_stub_agent()
+        agent._pre_delivery_gate_active = True
+        bridge = make_codex_app_server_event_bridge(agent)
+
+        bridge({"method": "item/agentMessage/delta", "params": {"delta": "clinical delta"}})
+        bridge({"method": "item/reasoning/delta", "params": {"delta": "clinical reasoning"}})
+        bridge(_item_started({
+            "type": "mcpToolCall", "id": "tool-1", "server": "medical", "tool": "search",
+        }))
+        bridge(_item_completed({
+            "type": "agentMessage", "id": "msg-1", "text": "clinical interim",
+        }))
+
+        agent._fire_stream_delta.assert_not_called()
+        agent._fire_reasoning_delta.assert_not_called()
+        agent._emit_interim_assistant_message.assert_not_called()
+        agent.tool_progress_callback.assert_not_called()
+
 
 class TestToolProgressDispatch:
     def test_command_started_fires_tool_started(self):
@@ -371,6 +390,9 @@ class TestBridgeWiredInRuntime:
             context_compressor=None,
             event_callback=None,
             _session_db=None,
+            session_id="session-1",
+            model="codex",
+            platform="acp",
         )
 
         codex_runtime.run_codex_app_server_turn(

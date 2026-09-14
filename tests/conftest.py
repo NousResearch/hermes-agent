@@ -296,6 +296,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_MANAGED_DIR",
     "HERMES_DEV",
     "HERMES_CONTAINER",
+    "HERMES_SERVE_HEADLESS",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT",
     "HERMES_TIMEZONE",
     "HERMES_REDACT_SECRETS",
@@ -572,6 +573,38 @@ def _hermetic_environment(tmp_path, monkeypatch):
 def _isolate_hermes_home(_hermetic_environment):
     """Alias preserved for any test that yields this name explicitly."""
     return None
+
+
+_REAL_DISK_REPAIR_TEST_FILES = {
+    "test_hermes_state.py",
+    "test_state_db_fts_segment_collision_probe.py",
+    "test_state_db_malformed_repair.py",
+    "test_state_db_repair_loop_cap.py",
+    "test_state_db_repair_loop_mtime.py",
+    "test_state_db_repair_non_destructive.py",
+}
+
+
+@pytest.fixture(autouse=True)
+def _stabilize_state_repair_disk_headroom(request, monkeypatch):
+    """Keep repair tests independent of transient free space on the host.
+
+    The production guard reserves two percent of the real volume. On a large,
+    nearly full developer volume, unrelated pytest temp files can cross that
+    threshold halfway through the suite and make tiny fixture databases fail.
+    Tests dedicated to the proportional formula import the original helper
+    directly; low-space tests provide their own ``disk_usage`` result.
+    """
+    if request.node.path.name not in _REAL_DISK_REPAIR_TEST_FILES:
+        return
+
+    import hermes_state_repair
+
+    monkeypatch.setattr(
+        hermes_state_repair,
+        "_repair_backup_headroom_bytes",
+        lambda _total_bytes: hermes_state_repair._REPAIR_BACKUP_MIN_FREE_BYTES,
+    )
 
 
 @pytest.fixture(autouse=True)

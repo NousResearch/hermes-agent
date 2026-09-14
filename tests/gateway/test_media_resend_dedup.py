@@ -130,6 +130,88 @@ def _allowed_file(tmp_path, monkeypatch, name: str):
 
 
 @pytest.mark.asyncio
+async def test_platform_delivery_records_content_free_clinical_trace(caplog, monkeypatch):
+    adapter = _DummyAdapter(platform=Platform.TELEGRAM)
+    monkeypatch.setattr(adapter, "_keep_typing", _hold_typing)
+    event = _make_event(platform=Platform.TELEGRAM)
+
+    async def handler(current_event):
+        current_event._clinical_delivery_trace = {
+            "schema": 1,
+            "trace_id": "b" * 32,
+            "platform": "telegram",
+            "protected": True,
+            "repair_count": 2,
+            "decision": "allow",
+        }
+        return "certified response"
+
+    adapter.set_message_handler(handler)
+    with caplog.at_level(logging.INFO, logger="hermes.clinical_delivery_trace"):
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+    trace_lines = [record.message for record in caplog.records if record.message.startswith("clinical_delivery_trace ")]
+    assert len(trace_lines) == 1
+    assert '"outcome":"delivered"' in trace_lines[0]
+    assert "certified response" not in trace_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_empty_protected_response_is_traced_as_suppressed(caplog, monkeypatch):
+    adapter = _DummyAdapter(platform=Platform.TELEGRAM)
+    monkeypatch.setattr(adapter, "_keep_typing", _hold_typing)
+    event = _make_event(platform=Platform.TELEGRAM)
+
+    async def handler(current_event):
+        current_event._clinical_delivery_trace = {
+            "schema": 1,
+            "trace_id": "c" * 32,
+            "platform": "telegram",
+            "protected": True,
+            "repair_count": 0,
+            "decision": "block",
+        }
+        return ""
+
+    adapter.set_message_handler(handler)
+    with caplog.at_level(logging.INFO, logger="hermes.clinical_delivery_trace"):
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+    trace_lines = [record.message for record in caplog.records if record.message.startswith("clinical_delivery_trace ")]
+    assert len(trace_lines) == 1
+    assert '"outcome":"suppressed"' in trace_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_protected_handler_exception_is_traced_without_content_leak(caplog, monkeypatch):
+    adapter = _DummyAdapter(platform=Platform.TELEGRAM)
+    monkeypatch.setattr(adapter, "_keep_typing", _hold_typing)
+    event = _make_event(platform=Platform.TELEGRAM)
+    marker = "PHI_SENTINEL_SHOULD_NOT_ESCAPE"
+
+    async def handler(current_event):
+        current_event._clinical_delivery_trace = {
+            "schema": 1,
+            "trace_id": "d" * 32,
+            "platform": "telegram",
+            "protected": True,
+            "repair_count": 1,
+            "decision": "block",
+        }
+        raise RuntimeError(marker)
+
+    adapter.set_message_handler(handler)
+    with caplog.at_level(logging.INFO):
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+    trace_lines = [record.message for record in caplog.records if record.message.startswith("clinical_delivery_trace ")]
+    assert len(trace_lines) == 1
+    assert '"outcome":"failed"' in trace_lines[0]
+    assert marker not in caplog.text
+    assert all(marker not in item["content"] for item in adapter.sent)
+
+
+@pytest.mark.asyncio
 async def test_explicit_media_resend_is_delivered_despite_history(tmp_path, monkeypatch):
     """#73771 core repro: the same MEDIA path was delivered in a prior turn;
     the model re-emits it on an explicit user request — it MUST be sent."""

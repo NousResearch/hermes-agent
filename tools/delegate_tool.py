@@ -14,6 +14,7 @@ tool calls or reasoning.
 import logging
 import time
 import weakref
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
@@ -77,6 +78,14 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 1200s stuck on same tool → stale
 
+
+def _resolve_max_iterations(cfg: dict) -> int:
+    """Resolve a child's local iteration ceiling; an explicit null is unlimited."""
+    if "max_iterations" not in cfg:
+        return DEFAULT_MAX_ITERATIONS
+    from hermes_cli.config import resolve_local_limit
+    return resolve_local_limit(cfg.get("max_iterations"), default=DEFAULT_MAX_ITERATIONS)
+
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True
@@ -95,14 +104,17 @@ def _open_child_session_db(parent_agent) -> Any:
     # per-profile handles (tui_gateway opens SessionDB(db_path=<profile>/ state.db) for non-launch
     # profiles), and a bare SessionDB() would write the child's transcript into the launch profile's db,
     # breaking parent_session_id lineage and session_search. AsyncSessionDB wrappers (gateway) forward
-    # .db_path via __getattr__, so this works through them.
+    # a concrete .db_path via __getattr__. MagicMock also manufactures that attribute, so validate the
+    # value before it escapes this boundary; otherwise acquire() creates a literal MagicMock/... DB in cwd.
     parent_session_db = getattr(parent_agent, "_session_db", None)
     if parent_session_db is None:
         return None
     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
         from hermes_state_registry import acquire
         _parent_db_path = getattr(parent_session_db, "db_path", None)
-        return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
+        if not isinstance(_parent_db_path, (str, Path)) or not _parent_db_path:
+            return None
+        return acquire(Path(_parent_db_path))
     return None
 
 def _apply_child_cache_ttl(child) -> None:
@@ -456,7 +468,7 @@ def delegate_task(
         )
 
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+    default_max_iter = _resolve_max_iterations(cfg)
     # Caller-supplied max_iterations is ignored: the config value is authoritative
     # so budgets stay predictable (kwarg kept for internal callers/tests).
     if max_iterations is not None and max_iterations != default_max_iter:

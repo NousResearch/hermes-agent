@@ -479,7 +479,10 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
         relay_host = MagicMock()
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
-        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 0.1)
+        # Leave enough scheduler headroom for the child thread to acquire its
+        # relay turn under the full parallel suite before timeout ownership is
+        # asserted. The child remains blocked until the parent releases it.
+        monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 1.0)
 
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(

@@ -587,7 +587,7 @@ def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
 
 
 def test_idle_sweep_probe_failure_keeps_elapsed_idle_clock(tmp_path, monkeypatch, stub_server):
-    """A transient telemetry failure cannot postpone an otherwise confirmed idle unload."""
+    """A transient telemetry failure pauses rather than resets the confirmed idle clock."""
     port, handler = stub_server
     handler.models = {"data": [{"id": "side-m", "status": {"value": "loaded"}}]}
     handler.slots = []
@@ -613,7 +613,8 @@ def test_idle_sweep_probe_failure_keeps_elapsed_idle_clock(tmp_path, monkeypatch
     assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S - 1) == []
 
     fail_probe = False
-    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 1) == ["side-m"]
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 1) == []
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 2) == ["side-m"]
     assert handler.unloaded == ["side-m"]
 
 

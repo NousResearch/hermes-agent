@@ -42,7 +42,12 @@ def register_backend(backend_cls: Type, *, scope: Optional[str] = None) -> bool:
         return False
     name = getattr(backend_cls, "name", "")
     prefix = getattr(backend_cls, "prefix", "")
-    if not name or not name.replace("_", "").isalnum() or name != name.lower():
+    if (
+        not isinstance(name, str)
+        or not name
+        or not name.replace("_", "").isalnum()
+        or name != name.lower()
+    ):
         logger.warning("Ignoring login backend with invalid name %r", name)
         return False
     if not isinstance(prefix, str) or not prefix:

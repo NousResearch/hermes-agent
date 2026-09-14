@@ -56,7 +56,9 @@ def _(rid, params: dict) -> dict:
     Each item carries ``backend``; locked managers contribute nothing (see vault.sources)."""
     try:
         from agent.vault_backends import enabled_backends
+        from hermes_cli.plugins import discover_plugins
 
+        discover_plugins()
         items = []
         for backend in enabled_backends():
             if backend.needs_unlock and not backend.is_unlocked():
@@ -72,7 +74,9 @@ def _(rid, params: dict) -> dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.base import external_backend_classes, is_installed
+    from hermes_cli.plugins import discover_plugins
 
+    discover_plugins()
     enabled = {b.name: b for b in enabled_backends()}
     rows = [{"name": "local", "display_name": "Hermes vault", "enabled": True, "needs_unlock": False,
              "unlocked": True, "installed": True}]
@@ -90,7 +94,9 @@ def _(rid, params: dict) -> dict:
     from agent.vault_backends.base import external_backend_classes
     from agent.vault_backends.unlock import lock
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.plugins import discover_plugins
 
+    discover_plugins()
     name = str(params.get("name") or "")
     if name not in {cls.name for cls in external_backend_classes()}:
         return _err(rid, 5095, f"unknown vault source: {name}")
@@ -111,7 +117,9 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
     from agent.vault_backends import enabled_backends
+    from hermes_cli.plugins import discover_plugins
 
+    discover_plugins()
     name = str(params.get("name") or "")
     password = str(params.get("password") or "")
     backend = next((b for b in enabled_backends() if b.name == name and b.needs_unlock), None)

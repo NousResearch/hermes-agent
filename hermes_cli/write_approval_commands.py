@@ -99,7 +99,7 @@ def _apply_one(subsystem: str, rec, memory_store):
             from tools.memory_tool import apply_memory_pending
             result = apply_memory_pending(payload, memory_store)
         else:
-            from tools.skill_manager_tool import apply_skill_pending
+            from tools.skill_owner_routing_tool import apply_skill_pending
             result = json.loads(apply_skill_pending(payload))
         return bool(result.get("success")), result.get("error", "")
     except Exception as e:

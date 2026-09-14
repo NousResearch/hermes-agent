@@ -583,6 +583,13 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                 slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
             # Gemini re-sends the full args each event; emit only the new suffix.
             last_arguments = str(slot.get("last_arguments") or "")
+            if last_arguments and not args_str.startswith(last_arguments):
+                # Revised (not extended) arguments: an OpenAI-style consumer CONCATENATES argument
+                # deltas, so re-emitting full args as one delta would append them to the stale prefix
+                # and yield unparseable JSON. Restart the slot with a fresh id/index instead — the
+                # accumulator treats a new id as a new call and replaces the arguments wholesale.
+                slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
+                last_arguments = ""
             slot["last_arguments"] = args_str
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
                      "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}

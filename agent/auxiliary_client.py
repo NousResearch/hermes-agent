@@ -3168,6 +3168,12 @@ def _is_structured_output_rejection(exc: Exception) -> bool:
         return True
     if "response_format" in err_lower and "unavailable" in err_lower:
         return True
+    # Gateways that validate the request body with a strict pydantic model reject the
+    # OBJECT-form json_schema by shape ("str type expected" on response_format.json_schema,
+    # 422) rather than by naming the feature. The field is what they refuse; the retry
+    # without it is the same remedy, so treat the shape error as a rejection too.
+    if "response_format" in err_lower and "json_schema" in err_lower:
+        return True
     return _is_unsupported_parameter_error(exc, "response_format") or _is_unsupported_parameter_error(exc, "output_config")
 
 

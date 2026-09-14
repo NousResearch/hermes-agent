@@ -1,5 +1,6 @@
 """Restart recovery uses current routing and never borrows another profile's heartbeat."""
 import asyncio
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -77,6 +78,55 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
             runner.session_store.close_all_db_handles()
         for db in dbs.values():
             db.close()
+
+
+@pytest.mark.asyncio
+async def test_restore_skips_sessions_owned_by_deleted_profiles(tmp_path, monkeypatch, caplog):
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+
+    home = tmp_path / '.hermes'
+    named = home / 'profiles' / 'deleted-owner'
+    named.mkdir(parents=True)
+    (named / 'config.yaml').write_text('{}')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    config = GatewayConfig(multiplex_profiles=True)
+    store = SessionStore(home / 'sessions', config)
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id='stale-chat', user_id='owner', profile='deleted-owner',
+    )
+    entry = store.get_or_create_session(source)
+    store.close_all_db_handles()
+    shutil.rmtree(named)
+    deleted = home / 'profiles' / '.deleted'
+    deleted.mkdir(parents=True)
+    (deleted / 'deleted-owner').write_text('deleted\n')
+    caplog.clear()
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = config
+    runner.session_store = SessionStore(home / 'sessions', config)
+    runner._heartbeat_watch = {}
+    setattr(runner, '_run_in_executor_with_context', asyncio.to_thread)
+    scope_calls = []
+    original_scope = runner._profile_scope_for_source
+
+    def record_profile_scope(resolved_source):
+        scope_calls.append(resolved_source)
+        return original_scope(resolved_source)
+
+    setattr(runner, '_profile_scope_for_source', record_profile_scope)
+    try:
+        await restore_heartbeat_watches(runner)
+        assert runner._heartbeat_watch == {}
+        assert scope_calls == []
+        assert not any(
+            "Profile 'deleted-owner' does not exist" in record.getMessage()
+            for record in caplog.records
+        )
+        assert runner.session_store.peek_session_id(entry.session_key) == entry.session_id
+    finally:
+        runner.session_store.close_all_db_handles()
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ async def restore_heartbeat_watches(runner) -> None:
     """
     from gateway.run import _profile_runtime_scope
     from hermes_cli.heartbeat import HeartbeatManager
+    from hermes_cli.profiles import profile_exists
     from hermes_constants import get_hermes_home
 
     store = runner.session_store
@@ -30,6 +31,11 @@ async def restore_heartbeat_watches(runner) -> None:
                 if entry.origin is None or not entry.session_id or entry.suspended:
                     continue
                 try:
+                    # Routing history outlives profile deletion. Never let those heartbeat
+                    # probes enter the resolver's global-home fallback.
+                    owner = getattr(entry.origin, "profile", None)
+                    if owner and not profile_exists(owner):
+                        continue
                     with runner._profile_scope_for_source(entry.origin):
                         manager = HeartbeatManager(entry.session_id)
                         if manager.is_active():

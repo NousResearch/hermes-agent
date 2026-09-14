@@ -24,7 +24,7 @@ from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
 from tools.file_operations_common import DEFAULT_READ_LIMIT
 from tools import file_state
-from agent.redact import redact_sensitive_text
+from agent.redact import _is_secret_file_arg, redact_sensitive_text
 from tools.file_tools_paths import (
     _expand_tilde, _path_resolution_warning, _resolve_base_dir, _resolve_path_for_task)
 from tools.file_tools_write_guards import (
@@ -209,6 +209,19 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
     return _is_blocked_device_path(resolved)
 
 
+def _resolved_match_path(path: str, task_id: str) -> str:
+    """Best-effort task-cwd resolution of a search hit's path.
+
+    Search backends may return cwd-relative paths while the process cwd differs, so both the
+    read-block filter and the redaction classifier must resolve against the task cwd. An
+    unresolvable path is used as-is (the raw path is still worth classifying).
+    """
+    try:
+        return str(_resolve_path_for_task(path, task_id))
+    except (OSError, ValueError, RuntimeError):
+        return path
+
+
 def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
     """Remove credential/cache/env paths from a SearchResult in-place; return the omitted count.
 
@@ -219,11 +232,7 @@ def _filter_read_blocked_search_results(result, task_id: str = "default") -> int
 
     def _allowed(path: str) -> bool:
         nonlocal omitted
-        try:
-            target = str(_resolve_path_for_task(path, task_id))
-        except (OSError, ValueError, RuntimeError):
-            target = path
-        if get_read_block_error(target):
+        if get_read_block_error(_resolved_match_path(path, task_id)):
             omitted += 1
             return False
         return True
@@ -458,7 +467,9 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     if len(result_dict["content"]) > max_chars:
         _apply_char_budget(result_dict, result_dict["content"], offset, total_lines, max_chars)
     if result_dict["content"]:
-        result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
+        result_dict["content"] = redact_sensitive_text(
+            result_dict["content"], file_read=True,
+            secret_file=_is_secret_file_arg(str(_resolved)))
     return json.dumps(result_dict, ensure_ascii=False)
 
 
@@ -621,7 +632,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
         if result.content:
-            result.content = redact_sensitive_text(result.content, file_read=True)
+            result.content = redact_sensitive_text(
+                result.content, file_read=True, secret_file=_is_secret_file_arg(resolved_str))
             result_dict["content"] = result.content
 
         if (file_size and file_size > _LARGE_FILE_HINT_BYTES
@@ -971,7 +983,9 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         omitted = _filter_read_blocked_search_results(result, task_id)
         for m in getattr(result, "matches", None) or ():
             if getattr(m, "content", None):
-                m.content = redact_sensitive_text(m.content, file_read=True)
+                m.content = redact_sensitive_text(
+                    m.content, file_read=True,
+                    secret_file=_is_secret_file_arg(_resolved_match_path(m.path, task_id)))
         result_dict = result.to_dict(densify=True)
 
         if omitted:

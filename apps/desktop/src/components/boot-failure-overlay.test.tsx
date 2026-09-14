@@ -248,4 +248,33 @@ describe('BootFailureOverlay', () => {
       restore()
     }
   })
+
+  // The dev-server URL (127.0.0.1:5174) opened in a regular browser fails boot
+  // with the IPC-bridge error and browserMode set. The overlay must NOT show
+  // the recovery card: without the bridge, Retry/Repair reload a page that can
+  // never boot, and Open logs is a silent no-op — the fix is "open the desktop
+  // app", which is what the browser-mode card says instead.
+  it('shows open-the-desktop-app guidance instead of dead recovery buttons in browser mode', () => {
+    $desktopBoot.set({
+      browserMode: true,
+      error: 'Desktop IPC bridge is unavailable.',
+      fakeMode: false,
+      message: 'boot failed',
+      phase: 'renderer.error',
+      progress: 40,
+      running: false,
+      timestamp: Date.now(),
+      visible: true
+    })
+
+    render(<BootFailureOverlay />)
+
+    expect(screen.getByText(/opened in a browser, not the desktop app/i)).toBeTruthy()
+    expect(screen.getByText(/open the Hermes Desktop app instead/i)).toBeTruthy()
+    expect(screen.getByText(/npm run dev/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /repair/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /gateway settings/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /open logs/i })).toBeNull()
+  })
 })

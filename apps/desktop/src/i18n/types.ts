@@ -290,6 +290,10 @@ export interface Translations {
       signInToRemoteGateway: string
       signInWithProvider: (provider: string) => string
       identityProvider: string
+      browserModeTitle: string
+      browserModeDescription: string
+      browserModeHint: string
+      browserModeDocs: string
     }
   }
 

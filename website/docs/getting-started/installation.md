@@ -106,6 +106,10 @@ You do **not** need to install Python, Node.js, ripgrep, or ffmpeg manually. The
 Nix is **no longer an explicitly supported install path** (best-effort only). If you already use Nix (on NixOS, macOS, or Linux), there's a dedicated setup path with a Nix flake, declarative NixOS module, and optional container mode. See the **[Nix & NixOS Setup](./nix-setup.md)** guide.
 :::
 
+:::info Older x86-64 CPUs (pre-2009 / no SSE4.2)
+Local voice features (local whisper transcription, wake-word detection) install native wheels — numpy 2.4 and ctranslate2 — whose prebuilt binaries require the **x86-64-v2** instruction set (SSE4.1/SSE4.2/POPCNT). On CPUs older than that (e.g. AMD E2/Bobcat, pre-Nehalem Intel), importing those libraries crashes the process with `SIGILL` instead of raising a Python error. Hermes detects this CPU class and disables local voice with a clear message instead; the rest of Hermes (including cloud STT/TTS providers and a local `whisper` CLI via `HERMES_LOCAL_STT_COMMAND`) keeps working. Check your CPU with `grep -o 'sse4_2' /proc/cpuinfo | head -1` — no output means local voice is unavailable on that machine.
+:::
+
 ---
 
 ## Manual / Developer Installation

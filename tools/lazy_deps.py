@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import platform
 import re
 import shutil
 import site
@@ -336,11 +337,60 @@ def _allow_lazy_installs() -> bool:
     return True
 
 
+def _read_cpuinfo_flags() -> str:
+    """The first ``flags`` line of /proc/cpuinfo, or "" when unavailable."""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("flags"):
+                    return line
+    except OSError:
+        pass
+    return ""
+
+
+def _cpu_baseline_missing_reason() -> Optional[str]:
+    """Why this CPU cannot run the prebuilt SIMD wheels some features install, or None.
+
+    NumPy 2.4 raised its x86-64 cpu-baseline to the x86-64-v2 microarchitecture
+    (SSE4.1/SSE4.2/POPCNT) and ctranslate2's wheels dispatch above that too, so on
+    pre-v2 cores the first ``import numpy`` (or the first ``WhisperModel`` load) raises
+    SIGILL — a signal, not an exception, which takes the whole process down. Only
+    x86-64 Linux is probed: every supported arm64 host and every Intel Mac (2009+,
+    SSE4.2 since Nehalem, and Rosetta advertises SSE4.2) satisfies v2, and Windows
+    has no portable flag source worth the false-positive risk.
+    """
+    if sys.platform != "linux" or (platform.machine().lower() not in {"x86_64", "amd64"}):
+        return None
+    flags = _read_cpuinfo_flags()
+    if not flags:
+        return None  # unreadable cpuinfo: don't guess, let the import speak for itself
+    missing = {"sse4_1", "sse4_2", "popcnt"} - set(flags.replace(",", " ").split())
+    if not missing:
+        return None
+    return (
+        "unsupported on this CPU: the bundled native wheels (numpy 2.4, ctranslate2) are "
+        "built for the x86-64-v2 baseline (SSE4.1/SSE4.2/POPCNT), which this processor "
+        "lacks, and importing them kills the process with SIGILL rather than raising an "
+        "exception. Use a cloud STT/TTS provider, a local whisper CLI "
+        "(HERMES_LOCAL_STT_COMMAND), or a v2-capable CPU."
+    )
+
+
+# Features whose wheels carry the x86-64-v2 SIMD baseline (numpy 2.4 / ctranslate2 /
+# onnxruntime native code). Gated before install so a doomed pip run never happens.
+_SIMD_BASELINE_FEATURES = frozenset({
+    "stt.faster_whisper", "wake.openwakeword", "wake.sherpa", "wake.porcupine",
+})
+
+
 def _unsupported_feature_reason(feature: str) -> Optional[str]:
     """Platform capability gate (not policy): why a feature cannot work on this host, or None."""
     if sys.platform == "win32" and feature == "platform.matrix":
         return ("unsupported on Windows: Matrix E2EE depends on python-olm, which has no Windows wheel and "
                 "requires make + libolm to build from sdist. Run Hermes under WSL to use Matrix on Windows.")
+    if feature in _SIMD_BASELINE_FEATURES:
+        return _cpu_baseline_missing_reason()
     return None
 
 

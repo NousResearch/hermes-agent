@@ -115,6 +115,19 @@ def _should_force_faster_whisper_cpu() -> bool:
     return _sysctl_value("sysctl.proc_translated") == "1" or _sysctl_value("hw.optional.arm64") == "1"
 
 
+def _cpu_unsupported_reason() -> Optional[str]:
+    """Why faster-whisper cannot run on this host (SIGILL-class, not exception-class)."""
+    try:
+        from tools.lazy_deps import _cpu_baseline_missing_reason
+        return _cpu_baseline_missing_reason()
+    except Exception:
+        return None
+
+
+class CpuBaselineError(RuntimeError):
+    """Raised instead of letting numpy/ctranslate2 SIGILL the process on pre-x86-64-v2 CPUs."""
+
+
 def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     """Resolve the idle unload timeout from config; 0 = never (default), negatives clamp to 0."""
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
@@ -134,6 +147,10 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when
         # multiple Intel OpenMP runtimes are loaded — set before the import.
         os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    # SIGILL cannot be caught: a pre-x86-64-v2 core dies inside the native import
+    # before Python sees anything, so refuse before the import rather than restart-loop.
+    if unsupported := _cpu_unsupported_reason():
+        raise CpuBaselineError(unsupported)
     from faster_whisper import WhisperModel
     if force_cpu:
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "

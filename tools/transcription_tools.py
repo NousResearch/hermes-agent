@@ -341,6 +341,12 @@ def _transcribe_local(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
+    # SIGILL-class CPU check first: lazy-install would either fetch wheels that
+    # crash the process on import (numpy on pre-x86-64-v2 cores) or install an
+    # unloadable ctranslate2 — refuse with the remediation hint up front.
+    from tools.transcription_local import _cpu_unsupported_reason
+    if unsupported := _cpu_unsupported_reason():
+        return _error_result(unsupported)
     if not _HAS_FASTER_WHISPER and not _try_lazy_install_stt():
         return _error_result("faster-whisper not installed")
     try:

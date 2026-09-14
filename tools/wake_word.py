@@ -386,9 +386,16 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     capture_mode = resolve_capture_mode(cfg)
     missing = " and ".join(n for n, ok in (("speech-to-text", stt_ok), ("text-to-speech", tts_ok)) if not ok)
 
+    # SIGILL-class: numpy/ctranslate2 wheels need x86-64-v2; refuse before the doomed install.
+    try:
+        cpu_unsupported = lazy_deps._cpu_baseline_missing_reason()
+    except Exception:
+        cpu_unsupported = None
+
     # Ordered remediation ladder: first true predicate wins.
     ladder = (
         (not key_ok, lambda: "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."),
+        (cpu_unsupported is not None, lambda: f"Wake word unavailable: {cpu_unsupported}"),
         (not deps_ok and not lazy_ok, lambda: lazy_deps.feature_install_command(feature) or ""),
         (not tflite_ok,
          lambda: "The wake word needs the tflite runtime on this Mac: pip install ai-edge-litert"),
@@ -410,7 +417,8 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
                     "build with client-capture wake support.")
 
     return {
-        "available": key_ok and stt_ok and tts_ok and tflite_ok and mic_ok, "provider": provider,
+        "available": cpu_unsupported is None and key_ok and stt_ok and tts_ok and tflite_ok and mic_ok,
+        "provider": provider,
         "deps_available": deps_ok, "audio_available": audio_ok,
         "local_input_available": _local_input_device_ready() if deps_ok else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,

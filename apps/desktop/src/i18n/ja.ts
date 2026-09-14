@@ -768,6 +768,8 @@ export const ja = defineLocale({
       compression: {
         enabled: '自動圧縮',
         threshold: '圧縮しきい値',
+        codexGpt55Autoraise: 'Codex しきい値の自動引き上げ',
+        codexGpt55AutoraiseNotice: 'Codex 自動引き上げ通知',
         targetRatio: '圧縮目標',
         protectLastN: '保護する直近メッセージ'
       },
@@ -829,7 +831,11 @@ export const ja = defineLocale({
         engine: '長い会話がコンテキスト上限に近づいたときの管理戦略です。'
       },
       compression: {
-        enabled: '会話が大きくなったとき、古いコンテキストを要約します。'
+        enabled: '会話が大きくなったとき、古いコンテキストを要約します。',
+        codexGpt55Autoraise:
+          '対応する ChatGPT Codex OAuth モデルでは圧縮しきい値を 85% に引き上げます。オフにすると常にグローバルしきい値を使用します。',
+        codexGpt55AutoraiseNotice:
+          'Codex が実効しきい値を引き上げたときに一度だけ通知します。通知をオフにしても自動引き上げは無効になりません。'
       },
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'

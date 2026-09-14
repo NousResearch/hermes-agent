@@ -961,6 +961,8 @@ export const zh = defineLocale({
       compression: {
         enabled: '自动压缩',
         threshold: '压缩阈值',
+        codexGpt55Autoraise: 'Codex 阈值自动提高',
+        codexGpt55AutoraiseNotice: 'Codex 自动提高通知',
         targetRatio: '压缩目标',
         protectLastN: '保护最近消息'
       },
@@ -1025,7 +1027,11 @@ export const zh = defineLocale({
         engine: '在接近上下文上限时管理长对话的策略。'
       },
       compression: {
-        enabled: '当对话变大时对较早的上下文进行摘要。'
+        enabled: '当对话变大时对较早的上下文进行摘要。',
+        codexGpt55Autoraise:
+          '为受支持的 ChatGPT Codex OAuth 模型将压缩阈值提高到 85%。关闭后始终使用全局阈值。',
+        codexGpt55AutoraiseNotice:
+          '当 Codex 提高有效阈值时显示一次性通知。关闭通知不会禁用自动提高。'
       },
       browser: {
         useRealProfile:

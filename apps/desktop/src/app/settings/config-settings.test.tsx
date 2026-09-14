@@ -58,14 +58,14 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderConfigSettings() {
+function renderConfigSettings(activeSectionId = 'safety') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const importInputRef = createRef<HTMLInputElement>()
 
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <ConfigSettings activeSectionId="safety" importInputRef={importInputRef} />
+        <ConfigSettings activeSectionId={activeSectionId} importInputRef={importInputRef} />
       </QueryClientProvider>
     </MemoryRouter>
   )
@@ -74,6 +74,34 @@ function renderConfigSettings() {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('renders and saves Codex compression override controls', async () => {
+    getHermesConfigRecord.mockResolvedValue({
+      compression: { codex_gpt55_autoraise: true, codex_gpt55_autoraise_notice: true }
+    })
+    getHermesConfigSchema.mockResolvedValue({ fields: {} })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings('memory')
+
+      expect(await screen.findByText('Codex Threshold Auto-Raise')).toBeTruthy()
+      expect(screen.getByText('Codex Auto-Raise Notice')).toBeTruthy()
+
+      screen.getAllByRole('switch')[0].click()
+      await vi.advanceTimersByTimeAsync(700)
+
+      await vi.waitFor(() =>
+        expect(saveHermesConfig).toHaveBeenCalledWith(
+          { compression: { codex_gpt55_autoraise: false } },
+          undefined
+        )
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

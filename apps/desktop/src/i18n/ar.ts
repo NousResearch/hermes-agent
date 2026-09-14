@@ -734,6 +734,8 @@ export const ar = defineLocale({
       'context.engine': 'محرك السياق',
       'compression.enabled': 'الضغط التلقائي',
       'compression.threshold': 'عتبة الضغط',
+      'compression.codexGpt55Autoraise': 'الرفع التلقائي لعتبة Codex',
+      'compression.codexGpt55AutoraiseNotice': 'إشعار الرفع التلقائي لـ Codex',
       'compression.targetRatio': 'هدف الضغط',
       'compression.protectLastN': 'الرسائل الأخيرة المحمية',
       'delegation.model': 'نموذج الوكيل الفرعي',
@@ -770,6 +772,10 @@ export const ar = defineLocale({
       'memory.userProfileEnabled': 'يحافظ على ملف مختصر لتفضيلات المستخدم.',
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
+      'compression.codexGpt55Autoraise':
+        'يرفع عتبة الضغط إلى 85٪ للنماذج المدعومة عبر ChatGPT Codex OAuth. عطّله لاستخدام العتبة العامة دائماً.',
+      'compression.codexGpt55AutoraiseNotice':
+        'يعرض إشعاراً لمرة واحدة عند رفع Codex للعتبة الفعلية. تعطيل الإشعار لا يعطّل الرفع التلقائي.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',
       'tts.xai.voiceId': 'معرف صوت xAI مثل eve أو معرف صوت مخصص.',
       'tts.xai.language': 'رمز لغة النطق، مثل en.',

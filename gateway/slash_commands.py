@@ -21,7 +21,7 @@ from typing import Optional, Union
 
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig, persist_home_channel
-from gateway.platforms.base import EphemeralReply
+from gateway.platforms.base import EphemeralReply, PrivateReply
 from gateway.platforms.event import MessageEvent
 from gateway.session import AsyncSessionStore
 from gateway.session_transcript import TranscriptReadError
@@ -113,6 +113,7 @@ def _restart_notify_payload(event: MessageEvent) -> dict:
         data["delivered_via_upstream_relay"] = True
         data.update({k: getattr(source, k) for k in ("user_id", "scope_id") if getattr(source, k)})
     optional = (("thread_id", source.thread_id), ("message_id", event.message_id),
+                ("user_id", source.user_id), ("user_name", source.user_name),
                 ("profile", getattr(source, "profile", None)))
     data.update({k: v for k, v in optional if v})
     return data
@@ -518,7 +519,8 @@ class GatewaySlashCommandsMixin(
             return ""
         if self._restart_requested or self._draining:
             count = self._running_agent_count()
-            return t("gateway.draining", count=count) if count else EphemeralReply(t("gateway.restart.in_progress"))
+            return PrivateReply(t("gateway.draining", count=count) if count else t("gateway.restart.in_progress"),
+                                ttl_seconds=0)
 
         async def _write_marker(name: str, build, label: str) -> None:
             try:
@@ -560,8 +562,8 @@ class GatewaySlashCommandsMixin(
         # counter increments for sessions that were running. If a session hits the threshold (3 consecutive
         # restarts while active), the next startup auto-suspends it — breaking the loop.
         if active_agents:
-            return t("gateway.draining", count=active_agents)
-        return EphemeralReply(t("gateway.restart.restarting"))
+            return PrivateReply(t("gateway.draining", count=active_agents), ttl_seconds=0)
+        return PrivateReply(t("gateway.restart.restarting"), ttl_seconds=0)
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""

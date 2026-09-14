@@ -61,6 +61,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
+    assert data["user_id"] == "u1"
     assert data["message_id"] == "m1"
     assert "thread_id" not in data  # no thread → omitted
 
@@ -243,6 +244,22 @@ async def test_relay_fronted_logical_home_gets_startup_notification(tmp_path, mo
     assert relay.send_for_platform.await_args.kwargs["metadata"]["scope_id"] == "T123"
 
 
+@pytest.mark.asyncio
+async def test_private_reply_without_source_is_dropped_without_sending():
+    from gateway.platforms.base import PrivateReply
+    _runner, adapter = make_restart_runner()
+    event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=None)
+
+    result = await adapter._send_private_reply_or_fallback(
+        event,
+        PrivateReply("private restart state"),
+    )
+
+    assert result.success is False
+    assert result.error == "missing message source"
+    assert adapter.sent == []
+
+
 # ── _send_restart_notification ───────────────────────────────────────────
 
 
@@ -283,6 +300,150 @@ async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_pa
     metadata = relay.send_for_platform.await_args.kwargs["metadata"]
     assert metadata["user_id"] == "U123"
     assert metadata["scope_id"] == "T123"
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_shared_relay_restart_notification_uses_neutral_logical_fallback(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(
+        json.dumps(
+            {
+                "platform": "slack",
+                "chat_id": "C123",
+                "chat_type": "channel",
+                "user_id": "U123",
+                "scope_id": "T123",
+                "delivered_via_upstream_relay": True,
+            }
+        )
+    )
+
+    runner, _native = make_restart_runner()
+    relay = MagicMock()
+    relay.fronts_platform.side_effect = lambda platform: platform == Platform.SLACK
+    relay._supports_private_notice_delivery.return_value = False
+    relay.send_private_notice = AsyncMock()
+    relay.send_for_platform = AsyncMock(
+        return_value=SendResult(success=True, message_id="restart")
+    )
+    runner.adapters = {Platform.RELAY: relay}
+    runner.config.platforms = {
+        Platform.RELAY: PlatformConfig(enabled=True),
+        Platform.SLACK: PlatformConfig(enabled=False),
+    }
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("slack", "C123", None)
+    relay.send_for_platform.assert_awaited_once()
+    relay.send_private_notice.assert_not_awaited()
+    assert relay.send_for_platform.await_args.args[0:2] == (Platform.SLACK, "C123")
+    public_text = relay.send_for_platform.await_args.args[2]
+    assert "restarted" in public_text.lower()
+    assert "session continues" not in public_text.lower()
+    metadata = relay.send_for_platform.await_args.kwargs["metadata"]
+    assert metadata["user_id"] == "U123"
+    assert metadata["scope_id"] == "T123"
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_from_group_prefers_private_notice(
+    tmp_path, monkeypatch
+):
+    """Restart lifecycle output from a shared chat is owner-private."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+    adapter.send_private_notice = AsyncMock(
+        return_value=SendResult(success=True, message_id="private")
+    )
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send_private_notice.assert_awaited_once()
+    private_args = adapter.send_private_notice.await_args
+    assert private_args.args[:3] == (
+        "-100",
+        "owner-1",
+        "♻ Gateway restarted successfully. Your session continues.",
+    )
+    adapter.send.assert_not_awaited()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_from_group_falls_back_when_private_notice_raises(
+    tmp_path, monkeypatch
+):
+    """A raising private delivery still emits only the neutral public fallback."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+    adapter.send_private_notice = AsyncMock(side_effect=RuntimeError("private send failed"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send_private_notice.assert_awaited_once()
+    adapter.send.assert_awaited_once()
+    public_text = adapter.send.await_args.args[1]
+    assert "restarted" in public_text.lower()
+    assert "session continues" not in public_text.lower()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_from_group_without_private_notice_uses_neutral_fallback(
+    tmp_path, monkeypatch
+):
+    """A shared chat never receives the backend restart lifecycle text by default."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send.assert_awaited_once()
+    public_text = adapter.send.await_args.args[1]
+    assert "restarted" in public_text.lower()
+    assert "session continues" not in public_text.lower()
     assert not notify_path.exists()
 
 
@@ -413,3 +574,76 @@ async def test_shutdown_notifications_are_fully_muted_when_flag_disabled():
     adapter.send.assert_not_awaited()
 
 
+@pytest.mark.parametrize("path", ["inline", "background"])
+@pytest.mark.parametrize("delivery", ["unsupported", "success", "failed", "raises", "none", "missing_user", "dm"])
+@pytest.mark.asyncio
+async def test_private_restart_reply_routes_before_text_delivery(monkeypatch, path, delivery):
+    from gateway.platforms.base import PrivateReply
+
+    _runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="-100", chat_type="dm" if delivery == "dm" else "group")
+    if delivery == "missing_user":
+        source.user_id = None
+    event = MessageEvent(text="/restart", source=source, message_id="request-1")
+    content = "private restart state: draining 3 active agents"
+    adapter.set_message_handler(AsyncMock(return_value=PrivateReply(content)))
+    monkeypatch.setattr(adapter, "_keep_typing", AsyncMock())
+    deleted = MagicMock()
+    monkeypatch.setattr(adapter, "_schedule_ephemeral_delete", deleted)
+    if delivery != "unsupported":
+        adapter.send_private_notice = AsyncMock(
+            return_value=None if delivery == "none" else SendResult(
+                success=delivery != "failed", message_id="private"))
+        if delivery == "raises":
+            adapter.send_private_notice.side_effect = RuntimeError("private transport unavailable")
+    if path == "inline":
+        await adapter._dispatch_inline_reply(event)
+    else:
+        await adapter._process_message_background(event, build_session_key(source))
+    if delivery == "success":
+        assert adapter.sent == []
+        assert adapter.send_private_notice.await_args.kwargs["content"] == content
+    elif delivery == "dm":
+        assert adapter.sent == [content]
+        adapter.send_private_notice.assert_not_awaited()
+    else:
+        assert len(adapter.sent) == 1
+        assert content not in adapter.sent[0]
+        assert "acknowledged" in adapter.sent[0]
+        if delivery == "missing_user":
+            adapter.send_private_notice.assert_not_awaited()
+    deleted.assert_not_called()  # A private message id must never be deleted in the origin chat.
+
+
+@pytest.mark.parametrize("already_restarting,count", [(False, 0), (False, 3), (True, 0), (True, 3)])
+@pytest.mark.asyncio
+async def test_restart_states_are_all_marked_private(tmp_path, monkeypatch, already_restarting, count):
+    from gateway.platforms.base import PrivateReply
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, _adapter = make_restart_runner()
+    runner._restart_requested = already_restarting
+    runner._running_agent_count = lambda: count
+    runner.request_restart = MagicMock(return_value=True)
+    reply = await runner._handle_restart_command(MessageEvent(text="/restart", source=make_restart_source()))
+    assert isinstance(reply, PrivateReply)
+
+
+@pytest.mark.parametrize("delivery", ["failed", "none", "missing_user", "missing_type"])
+@pytest.mark.asyncio
+async def test_restart_completion_uncertain_private_delivery_stays_neutral(tmp_path, monkeypatch, delivery):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_notify.json"
+    data = {"platform": "telegram", "chat_id": "-100", "chat_type": "group", "user_id": "owner-1"}
+    if delivery == "missing_user":
+        data.pop("user_id")
+    if delivery == "missing_type":
+        data.pop("chat_type")
+    marker.write_text(json.dumps(data))
+    runner, adapter = make_restart_runner()
+    adapter.send_private_notice = AsyncMock(
+        return_value=None if delivery == "none" else SendResult(success=False, error="unavailable"))
+    assert await runner._send_restart_notification() == ("telegram", "-100", None)
+    assert len(adapter.sent) == 1
+    assert "session continues" not in adapter.sent[0].lower()
+    assert not marker.exists()

@@ -23,14 +23,13 @@ The fix installs a three-rung ladder inside ``Install-Uv``:
 Only after all three rungs fail does it error out -- and then it prints the
 tail of the captured installer output so the real cause reaches the user.
 
-install.ps1 only runs on Windows, so these tests lock the contract at the
-source-text level (same style as test_install_ps1_uv_powershell_host.py).
+install.ps1 only runs on Windows: the source-shape tests below run everywhere,
+the two harness tests dot-source install.ps1 and run under ``windows_only``.
 """
 
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -133,7 +132,7 @@ def test_failure_path_keeps_manual_install_pointer_and_shows_output(source: str)
     )
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell required")
+@pytest.mark.windows_only
 def test_windows_rerun_self_heals_when_managed_uv_is_broken(tmp_path: Path):
     """When $HermesHome/bin/uv.exe is already a broken shim, Install-Uv must purge it and self-heal."""
     powershell = shutil.which("powershell")
@@ -144,6 +143,9 @@ def test_windows_rerun_self_heals_when_managed_uv_is_broken(tmp_path: Path):
     bin_dir = hermes_home / "bin"
     bin_dir.mkdir(parents=True)
     broken_managed_uv = bin_dir / "uv.exe"
+    # Compiled outside bin/ so it survives Install-Uv purging the managed copy;
+    # it doubles as the fail-fast stand-in for the installer host exe.
+    broken_uv = tmp_path / "BrokenUv.exe"
 
     # Create a broken executable that fails uv --version (exit code 1)
     source_cs = tmp_path / "BrokenUv.cs"
@@ -159,10 +161,11 @@ def test_windows_rerun_self_heals_when_managed_uv_is_broken(tmp_path: Path):
     )
     compile_ps1 = tmp_path / "compile.ps1"
     compile_ps1.write_text(
-        f"Add-Type -Path '{source_cs}' -OutputAssembly '{broken_managed_uv}' -OutputType ConsoleApplication\n",
+        f"Add-Type -Path '{source_cs}' -OutputAssembly '{broken_uv}' -OutputType ConsoleApplication\n",
         encoding="ascii",
     )
     subprocess.run([powershell, "-ExecutionPolicy", "Bypass", "-File", str(compile_ps1)], check=True)
+    shutil.copy(broken_uv, broken_managed_uv)
     assert broken_managed_uv.exists()
 
     # Also compile a valid uv that exits 0 with "uv 0.5.0"
@@ -191,15 +194,17 @@ def test_windows_rerun_self_heals_when_managed_uv_is_broken(tmp_path: Path):
     # and replaces it with the valid candidate.
     test_harness = tmp_path / "test_harness.ps1"
     test_harness.write_text(
-        r'''param([string]$InstallPs1, [string]$HomeDir, [string]$ValidCandidate)
+        r'''param([string]$InstallPs1, [string]$HomeDir, [string]$ValidCandidate, [string]$HostExe)
 $env:HERMES_HOME = $HomeDir
 . $InstallPs1 -HermesHome $HomeDir -InstallDir (Join-Path $HomeDir 'install')
 
-# Mock network installers by redefining Get-PowerShellHostExe to return a non-existent exe or dummy
-function Get-PowerShellHostExe { return "cmd.exe" }
+# Network installer rungs must fail fast: the host exe is an exit-1 stub, so
+# `& $psHostExe ...` returns immediately instead of opening a shell on stdin.
+function Get-PowerShellHostExe { return $HostExe }
+# Install-Uv calls Get-Command with -CommandType; the mock must bind it.
 function Get-Command {
     [CmdletBinding()]
-    param([Parameter(Position=0)][string]$Name, [Parameter(ValueFromRemainingArguments=$true)][object[]]$Rest)
+    param([Parameter(Position=0)][string]$Name, [string]$CommandType, [Parameter(ValueFromRemainingArguments=$true)][object[]]$Rest)
     if ($Name -eq 'uv') {
         return [pscustomobject]@{ Source = $ValidCandidate }
     }
@@ -226,6 +231,8 @@ if ($res) { exit 0 } else { exit 1 }
             str(hermes_home),
             "-ValidCandidate",
             str(valid_uv),
+            "-HostExe",
+            str(broken_uv),
         ],
         capture_output=True,
         text=True,
@@ -237,7 +244,7 @@ if ($res) { exit 0 } else { exit 1 }
     assert "uv 0.5.0" in managed_version.stdout
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell required")
+@pytest.mark.windows_only
 def test_windows_salvage_resolves_chocolatey_shim_to_real_executable(tmp_path: Path):
     """Chocolatey PATH shims (bin/uv.exe) must be resolved to the real binary under lib/uv/tools/uv.exe."""
     powershell = shutil.which("powershell")
@@ -297,11 +304,13 @@ def test_windows_salvage_resolves_chocolatey_shim_to_real_executable(tmp_path: P
 $env:HERMES_HOME = $HomeDir
 . $InstallPs1 -HermesHome $HomeDir -InstallDir (Join-Path $HomeDir 'install')
 
-# Mock network installers
-function Get-PowerShellHostExe { return "cmd.exe" }
+# Network installer rungs must fail fast: the exit-1 shim stands in for the
+# host exe so `& $psHostExe ...` returns instead of opening a shell on stdin.
+function Get-PowerShellHostExe { return $ChocoShim }
+# Install-Uv calls Get-Command with -CommandType; the mock must bind it.
 function Get-Command {
     [CmdletBinding()]
-    param([Parameter(Position=0)][string]$Name, [Parameter(ValueFromRemainingArguments=$true)][object[]]$Rest)
+    param([Parameter(Position=0)][string]$Name, [string]$CommandType, [Parameter(ValueFromRemainingArguments=$true)][object[]]$Rest)
     if ($Name -eq 'uv') {
         return [pscustomobject]@{ Source = $ChocoShim }
     }

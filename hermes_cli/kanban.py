@@ -152,13 +152,9 @@ def kanban_command(args: argparse.Namespace) -> int:
     if _is_delegated_child_cli_mutation(args):
         return _err("kanban: delegate_task child contexts cannot mutate Kanban tasks via the CLI")
 
-    # `boards …` manages board metadata and the current-board pointer itself, so it must ignore
-    # the `--board` routing override (else `--board beta boards show` reports beta).
-    if action == "boards":
-        return _dispatch_boards(args)
-
-    # `--board <slug>` pins HERMES_KANBAN_BOARD for the duration of this call so it inherits the
-    # exact resolution the dispatcher uses for workers.
+    # `--board <slug>` engages an explicit board scope for this call: it outranks any inherited
+    # worker/board env pins (HERMES_KANBAN_DB, workspaces/attachments roots). Omitted, resolution
+    # is unchanged: HERMES_KANBAN_BOARD env, then the persisted current-board file, then default.
     board_override = getattr(args, "board", None)
     board_scope = contextlib.nullcontext()
     if board_override:
@@ -169,13 +165,26 @@ def kanban_command(args: argparse.Namespace) -> int:
         if not normed:
             return _err("kanban: --board requires a slug", 2)
         # Boards other than 'default' must already exist — typoed slugs would otherwise silently
-        # create an empty board.
-        if normed != kb.DEFAULT_BOARD and not kb.board_exists(normed):
+        # create an empty board. `boards …` subcommands are exempt: bootstrap-by-flag
+        # (`--board ghost boards create ghost`) was legal before the explicit scope existed and
+        # must stay legal — the check would otherwise reject the very slug the boards
+        # subcommand is about to create (t_4eff74eb critic round 2).
+        if (
+            action != "boards"
+            and normed != kb.DEFAULT_BOARD
+            and not kb.board_exists(normed)
+        ):
             return _err(f"kanban: board {normed!r} does not exist. "
                         f"Create it with `hermes kanban boards create {normed}`.")
-        board_scope = kb.scoped_current_board(normed)
+        board_scope = kb.scoped_explicit_board(normed)
 
     with board_scope:
+        # `boards …` runs inside the scope too: with no --board flag the scope is a nullcontext
+        # and default resolution is unchanged; with one, `boards list` / `boards show` must
+        # resolve through the explicit slug (else a pinned worker's `--board alpha boards list`
+        # reported the pinned board's db_path and task totals — t_4eff74eb critic round 1).
+        if action == "boards":
+            return _dispatch_boards(args)
         # `repair` dispatches BEFORE auto-init: on a corrupt DB init_db() itself raises
         # KanbanDbCorruptError, which would turn every repair into "could not initialize database".
         if action == "repair":

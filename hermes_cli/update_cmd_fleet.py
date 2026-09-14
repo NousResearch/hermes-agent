@@ -276,6 +276,12 @@ def _run_pending_fleet_restart() -> bool:
     print("→ Restarting gateways left on pre-update code...")
     with suppress(Exception):
         _m()._purge_stale_hermes_modules()
+    # Same reasoning as the main restart phase: a pending catch-up must ALSO recycle the Desktop
+    # backends the previous run left on pre-update code (`_update_started_at` falls back to now
+    # outside an update run, which makes this a no-op rather than a guess).
+    with suppress(Exception):
+        from hermes_cli.update_cmd import _update_started_at
+        _recycle_stale_desktop_backends(_update_started_at())
     # Warn if legacy Hermes gateway unit files are still installed. When both hermes.service (from a
     # pre-rename install) and the current hermes-gateway.service are enabled, they SIGTERM-fight for the
     # same bot token (see PR #11909). Flagging here means every `hermes update` surfaces the issue until the
@@ -1173,6 +1179,50 @@ def _recover_after_restart_phase_abort(
     out.record_receipt(phase_error=str(e), fresh_recovery=_recovery_result)
 
 
+#: Desktop backend recycle is a hygiene step, not a correctness gate: a backend we fail to kill is
+#: still reaped by the Desktop's own ownership guard on the next connect. Bounded so a hung probe
+#: can never stall the restart phase.
+_DESKTOP_RECYCLE_TIMEOUT_S = 10.0
+
+
+def _recycle_stale_desktop_backends(pre_update_started_at: float, *, kill=None, stale_pids_fn=None) -> list:
+    """SIGTERM Desktop-local backends spawned before this update started. Never raises.
+
+    The Desktop REUSES a live ``hermes serve --isolated`` across reconnects, so a backend running
+    since before the pull keeps the previous checkout's modules in memory and fails mid-turn with
+    ``agent init failed: cannot import name ...`` long after update reported success. These are
+    throwaway per-connection processes — the Desktop's ssh-lifecycle spawns a fresh one on the next
+    connect — so recycling them is the cheapest correct fix.
+
+    Windows is skipped: Desktop teardown there goes through taskkill trees
+    (``_orphaned_desktop_backend_pids``), not a bare SIGTERM.
+    """
+    if sys.platform == "win32":
+        return []
+    import signal as _signal
+    kill = (lambda pid, sig: os.kill(pid, sig)) if kill is None else kill
+    if stale_pids_fn is None:
+        from hermes_cli.dashboard_procs import stale_desktop_backend_pids as stale_pids_fn
+    try:
+        stale = list(stale_pids_fn(pre_update_started_at))
+    except Exception as exc:
+        logger.debug("Desktop backend staleness probe failed: %s", exc)
+        return []
+    recycled: list = []
+    for pid in stale:
+        try:
+            kill(pid, _signal.SIGTERM)
+            recycled.append(pid)
+        except (ProcessLookupError, PermissionError, OSError) as exc:
+            logger.debug("Could not recycle Desktop backend pid=%s: %s", pid, exc)
+    if recycled:
+        print(
+            "  ↻ Recycled %d Desktop backend(s) still on pre-update code: %s"
+            % (len(recycled), ", ".join(str(pid) for pid in recycled))
+        )
+    return recycled
+
+
 def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     """Restart every running gateway (systemd, launchd, manual) onto the pulled code.
 
@@ -1204,6 +1254,12 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     # source into this pre-update interpreter, and a cached sibling missing a
     # symbol the new source expects would ImportError and abort the whole phase.
     _m()._purge_stale_hermes_modules()
+    # Then the long-lived processes this phase cannot see as gateways: Desktop reuses its
+    # ``serve --isolated`` backends across reconnects, so they keep serving pre-pull modules
+    # until recycled (import_symbol heals a running one; recycling prevents the failure at all).
+    with suppress(Exception):
+        from hermes_cli.update_cmd import _update_started_at
+        _recycle_stale_desktop_backends(_update_started_at())
     try:
         # Every gateway helper the phase needs is imported up front so a broken gateway
         # module aborts into recovery BEFORE any unit is touched.

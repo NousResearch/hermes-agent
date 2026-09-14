@@ -111,6 +111,10 @@ from hermes_cli.update_cmd_maint import (  # noqa: F401
     _verify_and_restore_state_dbs_post_update)
 logger = logging.getLogger(__name__)
 
+#: Epoch seconds at which the CURRENT update run started (None outside an update run). Set by
+#: ``_begin_update_receipt_and_plan``; read by the restart phase as its staleness cutoff.
+_UPDATE_STARTED_AT: float | None = None
+
 
 def _m():
     """Lazy ``hermes_cli.main`` handle: keeps main-side test patches effective, import one-way."""
@@ -1011,10 +1015,25 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         switch_branch=switch_branch, discard_local_changes=discard_local_changes)
 
 
+def _update_started_at() -> float:
+    """Epoch seconds at which THIS update run started (``_begin_update_receipt_and_plan``).
+
+    The restart phase uses it as the staleness cutoff for long-lived processes: anything already
+    running when the update began holds the pre-pull checkout in memory. Falls back to "now" for
+    callers outside an update run (a catch-up restart), which is deliberately conservative —
+    nothing predates it, so no process is recycled on a guess.
+    """
+    return _UPDATE_STARTED_AT if _UPDATE_STARTED_AT is not None else _time.time()
+
+
 def _begin_update_receipt_and_plan(args):
     """Open the receipt, snapshot the fleet, refuse on Windows shim holders. Returns the
     pre-update plan (None if the probe failed); ``sys.exit(2)`` when a non-gateway hermes.exe
     holds the venv shim."""
+    # Staleness cutoff for the restart phase: the moment this run began moving code under
+    # long-lived processes (see _recycle_stale_desktop_backends).
+    global _UPDATE_STARTED_AT
+    _UPDATE_STARTED_AT = _time.time()
     # Structured receipt: record what this run discovers/does/skips so silent failures are diagnosable.
     with _best_effort('Update receipt unavailable: %s'):
         # See #74973, #81193, #85753, #88848, #91277.

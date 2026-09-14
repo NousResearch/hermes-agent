@@ -156,6 +156,8 @@ class WebhookAdapter(BasePlatformAdapter):
     # The startup auto-resume turn must instruct the model to FINISH the interrupted work instead of
     # emitting an interactive acknowledgement that abandons the task (#57056).
     interactive_resume: bool = False
+    # ``/p/<profile>/webhooks/<route>`` on the shared listener (``_resolve_request_profile``).
+    serves_profile_prefix: bool = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
@@ -215,6 +217,9 @@ class WebhookAdapter(BasePlatformAdapter):
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
         # /p/<profile>/ routes the event to that profile (honored only under gateway.multiplex_profiles).
         app.router.add_post("/p/{profile}/webhooks/{route_name}", self._handle_webhook)
+        # Without an api_server listener this port is the shared listener: forward a secondary's
+        # inbound-port platforms (Twilio, LINE, Teams, ...) registered in shared-listener mode.
+        app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         # SO_REUSEADDR: on macOS (BSD) two wildcard/specific sockets can silently split traffic while
@@ -230,7 +235,8 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.error("[webhook] Could not bind %s:%d: %s. Set a different host or port in config.yaml under "
                          "platforms.webhook.extra.", self._host or "all IPv4+IPv6 interfaces", self._port, exc)
             return False
-        self._mark_connected()
+        from gateway.platforms.shared_ingress import listener_base_url
+        self._mark_connected(listener_base=listener_base_url(self._host, self._port))
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
@@ -372,6 +378,14 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
+    async def _handle_profile_ingress(self, request: "web.Request") -> "web.StreamResponse":
+        profile = self._resolve_request_profile(request)
+        if profile is _PROFILE_REJECTED or profile is None:
+            return _json_error("Unknown or unconfigured profile", 404)
+        from gateway.platforms.shared_ingress import dispatch_profile_ingress
+        return await dispatch_profile_ingress(
+            self.gateway_runner, profile, request.match_info.get("tail", ""), request)
+
     def _resolve_request_profile(self, request: "web.Request"):
         """Resolve + validate the /p/<profile>/ URL prefix: None (no prefix, or multiplexing off and the
         prefix names this gateway's own profile), the profile name (served under multiplexing), or
@@ -390,8 +404,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return _PROFILE_REJECTED
         try:
             from hermes_cli.profiles import profiles_to_serve
-            allowlist = getattr(cfg, "multiplex_profile_allowlist", None)
-            served = {name for name, _ in profiles_to_serve(multiplex=True, profile_allowlist=allowlist)}
+            served = {name for name, _ in profiles_to_serve(multiplex=True)}
         except Exception:
             return _PROFILE_REJECTED
         return profile if profile in served else _PROFILE_REJECTED

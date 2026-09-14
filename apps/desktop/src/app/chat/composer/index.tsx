@@ -7,6 +7,7 @@ import { useHudComposerDrag } from '@/app/hud/composer-drag'
 import { composerFill, composerFloatingStrip, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { $chatOnboardingSolo, $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
 import { OnboardingSkip } from '@/components/onboarding-chat/skip'
+import { OnboardingStart } from '@/components/onboarding-chat/start'
 import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
@@ -65,6 +66,7 @@ import { useEmojiCompletions } from './hooks/use-emoji-completions'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
+import { shouldConvertPasteToAttachment } from './large-paste'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { QueuePanel } from './queue-panel'
@@ -104,12 +106,14 @@ export function ChatBar({
   onAttachDroppedItems,
   onAttachImageBlob,
   onAttachPrCommentUrl,
+  onAttachPastedText,
   onPasteClipboardImage,
   onPickFiles,
   onPickFolders,
   onPickImages,
   onRemoveAttachment,
   onSteer,
+  onSteerHidden,
   onSubmit: onSubmitProp,
   onTranscribeAudio
 }: ChatBarProps) {
@@ -389,6 +393,7 @@ export function ChatBar({
     // empty composer) — an explicit halt, so it parks the queue.
     onCancel: haltRun,
     onSteer,
+    onSteerHidden,
     onSubmit,
     queueCurrentDraft,
     queueEdit,
@@ -558,6 +563,30 @@ export function ChatBar({
     }
 
     event.preventDefault()
+
+    // A paste past the large-paste threshold becomes a `.txt` attachment chip
+    // instead of flooding the composer.
+    // The instruction the user types stays in the input; the pasted source
+    // material rides along as a file. Falls back to inline insertion if the
+    // attachment can't be created (missing bridge, write failure) so the
+    // paste is never lost.
+    if (onAttachPastedText && shouldConvertPasteToAttachment(pastedText)) {
+      const editor = event.currentTarget
+
+      void Promise.resolve(onAttachPastedText(pastedText)).then(attached => {
+        if (attached) {
+          triggerHaptic('selection')
+
+          return
+        }
+
+        recordUndoPoint()
+        insertComposerContentsAtCaret(editor, pathifyRefs(linkifyUrls(pastedText)), openDirectiveScope(editor))
+        scheduleFlushEditorToDraft(editor)
+      })
+
+      return
+    }
 
     // Links in the paste land as `@url:` chips rather than a wall of URL text —
     // the same reference the "Add URL" dialog inserts, parsed in place so a link
@@ -1200,6 +1229,7 @@ export function ChatBar({
             <ActionBadges sessionId={statusSessionId} />
             <SuggestionPills sessionId={statusSessionId} />
             <OnboardingSkip />
+            <OnboardingStart />
           </div>
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it

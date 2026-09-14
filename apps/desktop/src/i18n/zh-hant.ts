@@ -178,7 +178,10 @@ export const zhHant = defineLocale({
       errorTitle: 'MCP 伺服器無法連線',
       errorMessage: name => `${name} MCP 健康檢查失敗。`,
       signIn: '登入',
-      view: '檢視'
+      view: '檢視',
+      disable: '停用',
+      disabledMessage: name => `已停用 ${name} MCP。可隨時在「功能 → MCP」重新啟用。`,
+      disableFailed: name => `無法停用 ${name} MCP。`
     },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
@@ -522,10 +525,10 @@ export const zhHant = defineLocale({
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       tipsTitle: '應用程式內提示',
-      tipsDesc: '指向應用程式某處的小氣泡：閒置時偶爾出現，需要時 Hermes 也會給你一則。每則提示只出現一次。',
+      tipsDesc: '偶爾顯示來自應用程式和 Hermes 的提示，每則提示只出現一次。開始使用滿30天後自動關閉，你可以重新開啟。',
       tipsReset: (count: number) => `再次顯示 ${count} 則提示`,
       toursTitle: '導覽',
-      toursDesc: '讓 Hermes 帶你認識應用程式：調暗畫面並逐步標示每個位置。',
+      toursDesc: '讓 Hermes 逐步標示每個位置，帶你認識應用程式。開始使用滿30天後自動關閉，你可以重新開啟。',
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
       vibeHeartsTitle: '心情愛心',
@@ -545,6 +548,7 @@ export const zhHant = defineLocale({
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeSearchPlaceholder: '搜尋本機主題或 VS Code Marketplace…',
       themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
       installTitle: '從 VS Code 安裝',
       installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
@@ -648,7 +652,8 @@ export const zhHant = defineLocale({
       },
       browser: {
         allowPrivateUrls: '瀏覽器私有 URL',
-        autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器'
+        autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器',
+        useRealProfile: '使用我的真實瀏覽器設定檔'
       },
       checkpoints: {
         enabled: '檔案檢查點',
@@ -657,11 +662,17 @@ export const zhHant = defineLocale({
       voice: {
         recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
-        autoTts: '朗讀回覆'
+        autoTts: '朗讀回覆',
+        voiceChatMode: '語音聊天模式',
+        gptLive: {
+          voice: 'GPT-Live 音色',
+          instructions: 'GPT-Live 人設'
+        }
       },
       stt: {
         enabled: '語音轉文字',
         provider: '語音轉文字提供方',
+        echoTranscripts: '回傳轉寫文字',
         local: {
           model: '本機轉寫模型',
           language: '轉寫語言'
@@ -694,6 +705,10 @@ export const zhHant = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 語音',
           modelId: 'ElevenLabs 模型'
+        },
+        deepinfra: {
+          model: 'DeepInfra TTS 模型',
+          voice: 'DeepInfra 語音'
         },
         xai: {
           voiceId: 'xAI (Grok) 語音',
@@ -777,7 +792,11 @@ export const zhHant = defineLocale({
       terminal: {
         cwd: '工具與終端機操作的預設專案資料夾。',
         persistentShell: '後端支援時，在指令之間保留 Shell 狀態。',
-        envPassthrough: '傳入工具執行的環境變數。'
+        envPassthrough: '傳入工具執行的環境變數。',
+        dockerImage: '執行後端為 Docker 時使用的容器映像。',
+        singularityImage: '執行後端為 Singularity 時使用的映像。',
+        modalImage: '執行後端為 Modal 時使用的映像。',
+        daytonaImage: '執行後端為 Daytona 時使用的映像。'
       },
       codeExecution: {
         mode: '程式碼執行被限制在目前專案中的嚴格程度。'
@@ -803,13 +822,38 @@ export const zhHant = defineLocale({
       compression: {
         enabled: '對話變大時摘要較早的上下文。'
       },
+      browser: {
+        useRealProfile:
+          '本機瀏覽會使用你的真實登入狀態。Hermes 會將預設瀏覽器的設定（Cookie、登入資訊與偏好）複製成受管理的快照，再以內建的 Chromium 驅動它——不會直接開啟你正在使用的設定檔，且每次執行都會從目前的設定檔重新整理副本。設定雲端瀏覽器後端時，也允許代理視需要開啟本機真實設定檔工作階段。僅支援 Chromium 系瀏覽器（Chrome、Edge、Brave、Brave Origin、Chromium）；若預設瀏覽器並非 Chromium 系，會顯示明確錯誤。預設關閉。'
+      },
       voice: {
-        autoTts: '自動朗讀助手回覆。'
+        autoTts: '自動朗讀助手回覆。',
+        voiceChatMode:
+          'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。',
+        gptLive: {
+          voice: 'GPT-Live 模式使用的音色，可填入自訂音色 ID。',
+          instructions: '附加至即時語音人設的句子（語氣、語速、語言）。Hermes 會保留自己的系統提示詞。'
+        }
       },
       stt: {
         enabled: '啟用本機或提供方支援的語音轉寫。',
+        echoTranscripts: '將語音訊息的原始 🎙️ 轉寫文字傳回聊天。',
         elevenlabs: {
           languageCode: '可選的 ISO-639-3 語言代碼。留空讓 ElevenLabs 自動偵測。'
+        }
+      },
+      tts: {
+        xai: {
+          voiceId: 'xAI 音色 ID（例如 eve）或自訂音色 ID。',
+          language: '口語語言代碼（例如 en、pt-BR），或填入 "auto" 自動偵測。',
+          speed: '播放速度。0.7 = 較慢，1.0 = 正常，1.5 = 較快。',
+          autoSpeechTags: '合成前讓 LLM 在文稿中插入富有表現力的音訊標籤（例如 [laughing]、[sighs]）。',
+          optimizeStreamingLatency: '延遲與品質的權衡。0 = 最佳品質，2 = 最低延遲。',
+          sampleRate: '音訊取樣率（Hz）。越高音質越好、檔案越大。',
+          bitRate: 'MP3 位元率（bps）。僅在編碼為 mp3 時生效。'
+        },
+        neutts: {
+          device: 'NeuTTS 的本機推論裝置。'
         }
       },
       updates: {
@@ -817,6 +861,30 @@ export const zhHant = defineLocale({
           'Hermes 從應用程式內更新自身時，保留本機原始碼變更（stash）或丟棄（discard）。終端機更新一律會詢問。'
       }
     }),
+    uninstallSection: {
+      dangerZone: '危險操作',
+      confirmUninstall: '確認解除安裝',
+      uninstallHermes: '解除安裝 Hermes'
+    },
+    poolLimits: {
+      warmBotBackendsAria: '預熱機器人後端',
+      warmBotBackendsTitle: '預熱機器人後端',
+      backendIdleTimeoutAria: '後端閒置逾時（毫秒）',
+      backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
+    },
+    customEndpoints: {
+      title: '自訂端點',
+      deleteEndpoint: '刪除端點',
+      emptyDescription: '在下方新增 OpenAI 相容端點。',
+      emptyTitle: '尚無自訂端點',
+      namePlaceholder: '我的代理',
+      contextPlaceholder: '自動'
+    },
+    computerUse: {
+      accessibility: '輔助使用',
+      screenRecording: '螢幕錄製',
+      driverHealth: '驅動程式健康狀態'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,
@@ -870,7 +938,8 @@ export const zhHant = defineLocale({
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
+      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      showOptions: '顯示選項'
     },
     quickEntry: {
       enabledTitle: '快速輸入',
@@ -1101,6 +1170,9 @@ export const zhHant = defineLocale({
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
       providerDefault: '(提供方預設)',
+      moaTitle: '混合代理（Mixture of Agents）',
+      moaPreset: '預設',
+      moaAggregator: '聚合模型',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
@@ -1357,198 +1429,6 @@ export const zhHant = defineLocale({
   },
 
   skills: {
-    collective: {
-      publishToTeam: '發布至團隊',
-      submitForApproval: '提交審核',
-      publishLocalNotice: '確認後將上傳此確切的套件，並在通過必要檢查後發布至團隊。',
-      submitLocalNotice: '確認後將上傳此確切的套件供組織審核。審核完成前不會發布。',
-      reloadReview: '重新載入審核內容',
-      notificationPreferences: {
-        title: '通知設定',
-        scope: '管理此組織中跨用戶端的主動通知。手動瀏覽和分享仍可使用。',
-        on: '通知已開啟',
-        muted: '通知已靜音',
-        day: '1 天',
-        week: '1 週',
-        month: '30 天',
-        forever: '無限期',
-        pending: '選擇已儲存在本機，正在等待同步。',
-        failed: '同步失敗。請重新整理設定後重新選擇。',
-        conflict: '其他用戶端變更了偏好。請重新整理查看。',
-        expired: '此選擇已過期。請重新整理設定後再試。'
-      },
-      title: '集體智慧',
-      loading: '正在載入集體智慧…',
-      unavailable: '集體智慧目前無法使用。',
-      setup: '此設定檔尚未設定集體智慧。',
-      setupDisclosure:
-        '候選資格評估會保留在此設定檔中。只有經擁有者核准的私人草稿內容、作者文案、宣告式資訊清單中繼資料和受管理安裝狀態會傳送到閘道。',
-      setupAction: '我已瞭解 — 設定此設定檔',
-      settingUp: '正在設定…',
-      scanLocal: '掃描本機技能',
-      orgWide: '組織範圍的集體',
-      sharedSkills: count => `${count} 個共享技能`,
-      localCandidates: count => `${count} 個合格建議`,
-      contributionWorkflow: '貢獻流程',
-      potential: '建議的貢獻',
-      potentialHelp: 'Hermes 根據本機使用或有意義的改進判定為合格的技能。在你審核前不會共享。',
-      noSuggestions: '目前沒有本機技能符合自動資格規則。',
-      browseLocal: count => `檢視所有本機技能 (${count})`,
-      browseLocalHelp: '手動選擇並不表示 Hermes 使用過這些技能或已自動判定其合格。',
-      ownerReview: '你的貢獻草稿',
-      ownerReviewHelp: '等待你審核的草稿，以及等待集體核准的提交。',
-      noDrafts: '沒有進行中的貢獻草稿或提交。',
-      noShared: '沒有符合此搜尋的共享技能。',
-      noDescription: '沒有擁有者撰寫的描述',
-      serverScanPassed: '伺服器掃描已通過',
-      localOnly: '可從此裝置共享。',
-      qualifiedLocally: 'Hermes 將此本機技能識別為可能的貢獻。',
-      qualificationFirst: organizationName =>
-        `${organizationName ? `您的組織（${organizationName}）` : '您的組織'}已啟用 Collective Wisdom，此功能會自動探索所有團隊成員的實用技能。恭喜！Hermes 偵測到一項可能對您的團隊有用的技能。`,
-      qualificationReturning: 'Hermes 又偵測到一項可能對您的團隊有用的技能。',
-      savedLocally: '私人草稿已儲存在此裝置上。',
-      prepare: '開始貢獻',
-      continueDraft: '繼續編輯草稿',
-      reviewExact: '檢視詳細資料',
-      runSetupStep: '執行此步驟',
-      confirmSetupPrerequisite: '確認前提條件',
-      setupCommand: '建議的命令（本機終端機）',
-      setupStepApprovalNotice: '確認僅授權此步驟。請勿在聊天中輸入憑證。',
-      openDraft: '檢視詳細資料',
-      draftState: state => {
-        const labels: Record<string, string> = {
-          vetting: '伺服器正在審核',
-          ready: '等待你審核',
-          owner_approved: '你已核准',
-          publishing: '正在發佈',
-          pending_moderation: '等待集體管理員核准',
-          changes_requested: '已要求修改'
-        }
-
-        return labels[state] || state.replaceAll('_', ' ')
-      },
-      authoritative: '閘道是發佈和伺服器掃描決定的權威來源。',
-      versionHistory: '版本歷程',
-      versions: '版本',
-      versionDetails: version => `版本 ${version}`,
-      immutableVersion: '不可變的已發佈版本',
-      published: date => `發佈於 ${date}`,
-      releaseExplanation: '伺服器說明',
-      viewInPortal: '在 Portal 中檢視',
-      backToSkill: '返回技能',
-      backToVersions: '返回版本列表',
-      prepareTitle: '上傳前審核本機套件',
-      prepareNotice: '不包含本機候選訊號。在點選「提交」前，不會有任何內容離開此設定檔。',
-      ownerDescription: '擁有者撰寫的描述',
-      systemSpecification: '系統規格',
-      cancel: '取消',
-      submit: '提交草稿',
-      submitting: '正在提交…',
-      readEvery: '請閱讀每個檔案。核准將綁定到下方三個精確雜湊值。',
-      editReview:
-        '可在此編輯描述、SKILL.md 或宣告式資訊清單。儲存會建立新的私人修訂、重新執行掃描並傳回新雜湊值；不會改寫你的本機來源技能。',
-      editOwnerDescription: '編輯擁有者撰寫的描述',
-      unsavedChanges: '這些變更尚未掃描。請先儲存並重新掃描，再進行核准。',
-      saveAndRescan: '儲存變更並重新掃描',
-      savingRevision: '正在儲存並重新掃描…',
-      resetChanges: '捨棄編輯',
-      reviewedHashes: '目前伺服器已審核修訂的雜湊值',
-      ownerReviewExact: '擁有者審核的精確內容',
-      localOverlay: '本機覆疊',
-      close: '關閉',
-      approve: '核准精確內容並發佈',
-      publishing: '正在發佈…',
-      proposalTitle: '發佈到集體 — 需要核准',
-      localSuggestion: '可供你審核',
-      preparingLocal: '正在準備可編輯的本機審核…',
-      whySuggested: 'Hermes 建議此技能的原因',
-      sharePrompt: '你想分享嗎？',
-      reviewFirst: '先審核',
-      notNow: '暫不',
-      yes: '是',
-      share: '分享',
-      reviewPreviousPage: '上一審閱頁',
-      reviewNextPage: '下一審閱頁',
-      sharePreparationNotice: '分享會先在本機準備交接套件。在上傳或發佈任何內容之前，你需要另外審閱並核准。',
-      muteNotificationsSoon: '將通知靜音（即將推出）',
-      unmuteNotificationsSoon: '取消通知靜音（即將推出）',
-      openCollective: '開啟集體',
-      prepareExact: '審核並編輯',
-      skillName: '技能名稱',
-      editDefaultsNotice: '請審核技能名稱和說明。Hermes 已根據此裝置預填相容性詳情；僅在需要調整時展開。',
-      detailedRequirements: '編輯詳細需求',
-      hideDetailedRequirements: '收合詳細需求',
-      specificationNotice: '請審核擁有者撰寫的文案和宣告式系統規格。此操作不會授權執行任何相依項目。',
-      openFullReview: '開啟完整審核',
-      sendPrivateReview: '提交草稿',
-      saveLocal: '儲存',
-      savingLocal: '正在儲存…',
-      source: '原始碼',
-      preview: '預覽',
-      localDraft: '本機草稿',
-      serverReviewed: '伺服器已審核',
-      serverEnforced: '伺服器強制執行',
-      localAdvisory: '本機建議：獨立的提交前掃描',
-      qualificationLabel: '入選原因',
-      scanPassed: '已通過',
-      reviewFindings: '請檢查發現項目',
-      scanAvailable: '可用',
-      scanUnavailable: '不可用',
-      reviewed: '已審核',
-      contentHash: '內容',
-      authorDescriptionHash: '作者說明',
-      packageManifestHash: '套件資訊清單',
-      serverReviewNotice: '請閱讀下方每個原始檔案。核准將綁定到這些由伺服器確認的精確雜湊值。',
-      decline: '拒絕',
-      approvePublish: '核准並發佈',
-      checkUpdates: count => `檢查更新${count ? `（${count}）` : ''}`,
-      checking: '正在檢查…',
-      refreshShared: '重新整理共享技能',
-      refreshingShared: '正在重新整理…',
-      installReferenceLabel: '從連結或技能 ID 安裝',
-      installReferencePlaceholder: '貼上 Portal 連結、技能 ID 或 skill-id@vN',
-      installReferenceHelp: 'Hermes 會先驗證確切版本並顯示相容性計畫，再進行安裝。',
-      reviewInstall: '檢查安裝',
-      planningInstall: '正在驗證…',
-      updateModeLabel: '後續更新',
-      updateModeDefault: '使用組織預設設定',
-      updateModeManual: '手動',
-      updateModeAutomatic: '自動更新並通知',
-      updateModeRequired: '必須更新',
-      updateModeHelp: 'Gateway 會套用組織目前的政策。涉及安全的變更仍需你的核准。',
-      updateModePlan: mode => `後續更新：${mode}`,
-      install: '安裝…',
-      uninstall: '解除安裝…',
-      checkSkill: '檢查此技能',
-      updateAvailable: version => (version ? `可更新至 v${version}` : '有可用更新'),
-      reviewUpdate: '檢視更新',
-      installed: (version, mode) => `已安裝 v${version} · ${mode}`,
-      confirmAction: action => `確認${action}`,
-      acceptCompatibility: '我已審核並接受相容性操作。',
-      acceptSensitive: '我明確接受新的敏感需求。',
-      preserveModified: '先將我修改過的副本保留為不受管理的分支。',
-      alreadyCurrent: '此受管理技能已是最新版本。',
-      ownerCopyLabel: '擁有者撰寫的描述（未經平台驗證）',
-      serverFactsLabel: '伺服器強制掃描和伺服器推導的事實',
-      notifications: '集體智慧更新',
-      activityReady: count => `${count} 則新通知`,
-      aSkill: '一個集體智慧技能',
-      decisionPublished: skill => `${skill} 已獲核准，現在已與你的團隊共享。`,
-      decisionChanges: skill => `${skill} 需要修改後才能共享。`,
-      decisionDeclined: skill => `${skill} 未獲共享核准。`,
-      decisionChanged: (skill, state) => `${skill} 的貢獻狀態已變更為${state}。`,
-      installedNotice: (skill, version) => `${skill}${version ? ` ${version}` : ''} 已安裝到此設定檔。`,
-      updatedNotice: (skill, version) => `${skill}${version ? ` ${version}` : ''} 已在此設定檔中更新。`,
-      updateNotice: (skill, version) => `${skill}${version ? ` ${version}` : ''} 有可用更新。`,
-      newSkillNotice: skill => `${skill} 已與你的集體共享。`,
-      unavailableNotice: skill => `${skill} 在此設定檔中已無法使用。`,
-      archivedNotice: skill => `${skill} 已不再可用於新安裝。`,
-      takedownNotice: skill => `${skill} 已從集體中移除。`,
-      viewSkill: '查看技能',
-      markSeen: '全部標示為已讀'
-    },
-    tabCollective: '集體智慧',
-    searchCollective: '搜尋集體智慧...',
     tabSkills: '技能',
     tabToolsets: '工具集',
     tabMcp: 'MCP',
@@ -1771,6 +1651,10 @@ export const zhHant = defineLocale({
     restartGateway: '重新啟動閘道',
     openBrowser: '開啟瀏覽器',
     gatewayRestartFailed: '閘道重新啟動失敗。',
+    sharedGatewayRestartTitle: '重新啟動共享閘道？',
+    sharedGatewayRestartDescription: bots => `此裝置上的所有機器人都會重新連線：${bots}`,
+    sharedGatewayRestartConfirm: '全部重新啟動',
+    sharedGatewayRestarted: count => `共享閘道已重新啟動（${count} 個機器人）`,
     updateHermes: '更新 Hermes',
     reloadWindow: '重新載入視窗',
     actionRunning: '執行中',
@@ -1817,6 +1701,7 @@ export const zhHant = defineLocale({
     },
     unknown: '未知',
     hintPendingRestart: '在狀態列重新啟動閘道以套用此變更。',
+    sharedListenerUrl: '透過共享閘道監聽器提供，位址為',
     hintGatewayStopped: '在狀態列啟動閘道以建立連線。',
     restartNeeded: '已儲存。請重新啟動訊息閘道以套用新設定。',
     restartNow: '立即重新啟動',
@@ -1875,6 +1760,8 @@ export const zhHant = defineLocale({
     restartToApply: '此變更將在閘道重新啟動後生效。',
     setupSaved: name => `${name} 設定已儲存`,
     restartToReconnect: '新憑證將在閘道重新啟動後生效。',
+    appliedLive: '已套用到執行中的閘道。',
+    connectingLive: '執行中的閘道正在使用新憑證連線。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 設定已更新。`,
     failedUpdate: name => `更新 ${name} 失敗`,
@@ -3592,6 +3479,8 @@ export const zhHant = defineLocale({
     imageAttach: '附加圖片',
     imageWriteFailed: '無法將圖片寫入磁碟。',
     imageAttachFailed: '附加圖片失敗',
+    pastedContent: '貼上內容',
+    pasteAttachFailed: '無法附加貼上的文字',
     attachImages: '附加圖片',
     clipboard: '剪貼簿',
     noClipboardImage: '剪貼簿中沒有圖片',

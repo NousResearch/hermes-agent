@@ -267,6 +267,13 @@ def generate_title(
             # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
             max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
             extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            # The module contract above promises thinking-disabled operation,
+            # but nothing enforced it: with the aux default reasoning_effort
+            # "" (provider default), Gemini enables internal thinking and
+            # bills thought tokens against max_tokens=64 — the JSON payload
+            # never lands, and the prose fallback stores the opening fence
+            # ("```json") as the session title (#91927).
+            reasoning_config={"enabled": False},
         )
         title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that

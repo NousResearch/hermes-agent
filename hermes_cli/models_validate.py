@@ -16,17 +16,13 @@ from difflib import get_close_matches
 from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
+from hermes_constants import openrouter_variant_base
 
 
 # ── Verdicts ─────────────────────────────────────────────────────────────
 
-def _verdict(accepted: bool, persist: bool, recognized: bool, message: Optional[str],
-             corrected_model: Optional[str] = None) -> dict[str, Any]:
-    out: dict[str, Any] = {"accepted": accepted, "persist": persist, "recognized": recognized}
-    if corrected_model is not None:
-        out["corrected_model"] = corrected_model
-    out["message"] = message
-    return out
+def _verdict(accepted: bool, persist: bool, recognized: bool, message: Optional[str]) -> dict[str, Any]:
+    return {"accepted": accepted, "persist": persist, "recognized": recognized, "message": message}
 
 
 def _accept() -> dict[str, Any]:
@@ -46,28 +42,16 @@ def _soft_accept(message: Optional[str]) -> dict[str, Any]:
     return _verdict(True, True, False, message)
 
 
-def _corrected(requested: str, corrected: str) -> dict[str, Any]:
-    return _verdict(True, True, True, f"Auto-corrected `{requested}` → `{corrected}`",
-                    corrected_model=corrected)
-
-
 # ── Catalog matching ─────────────────────────────────────────────────────
 
 @dataclass
 class _Match:
     exact: bool = False
-    corrected: Optional[str] = None
     suggestion_text: str = ""
 
-    def verdict(self, req: "_Request", *, keep_suffix: bool = False) -> Optional[dict[str, Any]]:
-        """Accept on exact, auto-correct on a near-typo (re-attaching a preserved ``@preset/``
-        suffix when *keep_suffix*), else None so the branch composes its own message."""
-        if self.exact:
-            return _accept()
-        if self.corrected:
-            corrected = req.with_preset_suffix(self.corrected) if keep_suffix else self.corrected
-            return _corrected(req.requested, corrected)
-        return None
+    def verdict(self, req: "_Request") -> Optional[dict[str, Any]]:
+        """Accept on exact membership, else None so the branch composes its own message."""
+        return _accept() if self.exact else None
 
 
 def _match_in_catalog(
@@ -75,12 +59,15 @@ def _match_in_catalog(
     candidates,
     *,
     case_insensitive: bool = False,
-    auto_correct: bool = True,
     suggest_query: Optional[str] = None,
     suggest_cutoff: float = 0.5,
     suggest_label: str = "Similar models",
 ) -> _Match:
-    """Shared ladder: exact membership → typo auto-correct (cutoff .9) → suggestion text.
+    """Shared ladder: exact membership → suggestion text. Never rewrites the id: a requested model
+    that is merely CLOSE to a catalog entry is the user's selection (a newer release the listing
+    lacks, a dated snapshot, a qualifier) and goes to the wire verbatim — fuzzy "auto-correction"
+    swapped `deepseek-v4.1-flash` for `deepseek-v4-flash`, `gemini-3.8-flash` for `gemini-3.6-flash`
+    and `model:nitro` for `model` under the user's own label. The vendor's 400 names the valid ids.
     ``case_insensitive`` matches lower-cased ids and maps results back to the catalog's spelling
     (MiniMax ships mixed-case ids). ``suggest_query`` overrides the string the suggestion search
     uses (some branches search on the raw request, not the lookup form)."""
@@ -98,9 +85,6 @@ def _match_in_catalog(
 
     if query in set(pool):
         return _Match(exact=True)
-    auto = get_close_matches(query, pool, n=1, cutoff=0.9) if auto_correct else []
-    if auto:
-        return _Match(corrected=_show(auto[0]))
     suggestions = get_close_matches(suggest_query, pool, n=3, cutoff=suggest_cutoff)
     if not suggestions:
         return _Match()
@@ -119,11 +103,6 @@ class _Request:
     base_url: Optional[str]
     api_mode: Optional[str]
     headers: Optional[dict[str, str]]
-    preset_suffix: str = ""
-
-    def with_preset_suffix(self, model_id: str) -> str:
-        """Re-attach a preserved ``@preset/<slug>`` suffix after auto-correction."""
-        return f"{model_id}{self.preset_suffix}"
 
 
 # ── Provider branches (None = not decided here) ─────────────────────────
@@ -150,7 +129,7 @@ def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
 def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:
     """OpenRouter presets are account-scoped, so ``@preset/<slug>`` never appears in the public
     /v1/models listing. A bare preset is accepted unverified; ``<model>@preset/<slug>`` validates
-    the base model and preserves the suffix through auto-correction. OpenRouter validates the slug
+    the base model; the full id (suffix included) goes to the wire. OpenRouter validates the slug
     at request time."""
     marker = "@preset/"
     if marker not in req.requested:
@@ -162,7 +141,6 @@ def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:
     if re.fullmatch(r"[A-Za-z0-9._~-]+", preset_slug) is None:
         return _reject("OpenRouter preset slugs must be non-empty URL-safe identifiers using only "
                        "letters, digits, '.', '_', '~', or '-'.")
-    req.preset_suffix = f"{marker}{preset_slug}"
     if not preset_base:
         return _soft_accept(None)
     req.lookup = preset_base
@@ -234,7 +212,7 @@ def _validate_ollama_native(req: _Request) -> Optional[dict[str, Any]]:
             f"Note: could not reach this Ollama endpoint's `/api/tags` model listing to validate `{req.requested}`. "
             "Hermes will save the model name, but local Ollama model discovery could not verify it."
         )
-    match = _match_in_catalog(req.lookup, models, auto_correct=False, suggest_label="Similar local Ollama models")
+    match = _match_in_catalog(req.lookup, models, suggest_label="Similar local Ollama models")
     if match.exact:
         return _accept()
     empty_hint = " No models are currently listed by `/api/tags`." if not models else ""
@@ -268,17 +246,19 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
                         "Consider saving that as your base URL.")
         return _soft_accept(message)
 
-    message = (
-        f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
-        f"Hermes will still save `{req.requested}`, but the endpoint should expose `/models` for verification."
-    )
-    if anthropic_style:
-        message += ("\n  Many Anthropic-compatible proxies do not implement the Models API (GET /v1/models).  "
-                    "The model name has been accepted without verification.")
+    # Many OpenAI-compatible and Anthropic-compatible proxies (DashScope coding plan, Cline,
+    # MiniMax) never implement GET /models; /chat/completions works fine. Rejecting the switch
+    # here bricked `/model` for them (#12220), so both chat modes persist the name unverified.
+    accepted = req.api_mode in ("chat_completions", "anthropic_messages")
+    message = f"Note: could not reach this custom endpoint's model listing at `{probe.get('probed_url')}`. "
+    if accepted:
+        message += (f"`{req.requested}` was accepted without verification — if this endpoint does not "
+                    "serve it, inference will fail; check the provider's model catalog or the model name.")
+    else:
+        message += f"`{req.requested}` was not saved; the endpoint should expose `/models` for verification."
     if probe.get("suggested_base_url"):
         message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
-    # Anthropic-style proxies routinely lack /v1/models, so only they are accepted unverified.
-    return _verdict(anthropic_style, True, False, message)
+    return _verdict(accepted, True, False, message)
 
 
 def _static_catalog(normalized: str) -> list[str]:
@@ -315,8 +295,7 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
         # hidden provider slug — soft-accepting one silently runs at 272K on a different model.
         if req.lookup.strip().lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX) and req.lookup not in set(catalog):
             if is_codex_context_variant(req.lookup):
-                # Valid variant a stale catalog hasn't synthesized yet. Accept directly — the typo
-                # auto-corrector would otherwise "fix" it to the base slug and drop the opt-in.
+                # Valid variant a stale catalog hasn't synthesized yet.
                 return _accept()
             base_guess = req.lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
             return _reject(
@@ -430,17 +409,12 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     if match.exact:
         return _accept()
     # OpenRouter routing variants (":nitro", ":floor", ...) are request-time modifiers, not
-    # catalog entries — validate the BASE but keep the suffixed id. Must run BEFORE fuzzy
-    # auto-correction, which would otherwise "correct" `model:nitro` → `model` and silently
-    # strip the routing opt-in.
-    variant_base = _m._openrouter_variant_base(req.lookup) if req.normalized == "openrouter" else None
+    # catalog entries — validate the BASE but keep the suffixed id.
+    variant_base = openrouter_variant_base(req.lookup) if req.normalized == "openrouter" else None
     if variant_base is not None and variant_base in set(api_models):
         return _accept()
     # Listed but not found: the account may reach models absent from the public listing
     # (e.g. Z.AI Pro/Max plans use glm-5 on coding endpoints) — warn but allow where plausible.
-    verdict = match.verdict(req, keep_suffix=True)
-    if verdict is not None:
-        return verdict
     # Curated-catalog soft-accept: providers omit valid models from live listings (stale cache,
     # partial rollout, gated previews). EXCEPTION: official OpenAI hosts (canonical + data-
     # residency regional) — their listing is access-scoped and authoritative, so an absent model
@@ -473,7 +447,7 @@ def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:
 
         region = resolve_bedrock_runtime_region()
         discovered_ids = {m["id"] for m in discover_bedrock_models(region)}
-        match = _match_in_catalog(req.requested, list(discovered_ids), auto_correct=False, suggest_cutoff=0.4)
+        match = _match_in_catalog(req.requested, list(discovered_ids), suggest_cutoff=0.4)
         if match.exact:
             return _accept()
         # Still accept (custom inference profiles / cross-account access), but warn.
@@ -502,10 +476,10 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
         return _accept()
     # Same OpenRouter routing-variant rule as the live-listing path.
     if req.normalized == "openrouter":
-        variant_base = _m._openrouter_variant_base(req.lookup)
+        variant_base = openrouter_variant_base(req.lookup)
         if variant_base is not None and variant_base.lower() in {m.lower() for m in catalog}:
             return _accept()
-    return match.verdict(req, keep_suffix=True) or _soft_accept(
+    return _soft_accept(
         f"Note: `{req.requested}` was not found in the {label} curated catalog "
         f"and the /models endpoint was unreachable.{match.suggestion_text}"
         f"\n  The model may still work if it exists on the provider."
@@ -555,7 +529,8 @@ def validate_requested_model(
 ) -> dict[str, Any]:
     """Validate a ``/model`` value for the active provider → dict with ``accepted`` (switch now),
     ``persist`` (safe to save to config), ``recognized`` (matched a known provider catalog),
-    ``message`` (optional warning / guidance) and ``corrected_model`` when a typo was fixed."""
+    ``message`` (optional warning / guidance). The requested id is never rewritten: what the user
+    selected is what the wire sees."""
     from hermes_cli import models as _m
 
     requested = (model_name or "").strip()

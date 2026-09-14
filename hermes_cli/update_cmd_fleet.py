@@ -601,7 +601,10 @@ def _restart_macos_launchd_gateways(
             graceful_ok = False
             if old_pid is not None and old_pid > 0:
                 print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
-                graceful_ok = _graceful_restart_via_sigusr1(old_pid, drain_timeout=drain_budget)
+                from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+                graceful_ok = _graceful_restart_via_sigusr1(
+                    old_pid, drain_timeout=drain_budget,
+                    on_progress=drain_progress_reporter(_gateway_home_for_pid(old_pid), budget_s=drain_budget))
             if graceful_ok and _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
                 # KeepAlive already respawned it on new code — a kickstart would kill it.
                 restarted_services.append(label)
@@ -752,7 +755,22 @@ def _drain_or_signal_gateway_for_update(pid: int, drain_budget: float, label: st
         _escalate_wedged_gateway(pid)
         return True
     print(f"  → {label}: draining (up to {int(drain_budget)}s)...")
-    return _graceful_restart_via_sigusr1(pid, drain_timeout=drain_budget)
+    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    return _graceful_restart_via_sigusr1(
+        pid, drain_timeout=drain_budget,
+        on_progress=drain_progress_reporter(_gateway_home_for_pid(pid), budget_s=drain_budget))
+
+
+def _gateway_home_for_pid(pid: int):
+    """HERMES_HOME of the gateway ``pid`` per the fleet inventory, else None (own profile's file)."""
+    with suppress(Exception):
+        from hermes_cli.update_receipt import _profile_homes
+        from gateway.status import read_runtime_status
+        for _profile, home in _profile_homes():
+            record = read_runtime_status(home / "gateway_state.json") or {}
+            if record.get("pid") == pid:
+                return home
+    return None
 
 
 def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: str):
@@ -1399,6 +1417,11 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
         sys.exit(1)
     _clear_fleet_restart_pending_marker()
+    # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
+    # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.
+    with _best_effort('Multiplex auto-migration after update failed: %s'):
+        from hermes_cli.gateway_migrate import maybe_auto_migrate_after_update
+        maybe_auto_migrate_after_update()
 
 
 def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:

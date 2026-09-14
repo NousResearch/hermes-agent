@@ -18,8 +18,9 @@ import pytest
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _reset_backend():
-    """Tear down the cached backend between tests."""
+def _reset_backend(grant_computer_use_approvals):
+    """Tear down the cached backend between tests; destructive actions get an interactive "once"
+    through the shared approval gate (the tool fails closed with nobody to ask)."""
     from tools.computer_use.tool import reset_backend_for_tests
     reset_backend_for_tests()
     # Force the noop backend.

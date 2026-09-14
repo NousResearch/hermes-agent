@@ -345,10 +345,6 @@ describe('createGatewayEventHandler', () => {
       type: 'tool.start'
     } as any)
     onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
-    onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
     } as any)
@@ -360,7 +356,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(2)
     expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '', thinking: 'mapped the page' })
     expect(appended[0]?.tools).toHaveLength(1)
-    expect(appended[0]?.tools?.[0]).toContain('hero cards')
+    expect(appended[0]?.tools?.[0]).toContain('home page')
     expect(appended[0]?.toolTokens).toBeGreaterThan(0)
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
@@ -402,10 +398,6 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
     onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
@@ -1510,7 +1502,6 @@ describe('createGatewayEventHandler', () => {
       const trailBefore = getTurnState().turnTrail.length
       onEvent({ payload: { name: 'browser' }, type: 'tool.generating' } as any)
       expect(getTurnState().turnTrail.length).toBe(trailBefore)
-      onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
       onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
       onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
 

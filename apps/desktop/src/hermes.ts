@@ -28,7 +28,6 @@ export * from './api/sessions'
 export * from './api/skills'
 export * from './api/system'
 export * from './api/toolsets'
-export * from './api/wisdom'
 
 export type {
   ActionResponse,
@@ -66,7 +65,6 @@ export type {
   ElevenLabsVoice,
   ElevenLabsVoicesResponse,
   EnvVarInfo,
-  GatewayReadyPayload,
   HermesConfig,
   HermesConfigRecord,
   LogsResponse,
@@ -88,8 +86,6 @@ export type {
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
-  ModelOptionProvider,
-  ModelOptionsResponse,
   PaginatedSessions,
   PairingResponse,
   PairingUser,
@@ -102,7 +98,6 @@ export type {
   ProjectFolder,
   ProjectInfo,
   ProjectsPayload,
-  RpcEvent,
   SessionCreateResponse,
   SessionInfo,
   SessionMessage,

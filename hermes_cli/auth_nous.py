@@ -139,10 +139,17 @@ def _nous_inference_env_override() -> Optional[str]:
     """User-set ``NOUS_INFERENCE_BASE_URL`` override (trailing slash stripped) or None.
 
     Documented dev/staging escape hatch; the env source is trusted, so unlike Portal-returned URLs
-    it is intentionally NOT gated by the network host allowlist.
+    it is intentionally NOT gated by the network host allowlist. Read through the profile-aware
+    resolver so a multiplexed profile uses its own override and never inherits the default
+    profile's process-wide value (#65941).
     """
     from hermes_cli.auth import _optional_base_url
-    return _optional_base_url(os.getenv("NOUS_INFERENCE_BASE_URL"))
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    try:
+        override = get_secret("NOUS_INFERENCE_BASE_URL")
+    except UnscopedSecretError:
+        override = os.getenv("NOUS_INFERENCE_BASE_URL")  # unscoped default-profile/CLI path: environ IS its own value
+    return _optional_base_url(override)
 
 
 def _nous_portal_env_override() -> Optional[str]:
@@ -377,7 +384,7 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
 
     Best-effort: failures are logged and swallowed; per-profile auth.json stays the source of truth.
     """
-    from hermes_cli.auth import _nonempty_str, _write_private_file_atomic
+    from hermes_cli.auth import _nonempty_str, _save_private_json
     refresh_token = state.get("refresh_token")
     # Nothing worth sharing without refresh material: an OAuth refresh_token (with its access token),
     # or a guest's anon_ credential, which is the whole identity and may not have been exchanged yet.
@@ -390,8 +397,7 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
-            _write_private_file_atomic(
-                path, json.dumps(shared, indent=2, sort_keys=True), replace=os.replace)
+            _save_private_json(path, shared, sort_keys=True)
         _oauth_trace(
             "nous_shared_store_written", path=str(path),
             refresh_token_fp=_token_fingerprint(refresh_token))

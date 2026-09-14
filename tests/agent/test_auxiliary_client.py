@@ -2956,6 +2956,37 @@ class TestAnthropicAuxiliaryReasoningTranslation:
         )
         assert "_reasoning_config" not in openai_wire_kwargs
 
+    def test_anthropic_messages_profile_keeps_reasoning_reachable(self):
+        # commandcode-anthropic: OpenAI-shaped URL, anthropic_messages api_mode, and a profile
+        # class that overrides build_api_kwargs_extras (so the generic extra_body.reasoning
+        # fallback the adapter used to read is suppressed). The adapter must still be told.
+        import model_tools  # noqa: F401 — triggers provider discovery
+        import providers
+
+        assert providers.get_provider_profile("commandcode-anthropic") is not None
+        rc = {"enabled": False}
+        kwargs = _build_call_kwargs(
+            "commandcode-anthropic", "claude-haiku-4-5-20251001", [{"role": "user", "content": "hi"}],
+            reasoning_config=rc, base_url="https://api.commandcode.ai/provider/v1",
+        )
+        assert kwargs["_reasoning_config"] == rc
+        chat_kwargs = _build_call_kwargs(
+            "commandcode", "Qwen/Qwen3.7-Max", [{"role": "user", "content": "hi"}],
+            reasoning_config=rc, base_url="https://api.commandcode.ai/provider/v1",
+        )
+        assert "_reasoning_config" not in chat_kwargs
+
+    def test_anthropic_messages_profile_resolves_to_messages_adapter(self, monkeypatch):
+        # Bare ``provider: commandcode-anthropic`` (no api_mode) must wrap the client on the
+        # profile's declared wire, or the ``_reasoning_config`` kwarg above would reach a plain
+        # OpenAI client and TypeError.
+        import model_tools  # noqa: F401
+        from agent.auxiliary_client import AnthropicAuxiliaryClient, resolve_provider_client
+
+        monkeypatch.setenv("COMMANDCODE_API_KEY", "sk-test-" + "x" * 20)
+        client, _ = resolve_provider_client("commandcode-anthropic", model="claude-haiku-4-5-20251001")
+        assert isinstance(client, AnthropicAuxiliaryClient)
+
 
 class TestAuxiliaryProviderProfileReasoning:
     """Auxiliary calls must reuse provider-profile reasoning wire shapes."""

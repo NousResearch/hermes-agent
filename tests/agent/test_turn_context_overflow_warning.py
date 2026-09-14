@@ -197,7 +197,7 @@ class TestPluginEngineDefault:
         for free from the ContextEngine base class — the call sites in
         turn_context.py / conversation_loop.py must not raise
         AttributeError on plugin engines (sweeper review, #62625)."""
-        from tests.run_agent.test_plugin_context_engine_init import _StubEngine
+        from tests.agent.test_plugin_context_engine_init import _StubEngine
 
         engine = _StubEngine()
         result = engine.should_compress_info(123_456)

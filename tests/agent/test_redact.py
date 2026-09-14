@@ -59,6 +59,13 @@ class TestKnownPrefixes:
         ]:
             assert redact_sensitive_text(benign) == benign
 
+    def test_agentmail_prefix_needs_a_key_shaped_hex_suffix(self):
+        """``am_`` is a common identifier prefix; only the documented hex key body is a secret (#10983)."""
+        for benign in ["schema.am_example_identifier_123", "path/to/am_monthly_report.sql"]:
+            assert redact_sensitive_text(benign) == benign
+        for key in ("am_" + "0123456789abcdef" * 2, "am_" + "Ab9" * 8, "am_org_" + "Zq7k" * 6):
+            assert key[-12:] not in redact_sensitive_text(f"leaked {key} in output"), key
+
     def test_slack_token(self):
         token = "xoxb-" + "0" * 12 + "-" + "a" * 14
         result = redact_sensitive_text(token)
@@ -854,53 +861,53 @@ class TestTerminalOutputRedaction:
 
     # ── .env file detection (issue #61352 v2) ──
 
-    def test_command_reads_env_file_detection(self):
-        from agent.redact import _command_reads_env_file
+    def test_command_reads_secret_file_detection(self):
+        from agent.redact import _command_reads_secret_file
         # Basic detection
-        assert _command_reads_env_file("cat .env")
-        assert _command_reads_env_file("cat .env.local")
-        assert _command_reads_env_file("cat .env.production")
-        assert _command_reads_env_file("cat .envrc")
-        assert _command_reads_env_file("head .env")
-        assert _command_reads_env_file("tail .env")
-        assert _command_reads_env_file("type .env")
-        assert _command_reads_env_file("nl .env")
-        assert _command_reads_env_file("bat .env")
+        assert _command_reads_secret_file("cat .env")
+        assert _command_reads_secret_file("cat .env.local")
+        assert _command_reads_secret_file("cat .env.production")
+        assert _command_reads_secret_file("cat .envrc")
+        assert _command_reads_secret_file("head .env")
+        assert _command_reads_secret_file("tail .env")
+        assert _command_reads_secret_file("type .env")
+        assert _command_reads_secret_file("nl .env")
+        assert _command_reads_secret_file("bat .env")
         # With flags
-        assert _command_reads_env_file("cat -n .env")
-        assert _command_reads_env_file("cat -A .env")
+        assert _command_reads_secret_file("cat -n .env")
+        assert _command_reads_secret_file("cat -A .env")
         # With paths
-        assert _command_reads_env_file("cat ~/.hermes/.env")
-        assert _command_reads_env_file("cat /home/user/project/.env")
-        assert _command_reads_env_file("cat ./config/.env.local")
+        assert _command_reads_secret_file("cat ~/.hermes/.env")
+        assert _command_reads_secret_file("cat /home/user/project/.env")
+        assert _command_reads_secret_file("cat ./config/.env.local")
         # In a pipeline / sequence
-        assert _command_reads_env_file("cat .env | grep KEY")
-        assert _command_reads_env_file("echo '---' && cat .env")
+        assert _command_reads_secret_file("cat .env | grep KEY")
+        assert _command_reads_secret_file("echo '---' && cat .env")
         # Windows-style backslash paths
-        assert _command_reads_env_file("cat C:\\Users\\test\\.env")
+        assert _command_reads_secret_file("cat C:\\Users\\test\\.env")
         # Quoted paths (plain split leaves the quotes attached)
-        assert _command_reads_env_file('cat ".env"')
-        assert _command_reads_env_file("cat '.env'")
+        assert _command_reads_secret_file('cat ".env"')
+        assert _command_reads_secret_file("cat '.env'")
         # Case-insensitive basename (macOS/Windows filesystems)
-        assert _command_reads_env_file("cat .ENV")
+        assert _command_reads_secret_file("cat .ENV")
 
-    def test_command_reads_env_file_excludes_templates(self):
-        from agent.redact import _command_reads_env_file
+    def test_command_reads_secret_file_excludes_templates(self):
+        from agent.redact import _command_reads_secret_file
         # Templates/examples should NOT trigger
-        assert not _command_reads_env_file("cat .env.example")
-        assert not _command_reads_env_file("cat .env.sample")
-        assert not _command_reads_env_file("cat .env.template")
-        assert not _command_reads_env_file("cat .env.dist")
+        assert not _command_reads_secret_file("cat .env.example")
+        assert not _command_reads_secret_file("cat .env.sample")
+        assert not _command_reads_secret_file("cat .env.template")
+        assert not _command_reads_secret_file("cat .env.dist")
 
-    def test_command_reads_env_file_rejects_non_env_files(self):
-        from agent.redact import _command_reads_env_file
-        assert not _command_reads_env_file("cat config.py")
-        assert not _command_reads_env_file("cat README.md")
-        assert not _command_reads_env_file("cat .envrc.bak")  # .bak not in list
-        assert not _command_reads_env_file("python app.py")
-        assert not _command_reads_env_file("echo .env")  # echo is not a file-read cmd
-        assert not _command_reads_env_file("")
-        assert not _command_reads_env_file(None)
+    def test_command_reads_secret_file_rejects_non_env_files(self):
+        from agent.redact import _command_reads_secret_file
+        assert not _command_reads_secret_file("cat config.py")
+        assert not _command_reads_secret_file("cat README.md")
+        assert not _command_reads_secret_file("cat .envrc.bak")  # .bak not in list
+        assert not _command_reads_secret_file("python app.py")
+        assert not _command_reads_secret_file("echo .env")  # echo is not a file-read cmd
+        assert not _command_reads_secret_file("")
+        assert not _command_reads_secret_file(None)
 
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""
@@ -961,6 +968,80 @@ class TestTerminalOutputRedaction:
         assert "abc123secret" not in red
         assert "export MISTRAL_API_KEY=*** # prod key" in red
 
+    @pytest.mark.parametrize(
+        ("command", "output", "secret"),
+        [
+            ("cat ~/.hermes/config.yaml", "api_key: hermesConfigSecret123", "hermesConfigSecret123"),
+            (
+                "head ~/.hermes/profiles/work/config.yaml",
+                "provider.token=profileConfigSecret456",
+                "profileConfigSecret456",
+            ),
+            ("tail ~/.bashrc", "export SERVICE_TOKEN=bashRcSecret789", "bashRcSecret789"),
+            ("grep TOKEN ~/.zshrc", "SERVICE_TOKEN=zshRcSecret123", "zshRcSecret123"),
+            (
+                "awk -F= '/TOKEN/ {print $2}' ~/.profile",
+                "SERVICE_TOKEN=profileSecret456",
+                "profileSecret456",
+            ),
+            ("sed -n '1,20p' ~/.zprofile", "api_key: zprofileSecret789", "zprofileSecret789"),
+            (
+                'cat "$HERMES_HOME/config.yaml"',
+                "SERVICE_TOKEN=variablePathSecret123456789",
+                "variablePathSecret123456789",
+            ),
+            (
+                'cat "${HERMES_HOME}/config.yaml"',
+                "SERVICE_TOKEN=variablePathSecret123456789",
+                "variablePathSecret123456789",
+            ),
+            (
+                "cat $HOME/.hermes/config.yaml",
+                "SERVICE_TOKEN=homeVariablePathSecret123456",
+                "homeVariablePathSecret123456",
+            ),
+            (
+                "awk '{print $1; print $2}' ~/.bashrc",
+                "export SERVICE_TOKEN=awkQuotedSecret123",
+                "awkQuotedSecret123",
+            ),
+            (
+                "grep 'foo|bar' ~/.hermes/config.yaml",
+                "SERVICE_TOKEN=grepQuotedSecret456",
+                "grepQuotedSecret456",
+            ),
+        ],
+    )
+    def test_secret_bearing_file_commands_mask_assignments(self, command, output, secret):
+        from agent.redact import redact_terminal_output
+
+        assert secret not in redact_terminal_output(output, command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat config.yaml",
+            "cat /project/config.yaml",
+            "cat ~/.hermes/config.example.yaml",
+            "cat ~/.hermes/config.template.yaml",
+            "cat ~/.bashrc.example",
+            'cat "$OTHER/config.yaml"',
+            "grep TOKEN app.py",
+            "grep .bashrc app.py",
+            "grep -n .env src/settings.py",
+            "awk '/TOKEN/' settings.yaml",
+            "sed -n '1,20p' template.yaml",
+        ],
+    )
+    def test_arbitrary_yaml_and_source_reads_stay_unredacted(self, command):
+        """Only the known secret-bearing files flip the gate: the same opaque value read
+        from project YAML / source code is left alone (code_file path), while the
+        identical text under ``cat .env`` is masked."""
+        from agent.redact import redact_terminal_output
+
+        output = "SERVICE_TOKEN=3JcQ1UzX9vQ2mL7pR4tY8wA1sD5fG6hJ2kSbn7Q0"
+        assert redact_terminal_output(output, command) == output
+        assert "3JcQ1UzX9vQ2mL7pR4tY8wA1sD5fG6hJ2kSbn7Q0" not in redact_terminal_output(output, "cat .env")
 
 
     def test_disabled_passes_through(self, monkeypatch):
@@ -1178,3 +1259,25 @@ class TestValueAwareGatingCorpus:
         result = redact_sensitive_text(block, force=True)
         assert prose_line in result
         assert "A9f3kZq7Lm2Xw8Rt4Yv6" not in result
+
+
+class TestRedactForEgress:
+    """``redact_for_egress`` is the single scrub every remote-reader surface (gateway chat, A2A, monitoring)
+    calls; there is no second pattern list to keep in sync."""
+
+    def test_opaque_bearer_without_vendor_prefix_is_masked(self):
+        from agent.redact import redact_for_egress
+        out = redact_for_egress("curl -H 'Authorization: Bearer opaque0123456789abcdef' https://x.example")
+        assert "opaque0123456789abcdef" not in out
+        assert "https://x.example" in out
+
+    def test_bearer_sweep_masks_real_tokens_not_the_english_word(self):
+        from agent.redact import redact_for_egress
+        prose = "I'm the bearer of bad news: the deploy failed"
+        assert redact_for_egress(prose) == prose
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in redact_for_egress("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+
+    def test_fails_closed_when_the_redactor_raises(self, monkeypatch):
+        from agent import redact as R
+        monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE

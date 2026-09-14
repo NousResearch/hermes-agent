@@ -4,7 +4,7 @@ import logging
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple, Union
 
-from agent.skill_utils import extract_skill_editorial_metadata, is_excluded_skill_path
+from agent.skill_utils import is_excluded_skill_path
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_members
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _hermes_tags, _matches_query, _memo_json, _parse_frontmatter, hub,
@@ -269,15 +269,8 @@ class OptionalSkillSource(SkillSource):
                 continue
             fm = _parse_frontmatter(content)
             tags = _hermes_tags(fm)
-            name = fm.get("name", parent.name)
-            description = fm.get("description", "")[:200]
-            meta = self._meta(parent.relative_to(self._optional_dir).as_posix(), name,
-                              description, tags if isinstance(tags, list) else [])
-            editorial = extract_skill_editorial_metadata(
-                fm, fallback_name=name, fallback_description=description)
-            meta.editorial_name = editorial["editorial_name"]
-            meta.editorial_description = editorial["editorial_description"]
-            results.append(meta)
+            results.append(self._meta(parent.relative_to(self._optional_dir).as_posix(), fm.get("name", parent.name),
+                                      fm.get("description", "")[:200], tags if isinstance(tags, list) else []))
         return results
 
 
@@ -383,6 +376,4 @@ class HermesIndexSource(SkillSource):
             source=entry.get("source", "hermes-index"), identifier=entry.get("identifier", ""),
             trust_level=entry.get("trust_level", "community"), repo=entry.get("repo"), path=entry.get("path"),
             tags=entry.get("tags", []), extra=entry.get("extra", {}),
-            editorial_name=entry.get("editorial_name"),
-            editorial_description=entry.get("editorial_description"),
         )

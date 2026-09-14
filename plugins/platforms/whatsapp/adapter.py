@@ -427,7 +427,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             "session_path",
             get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
         ))
-        self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
+        # ``hermes config set whatsapp.reply_prefix ""`` writes the YAML
+        # string literal ``'""'`` (4 chars: ``"\""``).  Adapter is purely
+        # transport — pass whatever the user configured straight through so
+        # the bridge can interpret it.  Treat the YAML literal sentinel as
+        # empty so the bridge sees the same payload a manual ``reply_prefix:
+        # ""`` would have produced.
+        _raw_reply_prefix = config.extra.get("reply_prefix")
+        if _raw_reply_prefix == '\"\"':
+            _raw_reply_prefix = ""
+        self._reply_prefix: Optional[str] = _raw_reply_prefix
         self._dm_policy = str(config.extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         # Prefer config.extra, then the documented WHATSAPP_ALLOWED_USERS env
         # (setup wizard / pairing mirror). Select by key *presence* so an
@@ -680,6 +689,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # can use it without the user needing to set a separate env var.
             # with_hermes_node_path() copies os.environ when called with no arg.
             bridge_env = with_hermes_node_path()
+            # Always inject WHATSAPP_REPLY_PREFIX (even when empty) so the
+            # bridge receives the user's configured intent verbatim.  The
+            # bridge's formatOutgoingMessage treats an empty REPLY_PREFIX
+            # as falsy and skips the prefix.
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
             bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = (

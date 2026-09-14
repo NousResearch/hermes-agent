@@ -12,8 +12,11 @@ from tools.registry import (
     ToolRegistry,
     _MAX_LOGGED_ERROR_CHARS,
     _MAX_TOOL_ERROR_CHARS,
+    _check_fn_cached,
     _module_registers_tools,
     discover_builtin_tools,
+    expected_false_check_fn,
+    invalidate_check_fn_cache,
     tool_error,
 )
 
@@ -28,6 +31,49 @@ def _make_schema(name="test_tool"):
         "description": f"A {name}",
         "parameters": {"type": "object", "properties": {}},
     }
+
+
+class TestCheckFnLogging:
+    @pytest.fixture(autouse=True)
+    def _reset_check_fn_cache(self):
+        invalidate_check_fn_cache()
+        yield
+        invalidate_check_fn_cache()
+
+    def test_expected_false_is_debug_not_warning(self, caplog):
+        @expected_false_check_fn
+        def mode_gate():
+            return False
+
+        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            assert _check_fn_cached(mode_gate) is False
+
+        records = [record for record in caplog.records if "mode_gate" in record.message]
+        assert [record.levelno for record in records] == [logging.DEBUG]
+        assert "returned False" in records[0].message
+
+    def test_expected_false_exception_still_warns(self, caplog):
+        @expected_false_check_fn
+        def broken_gate():
+            raise RuntimeError("boom")
+
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            assert _check_fn_cached(broken_gate) is False
+
+        records = [record for record in caplog.records if "broken_gate" in record.message]
+        assert [record.levelno for record in records] == [logging.WARNING]
+        assert "raised" in records[0].message
+
+    def test_unmarked_false_still_warns(self, caplog):
+        def dependency_probe():
+            return False
+
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            assert _check_fn_cached(dependency_probe) is False
+
+        records = [record for record in caplog.records if "dependency_probe" in record.message]
+        assert [record.levelno for record in records] == [logging.WARNING]
+        assert "returned False" in records[0].message
 
 
 class TestRegisterAndDispatch:

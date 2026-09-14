@@ -213,6 +213,7 @@ _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: Set[Callable] = set()
+_EXPECTED_FALSE_CHECK_FNS: Set[Callable] = set()
 _BROWSER_IDENTITY_KEYS = (
     "HERMES_SESSION_ID",
     "HERMES_BROWSER_CONTROL_PRINCIPAL",
@@ -222,6 +223,12 @@ _BROWSER_IDENTITY_KEYS = (
 def no_cache_check_fn(fn: Callable) -> Callable:
     """Mark a local, config-backed availability check as uncached."""
     _NO_CACHE_CHECK_FNS.add(fn)
+    return fn
+
+
+def expected_false_check_fn(fn: Callable) -> Callable:
+    """Mark an availability check whose ``False`` result is a normal mode gate."""
+    _EXPECTED_FALSE_CHECK_FNS.add(fn)
     return fn
 
 
@@ -334,9 +341,13 @@ def _check_fn_cached(fn: Callable) -> bool:
                 _fn_label(fn), outcome, _CHECK_FN_FAILURE_GRACE_SECONDS)
             return True
 
-        # No recent success (or grace expired) — honor the failure; logged so silent tool
-        # loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
+        # A mode gate may normally be off. Keep that diagnosable at DEBUG without making a
+        # healthy runtime look degraded; exceptions and dependency probes retain WARNING.
+        log = (
+            logger.debug
+            if fn in _EXPECTED_FALSE_CHECK_FNS and outcome == "returned False"
+            else logger.warning)
+        log(
             "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
             exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)

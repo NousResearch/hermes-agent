@@ -58,6 +58,23 @@ class TestFireworksHeaders:
         assert fireworks_profile.default_headers["User-Agent"].startswith("HermesAgent/")
 
 
+class TestFireworksReasoning:
+    def test_auxiliary_disable_uses_supported_top_level_field(self):
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            "fireworks",
+            "accounts/fireworks/models/deepseek-v4p1-flash",
+            [{"role": "user", "content": "Generate a title"}],
+            reasoning_config={"enabled": False},
+            base_url="https://api.fireworks.ai/inference/v1",
+            task="title_generation",
+        )
+
+        assert kwargs["reasoning_effort"] == "none"
+        assert "reasoning" not in kwargs.get("extra_body", {})
+
+
 class TestFireworksAliases:
     @pytest.mark.parametrize("alias", ["fireworks-ai", "fw"])
     def test_alias_resolves_via_registry(self, fireworks_profile, alias):

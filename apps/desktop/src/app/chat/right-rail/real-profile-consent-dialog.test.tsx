@@ -63,6 +63,7 @@ vi.mock('../../hooks/use-config-record', () => ({
 
 describe('RealProfileConsentDialog', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     mocks.loadedConfig = { browser: { allow_private_urls: false }, model: { provider: 'nous' } }
     mocks.save.mockResolvedValue({ ok: true })
     $realProfilePromptDismissed.set(false)
@@ -72,6 +73,8 @@ describe('RealProfileConsentDialog', () => {
 
   afterEach(() => {
     cleanup()
+    act(() => vi.runOnlyPendingTimers())
+    vi.useRealTimers()
     vi.clearAllMocks()
   })
 

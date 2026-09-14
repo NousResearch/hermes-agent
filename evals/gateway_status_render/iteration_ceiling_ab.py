@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import time
 from types import SimpleNamespace
@@ -102,7 +103,7 @@ def main() -> None:
     sys.path.insert(0, os.getcwd())
     agent = _agent(args.finite)
     out = {
-        "head": os.popen("git rev-parse --short HEAD").read().strip(),
+        "head": subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=False).stdout.strip(),
         "max_iterations": agent.max_iterations,
         "busy_ack": asyncio.run(_busy_ack(agent)),
         "heartbeat": asyncio.run(_heartbeat(agent)),

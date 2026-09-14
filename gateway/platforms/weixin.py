@@ -710,7 +710,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         allow_from, group_allow_from = extra.get("allow_from"), extra.get("group_allow_from")
         self._allow_from = self._coerce_list(_wx_secret("WEIXIN_ALLOWED_USERS", "") if allow_from is None else allow_from)
         self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
-        self._split_multiline_messages = _coerce_bool(extra.get("split_multiline_messages") or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"), default=False)
+        self._split_multiline_messages = _coerce_bool(_extra_or_secret(extra, "split_multiline_messages", ""), default=False)
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
         # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
         self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
@@ -1020,11 +1020,13 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
-        # Extract MEDIA: tags and bare local file paths before text delivery.
-        media_files, cleaned_content = self.extract_media(content)
-        local_files, final_content = self.extract_local_files(self.extract_images(cleaned_content)[1])
-        deliveries = [(p, v, "media") for p, v in self.filter_media_delivery_paths(media_files)]
-        deliveries += [(p, False, "local file") for p in self.filter_local_delivery_paths(local_files)]
+        # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
+        # profile's scope: Docker MEDIA translation infers the sandbox from the active profile (#109024).
+        with self._media_delivery_scope(self.build_source(chat_id=chat_id)):
+            media_files, cleaned_content = self.extract_media(content)
+            local_files, final_content = self.extract_local_files(self.extract_images(cleaned_content)[1])
+            deliveries = [(p, v, "media") for p, v in self.filter_media_delivery_paths(media_files)]
+            deliveries += [(p, False, "local file") for p in self.filter_local_delivery_paths(local_files)]
         try:
             for path, is_voice, label in deliveries:
                 ext = Path(path).suffix.lower()

@@ -157,14 +157,11 @@ def _profile_homes() -> list[tuple[str, Path]]:
 
 
 def _live_gateway_pid(home: Path) -> Optional[int]:
-    """PID of a standalone gateway owned by ``home`` (pid file, then runtime status), else None."""
-    from gateway.status import get_running_pid, get_runtime_status_running_pid, read_runtime_status
+    """Verified PID of a standalone gateway owned by ``home``, else None (never raises: a probe
+    failure must not abort a migration plan)."""
+    from gateway.status import live_gateway_pid_for_home
     with contextlib.suppress(Exception):
-        pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
-        if pid is not None:
-            return pid
-    with contextlib.suppress(Exception):
-        return get_runtime_status_running_pid(read_runtime_status(home / "gateway_state.json"), expected_home=home)
+        return live_gateway_pid_for_home(home)
     return None
 
 

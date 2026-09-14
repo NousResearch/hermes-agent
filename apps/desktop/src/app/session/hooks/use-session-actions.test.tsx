@@ -16,7 +16,7 @@ import {
   getSession,
   type ProfileScope,
   type SessionInfo,
-  type SessionResumeResponse,
+  type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -1136,16 +1136,26 @@ describe('resumeSession failure recovery', () => {
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
+        // The channel re-delivers `open_requests` to the request handler BEFORE
+        // the caller sees the result; that handler parks the card. Mirror that
+        // ordering here (no channel in this harness).
+        setClarifyRequest({
+          choices: ['safe', 'fast'],
+          multiSelect: false,
+          question: 'Which path?',
+          receivedAt: Date.now(),
+          requestId: 'req-resumed',
+          sessionId: 'runtime-1'
+        })
+
         return {
           info: {},
           message_count: 2,
           messages: [],
           messages_omitted: true,
-          pending_clarify: {
-            choices: ['safe', 'fast'],
-            question: 'Which path?',
-            request_id: 'req-resumed'
-          },
+          open_requests: [
+            { id: 'req-resumed', method: 'clarify', params: { choices: ['safe', 'fast'], question: 'Which path?' } }
+          ],
           resumed: 'stored-1',
           running: true,
           session_id: 'runtime-1',
@@ -1196,21 +1206,34 @@ describe('resumeSession failure recovery', () => {
       session_id: 'stored-1'
     } as never)
 
+    const questions = [
+      { choices: ['Blue', 'Red'], qid: 'q0', question: 'Color?' },
+      { choices: ['Small', 'Large'], qid: 'q1', question: 'Size?' }
+    ]
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.resume') {
+        // Request handler parks the batch card (with the server-locked answer)
+        // from the re-delivered open request before the result lands.
+        setClarifyRequest({
+          choices: null,
+          lockedAnswers: { q0: 'Blue' },
+          multiSelect: false,
+          question: '',
+          questions: questions.map(q => ({ ...q, multiSelect: false })),
+          receivedAt: Date.now(),
+          requestId: 'req-batch-resumed',
+          sessionId: 'runtime-1'
+        })
+
         return {
           info: {},
           message_count: 2,
           messages: [],
           messages_omitted: true,
-          pending_clarify: {
-            answers: { q0: 'Blue' },
-            questions: [
-              { choices: ['Blue', 'Red'], qid: 'q0', question: 'Color?' },
-              { choices: ['Small', 'Large'], qid: 'q1', question: 'Size?' }
-            ],
-            request_id: 'req-batch-resumed'
-          },
+          open_requests: [
+            { id: 'req-batch-resumed', method: 'clarify', params: { answers: { q0: 'Blue' }, questions } }
+          ],
           resumed: 'stored-1',
           running: true,
           session_id: 'runtime-1',
@@ -2751,7 +2774,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       session_id: 'stored-A'
     })
 
-    const deferredResume = deferred<SessionResumeResponse>()
+    const deferredResume = deferred<SessionResumeResult>()
 
     const requestGatewayMock = vi.fn((method: string, _params?: Record<string, unknown>) => {
       if (method === 'session.resume') {
@@ -2900,16 +2923,23 @@ describe('resumeSession warm-cache mapping integrity', () => {
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.activate') {
+        setClarifyRequest({
+          choices: ['safe', 'fast'],
+          multiSelect: false,
+          question: 'Which path?',
+          receivedAt: Date.now(),
+          requestId: 'req-warm',
+          sessionId: 'rt-A'
+        })
+
         return {
           info: {},
           message_count: 2,
           messages: [],
           messages_omitted: true,
-          pending_clarify: {
-            choices: ['safe', 'fast'],
-            question: 'Which path?',
-            request_id: 'req-warm'
-          },
+          open_requests: [
+            { id: 'req-warm', method: 'clarify', params: { choices: ['safe', 'fast'], question: 'Which path?' } }
+          ],
           resumed: 'stored-A',
           running: true,
           session_id: 'rt-A',
@@ -3064,7 +3094,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       current: new Map([['rt-A', clientState('stored-A')]])
     }
 
-    const activated = deferred<SessionResumeResponse>()
+    const activated = deferred<SessionResumeResult>()
 
     const requestGateway = vi.fn((method: string) =>
       method === 'session.activate' ? activated.promise : Promise.resolve({})
@@ -4171,6 +4201,7 @@ describe('openNewSessionTile workspace target', () => {
 
       throw new Error(`Unexpected ambient RPC: ${method}`)
     })
+
     vi.mocked(requestGatewayForProfile).mockResolvedValue({ control: {} } as never)
 
     let handle: HarnessHandle | null = null
@@ -4219,6 +4250,7 @@ describe('openNewSessionTile workspace target', () => {
 
       throw new Error(`Unexpected ambient RPC: ${method}`)
     })
+
     vi.mocked(requestGatewayForProfile).mockResolvedValue({ control: {} } as never)
 
     let handle: HarnessHandle | null = null

@@ -67,6 +67,10 @@ def build_gateway_parser(
             "launchd/systemd wrapper strips its native environment markers.")
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
+    gateway_run.add_argument(
+        "--yolo", action="store_true", default=argparse.SUPPRESS,
+        help="Bypass all dangerous command approval prompts (use at your own risk; "
+            "equivalent to HERMES_YOLO_MODE=1).")
     gateway_parser.add_argument(
         "--yolo", action="store_true", default=argparse.SUPPRESS,
         help="Bypass all dangerous command approval prompts (use at your own risk; "

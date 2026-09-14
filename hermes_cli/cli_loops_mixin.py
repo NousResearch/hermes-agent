@@ -280,8 +280,7 @@ class CLILoopsMixin:
             print(f"Plugin system error: {e}")
 
     # ── /queue: enqueue, list, edit, rm, move, clear ─────────────────
-    # Inspired by Factory Droid v0.203 "edit queued messages": a queued next-turn
-    # prompt can be inspected and changed before it is sent.
+    # A queued next-turn prompt can be inspected and changed before it is sent.
 
     def _pending_input_items(self) -> list:
         """Snapshot of queued next-turn prompts (raw items; may include ``_VoiceInputMessage``)."""

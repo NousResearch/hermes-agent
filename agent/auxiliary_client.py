@@ -1327,7 +1327,6 @@ class _CodexCompletionsAdapter:
 
     def _build_responses_kwargs(self, kwargs: Dict[str, Any]) -> Tuple[Dict[str, Any], str, Any]:
         """chat.completions kwargs → Responses API kwargs, ``(resp_kwargs, model, timeout)``; mirrors codex.py::build_kwargs."""
-        from utils import base_url_host_matches
         # Separate system/instructions from replayable conversation messages, then route the rest through
         # the SINGLE shared chat->Responses converter used by the main agent transport
         # (agent/transports/codex.py). Maintaining a private conversion loop here let chat-style messages
@@ -1346,10 +1345,10 @@ class _CodexCompletionsAdapter:
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
-        is_xai = base_url_host_matches(host, "x.ai") or base_url_host_matches(host, "api.x.ai")
         is_copilot = base_url_host_matches(host, "githubcopilot.com")
         # Same route classifier as the main transport, so the issuer stamp matches what it minted.
         route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
+        is_xai = route.is_xai_responses
         is_github = route.is_github_responses
         # System → ``instructions``; the rest goes through the SINGLE shared chat→Responses
         # converter (a private loop here once let role="tool" leak into input[]; the shared one

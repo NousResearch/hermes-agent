@@ -219,9 +219,9 @@ function ToolCallBlock({
         className="px-3 py-2 text-xs text-warning hover:bg-warning/10 hover:text-warning"
       >
         {open ? (
-          <ChevronDown className="h-3 w-3" />
+          <ChevronDown className="h-3 w-3 rtl:-scale-x-100 ltr:scale-x-100" />
         ) : (
-          <ChevronRight className="h-3 w-3" />
+          <ChevronRight className="h-3 w-3 rtl:-scale-x-100 ltr:scale-x-100" />
         )}
         <span className="font-mono-ui font-medium">
           {toolCall.function.name}
@@ -793,7 +793,9 @@ function SessionsPagination({
           onClick={() => onPageChange(page - 1)}
           aria-label={t.sessions.previousPage}
         >
-          <ChevronLeft />
+          {/* Flow direction is semantic: arrows mirror with the document so
+              "previous" points the way previous pages actually sit in RTL. */}
+          <ChevronLeft className="rtl:-scale-x-100 ltr:scale-x-100" />
         </Button>
         <span className="px-2 text-xs text-muted-foreground">
           {t.common.page} {page + 1} {t.common.of} {pageCount}
@@ -805,7 +807,7 @@ function SessionsPagination({
           onClick={() => onPageChange(page + 1)}
           aria-label={t.sessions.nextPage}
         >
-          <ChevronRight />
+          <ChevronRight className="rtl:-scale-x-100 ltr:scale-x-100" />
         </Button>
       </div>
     </div>

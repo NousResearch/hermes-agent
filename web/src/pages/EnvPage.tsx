@@ -392,7 +392,7 @@ function ProviderGroupCard({
           {expanded ? (
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0 rtl:-scale-x-100 ltr:scale-x-100" />
           )}
           <span className="font-semibold text-sm tracking-wide">
             {group.name === "Other" ? t.common.other : group.name}

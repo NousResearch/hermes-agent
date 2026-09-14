@@ -150,7 +150,7 @@ export const SlashPopover = forwardRef<SlashPopoverHandle, Props>(
               className="px-3 py-1.5"
             >
               <ChevronRight
-                className={`h-3 w-3 shrink-0 ${active ? "text-primary" : "text-transparent"}`}
+                className={`h-3 w-3 shrink-0 rtl:-scale-x-100 ltr:scale-x-100 ${active ? "text-primary" : "text-transparent"}`}
               />
 
               <span className="font-mono text-xs shrink-0 truncate">

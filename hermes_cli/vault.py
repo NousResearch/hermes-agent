@@ -163,7 +163,8 @@ def _cmd_sources(args) -> None:
     enabled = {b.name for b in enabled_backends()}
     for name, cls in classes.items():
         if name in enabled:
-            status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
+            unlock_hint = " · the agent asks you to unlock it when it needs a login" if cls.needs_unlock else ""
+            status = f"[green]detected[/]{unlock_hint}"
         elif is_installed(name):
             status = "[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)".format(name=name)
         else:
@@ -203,9 +204,9 @@ def register_cli(subparser) -> None:
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
 
-    p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
+    p_src = subs.add_parser("sources", help="Show detected password managers; they are on automatically")
     group = p_src.add_mutually_exclusive_group()
-    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden")
+    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager")
     group.add_argument("--enable", metavar="NAME", help="Undo --disable")
     p_src.set_defaults(_vault_handler=_cmd_sources)
 

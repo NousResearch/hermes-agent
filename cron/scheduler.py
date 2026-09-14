@@ -1801,6 +1801,13 @@ def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgen
     )
     if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
         raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
+    # Retries and fallback exhausted on empty model replies. The agent substitutes leaked
+    # reasoning or an explainer as final_response, so the empty-response soft-failure check
+    # never fires and the run would otherwise be recorded "ok".
+    if turn_exit_reason == "empty_response_exhausted":
+        raise RuntimeError(
+            "Agent produced only empty responses after retries and fallback "
+            "(empty_response_exhausted); no answer was delivered")
     if max_iteration_summary:
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "

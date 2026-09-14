@@ -66,6 +66,11 @@ def _rewrite_local_refs(node):
     return normalized
 
 
+# Mapping-valued JSON Schema keywords: the value maps entry NAMES to schemas and is never a
+# schema node itself. Repair must recurse into the map's values only (#110530).
+_SCHEMA_MAP_KEYS = ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas")
+
+
 def _repair_object_shape(node):
     """Recursively fill a missing object ``type``, ensure ``properties`` (so ``required``
     can't dangle) and prune ``required`` to names present in ``properties`` (Gemini 400s
@@ -74,7 +79,15 @@ def _repair_object_shape(node):
         return [_repair_object_shape(item) for item in node]
     if not isinstance(node, dict):
         return node
-    repaired = {k: _repair_object_shape(v) for k, v in node.items()}
+    repaired = {}
+    for key, value in node.items():
+        if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            # A schema map (entry name -> schema), never a schema node itself: recursing over
+            # the whole map would inject a bogus ``"type": "object"`` *entry* when one of its
+            # keys is literally named ``properties``/``required`` (#110530).
+            repaired[key] = {name: _repair_object_shape(schema) for name, schema in value.items()}
+        else:
+            repaired[key] = _repair_object_shape(value)
     if not repaired.get("type") and ("properties" in repaired or "required" in repaired):
         repaired["type"] = "object"
     if repaired.get("type") == "object":

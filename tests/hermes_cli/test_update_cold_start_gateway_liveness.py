@@ -36,7 +36,7 @@ def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
         lambda all_profiles=False: [] if all_profiles else surviving_pids,
     )
     # No Scheduled Task registered -> forces the fallback to _spawn_detached.
-    monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: False)
+    monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: None)
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: 4242)
     # Avoid the real 6s/0.4s poll loop in _report_gateway_start.
     monkeypatch.setattr(

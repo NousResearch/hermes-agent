@@ -964,13 +964,16 @@ def _cold_start_attested_profiles(token: dict) -> None:
     for name, generation in sorted(pending.items()):
         home = Path(get_profile_dir(name))
         with _best_effort(f"Could not cold-start Windows gateway profile {name} after update: %s"):
-            if not gateway_windows._live_gateway_pids(home=home):  # a concurrent autostart must not be doubled
+            ready_pids: list[int] = gateway_windows._live_gateway_pids(home=home)
+            if not ready_pids:  # a concurrent autostart must not be doubled
                 # Same job-object escape as the active-profile cold-start (#84185), keyed by this
-                # profile's own task name and home; direct spawn only when it has no task.
-                via_task = gateway_windows._spawn_via_scheduled_task(hermes_home=str(home))
-                if not via_task and not gateway_windows._spawn_detached(home=home):
-                    raise RuntimeError("cold-start did not return a process ID")
-            ready_pids = gateway_windows._wait_for_gateway_ready(home=home)
+                # profile's own task name and home; direct spawn only when it has no task — never
+                # after the task fired, since its child may still be booting (#110959).
+                ready_pids = gateway_windows._spawn_via_scheduled_task(home=home)
+                if ready_pids is None:
+                    if not gateway_windows._spawn_detached(home=home):
+                        raise RuntimeError("cold-start did not return a process ID")
+                    ready_pids = gateway_windows._wait_for_gateway_ready(home=home)
             if not ready_pids:
                 raise RuntimeError(f"gateway profile {name} did not become ready")
             gateway_windows._consume_start_attestation(generation, home=home)
@@ -1028,13 +1031,14 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
     # Direct spawn only when no task is registered — never as a fallback after the task fired, since
     # a task-spawned gateway may still be coming up and both would race for the same port.
     with _abort_on_error("Could not cold-start Windows gateway after update"):
-        via_task = gateway_windows._spawn_via_scheduled_task()
-        pid = None if via_task else gateway_windows._spawn_detached()
-    if not via_task and not pid:
-        raise RuntimeError("Windows gateway cold-start did not return a process ID")
-    ready_pids = gateway_windows._wait_for_gateway_ready()
+        ready_pids = gateway_windows._spawn_via_scheduled_task()
+        pid = gateway_windows._spawn_detached() if ready_pids is None else None
+    if ready_pids is None:
+        if not pid:
+            raise RuntimeError("Windows gateway cold-start did not return a process ID")
+        ready_pids = gateway_windows._wait_for_gateway_ready()
     if not ready_pids:
-        spawn = "via Scheduled Task" if via_task else f"PID {pid}"
+        spawn = f"PID {pid}" if pid else "via Scheduled Task"
         raise RuntimeError(f"Windows gateway cold-start {spawn} did not become ready")
     # The dead attestation has done its job (it authorized this spawn under Desktop ownership). Consume
     # it only now: a spawn that never became ready leaves it in place, so the registered retry still

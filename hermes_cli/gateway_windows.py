@@ -1111,8 +1111,8 @@ def _print_start_attestation_warning() -> None:
         print(warning)
 
 
-def _report_gateway_start(via: str, timeout_s: float = 6.0, all_profiles: bool = False) -> list[int]:
-    pids = _wait_for_gateway_ready(timeout_s=timeout_s, all_profiles=all_profiles)
+def _report_gateway_start(via: str) -> None:
+    pids = _wait_for_gateway_ready()
     if pids:
         print(f"✓ Gateway started via {via} (PID: {', '.join(map(str, pids))})")
         if _LAST_SPAWN_BREAKAWAY_FALLBACK.get("fallback"):
@@ -1124,72 +1124,70 @@ def _report_gateway_start(via: str, timeout_s: float = 6.0, all_profiles: bool =
         print("  (The process may have been created and then killed — e.g. by a parent Job Object, #91675.)")
         print(f"  Check the log for startup errors:\n    type {_hermes_home()}\\logs\\gateway.log\n    type {_hermes_home()}\\logs\\gateway-stdio.log")
         _print_task_run_hint("  Recovery: schtasks /Run /TN {}   (starts the gateway outside any Job Object)")
-    return pids
 
 
 def _spawn_via_scheduled_task(
-    task_name: str | None = None,
-    hermes_home: str | None = None,
+    home: str | Path | None = None,
     timeout_s: float = 30.0,
-) -> bool:
-    """Trigger a gateway Scheduled Task and confirm a *new* process comes up.
+    interval_s: float = 0.4,
+    confirm_s: float = 2.0,
+) -> list[int] | None:
+    """Trigger a gateway Scheduled Task and wait for a *new* gateway process to come up and stay up.
 
-    ``subprocess.Popen`` with ``CREATE_BREAKAWAY_FROM_JOB`` cannot reliably
-    escape a restrictive parent job object: ``CreateProcess`` accepts the flag
-    silently even when the job denies breakaway, so the child lands inside the
-    job and is hard-killed when the updater exits (issue #84185). The Task
-    Scheduler runs the task outside any job holding the calling updater, so
-    ``schtasks /Run`` is the only spawn path guaranteed to survive the
-    parent-job teardown.
+    ``subprocess.Popen`` with ``CREATE_BREAKAWAY_FROM_JOB`` cannot reliably escape a restrictive
+    parent job object: ``CreateProcess`` accepts the flag silently even when the job denies
+    breakaway, so the child lands inside the job and is hard-killed when the updater exits
+    (issue #84185). The Task Scheduler runs the task outside any job holding the calling updater,
+    so ``schtasks /Run`` is the only spawn path guaranteed to survive the parent-job teardown.
 
-    ``task_name`` and ``hermes_home`` default to the calling process's profile
-    (``get_task_name()`` / ``get_hermes_home()``); callers relaunching a
-    *different* profile — e.g. the update restart-watcher whose ``run_argv``
-    carries another profile — MUST pass ``hermes_home`` (the task name then
-    resolves from it), because the task name and the gateway's ``HERMES_HOME``
-    are per-profile (a watcher resolving the task name against its own home
-    would trigger the wrong task or none).
+    ``home`` selects the profile whose task is run and whose ``gateway.pid`` is probed; ``None``
+    means the calling process's own profile, probed across the whole fleet. Callers relaunching a
+    *different* profile (the update restart-watcher) MUST pass its home: task name and gateway
+    ``HERMES_HOME`` are per-profile.
 
-    Never writes or re-registers anything: the registered task action points
-    at the stable ``.vbs`` path and ``/Run`` executes whatever content is
-    currently on disk. Launcher refresh is the update's job
+    Never writes or re-registers anything: ``/Run`` executes whatever launcher is on disk
     (``_refresh_windows_gateway_launchers`` runs before this on every update).
-    User-customized launchers and user-edited task actions are simply
-    triggered as-is.
 
-    Success = the task accepted ``/Run`` AND a gateway PID that was not
-    running before the trigger appeared within ``timeout_s`` — a pre-update
-    gateway still draining does not satisfy the check on its own. ``False``
-    when the task is not registered, the trigger fails, or the poll expires
-    without a new PID.
+    Returns ``None`` when no task is registered (the caller may direct-spawn), the confirmed NEW
+    pids when one appears within ``timeout_s`` and survives ``confirm_s``, else ``[]`` — the task
+    fired but nothing new became ready. Only pids absent from the pre-trigger snapshot count: a
+    still-running sibling or a draining pre-update gateway satisfies a fleet-wide readiness poll
+    within seconds (#110959), and returning on it made every caller direct-spawn a second
+    gateway beside the one the task was still booting.
     """
     _assert_windows()
-    if hermes_home is None:
-        from hermes_cli.config import get_hermes_home
-
-        hermes_home = str(Path(get_hermes_home()))
-    if task_name is None:
-        task_name = get_task_name(home=hermes_home)  # the task is per-profile, like the home
+    task_name = get_task_name(home=home)
     if not is_task_registered(task_name=task_name):
-        return False
+        return None
 
-    from hermes_cli.gateway import find_gateway_pids
-
-    # Snapshot BEFORE triggering so a task-spawned python that becomes visible
-    # before /Run returns can never land in pre_pids (a pre-update gateway
-    # still draining must also not satisfy the check on its own).
+    # Own profile: the fleet-wide process-table probe (its gateway.pid may not be written yet by a
+    # task-launched child); another profile: only that home's identity files vouch.
+    all_profiles = home is None
+    probe_home = None if all_profiles else Path(home)
+    # Snapshot BEFORE triggering so a task-spawned python that becomes visible before /Run
+    # returns can never land in the baseline.
     try:
-        pre_pids = set(find_gateway_pids(all_profiles=True))
+        pre = set(_live_gateway_pids(all_profiles=all_profiles, home=probe_home))
     except Exception:
-        pre_pids = set()
+        pre = set()
 
     code, _, _ = _exec_schtasks(["/Run", "/TN", task_name])
     if code != 0:
-        return False
+        return []
 
-    ready = _wait_for_gateway_ready(timeout_s=timeout_s, all_profiles=True)
-    new_pids = set(ready) - pre_pids
-    return bool(new_pids)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        new = set(_live_gateway_pids(all_profiles=all_profiles, home=probe_home)) - pre
+        if new:
+            confirmed = _confirm_gateway_stable(
+                sorted(new), confirm_s, interval_s, all_profiles=all_profiles, home=probe_home,
+            )
+            confirmed_new = sorted(set(confirmed) & new)
+            if confirmed_new:
+                return confirmed_new
+            continue  # died during confirmation — keep polling until deadline
+        time.sleep(interval_s)
+    return []
 
 
 def _print_next_steps() -> None:

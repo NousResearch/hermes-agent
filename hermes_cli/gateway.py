@@ -1068,9 +1068,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
                 # Prefer the shared helper (snapshot -> /Run -> poll + profile-aware PID check).
                 from hermes_cli import gateway_windows as _gw  # type: ignore
                 if _gw.is_task_registered(task_name=_task_name):
-                    _started_via_task = _gw._spawn_via_scheduled_task(
-                        task_name=_task_name, hermes_home=_task_home
-                    )
+                    _started_via_task = bool(_gw._spawn_via_scheduled_task(home=_task_home))
             except Exception as _e:
                 try:
                     if _stdio_fh is not None:

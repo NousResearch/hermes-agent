@@ -5,7 +5,7 @@ The v1 scanner flagged ANY mention of AGENTS.md/CLAUDE.md/.cursorrules/
 permanently blocked popular community meta-skills (authoring guides, setup
 docs) with no --force override.
 
-skills-guard-v2 scores tiers by confidence:
+skills-guard-v3 scores tiers by confidence:
   * mechanical persistence (shell redirect, sed -i, tee, cp/mv into the
     file) -> critical -> dangerous
   * prose instructing modification of AGENT config files (imperative
@@ -34,10 +34,9 @@ def _scan(tmp_path: Path, content: str):
     return scan_skill(skill_dir, source="community/test")
 
 
-# The scanner version moved to v2 precisely so cached v1 dangerous verdicts
-# for previously-blocked skills are invalidated and re-scanned.
+# Scanner rule changes invalidate stale cached verdicts.
 def test_scanner_version_bumped():
-    assert SCANNER_VERSION == "skills-guard-v2"
+    assert SCANNER_VERSION == "skills-guard-v3"
 
 
 class TestFalsePositivesUnblocked:

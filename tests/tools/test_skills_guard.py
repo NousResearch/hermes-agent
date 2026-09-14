@@ -366,6 +366,31 @@ class TestUnicodeCharName:
 class TestFalsePositiveReductions:
     """Patterns that previously flagged benign, intrinsic skill content."""
 
+    def test_markdown_link_destination_is_not_path_traversal(self, tmp_path):
+        skill_dir = tmp_path / "linked-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("# Linked skill\n", encoding="utf-8")
+        readme = skill_dir / "README.md"
+        readme.write_text(
+            "See the [repository guide](../../../docs/guide.md).\n",
+            encoding="utf-8",
+        )
+        result = scan_skill(skill_dir, source="community")
+
+        assert result.verdict == "safe"
+        assert should_allow_install(result)[0] is True
+        assert not any(finding.category == "traversal" for finding in result.findings)
+
+        script = skill_dir / "read.py"
+        script.write_text(
+            "data = Path('../../../outside.txt').read_text()\n",
+            encoding="utf-8",
+        )
+
+        assert any(
+            finding.pattern_id == "path_traversal_deep" for finding in scan_file(script, "read.py")
+        )
+
     def test_cat_write_heredoc_is_not_a_secrets_read(self, tmp_path):
         # Setup doc telling the user to write their OWN keys into their OWN
         # local .env via a heredoc — writes in, does not exfiltrate out.

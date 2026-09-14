@@ -53,6 +53,7 @@ function sceneObjectSubject(
 
 export function WorldScene({ onSelectSubject, projection }: WorldSceneProps) {
   const { t } = useI18n()
+
   const conditionPresentations = useMemo(
     () =>
       projection.conditions.map(condition => ({

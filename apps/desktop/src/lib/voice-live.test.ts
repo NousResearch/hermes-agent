@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest'
+
 import { VoiceLiveSession } from './voice-live'
 vi.mock('@/api/client', () => ({ profileScoped: () => ({}) }))
 vi.mock('@/hermes', () => ({ hermesApi: async () => ({ ok: true, transport: { sdp: 'answer' } }) }))
@@ -7,8 +8,10 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.useRealTimers()
 })
+
 function fixture(media: Promise<unknown>) {
   const channel = Object.assign(new EventTarget(), { readyState: 'open', send: vi.fn(), close: vi.fn() })
+
   const peer = Object.assign(new EventTarget(), {
     iceGatheringState: 'complete',
     localDescription: { sdp: 'offer' },
@@ -19,6 +22,7 @@ function fixture(media: Promise<unknown>) {
     setRemoteDescription: async () => {},
     close: vi.fn()
   })
+
   vi.stubGlobal('RTCPeerConnection', function () {
     return peer
   })
@@ -26,14 +30,18 @@ function fixture(media: Promise<unknown>) {
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
   const onClosed = vi.fn()
   const session = new VoiceLiveSession({ onClosed, onDelegation: vi.fn(), onError: vi.fn() })
+
   return { session, peer, channel, onClosed }
 }
+
 it('stops capture synchronously while retaining the close acknowledgement and usage', async () => {
   vi.useFakeTimers()
   const track = { stop: vi.fn() }
+
   const { session, channel, peer, onClosed } = fixture(
     Promise.resolve({ getAudioTracks: () => [track], getTracks: () => [track] })
   )
+
   await session.start([])
   session.close()
   expect(track.stop).toHaveBeenCalledOnce()
@@ -53,11 +61,13 @@ it('stops capture synchronously while retaining the close acknowledgement and us
 it('stops a microphone granted after close without attaching it to the peer', async () => {
   const track = { stop: vi.fn() }
   let grant!: (stream: unknown) => void
+
   const { session, peer } = fixture(
     new Promise(resolve => {
       grant = resolve
     })
   )
+
   const starting = session.start([])
   session.close()
   grant({ getAudioTracks: () => [track], getTracks: () => [track] })

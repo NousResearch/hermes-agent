@@ -120,6 +120,7 @@ describe('backend dial routing (#90812)', () => {
   it('uses the composite registry scope for a registry backend', async () => {
     const claims = new BackendDialClaims()
     const dial = vi.fn(async () => 'registry')
+
     const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
       `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
 
@@ -131,6 +132,7 @@ describe('backend dial routing (#90812)', () => {
   it('uses the local profile scope for a local backend', async () => {
     const claims = new BackendDialClaims()
     const dial = vi.fn(async () => 'local')
+
     const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
       `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
 
@@ -142,6 +144,7 @@ describe('backend dial routing (#90812)', () => {
   it('preserves an explicit pooled key when the parsed route would normalize it', async () => {
     const claims = new BackendDialClaims()
     const dial = vi.fn(async () => 'forced-local')
+
     const scopeKey = vi.fn((connectionId: string | null, profile: string | null | undefined) =>
       `conn:${connectionId ?? 'local'}::${profile ?? 'default'}`)
 

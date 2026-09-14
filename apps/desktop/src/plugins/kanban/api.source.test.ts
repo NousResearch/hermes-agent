@@ -1,5 +1,5 @@
-import { afterEach, expect, it, vi } from 'vitest'
 import { atom, type WritableAtom } from 'nanostores'
+import { afterEach, expect, it, vi } from 'vitest'
 const state = vi.hoisted(() => ({ notify: vi.fn(), invalidate: vi.fn(), update: vi.fn() }))
 vi.mock('@hermes/plugin-sdk', () => ({
   atom,
@@ -33,6 +33,7 @@ it.each(['connectionId', 'profile'] as const)(
         frames.push(callback)
         const close = vi.fn()
         closes.push(close)
+
         return close
       }
     )

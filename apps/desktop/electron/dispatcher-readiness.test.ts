@@ -12,6 +12,7 @@ test('runDispatcherReadinessGate advances the boot phase before checking readine
     'session-token',
     async () => {
       events.push('readiness-checked')
+
       return { status: 'ready', ready: true, gateway_pid: 1, message: 'ok' }
     },
     async (id: string) => {
@@ -41,6 +42,7 @@ test('accepts a live gateway-owned dispatcher', async () => {
 
 test('starts one supervised gateway when the dispatcher is offline and waits for readiness', async () => {
   const calls: Array<[string, string | null, string]> = []
+
   const responses = [
     { status: 'offline', ready: false, gateway_pid: null, message: 'gateway is offline' },
     { ok: true, pid: 7654, name: 'gateway-start' },
@@ -53,6 +55,7 @@ test('starts one supervised gateway when the dispatcher is offline and waits for
     'session-token',
     async (url, token, options = {}) => {
       calls.push([url, token, options.method || 'GET'])
+
       return responses.shift()
     },
     { attempts: 2, pollMs: 0, sleep: async () => {} }
@@ -72,6 +75,7 @@ test('allows Desktop startup when the embedded dispatcher is disabled', async ()
 
   const result = await ensureKanbanDispatcherReady('http://127.0.0.1:9000', 'session-token', async url => {
     calls.push(url)
+
     return { status: 'disabled', ready: false, gateway_pid: null, message: 'dispatcher is disabled' }
   })
 
@@ -98,6 +102,7 @@ test('blocks startup without starting a gateway for unknown dispatcher state', a
   await assert.rejects(
     ensureKanbanDispatcherReady('http://127.0.0.1:9000', 'session-token', async url => {
       calls.push(url)
+
       return { status: 'unknown', ready: false, gateway_pid: null, message: 'dispatcher is unknown' }
     }),
     error => {

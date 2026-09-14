@@ -1417,6 +1417,7 @@ const registryDispatchRevalidation = new RemoteRevalidationCoordinator()
 // lifecycles, so concurrent dials for one (connectionId, profile) scope
 // coalesce here — the second caller awaits the first spawn's result.
 const backendDialClaims = new BackendDialClaims()
+
 const runClaimedBackendDial = <T>(
   connectionId: string | null,
   profile: string | null | undefined,
@@ -1424,6 +1425,7 @@ const runClaimedBackendDial = <T>(
   claimKey?: string
 ) =>
   runBackendDial({ claims: backendDialClaims, scopeKey: backendScopeKey }, connectionId, profile, dial, claimKey)
+
 // True while connection-config:apply soft-rehomes the primary — suppresses the
 // backend-exit toast so an intentional kill doesn't look like a crash.
 let softRehomeInProgress = false

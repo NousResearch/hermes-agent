@@ -42,9 +42,11 @@ def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str
 
 def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[str] = None):
     """Persist disabled skill names to config; essential skills (e.g. ``hermes-agent``) are
-    silently dropped — they cannot be disabled from any surface."""
-    from agent.skill_utils import ESSENTIAL_SKILLS
-    disabled = set(disabled) - ESSENTIAL_SKILLS
+    silently dropped — they cannot be disabled from any surface. A home that opted out of
+    essential seeding (``skills.seed_essentials: false``) lifts that protection."""
+    from agent.skill_utils import ESSENTIAL_SKILLS, seed_essentials_enabled
+    if seed_essentials_enabled():
+        disabled = set(disabled) - ESSENTIAL_SKILLS
     config.setdefault("skills", {})
     if platform is None:
         config["skills"]["disabled"] = sorted(disabled)

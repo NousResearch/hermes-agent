@@ -1,0 +1,174 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sign-and-publish:
+    name: Sign and publish Windows Desktop
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    runs-on: windows-2025
+    timeout-minutes: 45
+    environment: desktop-release
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Validate protected release configuration
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          WINDOWS_SIGNING_PUBLISHER_NAME: ${{ vars.WINDOWS_SIGNING_PUBLISHER_NAME }}
+        run: |
+          $required = @(
+            'AZURE_TENANT_ID',
+            'AZURE_CLIENT_ID',
+            'AZURE_CLIENT_SECRET',
+            'AZURE_TRUSTED_SIGNING_ENDPOINT',
+            'AZURE_TRUSTED_SIGNING_ACCOUNT_NAME',
+            'AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME',
+            'WINDOWS_SIGNING_PUBLISHER_NAME'
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "Protected desktop-release value '$name' is missing."
+            }
+          }
+          node apps/desktop/scripts/validate-release-tag.mjs "$env:GITHUB_REF_NAME"
+          $tagType = git cat-file -t "$env:GITHUB_REF_NAME"
+          if ($tagType -ne 'tag') {
+            throw "Desktop releases require an annotated tag; found '$tagType'."
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run release configuration tests
+        run: node --test apps/desktop/scripts/validate-release-tag.test.mjs apps/desktop/scripts/release-config.test.cjs
+
+      # The release overlay sets `win.signAndEditExecutable: true`, which re-enables
+      # electron-builder's own signtool step. That step fetches the winCodeSign-2.6.0.7z
+      # toolbox, and that archive contains macOS symlinks which 7-Zip cannot extract
+      # without SeCreateSymbolicLinkPrivilege — the failure mode documented in
+      # apps/desktop/scripts/set-exe-identity.mjs. Windows grants that privilege to a
+      # non-elevated process when Developer Mode is on, which is the case on the x64
+      # GitHub-hosted images (actions/runner-images Configure-DeveloperMode.ps1) but NOT
+      # on an ordinary local machine — which is why the local build path keeps the flag
+      # off. The configuration tests above only load this config; they cannot tell us the
+      # route actually runs here, so assert the precondition before any release depends
+      # on it. Runs before the signing secrets are exposed.
+      - name: Preflight — verify this runner can extract electron-builder's winCodeSign toolbox
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:RUNNER_TEMP 'symlink-probe.txt'
+          $link = "$probe.link"
+          Set-Content -Path $probe -Value 'probe'
+          Remove-Item $link -Force -ErrorAction SilentlyContinue
+
+          # Assert the OUTCOME (a symlink really exists), not the absence of one
+          # particular exception: whether New-Item throws, silently relinks, or lands a
+          # junction is an implementation detail of the host's PowerShell, and only the
+          # resulting link type tells us the privilege is actually present.
+          $failure = $null
+          try {
+            New-Item -ItemType SymbolicLink -Path $link -Target $probe -ErrorAction Stop | Out-Null
+          } catch {
+            $failure = $_.Exception.Message
+          }
+          $linkType = if (Test-Path $link) { (Get-Item $link -Force).LinkType } else { $null }
+          Remove-Item $link, $probe -Force -ErrorAction SilentlyContinue
+
+          if ($linkType -ne 'SymbolicLink') {
+            throw @"
+          This runner cannot create symlinks (LinkType='$linkType'${failure:+; $failure}).
+
+          The release overlay enables electron-builder's own signing path
+          (win.signAndEditExecutable: true), which extracts the winCodeSign-2.6.0.7z
+          toolbox. That archive contains macOS symlinks that 7-Zip cannot extract
+          without SeCreateSymbolicLinkPrivilege. On the x64 GitHub-hosted images
+          Developer Mode supplies it; on an arm image or a hardened image it may not.
+
+          Refusing to gate a release on a route that cannot run on this runner. Either
+          run this job on the x64 windows image, or implement the post-pack/artifact
+          signing fallback described in apps/desktop/scripts/set-exe-identity.mjs.
+          "@
+          }
+          Write-Host "Symlink privilege confirmed (LinkType=$linkType): winCodeSign extraction can complete on this runner."
+
+      - name: Build signed NSIS and MSI artifacts
+        working-directory: apps/desktop
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          AZURE_TRUSTED_SIGNING_ACCOUNT_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME: ${{ vars.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          WINDOWS_SIGNING_PUBLISHER_NAME: ${{ vars.WINDOWS_SIGNING_PUBLISHER_NAME }}
+          HERMES_DESKTOP_RELEASE_SIGNING: '1'
+        run: npm run dist:win:release
+
+      - name: Verify publisher, timestamp, and trust chain
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_PUBLISHER_NAME: ${{ vars.WINDOWS_SIGNING_PUBLISHER_NAME }}
+        run: |
+          ./apps/desktop/scripts/verify-windows-signatures.ps1 `
+            -ReleaseDirectory ./apps/desktop/release `
+            -PublisherName $env:WINDOWS_SIGNING_PUBLISHER_NAME
+
+      - name: Upload verified workflow artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-desktop-${{ github.ref_name }}
+          path: |
+            apps/desktop/release/Hermes-*.exe
+            apps/desktop/release/Hermes-*.exe.blockmap
+            apps/desktop/release/Hermes-*.msi
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish verified GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $artifacts = @(
+            Get-ChildItem ./apps/desktop/release -File |
+              Where-Object {
+                $_.Name -like 'Hermes-*.exe' -or
+                $_.Name -like 'Hermes-*.exe.blockmap' -or
+                $_.Name -like 'Hermes-*.msi' -or
+                $_.Name -eq 'latest.yml'
+              } |
+              Select-Object -ExpandProperty FullName
+          )
+          if ($artifacts.Count -lt 3) {
+            throw 'Expected verified NSIS, MSI, and update metadata artifacts.'
+          }
+          gh release create "$env:GITHUB_REF_NAME" @artifacts `
+            --repo "$env:GITHUB_REPOSITORY" `
+            --verify-tag `
+            --generate-notes `
+            --title "Hermes Desktop $env:GITHUB_REF_NAME"

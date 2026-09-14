@@ -6,11 +6,25 @@
 // WHY THIS EXISTS
 // ---------------
 // apps/desktop/package.json sets build.win.signAndEditExecutable=false. That
-// flag is load-bearing: turning electron-builder's own exe-editing ON also
-// re-enables its signtool step, which fetches winCodeSign-2.6.0.7z, whose
-// macOS symlinks crash 7-Zip on non-admin Windows (no Developer Mode = no
-// SeCreateSymbolicLinkPrivilege). That is an unfixable dead end — we do NOT
-// try to extract winCodeSign.
+// flag is load-bearing FOR THE LOCAL AND DEVELOPER PATHS: turning
+// electron-builder's own exe-editing ON also re-enables its signtool step, which
+// fetches winCodeSign-2.6.0.7z, whose macOS symlinks crash 7-Zip on a Windows
+// host that cannot create symlinks without elevation (Developer Mode off = no
+// SeCreateSymbolicLinkPrivilege). On such a host that is an unfixable dead end,
+// which is why the local path does NOT try to extract winCodeSign. Note the
+// constraint is conditional on Developer Mode, not universal: a dev box that has
+// it on can extract the archive (verified on 2026-09-13 — the probe in the
+// release preflight passes locally there).
+//
+// THE RELEASE PATH IS THE DOCUMENTED EXCEPTION. electron-builder's own signing
+// step is what Azure Trusted Signing hooks into, so
+// apps/desktop/electron-builder.release.cjs sets signAndEditExecutable=true and
+// does extract winCodeSign. That works only where a non-elevated process may
+// create symlinks: true on the x64 GitHub-hosted Windows images, which ship
+// Developer Mode on (actions/runner-images Configure-DeveloperMode.ps1). Because
+// the condition is a property of the host rather than of this repo, the release
+// workflow asserts it in a preflight step before it exposes the signing secrets
+// instead of assuming it — see `.github/workflows/desktop-release.yml`.
 //
 // The cost of disabling signAndEditExecutable is that electron-builder also
 // skips rcedit, so the unpacked Hermes.exe keeps the stock Electron icon and
@@ -34,6 +48,10 @@
 // stampExeIdentity() resolves on success and rejects on failure; the caller
 // (after-pack.mjs) swallows the rejection so a stamp failure never fails an
 // otherwise-good build (worst case: stock icon, not a broken app).
+//
+// Official releases are the deliberate exception. The release-only builder
+// overlay enables signing on a controlled CI runner after this afterPack stamp
+// and makes any branding failure fatal.
 
 import { resolve, join } from 'node:path'
 import { existsSync } from 'node:fs'

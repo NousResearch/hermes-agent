@@ -57,15 +57,20 @@ class PluginSessionToolset:
         self._tool_names: set[str] = set()
         self._frozen = False
         self._active = True
+        self._ownership_registration: Any = None
         with _LOCK:
             owners = _SESSION_TOOLSETS.setdefault((self.scope, self.session_key), set())
             if any(handle.name == self.name and handle.active for handle in owners):
                 raise ValueError(f"session toolset already exists: {clean_name}")
             owners.add(self)
         from tools.registry import registry
-        registry.register_session_toolset(
+        self._metadata = registry.register_session_toolset(
             self.name, self.description, direct=self._direct, scope=self.scope,
         )
+
+    def _bind_ownership_registration(self, registration: Any) -> None:
+        """Couple the manager ledger entry to this public disposable handle."""
+        self._ownership_registration = registration
 
     @property
     def active(self) -> bool:
@@ -99,8 +104,8 @@ class PluginSessionToolset:
             self._tool_names.add(logical_name)
             return registry_name
 
-    def dispose(self) -> None:
-        """Remove all registrations without affecting sibling sessions."""
+    def _dispose_resources(self) -> None:
+        """Release this generation's resources; called by its ledger registration."""
         with _LOCK:
             if not self._active:
                 return
@@ -115,7 +120,15 @@ class PluginSessionToolset:
         for handle in handles:
             handle.dispose()
         from tools.registry import registry
-        registry.deregister_session_toolset(self.name, scope=self.scope)
+        registry.deregister_session_toolset(self.name, self._metadata, scope=self.scope)
+
+    def dispose(self) -> None:
+        """Remove all registrations and this handle's host ownership entry."""
+        registration = self._ownership_registration
+        if registration is None:
+            self._dispose_resources()
+        else:
+            registration.dispose()
 
     close = dispose
 

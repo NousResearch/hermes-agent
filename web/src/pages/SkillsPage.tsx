@@ -332,9 +332,9 @@ export default function SkillsPage() {
     );
     setEnd(
       <div className="relative w-full min-w-0 sm:max-w-xs">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
-          className="h-8 rounded-none pl-8 pr-7 text-xs"
+          className="h-8 rounded-none ps-8 pe-7 text-xs"
           placeholder={t.common.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -343,7 +343,7 @@ export default function SkillsPage() {
           <Button
             ghost
             size="xs"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            className="absolute end-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearch("")}
             aria-label={t.common.clear}
           >
@@ -1037,9 +1037,9 @@ function HubBrowser({
         <CardContent className="py-4 flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+              <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
-                className="h-8 pl-8 text-sm"
+                className="h-8 ps-8 text-sm"
                 placeholder="Search the skill hub (GitHub, official, community)…"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -1300,7 +1300,7 @@ function HubResultCard({
       <CardContent className="py-3 flex items-start gap-3">
         <button
           type="button"
-          className="flex-1 min-w-0 text-left"
+          className="flex-1 min-w-0 text-start"
           onClick={onOpen}
           aria-label={`Open ${result.name}`}
         >

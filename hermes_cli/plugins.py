@@ -365,6 +365,14 @@ class PluginContext:
         elif self._wrong_type(provider, base_class, label, article):
             return None
         raw_name = getattr(provider, "name", "") if class_registration else provider.name
+        if class_registration and not isinstance(raw_name, str):
+            logger.warning(
+                "Plugin '%s' tried to register a %s class with invalid name %r. Ignoring.",
+                self.manifest.name,
+                label,
+                raw_name,
+            )
+            return None
         registry_name = raw_name if normalize is None else normalize(raw_name)
         scope = self._manager.scope_key
         previous = registry.snapshot_registration(registry_name, scope=scope)

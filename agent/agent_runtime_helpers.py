@@ -2280,6 +2280,18 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 middleware_trace=_tool_middleware_trace,
             )
             return result
+    elif function_name == "delegate_session":
+        def _execute(next_args: dict) -> Any:
+            from tools.delegate_session_tool import delegate_session as _delegate_session
+            return _delegate_session(
+                action=next_args.get("action") or "start",
+                session_id=next_args.get("session_id"),
+                goal=next_args.get("goal"),
+                context=next_args.get("context"),
+                message=next_args.get("message"),
+                timeout=next_args.get("timeout"),
+                parent_agent=agent,
+            )
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(

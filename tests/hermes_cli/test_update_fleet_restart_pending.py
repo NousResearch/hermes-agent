@@ -713,6 +713,7 @@ def test_stale_receipt_settles_after_recorded_dashboard_incarnation_is_gone(
             }
         ],
     )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [3])
 
     receipt_dir = get_hermes_home() / "logs" / "update_receipts"
     receipt_dir.mkdir(parents=True)
@@ -745,6 +746,25 @@ def test_stale_receipt_settles_after_recorded_dashboard_incarnation_is_gone(
     )
 
     assert update_cmd._pending_fleet_restart_needed() is pending
+
+
+def test_stale_receipt_does_not_settle_when_strict_scan_finds_omitted_gateway(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.read_latest_receipt",
+        lambda: {
+            "plan": {"runtimes": [{"kind": "gateway", "profile": "default"}]},
+            "fleet": [{"profile": "default"}],
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 3, "code_sha": "new", "state": "current"}],
+    )
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [3, 4])
+
+    assert update_cmd_fleet._live_fleet_covers_receipt("new") is False
 
 
 def test_successful_command_boundary_receipt_without_fleet_does_not_retrigger(
@@ -864,6 +884,21 @@ def test_pending_restart_accepts_gone_recorded_runtime(monkeypatch, kind):
     monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
     receipt = {"plan": {"runtimes": [{
         "kind": kind, "profile": "default", "pid": 99999999,
+        "detail": {"create_time": 1.0},
+    }]}}
+
+    assert update_cmd._run_pending_fleet_restart(receipt=receipt) is True
+
+
+def test_pending_restart_accepts_systemd_managed_dashboard_worklist(monkeypatch):
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **_kwargs: [])
+    monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
+    monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
+    monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
+    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [])
+    receipt = {"plan": {"runtimes": [{
+        "kind": "dashboard", "profile": "default", "pid": 42, "supervisor": "systemd",
         "detail": {"create_time": 1.0},
     }]}}
 

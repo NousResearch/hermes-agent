@@ -194,14 +194,12 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
     if plan.get("inventory_complete") is not True:
         return False
     owed: dict[str, int] = {}
-    recorded_pids: set[int] = set()
     for runtime in runtimes:
         if not isinstance(runtime, dict):
             return False
         if runtime.get("kind") in {"serve", "dashboard"}:
             if not _recorded_incarnation_is_gone(runtime):
                 return False
-            recorded_pids.add(int(runtime["pid"]))
             continue
         if runtime.get("kind") != "gateway":
             return False
@@ -219,7 +217,6 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
         ):
             return False
         owed[profile] = old_pid
-        recorded_pids.add(old_pid)
 
     try:
         homes = dict(_profile_homes())
@@ -250,15 +247,18 @@ def _marker_obligation_is_fulfilled(marker: dict, receipt: dict) -> bool:
         # runtime that was absent from the pre-pull plan therefore keeps the obligation pending.
         from hermes_cli.process_identity import ledger_entries
 
-        if any(
-            int(entry.get("pid", 0)) not in recorded_pids
-            for entry in ledger_entries(strict=True)
-            if entry.get("purpose") in {"serve", "dashboard"}
-        ):
-            return False
+        live_serve_pids: set[int] = set()
+        for entry in ledger_entries(strict=True):
+            if entry.get("purpose") not in {"serve", "dashboard"}:
+                continue
+            pid = int(entry.get("pid", 0))
+            started = float(entry.get("create_time", 0))
+            if pid <= 0 or started <= marker["started"]:
+                return False
+            live_serve_pids.add(pid)
         from hermes_cli.dashboard_procs import _scan_dashboard_processes
 
-        if any(pid not in recorded_pids for pid, _cmd in _scan_dashboard_processes(strict=True)):
+        if any(pid not in live_serve_pids for pid, _cmd in _scan_dashboard_processes(strict=True)):
             return False
     except Exception:
         return False
@@ -434,6 +434,11 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
             for row in fleet
         ):
             return False
+        from hermes_cli.gateway import find_gateway_pids
+
+        scanned_pids = {int(pid) for pid in find_gateway_pids(all_profiles=True, strict=True)}
+        if not scanned_pids <= {int(row.get("pid", 0)) for row in fleet}:
+            return False
         return owed <= {("gateway", row.get("profile")) for row in fleet}
     except Exception as exc:
         logger.debug("Could not reconcile pending fleet identities: %s", exc)
@@ -586,8 +591,9 @@ def _run_pending_fleet_restart(*, receipt: dict | None = None) -> bool:
                 if not isinstance(runtime, dict):
                     failed.append("recorded fleet runtime (invalid)")
                     continue
-                if runtime.get("kind") in {"serve", "dashboard"} and _recorded_incarnation_is_gone(runtime):
-                    continue
+                if runtime.get("kind") in {"serve", "dashboard"}:
+                    if _recorded_incarnation_is_gone(runtime) or runtime.get("supervisor") == "systemd":
+                        continue
                 if runtime.get("kind") != "gateway":
                     failed.append(
                         f"{runtime.get('kind') or 'unknown'}:{runtime.get('profile') or 'unknown'}"

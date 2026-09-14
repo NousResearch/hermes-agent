@@ -1267,12 +1267,11 @@ async function spawnRemoteDashboard(
       })
     )
   } catch (error) {
-    try {
-      await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)
-    } catch {
-      void 0
-    }
-
+    // The exec result can be lost after the detached serve has started. At
+    // that point the token file belongs to the child named by the lockfile;
+    // deleting it turns a recoverable unknown outcome into an authentication
+    // mismatch. A pre-spawn failure leaves only this nonce-scoped file, which
+    // the upload path expires after one hour.
     throw error
   }
 

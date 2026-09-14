@@ -1531,6 +1531,21 @@ test('spawnRemoteDashboard removes a token file when upload reporting fails', as
   assert.ok(ssh.calls.some(command => /rm -f .*\.token/.test(command)))
 })
 
+test('spawnRemoteDashboard preserves the token when spawn reporting fails', async () => {
+  const failure = new Error('channel timed out after remote spawn')
+  const ssh = fakeSsh([
+    [/grep -q ssh-session-token-file/, 'YES\n'],
+    [/python3 -c/, ''],
+    [/setsid|nohup/, failure]
+  ])
+
+  await assert.rejects(
+    () => spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tok', ownershipId: OWNERSHIP_ID }),
+    /channel timed out/
+  )
+  assert.ok(!ssh.calls.some(command => /rm -f .*\.token/.test(command)))
+})
+
 test('spawnRemoteDashboard streams the token over stdin, not argv/env', async () => {
   const stdinCalls: string[] = []
   const calls: string[] = []

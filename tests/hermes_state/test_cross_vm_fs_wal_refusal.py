@@ -28,6 +28,10 @@ SPACE_VIRTIOFS = "615 25 0:55 / /mnt/my\\040share rw,relatime - virtiofs share r
 
 
 class TestDetectCrossVmFs:
+    @pytest.fixture(autouse=True)
+    def _run_linux_detection(self, monkeypatch):
+        monkeypatch.setattr(hermes_state_wal.sys, "platform", "linux")
+
     @pytest.mark.parametrize("path,expected", [
         ("/data/agent", True),          # fuse.virtiofs bind mount
         ("/mnt/host/db", True),         # 9p bind mount

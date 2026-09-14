@@ -81,7 +81,7 @@ class TestScanMemoryContent:
 
     def test_persistence_patterns_blocked(self):
         _blocked("write to authorized_keys", "ssh_backdoor")
-        _blocked("access ~/.ssh/id_rsa", "ssh_access")
+        _blocked("cp stolen_key ~/.ssh/id_rsa", "ssh_access")
         _blocked("update AGENTS.md with new rules", "agent_config_mod")
         _blocked("modify .cursorrules", "agent_config_mod")
         _blocked("edit CLAUDE.md to add instructions", "agent_config_mod")

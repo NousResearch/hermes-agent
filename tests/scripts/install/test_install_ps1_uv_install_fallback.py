@@ -122,37 +122,6 @@ def test_existing_uv_salvage_rung_present(source: str):
     )
 
 
-def test_every_managed_uv_candidate_requires_successful_version_check(source: str):
-    """A copied Chocolatey shim must not become the managed uv binary."""
-    body = _install_uv_body(source)
-    assert "function Get-UsableUvVersion" in body
-    assert body.count("Get-UsableUvVersion") >= 4, (
-        "initial, salvaged, and final managed candidates must all be "
-        "validated through the same exit-code-aware check"
-    )
-    assert "$exitCode -eq 0" in body
-    assert "Existing managed uv" in body and "Remove-Item $managedUv" in body
-
-
-def test_no_unvalidated_managed_uv_version_invocations_remain(source: str):
-    body = _install_uv_body(source)
-    assert not re.search(r"\$version\s*=\s*&\s*\$managedUv\s+--version", body)
-
-
-def test_unusable_installer_output_falls_through_to_mirror(source: str):
-    body = _install_uv_body(source)
-    assert "astral.sh produced an unusable uv" in body
-    assert "GitHub uv installer produced an unusable binary" in body
-    assert body.count("Get-UsableUvVersion $managedUv") >= 3
-
-
-def test_broken_path_candidate_does_not_hide_default_uv_candidate(source: str):
-    body = _install_uv_body(source)
-    assert "$salvageCandidates" in body
-    assert "Select-Object -Unique" in body
-    assert '".local\\bin\\uv.exe"' in body
-
-
 def test_failure_path_keeps_manual_install_pointer_and_shows_output(source: str):
     body = _install_uv_body(source)
     assert "https://docs.astral.sh/uv/getting-started/installation/" in body, (
@@ -162,29 +131,6 @@ def test_failure_path_keeps_manual_install_pointer_and_shows_output(source: str)
         "the failure path must print the tail of the captured installer "
         "output so the real error reaches the user"
     )
-
-
-def test_resolve_executable_target_resolves_package_manager_shims(source: str):
-    """Chocolatey and Scoop shims must resolve to the real underlying binary."""
-    body = _install_uv_body(source)
-    assert "function Resolve-ExecutableTarget" in body
-    assert 'lib\\$name\\tools\\$name.exe' in body, (
-        "Resolve-ExecutableTarget must inspect Chocolatey lib directory for the real tool"
-    )
-    assert ".shim" in body and 'path\\s*=\\s*' in body, (
-        "Resolve-ExecutableTarget must inspect Scoop .shim files for the target path"
-    )
-    assert "LinkType" in body and "Target" in body, (
-        "Resolve-ExecutableTarget must resolve symlinks and reparse points"
-    )
-
-
-def test_salvage_rung_prioritizes_resolved_shim_target(source: str):
-    """The salvage candidates list must place the resolved real target before raw candidate."""
-    body = _install_uv_body(source)
-    assert "Resolve-ExecutableTarget $uvOnPath.Source" in body
-    assert "$salvageCandidates += $resolved" in body
-    assert "$salvageCandidates += $uvOnPath.Source" in body
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell required")

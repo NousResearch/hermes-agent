@@ -319,13 +319,13 @@ def get_default_model_from_cache(provider: str) -> str | None:
 
 def _invalidate_provider_model_caches_after_update() -> None:
     """Remove live provider catalogs for every profile that shares the updated checkout."""
+    homes = []
     try:
         from hermes_constants import get_default_hermes_root
 
-        homes = [get_default_hermes_root()]
+        homes.append(get_default_hermes_root())
     except Exception:
         logger.debug("default provider model cache resolution after update failed", exc_info=True)
-        return
 
     try:
         from hermes_cli.profiles import _iter_named_profile_dirs

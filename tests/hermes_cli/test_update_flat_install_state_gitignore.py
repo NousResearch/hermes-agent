@@ -21,8 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # ``hermes update`` would sweep it: the session store plus its SQLite sidecars
 # (gateway/platforms/base.py _ROOT_CREDENTIAL_PATHS enumerates the same set) and
 # retired-WAL capture dirs, quick snapshots, the legacy transcript dir, the
-# default kanban board, the cron executions ledger, gateway lock/pid files and
-# the cache/spill directories.
+# default kanban board, the cron job store (cron/jobs.py JOBS_FILE) and
+# executions ledger, gateway lock/pid files and the cache/spill directories.
 FLAT_INSTALL_RUNTIME_STATE = (
     "state.db",
     "state.db-wal",
@@ -37,6 +37,7 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "sessions/2026-09-14_06-00-00_abcd123d.jsonl",
     "browser-profile/Cookies",
     "cron/executions.db",
+    "cron/jobs.json",
     "gateway.lock",
     "gateway.pid",
     "hook_outputs/2026-09-14_06-00-00/tool.json",

@@ -170,8 +170,9 @@ docs/superpowers/*
 # Flat-install runtime state (checkout root == $HERMES_HOME, e.g. installs made
 # with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): the live session
 # store, its SQLite sidecars and retired-WAL capture dirs, quick snapshots, the
-# legacy transcripts, the cron executions ledger, gateway lock/pid files, and
-# cache/spill directories are Hermes-managed runtime state, never code changes.
+# legacy transcripts, the cron job store (jobs.json) and executions ledger,
+# gateway lock/pid files, and cache/spill directories are Hermes-managed runtime
+# state, never code changes.
 # Ignore them so `hermes update`'s `git stash push --include-untracked` cannot
 # sweep the live state.db/-wal into the stash and unlink it under the running
 # gateway (#110648). Nested installs keep all of this under $HERMES_HOME outside
@@ -189,6 +190,7 @@ docs/superpowers/*
 /sessions/
 /browser-profile/
 /cron/executions.db
+/cron/jobs.json
 /gateway.lock
 /gateway.pid
 /hook_outputs/

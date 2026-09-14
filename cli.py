@@ -3458,11 +3458,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
-        from tools.process_registry_notifications import SubagentNotification
-        notification_preview = user_input if isinstance(user_input, SubagentNotification) else None
+        from tools.process_registry_notifications import TimelineNotification
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
+        notification_preview = user_input if isinstance(user_input, TimelineNotification) else None
         self._status_bar_suppressed_after_resize = False  # input ends post-resize suppression
 
         submit_images = []

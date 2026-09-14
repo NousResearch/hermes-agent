@@ -30,7 +30,9 @@ function mutationSummary(operation: string, value: Record<string, unknown>): str
 
   if (operation === 'branch') { return `branch: ${value.branched_session_id}` }
 
-  if (operation === 'compress') { return `compress: ${value.target_session_id ?? value.session_id}` }
+  if (operation === 'compress') {
+    return value.status === 'preview' ? (value.lines as string[]).join('\n') : `compress: ${value.target_session_id ?? value.session_id}`
+  }
 
   return `${operation}: ok`
 }
@@ -262,6 +264,9 @@ export class CanonicalDesktopProtocol {
   // through the normal request path (which also re-primes revision/generation).
   async settle(method: string, params: Record<string, unknown>, value: any, request: (method: string, params: Record<string, unknown>) => Promise<any>): Promise<any> {
     if (method !== 'session.compress') { return value }
+
+    // `--preview` in the focus argument is a read-only report: no transcript changed.
+    if (value?.status === 'preview') { return { ...value, host_ack: { output: (value.lines as string[]).join('\n') } } }
     const resumed = await request('session.resume', { session_id: params.session_id })
 
     return { ...value, messages: resumed.messages, info: resumed.info, host_ack: { output: `compressed context: ${value.message_count} messages retained` } }

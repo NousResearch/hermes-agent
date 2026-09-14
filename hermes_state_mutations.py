@@ -13,7 +13,7 @@ def validate_action(operation, payload):
         return
     if operation == 'branch' and (not payload or (set(payload) == {'title'} and isinstance(payload['title'], str))):
         return
-    if operation == 'compress' and (not payload or (set(payload) == {'focus'} and isinstance(payload['focus'], str))):
+    if operation == 'compress' and _valid_compress_payload(payload):
         return
     if operation in {'delete', 'reset'} and not payload:
         return
@@ -31,6 +31,19 @@ def validate_action(operation, payload):
         valid = operation in required and set(payload) == required[operation]
     if not valid or any(type(value) is not METADATA_FIELDS[key] for key, value in payload.items()):
         raise RuntimeStoreError('invalid_params')
+
+
+_COMPRESS_FIELDS = {'focus': str, 'preview': bool, 'partial': bool, 'keep_last': int}
+
+
+def _valid_compress_payload(payload):
+    # ``focus`` alone may still be the raw ``/compress`` argument string (Ink/Desktop
+    # clients); the structured flags come from the shared parser on the native CLI/ACP path.
+    if set(payload) - _COMPRESS_FIELDS.keys():
+        return False
+    if any(type(value) is not _COMPRESS_FIELDS[key] for key, value in payload.items()):
+        return False
+    return 'keep_last' not in payload or (payload.get('partial') is True and payload['keep_last'] >= 1)
 
 
 def apply_action(db, conn, session_id, operation, payload, *, prepared=None):

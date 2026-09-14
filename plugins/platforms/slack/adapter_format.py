@@ -43,11 +43,10 @@ class SlackFormatMixin:
             pass
 
     def _slack_allow_bots(self) -> str:
-        """Return normalized Slack bot-message policy."""
+        """Return normalized Slack bot-message policy (scoped ``SLACK_ALLOW_BOTS`` → YAML → none)."""
         from . import adapter as _adapter
 
-        # Scoped read: under multiplex os.environ is the DEFAULT profile's bot-admission policy.
-        raw = self.config.extra.get("allow_bots", "") or _adapter._get_scoped_secret("SLACK_ALLOW_BOTS", "none")
+        raw = _adapter._extra_or_secret(self.config.extra, "allow_bots", "SLACK_ALLOW_BOTS", "none")
         value = str(raw).lower().strip()
         if value not in {"none", "mentions", "all"}:
             _adapter.logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)

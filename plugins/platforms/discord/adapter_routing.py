@@ -29,19 +29,19 @@ class DiscordRoutingMixin:
         return resolve_channel_prompt(self.config.extra, channel_id, parent_id)
 
     def _extra_or_env_flag(self, key: str, env_key: str, env_default: str, *, truthy: bool) -> bool:
-        """Boolean from ``config.extra[key]`` (str parsed permissively) else ``env_key``.
-        ``truthy=True`` env values must be in {true,1,yes,on}; ``truthy=False`` env values are on
-        unless in {false,0,no,off} — matching each flag's historical default shape."""
+        """Boolean: explicit scoped ``env_key`` → ``config.extra[key]`` (str parsed permissively) →
+        ``env_default``. ``truthy=True`` values must be in {true,1,yes,on}; ``truthy=False`` values are
+        on unless in {false,0,no,off} — matching each flag's historical default shape."""
         from . import adapter as _adapter
 
         extra = getattr(self.config, "extra", None)
-        configured = extra.get(key) if isinstance(extra, dict) else None
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() not in {"false", "0", "no", "off"}
-            return bool(configured)
-        env = _adapter._scoped_gate_env(env_key, env_default).lower()
-        return env in {"true", "1", "yes", "on"} if truthy else env not in {"false", "0", "no", "off"}
+        configured = _adapter._extra_or_secret(extra if isinstance(extra, dict) else None, key, env_key, None)
+        if configured is None:
+            configured = env_default
+        if isinstance(configured, bool):
+            return configured
+        text = str(configured).strip().lower()
+        return text in {"true", "1", "yes", "on"} if truthy else text not in {"false", "0", "no", "off"}
 
     def _discord_require_mention(self) -> bool:
         """Return whether Discord channel messages require a bot mention."""

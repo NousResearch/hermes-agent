@@ -158,8 +158,8 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
-    from hermes_state_mutation_retirement import retire_terminal_receipts
-    retire_terminal_receipts(conn, ids)
+    from hermes_state_mutation_retirement import retire_sessions
+    retire_sessions(conn, ids)
     for chunk in _id_chunks(ids):
         ph = _session_ids_placeholders(chunk)
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
@@ -697,9 +697,13 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
-    def get_dominant_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Main-loop model route that served most API calls (``session_model_usage`` keeps the coherent
-        per-call tuple; ``sessions`` mixes route changes)."""
+    def get_recent_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Most recently used main-loop model route as one coherent per-call tuple
+        (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).
+        Recency, not lifetime call count: on a long session a route retired weeks ago can hold the
+        highest ``api_call_count`` forever, and /status and /usage would keep calling it current.
+        ``rowid DESC`` breaks same-timestamp ties toward the route that first appeared later; without
+        it SQLite's temp-sort order is unspecified and the retired route can win."""
         self.flush_token_counts()
         row = self._read_one(
             """SELECT model, billing_provider, billing_base_url, billing_mode,
@@ -709,10 +713,7 @@ class SessionSessionsMixin:
                   AND task = ''
                   AND model <> 'unknown'
                   AND billing_provider <> ''
-                ORDER BY api_call_count DESC,
-                         (input_tokens + output_tokens + cache_read_tokens +
-                          cache_write_tokens + reasoning_tokens) DESC,
-                         last_seen DESC
+                ORDER BY last_seen DESC, rowid DESC
                 LIMIT 1""",
             (session_id,),
         )
@@ -1440,8 +1441,8 @@ class SessionSessionsMixin:
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
             }:
                 return False
-            from hermes_state_mutation_retirement import retire_terminal_receipts
-            retire_terminal_receipts(conn, [session_id, *_collect_delegate_child_ids(conn, [session_id])])
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, [session_id, *_collect_delegate_child_ids(conn, [session_id])])
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1455,6 +1456,24 @@ class SessionSessionsMixin:
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
+
+    def discard_unadmitted_session(self, session_id: str) -> bool:
+        """Abort a row this same flow just created and nobody has been admitted against (seed-copy
+        compensation): remove it WITHOUT the retirement fence so the id can be lazily recreated.
+        A row with any admission or worker receipt is a real session and takes the fenced
+        :meth:`delete_session` path instead."""
+        def _do(conn):
+            if conn.execute(
+                "SELECT 1 FROM session_admissions WHERE target_session_id=? UNION ALL "
+                "SELECT 1 FROM worker_executions WHERE session_id=? LIMIT 1", (session_id, session_id)).fetchone():
+                return None
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            return cur.rowcount > 0
+        result = self._execute_write(_do)
+        if result is None:
+            return self.delete_session(session_id)
+        return bool(result)
 
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None,
                                 *, report: Optional[dict] = None) -> bool:
@@ -1479,8 +1498,10 @@ class SessionSessionsMixin:
             ).fetchone()
             if eligible is None:
                 return False, 0
-            from hermes_state_mutation_retirement import retire_terminal_receipts
-            retire_terminal_receipts(conn, [session_id])
+            # Same BEGIN IMMEDIATE transaction as the check above: retire the ledger rows
+            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility.
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, [session_id])
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
             return True, 0
@@ -1505,8 +1526,8 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
-            from hermes_state_mutation_retirement import retire_terminal_receipts
-            retire_terminal_receipts(conn, [*existing, *_collect_delegate_child_ids(conn, existing)])
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, [*existing, *_collect_delegate_child_ids(conn, existing)])
             removed_ids.extend(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)

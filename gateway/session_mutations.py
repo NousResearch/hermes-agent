@@ -89,6 +89,9 @@ async def mutate_session(authority, actor, ref, params):
             prepare = {'model': prepare_model, 'compress': prepare_compress}[operation]
             prepared = await prepare(authority, live, params['payload'], prepared)
             applied = False
+            if prepared.get('status') == 'preview':
+                # ``--preview`` is a read-only report: no receipt, no publication, no eviction.
+                return {'session_id': ref.session_id, 'operation': operation, **prepared}
     if prepared is not None and 'snapshot' not in prepared:
         # Exact retry: the durable receipt is the result. Never re-prepare (compress
         # would summarize again); the runtime repairs below still run, because the

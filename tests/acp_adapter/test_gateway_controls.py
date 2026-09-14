@@ -53,3 +53,17 @@ async def test_gateway_acp_catalog_does_not_boot_a_runtime(tmp_path, monkeypatch
         db.append_message("persisted-acp", "user", "picker history")
     assert [row.session_id for row in (await agent.list_sessions(cwd=str(tmp_path))).sessions] == ["persisted-acp"]
     assert agent._gateway is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_acp_advertises_every_session_capability_it_implements(tmp_path, monkeypatch):
+    """Editors gate fork/list/resume UI on initialize; the gateway projection implements all three."""
+    from acp_adapter.session import SessionManager
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    gateway = HermesACPAgent()
+    in_process = HermesACPAgent(session_manager=SessionManager(agent_factory=object))
+    advertised = (await gateway.initialize(protocol_version=1)).agent_capabilities.session_capabilities
+    expected = (await in_process.initialize(protocol_version=1)).agent_capabilities.session_capabilities
+    assert advertised.model_dump(exclude_none=True) == expected.model_dump(exclude_none=True)
+    for capability in advertised.model_dump(exclude_none=True):
+        assert callable(getattr(gateway, f"{capability}_session" if capability != "list" else "list_sessions"))

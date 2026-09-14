@@ -880,6 +880,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'session.replay_gap':
+        // The authority retired this subscription (fanout overflow) while the
+        // socket stayed healthy, so no reconnect will ever re-attach it and the
+        // turn's completion can no longer arrive. Only the focused session
+        // reaches here (the sid filter above dropped the rest; activating one
+        // of those later gets a fresh subscription anyway). Re-attach through
+        // the resume path — same as desktop's replay-gap consumer — for an
+        // authoritative snapshot + fresh subscription; the draft and pending
+        // inputs stay fenced to their captured destination.
+        if (sid) {
+          resumeById(sid)
+        }
+
+        return
       case 'session.usage': {
         // Live usage tick while a turn runs (see tui_gateway
         // _start_usage_ticker) — keeps the status-bar context window current

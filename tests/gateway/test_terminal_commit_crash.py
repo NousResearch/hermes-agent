@@ -41,7 +41,7 @@ def test_terminal_commit_before_publication_survives_kill(tmp_path):
 
     def snapshot():
         with sqlite3.connect(home / 'state.db') as db:
-            rows = dict(db.execute('SELECT request_id,status FROM session_admissions'))
+            rows = {rid.rsplit(':', 1)[-1]: status for rid, status in db.execute('SELECT request_id,status FROM session_admissions')}
             result = db.execute("SELECT value FROM state_meta WHERE key LIKE 'gateway.admission.result.v1.%' AND value LIKE '%RECOVERY_ACK_BLOCK_STARTED%'").fetchone()
             return rows, json.loads(result[0]) if result else None
 
@@ -81,7 +81,7 @@ def test_terminal_commit_before_publication_survives_kill(tmp_path):
             async with asyncio.timeout(25):
                 while snapshot()[0][follower] != 'terminal':
                     await asyncio.sleep(.03)
-            assert snapshot()[0]['chat:once'] == 'terminal'
+            assert snapshot()[0]['once'] == 'terminal'
             assert snapshot()[1] == saved
 
     try:

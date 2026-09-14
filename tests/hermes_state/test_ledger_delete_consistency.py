@@ -66,6 +66,53 @@ def test_legacy_delete_retires_terminal_ledger_rows_and_refuses_live_work(tmp_pa
             assert not c.execute('PRAGMA foreign_key_check').fetchall()
 
 
+@pytest.mark.parametrize('delete', [
+    lambda db, sid: db.delete_session(sid),
+    lambda db, sid: db.delete_sessions([sid]),
+    lambda db, sid: db.delete_session_if_empty(sid),
+    lambda db, sid: db.delete_empty_sessions(),
+    lambda db, sid: db.prune_sessions(older_than_days=30),
+    lambda db, sid: db.prune_empty_ghost_sessions(),
+], ids=['single', 'bulk', 'if_empty', 'empty_sweep', 'prune', 'ghost_prune'])
+def test_legacy_delete_publishes_the_full_retirement_fence(tmp_path, delete):
+    """Same contract as the canonical mutate(delete): the exact retry of a settled request
+    still returns its terminal receipt, and a late accounting backfill cannot recreate the
+    row (which would let the same request be admitted a second time)."""
+    from hermes_state_mutation_retirement import retired_session
+    with closing(SessionDB(tmp_path / 'state.db')) as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        _old_ended(db, 's', source='tui')
+        db.save_gateway_routing_entry('route:s', '{"session_id": "s"}')
+        request = dict(epoch=epoch, principal_id='human', session_id='s', request_id='once',
+                       payload={'text': 'x'})
+        admission_id = _settled_admission(db, epoch, 's', 'once')
+        assert delete(db, 's')
+        assert db.get_session('s') is None and retired_session(db, 's')
+        assert db.load_gateway_routing_entries() == {}
+        retry = rt.admit_session_input(db, **request)
+        assert retry['status'] == 'terminal' and retry['admission_id'] == admission_id
+        with pytest.raises(rt.RuntimeStoreError, match='not_found'):
+            db.update_token_counts('s', input_tokens=1, output_tokens=1, model='m')
+        assert db.get_session('s') is None
+
+
+def test_legacy_delete_fences_cascaded_delegate_children(tmp_path):
+    from hermes_state_mutation_retirement import retired_session
+    with closing(SessionDB(tmp_path / 'state.db')) as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        db.create_session('parent', source='cli')
+        db.create_session('child', source='cli', parent_session_id='parent',
+                          model_config={'_delegate_from': 'parent'})
+        admission_id = _settled_admission(db, epoch, 'child', 'sub')
+        assert db.delete_session('parent')
+        assert db.get_session('child') is None and retired_session(db, 'child')
+        retry = rt.admit_session_input(db, epoch=epoch, principal_id='human', session_id='child',
+                                       request_id='sub', payload={'text': 'x'})
+        assert retry['status'] == 'terminal' and retry['admission_id'] == admission_id
+        with pytest.raises(rt.RuntimeStoreError, match='not_found'):
+            db.ensure_session('child', source='unknown')
+
+
 def test_sweeps_skip_sessions_with_live_work_and_retire_the_rest(tmp_path):
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
@@ -117,35 +164,41 @@ def test_startup_repair_latches_after_a_refusal_and_warns_once(monkeypatch, capl
     assert meta.get('ghost_session_prune_v1')
 
 
-def test_local_reset_refuses_over_started_admission_then_fences_generation(tmp_path):
+def _local_session(db, epoch):
+    """Commit a local (CLI-owned) logical session; returns ``(session_id, reset_entry_dict)``."""
     from hermes_state_local import commit_local_session
-    from hermes_state_local_lineage import reset_local_target
     from gateway.config import Platform
     from gateway.session import SessionEntry, SessionSource
     from gateway.session_lifecycle import _now
     from gateway.session_local_recovery import local_identity
     from gateway.session_policy import build_policy
+    sid = local_identity('profile', 'human', 'r')
+    source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
+    now = _now()
+    entry = SessionEntry('local:' + sid, sid, now, now, origin=source, platform=Platform.LOCAL)
+    policy = build_policy({'source': 'cli', 'cwd': '/', 'model': 'm', 'toolsets': []},
+                          {'platform_toolsets': {'cli': []}}, private_secrets={})
+    commit_local_session(db, epoch=epoch, receipt={
+        'profile_id': 'profile', 'principal_id': 'human', 'request_id': 'r', 'session_id': sid,
+        'route': entry.session_key, 'entry': entry.to_dict(), 'policy': asdict(policy)})
+    reset = SessionEntry(entry.session_key, 'child', now, now, origin=source,
+                         platform=Platform.LOCAL, is_fresh_reset=True)
+    return sid, reset.to_dict()
+
+
+def test_local_reset_refuses_over_started_admission_then_fences_generation(tmp_path):
+    from hermes_state_local_lineage import reset_local_target
     with closing(SessionDB(tmp_path / 'state.db')) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id='owner')
-        sid = local_identity('profile', 'human', 'r')
-        source = SessionSource(platform=Platform.LOCAL, chat_id=sid, user_id='human', chat_type='dm')
-        now = _now()
-        entry = SessionEntry('local:' + sid, sid, now, now, origin=source, platform=Platform.LOCAL)
-        policy = build_policy({'source': 'cli', 'cwd': '/', 'model': 'm', 'toolsets': []},
-                              {'platform_toolsets': {'cli': []}}, private_secrets={})
-        commit_local_session(db, epoch=epoch, receipt={
-            'profile_id': 'profile', 'principal_id': 'human', 'request_id': 'r', 'session_id': sid,
-            'route': entry.session_key, 'entry': entry.to_dict(), 'policy': asdict(policy)})
-        reset = SessionEntry(entry.session_key, 'child', now, now, origin=source,
-                             platform=Platform.LOCAL, is_fresh_reset=True)
+        sid, reset = _local_session(db, epoch)
         started = _started_admission(db, epoch, sid)
         before = db.get_session(sid)
         with pytest.raises(rt.RuntimeStoreError, match='session_busy'):
-            reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset.to_dict())
+            reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
         assert db.get_session('child') is None and db.get_session(sid) == before
         rt.settle_session_input(db, epoch=epoch, admission_id=started['admission_id'],
                                 generation=started['generation'], outcome='completed')
-        reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset.to_dict())
+        reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
         after = db.get_session(sid)
         assert after['end_reason'] == 'session_reset' and db.get_session('child') is not None
         assert after['runtime_generation'] == before['runtime_generation'] + 1
@@ -154,6 +207,36 @@ def test_local_reset_refuses_over_started_admission_then_fences_generation(tmp_p
             rt.register_worker_execution(db, epoch=epoch, execution_id='stale', session_id=sid,
                                          generation=before['runtime_generation'], kind='compute',
                                          adoption_secret='private-fixture')
+
+
+@pytest.mark.parametrize('adopted', [False, True], ids=['registered', 'running'])
+def test_local_reset_refuses_over_live_compute_worker_but_not_a_queued_follower(tmp_path, adopted):
+    """A registered/running worker is executing even though no admission is 'started' (an
+    idle-registered worker has none; an adopted one may finish through execution.finish). Reset
+    over it would bump the generation, strand the worker's persists as stale_generation and
+    leave the queued follower unclaimable. A queued follower alone must still allow reset."""
+    from hermes_state_local_lineage import reset_local_target
+    with closing(SessionDB(tmp_path / 'state.db')) as db:
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        sid, reset = _local_session(db, epoch)
+        scope = dict(execution_id='worker', session_id=sid, generation=0)
+        rt.register_worker_execution(db, epoch=epoch, **scope, kind='compute',
+                                     adoption_secret='private', require_idle=True)
+        if adopted:
+            rt.adopt_worker_execution(db, epoch=epoch, **scope, adoption_secret='private')
+        follower = rt.admit_session_input(db, epoch=epoch, principal_id='human', session_id=sid,
+                                          request_id='follower', payload={'text': 'next'})
+        before = db.get_session(sid)
+        with pytest.raises(rt.RuntimeStoreError, match='session_busy'):
+            reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
+        assert db.get_session(sid) == before and db.get_session('child') is None
+        rt.persist_worker_message(db, epoch=epoch, **scope, sequence=1, role='assistant', content='ok')
+        rt.finish_worker_execution(db, epoch=epoch, **scope)
+        # Worker terminal, follower still queued: /reset is exactly what the follower waits on.
+        reset_local_target(db, epoch=epoch, parent_session_id=sid, entry=reset)
+        assert db.get_session(sid)['runtime_generation'] == before['runtime_generation'] + 1
+        claimed = rt.claim_session_input(db, epoch=epoch, session_id=sid)
+        assert claimed is not None and claimed['admission_id'] == follower['admission_id']
 
 
 def test_adopted_worker_finish_settles_linked_admission_and_frees_follower(tmp_path):
@@ -176,3 +259,23 @@ def test_adopted_worker_finish_settles_linked_admission_and_frees_follower(tmp_p
         assert settled['status'] == 'terminal' and settled['outcome'] == 'completed'
         claimed = rt.claim_session_input(db, epoch=epoch, session_id='s')
         assert claimed is not None and claimed['admission_id'] == follower['admission_id']
+
+
+def test_discarding_an_unadmitted_row_leaves_no_fence_but_an_admitted_row_is_fenced(tmp_path):
+    """Seed-copy compensation removes a row nobody was admitted against WITHOUT the retirement
+    marker (the lazy first-prompt path must be able to recreate the id); once any receipt
+    exists the same call takes the fenced delete so the id cannot be resurrected."""
+    from hermes_state_mutation_retirement import RETIRED_PREFIX
+    with closing(SessionDB(db_path=tmp_path / 'state.db')) as db:
+        db.create_session('fresh', source='desktop')
+        assert db.discard_unadmitted_session('fresh') is True
+        assert db.get_session('fresh') is None
+        assert db.get_meta(RETIRED_PREFIX + 'fresh') is None
+        db.create_session('fresh', source='desktop')  # lazy recreation still allowed
+        assert db.get_session('fresh') is not None
+
+        db.create_session('used', source='desktop')
+        epoch = rt.begin_runtime_epoch(db, instance_id='owner')
+        _settled_admission(db, epoch, 'used')
+        assert db.discard_unadmitted_session('used') is True
+        assert db.get_meta(RETIRED_PREFIX + 'used') is not None

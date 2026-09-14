@@ -313,6 +313,25 @@ def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:
             "enabled_toolsets": ["terminal", "file"], "session_db": None, "skip_memory": True}
 
 
+@contextlib.contextmanager
+def _side_agent_session_db(parent_db):
+    """A side agent's OWN registry reference on the parent's store for the duration of its turn.
+    Handing the parent's object across is not enough: the parent releases its reference from
+    ``AIAgent.close()`` / a session reset, and when it was the last holder the registry tears the
+    connection down under the still-running background turn (the delegated-child path acquires
+    the same way, ``tools/delegate_tool._open_child_session_db``). Released on exit."""
+    path = getattr(parent_db, "db_path", None)
+    if parent_db is None or path is None:
+        yield parent_db
+        return
+    from hermes_state_registry import acquire, release_or_close
+    db = acquire(path)
+    try:
+        yield db
+    finally:
+        release_or_close(db)
+
+
 def _preview_restart_history(session: dict, max_messages: int = 24, max_tool_chars: int = 1200) -> list[dict]:
     """Distill recent parent history for the ephemeral preview-restart agent (else it guesses
     app/cwd/port from the bare URL): last ``max_messages`` back to the last user turn, tool

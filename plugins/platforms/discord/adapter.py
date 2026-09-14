@@ -271,8 +271,8 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from tools.url_safety import is_safe_url
 from gateway.platforms._shared import (
-    env_is_connected as _env_is_connected, platform_gate_env as _scoped_gate_env, send_error,
-    yaml_env_setter as _yaml_env_setter
+    env_is_connected as _env_is_connected, extra_or_secret as _extra_or_secret,
+    platform_gate_env as _scoped_gate_env, send_error, yaml_env_setter as _yaml_env_setter
 )
 
 
@@ -613,9 +613,12 @@ def _build_allowed_mentions(extra: Optional[dict] = None):
     configured = configured if isinstance(configured, dict) else {}
 
     def _b(name: str, key: str, default: bool) -> bool:
-        if (raw := configured.get(key)) is not None:
-            return str(raw).strip().lower() in {"true", "1", "yes", "on"}
-        return _env_bool(name, default)
+        # Explicit (scoped) env → this profile's YAML → safe default; a scoped miss never reads
+        # another profile's bridged env, and an explicit ``=false`` beats ``everyone: true``.
+        raw = _extra_or_secret(configured, key, name, None)
+        if raw is None:
+            return default
+        return raw if isinstance(raw, bool) else str(raw).strip().lower() in {"true", "1", "yes", "on"}
 
     return discord.AllowedMentions(
         everyone=_b("DISCORD_ALLOW_MENTION_EVERYONE", "everyone", False),

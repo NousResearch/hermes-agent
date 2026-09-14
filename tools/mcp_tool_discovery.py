@@ -262,12 +262,15 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             _core._server_connecting.add(keys[srv_name])
             _core._server_scope_keys[keys[srv_name]] = current_scope
             _core._server_connect_errors.pop(keys[srv_name], None)
-        # Track which servers opt-in to parallel tool calls (idempotent).
+        # Track which servers opt-in to parallel tool calls (idempotent). Keyed by THIS profile's own
+        # key: the opt-in is the calling profile's policy, so B's parallel-safe `x` never makes A's
+        # same-named serial `x` (own connection or adopted) run two calls at once.
         for srv_name, srv_cfg in servers.items():
+            own_key = _server_key(srv_name, current_scope, current=False)
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
-                _core._parallel_safe_servers.add(srv_name)
+                _core._parallel_safe_servers.add(own_key)
             else:
-                _core._parallel_safe_servers.discard(srv_name)
+                _core._parallel_safe_servers.discard(own_key)
     for srv in stale_cached:
         _loop._signal_reconnect(srv)
     return new_servers
@@ -535,7 +538,7 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
     with _core._lock:
         server_name = _core._mcp_tool_server_names.get(tool_name)
-        return bool(server_name and server_name in _core._parallel_safe_servers)
+        return bool(server_name and _server_key(server_name) in _core._parallel_safe_servers)
 
 
 def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runtime: bool = True) -> List[dict]:

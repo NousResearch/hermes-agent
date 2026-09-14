@@ -129,6 +129,10 @@ class GatewayChatView:
             operation, payload = slash_mutation(command, rest.strip())
             original = self.session_id
             result = await self.mutations.apply(self.client, original, operation, payload)
+            if result.get('status') == 'preview':
+                self.mutations.acknowledge(original, operation, payload)
+                print('\n'.join(result['lines']))
+                return True
             target = result.get('branched_session_id', original)
             snapshot = await self.client.rpc('session.resume', session_id=target)
             self.session_id = target
@@ -138,7 +142,7 @@ class GatewayChatView:
             print(f"{operation}: {target}")
             return True
         if command == "/help":
-            print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /quit (detach). /branch [title], /model <model> [--provider name], /compress [focus].")
+            print("/stop, /approve <id> <choice>, /answer <id> <text>, /discard <admission_id> (turn lost during restart), /quit (detach). /branch [title], /model <model> [--provider name], /compress [here [N] | <focus>] [--preview].")
             return True
         raise GatewayClientError("Unsupported gateway CLI command; use /help. No local command was run.")
 

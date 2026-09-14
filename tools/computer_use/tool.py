@@ -156,12 +156,21 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
     except Exception as e:
         on_error(e)
 
-def _get_backend(session_id: str = "") -> ComputerUseBackend:
+def _scoped_sid(session_id: str) -> str:
+    """Cache key for one Hermes session's backend. Outside a served-profile scope it is the bare id
+    (legacy keys byte-identical); under a multiplexed turn the routed profile's home key is appended
+    so two profiles that share a session id (or a DISPLAY) never share one cua-driver (#110032).
+    Every cache path — lookup, install, release — goes through this, so release finds what lookup made."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
     sid = str(session_id or "")
+    return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
+
+def _get_backend(session_id: str = "") -> ComputerUseBackend:
+    bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
     while True:
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
-            permission_mode = _cua_permission_mode(sid)
+            permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
@@ -178,7 +187,7 @@ def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
     grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
-    sid = str(session_id or "")
+    sid = _scoped_sid(session_id)
     with _backend_lock:
         backend, call_lock = _detach_locked(sid)
     if backend is None:

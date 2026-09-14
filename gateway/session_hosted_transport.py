@@ -297,6 +297,12 @@ def _check_remote_hosted_admission(authority, ref, row):
                 attested['prompt'], attested['attachments'], attested.get('attachment_digests'),
                 db=authority.db, admission=row):
             raise ValueError('input changed')
+    except RuntimeStoreError as exc:
+        # Reconstruction verifies the actual accepted v3/legacy paths. A missing or
+        # changed destination copy is a storage fault, not revoked source authority.
+        if exc.reason == 'storage_unavailable':
+            raise
+        raise RuntimeStoreError('permission_denied') from exc
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
     return True

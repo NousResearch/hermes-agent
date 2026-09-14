@@ -1186,7 +1186,9 @@ class TelegramLifecycleMixin:
                 fallback_ips = list(_adapter.SEED_FALLBACK_IPS)
             else:
                 _adapter.logger.info("[%s] Auto-discovered Telegram fallback IPs: %s", self.name, ", ".join(fallback_ips))
-        proxy_url = _adapter.resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips])
+        proxy_url = _adapter.resolve_proxy_url(
+            "TELEGRAM_PROXY", target_hosts=["api.telegram.org", *fallback_ips],
+            configured=self.config.extra.get("proxy_url"))
 
         def _pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
             return (_adapter.HTTPXRequest(**request_kwargs, **extra, httpx_kwargs=general_httpx),

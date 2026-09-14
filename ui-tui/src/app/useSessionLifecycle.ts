@@ -435,6 +435,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             status: statusFromLiveSession(r.status, running),
             usage: usageFrom(info)
           })
+          // resetSession dropped the previous session's controls; the snapshot's
+          // still-pending approval/clarify prompts are the only way they come back.
+          gw.hydrateSharedPrompts?.(r)
           hydrateLiveSessionInflight(r.inflight)
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)

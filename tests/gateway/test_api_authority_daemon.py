@@ -63,7 +63,7 @@ def test_ordinary_daemon_api_ws_fifo_retry(tmp_path):
                         return text
                 pending = asyncio.create_task(follow())
                 async with asyncio.timeout(10):
-                    while not any(row['request_id'] == 'chat:daemon-retry' and row['status'] == 'queued' for row in rows()):
+                    while not any(row['request_id'].endswith(':daemon-retry') and row['status'] == 'queued' for row in rows()):
                         await asyncio.sleep(.02)
                 peer.release.set()
                 completed = json.loads(await pending)

@@ -164,6 +164,9 @@ export async function runCanonicalSessionControl(
         }
       }))
       ctx.transcript.sys(`model → ${result.model}`)
+    } else if (result.status === 'preview') {
+      // `--preview` is a read-only report; nothing to re-hydrate.
+      ctx.transcript.sys((result.lines as string[]).join('\n'))
     } else {
       const before = getUiState()
       const snapshot = asRpcResult(await gw.request('session.resume', { session_id: ctx.sid }))

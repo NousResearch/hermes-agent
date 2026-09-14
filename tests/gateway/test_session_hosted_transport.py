@@ -316,3 +316,60 @@ def test_preflight_verifies_by_attested_digest_and_refuses_changed_source_bytes(
                 rpc.callbacks.clear()
             for server in servers:
                 asyncio.run_coroutine_threadsafe(server.stop(), loop).result()
+
+
+def test_preflight_refuses_a_retained_document_corrupted_or_missing_at_the_destination(owner, tmp_path, monkeypatch):
+    """Documents ride in the prompt as content-addressed paths, so execution never re-hashes
+    them: the digest-only preflight must itself refuse ``storage_unavailable`` when the
+    destination bytes no longer match the source-attested digest (same-size mutation) or
+    are gone, still without transferring bytes from the source. Images are unaffected."""
+    from gateway import session_hosted_transport as transport
+    from gateway.session_hosted_transport import HostedRoomOwnerRPC, check_remote_hosted_admission
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import list_session_admissions, RuntimeStoreError
+    authority, loop, _, _ = owner
+    target_home = tmp_path / 'profiles' / 'other'
+    target_home.mkdir(parents=True, mode=0o700)
+    authority.profile_id = str(target_home)
+    source = _SourceTask(tmp_path, monkeypatch, b'document bytes ' * 2000)
+    operations = []
+    real_request = transport.owner_request
+    def counting_request(home, verb, params, **kwargs):
+        operations.append(params.get('operation'))
+        return real_request(home, verb, params, **kwargs)
+    monkeypatch.setattr(transport, 'owner_request', counting_request)
+    servers = [_server(tmp_path), _server(target_home)]
+    with source.db:
+        transport.install_hosted_transport(servers[0], source.authority, loop, attest=source.service.attest)
+        transport.install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)
+        for server in servers:
+            assert asyncio.run_coroutine_threadsafe(server.start(), loop).result()
+        try:
+            rpc = HostedRoomOwnerRPC(home=target_home, source_home=tmp_path, **source.selector)
+            coords = dict(profile='other', source='bot_room')
+            sid = rpc.create(**coords, title='Group: room')['session_id']
+            rpc.submit(**coords, session_id=sid, prompt='frozen', task=source.identity,
+                       execution_generation=1, attachments=source.bound, on_terminal=lambda r: None)
+            row, = list_session_admissions(authority.db, session_id=sid, pending_only=False)
+            with rpc._lock:
+                rpc.callbacks.clear()
+            rpc._monitor.join(5)
+            ref = SessionRef(authority.profile_id, sid)
+            assert check_remote_hosted_admission(authority, ref, row) is True
+            from pathlib import Path
+            retained = Path(row['payload']['text'].split('[Shared attachment] file: ')[1].strip())
+            assert retained.read_bytes() == source.data
+            operations.clear()
+            retained.write_bytes(bytes([source.data[0] ^ 1]) + source.data[1:])
+            with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+                check_remote_hosted_admission(authority, ref, row)
+            retained.unlink()
+            with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+                check_remote_hosted_admission(authority, ref, row)
+            assert operations == ['execute', 'execute'], 'destination verification must not re-transfer bytes'
+            assert row == list_session_admissions(authority.db, session_id=sid, pending_only=False)[0]
+        finally:
+            with rpc._lock:
+                rpc.callbacks.clear()
+            for server in servers:
+                asyncio.run_coroutine_threadsafe(server.stop(), loop).result()

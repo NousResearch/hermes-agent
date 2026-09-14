@@ -25,13 +25,35 @@ class PreparedMutations:
                 # the tuple; never refresh its preconditions behind the user.
                 if str(exc) in {'invalid_params', 'revision_conflict', 'stale_generation',
                                 'session_busy', 'unknown_execution', 'permission_denied',
-                                'model_resolution_failed', 'nothing_to_compress'}:
+                                'model_resolution_failed', 'nothing_to_compress',
+                                'unsupported_compress_options'}:
                     self.pending.pop(key)
                 raise
         return entry['result']
 
     def acknowledge(self, session_id, operation, payload):
         self.pending.pop((session_id, operation, json.dumps(payload, sort_keys=True)), None)
+
+
+def compress_payload(arg):
+    """Structured ``session.mutate(compress)`` payload from the raw ``/compress`` arguments.
+
+    The shared parser is the one every native surface uses, so ``--preview`` stays a read-only
+    flag and ``here [N]`` a boundary instead of becoming a focus topic; ``--aggressive`` has no
+    canonical implementation and is refused before anything reaches the authority.
+    """
+    from agent.conversation_compression_manual import AGGRESSIVE_UNSUPPORTED, parse_compress_args
+    request = parse_compress_args(arg)
+    if request.aggressive:
+        raise GatewayClientError(AGGRESSIVE_UNSUPPORTED)
+    payload = {}
+    if request.focus_topic:
+        payload['focus'] = request.focus_topic
+    if request.preview:
+        payload['preview'] = True
+    if request.partial:
+        payload.update(partial=True, keep_last=request.keep_last)
+    return payload
 
 
 def slash_mutation(command, arg):
@@ -43,7 +65,8 @@ def slash_mutation(command, arg):
             raise GatewayClientError('unsupported_model_options')
         return name, {'model': parsed.model_input, **(
             {'provider': parsed.explicit_provider} if parsed.explicit_provider else {})}
-    fields = {'branch': 'title', 'compress': 'focus'}
-    if name not in fields:
+    if name == 'compress':
+        return name, compress_payload(arg)
+    if name != 'branch':
         raise GatewayClientError('unsupported_command')
-    return name, {fields[name]: arg} if arg else {}
+    return name, {'title': arg} if arg else {}

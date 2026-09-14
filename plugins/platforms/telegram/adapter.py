@@ -18,7 +18,11 @@ from hermes_cli import setup_platforms
 logger = logging.getLogger(__name__)
 
 from agent.deadline import run_bounded_async
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, platform_gate_env as _scoped_gate_env
+from gateway.platforms._shared import (
+    decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
+    platform_gate_env as _scoped_gate_env,
+)
 
 
 def _redact_telegram_error_text(error: object) -> str:
@@ -859,10 +863,15 @@ class TelegramAdapter(
     # -- Message reactions (processing lifecycle) --
 
     def _reactions_enabled(self) -> bool:
-        """Reactions enabled via ``extra.reactions`` (YAML, per profile) or TELEGRAM_REACTIONS."""
-        configured = self.config.extra.get("reactions")
+        """Reactions: scoped ``TELEGRAM_REACTIONS`` → ``extra.reactions`` (YAML, per profile) → off.
+
+        An explicit env var wins over YAML, so the stock ``reactions: false`` every install
+        materializes cannot silently kill a documented ``TELEGRAM_REACTIONS=true`` (#109032). Under
+        multiplex a scoped miss falls to the profile's own YAML, never another profile's env (#72348).
+        """
+        configured = _extra_or_secret(self.config.extra, "reactions", "TELEGRAM_REACTIONS", None)
         if configured is None:
-            configured = _scoped_gate_env("TELEGRAM_REACTIONS", "false")
+            return False
         return str(configured).lower() not in {"false", "0", "no"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: Optional[str]) -> bool:
@@ -1027,6 +1036,8 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         _bridge_gate(key, env, telegram_cfg.get(key), seed_extra=seed)
     _bridge_lower("reactions", "TELEGRAM_REACTIONS")
     if "proxy_url" in telegram_cfg:
+        # Seeded into extra so ``_build_ptb_requests`` keeps a secondary's route without the env bridge.
+        extras.setdefault("proxy_url", str(telegram_cfg["proxy_url"]).strip())
         _set_env("TELEGRAM_PROXY", str(telegram_cfg["proxy_url"]).strip())
     _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
     _telegram_rtm = telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg else _telegram_extra.get("reply_to_mode")

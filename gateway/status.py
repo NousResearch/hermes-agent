@@ -402,9 +402,11 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     home_lc = str(profile_home).lower().replace("\\", "/")
     if profile_name is not None and profile_name != "default":
         return profile_flag_value(command_lc) == profile_name.lower() or f"hermes_home={home_lc}" in command_lc
-    # Default profile: accept unless argv names another profile or a conflicting explicit
-    # HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually arrives via the env).
-    if "--profile " in command_lc or " -p " in command_lc:
+    # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
+    # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
+    # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
+    # arrives via the env).
+    if profile_flag_value(command_lc) is not None:
         return False
     return not ("hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc)
 
@@ -1060,6 +1062,23 @@ def get_runtime_status_running_pid(
     if not _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
         return None
     return pid
+
+
+def live_gateway_pid_for_home(home: Path) -> Optional[int]:
+    """Verified PID of the gateway owned by ``home`` (pid file + runtime lock first, then the runtime
+    status record), or None. Every reader of another home's gateway identity goes through this so
+    they all prove the same thing: the PID passes the start-time reuse guard, its live command line is
+    a gateway's belonging to ``home``, and the record is not ``stopped``. Bare PID existence is not
+    identity -- a stale record whose PID was recycled by an unrelated process lent it ``served_profiles``
+    and put phantom gateways into the update inventory (#109680) -- while a launch-service gateway whose
+    ``gateway.pid`` was unlinked is still live (#110166). Never unlinks ``home``'s identity files."""
+    home = Path(home)
+    # Cached: dashboard surfaces poll this for every served profile; the cache invalidates on any
+    # pid/lock file change, so a stopped or replaced gateway is seen at once.
+    pid = get_running_pid_cached(home / "gateway.pid", cleanup_stale=False)
+    if pid is not None:
+        return pid
+    return get_runtime_status_running_pid(read_runtime_status(home / "gateway_state.json"), expected_home=home)
 
 
 def remove_pid_file() -> None:

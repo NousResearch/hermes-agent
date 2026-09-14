@@ -411,26 +411,25 @@ class TelegramRoutingMixin:
                     _adapter.logger.debug("[%s] Could not send seed message to topic '%s': %s", self.name, topic_name, seed_err)
 
     def _extra_bool(self, key: str, env_name: str, default: str, *fallback_keys: str) -> bool:
-        """Boolean gate from ``config.extra[key]`` (then ``fallback_keys``), else env var."""
+        """Boolean gate: scoped ``env_name`` → ``config.extra[key]`` (then ``fallback_keys``) → ``default``."""
         from . import adapter as _adapter
 
-        configured = self.config.extra.get(key)
+        configured = _adapter._extra_or_secret(self.config.extra, key, env_name, None)
         for alt in fallback_keys:
             if configured is None:
                 configured = self.config.extra.get(alt)
-        if configured is not None:
-            if isinstance(configured, str):
-                return configured.lower() in {"true", "1", "yes", "on"}
-            return bool(configured)
-        return _adapter._scoped_gate_env(env_name, default).lower() in {"true", "1", "yes", "on"}
+        if configured is None:
+            configured = default
+        if isinstance(configured, bool):
+            return configured
+        return str(configured).strip().lower() in {"true", "1", "yes", "on"}
 
     def _extra_str_set(self, key: str, env_name: str) -> set[str]:
-        """Comma/list allowlist from ``config.extra[key]``, else the profile-scoped env var."""
+        """Comma/list allowlist: scoped ``env_name`` → ``config.extra[key]`` → empty."""
         from . import adapter as _adapter
 
-        raw = self.config.extra.get(key)
-        if raw is None:
-            raw = _adapter._scoped_gate_env(env_name)
+        raw = _adapter._extra_or_secret(self.config.extra, key, env_name, "", blank_is_unset=False)
+        raw = _adapter._decode_json_list_literal(raw)
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -501,11 +500,11 @@ class TelegramRoutingMixin:
         return self._extra_str_set("allowed_topics", "TELEGRAM_ALLOWED_TOPICS")
 
     def _telegram_ignored_threads(self) -> set[int]:
+        """Thread ids to skip: scoped ``TELEGRAM_IGNORED_THREADS`` → ``config.extra`` → none."""
         from . import adapter as _adapter
 
-        raw = self.config.extra.get("ignored_threads")
-        if raw is None:
-            raw = _adapter._scoped_gate_env("TELEGRAM_IGNORED_THREADS")
+        raw = _adapter._extra_or_secret(self.config.extra, "ignored_threads", "TELEGRAM_IGNORED_THREADS", "", blank_is_unset=False)
+        raw = _adapter._decode_json_list_literal(raw)
         ignored: set[int] = set()
         for value in (raw if isinstance(raw, list) else str(raw).split(",")):
             text = str(value).strip()
@@ -521,17 +520,18 @@ class TelegramRoutingMixin:
         """Compile optional regex wake-word patterns for group triggers."""
         from . import adapter as _adapter
 
-        patterns = self.config.extra.get("mention_patterns")
-        if patterns is None:
-            raw = _adapter._scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
-            if raw:
-                try:
-                    loaded = _adapter.json.loads(raw)
-                except Exception:
-                    loaded = [part.strip() for part in raw.splitlines() if part.strip()]
-                    if not loaded:
-                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
-                patterns = loaded
+        # Scoped env → the profile's YAML → none. Only the env rung is a serialized string (JSON list,
+        # newline- or comma-separated); a YAML string is one literal pattern and is left intact.
+        env_raw = _adapter._scoped_gate_env("TELEGRAM_MENTION_PATTERNS", "").strip()
+        if env_raw:
+            try:
+                patterns = _adapter.json.loads(env_raw)
+            except Exception:
+                patterns = [part.strip() for part in env_raw.splitlines() if part.strip()]
+                if not patterns:
+                    patterns = [part.strip() for part in env_raw.split(",") if part.strip()]
+        else:
+            patterns = self.config.extra.get("mention_patterns")
         if patterns is None:
             return []  # before touching ``self.name``: tests build bare adapters via object.__new__
         return _adapter.compile_mention_patterns(patterns, log_prefix=self.name, platform_label="telegram", display_label="Telegram", logger_=_adapter.logger)

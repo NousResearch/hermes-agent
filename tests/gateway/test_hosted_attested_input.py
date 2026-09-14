@@ -99,9 +99,28 @@ def test_preclaim_refuses_changed_attestation_or_custody_without_repair(tmp_path
         else:
             conn.execute("UPDATE input_custody_refs SET request_id='wrong' WHERE ordinal=1")
         before = list(conn.iterdump())
-        with pytest.raises(RuntimeStoreError, match='permission_denied'):
+        reason = 'storage_unavailable' if mutation in {'missing-copy', 'reference-identity'} else 'permission_denied'
+        with pytest.raises(RuntimeStoreError, match=reason):
             transport._check_remote_hosted_admission(authority, ref, row)
         assert operations == ['execute'] and list(conn.iterdump()) == before
         assert paths[0].exists()
         if mutation == 'missing-copy':
             assert not paths[1].exists()
+
+
+@pytest.mark.parametrize('namespace', ['v3', 'legacy'])
+def test_preclaim_rehashes_retained_documents_without_transfer_or_repair(tmp_path, monkeypatch, namespace):
+    from hermes_state_runtime import RuntimeStoreError
+    with _accepted(tmp_path, monkeypatch, namespace) as (transport, authority, ref, row, attested, paths, conn, operations):
+        before = list(conn.iterdump())
+        original = paths[1].read_bytes()
+        changed = bytes([original[0] ^ 1]) + original[1:]
+        paths[1].write_bytes(changed)
+        with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+            transport._check_remote_hosted_admission(authority, ref, row)
+        assert paths[1].read_bytes() == changed
+        paths[1].unlink()
+        with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+            transport._check_remote_hosted_admission(authority, ref, row)
+        assert not paths[1].exists() and paths[0].exists()
+        assert operations == ['execute', 'execute'] and list(conn.iterdump()) == before

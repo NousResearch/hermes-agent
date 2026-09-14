@@ -464,7 +464,9 @@ def _canonical_profile_request(name: str) -> str:
     """
     if name.casefold() in {".hermes", "hermes"}:
         from hermes_cli import profiles as profiles_mod
-        if not Path(profiles_mod.get_profile_dir(name)).is_dir():
+        # Check the profiles root directly: get_profile_dir rejects "hermes" as a
+        # reserved name, but a pre-reserved-list install may still carry that dir.
+        if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
             return "default"
     return name
 
@@ -472,7 +474,12 @@ def _canonical_profile_request(name: str) -> str:
 def _response_profile_name(profile: str | None = None) -> str:
     """Profile name for session.* payloads: the requested real non-launch profile, else the launch one."""
     name = _canonical_profile_request((profile or "").strip())
-    return name if name and _profile_home(name) is not None else _current_profile_name()
+    if not name:
+        return _current_profile_name()
+    try:
+        return name if _profile_home(name) is not None else _current_profile_name()
+    except ProfileUnavailableError:
+        return _current_profile_name()
 
 
 def _db_unavailable_error(rid, *, code: int):
@@ -482,16 +489,30 @@ def _db_unavailable_error(rid, *, code: int):
 # ── Per-session profile scoping: the desktop's app-global remote mode points every profile at this
 # backend, so calls carry ``profile`` → open that profile's db and bind its HERMES_HOME (ContextVar
 # override) so config/skills/model/persistence resolve to it. Omitted/own profile → launch profile.
+class ProfileUnavailableError(FileNotFoundError):
+    """An explicit ``profile`` param names no live profile on this host. Raised out of the method
+    (never a silent fall-back to the launch profile); ``handle_request`` turns it into JSON-RPC 4064
+    so a client holding a deleted profile gets a typed error instead of a ws dispatch crash (#107829)."""
+
+
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
     if not (name := _canonical_profile_request((profile or "").strip())):
         return None
     from hermes_cli import profiles as profiles_mod
-    home = Path(profiles_mod.get_profile_dir(name))
-    if not home.is_dir():
-        raise FileNotFoundError(f"Profile '{name}' does not exist.")
+    try:
+        home = Path(profiles_mod.get_profile_dir(name))
+    except ValueError:
+        home = None
+    if home is None or not home.is_dir():
+        raise ProfileUnavailableError(f"Profile '{name}' does not exist.")
     if home.resolve() == Path(_hermes_home).resolve():
         return None  # already the launch profile (no override needed)
+    if home not in _served_profile_homes:
+        # Last moment ambient TERMINAL_* is provably the launch profile's own: freeze it for
+        # launch-profile turns before any secondary code runs (tui_gateway/launch_terminal_policy.py).
+        from tui_gateway.launch_terminal_policy import capture_launch_terminal_env
+        capture_launch_terminal_env()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
     return home
 
@@ -754,6 +775,8 @@ def handle_request(req: dict) -> dict | None:
     token = _current_rpc_method.set(method)
     try:
         return fn(rid, params)
+    except ProfileUnavailableError as exc:
+        return _err(rid, 4064, str(exc))
     finally:
         _current_rpc_method.reset(token)
 

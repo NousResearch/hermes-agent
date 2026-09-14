@@ -85,6 +85,7 @@ def attested_submission_payload(prompt, attachments, digests, *, db, admission):
 
     v3 documents use the admission's exact custody references, not native-cache paths.
     This read-only preflight neither prepares input nor repairs missing local bytes.
+    Documents embedded in prompt text must be re-hashed here, before execution.
     """
     from gateway.hosted_room_driver import validate_bound_task_manifest
     from gateway.hosted_room_attachments import _SHA256_RE

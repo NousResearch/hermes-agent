@@ -1637,6 +1637,7 @@ _A2A_ENV_VARS = (
     "A2A_AGENT_NAME",
     "A2A_ADVERTISED_TOOLSETS",
     "A2A_AGENT_DESCRIPTION",
+    "A2A_PUBLIC_URL",
 )
 
 
@@ -1676,6 +1677,7 @@ def default_profile_env(monkeypatch):
     monkeypatch.setenv("A2A_AGENT_NAME", "default-profile-agent")
     monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "default-only-toolset")
     monkeypatch.setenv("A2A_AGENT_DESCRIPTION", "Default profile's own agent.")
+    monkeypatch.setenv("A2A_PUBLIC_URL", "https://default-profile.example.com/")
 
 
 class TestMultiplexConstructionScope:
@@ -1698,6 +1700,10 @@ class TestMultiplexConstructionScope:
         assert adapter._agents[""]["description"] == (
             "Hermes Agent — a general-purpose agent reachable over A2A."
         )
+        # _public_url was captured at construction time via a bare os.getenv, missed by the
+        # scoped retrofit the sibling fields above already got.
+        assert adapter._public_url != "https://default-profile.example.com/"
+        assert adapter._public_url == ""
 
     def test_default_profile_unscoped_keeps_env_precedence(
         self, monkeypatch, default_profile_env
@@ -1716,3 +1722,4 @@ class TestMultiplexConstructionScope:
         assert adapter.port == 9111
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
+        assert adapter._public_url == "https://default-profile.example.com/"

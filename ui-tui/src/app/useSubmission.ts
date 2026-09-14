@@ -12,7 +12,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
-import type { ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
+import type { BusyInputMode, ComposerActions, ComposerRefs, ComposerState, ComposerToken, SlashHandler } from './interfaces.js'
 import { submitPrompt } from './submissionCore.js'
 import { captureDestination, isCurrentDestination, type SubmissionDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
@@ -63,6 +63,24 @@ export const prepareSlashSubmission = (display: string, tokens: ComposerToken[])
 })
 
 export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
+
+/**
+ * Where and how a busy-time input is admitted. Captured synchronously at the
+ * moment the user commits the input: a continuation that runs after an await
+ * (an edited row waiting for its original to retire) must not re-read the
+ * live focus, which may have moved to another session in the meantime.
+ */
+export interface BusyControl {
+  destination: SubmissionDestination
+  mode: BusyInputMode
+  executionGeneration?: number
+}
+
+export const captureBusyControl = (): BusyControl => {
+  const live = getUiState()
+
+  return { destination: captureDestination(), mode: live.busyInputMode, executionGeneration: live.info?.execution_generation }
+}
 
 export function useSubmission(opts: UseSubmissionOptions) {
   const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =
@@ -242,10 +260,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
   // `opts.fallbackToFront` re-inserts at the queue head (queue-edit picks keep
   // their position); the mainline submit path appends.
   const handleBusyInput = useCallback(
-    (item: QueueItem, opts: { fallbackToFront?: boolean } = {}) => {
-      const live = getUiState()
-      const destination = captureDestination()
-      const mode = live.busyInputMode
+    (item: QueueItem, opts: { fallbackToFront?: boolean; control?: BusyControl } = {}) => {
+      const { destination, mode, executionGeneration } = opts.control ?? captureBusyControl()
 
       const enqueueText = () => {
         if (opts.fallbackToFront) {
@@ -260,7 +276,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         if (!staged) { return }
         staged.controlMethod ??= mode === 'steer' ? 'session.steer' : 'session.redirect'
-        staged.executionGeneration ??= live.info?.execution_generation
+        staged.executionGeneration ??= executionGeneration
         staged.attachments ??= item.attachments
 
         return send(item.text, true, item.display, value => value, {
@@ -391,20 +407,25 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
 
         // An edited authority row is admitted only after its original retires.
+        // The edit belongs to the session it was made in: focus may move to
+        // another (busy) session before the retirement resolves.
+        const control = captureBusyControl()
+        const editedWhileBusy = live.busy
+
         return void Promise.resolve(picked).then(item => {
           if (!item) {
             return
           }
 
-          if (getUiState().busy) {
+          if (editedWhileBusy) {
             // 'interrupt' / 'steer' should reach the live turn instead of
             // silently going back to the queue.  handleBusyInput resolves
             // mode-specific behavior (interrupt-and-send, steer, or queue).
-            if (getUiState().busyInputMode === 'queue' && !gw.isCanonical) {
-              return composerActions.prependQueue(item)
+            if (control.mode === 'queue' && !gw.isCanonical) {
+              return composerActions.prependQueue(item, control.destination)
             }
 
-            return handleBusyInput(item, { fallbackToFront: true })
+            return handleBusyInput(item, { fallbackToFront: true, control })
           }
 
           return sendQueued(item)

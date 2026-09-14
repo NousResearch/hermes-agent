@@ -56,16 +56,3 @@ export function computeKeyboardInset(
   const inset = Math.round(layoutHeightPx - height - offsetTop);
   return inset >= KEYBOARD_INSET_MIN_PX ? inset : 0;
 }
-
-/**
- * Whether the page scroll should be pinned back to the top.
- *
- * The dashboard shell is a fixed `h-dvh` column and must never scroll, but
- * iOS Safari auto-scrolls the *page* when a focused input would sit under
- * the keyboard (xterm's hidden textarea triggers this). Pin whenever a
- * keyboard is present so the terminal chrome stays put; the terminal's own
- * scrollback handles content visibility.
- */
-export function shouldPinScroll(nextInsetPx: number): boolean {
-  return nextInsetPx > 0;
-}

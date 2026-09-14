@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   computeKeyboardInset,
   KEYBOARD_INSET_MIN_PX,
-  shouldPinScroll,
 } from "./keyboard-inset";
 
 describe("computeKeyboardInset", () => {
@@ -65,15 +64,5 @@ describe("computeKeyboardInset", () => {
     expect(
       computeKeyboardInset({ height: 479.5, offsetTop: 0.25 }, 800),
     ).toBe(320);
-  });
-});
-
-describe("shouldPinScroll", () => {
-  it("pins while a keyboard inset is active", () => {
-    expect(shouldPinScroll(320)).toBe(true);
-  });
-
-  it("does not pin without a keyboard", () => {
-    expect(shouldPinScroll(0)).toBe(false);
   });
 });

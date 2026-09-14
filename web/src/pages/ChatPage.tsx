@@ -26,7 +26,15 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  type PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router";
 
@@ -64,7 +72,7 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
-import { computeKeyboardInset, shouldPinScroll } from "@/lib/keyboard-inset";
+import { computeKeyboardInset } from "@/lib/keyboard-inset";
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
@@ -74,6 +82,10 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
+import {
+  advanceTouchScroll,
+  type TouchScrollState,
+} from "@/lib/pty-touch-scroll";
 import {
   imageFilesFromTransfer,
   transferMayContainImage,
@@ -132,6 +144,7 @@ function generateChannelId(scope?: string): string {
 // terminal chrome just needs to sit quietly inside the dashboard.
 const DEFAULT_TERMINAL_BACKGROUND = "#000000";
 const DEFAULT_TERMINAL_FOREGROUND = "#f0e6d2";
+const MOBILE_ACCESSORY_RESERVED_PX = 44;
 
 function buildTerminalTheme(background: string, foreground: string) {
   return {
@@ -242,6 +255,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // chat is broken; clears as soon as there is something to show.
   const [resumeHydrating, setResumeHydrating] = useState(false);
   const [lastCloseCode, setLastCloseCode] = useState<number | null>(null);
+  const [keyboardInsetPx, setKeyboardInsetPx] = useState(0);
   // NS-504: when the agent process exits cleanly (the user typed `/exit`, or
   // started a new session that ended the current PTY child), the PTY socket
   // closes with a normal code. Before this fix the terminal just printed
@@ -338,6 +352,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }>({ scope: "", title: null });
   const { t } = useI18n();
   const closeMobilePanel = useCallback(() => setMobilePanelOpenRaw(false), []);
+  const preserveTerminalFocus = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => event.preventDefault(),
+    [],
+  );
+  const sendMobileTerminalKey = useCallback((sequence: string) => {
+    sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, sequence);
+    termRef.current?.focus();
+  }, []);
+  const pasteIntoTerminal = useCallback(() => {
+    void navigator.clipboard
+      .readText()
+      .then((text) => {
+        if (text) termRef.current?.paste(text);
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn("[dashboard clipboard] mobile paste failed:", message);
+      })
+      .finally(() => termRef.current?.focus());
+  }, []);
   const modelToolsLabel = useMemo(
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
     [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
@@ -835,6 +869,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
     term.open(host);
 
+    // xterm positions its helper textarea far off-screen. iOS Safari scrolls
+    // the visual viewport to reveal that focused element, which moves the
+    // entire fixed dashboard shell. Keep the transparent input inside the
+    // terminal instead; xterm remains the sole composer and PTY writer.
+    const isMobileLike =
+      typeof navigator !== "undefined" &&
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    if (isMobileLike && term.textarea) {
+      Object.assign(term.textarea.style, {
+        background: "transparent",
+        bottom: "0",
+        caretColor: "transparent",
+        color: "transparent",
+        height: "1px",
+        left: "0",
+        opacity: "0",
+        top: "auto",
+        width: "1px",
+      });
+    }
+
     // IME composition guard (fixes #52111).
     //
     // React 18's root-level event delegation intercepts keydown events with
@@ -866,9 +921,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       textarea.setAttribute("autocapitalize", "off");
       textarea.setAttribute("spellcheck", "false");
 
-      const isMobileLike =
-        typeof navigator !== "undefined" &&
-        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
       const markReplacementInput = (ev: Event) => {
         const input = ev as InputEvent;
         if (
@@ -893,6 +945,38 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         textarea.removeEventListener("compositionend", markCompositionEnd, true);
       };
     }
+
+    // xterm's wheel bridge does not receive iOS one-finger pans. Translate a
+    // single touch into scrollback rows locally; taps still reach the helper
+    // textarea and multi-touch gestures remain browser-owned.
+    let touchScroll: TouchScrollState | null = null;
+    const resetTouchScroll = () => {
+      touchScroll = null;
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        resetTouchScroll();
+        return;
+      }
+      touchScroll = { lastY: event.touches[0].clientY, remainderPx: 0 };
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      if (!touchScroll || event.touches.length !== 1) return;
+      const fontSize = Number(term.options.fontSize) || 14;
+      const lineHeight = Number(term.options.lineHeight) || 1;
+      const step = advanceTouchScroll(
+        touchScroll,
+        event.touches[0].clientY,
+        fontSize * lineHeight,
+      );
+      touchScroll = step.state;
+      if (step.lines) term.scrollLines(step.lines);
+      event.preventDefault();
+    };
+    host.addEventListener("touchstart", handleTouchStart, { passive: true });
+    host.addEventListener("touchmove", handleTouchMove, { passive: false });
+    host.addEventListener("touchend", resetTouchScroll, { passive: true });
+    host.addEventListener("touchcancel", resetTouchScroll, { passive: true });
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -1009,18 +1093,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         vv ? { height: vv.height, offsetTop: vv.offsetTop } : null,
         window.innerHeight,
       );
-      if (shouldPinScroll(inset)) {
-        // iOS auto-scrolls the page to reveal xterm's hidden textarea when
-        // the keyboard opens. The shell is a fixed h-dvh column that must
-        // never scroll — pin it back so the terminal chrome stays put.
-        window.scrollTo(0, 0);
-        const scroller = document.scrollingElement;
-        if (scroller && scroller.scrollTop !== 0) scroller.scrollTop = 0;
-      }
       if (inset === appliedKeyboardInset) return;
       appliedKeyboardInset = inset;
+      setKeyboardInsetPx(inset);
       if (inset > 0) {
-        wrap.style.paddingBottom = `${inset}px`;
+        wrap.style.paddingBottom = `${inset + MOBILE_ACCESSORY_RESERVED_PX}px`;
         // Keep the freshly-resized input line in view.
         try {
           term.scrollToBottom();
@@ -1049,6 +1126,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     keyboardInsetSyncRef.current = onViewportChange;
     keyboardInsetResetRef.current = () => {
       appliedKeyboardInset = 0;
+      setKeyboardInsetPx(0);
       if (termWrap) termWrap.style.paddingBottom = "";
     };
     scheduleHostSync();
@@ -1524,6 +1602,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
+      host.removeEventListener("touchstart", handleTouchStart);
+      host.removeEventListener("touchmove", handleTouchMove);
+      host.removeEventListener("touchend", resetTouchScroll);
+      host.removeEventListener("touchcancel", resetTouchScroll);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       keyboardInsetSyncRef.current = null;
@@ -1850,8 +1932,41 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         >
           <div
             ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1 touch-none"
           />
+
+          {narrow && keyboardInsetPx > 0 && (
+            <div
+              aria-label="Terminal keyboard controls"
+              className="absolute inset-x-2 z-20 flex h-9 items-center justify-center gap-1 rounded border border-white/20 bg-black/90 px-1 shadow-lg"
+              style={{ bottom: keyboardInsetPx + 4, color: terminalFg }}
+            >
+              <Button ghost size="sm" onPointerDown={preserveTerminalFocus} onClick={pasteIntoTerminal}>
+                Paste
+              </Button>
+              <Button ghost size="sm" onPointerDown={preserveTerminalFocus} onClick={() => sendMobileTerminalKey("\x03")}>
+                Ctrl+C
+              </Button>
+              {([
+                ["Up", "↑", "\x1b[A"],
+                ["Down", "↓", "\x1b[B"],
+                ["Left", "←", "\x1b[D"],
+                ["Right", "→", "\x1b[C"],
+              ] as const).map(([label, glyph, sequence]) => (
+                <Button
+                  ghost
+                  size="sm"
+                  key={label}
+                  aria-label={`${label} arrow`}
+                  onPointerDown={preserveTerminalFocus}
+                  onClick={() => sendMobileTerminalKey(sequence)}
+                  className="min-w-8 px-2"
+                >
+                  {glyph}
+                </Button>
+              ))}
+            </div>
+          )}
 
           {showReconnectOverlay && (
             <div className="absolute inset-x-3 top-3 z-20 flex justify-center sm:inset-x-auto sm:right-3 sm:justify-end">

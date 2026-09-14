@@ -206,29 +206,56 @@ _AUTO_ARCHIVE_CHECK_INTERVAL_S = 300.0
 _last_auto_archive_check: Dict[str, float] = {}
 
 
+def _gateway_owns_home(home: Path) -> bool:
+    """True when a gateway owns the store at ``home`` *or* ownership can't be determined.
+
+    ``_check_gateway_running`` returns only ``GatewayLiveness.running`` and drops
+    ``probe_error``, which is the field that exists to tell "down" from "unknown"
+    (``gateway/status.py``). A rung that raises degrades to the next and leaves
+    ``running=False``, so a caller that only reads ``.running`` treats an unreadable
+    PID file or an unflockable lock as "no gateway" and opens a second writer — the
+    exact tear this gate is here to prevent. Resolve the liveness ourselves so the
+    unknown state survives, and count it as owned.
+    """
+    from gateway.status import get_running_pid, resolve_gateway_liveness
+
+    # cleanup_stale=False: a status probe for ANOTHER profile must never unlink its PID file.
+    liveness = resolve_gateway_liveness(
+        profile_dir=home, use_cache=False,
+        pid_probe=lambda path: get_running_pid(path, cleanup_stale=False))
+    return bool(liveness.running or liveness.probe_error)
+
+
 def _auto_archive_owned_by_gateway(profile: Optional[str]) -> bool:
     """True when a live gateway already owns ``profile``'s session store.
 
-    Same stand-down gate the in-process cron scheduler applies (``_check_gateway_running``
-    / ``_served_by_running_multiplexer`` in ``web_server.py``). The gateway runs its own
-    ``maybe_auto_archive`` timer, so nothing is skipped — but opening a *writable*
-    ``SessionDB`` here and closing it tears down the WAL generation the gateway is holding
-    (SQLite checkpoints on close and unlinks ``-wal``/``-shm`` as the apparent last
-    connection), stranding it on deleted inodes behind ``DeletedWalGenerationError``
-    (#109727, #107688, #100896). Fails closed: an unknown answer means don't open.
-    """
-    from hermes_cli.profiles import _check_gateway_running, _served_by_running_multiplexer
+    The gateway runs its own ``maybe_auto_archive`` timer, so standing down skips
+    nothing — but opening a *writable* ``SessionDB`` here and closing it tears down the
+    WAL generation the gateway is holding (SQLite checkpoints on close and unlinks
+    ``-wal``/``-shm`` as the apparent last connection), stranding it on deleted inodes
+    behind ``DeletedWalGenerationError`` (#109727, #107688, #100896).
 
-    if profile:
+    Fails closed in every direction: an unknown liveness answer, an unresolvable
+    profile, or a raising multiplexer probe all count as owned. A skipped sweep costs
+    one archive interval; a wrong "not owned" costs the gateway its WAL.
+    """
+    try:
+        if not profile:
+            from hermes_constants import get_hermes_home
+
+            return _gateway_owns_home(get_hermes_home())
+
+        from hermes_cli.profiles import _served_by_running_multiplexer
         from hermes_cli.web_server_cron import _cron_profile_home
 
         name, home = _cron_profile_home(profile)
-        return bool(_check_gateway_running(Path(home))
-                    or (name != "default" and _served_by_running_multiplexer(name)))
-
-    from hermes_constants import get_hermes_home
-
-    return bool(_check_gateway_running(get_hermes_home()))
+        if _gateway_owns_home(Path(home)):
+            return True
+        # A served satellite writes no gateway.pid of its own; the live default
+        # multiplexer holds its writer and (since this change) sweeps it too.
+        return bool(name != "default" and _served_by_running_multiplexer(name))
+    except Exception:
+        return True
 
 
 def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:

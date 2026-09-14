@@ -4479,20 +4479,60 @@ def _housekeeping_org_skill_sync() -> None:
     maybe_pull_org_skills()
 
 
-def _housekeeping_auto_archive() -> None:
-    """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
-    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound."""
+def _auto_archive_one_home(db_path=None) -> None:
+    """Run the config-gated auto-archive sweep for one store. ``db_path`` None = this
+    process's own (launch-profile) store. The caller scopes HERMES_HOME so that
+    ``load_config()`` reads *that* profile's ``sessions`` block."""
     from hermes_cli.config import load_config as _load_full_config
     from hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
-    if _sess_cfg.get("auto_archive", False):
-        _adb = acquire()
+    if not _sess_cfg.get("auto_archive", False):
+        return
+    _adb = acquire(db_path)
+    try:
+        _adb.maybe_auto_archive(
+            idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
+            min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
+    finally:
+        release_or_close(_adb)
+
+
+def _housekeeping_auto_archive(runner=None) -> None:
+    """Stale-session auto-archive on a live timer (the startup hook fires once); maybe_auto_archive()
+    is gated by sessions.min_interval_hours. Opens its own SessionDB — SQLite connections are thread-bound.
+
+    Sweeps the launch profile **and every served satellite profile**. A served profile writes no
+    ``gateway.pid`` of its own, so the dashboard stands down for it (``_auto_archive_owned_by_gateway``
+    in ``hermes_cli/web_server_sessions.py``) to avoid tearing the WAL this process holds — which
+    means the multiplexer is the only remaining sweeper for those stores. Before #109727 this swept
+    only ``acquire()`` (the launch home) and a satellite with ``auto_archive`` enabled never archived.
+    Each home is scoped so it is gated by its OWN ``sessions`` config, not the launch profile's.
+    """
+    _auto_archive_one_home()
+
+    homes = dict(getattr(runner, "_served_profile_homes", None) or {}) if runner is not None else {}
+    if not homes:
+        return
+    from pathlib import Path as _Path
+
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+
+    launch_home = get_hermes_home().resolve()
+    for _name, _home in homes.items():
         try:
-            _adb.maybe_auto_archive(
-                idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
-                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
+            home = _Path(_home).resolve()
+        except OSError:
+            home = _Path(_home)
+        if home == launch_home:
+            continue  # already swept above as this process's own store
+        _token = set_hermes_home_override(str(home))
+        try:
+            _auto_archive_one_home(home / "state.db")
+        except Exception as exc:
+            # One unreadable satellite must not stop the rest of the sweep.
+            logger.debug("Auto-archive tick skipped for profile %s: %s", _name, exc)
         finally:
-            release_or_close(_adb)
+            reset_hermes_home_override(_token)
 
 
 def _housekeeping_deferred_fts_retry() -> None:
@@ -4565,7 +4605,7 @@ def _start_gateway_housekeeping(
         (60, "Curator tick", _housekeeping_curator),
         (60, "Sync pull tick", _housekeeping_skill_sync),
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
-        (60, "Auto-archive tick", _housekeeping_auto_archive),
+        (60, "Auto-archive tick", lambda: _housekeeping_auto_archive(runner)),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
         (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
         (1, "MCP config reconcile", _mcp_config_reconciler(runner))]

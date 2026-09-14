@@ -43,17 +43,22 @@ class TestPollingHealthConfirmation:
         assert "generation 1" in rendered
         assert a._polling_progress_event.is_set()
 
-    def test_subsequent_progress_is_silent(self, caplog):
-        """Only the FIRST round-trip of a generation logs — a quiet evening
-        must not spam one INFO per getUpdates poll."""
+    def test_subsequent_progress_before_liveness_interval_is_silent(self, caplog):
+        """Progress before the liveness interval must not spam INFO logs."""
         a = _bare_adapter()
-        a._record_polling_progress(1)  # first — logs
-        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
-            a._record_polling_progress(1)  # second — silent
-            a._record_polling_progress(1)  # third — silent
-        assert not [
-            rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()
-        ]
+        with patch(
+            "plugins.platforms.telegram.adapter.time.monotonic",
+            side_effect=[10.0, 100.0, 909.0],
+        ):
+            a._record_polling_progress(1)  # first — logs
+            caplog.clear()
+            with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+                a._record_polling_progress(1)  # second — silent
+                a._record_polling_progress(1)  # third — still below 900 seconds
+
+        rendered = " | ".join(rec.getMessage() for rec in caplog.records)
+        assert "Telegram polling" not in rendered
+        assert "Telegram inbound liveness" not in rendered
 
     def test_new_generation_logs_again(self, caplog):
         """A reconnect starts a new generation with a fresh event; its first
@@ -93,7 +98,5 @@ class TestPollingHealthConfirmation:
         a._polling_progress_event = asyncio.Event()
         with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
             a._record_polling_progress(1)
-        assert not [
-            rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()
-        ]
+        assert not [rec for rec in caplog.records if rec.levelno == logging.INFO]
         assert not a._polling_progress_event.is_set()

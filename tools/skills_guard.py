@@ -292,7 +292,11 @@ THREAT_PATTERNS = [
     # `allowed-tools:` is REQUIRED frontmatter per the agent-skill spec — informational (low) only.
     (r'^allowed-tools\s*:',
      "allowed_tools_field", "low", "privilege_escalation", "skill declares allowed-tools (standard frontmatter; informational)"),
-    (r'\bsudo\b', "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
+    # `sudo.request` / `sudo.respond` are gateway wire events (the masked sudo-password prompt), not an
+    # invocation: any client plugin that relays Hermes' secure prompts has to name them, and a bare
+    # `\bsudo\b` made every such plugin `caution`. A dotted event name is never a shell `sudo`.
+    (r'\bsudo\b(?!\.(?:request|respond)\b)',
+     "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
     (r'setuid|setgid|cap_setuid',
      "setuid_setgid", "critical", "privilege_escalation", "setuid/setgid (privilege escalation mechanism)"),
     (r'NOPASSWD',

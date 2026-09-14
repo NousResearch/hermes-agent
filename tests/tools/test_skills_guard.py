@@ -192,6 +192,22 @@ class TestScanFile:
         assert any(fi.category == "injection" for fi in findings)
 
 
+    def test_sudo_event_names_are_not_sudo_usage(self, tmp_path):
+        """`sudo.request` / `sudo.respond` are the gateway's secure-prompt wire events (the masked sudo
+        password ask). A client plugin that relays those prompts must spell them out, and they are not
+        a privilege escalation — only a real `sudo` invocation is."""
+        events = tmp_path / "events.py"
+        events.write_text(
+            'INPUT_EVENTS = ("approval.request", "secret.request", "sudo.request")\n'
+            'RESPONSES = {"sudo.respond": "value"}\n',
+            encoding="utf-8",
+        )
+        assert not any(fi.pattern_id == "sudo_usage" for fi in scan_file(events, "events.py"))
+
+        setup = tmp_path / "setup.sh"
+        setup.write_text("sudo apt-get install -y jq\nsudo ./install.sh\n", encoding="utf-8")
+        assert [fi.line for fi in scan_file(setup, "setup.sh") if fi.pattern_id == "sudo_usage"] == [1, 2]
+
     def test_deduplication_per_pattern_per_line(self, tmp_path):
         f = tmp_path / "dup.sh"
         f.write_text("rm -rf / && rm -rf /home\n", encoding="utf-8")

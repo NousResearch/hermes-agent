@@ -356,6 +356,32 @@ class TestMaybeAutoTitle:
                 runtime_validator=None,
             )
 
+    def test_kanban_worker_uses_task_title_without_background_llm(self, tmp_path, monkeypatch):
+        """A dispatcher-provided task title is the worker session title, not an LLM prompt."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="kanban")
+        monkeypatch.setenv("HERMES_KANBAN_TASK_TITLE", "Fix flaky worker startup")
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "work kanban task t_b21733fb", [])
+
+        assert db.get_session_title("sess-1") == "Fix flaky worker startup"
+        assert db.get_session_title_source("sess-1") == "llm"
+        mock_auto.assert_not_called()
+
+    def test_kanban_task_title_keeps_manual_title_precedence(self, tmp_path, monkeypatch):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="kanban")
+        db.set_session_title("sess-1", "Operator-selected title")
+        monkeypatch.setenv("HERMES_KANBAN_TASK_TITLE", "Fix flaky worker startup")
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "work kanban task t_b21733fb", [])
+
+        assert db.get_session_title("sess-1") == "Operator-selected title"
+        assert db.get_session_title_source("sess-1") == "user"
+        mock_auto.assert_not_called()
+
     def test_writes_instant_title_before_the_model_runs(self, tmp_path):
         """The derived title lands synchronously — no LLM, no waiting."""
         db = SessionDB(tmp_path / "state.db")

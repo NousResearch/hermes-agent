@@ -101,10 +101,16 @@ class SessionTelegramTopicsMixin:
     ``enable``/``bind`` run the migration."""
 
     def _topic_read_one(self, sql: str, params):
-        """``fetchone`` that treats an unmigrated table as None."""
+        """``fetchone`` that treats an unmigrated table as None.
+
+        Logs OperationalError at warning so schema-regression failures are visible
+        in production (previously logged at debug, hiding the v2→v3 migration gap
+        that causes silent topic-rename breakage — issue #103363).
+        """
         try:
             return self._read_one(sql, params)
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            logger.warning("Telegram topic read failed (table may need migration): %s", exc)
             return None
 
     def apply_telegram_topic_migration(self) -> None:
@@ -215,7 +221,17 @@ class SessionTelegramTopicsMixin:
     def get_telegram_topic_binding(
         self, *, chat_id: str, thread_id: str, profile_name: str = "default"
     ) -> Optional[Dict[str, Any]]:
-        """Return the session binding for a Telegram DM topic, if present."""
+        """Return the session binding for a Telegram DM topic, if present.
+
+        Runs the v2→v3 schema migration before the read so that installs upgraded
+        from < 0.21.0 (schema v2, no ``profile_name`` column) are healed on first
+        access rather than silently returning None and breaking auto-rename.  The
+        migration is write-based so this is safe to call on every read — it is a
+        no-op once the schema is current.
+
+        Fixes #103363.
+        """
+        self.apply_telegram_topic_migration()
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
         row = self._topic_read_one("""
                     SELECT * FROM telegram_dm_topic_bindings
@@ -226,19 +242,30 @@ class SessionTelegramTopicsMixin:
     def list_telegram_topic_bindings_for_chat(
         self, *, chat_id: str, profile_name: str = "default"
     ) -> List[Dict[str, Any]]:
-        """All bindings for one chat, newest first ([] when the table is absent)."""
+        """All bindings for one chat, newest first ([] when the table is absent).
+
+        Runs the migration first so v2→v3 schema gaps are healed on read
+        (same pattern as ``get_telegram_topic_binding`` — issue #103363).
+        """
+        self.apply_telegram_topic_migration()
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
         try:
             rows = self._read_all(
                 "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
                 (profile_name, str(chat_id)),
             )
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            logger.warning("Telegram topic read failed (table may need migration): %s", exc)
             return []
         return [dict(row) for row in rows]
 
     def get_telegram_topic_binding_by_session(self, *, session_id: str) -> Optional[Dict[str, Any]]:
-        """Reverse lookup via the UNIQUE INDEX on session_id; None when unbound."""
+        """Reverse lookup via the UNIQUE INDEX on session_id; None when unbound.
+
+        Runs the migration first so v2→v3 schema gaps are healed on read
+        (same pattern as ``get_telegram_topic_binding`` — issue #103363).
+        """
+        self.apply_telegram_topic_migration()
         row = self._topic_read_one("""
                     SELECT * FROM telegram_dm_topic_bindings
                     WHERE session_id = ?

@@ -75,10 +75,10 @@ async def test_refresh_preserves_existing_explicit_rights_and_hard_horizon(targe
             peer.decode_room_grant(target.adapter._room_grant_secret(), json.loads(response.text)['grant'], permission='attachment.stage')
 
 
-def change_endpoint(target):
-    # Actual catalog configuration, not a fake Files-ready catalog.
-    config = target.home / 'config.yaml'
-    config.write_text(config.read_text() + '\ngateway:\n  room_link_url: https://changed.example.test/hermes\n')
+def change_endpoint(monkeypatch):
+    # The YAML endpoint is restart-cached. Change the actual live override in
+    # this test's private process, not a fake Files-ready catalog or a no-op edit.
+    monkeypatch.setenv('HERMES_ROOM_LINK_URL', 'https://changed.example.test/hermes')
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,7 @@ async def test_native_rechecks_catalog_on_actual_owner_transaction(target, monke
     task = asyncio.create_task(target.connection.dispatch(dict(id=1, method='groups.peer.invite', params=invitation())))
     try:
         assert await asyncio.to_thread(entered.wait, 10)
-        change_endpoint(target)
+        change_endpoint(monkeypatch)
     finally:
         resume.set()
     response = await asyncio.wait_for(task, 10)
@@ -116,7 +116,7 @@ async def test_http_rechecks_catalog_after_reservation_on_owner_transaction(targ
 
     def write(fn, *args, **kwargs):
         if fn.__name__ == 'confirm':
-            change_endpoint(target)
+            change_endpoint(monkeypatch)
         return original(fn, *args, **kwargs)
 
     monkeypatch.setattr(target.db, '_execute_write', write)

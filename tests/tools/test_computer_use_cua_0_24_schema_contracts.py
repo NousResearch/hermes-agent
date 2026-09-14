@@ -38,15 +38,54 @@ _COMMON = {"pid", "window_id", "session"}
 
 
 def test_canonical_double_click_preserves_requested_semantics_when_schema_supports_count():
-    session = _StrictSchemaSession({"click": _COMMON | {"element_index", "count", "button", "modifier"}})
+    """Pixel addressing is the only path where the driver honors `count`."""
+    session = _StrictSchemaSession({"click": _COMMON | {"x", "y", "count", "button", "modifier"}})
 
-    result = _backend(session).click(element=5, click_count=2, button="right", modifiers=["shift"])
+    result = _backend(session).click(x=10, y=20, click_count=2, button="right", modifiers=["shift"])
 
     assert result.ok is True
     assert session.calls == [
-        ("click", {"pid": 42, "element_index": 5, "window_id": 7, "count": 2,
+        ("click", {"pid": 42, "x": 10, "y": 20, "window_id": 7, "count": 2,
                    "button": "right", "modifier": ["shift"], "session": "schema-contract-run"})
     ]
+
+
+def test_element_double_click_routes_to_double_click_even_when_click_exposes_count():
+    """`count` is pixel-path-only: an element click takes the AX action path and
+    ignores it, so element addressing must keep using the `double_click` tool
+    (AXOpen, else a pixel double-click at the element's center).
+
+    Regression for the 0->1 activation counter reported on #106540: routing an
+    element double-click through click{count: 2} silently delivers ONE click.
+    """
+    session = _StrictSchemaSession({
+        "click": _COMMON | {"element_index", "x", "y", "count", "button", "modifier"},
+        "double_click": _COMMON | {"element_index"},
+    })
+
+    result = _backend(session).click(element=5, click_count=2)
+
+    assert result.ok is True
+    assert session.calls == [
+        ("double_click", {"pid": 42, "element_index": 5, "window_id": 7,
+                          "session": "schema-contract-run"})
+    ]
+    assert "count" not in session.calls[0][1]
+
+
+def test_element_double_click_refuses_button_the_ax_path_cannot_preserve():
+    """A right/modified double-click cannot be expressed on the AX path at all;
+    refuse rather than deliver a single AXShowMenu and call it a double-click."""
+    session = _StrictSchemaSession({
+        "click": _COMMON | {"element_index", "x", "y", "count", "button", "modifier"},
+        "double_click": _COMMON | {"element_index"},
+    })
+
+    result = _backend(session).click(element=5, click_count=2, button="right", modifiers=["shift"])
+
+    assert result.ok is False
+    assert result.code == "double_click_unsupported"
+    assert session.calls == []
 
 
 def test_legacy_double_click_keeps_unmodified_left_element_behavior():

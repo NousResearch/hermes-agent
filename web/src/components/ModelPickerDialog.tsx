@@ -6,12 +6,13 @@ import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import type { GatewayClient } from "@/lib/gatewayClient";
+import type { ModelOptionProvider, ModelOptionsResponse } from "@hermes/shared";
 import { Check, RefreshCw, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
-import { fuzzyRank } from "@/lib/fuzzy";
 import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
+import { fuzzyRank, modelSearchText } from "@hermes/shared";
 
 /**
  * Two-stage model picker modal.
@@ -32,21 +33,6 @@ import { queryMatchesProviderOnly } from "@/lib/model-picker-filter";
  *    command.  This lets the Models page reuse the same UI without
  *    requiring an open chat PTY.
  */
-
-interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  warning?: string;
-}
-
-interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
 
 interface ExpensiveModelConfirmResponse {
   confirm_message?: string;
@@ -217,15 +203,22 @@ export function ModelPickerDialog(props: Props) {
   // Fuzzy-ranked providers: match on name + slug + the provider's model ids so
   // typing a model name surfaces its provider (preserves the prior behaviour
   // where a model match also revealed its provider).
-  const filteredProviders = useMemo(
-    () =>
-      fuzzyRank(
-        providers,
-        trimmedQuery,
-        (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
-      ).map((r) => r.item),
-    [providers, trimmedQuery],
-  );
+  //
+  // With no query, float providers that actually have models to the top
+  // (stable within each group). A fresh install lists ~40 providers and only
+  // a couple are configured — burying "OpenRouter · 37 models" under a wall
+  // of "0 models" rows made the picker feel broken.
+  const filteredProviders = useMemo(() => {
+    const ranked = fuzzyRank(
+      providers,
+      trimmedQuery,
+      (p) => `${p.name} ${p.slug} ${(p.models ?? []).join(" ")}`,
+    ).map((r) => r.item);
+    if (trimmedQuery) return ranked;
+    const withModels = ranked.filter((p) => (p.models ?? []).length > 0);
+    const withoutModels = ranked.filter((p) => (p.models ?? []).length === 0);
+    return [...withModels, ...withoutModels];
+  }, [providers, trimmedQuery]);
 
   // A query that matched the SELECTED provider by name/slug (not its models)
   // located that provider — it shouldn't also hide that provider's models
@@ -239,16 +232,18 @@ export function ModelPickerDialog(props: Props) {
   );
 
   // Fuzzy-ranked models carrying the matched character positions so the model
-  // list can highlight why each entry matched.
+  // list can highlight why each entry matched. modelSearchText adds aliases
+  // for brand-less wire ids (e.g. Kimi Coding `k3` ↔ search "kimi").
   const filteredModels = useMemo(
     () =>
       fuzzyRank(
         models,
         queryMatchesSelectedProviderOnly ? "" : trimmedQuery,
-        (m) => m,
+        modelSearchText,
       ).map((r) => ({
         model: r.item,
-        positions: r.positions,
+        // Positions may land in alias suffixes — keep only in-id highlights.
+        positions: r.positions.filter((i) => i >= 0 && i < r.item.length),
       })),
     [models, trimmedQuery, queryMatchesSelectedProviderOnly],
   );

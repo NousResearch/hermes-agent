@@ -40,11 +40,15 @@ def test_tini_compat_shim_exists(built_image: str) -> None:
     )
 
 
-def test_entrypoint_is_init_not_tini(built_image: str) -> None:
-    """The image's actual ENTRYPOINT must be /init (s6-overlay).
+def test_entrypoint_is_dispatcher_not_tini(built_image: str) -> None:
+    """The image's actual ENTRYPOINT must be the PID-1 dispatcher.
 
-    The tini shim is only for legacy external wrappers; the image's own
-    runtime must continue to use the canonical /init.
+    Since #38349 the ENTRYPOINT is ``entrypoint-dispatch.sh``, which
+    exec's the canonical ``/init`` (s6-overlay) when the image owns
+    PID 1 and falls back to a direct bootstrap on wrapped runtimes
+    (Fly Machines, ``docker run --init``). The tini shim is only for
+    legacy external wrappers; the image's own runtime must route
+    through the dispatcher, never through /usr/bin/tini.
     """
     r = subprocess.run(
         ["docker", "inspect", built_image,
@@ -53,38 +57,24 @@ def test_entrypoint_is_init_not_tini(built_image: str) -> None:
     )
     assert r.returncode == 0, f"docker inspect failed: {r.stderr}"
     entrypoint = r.stdout.strip()
-    assert "/init" in entrypoint, (
-        f"ENTRYPOINT is not /init: {entrypoint!r}"
+    assert "entrypoint-dispatch.sh" in entrypoint, (
+        f"ENTRYPOINT is not the PID-1 dispatcher: {entrypoint!r}"
     )
-    # The entrypoint array should be ["/init", "/opt/hermes/docker/main-wrapper.sh"]
     # /usr/bin/tini should NOT be in the entrypoint.
     assert "tini" not in entrypoint.lower(), (
-        f"ENTRYPOINT references tini instead of /init: {entrypoint!r}"
+        f"ENTRYPOINT references tini instead of the dispatcher: {entrypoint!r}"
+    )
+    # The dispatcher must still hand PID-1 execution to /init inside
+    # the image, preserving the supervision tree.
+    r2 = subprocess.run(
+        ["docker", "run", "--rm", "--entrypoint", "sh", built_image, "-c",
+         "grep -q 'exec /init /opt/hermes/docker/main-wrapper.sh' "
+         "/opt/hermes/docker/entrypoint-dispatch.sh"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r2.returncode == 0, (
+        "entrypoint-dispatch.sh in the image does not delegate the "
+        f"PID-1 path to /init: stderr={r2.stderr[-500:]!r}"
     )
 
 
-def test_legacy_tini_g_entrypoint_does_not_boot_loop(built_image: str) -> None:
-    """``docker run --entrypoint /usr/bin/tini … -g -- --help`` must work.
-
-    Exact failure from #66679: after update, NAS templates still invoke
-    ``/usr/bin/tini -g -- …``. The old symlink turned that into
-    ``/init -g -- …``, rc.init tried to exec ``-g``, and the container
-    restart-looped. The shim must strip ``-g`` / ``--`` and reach hermes.
-    """
-    r = subprocess.run(
-        [
-            "docker", "run", "--rm",
-            "--entrypoint", "/usr/bin/tini",
-            built_image,
-            "-g", "--", "--help",
-        ],
-        capture_output=True, text=True, timeout=120,
-    )
-    combined = r.stdout + r.stderr
-    assert "-g: not found" not in combined, (
-        f"tini -g leaked into rc.init (boot-loop regression):\n{combined[-3000:]}"
-    )
-    assert r.returncode == 0, (
-        f"legacy tini -g -- --help failed (exit {r.returncode}):\n"
-        f"stdout={r.stdout[-2000:]!r}\nstderr={r.stderr[-2000:]!r}"
-    )

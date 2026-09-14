@@ -8,6 +8,7 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -139,7 +140,21 @@ export function PetSettings() {
               {/* Fixed-height scroll area so filtering never grows/shrinks the
                   page (no layout thrash); the grid scrolls inside it. */}
               <div className="mt-3 h-72 overflow-y-auto pr-1">
-                {pets.length === 0 ? (
+                {status === 'loading' && pets.length === 0 ? (
+                  // First load keeps the grid's shape rather than flashing the
+                  // "unreachable" copy before the gallery has even arrived.
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                    {Array.from({ length: 6 }, (_, i) => (
+                      <div className="flex items-center gap-2.5 px-2.5 py-2" key={i}>
+                        <Skeleton className="size-10 shrink-0 rounded-md" />
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <Skeleton className="h-3.5 w-24 max-w-full" />
+                          <Skeleton className="h-3 w-16 max-w-full" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : pets.length === 0 ? (
                   <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                     {copy.unreachable}
                   </p>

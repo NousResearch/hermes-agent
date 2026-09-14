@@ -45,6 +45,29 @@ export interface CronEditorSaveValues {
   schedule: string
 }
 
+export function parseCronDeliveryTargets(value: string): string[] {
+  const targets = value
+    .split(',')
+    .map(target => target.trim())
+    .filter(Boolean)
+
+  return targets.length > 0 ? [...new Set(targets)] : ['local']
+}
+
+export function toggleCronDeliveryTarget(value: string, target: string, checked: boolean): string {
+  const targets = parseCronDeliveryTargets(value)
+
+  if (checked) {
+    return targets.includes(target) ? targets.join(',') : [...targets, target].join(',')
+  }
+
+  if (!targets.includes(target) || targets.length === 1) {
+    return targets.join(',')
+  }
+
+  return targets.filter(candidate => candidate !== target).join(',')
+}
+
 /** Build the API update payload, preserving an empty prompt on script-only jobs. */
 export function cronEditorUpdates(values: CronEditorSaveValues, options: { scriptOnlyJob: boolean }): CronJobUpdates {
   const updates: CronJobUpdates = {

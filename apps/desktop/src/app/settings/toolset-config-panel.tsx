@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,7 @@ import {
   getToolsetConfig,
   getToolsetModels,
   pollOAuthSession,
+  type ProfileScope,
   revealEnvVar,
   runToolsetPostSetup,
   selectToolsetModel,
@@ -21,6 +22,7 @@ import { useI18n } from '@/i18n'
 import { Check, Loader2, Save, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type {
   ActionStatusResponse,
@@ -31,7 +33,7 @@ import type {
   ToolsetModelsResponse
 } from '@/types/hermes'
 
-import { EnvVarActionsMenu, EnvVarActionsTrigger } from './env-var-actions-menu'
+import { EnvVarActionsMenu, EnvVarActionsTrigger, EnvVarContextMenu } from './env-var-actions-menu'
 import { Pill } from './primitives'
 import { VoiceProviderFields } from './voice-provider-fields'
 
@@ -40,11 +42,31 @@ interface ToolsetConfigPanelProps {
   /** Called after a key is saved/cleared or a provider chosen, so the parent
    *  can refresh the "Configured / Needs keys" pill. */
   onConfiguredChange?: () => void
+  /** Capabilities profile-scope override: configure THIS profile instead of the
+   *  app-wide active one. Omitted (every other caller) → app-wide active
+   *  profile, so behavior is unchanged. Threaded into every fetch below. */
+  profile?: ProfileScope
 }
 
 /** Toolsets whose backends expose a selectable model catalog (mirrors the
  *  backend's _MODEL_CATALOG_TOOLSETS map). */
 const MODEL_CATALOG_TOOLSETS = new Set(['image_gen', 'video_gen'])
+
+/**
+ * `useNavigate` throws when there is no react-router context. Inside Settings
+ * (the panel's original home) there always is one, so behavior is unchanged;
+ * embedded in a plugin dialog OUTSIDE the router there is none, and this
+ * degrades to `null` instead of crashing the whole panel. Router presence is
+ * stable for a mounted instance's lifetime, so the try/catch never changes the
+ * hook count between renders (rules-of-hooks safe).
+ */
+function useOptionalNavigate(): null | ReturnType<typeof useNavigate> {
+  try {
+    return useNavigate()
+  } catch {
+    return null
+  }
+}
 
 function providerConfigured(provider: ToolProvider, envState: Record<string, boolean>): boolean {
   if (provider.env_vars.length === 0) {
@@ -81,12 +103,13 @@ interface EnvVarFieldProps {
   isSet: boolean
   onSaved: (key: string) => void
   onCleared: (key: string) => void
+  profile?: ProfileScope
 }
 
-function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
+function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarFieldProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
-  const navigate = useNavigate()
+  const navigate = useOptionalNavigate()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -94,7 +117,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
 
   // Internal route change to Settings → API Keys (tools sub-view) with the
   // deep-link param keys-settings consumes to scroll + flash this key's card.
-  const openInKeys = () => navigate(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
+  // No-op when there is no router (embedded outside Settings, e.g. a plugin
+  // dialog): the "Manage keys" affordance simply doesn't navigate there.
+  const openInKeys = () => navigate?.(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
 
   async function handleSave() {
     if (!value) {
@@ -104,7 +129,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     setBusy(true)
 
     try {
-      await setEnvVar(envVar.key, value)
+      await setEnvVar(envVar.key, value, profile)
       setEditing(false)
       setValue('')
       onSaved(envVar.key)
@@ -117,14 +142,14 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
   }
 
   async function handleClear() {
-    if (!window.confirm(copy.removeConfirm(envVar.key))) {
+    if (!(await confirm({ destructive: true, title: copy.removeConfirm(envVar.key) }))) {
       return
     }
 
     setBusy(true)
 
     try {
-      await deleteEnvVar(envVar.key)
+      await deleteEnvVar(envVar.key, profile)
       setRevealed(null)
       onCleared(envVar.key)
       notify({ kind: 'success', title: copy.removedTitle, message: copy.removedMessage(envVar.key) })
@@ -143,71 +168,75 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
     }
 
     try {
-      const result = await revealEnvVar(envVar.key)
+      const result = await revealEnvVar(envVar.key, profile)
       setRevealed(result.value)
     } catch (err) {
       notifyError(err, copy.failedReveal(envVar.key))
     }
   }
 
+  const actionProps = {
+    clearDisabled: busy,
+    docsUrl: envVar.url,
+    isRevealed: revealed !== null,
+    isSet,
+    label: envVar.key,
+    onClear: () => void handleClear(),
+    onEdit: () => setEditing(true),
+    onManageKeys: openInKeys,
+    onReveal: () => void handleReveal()
+  }
+
   return (
-    <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-mono text-xs font-medium">{envVar.key}</span>
-            <Pill tone={isSet ? 'primary' : 'muted'}>
-              {isSet && <Check className="size-3" />}
-              {isSet ? copy.set : copy.notSet}
-            </Pill>
+    <EnvVarContextMenu {...actionProps}>
+      <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs font-medium">{envVar.key}</span>
+              <Pill tone={isSet ? 'primary' : 'muted'}>
+                {isSet && <Check className="size-3" />}
+                {isSet ? copy.set : copy.notSet}
+              </Pill>
+            </div>
+            {envVar.prompt && envVar.prompt !== envVar.key && (
+              <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
+            )}
           </div>
-          {envVar.prompt && envVar.prompt !== envVar.key && (
-            <p className="mt-0.5 text-[0.7rem] text-muted-foreground">{envVar.prompt}</p>
+          {!editing && (
+            <EnvVarActionsMenu {...actionProps}>
+              <EnvVarActionsTrigger onClick={event => event.stopPropagation()} />
+            </EnvVarActionsMenu>
           )}
         </div>
-        {!editing && (
-          <EnvVarActionsMenu
-            clearDisabled={busy}
-            docsUrl={envVar.url}
-            isRevealed={revealed !== null}
-            isSet={isSet}
-            label={envVar.key}
-            onClear={() => void handleClear()}
-            onEdit={() => setEditing(true)}
-            onManageKeys={openInKeys}
-            onReveal={() => void handleReveal()}
-          >
-            <EnvVarActionsTrigger label={envVar.key} onClick={event => event.stopPropagation()} />
-          </EnvVarActionsMenu>
+
+        {isSet && revealed !== null && (
+          <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">
+            {revealed || '---'}
+          </div>
+        )}
+
+        {editing && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              autoFocus
+              className="min-w-52 flex-1 font-mono"
+              onChange={e => setValue(e.target.value)}
+              placeholder={envVar.prompt || envVar.key}
+              type={envVar.default ? 'text' : 'password'}
+              value={value}
+            />
+            <Button disabled={busy || !value} onClick={() => void handleSave()} size="sm">
+              {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
+              {t.common.save}
+            </Button>
+            <Button onClick={() => setEditing(false)} size="sm" variant="text">
+              {t.common.cancel}
+            </Button>
+          </div>
         )}
       </div>
-
-      {isSet && revealed !== null && (
-        <div className="rounded-md bg-background px-2.5 py-1.5 font-mono text-xs text-foreground">
-          {revealed || '---'}
-        </div>
-      )}
-
-      {editing && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Input
-            autoFocus
-            className="min-w-52 flex-1 font-mono"
-            onChange={e => setValue(e.target.value)}
-            placeholder={envVar.prompt || envVar.key}
-            type={envVar.default ? 'text' : 'password'}
-            value={value}
-          />
-          <Button disabled={busy || !value} onClick={() => void handleSave()} size="sm">
-            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-            {t.common.save}
-          </Button>
-          <Button onClick={() => setEditing(false)} size="sm" variant="text">
-            {t.common.cancel}
-          </Button>
-        </div>
-      )}
-    </div>
+    </EnvVarContextMenu>
   )
 }
 
@@ -222,6 +251,7 @@ interface PostSetupRunnerProps {
   /** Refresh the parent config after the install finishes (a backend may now
    *  report itself configured). */
   onComplete?: () => void
+  profile?: ProfileScope
 }
 
 /**
@@ -235,7 +265,7 @@ interface PostSetupRunnerProps {
  * "Installed" pill plus a small "Re-run setup" text button, so clicking
  * around the panel doesn't look like it keeps reinstalling.
  */
-function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete }: PostSetupRunnerProps) {
+function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete, profile }: PostSetupRunnerProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [running, setRunning] = useState(false)
@@ -243,6 +273,7 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete 
   // Guard against overlapping polls / state updates after unmount.
   const activeRef = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     return () => {
       activeRef.current = false
@@ -255,7 +286,7 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete 
     activeRef.current = true
 
     try {
-      const started = await runToolsetPostSetup(toolset, postSetupKey)
+      const started = await runToolsetPostSetup(toolset, postSetupKey, profile)
 
       // The spawn endpoint reports ok:false if it couldn't launch the action
       // (e.g. unknown key, server-side spawn failure). Don't poll a status
@@ -278,7 +309,7 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete 
           break
         }
 
-        const polled = await getActionStatus(started.name, 300)
+        const polled = await getActionStatus(started.name, 300, profile)
         last = polled
         setStatus(polled)
         upsertDesktopActionTask(polled)
@@ -311,7 +342,7 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete 
         setRunning(false)
       }
     }
-  }, [toolset, postSetupKey, onComplete, copy])
+  }, [toolset, postSetupKey, onComplete, copy, profile])
 
   return (
     <div className="grid gap-2 rounded-lg bg-background/55 p-2.5">
@@ -359,6 +390,7 @@ interface ModelCatalogPickerProps {
   /** True when this provider is the one written to config — selecting a model
    *  only makes sense for the active backend. */
   isActiveBackend: boolean
+  profile?: ProfileScope
 }
 
 /**
@@ -368,7 +400,7 @@ interface ModelCatalogPickerProps {
  * radio-card list and persists the choice to `image_gen.model` /
  * `video_gen.model`.
  */
-function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCatalogPickerProps) {
+function ModelCatalogPicker({ toolset, providerName, isActiveBackend, profile }: ModelCatalogPickerProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [catalog, setCatalog] = useState<ToolsetModelsResponse | null>(null)
@@ -379,7 +411,7 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCat
     let cancelled = false
 
     setLoading(true)
-    getToolsetModels(toolset, providerName)
+    getToolsetModels(toolset, providerName, profile)
       .then(next => {
         if (!cancelled) {
           setCatalog(next)
@@ -399,13 +431,13 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCat
       })
 
     return () => void (cancelled = true)
-  }, [toolset, providerName])
+  }, [toolset, providerName, profile])
 
   const pick = async (modelId: string) => {
     setSaving(modelId)
 
     try {
-      await selectToolsetModel(toolset, modelId, providerName)
+      await selectToolsetModel(toolset, modelId, providerName, profile)
       setCatalog(current => (current ? { ...current, current: modelId } : current))
       notify({ kind: 'success', title: copy.modelSelectedTitle, message: copy.modelSelectedMessage(modelId) })
     } catch (err) {
@@ -481,18 +513,24 @@ function ModelCatalogPicker({ toolset, providerName, isActiveBackend }: ModelCat
   )
 }
 
-export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfigPanelProps) {
+export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: ToolsetConfigPanelProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [selecting, setSelecting] = useState<string | null>(null)
-  const [activeProvider, setActiveProvider] = useState<string | null>(null)
+  // Which provider row is EXPANDED in the panel (purely presentational —
+  // distinct from the backend-active provider in cfg.active_provider).
+  const [expandedProvider, setExpandedProvider] = useState<string | null>(null)
   // Live per-key set/unset state, seeded from the endpoint then patched locally.
   const [envState, setEnvState] = useState<Record<string, boolean>>({})
+  // Default-provider selection and a user click race just after config arrives:
+  // a stale initialization effect must never replace an explicit choice.
+  const providerChoiceClaimedRef = useRef(false)
   // Guard the Nous Portal sign-in poll loop against unmount/state updates.
   const mountedRef = useRef(true)
 
+  // eslint-disable-next-line no-restricted-syntax -- mount flag guarding an async poll loop, not an atom mirror
   useEffect(() => {
     mountedRef.current = true
 
@@ -505,7 +543,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     setLoading(true)
 
     try {
-      const next = await getToolsetConfig(toolset)
+      const next = await getToolsetConfig(toolset, profile)
       setCfg(next)
       const seeded: Record<string, boolean> = {}
 
@@ -521,7 +559,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     } finally {
       setLoading(false)
     }
-  }, [copy.failedLoad, toolset])
+  }, [copy.failedLoad, toolset, profile])
 
   useEffect(() => {
     void refresh()
@@ -534,8 +572,9 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   // first fully-configured provider, else the first provider. Without this the
   // panel highlighted the first keyless provider (e.g. Nous Portal) even when
   // the user had already selected another (e.g. DuckDuckGo).
+  // eslint-disable-next-line no-restricted-syntax -- one-shot provider-choice claim flag, not an atom mirror
   useEffect(() => {
-    if (activeProvider || providers.length === 0) {
+    if (providerChoiceClaimedRef.current || expandedProvider || providers.length === 0) {
       return
     }
 
@@ -545,15 +584,24 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
       providers.find(p => providerConfigured(p, envState)) ??
       providers[0]
 
-    setActiveProvider(selected.name)
-  }, [activeProvider, providers, envState, cfg])
+    // Claim before enqueueing the state update. Effects can run with a stale
+    // expandedProvider closure after a user click, so state alone is too late
+    // to protect that choice.
+    providerChoiceClaimedRef.current = true
+    setExpandedProvider(selected.name)
+  }, [expandedProvider, providers, envState, cfg])
 
   async function handleSelect(provider: ToolProvider) {
-    setActiveProvider(provider.name)
+    if (selecting !== null) {
+      return
+    }
+
+    providerChoiceClaimedRef.current = true
+    setExpandedProvider(provider.name)
     setSelecting(provider.name)
 
     try {
-      const result = await selectToolsetProvider(toolset, provider.name)
+      const result = await selectToolsetProvider(toolset, provider.name, undefined, profile)
       // Mirror the backend write locally so dependent UI (model catalog
       // enablement) tracks the new active backend without a refetch.
       setCfg(current =>
@@ -595,7 +643,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
   // refetch the toolset config so is_active / status flip once entitled.
   async function signInToNousPortal() {
     try {
-      const start = await startOAuthLogin('nous')
+      const start = await startOAuthLogin('nous', profile)
 
       if (start.flow !== 'device_code') {
         notifyError(new Error(`unexpected flow: ${start.flow}`), copy.nousAuthFailed)
@@ -623,7 +671,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
           return
         }
 
-        const polled = await pollOAuthSession('nous', start.session_id)
+        const polled = await pollOAuthSession('nous', start.session_id, profile)
 
         if (polled.status === 'approved') {
           notify({ kind: 'success', title: copy.nousAuthDoneTitle, message: copy.nousAuthDoneMessage })
@@ -655,7 +703,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     setSelecting(provider.name)
 
     try {
-      await selectToolsetProvider(toolset, provider.name, capability)
+      await selectToolsetProvider(toolset, provider.name, capability, profile)
       // Mirror the backend write locally so the Search:/Extract: badges track
       // the new per-capability backend without a refetch.
       setCfg(current =>
@@ -716,7 +764,8 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
         </div>
       )}
       {providers.map(provider => {
-        const isActive = activeProvider === provider.name
+        const isExpanded = expandedProvider === provider.name
+        const isBackendActive = provider.is_active || cfg?.active_provider === provider.name
         const status = providerStatus(provider, envState)
         const webCaps = toolset === 'web' ? (provider.capabilities ?? []) : []
         const isSearchBackend = Boolean(provider.web_backend && cfg.active_search_backend === provider.web_backend)
@@ -725,18 +774,30 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
         return (
           <div className="overflow-hidden rounded-xl bg-background/60" key={provider.name}>
             <button
-              aria-pressed={isActive}
+              aria-expanded={isExpanded}
               className={cn(
                 'flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-accent/50',
-                isActive && 'bg-accent/40'
+                isExpanded && 'bg-accent/40'
               )}
-              onClick={() => void handleSelect(provider)}
+              onClick={() => {
+                // Row click only expands/collapses — activating a backend is
+                // the explicit "Use this backend" button below, so browsing
+                // provider details never silently rewrites config.
+                providerChoiceClaimedRef.current = true
+                setExpandedProvider(current => (current === provider.name ? null : provider.name))
+              }}
               type="button"
             >
               <span className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm font-medium">{provider.name}</span>
                 {provider.badge && <Pill>{provider.badge}</Pill>}
-                {status === 'ready' && (
+                {isBackendActive && (
+                  <Pill tone="primary">
+                    <Check className="size-3" />
+                    {copy.activeBackend}
+                  </Pill>
+                )}
+                {status === 'ready' && !isBackendActive && (
                   <Pill tone="primary">
                     <Check className="size-3" />
                     {copy.ready}
@@ -750,9 +811,27 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
               {selecting === provider.name && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
             </button>
 
-            {isActive && (
+            {isExpanded && (
               <div className="grid gap-2 bg-muted/20 p-3">
                 {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
+                {(toolset !== 'web' || webCaps.length === 0) && (
+                  // Explicit activation — the old row-click-selects UX gave no
+                  // signal about which backend was actually in use and made
+                  // reading a row's details indistinguishable from choosing it.
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isBackendActive ? (
+                      <Pill tone="primary">
+                        <Check className="size-3" />
+                        {copy.activeBackendHint}
+                      </Pill>
+                    ) : (
+                      <Button disabled={selecting !== null} onClick={() => void handleSelect(provider)} size="sm">
+                        {selecting === provider.name ? <Loader2 className="size-3.5 animate-spin" /> : <Check />}
+                        {copy.useBackend}
+                      </Button>
+                    )}
+                  </div>
+                )}
                 {webCaps.length > 0 && (
                   // Per-capability assignment: writes web.search_backend /
                   // web.extract_backend without touching the shared
@@ -794,6 +873,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                       key={ev.key}
                       onCleared={key => patchEnv(key, false)}
                       onSaved={key => patchEnv(key, true)}
+                      profile={profile}
                     />
                   ))
                 )}
@@ -802,6 +882,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                     installed={provider.status === 'ready'}
                     onComplete={() => void refresh()}
                     postSetupKey={provider.post_setup}
+                    profile={profile}
                     toolset={toolset}
                   />
                 )}
@@ -814,6 +895,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 {MODEL_CATALOG_TOOLSETS.has(toolset) && (
                   <ModelCatalogPicker
                     isActiveBackend={provider.is_active || cfg?.active_provider === provider.name}
+                    profile={profile}
                     providerName={provider.name}
                     toolset={toolset}
                   />

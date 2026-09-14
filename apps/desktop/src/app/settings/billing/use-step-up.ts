@@ -20,11 +20,6 @@ export interface StepUpMessage {
   title: string
 }
 
-interface StepUpVerificationPayload {
-  user_code?: unknown
-  verification_url?: unknown
-}
-
 export function useStepUpFlow() {
   const api = useBillingApi()
   const gateway = useStore($gateway)
@@ -82,7 +77,7 @@ export function useStepUpFlow() {
     setPhase('waiting')
 
     offRef.current =
-      gateway?.on<StepUpVerificationPayload>('billing.step_up.verification', event => {
+      gateway?.on('billing.step_up.verification', event => {
         const payload = event.payload
         const url = typeof payload?.verification_url === 'string' ? payload.verification_url : null
 
@@ -121,7 +116,7 @@ export function useStepUpFlow() {
     if (!result.data.granted) {
       setMessage({
         kind: 'error',
-        text: 'Verification finished without granting billing management access.',
+        text: 'Verification finished without allowing Remote Spending for this terminal.',
         title: 'Verification was not approved'
       })
 
@@ -134,7 +129,7 @@ export function useStepUpFlow() {
     ])
     setMessage({
       kind: 'success',
-      text: 'Billing management access was verified.',
+      text: 'Remote Spending is allowed for this terminal.',
       title: 'Verification complete'
     })
   }, [api, gateway, queryClient, unsubscribe])

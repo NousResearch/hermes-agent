@@ -15,7 +15,7 @@ Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity\google-workspace` |
+| Path | `skills/productivity/google-workspace` |
 | Version | `1.2.0` |
 | Author | Nous Research |
 | License | MIT |
@@ -51,7 +51,7 @@ on CLI, Telegram, Discord, or any platform.
 Define a shorthand first:
 
 ```bash
-GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
+GSETUP="${HERMES_PYTHON:-python3} ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
 ```
 
 ### Step 0: Check if already set up
@@ -122,45 +122,44 @@ Once they provide the path:
 $GSETUP --client-secret /path/to/client_secret.json
 ```
 
-If they paste the raw client ID / client secret values instead of a file path,
-write a valid Desktop OAuth JSON file for them yourself, save it somewhere
-explicit (for example `~/Downloads/hermes-google-client-secret.json`), then run
-`--client-secret` against that file.
+Do not ask the user to paste raw client credentials.
+They must download the JSON file and provide only its local path.
 
 ### Step 3: Get authorization URL
 
 Use the service set chosen in Step 1. Examples:
 
 ```bash
-$GSETUP --auth-url --services email,calendar --format json
-$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
-$GSETUP --auth-url --services all --format json
+$GSETUP --auth-url --services email,calendar
+$GSETUP --auth-url --services calendar,drive,sheets,docs
+$GSETUP --auth-url --services all
 ```
 
-This returns JSON with an `auth_url` field and also saves the exact URL to
-`~/.hermes/google_oauth_last_url.txt`.
+This prints the authorization URL.
 
 Agent rules for this step:
-- Extract the `auth_url` field and send that exact URL to the user as a single line.
+- Send the exact authorization URL to the user as a single line.
 - Tell the user that the browser will likely fail on `http://localhost:1` after approval, and that this is expected.
 - Tell them to copy the ENTIRE redirected URL from the browser address bar.
 - If the user gets `Error 403: access_denied`, send them directly to `https://console.cloud.google.com/auth/audience` to add themselves as a test user.
 
 ### Step 4: Exchange the code
 
-The user will paste back either a URL like `http://localhost:1/?code=4/0A...&scope=...`
-or just the code string. Either works. The `--auth-url` step stores a temporary
-pending OAuth session locally so `--auth-code` can complete the PKCE exchange
-later, even on headless systems:
+The redirected URL contains a one-time credential.
+Never ask the user to paste it into chat or place it in a command argument.
+Have the user save the complete URL to a private local file, then exchange it with `--auth-code-file`:
 
 ```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
+callback_file="${HERMES_HOME:-$HOME/.hermes}/google_oauth_redirect.txt"
+umask 077
+IFS= read -r -s callback_url
+printf '%s' "$callback_url" > "$callback_file"
+unset callback_url
+$GSETUP --auth-code-file "$callback_file"
 ```
 
-If `--auth-code` fails because the code expired, was already used, or came from
-an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
-immediately send the new URL to the user and have them retry with the newest
-browser redirect only.
+The setup helper deletes the callback file after a successful exchange.
+If exchange fails because the code expired, was already used, or came from an older browser tab, generate a fresh authorization URL and retry with the newest redirect only.
 
 ### Step 5: Verify
 
@@ -182,7 +181,7 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 All commands go through the API script. Set `GAPI` as a shorthand:
 
 ```bash
-GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
+GAPI="${HERMES_PYTHON:-python3} ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
 ```
 
 ### Gmail
@@ -288,8 +287,9 @@ $GAPI sheets append SHEET_ID "Sheet1!A:C" --values '[["new","row","data"]]'
 ### Docs
 
 ```bash
-# Read
+# Read (a tabbed Doc returns a "tabs" array; single-tab and legacy Docs also return "body")
 $GAPI docs get DOC_ID
+$GAPI docs get DOC_ID --tab TAB_ID     # read one tab of a tabbed Doc
 
 # Create a new Doc (optionally seeded with body text)
 $GAPI docs create --title "Meeting Notes"
@@ -297,6 +297,7 @@ $GAPI docs create --title "Draft" --body "First paragraph..."
 
 # Append text to the end of an existing Doc
 $GAPI docs append DOC_ID --text "Additional content to append"
+$GAPI docs append DOC_ID --tab TAB_ID --text "..."   # --tab required when the Doc has multiple tabs
 ```
 
 ## Output Format

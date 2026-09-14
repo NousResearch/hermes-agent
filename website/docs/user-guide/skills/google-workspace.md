@@ -17,8 +17,9 @@ The setup is fully agent-driven — ask Hermes to set up Google Workspace and it
 
 1. **Create a Google Cloud project** and enable the required APIs (Gmail, Calendar, Drive, Sheets, Docs, People)
 2. **Create OAuth 2.0 credentials** (Desktop app type) and download the client secret JSON
-3. **Authorize** — Hermes generates an auth URL, you approve in the browser, paste back the redirect URL
-4. **Done** — token auto-refreshes from that point on
+3. **Authorize** - Hermes generates an auth URL and you approve access in the browser.
+4. **Exchange securely** - Save the redirect URL to a private local file so it never enters chat or process arguments.
+5. **Done** - The token refreshes automatically from that point on.
 
 :::tip Email-only users
 If you only need email (no Calendar/Drive/Sheets), use the **himalaya** skill instead — it works with a Gmail App Password and takes 2 minutes. No Google Cloud project needed.

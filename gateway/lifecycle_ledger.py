@@ -104,23 +104,31 @@ def _append_exit_diag(record: Dict[str, Any], home: Optional[Path]) -> None:
         logger.debug("Failed to append unclean-exit record", exc_info=True)
 
 
-def _pid_alive_with_start_time(pid: Any, start_time: Any) -> bool:
-    """True when ``pid`` is a live process matching ``start_time`` (±2s) — guards the
-    ``--replace`` race: a live matching owner mid-teardown is a handover, not a death."""
+def _pid_is_sentinel_owner(pid: Any, create_time: Any) -> bool:
+    """True when ``pid`` is a live process that is the sentinel's incarnation — guards the
+    ``--replace`` race: a live matching owner mid-teardown is a handover, not a death.
+
+    Identity is the psutil ``create_time`` the sentinel stamps at claim (epoch seconds, same
+    producer on both sides). The sentinel's ``start_time`` is the ledger claim time and is NOT comparable with
+    ``gateway.status.get_process_start_time`` (proc ticks on Linux, centiseconds elsewhere) — the
+    old comparison never matched, so every ``--replace`` handover read as an unclean death. A
+    sentinel without ``create_time`` (pre-stamp gateway) cannot disambiguate PID reuse; a live PID
+    is taken as the owner, matching the psutil-silent case below."""
     try:
         pid_int = int(pid)
         # NOT os.kill(pid, 0): on Windows that sends CTRL_C_EVENT to the target's console group.
-        from gateway.status import _pid_exists, get_process_start_time
+        from gateway.status import _pid_exists
 
         if pid_int <= 0 or not _pid_exists(pid_int):
             return False
     except Exception:
         return False
-    try:
-        actual = None if start_time is None else get_process_start_time(pid_int)
-        return actual is None or abs(float(actual) - float(start_time)) <= 2.0  # None: can't disambiguate PID reuse
-    except Exception:
+    if type(create_time) not in (int, float):
         return True
+    from hermes_cli.process_identity import _process_create_time
+
+    actual = _process_create_time(pid_int)
+    return actual is None or abs(actual - float(create_time)) <= 2.0  # None: can't disambiguate PID reuse
 
 
 def _suspected_oom(mem: Dict[str, Any]) -> bool:
@@ -141,7 +149,7 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]
     sentinel = _read_json(get_lifecycle_sentinel_path(home))
     if not sentinel or sentinel.get("phase") != "running":
         return None
-    if _pid_alive_with_start_time(sentinel.get("pid"), sentinel.get("start_time")):
+    if _pid_is_sentinel_owner(sentinel.get("pid"), sentinel.get("create_time")):
         return None  # live owner — planned takeover in flight, not a death
     evidence: Dict[str, Any] = {
         "prior_pid": sentinel.get("pid"), "prior_started_at": sentinel.get("started_at"),

@@ -228,3 +228,25 @@ def test_sentinel_carries_process_birth_through_exit(tmp_path: Path, monkeypatch
     exited = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
     assert exited["phase"] == "exited"
     assert (exited["start_time"], exited["create_time"]) == (running["start_time"], 1234.5)
+
+
+def test_replace_handover_is_not_a_death_and_pid_reuse_is(tmp_path: Path, monkeypatch) -> None:
+    """The live-owner guard compares the sentinel's psutil ``create_time`` with the live PID's
+    (same producer, epoch seconds). The ledger's ``start_time`` (claim time) is never compared
+    with ``get_process_start_time`` (proc ticks / centiseconds): that comparison could not match,
+    so a ``--replace`` handover was reported as an unclean death."""
+    from gateway import lifecycle_ledger
+
+    monkeypatch.setattr(lifecycle_ledger, "_pid_exists", lambda pid: True, raising=False)
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 5000.0)
+    live = {"phase": "running", "pid": 4242, "start_time": 5003.7, "started_at": "x"}
+
+    _write_sentinel(tmp_path, {**live, "create_time": 5000.0})
+    assert detect_unclean_exit(home=tmp_path) is None  # same incarnation still alive: handover
+
+    _write_sentinel(tmp_path, {**live, "create_time": 4000.0})
+    assert detect_unclean_exit(home=tmp_path) is not None  # PID reused by another process: death
+
+    _write_sentinel(tmp_path, live)  # pre-stamp sentinel: a live PID is taken as the owner
+    assert detect_unclean_exit(home=tmp_path) is None

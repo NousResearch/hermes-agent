@@ -31,10 +31,10 @@ class InflightErrorSurface(Result):
     layer: str
     code: str
     retryable: bool
-    provider: str | None
-    model: str | None
-    auth_kind: str | None
-    provider_label: str | None
+    provider: str | None = None
+    model: str | None = None
+    auth_kind: str | None = None
+    provider_label: str | None = None
 
 
 class InflightTurn(Result):

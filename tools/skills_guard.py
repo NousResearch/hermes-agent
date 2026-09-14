@@ -458,6 +458,7 @@ _INVISIBLE_CHAR_NAMES = {
     '\u202d': "LTR override", '\u202e': "RTL override", '\u2066': "LTR isolate", '\u2067': "RTL isolate",
     '\u2068': "first strong isolate", '\u2069': "pop directional isolate"}
 INVISIBLE_CHARS = set(_INVISIBLE_CHAR_NAMES)
+_PATH_TRAVERSAL_PATTERN_IDS = {"path_traversal", "path_traversal_deep"}
 
 
 def _unicode_char_name(char: str) -> str:
@@ -478,6 +479,39 @@ def _compute_docstring_lines(lines: list) -> set:
     return doc_lines
 
 
+def _mask_markdown_link_destinations(line: str) -> str:
+    """Blank balanced inline-link destinations while preserving line offsets.
+
+    A relative Markdown destination describes documentation structure; it does
+    not cause filesystem access. Nested parentheses and escaped characters are
+    handled so a later, non-link traversal on the same line remains scannable.
+    """
+    masked = list(line)
+    search_from = 0
+    while (start := line.find("](", search_from)) != -1:
+        depth = 1
+        escaped = False
+        cursor = start + 2
+        while cursor < len(line):
+            char = line[cursor]
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    masked[start + 2:cursor] = " " * (cursor - start - 2)
+                    search_from = cursor + 1
+                    break
+            cursor += 1
+        else:
+            break
+    return "".join(masked)
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
@@ -490,10 +524,13 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         return []
     findings = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
+    traversal_lines = ([_mask_markdown_link_destinations(line) for line in lines]
+                       if file_path.suffix.lower() == ".md" else lines)
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
-            if i not in docstring_lines and pattern.search(line):
+            scan_line = traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS else line
+            if i not in docstring_lines and pattern.search(scan_line):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(
                     pid, severity, description, line, lines[owners[i - 1]], suffix)

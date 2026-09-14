@@ -1994,6 +1994,27 @@ def _synthesize_ended_run(
 
 # --- Dependency resolution (todo -> ready) ---
 
+def _breaker_trip_since_unblock(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when a breaker trip (``gave_up``) was recorded after the newest
+    ``unblocked`` event, whatever its ``sticky`` marker.
+
+    This is the evidence that a ``blocked`` row was parked by the circuit
+    breaker rather than written there out of band. It is what makes
+    ``consecutive_failures`` an unsafe proxy for that question:
+    ``assign_task()`` resets the counter to zero when a card is handed to a
+    fresh profile, and the card is still blocked at that moment — with the
+    trip that blocked it still in the event log. Judging the park on the
+    counter alone would then hold a card the operator just re-armed.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("
+        "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
+        "LIMIT 1", (task_id, task_id),
+    ).fetchone()
+    return row is not None
+
+
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
     block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
@@ -2004,7 +2025,10 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     ``ready`` in the same tick and the card respawns forever. A plain
     (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
     so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
-    releases it; a task with no such event at all (direct DB edit) auto-recovers.
+    releases it; a task with no such event at all (direct DB edit) auto-recovers
+    here — ``recompute_ready`` additionally requires breaker evidence in the log,
+    so an event-less blocked row is held by its caller even though this helper
+    returns ``False``.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
@@ -2056,13 +2080,17 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
-    ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
-    ``consecutive_failures`` reached the limit (else the breaker could never
-    trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
-    ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
+    ``blocked`` is skipped when sticky (explicit ``kanban_block``), when the row
+    was parked with no breaker trip to attribute it to (an unattributed park),
+    or when ``consecutive_failures`` reached the limit (else the breaker
+    could never trip). Limit order matches ``_record_task_failure``:
+    ``max_retries`` > ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
 
     1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).
+    explicit ``kanban_unblock`` (#28712) — or the block carries no breaker trip to attribute it to the
+    breaker (a direct status write, a legacy row, a lost ``blocked`` event): an unattributed park. The
+    trip is read from the event log, not from ``consecutive_failures``, because ``assign_task()``
+    resets the counter without clearing the ``gave_up`` that parked the card.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -2075,8 +2103,20 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
-            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Explicit human-intervention block; only ``unblock_task`` may exit it.
+            failures = int(row["consecutive_failures"] or 0)
+            if cur_status == "blocked" and (
+                _has_sticky_block(conn, task_id)
+                or (failures < 1 and not _breaker_trip_since_unblock(conn, task_id))
+            ):
+                # A blocked row is auto-recoverable only when the block is
+                # provably the breaker's. Every supported route into ``blocked``
+                # records a failure (``_record_task_failure``) or emits a
+                # ``blocked`` event (``block_task``, ``create_task``); a row with
+                # neither is a human-gated or unattributed park — a direct status
+                # write, a legacy row, or a lost event — so no worker is handed it.
+                # The ``gave_up`` in the event log, not the counter, is what
+                # attributes the park: ``assign_task()`` zeroes the counter while
+                # the card is still blocked, and that re-arm must still promote.
                 continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
@@ -2089,7 +2129,6 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) 
                     # At the breaker limit, no auto-recovery (else block ->
                     # recover -> respawn -> exhaust -> block forever). The
                     # counter is preserved so it accumulates across cycles.
-                    failures = int(row["consecutive_failures"] or 0)
                     task_limit = row["max_retries"]
                     effective_limit = (
                         int(task_limit) if task_limit is not None

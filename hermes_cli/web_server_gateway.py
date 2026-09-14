@@ -2,8 +2,9 @@
 subprocess spawning, gateway restart plumbing, system platform display.
 """
 
-import logging
+import hashlib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -279,6 +280,15 @@ _ACTION_IDS: Dict[str, str] = {}
 _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
 
 
+def _action_log_filename(name: str) -> str:
+    """Return a bounded, safe log filename for a registered or extension action."""
+    filename = _ACTION_LOG_FILES.get(name)
+    if filename:
+        return filename
+    digest = hashlib.sha256(name.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"action-{digest}.log"
+
+
 def _terminate_desktop_managed_gateway() -> None:
     """Stop a live gateway restart child when its Desktop backend shuts down."""
     proc = _ACTION_PROCS.get("gateway-restart")
@@ -401,19 +411,21 @@ def _spawn_hermes_action(
     """Spawn ``hermes <subcommand>`` detached (via ``hermes_cli.main``) and record the handle."""
     from hermes_cli.web_server import PROJECT_ROOT
     _ACTION_LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
-    log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
+    log_file = open(_ACTION_LOG_DIR / _action_log_filename(name), "ab", buffering=0)
+    try:
+        log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
 
-    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
-    # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
-    # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
-    action_env = _profile_action_environment(subcommand, env_overrides)
-    detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
-    proc = subprocess.Popen(
-        cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-        env=action_env, **detach,
-    )
-    log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
+        cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
+        # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
+        # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
+        action_env = _profile_action_environment(subcommand, env_overrides)
+        detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
+        proc = subprocess.Popen(
+            cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+            env=action_env, **detach,
+        )
+    finally:
+        log_file.close()  # child holds its own dup'd fd; keeping ours leaks one per action
     _ACTION_RESULTS.pop(name, None)
     _ACTION_COMMANDS[name] = tuple(subcommand)
     _ACTION_PROCS[name] = proc

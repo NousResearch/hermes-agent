@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { test } from 'vitest'
 
@@ -18,14 +20,18 @@ import {
   forwardSpec,
   hostArgs,
   redactSecrets,
+  REMOTE_PROBE_TIMEOUT_SECS,
   runSsh,
   SSH_ERROR,
   SshConnection,
   sshErrorMessage,
   stopTunnelChild,
   target,
-  validateSshTarget
+  validateSshTarget,
+  withRemoteTimeout
 } from './ssh-connection'
+
+const execFileAsync = promisify(execFile)
 
 test('redactSecrets scrubs the spawn-time session token env var', () => {
   const line = 'setsid env HERMES_DASHBOARD_SESSION_TOKEN=abc123deadbeef HERMES_DESKTOP=1 hermes dashboard'
@@ -1066,4 +1072,47 @@ test('stopTunnelChild waits for process exit', async () => {
   assert.equal(stopped, false)
   await stopping
   assert.equal(stopped, true)
+})
+
+test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#110478)', async () => {
+  // Shape: POSIX watchdog — macOS remotes have no GNU `timeout`.
+  const wrapped = withRemoteTimeout('hermes --version 2>&1', 15)
+
+  assert.ok(wrapped.includes('sleep 15'), 'watchdog duration honored')
+  assert.ok(wrapped.includes('kill -9'), 'watchdog kills the hung child remotely')
+  assert.ok(!/(^|[ ;(])timeout[ ;]/.test(wrapped), 'no GNU timeout dependency')
+  assert.ok(wrapped.endsWith('exit $__htrc'), 'inner exit code propagated')
+  assert.ok(
+    withRemoteTimeout('true').includes(`sleep ${REMOTE_PROBE_TIMEOUT_SECS}`),
+    'defaults to REMOTE_PROBE_TIMEOUT_SECS'
+  )
+  assert.ok(REMOTE_PROBE_TIMEOUT_SECS * 1000 < 20_000, 'remote watchdog fires before the local exec timeout')
+
+  // Behavior through a real POSIX shell: healthy output passes through …
+  const healthyStart = Date.now()
+  const { stdout } = await execFileAsync('sh', ['-c', withRemoteTimeout('echo hello', 5)])
+  const healthyElapsed = Date.now() - healthyStart
+
+  assert.equal(stdout, 'hello\n')
+  // … and returns promptly: the watchdog's orphaned `sleep` must not hold the
+  // session pipes open until the full timeout on the healthy path.
+  assert.ok(healthyElapsed < 4000, `healthy probe returned fast (took ${healthyElapsed}ms)`)
+
+  // … a hung command is killed promptly with a non-zero exit …
+  const start = Date.now()
+
+  const err: any = await execFileAsync('sh', ['-c', withRemoteTimeout('sleep 30', 1)]).then(
+    () => null,
+    e => e
+  )
+
+  const elapsed = Date.now() - start
+
+  assert.ok(err && err.code !== 0, 'hung command must exit non-zero')
+  assert.ok(elapsed < 15000, `watchdog fired promptly instead of waiting 30s (took ${elapsed}ms)`)
+
+  // … and no orphan is left behind.
+  const { stdout: strays } = await execFileAsync('sh', ['-c', 'ps -eo args | grep "[s]leep 30" || true'])
+
+  assert.equal(strays.trim(), '', 'killed probe left no orphan process')
 })

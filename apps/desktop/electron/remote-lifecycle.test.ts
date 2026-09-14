@@ -26,6 +26,7 @@ import {
   openForward,
   ownershipDirectory,
   pidIsOurDashboard,
+  probeHermesVersion,
   probeRemotePlatform,
   PROTOCOL_VERSION,
   readLockfile,
@@ -476,7 +477,7 @@ test('connect() fails closed on lockfile schema/ownership skew: skips reap, touc
       `${label}: connect must refuse with remote-lockfile-skew`
     )
     assert.ok(
-      !ssh.calls.some(c => /(^|[^-\d])kill -?9? ?\d/.test(c) && !/kill -0/.test(c)),
+      !ssh.calls.some(c => /(^|[^-\d])kill -9 \d+/.test(c) && !/kill -0/.test(c)),
       `${label}: must not kill any pid`
     )
     assert.ok(!ssh.calls.some(c => /rm -f/.test(c)), `${label}: must not remove any remote file`)
@@ -1808,6 +1809,41 @@ test('remote SSH ownership capability requires both secure bootstrap flags', asy
 
   const unsupported = fakeSsh([[/serve --help/, 'NO\n']])
   assert.equal(await remoteSupportsSshOwnership(unsupported, '/x/hermes'), false)
+})
+
+test('probes run under the remote watchdog so a hung CLI cannot orphan (#110478)', async () => {
+  let versionProbe = ''
+
+  const versionSsh = fakeSsh([
+    [
+      /--version/,
+      (cmd: string) => {
+        versionProbe = cmd
+
+        return 'Hermes Agent v0.18.2 (abc123)\n'
+      }
+    ]
+  ])
+
+  assert.equal(await probeHermesVersion(versionSsh, '/x/hermes'), 'Hermes Agent v0.18.2 (abc123)')
+  assert.ok(versionProbe.includes('kill -9'), 'version probe wrapped in the remote watchdog')
+
+  let helpProbe = ''
+
+  const helpSsh = fakeSsh([
+    [
+      /serve --help/,
+      (cmd: string) => {
+        helpProbe = cmd
+
+        return 'YES\n'
+      }
+    ]
+  ])
+
+  assert.equal(await remoteSupportsSshOwnership(helpSsh, '/x/hermes'), true)
+  assert.ok(helpProbe.includes('kill -9'), 'ownership probe wrapped in the remote watchdog')
+  assert.ok(helpProbe.includes('$( ('), 'watchdog nested around the inner serve --help')
 })
 
 test('cleanupStale escalates to SIGKILL when the backend survives the graceful wait (#91668 quit-during-active-turn)', async () => {

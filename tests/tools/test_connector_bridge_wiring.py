@@ -583,12 +583,12 @@ def _sent_tools(transport):
 
 
 def test_hook_rewrite_and_restored_vendor_slug_reach_the_gateway_request_body(monkeypatch):
-    import hermes_cli.plugins as plugins
+    import hermes_cli.plugins_pre_tool_call as plugins_pre_tool_call
 
     transport = _RecordingTransport()
     _connectors_on(monkeypatch, _recording_client_factory(transport))
     # A pre_tool_call redaction pass: the secret must never leave the process.
-    monkeypatch.setattr(plugins, "_dispatch_pre_tool_call_hooks",
+    monkeypatch.setattr(plugins_pre_tool_call, "_dispatch_pre_tool_call_hooks",
                         lambda name, args, **kw: (None, {**args, "body": "[REDACTED]"}))
 
     out = _tool_call([{"name": "connectors__gmail__SEND_EMAIL",

@@ -7,7 +7,8 @@ order the runtime guard (``check_all_command_guards``) applies them:
 1. container-skip gate (isolated backends bypass all guards), 2. hardline blocklist (never
 bypassable, fires before yolo/off), 3. sudo-stdin guard (unconditional), 4. user ``approvals.deny``
 rules (fire before yolo/off), 5. yolo / ``approvals.mode: off`` bypass, 6. permanent
-``command_allowlist``, 7. dangerous-pattern detection (would prompt).
+``command_allowlist``, 7. ``approvals.command_approval_required`` rules (would prompt),
+8. dangerous-pattern detection (would prompt).
 """
 
 from __future__ import annotations
@@ -34,12 +35,14 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     """
     import tools.approval as approval
     from tools import approval_context, approval_detection, approval_floors
-    # Sync config-persisted "always" patterns so the allowlist check below sees what the runtime
-    # would see (load is read-only).
+    # The effective allowlist a fresh runtime would hold (persisted list minus grants the current
+    # review policies supersede), computed WITHOUT loading it into this process or writing config:
+    # a diagnostic advertised for automation must not be a runtime event (see
+    # approval.effective_permanent_allowlist / _approval_required_rules(observe=False)).
     try:
-        approval.load_permanent_allowlist()
+        allowlist = approval.effective_permanent_allowlist()
     except Exception:
-        pass
+        allowlist = set()
 
     variants = list(approval_detection._command_detection_variants(command))
 
@@ -99,11 +102,23 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
                    "only hardline/deny rules would block",
         )
 
-    # 6. Permanent command_allowlist.
-    if approval_floors._command_matches_permanent_allowlist(command):
+    # 6. Permanent command_allowlist — unless an approvals.command_approval_required rule matches
+    #    (the rule is the more specific statement of intent and wins at runtime too).
+    required = approval_floors._match_approval_required_rule(command, observe=False)
+    if required is None and approval_floors._matches_allowlist_patterns(command, allowlist):
         return result("allow", detail="matches command_allowlist in config.yaml (permanently approved)")
 
-    # 7. Dangerous-pattern detection → would prompt.
+    # 7. Configured approval-required rule → would prompt (human, or the smart guardian first).
+    if required is not None:
+        who = "the smart-approval guardian first (approvals.mode: smart), then a human" \
+            if required.review == "smart" else "a human (never the smart guardian, never [a]lways)"
+        return result(
+            "ask-approval", rule=required.pattern,
+            detail=f"matches approvals.command_approval_required rule '{required.description}'; "
+                   f"the runtime would ask {who} (pattern key: {required.key!r})",
+        )
+
+    # 8. Dangerous-pattern detection → would prompt.
     is_dangerous, pattern_key, description = approval_detection.detect_dangerous_command(command)
     if is_dangerous:
         return result(

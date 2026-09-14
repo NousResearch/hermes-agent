@@ -171,7 +171,7 @@ class TestCallbackSubprocess:
         """Registering via register_from_config makes
         get_pre_tool_call_block_message surface the block — the real
         end-to-end control flow used by run_agent._invoke_tool."""
-        from hermes_cli import plugins
+        from hermes_cli import plugins, plugins_pre_tool_call
 
         script = _write_script(
             tmp_path, "block.sh",
@@ -195,7 +195,7 @@ class TestCallbackSubprocess:
         registered = shell_hooks.register_from_config(cfg, accept_hooks=True)
         assert len(registered) == 1
 
-        msg = plugins.get_pre_tool_call_block_message(
+        msg = plugins_pre_tool_call.get_pre_tool_call_block_message(
             tool_name="terminal",
             args={"command": "rm"},
         )

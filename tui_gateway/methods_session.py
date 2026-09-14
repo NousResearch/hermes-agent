@@ -1178,24 +1178,23 @@ def _(rid, params: HandoffFailParams) -> HandoffFailResult | dict:
 # ── usage ────────────────────────────────────────────────────────────
 @_session_method("session.usage")
 def _(rid, params: SessionUsageParams, session: dict) -> SessionUsageResult:
-    usage = _session_usage_snapshot(session)
-    if session.get("agent") is None and not usage: usage = {"calls": 0, "input": 0, "output": 0, "total": 0}
+    usage, credits = _session_usage_snapshot(session), None
     with contextlib.suppress(Exception):
         from agent.account_usage import nous_credits_lines
-        if credits := nous_credits_lines(): usage["credits_lines"] = credits
-    return SessionUsageResult.model_validate(usage)
+        credits = nous_credits_lines() or None
+    return SessionUsageResult(**usage.model_dump(), credits_lines=credits)
 
 
 @_session_method("session.context_breakdown")
 def _(rid, params: SessionContextBreakdownParams, session: dict) -> SessionContextBreakdownResult | dict:
     if (agent := session.get("agent")) is None:
-        usage = _session_usage_snapshot(session) or _get_usage(None)
+        usage = _session_usage_snapshot(session)
         return SessionContextBreakdownResult(
-            categories=[], context_max=usage.get("context_max", 0) or 0,
-            context_percent=usage.get("context_percent", 0) or 0,
-            context_used=usage.get("context_used", 0) or 0, estimated_total=0,
-            context_estimated=usage.get("context_estimated", False),
-            context_source=usage.get("context_source", "provider_usage"),
+            categories=[], context_max=usage.context_max or 0,
+            context_percent=usage.context_percent or 0,
+            context_used=usage.context_used or 0, estimated_total=0,
+            context_estimated=bool(usage.context_estimated),
+            context_source=usage.context_source or "provider_usage",
             model=_metadata_mirror(session).get("model", ""))
     with session["history_lock"]:
         history = list(session.get("history", []))
@@ -1569,7 +1568,7 @@ def _(rid, params: SessionStatusParams, session: dict) -> SessionStatusResult:
     from hermes_cli.status_report import build_status_fields, status_lines
     key = session.get("session_key") or params.session_id; mirror, live_agent = _metadata_mirror(session), session.get("agent")
     agent = None if session.get("_compute_host_active") else live_agent
-    fields = build_status_fields(key, agent, _status_row(session, params, key), model=mirror.get("model") or getattr(live_agent, "model", None), provider=mirror.get("provider") or getattr(live_agent, "provider", None), tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")))
+    fields = build_status_fields(key, agent, _status_row(session, params, key), model=mirror.get("model") or getattr(live_agent, "model", None), provider=mirror.get("provider") or getattr(live_agent, "provider", None), tokens=_session_usage_snapshot(session).total, agent_running=bool(session.get("running")))
     project = _project_info_for_cwd(_display_session_cwd(session)); lines = ["Hermes TUI Status", "", *status_lines(fields, "session_id", "path"), *([f"Project: {project.name}"] if project else []), *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
     return SessionStatusResult(output="\n".join(lines))
 

@@ -189,9 +189,12 @@ def _known_provider_ids(cfg: dict) -> tuple[set, list, object, object, object]:
 
 # Vendor/model slugs are valid on aggregators and any custom provider; Fireworks' native IDs are slash-form
 # (accounts/fireworks/models/...) and DeepInfra's catalog is exclusively vendor/model.
+# CommandCode is an aggregator-style gateway whose catalog is exclusively ``vendor/model`` slugs
+# (deepseek/…, Qwen/…, zai-org/…, MiniMaxAI/…, nvidia/…, xiaomi/…, stepfun/…). The registry id is
+# ``commandcode`` (no hyphen); ``command-code`` is not a known provider and never reaches this check.
 _VENDOR_SLUG_PROVIDERS = {
     "openrouter", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "lmstudio", "nous", "nvidia",
-    "fireworks", "deepinfra",
+    "fireworks", "deepinfra", "commandcode",
 }
 
 

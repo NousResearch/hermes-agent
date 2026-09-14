@@ -354,7 +354,9 @@ class SessionRecoveryMixin:
     ) -> Dict[str, Any]:
         """kwargs for ``SessionDB.create_session``. Identity (origin_json) and lineage
         (parent/_reset_from) land atomically in the INSERT so a crash right after cannot strand the
-        row unroutable."""
+        row unroutable. ``_reset_created_from`` is creation-only evidence, matched against
+        ``parent_session_id`` by consumers; ``_reset_from`` is also written for legacy readers
+        but can be inferred by reopen_session(). Never backfill the creation-only marker."""
         return {
             "session_id": session_id,
             "source": source_value,
@@ -367,7 +369,10 @@ class SessionRecoveryMixin:
             "origin_json": _origin_json(origin),
             "display_name": display_name,
             "parent_session_id": parent_session_id,
-            "model_config": {"_reset_from": parent_session_id} if parent_session_id else None,
+            "model_config": {
+                "_reset_from": parent_session_id,
+                "_reset_created_from": parent_session_id,
+            } if parent_session_id else None,
         }
 
     def _create_session_row(self, session_key, db_create_kwargs, origin, display_name, *, log) -> None:

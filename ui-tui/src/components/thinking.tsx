@@ -1,5 +1,4 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
-import { compactNumber } from '@hermes/shared/format'
 import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
@@ -19,6 +18,7 @@ import {
   boundedLiveRenderText,
   compactPreview,
   estimateTokensRough,
+  fmtK,
   formatToolCall,
   parseToolTrailResultLine,
   pick,
@@ -332,16 +332,7 @@ function SubagentAccordion({
         ? 'warn'
         : 'dim'
 
-  // `[6a66 3/9]` when the gateway tags the batch; `[3/9]` on older gateways.
-  const batchTag = item.delegationId?.split('_').at(-1)?.slice(0, 4)
-
-  const prefix =
-    item.taskCount > 1
-      ? `[${batchTag ? `${batchTag} ` : ''}${item.index + 1}/${item.taskCount}] `
-      : batchTag
-        ? `[${batchTag}] `
-        : ''
-
+  const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
   const goalLabel = item.goal || `Subagent ${item.index + 1}`
   const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
@@ -675,11 +666,68 @@ export const Thinking = memo(function Thinking({
 // ── ToolTrail ────────────────────────────────────────────────────────
 
 interface Group {
+  collapsedDefault?: boolean
   color: string
   content: ReactNode
   details: DetailRow[]
+  duration?: string
   key: string
   label: string
+  preview?: string
+  toolName?: string
+}
+
+function ToolCard({
+  defaultOpen,
+  group,
+  t
+}: {
+  defaultOpen: boolean
+  group: Group
+  t: Theme
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  const preview = group.preview ? compactPreview(group.preview, 72) : ''
+  const duration = group.duration
+  const title = splitToolDuration(group.label).label
+
+  return (
+    <Box flexDirection="column">
+      <Box
+        onClick={(e: any) => {
+          e?.stopPropagation?.()
+          setOpen(v => !v)
+        }}
+      >
+        <Text color={t.color.muted} wrap="truncate-end">
+          <Text color={t.color.accent}>{open ? '▾ ' : '▸ '}</Text>
+          {title}
+          {duration ? (
+            <Text color={t.color.statusFg} dim>
+              {duration.startsWith(' ') ? duration : ` ${duration}`}
+            </Text>
+          ) : null}
+          {!open && preview ? (
+            <Text color={t.color.muted} dim>
+              {'  '}
+              {preview}
+            </Text>
+          ) : null}
+        </Text>
+      </Box>
+      {open
+        ? group.details.map((detail, detailIndex) => (
+            <Detail
+              {...detail}
+              branch={detailIndex === group.details.length - 1 ? 'last' : 'mid'}
+              key={detail.key}
+              rails={[]}
+              t={t}
+            />
+          ))
+        : null}
+    </Box>
+  )
 }
 
 export const ToolTrail = memo(function ToolTrail({
@@ -836,11 +884,15 @@ export const ToolTrail = memo(function ToolTrail({
 
     if (parsed) {
       groups.push({
+        collapsedDefault: true,
         color: parsed.mark === '✗' ? t.color.error : t.color.text,
         content: parsed.call,
         details: [],
+        duration: splitToolDuration(parsed.call).duration,
         key: `tr-${i}`,
-        label: parsed.call
+        label: parsed.call,
+        preview: parsed.detail,
+        toolName: parsed.call.split('(')[0]?.trim()
       })
 
       if (parsed.detail) {
@@ -893,9 +945,13 @@ export const ToolTrail = memo(function ToolTrail({
     const label = formatToolCall(tool.name, tool.context || '')
 
     groups.push({
+      collapsedDefault: true,
       color: t.color.text,
       key: tool.id,
       label,
+      preview: tool.context || '',
+      duration: tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : '',
+      toolName: tool.name,
       details: tool.verboseArgs
         ? [
             {
@@ -934,12 +990,11 @@ export const ToolTrail = memo(function ToolTrail({
 
   const toolTokenCount = toolTokens ?? 0
   const totalTokenCount = tokenCount + toolTokenCount
-  const thinkingTokensLabel = tokenCount > 0 ? `~${compactNumber(tokenCount)} tokens` : null
+  const thinkingTokensLabel = tokenCount > 0 ? `~${fmtK(tokenCount)} tokens` : null
 
-  const toolTokensLabel =
-    toolTokens !== undefined && toolTokens > 0 ? `~${compactNumber(toolTokens)} tokens` : undefined
+  const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
 
-  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${compactNumber(totalTokenCount)} total` : null
+  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
@@ -1120,34 +1175,29 @@ export const ToolTrail = memo(function ToolTrail({
             // registered — so users can open the live monitor immediately.
             const isDelegateGroup = group.label.startsWith('Delegate Task')
 
+            const cardOpenByDefault =
+              visible.tools === 'expanded' && group.collapsedDefault === false
+
             return (
               <Box flexDirection="column" key={group.key}>
-                <TreeTextRow
-                  branch={branch}
-                  color={group.color}
-                  content={
-                    <>
-                      <Text color={t.color.tool}>● </Text>
-                      {toolLabel(group)}
-                      {isDelegateGroup ? (
+                {isDelegateGroup ? (
+                  <TreeTextRow
+                    branch={branch}
+                    color={group.color}
+                    content={
+                      <>
+                        {toolLabel(group)}
                         <Text color={t.color.statusFg} dim>
                           {'  (/agents to monitor)'}
                         </Text>
-                      ) : null}
-                    </>
-                  }
-                  rails={rails}
-                  t={t}
-                />
-                {group.details.map((detail, detailIndex) => (
-                  <Detail
-                    {...detail}
-                    branch={detailIndex === group.details.length - 1 && !hasInlineSubagents ? 'last' : 'mid'}
-                    key={detail.key}
-                    rails={childRails}
+                      </>
+                    }
+                    rails={rails}
                     t={t}
                   />
-                ))}
+                ) : (
+                  <ToolCard defaultOpen={cardOpenByDefault} group={group} t={t} />
+                )}
                 {hasInlineSubagents ? renderSubagentList(childRails) : null}
               </Box>
             )

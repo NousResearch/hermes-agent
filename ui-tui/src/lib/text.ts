@@ -1,6 +1,3 @@
-import { stripAnsi } from '@hermes/shared/ansi'
-import { compactNumber } from '@hermes/shared/format'
-
 import {
   LIVE_RENDER_MAX_CHARS,
   LIVE_RENDER_MAX_LINES,
@@ -11,7 +8,42 @@ import {
 import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
 
+const ESC = String.fromCharCode(27)
+const BEL = String.fromCharCode(7)
+const ANSI_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')
+const ANSI_CSI_WITH_CMD_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*([@-~])`, 'g')
+const ANSI_INCOMPLETE_CSI_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*(?=${ESC}|\\n|$)`, 'g')
+const ANSI_OSC_RE = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+const ANSI_STRING_RE = new RegExp(`${ESC}[PX^_][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g')
+const ANSI_NON_CSI_ESC_SEQ_RE = new RegExp(`${ESC}(?!\\[|\\]|P|X|\\^|_)[ -/]*[0-~]`, 'g')
+const ANSI_STRAY_ESC_RE = new RegExp(`${ESC}(?!\\[)[\\s\\S]?`, 'g')
+// eslint-disable-next-line no-control-regex -- intentionally strips C0/C1 control chars
+const CONTROL_RE = /[\x00-\x08\x0B\x0C\x0D\x0E-\x1A\x1C-\x1F\x7F]/g
 const WS_RE = /\s+/g
+
+export const stripAnsi = (s: string) =>
+  s
+    .replace(ANSI_OSC_RE, '')
+    .replace(ANSI_STRING_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_CSI_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
+    .replace(ANSI_STRAY_ESC_RE, '')
+    .replace(CONTROL_RE, '')
+
+export const sanitizeAnsiForRender = (s: string) =>
+  s
+    .replace(ANSI_OSC_RE, '')
+    .replace(ANSI_STRING_RE, '')
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_CSI_WITH_CMD_RE, (seq, cmd: string) => (cmd === 'm' ? seq : ''))
+    .replace(ANSI_INCOMPLETE_CSI_RE, '')
+    .replace(ANSI_NON_CSI_ESC_SEQ_RE, '')
+    .replace(ANSI_STRAY_ESC_RE, '')
+    .replace(CONTROL_RE, '')
+
+export const hasAnsi = (s: string) => s.includes(ESC)
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()
@@ -64,14 +96,14 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
   const preview = edgePreview(text)
 
   if (!preview) {
-    return `[[ [${compactNumber(lineCount)} lines] ]]`
+    return `[[ [${fmtK(lineCount)} lines] ]]`
   }
 
   const [head = preview, tail = ''] = preview.split('.. ', 2)
 
   return tail
-    ? `[[ ${head.trimEnd()}.. [${compactNumber(lineCount)} lines] .. ${tail.trimStart()} ]]`
-    : `[[ ${preview} [${compactNumber(lineCount)} lines] ]]`
+    ? `[[ ${head.trimEnd()}.. [${fmtK(lineCount)} lines] .. ${tail.trimStart()} ]]`
+    : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
 }
 
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
@@ -145,8 +177,8 @@ const boundedRenderText = (
 
   const label =
     omittedLines > 0
-      ? `[${labelPrefix}; omitted ${compactNumber(omittedLines)} lines / ${compactNumber(omittedChars)} chars]\n`
-      : `[${labelPrefix}; omitted ${compactNumber(omittedChars)} chars]\n`
+      ? `[${labelPrefix}; omitted ${fmtK(omittedLines)} lines / ${fmtK(omittedChars)} chars]\n`
+      : `[${labelPrefix}; omitted ${fmtK(omittedChars)} chars]\n`
 
   return `${label}${tail}`
 }
@@ -377,6 +409,10 @@ export const clarifyBatchRevisitState = (
 }
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
+
+const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })
+
+export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
 
 export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 

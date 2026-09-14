@@ -23,10 +23,23 @@ def isolated_kanban_home(monkeypatch):
     test_home = tempfile.mkdtemp(prefix="kanban_cli_passthrough_")
     os.makedirs(os.path.join(test_home, "profiles", "default"), exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", test_home)
-    for mod in list(sys.modules.keys()):
-        if mod.startswith("hermes_cli") or mod.startswith("hermes_state") or mod == "hermes_constants":
-            del sys.modules[mod]
-    yield test_home
+    _purge_prefixes = ("hermes_cli", "hermes_state")
+    _saved = {
+        mod: sys.modules[mod]
+        for mod in list(sys.modules)
+        if mod.startswith(_purge_prefixes) or mod == "hermes_constants"
+    }
+    for mod in list(_saved):
+        del sys.modules[mod]
+    try:
+        yield test_home
+    finally:
+        # restore exact pre-fixture module state: later tests in the same
+        # session must not observe duplicate hermes_cli/hermes_state instances
+        for mod in list(sys.modules):
+            if mod.startswith(_purge_prefixes) or mod == "hermes_constants":
+                del sys.modules[mod]
+        sys.modules.update(_saved)
 
 
 def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, monkeypatch):

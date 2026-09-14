@@ -1434,3 +1434,19 @@ patches:
       - scripts/run_tests.sh tests/tools/test_pr_merge_authorization_gate.py tests/gateway/test_approval_request_id_routing.py
       - scripts/run_tests.sh tests/gateway/test_telegram_approval_buttons.py tests/gateway/test_discord_component_auth.py
     retirement: Remove when upstream ships an equivalent exact-identity PR merge authorization gate with per-request approval correlation across all platform adapters.
+
+  - id: kanban-dispatch-test-hardening
+    kind: operations
+    rationale: >-
+      Test-only hardening for the Kanban admission kernel: restore sys.modules
+      state in the dispatch-passthrough fixture so later tests in the same
+      pytest session do not import duplicate hermes_cli module instances, and
+      assert dispatch_once leaves no claim residue (claim_lock and worker_pid
+      NULL on every non-running task) after spawn failure and after real
+      complete_task, pinned against memory-pressure vacuity.
+    paths:
+      - tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+      - tests/hermes_cli/test_kanban_db.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+    retirement: Fold into the upstream Kanban test suite when the admission kernel lands upstream.

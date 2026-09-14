@@ -1269,6 +1269,83 @@ def test_dispatch_max_in_progress_blocks_review_when_at_limit(
     assert review_task is not None
     assert review_task.status == "review"
 
+
+# dispatch_once — quiesced-claim invariants (round-6 hardening)
+# ---------------------------------------------------------------------------
+
+
+def _row(conn, task_id: str) -> dict:
+    r = conn.execute(
+        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    return dict(r)
+
+
+def test_dispatch_once_clears_claim_and_pid_on_spawn_failure(kanban_home, monkeypatch):
+    """Round-6 note: a tick whose spawn raises must leave the task re-queueable —
+    claim_lock and worker_pid NULL, status back to ready (or blocked once the
+    failure limit is exhausted — still claim-residue-free). A stale non-NULL
+    claim_lock here wedges every later reclaim (guarded CAS compares against
+    it), so this is an invariant, not a snapshot. Memory pressure is pinned so
+    the spawn path is guaranteed to run (not vacuously skipped)."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
+    calls = []
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="failing spawn", assignee="default")
+
+        def boom(task, workspace, board=None):
+            calls.append(task.id)
+            raise RuntimeError("simulated spawn failure")
+
+        # default failure_limit: first failure requeues rather than blocks
+        res = kb.dispatch_once(conn, spawn_fn=boom)
+        row = _row(conn, tid)
+        later = kb.get_task(conn, tid)
+
+    assert calls == [tid], "spawn path must actually run"
+    assert not res.spawned
+    # invariant: no claim residue after a failed tick
+    assert row["claim_lock"] is None, row
+    assert row["worker_pid"] is None, row
+    assert later is not None and later.status in ("ready", "triage", "blocked")
+
+
+def test_dispatch_once_quiesced_tick_leaves_no_claim_residue(kanban_home, monkeypatch):
+    """Round-6 note: after dispatch_once completes and any spawned worker
+    finishes, every task row must be claim-residue-free: claim_lock IS NULL
+    and worker_pid IS NULL wherever status is not 'running'. Memory pressure
+    is pinned and the running-time row is observed mid-spawn so the test
+    cannot pass vacuously; tmux cleanup is stubbed to keep it hermetic (the
+    DB completion transition stays real)."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
+    monkeypatch.setattr(kb, "_cleanup_worker_tmux", lambda *a, **k: None)
+    spawns = []
+    running_rows = {}
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        # observe the in-flight row exactly as the dispatcher holds it
+        with kb.connect_closing() as peek:
+            running_rows[task.id] = _row(peek, task.id)
+        return 4242
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="quiesced", assignee="default")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        assert spawns == [tid], "spawn path must actually run"
+        assert res.spawned, "dispatch must report the spawn"
+        mid = running_rows[tid]
+        assert mid["status"] == "running", mid
+        # simulate worker completion on the real DB transition path
+        kb.complete_task(conn, tid, result="ok")
+        for r in conn.execute(
+            "SELECT id, status, claim_lock, worker_pid FROM tasks"
+        ).fetchall():
+            if r["status"] != "running":
+                assert r["claim_lock"] is None, dict(r)
+                assert r["worker_pid"] is None, dict(r)
+
+
 # Review column dispatch
 # ---------------------------------------------------------------------------
 

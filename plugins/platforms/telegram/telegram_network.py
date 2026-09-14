@@ -55,6 +55,12 @@ def _resolve_proxy_url(target_hosts=None) -> str | None:
     return resolve_proxy_url("TELEGRAM_PROXY", target_hosts=target_hosts)
 
 
+def _format_connect_error(exc: BaseException) -> str:
+    """httpx connect/timeout exceptions (ConnectTimeout, ReadTimeout, ...) can stringify to "" —
+    fall back to the class name so a failure line never logs an empty reason (#111211)."""
+    return str(exc) or type(exc).__name__
+
+
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     """Reach the Bot API via known IPv4 literals first, dual-stack hostname last. Host + SNI stay on
     api.telegram.org (like ``curl --resolve``) so a blackholed IPv6 AAAA can't pin initialize()."""
@@ -157,9 +163,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                                 ip if ip is not None else "api.telegram.org")
                 if ip is None:
                     await self._reset_primary(transport)
-                    logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", exc)
+                    logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", _format_connect_error(exc))
                     continue
-                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, exc)
+                logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, _format_connect_error(exc))
                 await self._reset_fallback(ip)
                 continue
         if last_error is None:

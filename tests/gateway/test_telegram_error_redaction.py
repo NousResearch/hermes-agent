@@ -23,7 +23,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter, _redact_telegram_error_text
 
 _SECRET_TOKEN = "123456789:AAFakeSecretTelegramBotTokenABCDEFGHIJ"
 _SECRET_URL = f"https://api.telegram.org/bot{_SECRET_TOKEN}/getMe"
@@ -188,3 +188,28 @@ async def test_delete_message_failure_redacts_token_in_log(caplog):
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert _SECRET_TOKEN not in logged
     assert "***" in logged
+
+
+def test_redact_empty_str_exception_keeps_class_name():
+    """#111211: transport exceptions can stringify to "" (httpx timeout wraps,
+    PTB TimedOut) — the redacted text must keep the class name so failure
+    lines never log an empty reason."""
+    import httpx
+
+    class _EmptyReasonTimeout(httpx.ConnectTimeout):
+        def __str__(self):
+            return ""
+
+    assert _redact_telegram_error_text(_EmptyReasonTimeout("timed out")) == "<_EmptyReasonTimeout>"
+
+
+def test_redact_populated_exception_unchanged():
+    """A normal exception still goes through redaction with its own text."""
+    text = _redact_telegram_error_text(RuntimeError(f"timed out on {_SECRET_URL}"))
+    assert _SECRET_TOKEN not in text
+    assert "timed out" in text
+
+
+def test_redact_none_stays_empty():
+    """None means "no error object" — the empty string stays empty."""
+    assert _redact_telegram_error_text(None) == ""

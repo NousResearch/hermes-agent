@@ -29,7 +29,9 @@ def _redact_telegram_error_text(error: object) -> str:
     """Redact secrets from Telegram transport errors before logging or returning them."""
     text = "" if error is None else str(error)
     if not text:
-        return text
+        # httpx timeout exceptions (ConnectTimeout, ReadTimeout, ...) stringify to "" — keep the
+        # class name so failure lines never log an empty reason (#111211).
+        return f"<{type(error).__name__}>" if error is not None else text
     try:
         from agent.redact import redact_sensitive_text
         return redact_sensitive_text(text, force=True)
@@ -1614,7 +1616,12 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         if not self._polling_progress_event.is_set():
             # First confirmed round-trip resolves the "health pending" line both reconnect paths end on.
-            logger.info("[%s] Telegram polling confirmed healthy: getUpdates progressing (generation %d)", self.name, generation)
+            # After a polling network failure the recovery must be as visible as the failure WARNING
+            # was (#111211): log silence after an outage is indistinguishable from a stalled poller.
+            network_errors = self._polling_network_error_count
+            log = logger.warning if network_errors else logger.info
+            log("[%s] Telegram polling confirmed healthy: getUpdates progressing (generation %d%s)", self.name, generation,
+                f"; recovered after {network_errors} network error(s)" if network_errors else "")
         self._polling_progress_event.set()
         self._polling_last_progress_monotonic = time.monotonic()
         self._polling_network_error_count = 0

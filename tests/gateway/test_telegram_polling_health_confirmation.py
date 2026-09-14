@@ -43,9 +43,10 @@ class TestPollingHealthConfirmation:
 
     def test_subsequent_progress_is_silent(self, caplog):
         """Only the FIRST round-trip of a generation logs — a quiet evening
-        must not spam one INFO per getUpdates poll."""
+        must not spam one log line per getUpdates poll."""
         a = _bare_adapter()
-        a._record_polling_progress(1)  # first — logs
+        a._record_polling_progress(1)  # first — logs (WARNING here: fixture counters imply recovery)
+        caplog.clear()  # the first line's level is not this test's concern
         with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
             a._record_polling_progress(1)  # second — silent
             a._record_polling_progress(1)  # third — silent
@@ -83,3 +84,30 @@ class TestPollingHealthConfirmation:
             rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()
         ]
         assert not a._polling_progress_event.is_set()
+
+    def test_recovery_after_network_errors_logs_warning(self, caplog):
+        """#111211: recovery after polling network errors must be as visible
+        as the failure WARNING — otherwise the outage's log stream shows the
+        failure but never a resumed-polling event, and log silence after the
+        failure is indistinguishable from a stalled poller."""
+        a = _bare_adapter()
+        assert a._polling_network_error_count > 0
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+            a._record_polling_progress(1)
+        records = [rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()]
+        assert records
+        assert records[0].levelno == logging.WARNING
+        assert "recovered after" in records[0].getMessage()
+        assert a._polling_network_error_count == 0
+
+    def test_clean_generation_progress_stays_info(self, caplog):
+        """No preceding network errors → the confirmation stays INFO without
+        fake "recovered" wording (a clean bootstrap is not an outage recovery)."""
+        a = _bare_adapter()
+        a._polling_network_error_count = 0
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
+            a._record_polling_progress(1)
+        records = [rec for rec in caplog.records if "confirmed healthy" in rec.getMessage()]
+        assert records
+        assert records[0].levelno == logging.INFO
+        assert "recovered after" not in records[0].getMessage()

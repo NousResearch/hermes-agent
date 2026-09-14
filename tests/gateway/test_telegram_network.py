@@ -248,6 +248,38 @@ class TestFallbackTransport:
         assert [c["url_host"] for c in calls] == ["149.154.167.220", "api.telegram.org"]
         assert transport._sticky_ip is None
 
+    @pytest.mark.asyncio
+    async def test_failed_ip_logs_class_name_when_exc_stringifies_empty(self, monkeypatch, caplog):
+        """#111211: transport exceptions can stringify to "" — the failure line must
+        still name the error class instead of logging an empty reason."""
+        import logging
+
+        class _EmptyReasonTimeout(httpx.ConnectTimeout):
+            """Same retryable type, but str() is empty (as some httpx/PTB wraps are)."""
+
+            def __str__(self):
+                return ""
+
+        calls = []
+        monkeypatch.setattr(
+            tnet.httpx,
+            "AsyncHTTPTransport",
+            _fake_transport_factory(
+                calls,
+                {"149.154.167.220": _EmptyReasonTimeout("timed out"), "149.154.167.221": "ok"},
+            ),
+        )
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.telegram_network"):
+            resp = await transport.handle_async_request(_telegram_request())
+        assert resp.status_code == 200
+        failed = [
+            r for r in caplog.records
+            if "IPv4 Telegram API IP 149.154.167.220 failed" in r.getMessage()
+        ]
+        assert failed, "expected the failed-IP warning line"
+        assert failed[0].getMessage().rstrip().endswith("_EmptyReasonTimeout")
+
 
 class TestFallbackTransportPassthrough:
     """Requests that don't need fallback behavior."""

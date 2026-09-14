@@ -156,6 +156,7 @@ export function ResizableMarkdownTable({ children, className, ...props }: Compon
   return (
     <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-(--ui-stroke-tertiary)">
       <table
+        dir="auto"
         className={cn(
           'm-0 w-full min-w-[18rem] border-collapse text-[0.8125rem] [&_tr]:border-b [&_tr]:border-(--ui-stroke-tertiary) last:[&_tr]:border-0',
           widths && 'table-fixed [&_td]:wrap-anywhere',
@@ -183,7 +184,7 @@ export function ResizableMarkdownTh({ children, className, ...props }: Component
   return (
     <th
       className={cn(
-        'relative px-2.5 py-1.5 text-left align-middle text-[0.75rem] font-medium text-muted-foreground',
+        'relative px-2.5 py-1.5 text-start align-middle text-[0.75rem] font-medium text-muted-foreground',
         // The trailing column has no seam: its right edge is the table's edge,
         // and there is nothing on the far side to trade width with.
         '[&:last-child_[data-md-col-handle]]:hidden',

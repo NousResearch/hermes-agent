@@ -199,19 +199,29 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
     return converted
 
 
+_DATA_URI_RE = re.compile(r"data:[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+")
+
+
+def _strip_data_uris(text: str) -> str:
+    """Strip base64 data URIs from text to prevent bloating logs and trajectories."""
+    if not isinstance(text, str) or "data:" not in text:
+        return text if isinstance(text, str) else ""
+    return _DATA_URI_RE.sub("[embedded data]", text)
+
+
 def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
     """Flatten message content to plain text: text parts joined with ``sep`` (``" "`` for logs; ``"\\n"`` for memory
     providers feeding regexes), images → ``[N image(s)]`` marker, ``""`` for None, ``str(content)`` for other scalars."""
     if not isinstance(content, list):
         try:
-            return _str_or_empty(content)
+            return _strip_data_uris(_str_or_empty(content))
         except Exception:
             return ""
     parts = list(_iter_content_parts(content))
-    text_bits = [payload for kind, payload in parts if kind == "text"]
+    text_bits = [_strip_data_uris(payload) for kind, payload in parts if kind == "text"]
     image_count = len(parts) - len(text_bits)
     note = f"[{image_count} image{'s' if image_count != 1 else ''}]" if image_count else ""
-    return " ".join(bit for bit in (note, sep.join(text_bits).strip()) if bit)
+    return _strip_data_uris(" ".join(bit for bit in (note, sep.join(text_bits).strip()) if bit))
 
 
 # --- ID helpers ---------------------------------------------------------------

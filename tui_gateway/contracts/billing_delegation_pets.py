@@ -8,10 +8,12 @@ client always resolves and branches on the envelope. ``BillingEnvelope`` is that
 
 from __future__ import annotations
 
+from typing import Annotated, Literal, Union
+
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import MessageReaction, OpenModel, ProfileParams, SessionParams
+from .common import MessageReaction, ProfileParams, SessionParams, SubagentStatus
 from .registry import method
 
 # ── billing envelope ──────────────────────────────────────────────────────────────────────────
@@ -27,7 +29,8 @@ class BillingEnvelope(Result):
     message: str | None = None
     portal_url: str | None = None
     retry_after: int | float | None = None
-    payload: dict[str, JsonValue] | None = None
+    # JsonValue: billing_view.py:37 forwards provider-defined NAS bodies; desktop reads remainingUsd.
+    payload: JsonValue | None = None
     actor: str | None = None
     code: str | None = None
     recovery: str | None = None
@@ -85,64 +88,83 @@ class BillingCardInfo(Result):
     resolved_via: str | None = None
 
 
-class PaymentMethodKind(WireEnum):
-    card = "card"
-    link = "link"
-    unknown = "unknown"
+class BillingCardPaymentMethod(Result):
+    """``_serialize_payment_method`` card arm (billing_view.py:48-52)."""
+
+    kind: Literal["card"]
+    brand: str | None
+    last4: str | None
+    wallet: str | None
+    resolved_via: str | None
 
 
-class BillingPaymentMethod(Result):
-    """``_serialize_payment_method``: each kind emits only its own fields (a ``card`` never carries
-    ``email``; ``unknown`` carries what the server called it in ``raw_kind``)."""
+class BillingLinkPaymentMethod(Result):
+    """``_serialize_payment_method`` link arm (billing_view.py:53-54)."""
 
-    kind: PaymentMethodKind
-    brand: str | None = None
-    last4: str | None = None
-    wallet: str | None = None
-    email: str | None = None
-    raw_kind: str | None = None
-    resolved_via: str | None = None
+    kind: Literal["link"]
+    email: str | None
+    resolved_via: str | None
+
+
+class BillingUnknownPaymentMethod(Result):
+    """``_serialize_payment_method`` fallback arm (billing_view.py:55)."""
+
+    kind: Literal["unknown"]
+    raw_kind: str | None
+    resolved_via: str | None
+
+
+BillingPaymentMethod = Annotated[
+    Union[BillingCardPaymentMethod, BillingLinkPaymentMethod, BillingUnknownPaymentMethod],
+    Field(discriminator="kind"),
+]
 
 
 class BillingMonthlyCap(Result):
-    limit_usd: str | None = None
+    limit_usd: str | None
     limit_display: str
-    spent_this_month_usd: str | None = None
+    spent_this_month_usd: str | None
     spent_display: str
     is_default_ceiling: bool
 
 
-class AutoReloadCardKind(WireEnum):
-    canonical = "canonical"
-    distinct = "distinct"
-    none = "none"
+class BillingCanonicalAutoReloadCard(Result):
+    kind: Literal["canonical"]
 
 
-class BillingAutoReloadCard(Result):
-    """Only ``distinct`` carries the payment-method identity."""
+class BillingDistinctAutoReloadCard(Result):
+    kind: Literal["distinct"]
+    payment_method_id: str | None
+    brand: str | None
+    last4: str | None
 
-    kind: AutoReloadCardKind
-    payment_method_id: str | None = None
-    brand: str | None = None
-    last4: str | None = None
+
+class BillingNoAutoReloadCard(Result):
+    kind: Literal["none"]
+
+
+BillingAutoReloadCard = Annotated[
+    Union[BillingCanonicalAutoReloadCard, BillingDistinctAutoReloadCard, BillingNoAutoReloadCard],
+    Field(discriminator="kind"),
+]
 
 
 class BillingAutoReload(Result):
     enabled: bool
-    threshold_usd: str | None = None
+    threshold_usd: str | None
     threshold_display: str
-    reload_to_usd: str | None = None
+    reload_to_usd: str | None
     reload_to_display: str
-    card: BillingAutoReloadCard | None = None
+    card: BillingAutoReloadCard | None
 
 
 class BillingStateResult(Result):
     """``_serialize_billing_state`` (money as strings); the ``except`` fallback emits only
-    ``ok / logged_in / free_tier / error``, so everything else is optional."""
+    ``ok / logged_in / free_tier / error``, so the normal-state additions may be absent."""
 
     ok: bool
     logged_in: bool
-    free_tier: bool = False
+    free_tier: bool
     free_tier_model: str | None = None
     org_name: str | None = None
     org_slug: str | None = None
@@ -179,17 +201,17 @@ class SubscriptionContext(WireEnum):
 
 
 class CurrentSubscription(Result):
-    tier_id: str | None = None
-    tier_name: str | None = None
-    monthly_credits: str | None = None
-    credits_remaining: str | None = None
-    cycle_ends_at: str | None = None
-    pending_downgrade_tier_name: str | None = None
-    pending_downgrade_at: str | None = None
-    pending_downgrade_display: str | None = None
+    tier_id: str | None
+    tier_name: str | None
+    monthly_credits: str | None
+    credits_remaining: str | None
+    cycle_ends_at: str | None
+    pending_downgrade_tier_name: str | None
+    pending_downgrade_at: str | None
+    pending_downgrade_display: str | None
     cancel_at_period_end: bool
-    cancellation_effective_at: str | None = None
-    cancellation_effective_display: str | None = None
+    cancellation_effective_at: str | None
+    cancellation_effective_display: str | None
 
 
 class SubscriptionTierOption(Result):
@@ -197,7 +219,7 @@ class SubscriptionTierOption(Result):
     name: str
     tier_order: int
     dollars_per_month_display: str
-    monthly_credits: str | None = None
+    monthly_credits: str | None
     is_current: bool
     is_enabled: bool
 
@@ -257,7 +279,7 @@ class SubscriptionChangeParams(ProfileParams):
     """Either a target tier (downgrade / same-price change) or ``cancel`` (period-end cancellation)."""
 
     subscription_type_id: str | None = None
-    cancel: bool = False
+    cancel: bool | None = None
 
 
 class BillingPendingChangeResult(BillingEnvelope):
@@ -328,7 +350,7 @@ method("billing.charge_status", params=BillingChargeStatusParams, result=Billing
 
 
 class BillingAutoReloadParams(ProfileParams):
-    enabled: bool = False
+    enabled: bool | None = None
     threshold: float | str | None = None
     top_up_amount: float | str | None = None
 
@@ -348,7 +370,7 @@ class BillingStepUpParams(ProfileParams):
 class BillingStepUpResult(BillingEnvelope):
     """``granted`` false when the server downscopes (also on every error envelope)."""
 
-    granted: bool | None = None
+    granted: bool
 
 
 method("billing.step_up", params=BillingStepUpParams, result=BillingStepUpResult,
@@ -358,20 +380,20 @@ method("billing.step_up", params=BillingStepUpParams, result=BillingStepUpResult
 # ── delegation / subagent.steer ───────────────────────────────────────────────────────────────
 
 
-class ActiveSubagent(OpenModel):
-    """One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record
-    is extended by the child runner — ``missed_steer`` etc. — so it stays open)."""
+class ActiveSubagent(Result):
+    """One ``list_active_subagents`` record (tools/delegate_tool_registry.py:173-177)."""
 
     subagent_id: str
-    parent_id: str | None = None
-    depth: int | None = None
-    goal: str | None = None
-    delegation_id: str | None = None
-    model: str | None = None
-    started_at: float | None = None
-    status: str | None = None
-    tool_count: int | None = None
-    owner_agent_session_id: str | None = None
+    parent_id: str | None
+    depth: int
+    goal: str
+    delegation_id: str | None
+    model: str | None
+    started_at: float
+    status: SubagentStatus
+    tool_count: int
+    last_tool: str | None = None
+    owner_agent_session_id: str | None
 
 
 class DelegationStatusResult(Result):
@@ -528,8 +550,8 @@ class PetGenerateParams(ProfileParams):
 
     prompt: str | None = None
     referenceImage: str | None = None  # noqa: N815 - wire key
-    count: int | None = None
-    style: str | None = None
+    count: int = 4
+    style: str = "auto"
     provider: str | None = None
 
 
@@ -552,17 +574,16 @@ class PetHatchParams(ProfileParams):
     token: str
     name: str
     cancelToken: str | None = None  # noqa: N815 - wire key
-    index: int | None = None
+    index: int = 0
     description: str | None = None
     prompt: str | None = None
-    style: str | None = None
+    style: str = "auto"
     provider: str | None = None
 
 
-# TODO(common): ``tui_gateway/server.py::_pet_sprite_payload`` is one shape for ``pet.info`` and
-# ``pet.hatch``; consolidate with the pets contract module. Every field optional: ``pet.hatch``
-# emits ``{}`` when the installed pet cannot be reloaded.
 class PetSpritePayload(Result):
+    """``server._pet_sprite_payload``; ``pet.hatch`` emits ``{}`` if reload fails."""
+
     slug: str | None = None
     displayName: str | None = None  # noqa: N815 - wire key
     mime: str | None = None
@@ -584,7 +605,7 @@ class PetHatchResult(Result):
     ok: bool
     slug: str
     displayName: str  # noqa: N815 - wire key
-    warnings: list[JsonValue] = Field(default_factory=list)
+    warnings: list[str]
     pet: PetSpritePayload
 
 

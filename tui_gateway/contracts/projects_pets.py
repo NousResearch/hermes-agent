@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from pydantic import Field
 
-from .base import JsonValue, Params, Result
-from .common import OkResult, OpenModel, ProfileParams, StoredSessionRow
+from .base import Params, Result
+from .common import OkResult, ProfileParams, StoredSessionRow
 from .registry import method
 
 # ── projects: stored rows ─────────────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ class ProjectFolder(Result):
     path: str
     label: str | None = None
     is_primary: bool = False
-    added_at: int | None = None
+    added_at: float = 0.0
 
 
 class ProjectInfo(Result):
@@ -39,7 +39,7 @@ class ProjectInfo(Result):
     board_slug: str | None = None
     primary_path: str | None = None
     archived: bool = False
-    created_at: int
+    created_at: float
     folders: list[ProjectFolder] = Field(default_factory=list)
 
 
@@ -59,7 +59,7 @@ class OptionalProjectResult(Result):
 
 
 class ProjectIdParams(ProfileParams):
-    """Any method addressed at one stored project (``5062`` when the id resolves to nothing)."""
+    """A method addressed at one stored project (``5062`` when the id resolves to nothing)."""
 
     id: str
 
@@ -235,7 +235,7 @@ class ProjectTreeSession(StoredSessionRow):
     """``methods_projects._project_tree_row`` + ``project_tree.stamp_profile``: the minimal row the
     sidebar renders, stamped with the profile it belongs to."""
 
-    profile: str | None = None
+    profile: str | None
 
 
 class ProjectTreeLane(Result):
@@ -243,18 +243,18 @@ class ProjectTreeLane(Result):
 
     id: str
     label: str
-    path: str | None = None
-    isMain: bool = False
-    isKanban: bool = False
-    sessions: list[ProjectTreeSession] = Field(default_factory=list)
+    path: str | None
+    isMain: bool
+    isKanban: bool
+    sessions: list[ProjectTreeSession]
 
 
 class ProjectTreeRepo(Result):
     id: str
     label: str
-    path: str | None = None
-    groups: list[ProjectTreeLane] = Field(default_factory=list)
-    sessionCount: int = 0
+    path: str | None
+    groups: list[ProjectTreeLane]
+    sessionCount: int
 
 
 class ProjectTreeNode(Result):
@@ -262,17 +262,17 @@ class ProjectTreeNode(Result):
 
     id: str
     label: str
-    path: str | None = None
-    color: str | None = None
-    icon: str | None = None
-    isAuto: bool = False
-    isNoProject: bool = False
-    sessionCount: int = 0
-    lastActive: float = 0.0
-    totalTokens: int = 0
-    totalCostUsd: float = 0.0
-    repos: list[ProjectTreeRepo] = Field(default_factory=list)
-    previewSessions: list[ProjectTreeSession] = Field(default_factory=list)
+    path: str | None
+    color: str | None
+    icon: str | None
+    isAuto: bool
+    isNoProject: bool
+    sessionCount: int
+    lastActive: float
+    totalTokens: int
+    totalCostUsd: float
+    repos: list[ProjectTreeRepo]
+    previewSessions: list[ProjectTreeSession]
 
 
 class ProjectsTreeParams(ProfileParams):
@@ -282,8 +282,8 @@ class ProjectsTreeParams(ProfileParams):
 
 class ProjectsTreeResult(Result):
     projects: list[ProjectTreeNode]
-    active_id: str | None = None
-    scoped_session_ids: list[str] = Field(default_factory=list)
+    active_id: str | None
+    scoped_session_ids: list[str]
 
 
 method("projects.tree", params=ProjectsTreeParams, result=ProjectsTreeResult,
@@ -296,7 +296,7 @@ class ProjectsProjectSessionsParams(ProfileParams):
 
 
 class ProjectsProjectSessionsResult(Result):
-    project: ProjectTreeNode | None = None
+    project: ProjectTreeNode | None
 
 
 method("projects.project_sessions", params=ProjectsProjectSessionsParams, result=ProjectsProjectSessionsResult,
@@ -312,25 +312,25 @@ class PetInfoParams(ProfileParams):
     knownRevision: str | None = None
 
 
-class PetInfoResult(OpenModel):
-    """``server._pet_sprite_payload`` behind ``enabled``; every sprite field is absent when the pet
-    display is off, ``spritesheetBase64`` is elided when ``spritesheetUnchanged``."""
+class PetInfoResult(Result):
+    """``server._pet_sprite_payload`` behind ``enabled``; sprite fields are absent when display is off
+    and ``spritesheetBase64`` is absent when ``spritesheetUnchanged`` is true."""
 
     enabled: bool
-    slug: str | None = None
-    displayName: str | None = None
-    mime: str | None = None
-    spritesheetBase64: str | None = None
-    spritesheetRevision: str | None = None
-    spritesheetUnchanged: bool | None = None
-    frameW: int | None = None
-    frameH: int | None = None
-    framesPerState: int | None = None
-    framesByState: dict[str, int] | None = None
-    framesByRow: dict[str, int] | None = None
-    loopMs: int | None = None
-    scale: float | None = None
-    stateRows: list[str] | None = None
+    slug: str | None
+    displayName: str | None  # noqa: N815 - wire key
+    mime: str | None
+    spritesheetBase64: str | None  # noqa: N815 - wire key
+    spritesheetRevision: str | None  # noqa: N815 - wire key
+    spritesheetUnchanged: bool | None  # noqa: N815 - wire key
+    frameW: int | None  # noqa: N815 - wire key
+    frameH: int | None  # noqa: N815 - wire key
+    framesPerState: int | None  # noqa: N815 - wire key
+    framesByState: dict[str, int] | None  # noqa: N815 - wire key
+    framesByRow: dict[str, int] | None  # noqa: N815 - wire key
+    loopMs: int | None  # noqa: N815 - wire key
+    scale: float | None
+    stateRows: list[str] | None  # noqa: N815 - wire key
 
 
 method("pet.info", params=PetInfoParams, result=PetInfoResult,
@@ -339,10 +339,10 @@ method("pet.info", params=PetInfoParams, result=PetInfoResult,
 
 class PetInfoMetaResult(Result):
     enabled: bool
-    slug: str | None = None
-    displayName: str | None = None
-    scale: float | None = None
-    spritesheetRevision: str | None = None
+    slug: str | None
+    displayName: str | None  # noqa: N815 - wire key
+    scale: float | None
+    spritesheetRevision: str | None  # noqa: N815 - wire key
 
 
 method("pet.info.meta", params=ProfileParams, result=PetInfoMetaResult,
@@ -358,22 +358,21 @@ class PetCellsParams(ProfileParams):
 
 
 class PetCellsResult(Result):
-    """Unicode: ``frames`` is frame → row → cell ``[tr,tg,tb,ta, br,bg,bb,ba]``; kitty (``graphics``
-    set): ``frames`` are transmit escapes and ``placeholder`` the text grid."""
+    """Unicode cells or kitty transmit escapes from methods_session.py:1268-1290."""
 
     enabled: bool
-    slug: str | None = None
-    displayName: str | None = None
-    state: str | None = None
-    cols: int | None = None
-    frameMs: float | None = None
-    frames: list[list[list[list[int]]]] | list[str] | None = None
-    scale: float | None = None
-    graphics: str | None = None
-    imageId: int | None = None
-    color: str | None = None
-    rows: int | None = None
-    placeholder: list[str] | None = None
+    slug: str | None
+    displayName: str | None  # noqa: N815 - wire key
+    state: str | None
+    cols: int | None
+    frameMs: float | None  # noqa: N815 - wire key
+    frames: list[list[list[list[int]]]] | list[str] | None
+    scale: float | None
+    graphics: str | None
+    imageId: int | None  # noqa: N815 - wire key
+    color: str | None
+    rows: int | None
+    placeholder: list[str] | None
 
 
 method("pet.cells", params=PetCellsParams, result=PetCellsResult,
@@ -389,17 +388,17 @@ class PetGalleryParams(ProfileParams):
 
 class PetGalleryEntry(Result):
     slug: str
-    displayName: str
+    displayName: str  # noqa: N815 - wire key
     installed: bool
-    spritesheetUrl: str = ""
-    curated: bool | None = None
-    generated: bool = False
+    spritesheetUrl: str  # noqa: N815 - wire key
+    curated: bool | None
+    generated: bool
 
 
 class PetGalleryResult(Result):
     enabled: bool
-    active: str = ""
-    pets: list[PetGalleryEntry] = Field(default_factory=list)
+    active: str
+    pets: list[PetGalleryEntry]
 
 
 method("pet.gallery", params=PetGalleryParams, result=PetGalleryResult,
@@ -413,7 +412,7 @@ class PetSlugParams(ProfileParams):
 class PetSlugResult(Result):
     ok: bool
     slug: str
-    displayName: str | None = None
+    displayName: str | None  # noqa: N815 - wire key
 
 
 method("pet.select", params=PetSlugParams, result=PetSlugResult,
@@ -433,7 +432,7 @@ method("pet.rename", params=PetRenameParams, result=PetSlugResult,
 class PetExportResult(Result):
     ok: bool
     filename: str
-    zipBase64: str
+    zipBase64: str  # noqa: N815 - wire key
 
 
 method("pet.export", params=PetSlugParams, result=PetExportResult,
@@ -449,7 +448,7 @@ class PetThumbParams(PetSlugParams):
 class PetThumbResult(Result):
     ok: bool
     slug: str
-    dataUri: str | None = None
+    dataUri: str | None  # noqa: N815 - wire key
 
 
 method("pet.thumb", params=PetThumbParams, result=PetThumbResult,
@@ -460,7 +459,7 @@ method("pet.disable", params=ProfileParams, result=OkResult,
 
 
 class PetScaleParams(ProfileParams):
-    scale: JsonValue = None  # number or numeric string; a non-number answers 4004
+    scale: float | str | None = None
 
 
 class PetScaleResult(Result):

@@ -36,6 +36,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: 
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
+from tui_gateway.contracts import registry as _contracts
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -614,6 +615,7 @@ def write_json(obj: dict) -> bool:
 
 
 def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
+    _contracts.check_payload(event, payload)
     params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
@@ -765,9 +767,16 @@ def _err(rid, code: int, msg: str, data=None) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": error}
 
 
+def register_method(name: str, fn) -> None:
+    """The ONE registration seam (``@method`` here and ``HandlerRegistry.install`` for the split
+    modules). ``tests/contracts/test_generated.py::test_every_method_has_a_contract`` and the
+    generator's ``assert_complete`` fail when a registered name has no contract."""
+    _methods[name] = fn
+
+
 def method(name: str):
     def dec(fn):
-        _methods[name] = fn
+        register_method(name, fn)
         return fn
     return dec
 
@@ -792,13 +801,23 @@ def handle_request(req: dict) -> dict | None:
     rid, method, params = normalized
     if not (fn := _methods.get(method)):
         return _err(rid, -32601, f"unknown method: {method}")
+    # Test doubles register straight into ``_methods`` without a contract; every production
+    # handler comes through ``register_method`` and therefore has one.
+    contract = _contracts.METHODS.get(method)
+    if contract is not None:
+        params, problem = _contracts.validate_params(contract, params)
+        if problem is not None:
+            return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        return fn(rid, params)
+        response = fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
     finally:
         _current_rpc_method.reset(token)
+    if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
+        _contracts.check_result(contract, response["result"])
+    return response
 
 
 def _current_session_steer_authority(session_id: str) -> tuple[Transport | None, dict | None]:

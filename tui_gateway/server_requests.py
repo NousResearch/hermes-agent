@@ -85,6 +85,14 @@ def _emit_cancel(req: ServerRequest, reason: str) -> None:
 
 
 def _register(req: ServerRequest) -> None:
+    from tui_gateway.contracts import registry as contracts
+
+    contract = contracts.SERVER_REQUESTS.get(req.method)
+    if contract is None:
+        raise RuntimeError(f"server request {req.method!r} has no contract in tui_gateway/contracts")
+    _, problem = contracts.validate_params(contract, {"session_id": req.sid, **req.params})
+    if problem is not None:
+        raise ValueError(problem)
     with _lock:
         _open[req.id] = req
     _write(req.frame())

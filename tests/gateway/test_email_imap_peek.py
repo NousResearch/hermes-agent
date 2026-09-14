@@ -1,11 +1,16 @@
 """
-Test that EmailAdapter respects the platforms.email.imap_peek config option.
+Tests for the Email IMAP peek + restart replay-guard behavior.
 
-Verifies the IMAP FETCH uses BODY.PEEK[] by default (so polling does not mark
-unread messages as read) and RFC822 when imap_peek is explicitly false, and
-that the selector actually reaches the imap.uid("fetch", ...) call.
+Covers:
+- ``platforms.email.imap_peek`` config coercion (BODY.PEEK[] vs RFC822).
+- The real ``load_gateway_config()`` path: a top-level ``platforms.email.imap_peek``
+  key must reach ``PlatformConfig.extra`` through the generic non-typed-key
+  promotion, not only a hand-built ``extra`` dict.
+- The consumed-UID watermark that keeps BODY.PEEK[] safe against bounded-set
+  replay (#60637) and the fail-closed startup UID baseline.
 """
 
+import asyncio
 import os
 from unittest.mock import MagicMock, patch
 
@@ -23,7 +28,7 @@ _EMAIL_ENV = {
 }
 
 # Minimal valid message body so downstream parsing in _fetch_new_messages
-# does not raise; the assertion only cares about the FETCH selector.
+# does not raise; the assertions only care about the FETCH selector / UID.
 _SAMPLE_RAW = (
     b"From: sender@test.com\n"
     b"To: hermes@test.com\n"
@@ -123,6 +128,8 @@ def _fetch_selector(extra: dict) -> str:
     return body_calls[0].args[2]
 
 
+# --- config coercion --------------------------------------------------------
+
 def test_imap_peek_defaults_to_true():
     """Without explicit config, imap_peek should default to True (BODY.PEEK[])."""
     assert _make_adapter({})._imap_peek is True
@@ -147,6 +154,8 @@ def test_imap_peek_string_true():
     """String 'true' should be coerced to bool True."""
     assert _make_adapter({"imap_peek": "true"})._imap_peek is True
 
+
+# --- FETCH selector ---------------------------------------------------------
 
 def test_fetch_uses_body_peek_by_default():
     """The FETCH call must receive (BODY.PEEK[]) by default."""

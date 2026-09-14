@@ -53,15 +53,16 @@ def _post(url, data=None, headers=None, form=False, timeout=30):
         req.add_header(k, v)
     req.add_header("User-Agent", UA)
     try:
-        r = urllib.request.urlopen(req, timeout=timeout)
-        return r.status, dict(r.headers), r.read()
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
 
 
 def _get_json(url, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
 
 
 def _mcp_initialize(mcp_url, access_token):

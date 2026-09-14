@@ -31,6 +31,13 @@ class ExecutionEventKind(str, Enum):
     SCREENSHOT = "screenshot"
     ERROR = "error"
     TASK_COMPLETED = "task_completed"
+    TOOL_CALL = "tool_call"
+    WORKER_MESSAGE = "worker_message"
+    PROGRESS = "progress"
+    USAGE = "usage"
+    DELIVERABLE = "deliverable"
+    RECOVERY = "recovery"
+    LIFECYCLE = "lifecycle"
 
 
 @dataclass(slots=True)

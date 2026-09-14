@@ -578,7 +578,7 @@ export function renderRpcResult(response: unknown, name: string): string {
     const total = Number(r.total ?? 0)
 
     const lines: string[] = [
-      `Usage: ${calls.toLocaleString()} calls · ${input.toLocaleString()} in / ${output.toLocaleString()} out · ${total.toLocaleString()} total`
+      `Usage: ${calls.toLocaleString('en-US')} calls · ${input.toLocaleString('en-US')} in / ${output.toLocaleString('en-US')} out · ${total.toLocaleString('en-US')} total`
     ]
 
     if (Array.isArray(r.credits_lines)) {

@@ -3579,6 +3579,27 @@ async def get_health():
     }
 
 
+@app.get("/api/workstation/resources")
+async def get_workstation_resources():
+    """Project the Electron Workstation resources for Dashboard clients.
+
+    The controller call is blocking and runs off the event loop. A missing
+    Desktop controller is returned as an explicit degraded snapshot so a
+    Dashboard can remain usable while the browser runtime is unavailable.
+    """
+    from workstation.client import get_workstation_resources as read_resources
+
+    return await asyncio.to_thread(read_resources)
+
+
+@app.get("/api/workstation/events")
+async def get_workstation_events(task_id: str | None = None, limit: int = 200):
+    """Project bounded canonical Workstation journal events for clients."""
+    from workstation.client import get_workstation_events as read_events
+
+    return await asyncio.to_thread(read_events, task_id=task_id, limit=limit)
+
+
 _PROFILE_PLATFORM_STATUS_KEY_RE = re.compile(
     # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE.  Platform
     # segment mirrors the Platform enum's normalized values: built-in members

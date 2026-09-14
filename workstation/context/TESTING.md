@@ -30,10 +30,21 @@ Do not replace executable behavior tests with source greps. Source-shape tests a
 - read-only committed-integration validation;
 - normal `workstation\\install.cmd` execution;
 - clean-checkout assertion after install;
+- production dependency audit with `npm audit --omit=dev --audit-level=moderate`;
+- strict `workstation\\doctor.cmd -Strict` dependency/integration gate;
+- four-session Workstation reconnect soak with JSON and durable evidence upload;
+- Dashboard Playwright browser installation and provider-free cross-engine smoke;
+- Desktop unpacked packaging and packaged GUI/HUD E2E smoke;
+- isolated Workstation validation dependencies for the release qualification
+  Python test runner;
+- uploaded release and Desktop E2E evidence artifacts;
 - Desktop typecheck;
 - BrowserSessionState lint/format;
 - focused BrowserSessionState resilience plus BrowserTask lifecycle/runtime step;
 - H010 native clean/fault/abrupt restart probe;
+- H011 native hidden-window Browser runtime reconnect soak;
+- H012 real headless `hermes serve` multi-session/reconnect soak;
+- H013 integrated hidden-window Desktop/Browser load E2E;
 - Desktop UI tests;
 - Desktop platform/Electron tests;
 - final aggregator that remains red if a scoped or broad required outcome is red.
@@ -129,6 +140,92 @@ The probe used distinct Electron PIDs for restart, real WebContentsView/profile
 behavior, a forced persistence failure seam and an abrupt non-clean first
 process exit. It proved lazy exactly-one-page task recovery and profile/state
 separation; it did not prove any later Chat/Hub/Preview or Kanban feature.
+
+### Current working-tree rerun — 2026-09-12
+
+The same versioned probe passed locally against checkout `HEAD`
+`d77901a6857cf90f9401a90377de3b6ee5254bef`, on Windows `10.0.26200`, Electron
+`40.10.2` and Node `v26.7.0`. It emitted all clean, fault, destroy and abrupt
+restart pass markers and ended with `H010_CLASSIFICATION=VALIDATED`.
+
+This rerun imported the current working-tree files while the checkout was
+dirty, so it is native local evidence for the current code, not a substitute
+for the workflow's clean-checkout/clean-machine promotion gate.
+
+## Native Browser runtime reconnect soak
+
+`workstation/context/engineering-journal/probes/h011-native-browser-runtime-soak.mjs`
+uses real Electron `WebContentsView` instances in hidden `BrowserWindow`
+hosts. It repeatedly navigates four task-owned pages, alternates `hub`/`chat`
+host ownership, hides or parks the active task, validates resource/session/tab
+identity, shuts the process down cleanly, and restores the composite
+`BrowserSessionState` in a fresh process. Restart episodes first assert parked
+lazy metadata, then explicitly warm the task pool for multi-task coverage.
+
+The 2026-09-12 local run passed **39 episodes / 936 iterations / 4 tasks** in
+the 60-second budget and emitted
+`H011_NATIVE_BROWSER_RUNTIME_CLASSIFICATION=VALIDATED`. The probe is native
+runtime evidence, not a claim of clean-machine release qualification or a full
+agent/backend production workload; the Windows workflow runs it as a required
+60-second gate and uploads the report plus durable JSON projection.
+
+## Headless backend multi-session reconnect soak
+
+`workstation/context/engineering-journal/probes/h012-headless-backend-reconnect-soak.py`
+starts the real `hermes serve` headless backend, connects through its
+authenticated production WebSocket gateway, drives concurrent desktop-shaped
+sessions and streamed synthetic turns, then restarts the backend and resumes
+the durable session identities from the same isolated `HERMES_HOME`. The
+synthetic turn seam is deterministic and token-free; the backend process,
+JSON-RPC transport, session persistence and concurrent dispatch are real.
+
+The 2026-09-12 local workflow-shaped run passed **12 cycles / 48 turns / 44
+reconnects / 2 backend restarts / 48 heartbeats**, with **192 streamed events**,
+zero errors and a maximum of **4 concurrent turns**. It emitted
+`H012_HEADLESS_BACKEND_CLASSIFICATION=VALIDATED`. This is stronger backend
+boundary evidence, but it does not claim real-provider quality or a clean
+machine/full Desktop-and-Browser production deployment; the Windows workflow
+runs the same probe with a 120-second budget and retains its JSON evidence.
+
+## Integrated Desktop/Browser headless load E2E
+
+`apps/desktop/e2e/workstation-headless-load.spec.ts` runs the real dev Electron
+shell with the real `hermes serve` backend from the mock-backend fixture while
+keeping every native window hidden. It starts a deterministic local HTTP server,
+drives four native Chromium BrowserTasks concurrently through the authenticated
+controller, compares the complete `/resources` and `/events` projections with
+Desktop IPC (including state, lineage, evidence and event payloads), and
+exercises hide/park/destroy cleanup. The inference provider is synthetic and
+token-free; Chromium, BrowserTask lifecycle, controller authentication and IPC
+are real.
+
+The local default run passed **2 tests in 36.6s** (a later formatted rerun
+passed in 38.8s): the four-task identity/geometry scenario and a sustained
+scenario with eight concurrent BrowserTasks, three navigation/snapshot rounds
+and three real backend chat turns. Both exercised native host-aware transfer
+and maximize/restore reconciliation with no visible Electron window.
+The Windows release workflow runs the same H013 gate with an explicit
+`HERMES_DESKTOP_E2E_HEADLESS=1` environment plus a larger bounded profile of
+16 tasks, up to 300 rounds or 120 seconds, and 8 real backend chat turns. It
+also emits a bounded JSON report and rejects missing or under-sized evidence
+through the read-only `python -m workstation.desktop_load_evidence` validator
+before the final aggregator; the clean-machine execution and this scaled
+profile remain release-candidate evidence gates.
+A local run of that exact 16-task/120-second/8-turn profile passed **2 tests in
+3.0 minutes**, completing 170 rounds with 120,651 ms observed and no Electron
+process remaining. It is local toolchain evidence, not clean-machine release
+qualification.
+
+## Host-aware viewport geometry
+
+`apps/desktop/electron/workstation-browser-runtime-viewport.test.ts` covers the
+shared-window geometry boundary: stale Chat/Hub `setBounds` calls are ignored
+when their expected host is not the current owner, valid bounds are normalized
+for Chromium zoom and clamped to the native content rectangle, transfer between
+two `BrowserWindow` hosts preserves exactly one live view, and native window
+resize/maximize/restore events reapply the active bounds. H013 validates that
+matrix with a real hidden Electron/Chromium view; broader compositor-race and
+clean-machine Windows evidence remain hardening gates.
 
 ## BrowserTask lifecycle policy
 
@@ -256,6 +353,36 @@ A baseline/candidate A/B may establish that a failure is pre-existing and that t
 
 For the current Windows baseline see KI-006 in `KNOWN_ISSUES.md`.
 
+### KI-006 Windows portability closure
+
+The follow-up HW-018 closure was validated on the current Windows working
+tree with the same broad suites that exposed the historical debt:
+
+- Desktop UI: **591 files / 5,669 tests passed**;
+- Desktop platform/Electron: **126 files / 1,760 tests passed, 5 skipped**;
+- Desktop TypeScript typecheck: **0 errors**.
+
+The closure preserves strict POSIX mode checks, explicit Windows ACL/no-mux
+semantics, cross-platform path contracts, non-blocking WSL selection, Git cwd
+cleanup and locale-deterministic UI formatting. No test file was deleted,
+skipped solely to hide a failure, or weakened into a claimed pass.
+
+### Dashboard/TUI resource and event adapter parity
+
+`workstation/tests/test_client.py` includes a real authenticated loopback HTTP
+controller and invokes both high-level surfaces against it for both projections:
+
+- Dashboard's `/api/workstation/resources` handler;
+- TUI's `workstation.resources` JSON-RPC handler.
+- Dashboard's `/api/workstation/events` handler;
+- TUI's `workstation.events` JSON-RPC handler.
+
+Both surfaces must return the same normalized envelope and the same
+browser/task/journal identities and event lineage for one logical session. The
+current test file passes **5/5** and the full Workstation suite passes
+**175/175**. This is adapter and transport evidence; it does not replace
+packaged Electron, clean-machine or production soak evidence.
+
 ## Required browser-foundation invariants
 
 As corresponding implementations land, tests must establish relationships rather than freeze incidental values:
@@ -279,6 +406,74 @@ As corresponding implementations land, tests must establish relationships rather
 The final broader browser foundation, after later surfaces exist, must also cover Chat Browser View ↔ Browser Hub shared task/page behavior, human control, resize/maximize/restore, second-task isolation, profile login persistence, controller-loss fail-closed behavior, and Preview compatibility.
 
 Those later steps must remain future work; the narrower Implementation 4 pass must not be used to mark them complete.
+
+## Release qualification and bounded soak
+
+Run the release gate from the candidate checkout:
+
+```powershell
+& .venv\Scripts\python.exe -m workstation.release_qualification --root . `
+  --clean-install-evidence C:\path\to\clean-install-report.json `
+  --report .\release-qualification.json
+```
+
+The runner first requires a clean candidate checkout, then executes ownership,
+assets, Workstation smoke, native smoke and
+migration locally, but accepts the `clean_install` stage only when an external
+clean-machine report is marked accepted and carries the exact candidate
+`HEAD` revision. It stops at the first failed or missing stage and bounds
+subprocess output/time; it does not install, repair or promote a release.
+The minimum accepted external evidence shape is:
+
+```json
+{"accepted": true, "candidate_revision": "<exact HEAD>", "workstation_home": "<absolute isolated path>", "stages": ["clean_install"]}
+```
+
+The Windows workflow allocates that home under `RUNNER_TEMP`, persists it via
+`GITHUB_ENV` for both install and doctor, verifies its `Runtime` and `Browser`
+directories and includes the path in the candidate-matched evidence. The
+qualification runner rejects accepted reports that omit the field, use a
+relative path or point inside the candidate checkout.
+
+Local verification also materialized the current working tree as an isolated
+synthetic candidate, ran the real install/`npm ci`/Desktop build and strict
+doctor with an external Workstation home, and passed all six qualification
+stages. The hidden H013 profile on that candidate passed **2/2** (16 tasks,
+173 rounds, 120,262 ms, 8 chat turns) and the shared evidence validator accepted
+the report. This is local candidate evidence; official clean-machine CI is
+still required for promotion.
+
+`SoakRunner.run_for_duration()` provides an iteration cap, elapsed duration,
+completed-iteration count and explicit timeout state for a production-like
+scenario harness. The Windows workflow runs the canonical four-session process
+restart scenario for a 180-second budget with a 3,000-iteration cap, validates
+zero failures/errors and at least one completed iteration, and uploads both its
+JSON report and durable root. The canonical contract scenario can also be
+sampled locally with:
+
+```powershell
+& .venv\Scripts\python.exe -m workstation.soak --duration 60 --iterations 1000
+```
+
+It executes each iteration in a fresh Python process and exercises multiple
+session leases, durable session metadata, model changes, migration,
+cold-session reload, memory snapshot/restore, journal append/read and worker
+stop/reconstruct lineage. Those metrics make a soak report auditable. Neither
+the CI contract soak nor a short local run turns into long-duration
+Desktop/Browser production evidence; that remains a separate acceptance gate.
+
+Latest local sample: **77 fresh-process iterations, 0 failures, 1,155 actions,
+924 journal events, 26,796 memory records, 231 snapshots and 228 worker
+reconstructions** across three sessions. `timed_out=true` is the expected
+duration-budget marker when the runner stops after 60 seconds.
+
+Latest extended local sample: **128 fresh-process iterations, 0 failures, 2,560
+actions, 2,048 journal events, 15,888 cumulative memory records, 512 snapshots
+and 508 worker reconstructions** across four sessions, with 508 model changes
+and 508 cold reloads, in a 180-second budget. Live memory peaked at **32
+records**, exactly the explicit eight-record-per-session bound. `timed_out=true`
+remains the expected duration-budget marker; this is stronger local evidence
+but does not promote the separate production-like Desktop/Browser soak gate.
 
 ## Failure policy
 

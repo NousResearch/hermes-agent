@@ -29,8 +29,8 @@ const here = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(here, '..')
 const require = createRequire(import.meta.url)
 
-function makeExecutable(filePath) {
-  chmodSync(filePath, 0o755)
+function makeExecutable(filePath, chmod = chmodSync) {
+  chmod(filePath, 0o755)
 }
 
 function patchUnixTerminalAsarPaths(destRoot) {
@@ -437,7 +437,7 @@ const GET_WINDOWS_VERSION = '9.3.0'
 export function stageGetWindowsInto(
   srcRoot,
   destRoot,
-  { platform = process.platform, arch = process.arch, install } = {}
+  { platform = process.platform, arch = process.arch, install, chmod = chmodSync } = {}
 ) {
   // The STAGED_WINDOWS_JS rewrite mirrors this exact version's export surface.
   // A version bump must fail the build here until the rewrite is re-verified —
@@ -475,7 +475,7 @@ export function stageGetWindowsInto(
       throw new Error('[stage-native-deps] get-windows is missing its macOS helper binary (main)')
     }
     cpSync(helper, join(destRoot, 'main'))
-    makeExecutable(join(destRoot, 'main'))
+    makeExecutable(join(destRoot, 'main'), chmod)
   }
 
   if (platform === 'win32') {

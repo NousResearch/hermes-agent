@@ -11229,8 +11229,14 @@ function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onReve
     { onRevealed }
   )
 
-  win.once('ready-to-show', controller.reveal)
-  win.webContents.once('did-finish-load', controller.scheduleFallback)
+  // Packaged E2E can exercise the renderer and IPC boundary without painting
+  // an additional native window on the user's desktop. Production launches
+  // retain the normal themed reveal and watchdog fallback.
+  const headlessE2E = process.env.HERMES_DESKTOP_E2E_HEADLESS === '1'
+  if (!headlessE2E) {
+    win.once('ready-to-show', controller.reveal)
+    win.webContents.once('did-finish-load', controller.scheduleFallback)
+  }
   win.on('closed', controller.dispose)
 
   return controller
@@ -12005,7 +12011,7 @@ function restoreMainWindowFromHud() {
 
   hudRestoreMainWindow = false
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
+  if (mainWindow && !mainWindow.isDestroyed() && process.env.HERMES_DESKTOP_E2E_HEADLESS !== '1') {
     mainWindow.show()
   }
 }
@@ -12382,7 +12388,7 @@ function createWindow() {
   // Under Playwright testing, instantly show the window: `ready-to-show`
   // doesn't fire in some testing envs, and the suite can't wait out the
   // production fallback.
-  if (process.env.TEST_WORKER_INDEX !== undefined) {
+  if (process.env.TEST_WORKER_INDEX !== undefined && process.env.HERMES_DESKTOP_E2E_HEADLESS !== '1') {
     revealController.reveal()
   }
 

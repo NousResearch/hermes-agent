@@ -36,6 +36,22 @@ These constraints apply to Workstation changes in addition to the repository-wid
 - Existing Hermes approval/security gates remain authoritative for sensitive actions. Workstation must not bypass approvals merely because the page is locally visible.
 - Pause/resume/stop/focus/control ownership semantics must remain recoverable and explicit.
 
+## V3 operational hardening
+
+- `RUNNING` requires live, verifiable operational evidence; stale evidence must
+  degrade to `STALLED` rather than leave a zombie operation.
+- Event subscribers are bounded and isolated: a slow client must not block
+  unrelated task/worker events, and structural failures must be observable.
+- Runtime calls, worker waits, MCP pagination/execution and persistence use
+  explicit deadlines/cancellation or bounded failure behavior.
+- Persistent worker messages/results retain sender, parent-task, session,
+  sequence and semantic status; worker stop/failure is never normal completion.
+- Session ownership is cross-process exclusive; migration is backup → validate →
+  promote with rollback, and hot/warm/cold plus compaction markers remain
+  reconstructable from durable state.
+- Recovery and release gates are evidence-driven. Unit tests, typechecks and
+  native browser smoke are separate claims and must not be conflated.
+
 ## Upstream maintenance
 
 - Prefer extending existing code over adding parallel managers or frameworks.

@@ -1,15 +1,37 @@
-import { type ChangeEvent, type FormEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ChangeEvent,
+  type FormEvent,
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { cn } from '@/lib/utils'
 import { $rightRailActiveTabId, selectRightRailTab } from '@/store/layout'
-import { $previewTabs, $sessionPreviewTabs, activeSessionKey, closeRightRail, openWorkstationBrowserPreview } from '@/store/preview'
+import {
+  $previewTabs,
+  $sessionPreviewTabs,
+  activeSessionKey,
+  closeRightRail,
+  openWorkstationBrowserPreview
+} from '@/store/preview'
 
 import { TaskJournalDrawer } from './task-journal-drawer'
 import { TaskRail } from './task-rail'
-import type { BrowserTask, WorkstationBrowserBounds, WorkstationBrowserState, WorkstationBrowserTabState } from './types'
+import type {
+  BrowserTask,
+  WorkstationBrowserBounds,
+  WorkstationBrowserState,
+  WorkstationBrowserTabState,
+  WorkstationResourceSnapshot
+} from './types'
 
 function useOptionalNavigate(): null | ReturnType<typeof useNavigate> {
   try {
@@ -38,16 +60,22 @@ const EMPTY_STATE: WorkstationBrowserState = {
 }
 
 function cacheLabel(bytes: number | null): string {
-  if (bytes == null) {return '—'}
+  if (bytes == null) {
+    return '—'
+  }
   const mb = bytes / (1024 * 1024)
 
   return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.round(mb)} MB`
 }
 
 function shortTitle(tab: WorkstationBrowserTabState): string {
-  if (tab.title && tab.title !== 'New Tab') {return tab.title}
+  if (tab.title && tab.title !== 'New Tab') {
+    return tab.title
+  }
 
-  if (!tab.url || tab.url === 'about:blank') {return 'New Tab'}
+  if (!tab.url || tab.url === 'about:blank') {
+    return 'New Tab'
+  }
 
   try {
     return new URL(tab.url).hostname || tab.url
@@ -89,6 +117,7 @@ export function BrowserView() {
   const [busy, setBusy] = useState(false)
   const [showDownloads, setShowDownloads] = useState(false)
   const [auditTaskId, setAuditTaskId] = useState<string | null>(null)
+  const [resourceSnapshot, setResourceSnapshot] = useState<WorkstationResourceSnapshot | null>(null)
 
   const activeTab = useMemo(
     () => state.tabs.find(tab => tab.id === state.activeTabId) ?? state.tabs[0] ?? null,
@@ -134,7 +163,9 @@ export function BrowserView() {
 
   const run = useCallback(
     async (fn: () => Promise<WorkstationBrowserState>) => {
-      if (!bridge) {return}
+      if (!bridge) {
+        return
+      }
 
       try {
         setBusy(true)
@@ -150,21 +181,29 @@ export function BrowserView() {
 
   const publishBounds = useCallback(
     async (attach = false) => {
-      if (!bridge || !hostRef.current) {return}
+      if (!bridge || !hostRef.current) {
+        return
+      }
       const rect = hostRef.current.getBoundingClientRect()
 
-      if (rect.width < 1 || rect.height < 1) {return}
+      if (rect.width < 1 || rect.height < 1) {
+        return
+      }
       const bounds = rectToBounds(rect)
-      setState(await (attach ? bridge.attach(bounds, 'hub') : bridge.setBounds(bounds)))
+      setState(await (attach ? bridge.attach(bounds, 'hub') : bridge.setBounds(bounds, 'hub')))
     },
     [bridge]
   )
 
   const transferToHub = useCallback(async () => {
-    if (!bridge || !hostRef.current) {return}
+    if (!bridge || !hostRef.current) {
+      return
+    }
     const rect = hostRef.current.getBoundingClientRect()
 
-    if (rect.width < 1 || rect.height < 1) {return}
+    if (rect.width < 1 || rect.height < 1) {
+      return
+    }
     const bounds = rectToBounds(rect)
     setState(await bridge.transferViewport('hub', bounds))
   }, [bridge])
@@ -172,12 +211,16 @@ export function BrowserView() {
   const transferToChat = useCallback(() => {
     openWorkstationBrowserPreview()
 
-    if (navigate) {navigate('/')}
+    if (navigate) {
+      navigate('/')
+    }
   }, [navigate])
 
   const handleSelectTask = useCallback(
     async (task: BrowserTask) => {
-      if (!bridge || !hostRef.current) {return}
+      if (!bridge || !hostRef.current) {
+        return
+      }
       const rect = hostRef.current.getBoundingClientRect()
       const bounds = rectToBounds(rect)
       await bridge.showTask(task.taskId, bounds, 'hub')
@@ -187,7 +230,9 @@ export function BrowserView() {
 
   const handleParkTask = useCallback(
     async (taskId: string) => {
-      if (!bridge) {return}
+      if (!bridge) {
+        return
+      }
       await bridge.parkTask(taskId)
     },
     [bridge]
@@ -195,7 +240,9 @@ export function BrowserView() {
 
   const handleHideTask = useCallback(
     async (taskId: string) => {
-      if (!bridge) {return}
+      if (!bridge) {
+        return
+      }
       await bridge.hideTask(taskId)
     },
     [bridge]
@@ -203,38 +250,47 @@ export function BrowserView() {
 
   const handleDestroyTask = useCallback(
     async (taskId: string) => {
-      if (!bridge) {return}
+      if (!bridge) {
+        return
+      }
       await bridge.destroyTask(taskId)
     },
     [bridge]
   )
 
-  const handleClearParked = useCallback(
-    async () => {
-      if (!bridge) {return}
-      await bridge.clearParkedTasks()
-    },
-    [bridge]
-  )
+  const handleClearParked = useCallback(async () => {
+    if (!bridge) {
+      return
+    }
+    await bridge.clearParkedTasks()
+  }, [bridge])
 
   useEffect(() => {
-    if (!bridge) {return}
+    if (!bridge) {
+      return
+    }
 
     let disposed = false
 
     const off = bridge.onState(next => {
-      if (!disposed) {setState(next)}
+      if (!disposed) {
+        setState(next)
+      }
     })
 
     void bridge
       .ensure()
       .then(next => {
-        if (disposed) {return}
+        if (disposed) {
+          return
+        }
         setState(next)
         requestAnimationFrame(() => void publishBounds(true))
       })
       .catch(error => {
-        if (!disposed) {setState(current => ({ ...current, lastError: String(error) }))}
+        if (!disposed) {
+          setState(current => ({ ...current, lastError: String(error) }))
+        }
       })
 
     return () => {
@@ -247,7 +303,39 @@ export function BrowserView() {
   }, [bridge, publishBounds])
 
   useEffect(() => {
-    if (!bridge || !hostRef.current) {return}
+    if (!bridge?.resources) {
+      return
+    }
+
+    let disposed = false
+    const refresh = () => {
+      void bridge
+        .resources()
+        .then(next => {
+          if (!disposed) {
+            setResourceSnapshot(next)
+          }
+        })
+        .catch(() => {
+          if (!disposed) {
+            setResourceSnapshot(null)
+          }
+        })
+    }
+
+    refresh()
+    const timer = window.setInterval(refresh, 5_000)
+
+    return () => {
+      disposed = true
+      window.clearInterval(timer)
+    }
+  }, [bridge])
+
+  useEffect(() => {
+    if (!bridge || !hostRef.current) {
+      return
+    }
 
     let frame = 0
 
@@ -272,7 +360,9 @@ export function BrowserView() {
   }, [bridge, publishBounds])
 
   useEffect(() => {
-    if (!bridge?.setVisible) {return}
+    if (!bridge?.setVisible) {
+      return
+    }
 
     let isOverlayPresent = false
 
@@ -304,7 +394,9 @@ export function BrowserView() {
   const submitAddress = (event: FormEvent) => {
     event.preventDefault()
 
-    if (!bridge) {return}
+    if (!bridge) {
+      return
+    }
     void run(() => bridge.navigate(address))
   }
 
@@ -433,7 +525,13 @@ export function BrowserView() {
             title={`Controller: ${state.controlReady ? 'ready' : 'offline'} · Profile: ${state.profilePath || 'initializing'}`}
           >
             <span className="size-1.5 rounded-full bg-current" />
-            {state.paused ? 'Paused' : state.controlOwner === 'human' ? 'Human control' : state.controlReady ? 'Agent ready' : 'Controller offline'}
+            {state.paused
+              ? 'Paused'
+              : state.controlOwner === 'human'
+                ? 'Human control'
+                : state.controlReady
+                  ? 'Agent ready'
+                  : 'Controller offline'}
           </div>
         </div>
 
@@ -484,7 +582,8 @@ export function BrowserView() {
             </Button>
           )}
           <span className="ml-auto hidden font-mono text-[10px] text-(--ui-text-quaternary) lg:block">
-            Electron Chromium · persistent profile · cache {cacheLabel(state.cacheBytes)}
+            Electron Chromium · persistent profile · resources {resourceSnapshot?.resources.length ?? '—'} · cache{' '}
+            {cacheLabel(state.cacheBytes)}
           </span>
         </div>
       </div>
@@ -505,9 +604,14 @@ export function BrowserView() {
               const pct = dl.totalBytes > 0 ? Math.round((dl.receivedBytes / dl.totalBytes) * 100) : 0
 
               return (
-                <div className="rounded border border-(--ui-stroke-tertiary) p-1.5 bg-(--ui-card-background)" key={dl.id}>
+                <div
+                  className="rounded border border-(--ui-stroke-tertiary) p-1.5 bg-(--ui-card-background)"
+                  key={dl.id}
+                >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-medium text-(--ui-text-primary)" title={dl.filename}>{dl.filename}</span>
+                    <span className="truncate font-medium text-(--ui-text-primary)" title={dl.filename}>
+                      {dl.filename}
+                    </span>
                     <span className="shrink-0 text-[10px] font-mono text-(--ui-text-tertiary)">
                       {dl.state === 'completed' ? 'Done' : `${pct}%`}
                     </span>
@@ -553,12 +657,7 @@ export function BrowserView() {
           tasks={state.tasks}
         />
 
-        {auditTaskId && (
-          <TaskJournalDrawer
-            onClose={() => setAuditTaskId(null)}
-            taskId={auditTaskId}
-          />
-        )}
+        {auditTaskId && <TaskJournalDrawer onClose={() => setAuditTaskId(null)} taskId={auditTaskId} />}
 
         <div className="relative min-h-0 flex-1 bg-black">
           {/* The Electron main process places the active WebContentsView exactly

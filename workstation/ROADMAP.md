@@ -306,13 +306,67 @@ one user request
   → the same semantic workflow can run on supported Windows or Linux hosts
 ```
 
-## V3.1 — Runtime Resilience, Recovery Plane & Deterministic Routine Promotion — Planned
+### V3.1–V3.4 implementation status — 2026-09-12
+
+The planned Python contract layer is implemented in `workstation/` and is
+validated by 175 Workstation tests plus the versioned Windows process-boundary
+probe `context/engineering-journal/probes/v3-runtime-hardening-smoke.py`.
+The implementation extends the existing owners: `ExecutionJournal`,
+`ProceduralMemory`, `WorkerRegistry`, Hermes sessions, Kanban and BrowserTask;
+it does not add a parallel canonical store or model tool.
+
+Implemented surfaces include:
+
+- EvidenceState and durable reconciliation, bounded RuntimeEventBus with
+  journal mirroring, deadlines/cancellation, typed reconnectable resources and
+  task-scoped budget/model routing;
+- independent subprocess RuntimeSupervisor with watchdog restart/checkpoints,
+  Recovery Plane quarantine/diagnostics and a dependency-light recovery CLI;
+- discover → validate → promote → deterministic routine replay with fail-closed
+  drift handling and journal lineage;
+- persistent WorkerRegistry queue/message/steer/wait/stop/reconstruct lifecycle,
+  structured result envelopes and parent wake-up events;
+- typed temporal memory, recoverable snapshots, hot/warm/cold session metadata,
+  migration rollback, explicit compaction markers, portable redacted traces,
+  side-effect-free replay/fork and model-independent evaluation/soak gates;
+- explicit scoped memory compaction for operational task context, with soak
+  evidence proving a bounded live-record set without pruning procedures or
+  unrelated memory kinds;
+- versioned hidden-window native Browser runtime reconnect soak with real
+  Electron/Chromium pages, composite state restoration and resource lineage;
+- versioned real headless `hermes serve` multi-session/reconnect soak with
+  authenticated WebSocket traffic, streamed turns and durable session resume;
+- versioned H013 integrated hidden-window Desktop/Browser load E2E with four
+  native Chromium BrowserTasks, complete controller/IPC resource-event parity,
+  host-aware viewport transfer, native maximize/restore reconciliation and
+  lifecycle cleanup, plus
+  an expanded eight-task/three-round sustained backend load and a bounded
+  16-task/120-second candidate-release profile with checked JSON evidence via
+  `workstation.desktop_load_evidence`;
+- Control Plane action/spend/network/permission observation, degraded optional
+  boot, bounded MCP execution, extension qualification and versioned A2A/ACP/UHP
+  adapters;
+- production dependency audit gate with the vulnerable transitive frontend
+  packages refreshed in the lockfile without forced upgrades.
+
+The remaining roadmap acceptance gates are evidence gates, not unimplemented
+contracts: clean-machine release qualification, broader event/resource parity
+for future clients and candidate-release confirmation of the full-duration/
+production-scale Desktop/Browser agent/backend profile beyond the locally
+validated H013 run. The
+`workstation.release_qualification` runner and canonical reconnect soak make
+those checks reproducible without inferring clean-machine or Desktop/Browser
+production evidence. The Chromium/Firefox smoke is validated, and the optional
+installed Edge project is also validated when the supported system browser is
+available; neither is claimed as a full release qualification.
+
+## V3.1 — Runtime Resilience, Recovery Plane & Deterministic Routine Promotion — Implemented contract layer
 
 **Purpose:** harden Hermes Workstation as a long-lived agentic system by separating the mechanisms that keep the runtime alive, rescue a broken installation, and replay already-understood workflows from the LLM-driven reasoning path.
 
 This milestone extends existing V2 procedural memory and V2.5 runtime/control-plane work; it must **not** introduce a second Hermes SessionDB, Kanban, Memory store, browser page store, task scheduler, or competing source of truth.
 
-### Independent Runtime Supervisor — Planned
+### Independent Runtime Supervisor — Implemented contract
 
 The process responsible for keeping Hermes alive must live outside the agent runtime it supervises.
 
@@ -324,7 +378,7 @@ The process responsible for keeping Hermes alive must live outside the agent run
 
 **Acceptance:** deliberately crash or self-stop the Hermes runtime and prove the independent supervisor restores service or rolls back to a known-good state without relying on the dead runtime.
 
-### Recovery Plane / Safe Mode — Planned
+### Recovery Plane / Safe Mode — Implemented contract
 
 Recovery must remain available even when the normal Workstation UI, plugin graph, browser surface, or agent runtime is unhealthy.
 
@@ -337,7 +391,7 @@ Recovery must remain available even when the normal Workstation UI, plugin graph
 
 **Acceptance:** break the normal Workstation UI or an optional plugin intentionally and recover to an operational state using only the Recovery Plane, with no manual repository/profile surgery.
 
-### Routine promotion — discover → validate → promote → deterministic replay — Planned
+### Routine promotion — discover → validate → promote → deterministic replay — Implemented contract
 
 V2 `ProceduralMemory` already captures reusable knowledge from successful workflows. V3.1 adds an explicit promotion boundary so a workflow that is understood and validated no longer requires the LLM to rediscover every step on every run.
 
@@ -434,7 +488,7 @@ work and should be hardened there rather than reimplemented:
 The items below are the remaining research-derived gaps or explicit hardening
 requirements.
 
-## V3.2 — Evidence-backed Long-Lived Runtime & AgentOps — Planned
+## V3.2 — Evidence-backed Long-Lived Runtime & AgentOps — Implemented contract layer
 
 **Purpose:** make “running” mean demonstrably running, make long-lived sessions and
 workers operationally bounded, and expose one coherent runtime state to every
@@ -444,7 +498,7 @@ This milestone extends V3.1. It must reuse the canonical `ExecutionJournal`,
 Kanban, BrowserTask, Hermes session/memory owners, `WorkerRegistry`, Policy Engine
 and supervisor; it must not introduce parallel task/session/memory stores.
 
-### EvidenceState + explicit execution state machine — Planned
+### EvidenceState + explicit execution state machine — Implemented contract
 
 Introduce `EvidenceState` as a first-class projection over canonical task/run state.
 
@@ -478,7 +532,7 @@ Rules:
 prove the UI/state projection stops claiming progress without evidence and offers
 the correct recovery/handoff state.
 
-### Event bus, deadlines and backpressure — Planned
+### Event bus, deadlines and backpressure — Implemented contract
 
 Harden runtime ↔ cockpit communication into a complete event contract.
 
@@ -497,7 +551,7 @@ Harden runtime ↔ cockpit communication into a complete event contract.
 **Acceptance:** inject a stuck event/channel and prove unrelated task events
 continue; cancellation/deadline produces an auditable terminal state.
 
-### Durable session ownership, migration and memory lifecycle — Planned
+### Durable session ownership, migration and memory lifecycle — Implemented contract
 
 Treat persistent conversation history and a live persistent agent as separate
 recovery concerns.
@@ -523,7 +577,7 @@ recovery concerns.
 model change, migrate one session, unload/reload cold sessions, and prove identity,
 history and ownership recover without unbounded memory growth.
 
-### Persistent workers: queue → message → steer → wait → stop — Planned
+### Persistent workers: queue → message → steer → wait → stop — Implemented contract
 
 Extend `WorkerRegistry` beyond fire-and-return delegation.
 
@@ -543,7 +597,7 @@ Extend `WorkerRegistry` beyond fire-and-return delegation.
 pause/resume or reconstruct it, then stop it deterministically with complete
 journal/evidence and cost metadata.
 
-### Cost, budget and model/provider routing — Planned
+### Cost, budget and model/provider routing — Implemented contract
 
 Make selection of intelligence an operational policy rather than a UI-only choice.
 
@@ -565,7 +619,15 @@ Make selection of intelligence an operational policy rather than a UI-only choic
 report quality/status, latency, usage/cost and fallback decisions in canonical
 journal metadata.
 
-### Typed Resources + one runtime / many clients — Planned
+### Typed Resources + one runtime / many clients — Implemented contract
+
+The first client boundary is now wired: Electron's BrowserTask/page owner
+publishes bounded, versioned resource and event projections through its
+authenticated loopback controller. Desktop IPC and the Dashboard REST route
+consume those projections, while the TUI gateway exposes the same read-only
+adapters for future clients. Degraded controller health is explicit and
+permissions fail closed to `read`; no client creates a second task or journal
+store.
 
 Formalize a UI-neutral resource contract so capabilities publish typed state and
 interfaces decide how to render it.
@@ -596,7 +658,14 @@ Requirements:
 **Acceptance:** open the same running task from two supported surfaces and prove
 both resolve identical canonical resources without duplicate workers/pages/tasks.
 
-### Human Handoff contract — Planned
+Current adapter evidence covers the Dashboard REST and TUI JSON-RPC surfaces
+over one authenticated controller projection, with identical browser,
+BrowserTask, execution-journal and bounded event identities. The exact packaged
+artifact also passes the complete headless Desktop GUI/HUD smoke and IPC/
+controller identity checks; visible desktop-session reveal and future remote
+clients remain separate evidence gates.
+
+### Human Handoff contract — Implemented contract
 
 Generalize existing take/release-control primitives into a task-level human handoff.
 
@@ -612,9 +681,9 @@ Generalize existing take/release-control primitives into a task-level human hand
 completes login/2FA, returns the same session, and the agent continues with no
 duplicate page/profile.
 
-## V3.3 — Isolation, Protocol Governance & Supply-Chain Hardening — Planned
+## V3.3 — Isolation, Protocol Governance & Supply-Chain Hardening — Implemented contract layer
 
-### Control Plane boundary + independent watchdog — Planned
+### Control Plane boundary + independent watchdog — Implemented contract
 
 Extend the V2.5 Policy Engine and V3.1 supervisor with an independent policy/watch
 path that cannot perform ordinary task work.
@@ -632,7 +701,7 @@ path that cannot perform ordinary task work.
 - Preserve an incident trace showing the sequence of decisions/actions that led to
   a privileged or anomalous operation.
 
-### Plugin / Skill / MCP isolation and degraded boot — Planned
+### Plugin / Skill / MCP isolation and degraded boot — Implemented contract
 
 Optional components must fail independently.
 
@@ -651,7 +720,7 @@ Optional components must fail independently.
 - Secrets/credentials exposed to extensions should be scoped and preferably
   write-only/non-readable where practical.
 
-### Protocol boundary / interoperability — Planned
+### Protocol boundary / interoperability — Implemented contract
 
 Keep Workstation semantics independent of any one external protocol.
 
@@ -664,14 +733,16 @@ Keep Workstation semantics independent of any one external protocol.
   approvals, usage, errors and cancellation even if an external protocol omits them.
 - Version protocol adapters and test compatibility explicitly.
 
-### Upstream ownership & release qualification gate — Planned
+### Upstream ownership & release qualification gate — Implemented contract
 
 For every upstream Hermes update:
 
 1. classify each overlapping capability as `upstream-owned`, `Workstation-owned`
    or `adapter-owned`;
 2. compare imported commit/version, packaged assets and expected integrations;
-3. run clean-machine install/build from the exact candidate release;
+3. run clean-machine install/build from the exact candidate release with an
+   absolute isolated Workstation home outside the checkout, shared by install
+   and doctor;
 4. execute Workstation contract/eval smoke, Windows-native smoke and migration
    preflight;
 5. promote only after validation; retain last-known-good rollback.
@@ -679,9 +750,9 @@ For every upstream Hermes update:
 A stable upstream tag must never be assumed equivalent to `main`, and local caches
 must never be allowed to hide missing release dependencies.
 
-## V3.4 — Memory, Time, Replay & Evaluation — Planned
+## V3.4 — Memory, Time, Replay & Evaluation — Implemented contract layer
 
-### Typed memory + temporal awareness — Planned
+### Typed memory + temporal awareness — Implemented contract
 
 Build typed policy views over existing Hermes Memory ownership, not a second memory DB.
 
@@ -705,7 +776,7 @@ Add:
 - explicit `created_at / observed_at / last_verified_at`;
 - elapsed-time awareness for pending tasks, promises, stale decisions and recovery.
 
-### Portable trace, replay and model fork — Planned
+### Portable trace, replay and model fork — Implemented contract
 
 Extend Execution Journal toward operational replay/evaluation.
 
@@ -717,7 +788,7 @@ Extend Execution Journal toward operational replay/evaluation.
 - Preserve exact model/provider/tool/policy/version metadata needed to explain why
   behavior changed between runs.
 
-### Evaluation & efficiency gates — Planned
+### Evaluation & efficiency gates — Implemented contract
 
 - Model-independent harness evals separate model quality from harness/runtime quality.
 - Long-duration soak tests for sessions, workers, memory and reconnect behavior.

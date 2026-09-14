@@ -29,6 +29,7 @@ vi.mock('../shell/hooks/use-statusbar-items', () => ({
 }))
 vi.mock('../shell/statusbar-controls', () => ({ StatusbarControls: () => null }))
 vi.mock('../routes', () => ({
+  BROWSER_ROUTE: '/browser',
   contributedRoutes: () => [],
   NEW_CHAT_ROUTE: '/new',
   ROUTES_AREA: 'routes',

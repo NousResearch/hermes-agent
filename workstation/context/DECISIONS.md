@@ -69,6 +69,21 @@ Known, causally classified debt may remain open when its scope and evidence are
 explicit. An unclassified material delta, stale active predecessor, or required
 artifact available only on another branch blocks the handoff.
 
+## D-013 — V3 operational state is a projection, not a new canonical owner
+
+EvidenceState, typed resources, event delivery, session lifecycle metadata,
+worker persistence, Recovery Plane records and evaluation traces are
+operational projections over Hermes' canonical SessionDB, Kanban, Memory,
+BrowserTask and ExecutionJournal owners. They may persist identities, leases,
+evidence and recovery copies, but they must not become a second task/session/
+memory/browser database or agent core.
+
+The independent supervisor is allowed to own runtime process liveness and
+restart/rollback metadata. The Recovery Plane is allowed to quarantine optional
+components. Neither is allowed to perform ordinary task work or weaken Policy
+Engine/approval boundaries. External A2A/ACP/UHP protocols are adapters into
+the canonical event/resource contracts, never alternative state owners.
+
 ## Changing a decision
 
 A replacement decision must state which decision it supersedes, why the old invariant no longer holds, how migration/backward compatibility is handled, and which tests prove the new contract. Do not silently drift architecture through implementation-only changes.

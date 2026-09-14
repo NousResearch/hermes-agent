@@ -24,3 +24,10 @@ Initial metrics:
 
 Reference suites: BrowseWebApp Bench and BrowserTransactionBench. We do not
 vendor their datasets in this patch.
+
+The model-independent harness lives in `workstation/evaluation.py`. It records
+success, safety, actions, latency, tokens and cost; compares a candidate with a
+baseline under an explicit regression budget; and provides a bounded soak
+runner. When given an `ExecutionJournal`, each evaluation result is recorded as
+operational metadata so routing/fallback changes remain inspectable without
+persisting private model reasoning.

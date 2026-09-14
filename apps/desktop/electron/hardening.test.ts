@@ -28,10 +28,11 @@ import {
 } from './hardening'
 
 /**
- * Real temp dir per test: the property under test IS the on-disk mode after a
- * temp-file-then-rename, which a mocked fs would assert into existence rather
- * than verify. `platform` is still injected so the Windows branch is coverable
- * from a POSIX run.
+ * Real temp dir per test: on POSIX, the property under test IS the on-disk mode
+ * after a temp-file-then-rename, which a mocked fs would assert into existence
+ * rather than verify. Windows does not expose POSIX mode bits through Node, so
+ * those assertions verify the file remains readable and writable while the
+ * injected-fs tests cover the no-chmod ACL-preserving branch.
  */
 function withTempDir(run: (dir: string) => void) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-secret-file-'))
@@ -45,6 +46,26 @@ function withTempDir(run: (dir: string) => void) {
 
 function modeOf(filePath: string) {
   return fs.statSync(filePath).mode & 0o777
+}
+
+function assertOwnerOnlyMode(filePath: string, message = 'file must be owner-only') {
+  if (process.platform === 'win32') {
+    // Node's Windows mode field is not an ACL. The production contract there
+    // is to leave the userData ACL intact and keep the file writable; chmod
+    // would only toggle the read-only attribute.
+    fs.accessSync(filePath, fs.constants.R_OK | fs.constants.W_OK)
+
+    return
+  }
+
+  assert.equal(modeOf(filePath), SECRET_FILE_MODE, message)
+  assert.equal(modeOf(filePath) & 0o077, 0, 'no group/other bits')
+}
+
+function assertModeWhenSupported(filePath: string, expected: number, message?: string) {
+  if (process.platform !== 'win32') {
+    assert.equal(modeOf(filePath), expected, message)
+  }
 }
 
 /**
@@ -161,8 +182,7 @@ test('writeSecretFileAtomic creates the file owner-only, not at the 0644 umask d
 
     writeSecretFileAtomic(target, payload)
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
-    assert.equal(modeOf(target) & 0o077, 0, 'no group/other bits')
+    assertOwnerOnlyMode(target)
     assert.equal(fs.readFileSync(target, 'utf8'), payload, 'content round-trips')
     assertNoSecretDebris(dir, 'connection.json', 'BLOB')
   })
@@ -392,7 +412,7 @@ test('writeSecretFileAtomic does not inherit loose bits from a stale temp file',
 
     writeSecretFileAtomic(target, 'fresh')
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assertOwnerOnlyMode(target)
     assert.equal(fs.readFileSync(target, 'utf8'), 'fresh')
   })
 })
@@ -430,7 +450,7 @@ test('the written file is owner-only even where chmod does nothing', () => {
       process.umask(previousUmask)
     }
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE, 'created owner-only, not tightened after the fact')
+    assertOwnerOnlyMode(target, 'created owner-only, not tightened after the fact')
   })
 })
 
@@ -444,7 +464,7 @@ test('the written file is owner-only even when a stale temp cannot be removed', 
 
     writeSecretFileAtomic(target, 'tok', { fs: fsWith({ rmSync: () => void 0 }) })
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE, 'tightened before the rename handed the bits over')
+    assertOwnerOnlyMode(target, 'tightened before the rename handed the bits over')
     assert.equal(fs.readFileSync(target, 'utf8'), 'tok')
   })
 })
@@ -471,10 +491,10 @@ test('writeSecretFileAtomic cannot be redirected through a symlink planted at th
     writeSecretFileAtomic(target, 'tok-live-42')
 
     assert.equal(fs.readFileSync(victim, 'utf8'), 'original', 'the symlink target was not written through')
-    assert.equal(modeOf(victim), 0o644, 'the victim file was not chmodded either')
+    assertModeWhenSupported(victim, 0o644, 'the victim file was not chmodded either')
     assert.equal(fs.readFileSync(target, 'utf8'), 'tok-live-42')
     assert.equal(fs.lstatSync(target).isSymbolicLink(), false, 'the target is a real file, not the planted link')
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assertOwnerOnlyMode(target)
   })
 })
 
@@ -496,11 +516,11 @@ test('tightenSecretFileMode tightens a pre-existing world-readable config in pla
     })
 
     fs.writeFileSync(target, legacy, { mode: 0o644 })
-    assert.equal(modeOf(target), 0o644)
+    assertModeWhenSupported(target, 0o644)
 
     assert.equal(tightenSecretFileMode(target), true)
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assertOwnerOnlyMode(target)
     assert.deepEqual(JSON.parse(fs.readFileSync(target, 'utf8')), JSON.parse(legacy), 'contents untouched')
   })
 })
@@ -522,7 +542,7 @@ test('tightenSecretFileMode leaves a non-safeStorage token payload readable', ()
 
     tightenSecretFileMode(target)
 
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assertOwnerOnlyMode(target)
     assert.equal(JSON.parse(fs.readFileSync(target, 'utf8')).remote.token.value, 'tok-live-42')
   })
 })
@@ -534,11 +554,12 @@ test('tightenSecretFileMode is idempotent and never throws on an unusable path',
 
     assert.equal(tightenSecretFileMode(target), true)
     assert.equal(tightenSecretFileMode(target), true)
-    assert.equal(modeOf(target), SECRET_FILE_MODE)
+    assertOwnerOnlyMode(target)
 
-    // Missing file (fresh install, nothing saved yet) reports failure quietly
-    // instead of breaking the read path it is called from.
-    assert.equal(tightenSecretFileMode(path.join(dir, 'absent.json')), false)
+    // Missing files report failure quietly on POSIX instead of breaking the
+    // read path. Windows intentionally treats ACL-preserving no-op hardening
+    // as success, including when there is nothing to tighten.
+    assert.equal(tightenSecretFileMode(path.join(dir, 'absent.json')), process.platform === 'win32')
   })
 })
 
@@ -562,7 +583,7 @@ test('tightenSecretFileMode refuses to chmod a symlink instead of following it t
     }
 
     assert.equal(tightenSecretFileMode(target), false, 'reports "not tightened" rather than acting on the link')
-    assert.equal(modeOf(victim), 0o644, 'the symlink target keeps its own mode')
+    assertModeWhenSupported(victim, 0o644, 'the symlink target keeps its own mode')
   })
 })
 
@@ -584,18 +605,22 @@ test('tightenSecretFileMode only touches a regular file the current user owns', 
   const uid = typeof process.getuid === 'function' ? process.getuid() : 0
 
   assert.equal(
-    tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ isFile: () => false }), platform: 'linux' }),
+    tightenSecretFileMode('/x/connection.json', {
+      fs: fakeFs({ isFile: () => false }),
+      platform: 'linux',
+      userId: uid
+    }),
     false
   )
   assert.equal(
-    tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid: uid + 1 }), platform: 'linux' }),
+    tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid: uid + 1 }), platform: 'linux', userId: uid }),
     false,
     'a file owned by another user is left alone'
   )
   assert.deepEqual(chmodded, [], 'nothing was chmodded on the rejected paths')
 
   // The same fs shape, but ours and loose: now it tightens.
-  assert.equal(tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid }), platform: 'linux' }), true)
+  assert.equal(tightenSecretFileMode('/x/connection.json', { fs: fakeFs({ uid }), platform: 'linux', userId: uid }), true)
   assert.deepEqual(chmodded, ['/x/connection.json'])
 })
 
@@ -620,7 +645,7 @@ test('tightenSecretFileMode leaves Windows alone rather than flipping the read-o
 
   // Same fs, POSIX: the chmod does happen, proving the platform gate is what
   // suppressed it above.
-  assert.equal(tightenSecretFileMode('/home/me/connection.json', { fs: fakeFs, platform: 'linux' }), true)
+  assert.equal(tightenSecretFileMode('/home/me/connection.json', { fs: fakeFs, platform: 'linux', userId: 0 }), true)
   assert.ok(chmods.includes('/home/me/connection.json'), 'the POSIX path was tightened')
 })
 

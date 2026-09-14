@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import path from 'node:path'
 
 import { test } from 'vitest'
 
@@ -36,6 +37,7 @@ test('collectSshConfigHosts follows Include directives (read-only)', () => {
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
+    path: path.posix,
     readFile: p => files[p] ?? null
   })
 
@@ -54,6 +56,7 @@ test('collectSshConfigHosts does not loop on a self-include cycle', () => {
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
+    path: path.posix,
     readFile: p => files[p] ?? null
   })
 
@@ -69,6 +72,7 @@ test('collectSshConfigHosts expands globbed includes via injected globSync', () 
 
   const hosts = collectSshConfigHosts('/home/u/.ssh/config', {
     homeDir: '/home/u',
+    path: path.posix,
     readFile: p => files[p] ?? null,
     globSync: pattern =>
       pattern.endsWith('config.d/*') ? ['/home/u/.ssh/config.d/10-work', '/home/u/.ssh/config.d/20-home'] : [pattern]

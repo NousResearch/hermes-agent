@@ -10,9 +10,13 @@ This file records observed/reproduced gaps and the evidence boundary around them
 
 **Target invariant:** Workstation-mode Preview compatibility and Browser Hub/Chat Browser View reference one BrowserTask/live page.
 
-**Pre-1.5 status:** still open. Promoted BrowserSessionState deliberately does not
-collapse Preview into the Workstation runtime. The V1 #1.5 compatibility slice
-must reuse/refuse duplication before later V1 #4 hardening.
+**Current status:** the MVP invariant is resolved. Chat Browser View, Browser
+Hub and Workstation Preview reuse the same BrowserTask/runtime identity, and
+the single-host transfer path is covered by
+`apps/desktop/electron/workstation-browser-runtime-viewport.test.ts` plus the
+packaged GUI smoke. Full Preview action parity, richer layouts and exhaustive
+reconnect/compatibility coverage remain follow-up hardening rather than a
+second browser lane.
 
 ## KI-004 — Native browser surface can overlap another Desktop pane
 
@@ -22,11 +26,17 @@ must reuse/refuse duplication before later V1 #4 hardening.
 
 **Target invariant:** one live `WebContentsView` host at a time plus an explicit host/viewport ownership contract; validate resize, maximize/restore, sidebar/pane changes, and host transfer.
 
-**Pre-1.5 status:** BrowserTask lifecycle makes a single-host transfer contract
-possible, but Chat/Hub/Preview host unification is not implemented yet. This
-issue remains open and needs native composition evidence.
+**Current status:** the shared-surface overlap invariant is resolved.
+`viewportHost` and `transferViewport()` move the same `WebContentsView` between
+Hub and Chat, while host-aware `setBounds` rejects stale geometry from a
+non-owner pane. The focused runtime tests cover host rejection, zoom/clamp
+normalization and cross-window rehoming. The runtime also reconciles the active
+view on native window resize/maximize/restore events, and H013 validates that
+matrix against a real hidden Electron/Chromium view. More complex pane races,
+compositor transitions and broader native composition evidence remain open
+hardening work.
 
-## KI-006 — Broad Windows Desktop suites contain pre-existing portability/test failures
+## KI-006 — Broad Windows Desktop suites contain pre-existing portability/test failures [RESOLVED]
 
 **Observed:** after the canonical-source installer reached a clean install and passing Desktop typecheck, the broad UI and Electron/platform suites remained red on Windows.
 
@@ -53,9 +63,30 @@ across unrelated POSIX path/mode/symlink/SSH/platform assumptions. This is the
 current exact-head manifestation of the same KI-006 class, not a
 BrowserSessionState failure.
 
-**Current policy:** keep the broad workflow red while these failures exist. UI and platform suites run independently and a final aggregator preserves failure if either is red. A green focused BrowserTask step does not convert the broad red gate into a pass.
+**Resolution on the current working tree (HW-018, 2026-09-11):** the
+underlying Windows contracts were fixed and validated without disabling or
+deleting coverage:
 
-**Required action:** fix the underlying Windows portability/test assumptions in a separate scoped implementation with baseline regression tests. Do not weaken or delete those suites merely to make Workstation CI green.
+- deterministic English locale formatting now keeps UI output stable across
+  host locales, and the new-session Preview promotion preserves tabs when the
+  stored session id arrives after the runtime session;
+- POSIX fixture paths use an explicit path adapter, while Windows venv paths
+  use Windows grammar;
+- POSIX mode assertions now remain strict on POSIX and validate the Windows
+  ACL-preserving/writable contract instead of requiring meaningless Node mode
+  bits;
+- Git path comparisons use native physical paths and non-repository probes
+  avoid leaving Windows cwd handles locked;
+- SSH ControlMaster tests opt into mux behavior explicitly, while no-mux
+  behavior remains covered separately;
+- WSL UNC selection no longer performs a blocking synchronous network share
+  probe, and native staging tests verify the requested executable mode through
+  an injected boundary.
+
+Validation: Desktop UI **591 files / 5,669 tests passed**; Desktop
+platform/Electron **126 files / 1,760 tests passed, 5 skipped**; Desktop
+typecheck passed. The baseline comparison above remains historical evidence;
+KI-006 is no longer an open failure on this working tree.
 
 ## KI-007 — `Session not found` / exported `session: null`
 
@@ -64,6 +95,47 @@ BrowserSessionState failure.
 **Causality status:** **unproven**. Preview/browser behavior has independent reproduced gaps, so this issue must not be used as their explanation without a causal trace.
 
 **Required proof before any SessionDB/Gateway change:** reproduce on current `main` → identify endpoint/caller/session id → determine lineage/compression/rotation expectations → identify the responsible line/race → add regression test → only then change core.
+
+## KI-008 — V3 product-level acceptance evidence is still open
+
+**Observed:** the V3.1–V3.4 Python contract layer is implemented and validated,
+including a Windows process-boundary smoke, and bounded native Browser plus
+real headless-backend reconnect soaks now pass. The roadmap still requires
+clean-machine release qualification, full event/resource parity beyond the
+current clients and full-duration/production-scale Desktop/Browser load. The
+Chromium/Firefox/Edge browser smoke is now validated separately when Edge is
+available.
+
+**Causality status:** **not a product failure; evidence boundary is explicit.**
+The contract tests do not prove behavior that they do not exercise. The
+historical KI-006 Desktop portability debt is resolved on the current working
+tree, while the remaining V3 release evidence gates are still separate.
+
+**Required action:** run the Windows clean-machine release workflow (which now
+emits candidate-matched install/build evidence and the configured H013
+hidden-window Desktop/Browser load gate, including its bounded 16-task/
+120-second candidate profile (locally validated, but still unqualified on a
+clean candidate) and the full-duration/production-scale
+Desktop/Browser load gate on a candidate release, and extend client parity as new supported
+surfaces are added, before promoting V3.1–V3.4 from “contract layer validated”
+to fully accepted. Do not mark those gates green from unit-test coverage alone;
+the bounded H011/H012 probes and local H013 integrated E2E are evidence, not a
+substitute for the clean-machine/release-candidate gate.
+
+## KI-009 — Packaged Desktop GUI E2E target initialization [RESOLVED]
+
+**Original symptom:** the packaged Windows artifact loaded its real renderer,
+but Playwright's Electron `beforeAll` waited for a detached Workstation
+`WebContentsView` target and ended at the 90-second hook timeout.
+
+**Resolution:** Workstation controller startup no longer creates a browser view
+until the UI or a `browser_*` action needs one. The E2E fixture isolates
+`HERMES_WORKSTATION_HOME`, injects the Electron loader for the custom packaged
+executable and tolerates only 1 px of native subpixel geometry rounding.
+
+**Evidence:** the original packaged GUI gate passed **5 passed (26.4s)**;
+the latest run including the shared-resource identity check passed **6 passed
+(28.3s)**.
 
 ## Resolved regression classes
 

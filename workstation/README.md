@@ -124,9 +124,35 @@ in `context/MAINLINE_CONSOLIDATION.md`. V1 #1.5 is therefore the next
 implementation track and must branch only from `main`.
 
 Automatic Kanban promotion/orchestration, shared Chat/Hub hosting, LAN settings,
-Execution Journal, memory/perception/drift and specialist runtime paths remain
-unimplemented until their real 1.5 slices land. The original numbered milestones
-remain in place for later architectural hardening.
+Execution Journal, procedural memory/perception/drift and specialist runtime
+paths are implemented in the existing owners. The V3 runtime-hardening layer
+adds evidence projections, bounded events/deadlines, independent supervision,
+Recovery Plane CLI, deterministic routine promotion, persistent worker control,
+temporal memory/snapshots, portable replay, protocol adapters and evaluation
+gates without creating parallel SessionDB/Kanban/Memory/browser stores.
+
+The V3 contract layer is validated by `workstation/tests/` and the versioned
+Windows process-boundary probe
+`context/engineering-journal/probes/v3-runtime-hardening-smoke.py`. The
+read-only `workstation.release_qualification` runner now produces a bounded
+  report for the local, native and migration stages and requires an explicit
+  candidate-matched clean-install report. The shared `/resources` and bounded
+  `/events` projections feed Desktop IPC, Dashboard REST and TUI JSON-RPC from
+  the same Electron-owned state. `python -m workstation.soak` exercises
+  canonical session/lease, journal and worker stop/reconstruct behavior with
+  bounded duration and iteration evidence. The versioned H012 probe additionally
+  drives the real headless `hermes serve` WebSocket backend through concurrent
+  streamed turns and process restarts. The H013 E2E additionally exercises four
+  native Chromium BrowserTasks through the hidden-window Desktop controller,
+  IPC projection, host-aware viewport transfer and native maximize/restore
+  reconciliation; the sustained gate also exercises eight tasks across three
+  rounds and real backend chat turns. Product integration beyond the current
+  resource adapters, clean-machine release qualification and full
+  Desktop/Browser soak remain explicit evidence gates rather than implied by
+  unit tests. The initial Chromium/Firefox Dashboard smoke is validated.
+  Operational `TASK_CONTEXT` records in the reconnect scenario use explicit
+  scoped compaction with persisted stale-writer reconciliation; the latest
+  four-session soak kept live memory within its eight-record-per-session bound.
 
 See `ARCHITECTURE.md`, `ROADMAP.md`, `UPSTREAM_DELTA.md`, and
 `context/MAINLINE_CONSOLIDATION.md`.

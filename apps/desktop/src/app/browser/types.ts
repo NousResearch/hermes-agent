@@ -66,9 +66,51 @@ export interface WorkstationBrowserState {
   lastError: string | null
 }
 
+export interface WorkstationResource {
+  resource_type: 'browser' | 'browser_task' | 'execution_journal'
+  resource_id: string
+  task_id: string | null
+  session_id: string | null
+  permissions: string[]
+  state: Record<string, unknown>
+  updated_at: string
+}
+
+export interface WorkstationResourceSnapshot {
+  schema_version: 1
+  runtime: 'electron-chromium'
+  generated_at: string
+  resources: WorkstationResource[]
+}
+
+export interface WorkstationEvent {
+  event_id: string
+  kind: string
+  task_id: string
+  session_id: string
+  message: string
+  timestamp: string
+  elapsed_seconds?: number
+  url?: string | null
+  browser_tab_id?: string | null
+  risk?: string
+  metadata?: Record<string, unknown>
+  evidence?: Array<Record<string, unknown>>
+}
+
+export interface WorkstationEventSnapshot {
+  schema_version: 1
+  runtime: 'electron-chromium'
+  generated_at: string
+  task_id: string | null
+  events: WorkstationEvent[]
+}
+
 export interface WorkstationBrowserBridge {
   status: () => Promise<WorkstationBrowserState>
   ensure: () => Promise<WorkstationBrowserState>
+  resources: () => Promise<WorkstationResourceSnapshot>
+  events?: (taskId?: string | null, limit?: number) => Promise<WorkstationEventSnapshot>
   newTab: (target?: string) => Promise<WorkstationBrowserState>
   activateTab: (tabId: string) => Promise<WorkstationBrowserState>
   closeTab: (tabId: string) => Promise<WorkstationBrowserState>
@@ -79,7 +121,7 @@ export interface WorkstationBrowserBridge {
   stop: () => Promise<WorkstationBrowserState>
   focus: () => Promise<WorkstationBrowserState>
   attach: (bounds: WorkstationBrowserBounds, host?: string) => Promise<WorkstationBrowserState>
-  setBounds: (bounds: WorkstationBrowserBounds) => Promise<WorkstationBrowserState>
+  setBounds: (bounds: WorkstationBrowserBounds, expectedHost?: string) => Promise<WorkstationBrowserState>
   detach: () => Promise<WorkstationBrowserState>
   setVisible: (visible: boolean) => Promise<WorkstationBrowserState>
   clearError: () => Promise<WorkstationBrowserState>

@@ -38,7 +38,9 @@ const electron = vi.hoisted(() => {
     }
 
     private emit(event: string, ...args: unknown[]): void {
-      for (const listener of this.listeners.get(event) ?? []) {listener(...args)}
+      for (const listener of this.listeners.get(event) ?? []) {
+        listener(...args)
+      }
     }
 
     setWindowOpenHandler(handler: (details: { url: string }) => { action: string }): void {
@@ -74,7 +76,9 @@ const electron = vi.hoisted(() => {
     }
 
     close(): void {
-      if (this.destroyed) {return}
+      if (this.destroyed) {
+        return
+      }
       this.destroyed = true
       this.emit('destroyed')
     }
@@ -99,7 +103,9 @@ const electron = vi.hoisted(() => {
 
       return {}
     }
-    async capturePage(): Promise<{ toPNG: () => Uint8Array }> { return { toPNG: () => new Uint8Array() } }
+    async capturePage(): Promise<{ toPNG: () => Uint8Array }> {
+      return { toPNG: () => new Uint8Array() }
+    }
 
     simulateRenderProcessGone(): void {
       this.emit('render-process-gone', {}, { reason: 'crashed' })
@@ -120,7 +126,9 @@ const electron = vi.hoisted(() => {
     readonly contentView = {
       children: [] as FakeWebContentsView[],
       addChildView: (view: FakeWebContentsView) => {
-        if (!this.contentView.children.includes(view)) {this.contentView.children.push(view)}
+        if (!this.contentView.children.includes(view)) {
+          this.contentView.children.push(view)
+        }
       },
       removeChildView: (view: FakeWebContentsView) => {
         this.contentView.children = this.contentView.children.filter(candidate => candidate !== view)
@@ -189,7 +197,9 @@ afterEach(() => {
   delete process.env.HERMES_WORKSTATION_HOME
   electron.windows.splice(0)
 
-  for (const root of tempRoots.splice(0)) {fs.rmSync(root, { recursive: true, force: true })}
+  for (const root of tempRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 function runtimeHome(): string {
@@ -218,7 +228,9 @@ function interruptibleSessionPersistence(home: string): {
         throw new Error('simulated BrowserSessionState projection interruption')
       }
 
-      if (successfulReplacementsBeforeFailure !== null) {successfulReplacementsBeforeFailure -= 1}
+      if (successfulReplacementsBeforeFailure !== null) {
+        successfulReplacementsBeforeFailure -= 1
+      }
       fs.renameSync(...args)
     }
   }
@@ -346,7 +358,10 @@ test('a lazy BrowserTask remains the logical active tab until its page is recrea
 
   const second = new WorkstationBrowserRuntime()
   const beforeShow = second.ensure()
-  assert.equal(beforeShow.tabs.some(tab => tab.ownerTaskId === 'task-active'), false)
+  assert.equal(
+    beforeShow.tabs.some(tab => tab.ownerTaskId === 'task-active'),
+    false
+  )
   assert.equal(JSON.parse(fs.readFileSync(workstationBrowserSessionStatePath(), 'utf-8')).activeTabId, taskTab.id)
 
   second.showTask('task-active', hostWindow() as never, { x: 0, y: 0, width: 900, height: 600 })
@@ -420,8 +435,14 @@ test('C1 create interruption recovers new BrowserTask metadata with the previous
   // advanced, while the sanitized tabs/active projection is still previous.
   const intermediate = persistedComposite()
   assert.deepEqual(intermediate.tabs, before.tabs)
-  assert.deepEqual(intermediate.browserTasks.tasks.map(task => task.taskId), ['task-c1'])
-  assert.equal(intermediate.tabs.some(tab => tab.browserTaskId === 'task-c1'), false)
+  assert.deepEqual(
+    intermediate.browserTasks.tasks.map(task => task.taskId),
+    ['task-c1']
+  )
+  assert.equal(
+    intermediate.tabs.some(tab => tab.browserTaskId === 'task-c1'),
+    false
+  )
   const serializedIntermediate = JSON.stringify(intermediate)
   assert.equal(serializedIntermediate.includes('c1-query-secret'), false)
   assert.equal(serializedIntermediate.includes('Recovery code 482913'), false)
@@ -430,7 +451,10 @@ test('C1 create interruption recovers new BrowserTask metadata with the previous
   const beforeShow = recovered.ensure()
   assert.equal(recovered.listTasks().filter(task => task.taskId === 'task-c1').length, 1)
   assert.equal(recovered.listTasks()[0]?.status, 'parked')
-  assert.equal(beforeShow.tabs.some(tab => tab.ownerTaskId === 'task-c1'), false)
+  assert.equal(
+    beforeShow.tabs.some(tab => tab.ownerTaskId === 'task-c1'),
+    false
+  )
 
   recovered.showTask('task-c1', hostWindow() as never, { x: 0, y: 0, width: 900, height: 600 })
   const owned = recovered.state().tabs.filter(tab => tab.ownerTaskId === 'task-c1')
@@ -438,7 +462,10 @@ test('C1 create interruption recovers new BrowserTask metadata with the previous
   assert.equal(recovered.state().activeTabId, owned[0].id)
 
   const canonical = persistedComposite()
-  assert.deepEqual(canonical.browserTasks.tasks.map(task => task.taskId), ['task-c1'])
+  assert.deepEqual(
+    canonical.browserTasks.tasks.map(task => task.taskId),
+    ['task-c1']
+  )
   assert.equal(canonical.tabs.filter(tab => tab.browserTaskId === 'task-c1').length, 1)
   assert.deepEqual(
     canonical.tabs.map(tab => tab.id),
@@ -461,7 +488,10 @@ test('C2 show interruption recovers one lazy task from new lifecycle metadata pl
   const fault = interruptibleSessionPersistence(home)
   const interrupted = new WorkstationBrowserRuntime(fault.persistence)
   const lazyState = interrupted.ensure()
-  assert.equal(lazyState.tabs.some(tab => tab.ownerTaskId === 'task-c2'), false)
+  assert.equal(
+    lazyState.tabs.some(tab => tab.ownerTaskId === 'task-c2'),
+    false
+  )
   const previousProjection = persistedComposite()
   const pendingTaskTab = previousProjection.tabs.find(tab => tab.browserTaskId === 'task-c2')
   assert.ok(pendingTaskTab)
@@ -487,7 +517,10 @@ test('C2 show interruption recovers one lazy task from new lifecycle metadata pl
   const beforeShow = recovered.ensure()
   assert.equal(recovered.listTasks().filter(task => task.taskId === 'task-c2').length, 1)
   assert.equal(recovered.listTasks()[0]?.status, 'parked')
-  assert.equal(beforeShow.tabs.some(tab => tab.ownerTaskId === 'task-c2'), false)
+  assert.equal(
+    beforeShow.tabs.some(tab => tab.ownerTaskId === 'task-c2'),
+    false
+  )
 
   recovered.showTask('task-c2', hostWindow() as never, { x: 0, y: 0, width: 900, height: 600 })
   recovered.showTask('task-c2', hostWindow() as never, { x: 0, y: 0, width: 900, height: 600 })
@@ -518,7 +551,9 @@ test('C3 destroy interruption drops the removed task and orphan projection deter
   interrupted.createTask({ taskId: 'task-c3' })
   const taskTab = interrupted.state().tabs.find(tab => tab.ownerTaskId === 'task-c3')
   assert.ok(taskTab)
-  const taskContents = interrupted.getWebContents(taskTab.id) as unknown as InstanceType<typeof electron.FakeWebContents>
+  const taskContents = interrupted.getWebContents(taskTab.id) as unknown as InstanceType<
+    typeof electron.FakeWebContents
+  >
   interrupted.activateTab(taskTab.id)
 
   fault.failAfterSuccessfulReplacements(1)
@@ -527,13 +562,19 @@ test('C3 destroy interruption drops the removed task and orphan projection deter
 
   const intermediate = persistedComposite()
   assert.deepEqual(intermediate.browserTasks.tasks, [])
-  assert.equal(intermediate.tabs.some(tab => tab.browserTaskId === 'task-c3'), false)
+  assert.equal(
+    intermediate.tabs.some(tab => tab.browserTaskId === 'task-c3'),
+    false
+  )
   assert.equal(intermediate.activeTabId, null)
 
   const recovered = new WorkstationBrowserRuntime()
   const state = recovered.ensure()
   assert.deepEqual(recovered.listTasks(), [])
-  assert.equal(state.tabs.some(tab => tab.ownerTaskId === 'task-c3'), false)
+  assert.equal(
+    state.tabs.some(tab => tab.ownerTaskId === 'task-c3'),
+    false
+  )
   assert.equal(state.tabs.filter(tab => tab.id === ordinary.id).length, 1)
   assert.equal(state.activeTabId, ordinary.id)
   assert.throws(
@@ -543,7 +584,10 @@ test('C3 destroy interruption drops the removed task and orphan projection deter
 
   const canonical = persistedComposite()
   assert.deepEqual(canonical.browserTasks.tasks, [])
-  assert.equal(canonical.tabs.some(tab => tab.browserTaskId === 'task-c3'), false)
+  assert.equal(
+    canonical.tabs.some(tab => tab.browserTaskId === 'task-c3'),
+    false
+  )
   assert.deepEqual(
     canonical.tabs.map(tab => tab.id),
     state.tabs.map(tab => tab.id)
@@ -679,10 +723,19 @@ test('destroying the active BrowserTask activates the remaining isolated task pa
 
   assert.equal(runtime.destroyTask('task-a'), true)
   const state = runtime.state()
-  assert.equal(state.tabs.some(candidate => candidate.ownerTaskId === 'task-a'), false)
+  assert.equal(
+    state.tabs.some(candidate => candidate.ownerTaskId === 'task-a'),
+    false
+  )
   assert.equal(state.tabs.filter(candidate => candidate.ownerTaskId === 'task-b').length, 1)
   assert.equal(state.activeTabId, taskB.id)
-  assert.equal(runtime.listTasks().map(task => task.taskId).join(','), 'task-b')
+  assert.equal(
+    runtime
+      .listTasks()
+      .map(task => task.taskId)
+      .join(','),
+    'task-b'
+  )
 
   await runtime.destroy()
 })
@@ -701,7 +754,10 @@ test('runtime restart keeps task metadata parked and recreates a page only on sh
   assert.equal(restored[0].taskId, 'task-persisted')
   assert.equal(restored[0].status, 'parked')
   assert.equal(restored[0].recoveryState, 'restored')
-  assert.equal(second.state().tabs.some(tab => tab.ownerTaskId === 'task-persisted'), false)
+  assert.equal(
+    second.state().tabs.some(tab => tab.ownerTaskId === 'task-persisted'),
+    false
+  )
 
   const shown = second.showTask('task-persisted', hostWindow() as never, { x: 0, y: 0, width: 900, height: 600 })
   assert.equal(shown.recoveryState, 'recreated')

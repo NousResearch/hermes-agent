@@ -54,6 +54,8 @@ interface SecretFileOptions {
   encoding?: BufferEncoding
   fs?: SecretFileFs
   platform?: string
+  /** Injected only by cross-platform tests when emulating POSIX on Windows. */
+  userId?: number
 }
 
 /**
@@ -95,7 +97,18 @@ function tightenSecretFileMode(filePath, options: SecretFileOptions = {}) {
       return false
     }
 
-    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+    const currentUserId =
+      options.userId ??
+      (platform === process.platform && typeof process.getuid === 'function' ? process.getuid() : undefined)
+
+    // A forced POSIX platform on a host without getuid cannot establish
+    // ownership safely. The real POSIX path always has getuid; the explicit
+    // option exists so tests can exercise that path on Windows.
+    if (currentUserId == null) {
+      return false
+    }
+
+    if (stat.uid !== currentUserId) {
       return false
     }
 

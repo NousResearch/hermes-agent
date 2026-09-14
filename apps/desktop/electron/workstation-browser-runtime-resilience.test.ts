@@ -231,9 +231,13 @@ function persistedTaskIds(): string[] {
   return composite.browserTasks.tasks.map(task => task.taskId)
 }
 
-function persistedTask(taskId: string): { taskId: string; sessionHost: string | null; kanbanCardId?: string | null; runId?: string | null } | undefined {
+function persistedTask(
+  taskId: string
+): { taskId: string; sessionHost: string | null; kanbanCardId?: string | null; runId?: string | null } | undefined {
   const composite = JSON.parse(fs.readFileSync(workstationBrowserSessionStatePath(), 'utf-8')) as {
-    browserTasks: { tasks: Array<{ taskId: string; sessionHost: string | null; kanbanCardId?: string | null; runId?: string | null }> }
+    browserTasks: {
+      tasks: Array<{ taskId: string; sessionHost: string | null; kanbanCardId?: string | null; runId?: string | null }>
+    }
   }
 
   return composite.browserTasks.tasks.find(task => task.taskId === taskId)
@@ -299,6 +303,76 @@ test('failed BrowserTask destroy persistence completes in-memory cleanup before 
   // inherit the destroyed page's pending URL/identity metadata.
   await assertFreshRecreation(runtime, taskId, originalTab.id)
   await runtime.destroy()
+})
+
+test('resource projection is derived from the live BrowserTask state without creating another store', async () => {
+  runtimeHome()
+  const runtime = new WorkstationBrowserRuntime()
+
+  runtime.createTask({ taskId: 'resource-task', sessionHost: 'resource-session', runId: 'resource-run' })
+  const snapshot = runtime.resources()
+  const task = snapshot.resources.find(resource => resource.resource_type === 'browser_task')
+
+  assert.equal(snapshot.schema_version, 1)
+  assert.equal(task?.resource_id, 'browser-task:resource-task')
+  assert.equal(task?.session_id, 'resource-session')
+  assert.equal(task?.state.lineage && (task.state.lineage as { run_id?: string }).run_id, 'resource-run')
+  assert.equal(snapshot.resources.filter(resource => resource.task_id === 'resource-task').length, 2)
+  await runtime.destroy()
+})
+
+test('event projection reads the bounded canonical journal for one task', async () => {
+  const home = runtimeHome()
+  const previousHermesHome = process.env.HERMES_HOME
+  process.env.HERMES_HOME = home
+  const runtime = new WorkstationBrowserRuntime()
+
+  try {
+    const taskId = 'event-task'
+    runtime.createTask({ taskId, sessionHost: 'event-session' })
+    const journalPath = path.join(home, 'workstation', 'journals', `${taskId}.jsonl`)
+    fs.mkdirSync(path.dirname(journalPath), { recursive: true })
+    fs.writeFileSync(
+      journalPath,
+      [
+        JSON.stringify({
+          event_id: 'event-1',
+          kind: 'task_started',
+          task_id: taskId,
+          session_id: 'event-session',
+          message: 'started',
+          timestamp: '2026-09-11T12:00:00.000Z'
+        }),
+        JSON.stringify({
+          event_id: 'event-2',
+          kind: 'progress',
+          task_id: taskId,
+          session_id: 'event-session',
+          message: 'progress',
+          timestamp: '2026-09-11T12:00:01.000Z'
+        })
+      ].join('\n'),
+      'utf-8'
+    )
+
+    const snapshot = runtime.events(taskId, 1)
+
+    assert.equal(snapshot.schema_version, 1)
+    assert.equal(snapshot.task_id, taskId)
+    assert.deepEqual(
+      snapshot.events.map(event => event.event_id),
+      ['event-2']
+    )
+    assert.equal(snapshot.events[0]?.session_id, 'event-session')
+    assert.equal(snapshot.events[0]?.elapsed_seconds, 1)
+  } finally {
+    await runtime.destroy()
+    if (previousHermesHome === undefined) {
+      delete process.env.HERMES_HOME
+    } else {
+      process.env.HERMES_HOME = previousHermesHome
+    }
+  }
 })
 
 test('failed destroy also clears a recovery hint when the task page was already gone', async () => {
@@ -559,4 +633,3 @@ test('controller binds kanbanCardId and runId and rejects mismatch fail-closed a
   assert.equal(persistedTask(taskId)?.runId, 'run-101')
   await second.destroy()
 })
-

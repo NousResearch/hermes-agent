@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   workstationBrowser: {
     status: () => ipcRenderer.invoke('hermes:workstation-browser:status'),
     ensure: () => ipcRenderer.invoke('hermes:workstation-browser:ensure'),
+    resources: () => ipcRenderer.invoke('hermes:workstation-browser:resources'),
+    events: (taskId, limit) => ipcRenderer.invoke('hermes:workstation-browser:events', taskId, limit),
     newTab: target => ipcRenderer.invoke('hermes:workstation-browser:new-tab', target),
     activateTab: tabId => ipcRenderer.invoke('hermes:workstation-browser:activate-tab', tabId),
     closeTab: tabId => ipcRenderer.invoke('hermes:workstation-browser:close-tab', tabId),
@@ -24,7 +26,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     stop: () => ipcRenderer.invoke('hermes:workstation-browser:stop'),
     focus: () => ipcRenderer.invoke('hermes:workstation-browser:focus'),
     attach: (bounds, host) => ipcRenderer.invoke('hermes:workstation-browser:attach', bounds, host),
-    setBounds: bounds => ipcRenderer.invoke('hermes:workstation-browser:set-bounds', bounds),
+    setBounds: (bounds, expectedHost) =>
+      ipcRenderer.invoke('hermes:workstation-browser:set-bounds', bounds, expectedHost),
     detach: () => ipcRenderer.invoke('hermes:workstation-browser:detach'),
     setVisible: visible => ipcRenderer.invoke('hermes:workstation-browser:set-visible', visible),
     clearError: () => ipcRenderer.invoke('hermes:workstation-browser:clear-error'),

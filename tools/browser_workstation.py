@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote_plus, unquote, urlsplit
+from urllib.parse import quote, quote_plus, unquote, urlsplit
 from urllib.request import Request, urlopen
 
 from agent.redact import _PREFIX_RE, redact_sensitive_text
@@ -221,6 +221,31 @@ def workstation_controller_available(*, force: bool = False) -> bool:
         _LAST_HEALTH_AT = now
         _LAST_HEALTH_VALUE = value
     return value
+
+
+def workstation_controller_resources(*, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> Dict[str, Any]:
+    """Read the UI-neutral resource projection from the Electron controller.
+
+    The controller is the owner of BrowserTask/page identity. This small
+    adapter is intentionally public so Dashboard/other Python clients reuse
+    the browser route instead of opening the control descriptor themselves.
+    """
+    return _request_json("GET", "/resources", timeout=timeout)
+
+
+def workstation_controller_events(
+    *,
+    task_id: Optional[str] = None,
+    limit: int = 200,
+    timeout: float = _DEFAULT_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Read bounded canonical journal events from the Electron controller."""
+
+    bounded_limit = min(200, max(1, int(limit)))
+    suffix = f"/events?limit={bounded_limit}"
+    if task_id:
+        suffix += f"&task_id={quote(str(task_id), safe='')}"
+    return _request_json("GET", suffix, timeout=timeout)
 
 
 def _task_key(task_id: Optional[str], session_id: Optional[str]) -> str:

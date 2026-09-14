@@ -1,3 +1,6 @@
+import fs from 'node:fs'
+import path from 'node:path'
+
 import { expect, test } from './test'
 
 import {
@@ -46,6 +49,82 @@ test('renderer loads and shows DOM content', async () => {
   expect(childCount).toBeGreaterThan(0)
 })
 
+test('Desktop IPC and the loopback controller expose the same resource and event identities', async () => {
+  const page = fixture!.page
+  const ipcSnapshot = await page.evaluate(async () =>
+    (window as typeof window & {
+      hermesDesktop?: {
+        workstationBrowser?: {
+          resources: () => Promise<unknown>
+        }
+      }
+    }).hermesDesktop?.workstationBrowser?.resources()
+  ) as {
+    schema_version: number
+    runtime: string
+    resources: Array<{ resource_id: string; resource_type: string; state: Record<string, unknown> }>
+  } | undefined
+
+  expect(ipcSnapshot?.schema_version).toBe(1)
+  expect(ipcSnapshot?.runtime).toBe('electron-chromium')
+
+  const controlPath = path.join(fixture!.sandbox.root, 'workstation', 'Runtime', 'browser-control.json')
+  await expect.poll(() => fs.existsSync(controlPath), { timeout: 15_000 }).toBe(true)
+  const control = JSON.parse(fs.readFileSync(controlPath, 'utf8')) as { url: string; token: string }
+  const response = await fetch(`${control.url}/resources`, {
+    headers: { Authorization: `Bearer ${control.token}` }
+  })
+  expect(response.ok).toBe(true)
+  const controllerSnapshot = await response.json() as {
+    success: boolean
+    schema_version: number
+    runtime: string
+    resources: Array<{ resource_id: string; resource_type: string; state: Record<string, unknown> }>
+  }
+
+  expect(controllerSnapshot.success).toBe(true)
+  expect(controllerSnapshot.schema_version).toBe(ipcSnapshot?.schema_version)
+  expect(controllerSnapshot.runtime).toBe(ipcSnapshot?.runtime)
+  expect(controllerSnapshot.resources.map(resource => [resource.resource_type, resource.resource_id]))
+    .toEqual(ipcSnapshot?.resources.map(resource => [resource.resource_type, resource.resource_id]))
+
+  const ipcEvents = await page.evaluate(async () =>
+    (window as typeof window & {
+      hermesDesktop?: {
+        workstationBrowser?: {
+          events: (taskId?: string | null, limit?: number) => Promise<unknown>
+        }
+      }
+    }).hermesDesktop?.workstationBrowser?.events(null, 200)
+  ) as {
+    schema_version: number
+    runtime: string
+    task_id: string | null
+    events: Array<{ event_id: string; task_id: string; session_id: string; timestamp: string }>
+  } | undefined
+
+  expect(ipcEvents?.schema_version).toBe(1)
+  expect(ipcEvents?.runtime).toBe('electron-chromium')
+
+  const eventsResponse = await fetch(`${control.url}/events?limit=200`, {
+    headers: { Authorization: `Bearer ${control.token}` }
+  })
+  expect(eventsResponse.ok).toBe(true)
+  const controllerEvents = await eventsResponse.json() as {
+    success: boolean
+    schema_version: number
+    runtime: string
+    task_id: string | null
+    events: Array<{ event_id: string; task_id: string; session_id: string; timestamp: string }>
+  }
+
+  expect(controllerEvents.success).toBe(true)
+  expect(controllerEvents.schema_version).toBe(ipcEvents?.schema_version)
+  expect(controllerEvents.runtime).toBe(ipcEvents?.runtime)
+  expect(controllerEvents.task_id).toBe(ipcEvents?.task_id)
+  expect(controllerEvents.events).toEqual(ipcEvents?.events)
+})
+
 test('HUD composer remains fully inside the transparent window', async () => {
   const hudPagePromise = fixture!.app.waitForEvent('window')
 
@@ -89,20 +168,25 @@ test('HUD composer remains fully inside the transparent window', async () => {
     }
   })
 
+  // Native window scaling can leave CSS geometry a fraction of a pixel past
+  // the integer viewport edge. Keep the tolerance below any meaningful
+  // off-screen regression while avoiding false failures from subpixel layout.
+  const containmentTolerance = 1
+
   // Horizontal containment — the composer shifted half a window left when the
   // standalone `translate: -50%` survived optimization (#82214, #82233).
   expect(geometry.dockLeft).toBeGreaterThanOrEqual(0)
   expect(geometry.inputLeft).toBeGreaterThanOrEqual(0)
-  expect(geometry.dockRight).toBeLessThanOrEqual(geometry.viewportWidth)
-  expect(geometry.inputRight).toBeLessThanOrEqual(geometry.viewportWidth)
+  expect(geometry.dockRight).toBeLessThanOrEqual(geometry.viewportWidth + containmentTolerance)
+  expect(geometry.inputRight).toBeLessThanOrEqual(geometry.viewportWidth + containmentTolerance)
 
   // Vertical containment — the toolbar/transcript clipping reported on
   // Windows (#82203) and macOS (#82214) is the same "composer escapes the
   // window" class on the other axis.
   expect(geometry.dockTop).toBeGreaterThanOrEqual(0)
   expect(geometry.inputTop).toBeGreaterThanOrEqual(0)
-  expect(geometry.dockBottom).toBeLessThanOrEqual(geometry.viewportHeight)
-  expect(geometry.inputBottom).toBeLessThanOrEqual(geometry.viewportHeight)
+  expect(geometry.dockBottom).toBeLessThanOrEqual(geometry.viewportHeight + containmentTolerance)
+  expect(geometry.inputBottom).toBeLessThanOrEqual(geometry.viewportHeight + containmentTolerance)
 
   // The dock's centering translate must be fully neutralized. Any live
   // percentage translate means the HUD override lost to the app's centering.

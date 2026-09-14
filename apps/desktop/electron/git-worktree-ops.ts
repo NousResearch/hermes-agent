@@ -242,6 +242,30 @@ function uniqueDir(base) {
   return dir
 }
 
+// Avoid spawning concurrent Git probes for an ordinary folder. On Windows a
+// short-lived git.exe launched with a non-repository cwd can keep that cwd
+// locked briefly after reporting "not a repository", which is especially
+// painful for callers that immediately replace or remove the folder. Walking
+// ancestors preserves support for a path inside a repository and for linked
+// worktrees (`.git` may be a file there).
+function hasGitWorktreeMarker(startPath) {
+  let current = path.resolve(startPath)
+
+  while (true) {
+    if (fs.existsSync(path.join(current, '.git'))) {
+      return true
+    }
+
+    const parent = path.dirname(current)
+
+    if (parent === current) {
+      return false
+    }
+
+    current = parent
+  }
+}
+
 async function addExistingBranchWorktree(gitBin, root, name) {
   const requested = sanitizeBranch(name)
 
@@ -377,6 +401,10 @@ async function listBranches(repoPath, gitBin) {
   try {
     resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Branch list' })
   } catch {
+    return []
+  }
+
+  if (!hasGitWorktreeMarker(resolved)) {
     return []
   }
 

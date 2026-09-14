@@ -262,6 +262,8 @@ _LONG_HANDLERS = frozenset(
         # prompt.submit / session.interrupt sit unread (same class as #21123),
         # and the Desktop model pill / picker block on it every open.
         "model.options",
+        "workstation.resources",
+        "workstation.events",
         # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
         # per-frame PNG decode/encode (pet.cells): inline they serialize on the
         # reader thread, so picker previews trickle in one at a time and the
@@ -16394,6 +16396,7 @@ from . import (  # noqa: E402
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
     methods_tools as _methods_tools,
+    methods_workstation as _methods_workstation,
 )
 
 for _m in (
@@ -16406,6 +16409,7 @@ for _m in (
     _methods_profiles,
     _methods_images,
     _methods_bot_relay,
+    _methods_workstation,
 ):
     _m.register(sys.modules[__name__])
 del _m

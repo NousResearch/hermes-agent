@@ -1,17 +1,733 @@
 # CURRENT — Workstation Engineering Journal
 
-Last updated: 2026-09-03
-Active track: Full Roadmap Completion (V1, V1.1, V2) — COMPLETED & VERIFIED
+Last updated: 2026-09-12
+Active track: V3.1–V3.4 runtime-hardening contract layer — VALIDATED; **175/175** product contract tests green; product evidence gates open
 Repository: `kevynlucasprofissional-stack/hermes-agent`
-Active feature branch: `feat/workstation-v1-1-5-integrated-dogfood`
+Active feature branch: `main` plus current Workstation working tree
 Journal entries:
 - `v1-1-5-integrated-dogfood-mvp.md` (V1 #1.5 MVP verification)
 - `v2-roadmap-completion.md` (Full roadmap completion: V1.1 and V2)
-Status: 57/57 Pytest passing, 55/55 Vitest passing, 0 TypeScript errors.
+- `v3-runtime-hardening-closure.md` (V3.1–V3.4 contract-layer closure)
+Status: 158/158 Workstation Pytest passing, Desktop typecheck passing; broad
+Desktop UI and platform/Electron suites pass after the HW-018 KI-006 closure.
+
+## H-041 — Current Windows H010 rerun validates BrowserSessionState on the live working tree
+
+Status: VALIDATED — LOCAL NATIVE EVIDENCE; CLEAN-CHECKOUT QUALIFICATION STILL OPEN
+Origin: continuation of the V3 roadmap acceptance audit
+Date / ref: 2026-09-12 / `main@d77901a6857cf90f9401a90377de3b6ee5254bef`
+
+### Claim
+
+The versioned H010 native probe still validates the BrowserSessionState and
+BrowserTask restart boundary on the current Windows/Electron toolchain after
+the latest Workstation changes.
+
+### Observed evidence
+
+- `node workstation/context/engineering-journal/probes/h010-native-browser-session-state-smoke.mjs` passed before any visible Desktop window was opened;
+- Windows `10.0.26200`, Electron `40.10.2`, outer Node `v26.7.0`;
+- clean restart, failed-write convergence, explicit-destroy cleanup and abrupt
+  restart all emitted their pass markers;
+- phase A and phase B used distinct Electron PIDs, and phase B restored the
+  durable logical state before lazily recreating exactly one task page;
+- final marker: `H010_CLASSIFICATION=VALIDATED`.
+
+### Boundary
+
+The probe resolved `HEAD` to the SHA above but imported product files from the
+current working tree. Because the checkout contains uncommitted Workstation
+changes, this is strong local native evidence rather than clean-machine or
+clean-checkout release evidence. The Windows workflow's exact-SHA and
+clean-install gates remain authoritative for promotion.
+
+## H-042 — Hidden native Browser runtime reconnect soak passes
+
+Status: VALIDATED — NATIVE RUNTIME BOUNDARY; FULL PRODUCTION LOAD STILL OPEN
+Origin: continuation of the V3.2/V3.4 soak acceptance audit
+Date / ref: 2026-09-12 / `main@d77901a6857cf90f9401a90377de3b6ee5254bef`
+
+### Claim
+
+The Electron Workstation Browser can repeatedly recreate its runtime across
+processes while retaining canonical BrowserTask/session/resource identity and
+the one-live-page-per-task invariant under navigation and host transitions.
+
+### Observed evidence
+
+- versioned probe: `workstation/context/engineering-journal/probes/h011-native-browser-runtime-soak.mjs`;
+- 60-second local run on Windows `10.0.26200`, Electron `40.10.2`, Node
+  `v26.7.0`;
+- 39 hidden Electron process episodes, 936 task cycles, four task identities,
+  repeated local Chromium navigation, `hub`/`chat` host changes, hide/park
+  transitions and resource lineage assertions;
+- every episode passed, and the final durable `browser-session.json` retained
+  exactly four unique BrowserTask records;
+- final marker: `H011_NATIVE_BROWSER_RUNTIME_CLASSIFICATION=VALIDATED`.
+
+### Boundary
+
+The probe uses a local deterministic HTTP page and direct runtime APIs, with
+all BrowserWindow instances created as `show: false` and all child processes
+spawned with `windowsHide: true`. It is stronger than mocked Electron tests,
+but it does not prove the full Hermes agent/backend workload, clean-machine
+installation, or a long-duration production deployment. The Windows workflow
+now runs the same probe for 60 seconds and uploads its JSON/durable projection.
 
 > Journal/probe/documentation commits after `1ac0e0a9...` do not change BrowserTask product behavior unless this file explicitly records a later code-bearing candidate. Always verify live `main` and compare product paths before carrying evidence into a later implementation.
 
+## H-043 — Real headless backend multi-session reconnect soak passes
+
+Status: VALIDATED — BACKEND/AGENT TRANSPORT BOUNDARY; FULL DESKTOP/BROWSER LOAD STILL OPEN
+Origin: continuation of the V3.2/V3.4 production-like load evidence audit
+Date / ref: 2026-09-12 / `main@d77901a6857cf90f9401a90377de3b6ee5254bef`
+
+### Claim
+
+The shipped headless `hermes serve` backend can sustain concurrent desktop-shaped
+WebSocket sessions, streamed agent turns and durable session resumption across
+real backend process restarts without relying on Electron or an external model
+provider.
+
+### Observed evidence
+
+- versioned probe: `workstation/context/engineering-journal/probes/h012-headless-backend-reconnect-soak.py`;
+- local workflow-shaped run used the real `hermes serve` child process, the
+  authenticated `/api/ws` gateway and an isolated `HERMES_HOME`;
+- 12 cycles, 48 turns, 44 reconnects, 2 backend restarts, 48 heartbeats and
+  192 streamed events passed with zero errors and four concurrent turns;
+- every session resumed from its persisted stored identity after process restart;
+- final marker: `H012_HEADLESS_BACKEND_CLASSIFICATION=VALIDATED`.
+
+### Boundary
+
+The synthetic turn seam is deterministic and token-free, so this evidence is
+about real backend process/transport/session behavior rather than provider or
+model quality. It does not prove clean-machine installation, native Browser
+composition, remote-client parity or a long-duration full Desktop/Browser
+deployment. The Windows workflow runs the same probe with a 120-second budget,
+requires two restarts and uploads the JSON/durable home evidence.
+
+## H-044 — Integrated Desktop/Browser headless load gate is validated locally
+
+Status: **VALIDATED — LOCAL HIDDEN-WINDOW RUNTIME GREEN**
+Origin: continuation of the V3.2/V3.4 Desktop/Browser production-load audit
+Date / ref: 2026-09-12 / `main@d77901a6857cf90f9401a90377de3b6ee5254bef`
+
+### Claim
+
+The Windows release workflow now includes a hidden-window integrated Desktop/
+Browser E2E. It uses the real dev Electron shell and real `hermes serve`
+backend, drives four deterministic local Chromium pages through the authenticated
+Workstation controller, compares controller resource/event projections against
+Desktop IPC, and exercises BrowserTask hide/park/destroy lifecycle cleanup.
+
+### Evidence boundary
+
+The spec typechecks, the Desktop build succeeds, and the local runtime passed
+**2 tests in 36.6s** after the fixture resolved the workspace-local Windows
+`electron.exe`. The base run exercised four native tasks, controller/IPC
+identity, host-aware viewport geometry/transfer, native maximize/restore
+reconciliation, events and hide/park/destroy cleanup. The sustained run added
+eight concurrent tasks, three navigation/snapshot rounds and three real chat
+turns through the `hermes serve` backend.
+The test sets
+`HERMES_DESKTOP_E2E_HEADLESS=1` and asserts that every Electron window remains
+hidden, so it did not open a user-visible window. The Windows workflow still
+executes H013 as the clean release-candidate gate.
+
+## H-045 — Windows worker persistence tolerates transient atomic-replace locks
+
+Status: **VALIDATED — WINDOWS CONTRACT REGRESSION GREEN**
+Origin: continuation of the Windows portability gate exposed by the full
+Workstation suite
+Date / ref: 2026-09-12 / `main@d77901a6857cf90f9401a90377de3b6ee5254bef`
+
+### Claim
+
+`WorkerRegistry` persistence retains its atomic temp-file replacement contract
+while tolerating a short Windows sharing lock from security/indexing software.
+The bounded retry is only for `PermissionError`; a persistent failure still
+raises to the caller.
+
+### Observed evidence
+
+- the previously exposed full-suite `WinError 5` at `Path.replace()` is covered
+  by the bounded retry in `workstation/workers.py`;
+- focused persistent-worker tests: **4 passed**;
+- complete Workstation regression after the change: **158 passed in 12.94s**.
+
+## H-046 — Shared Desktop viewport geometry is host-aware
+
+Status: **VALIDATED — FOCUSED RUNTIME CONTRACT GREEN**
+Origin: KI-004 hardening audit after the H013 integrated E2E
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+Chat and Browser Hub share one Electron `BrowserWindow`; therefore the sender
+window cannot by itself identify which pane produced a resize update. The
+Desktop bridge now carries an optional expected host and the runtime ignores a
+host-aware `setBounds` call from a non-owner pane while retaining the existing
+backward-compatible unqualified call path.
+
+### Evidence
+
+The focused viewport tests cover stale-host rejection, zoom/clamp/invalid-bound
+normalization, native resize reconciliation and rehoming one live
+`WebContentsView` between two native window hosts. H013 additionally exercised
+the host-aware bridge and native maximize/restore path against the real
+Electron/Chromium view while all windows remained hidden. The full Workstation
+suite remains green; broader compositor-race, long-duration load and
+clean-machine Windows matrices are still explicit evidence gates.
+
+## H-047 — H013 sustained Desktop/Browser load expansion
+
+Status: **VALIDATED — LOCAL HIDDEN-WINDOW LOAD REGRESSION GREEN**
+Origin: continuation of the V3.2/V3.4 Desktop/Browser production-load audit
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+The integrated Desktop/Browser gate can sustain multiple concurrent native
+BrowserTasks across repeated controller navigation/snapshot rounds while the
+same real `hermes serve` backend handles chat turns, without duplicating task
+pages or exposing a native window.
+
+### Evidence
+
+The expanded `workstation-headless-load.spec.ts` passed **2 tests in 36.6s**:
+the original four-task controller/IPC/geometry scenario and a second scenario
+with **8 tasks × 3 rounds**, native task selection across Hub/Chat, **3 real
+chat turns**, resource/event parity and explicit hide/park/destroy cleanup. The
+run used `HERMES_DESKTOP_E2E_HEADLESS=1`; broader long-duration production load,
+clean-machine qualification and compositor-race coverage remain open.
+
+## H-052 — H013 full resource/event projection parity
+
+Status: **VALIDATED — FULL RESOURCE/EVENT PARITY GREEN**
+Origin: KI-008 current-client parity evidence boundary
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+The integrated H013 controller/IPC assertions can compare the complete
+resource state and event payload—not only resource identity—while ignoring
+only call-generated timestamps that are expected to differ between snapshots.
+
+### Confirming evidence expected
+
+- browser task lineage, permissions, lifecycle state and evidence URIs match
+  across controller and Desktop IPC;
+- bounded event task lineage and event payloads match across both surfaces;
+- the four-task and scaled profiles remain hidden and clean after the stronger
+  assertions.
+
+### Refuting evidence expected
+
+- controller and IPC disagree on any canonical resource/event field;
+- the comparison hides a semantic field rather than only generated timestamps;
+- the stronger parity check causes task/page duplication or cleanup failure.
+
+### Result
+
+H013 now compares complete controller/IPC resource projections, including
+permissions, state, lineage and evidence URIs, plus the full bounded event
+payload. Both the default suite (**2 tests in 35.4s**) and the exact scaled
+profile (**2 tests in 3.1 minutes**) passed. The scaled report recorded **16
+tasks**, **150 completed rounds**, `observed_duration_ms=120075`, **8 chat
+turns** and `accepted=true`; the post-run process check reported `no_electron`.
+Only generated snapshot timestamps are excluded from comparison.
+
+## H-053 — Clean-machine install and doctor profile isolation
+
+Status: **VALIDATED — ISOLATED INSTALL/DOCTOR PROFILE GREEN**
+Origin: KI-008 clean-machine release evidence audit
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+The Windows release job can prove that installation and doctor validation use
+the same fresh Workstation home when the workflow allocates an explicit
+`RUNNER_TEMP` directory and both scripts resolve `HERMES_WORKSTATION_HOME`.
+
+### Confirming evidence expected
+
+- install and doctor report the same isolated home and leave the source
+  checkout clean;
+- the clean-install evidence records the isolated home and candidate revision;
+- existing bootstrap/doctor contracts remain green without changing the
+  default user-facing `%LOCALAPPDATA%` behavior.
+
+### Refuting evidence expected
+
+- doctor still reports a different profile than install;
+- the isolated home is not created or the workflow cannot carry it between
+  steps;
+- existing local/default path contracts regress.
+
+### Result
+
+Using a fresh `HERMES_WORKSTATION_HOME` under the Windows temp directory,
+`workstation\install.cmd -SkipDependencies` and `workstation\doctor.cmd
+-Strict` both passed. Install created `Runtime` and `Browser`, doctor reported
+the exact same home and `Browser\User Data` path, and the checkout remained
+unchanged. The workflow now persists a unique `RUNNER_TEMP` home through
+`GITHUB_ENV` and includes it in candidate-matched clean-install evidence.
+
+## H-054 — Clean-install evidence must name the isolated Workstation home
+
+Status: **VALIDATED — SHARED REPORT VALIDATOR GREEN**
+Origin: H-053 install/doctor profile isolation audit
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+Requiring a non-empty `workstation_home` field in accepted clean-install
+evidence prevents the release qualification runner from accepting a report
+whose `accepted` flag and revision match but whose runtime profile is unknown.
+
+### Confirming evidence expected
+
+- the workflow report carries the isolated home and the runner requires it;
+- existing accepted/rejected evidence tests remain precise and the workflow
+  still passes its source contract;
+- local/default behavior remains unchanged when no explicit home is set.
+
+### Refuting evidence expected
+
+- a report without `workstation_home` still passes the clean-install stage;
+- the new field requirement rejects a valid report produced by the workflow;
+- the runner starts inspecting or mutating the external machine path.
+
+### Result
+
+`ReleaseQualificationRunner._check_clean_install()` now requires a non-empty
+`workstation_home`. The Windows workflow records the same fresh
+`RUNNER_TEMP` home used by install and doctor. The focused isolation,
+bootstrap and documentation suite passed **27 tests**, and the real local
+`install.cmd -SkipDependencies` → `doctor.cmd -Strict` run passed with matching
+`Runtime`, `Browser` and `Browser\User Data` paths while leaving the checkout
+unchanged.
+
+## H-055 — Clean-install home must be absolute and outside the candidate
+
+Status: **VALIDATED — SHARED REPORT VALIDATOR GREEN**
+Origin: H-054 clean-install evidence contract hardening
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+Requiring an absolute `workstation_home` outside the candidate checkout makes
+the accepted clean-install report prove profile separation rather than merely
+recording an arbitrary non-empty string.
+
+### Confirming evidence expected
+
+- relative paths and paths inside the candidate root are rejected;
+- the workflow's absolute `RUNNER_TEMP` path and an external absolute path are
+  accepted without probing or mutating that path;
+- existing release qualification behavior remains fail-closed.
+
+### Refuting evidence expected
+
+- `.` or a candidate subdirectory is accepted as an isolated home;
+- valid external Windows/POSIX absolute paths are rejected by platform-neutral
+  validation;
+- the runner starts treating the evidence path as a writable local resource.
+
+### Result
+
+`workstation.release_qualification` now rejects missing, relative and
+candidate-contained `workstation_home` values while accepting an external
+absolute path without reading or mutating it. The qualification/bootstrap/
+documentation suite passed **30 tests**, including both valid and invalid
+evidence cases.
+
+## H-056 — Full Workstation regression after qualification hardening
+
+Status: **VALIDATED — FULL SUITE GREEN**
+Origin: regression after H-053 through H-055 release-evidence changes
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Evidence
+
+The complete `workstation/tests` suite passed **163 tests in 16.08s** after
+the doctor profile, clean-install report and absolute-home validation changes.
+The result includes the new qualification cases and all prior Workstation
+contracts; the candidate-release workflow itself remains an external gate.
+
+## H-057 — Shared validation for the H013 release evidence report
+
+Status: **VALIDATED — SHARED REPORT VALIDATOR GREEN**
+Origin: H-051/H-050 candidate-load report audit
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+A read-only Python validator shared by the release workflow and contract tests
+can enforce the complete H013 profile without relying on duplicated, weaker
+PowerShell field checks.
+
+### Confirming evidence expected
+
+- accepted reports must meet minimum tasks, requested rounds, duration and
+  chat-turn values and must reach either the round or duration boundary;
+- malformed, partial or under-sized reports fail with a useful reason;
+- the validator performs no writes and the workflow still uploads the original
+  report for review.
+
+### Refuting evidence expected
+
+- a report below the configured profile is accepted;
+- valid reports with a larger profile are rejected unnecessarily;
+- moving validation to Python changes the hidden-window H013 behavior.
+
+### Result
+
+`workstation.desktop_load_evidence` now enforces minimum tasks, requested
+rounds, duration, chat turns and a reached stopping boundary without writing
+to the report. Its focused suite plus the qualification/bootstrap/documentation
+contracts passed **41 tests**. It also accepted the actual 16-task H013 report
+(`150` rounds, `120075` ms, `8` chat turns), and the workflow invokes the same
+validator before allowing the H013 gate to succeed.
+
+## H-058 — Full Workstation regression after shared evidence validation
+
+Status: **VALIDATED — FULL SUITE GREEN**
+Origin: regression after H-057 shared H013 report validation
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Evidence
+
+The complete `workstation/tests` suite passed **174 tests in 10.02s** after
+the shared desktop-load evidence validator and its contract coverage were
+added. The candidate-release workflow remains an external clean-machine gate.
+
+## H-059 — H013 validator numeric-boundary regression
+
+Status: **VALIDATED — FULL SUITE GREEN**
+Origin: malformed-duration audit of H-057 shared evidence validator
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Evidence
+
+The H013 report validator now rejects non-positive task/round/chat counts and
+negative duration values before applying the round-or-duration boundary rule.
+The focused validator/bootstrap/isolation contracts passed **38 tests**, and
+the complete `workstation/tests` suite passed **175 tests in 9.64s**.
+
+## H-060 — Clean candidate validation dependency boundary
+
+Status: **VALIDATED — LOCAL CLEAN CANDIDATE GREEN / OFFICIAL CI STILL REQUIRED**
+Origin: release qualification stopped at `workstation_smoke` because the
+runtime-only `.venv` intentionally did not contain `pytest`
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+The Windows release workflow must install its pinned validation dependencies
+explicitly before invoking the read-only release qualification runner, while
+keeping the normal runtime installation free of test tooling.
+
+### Result
+
+The workflow now installs `.[dev]` into the isolated candidate `.venv` after
+the production install/build and before release qualification. A temporary
+clean candidate with the current tree passed real install, `npm ci`, Desktop
+production build and strict doctor, then passed all **6/6** release
+qualification stages. Its hidden H013 profile passed **2/2** in **3.2 minutes**
+and the shared validator accepted the report (`16` tasks, `173` rounds,
+`120262` ms, `8` chat turns). This validates the local candidate path only;
+the official Windows candidate workflow remains the promotion authority.
+
+## H-061 — Production dependency advisory closure
+
+Status: **VALIDATED — LOCKFILE-ONLY SECURITY REFRESH GREEN**
+Origin: clean-candidate `npm ci` reported three production advisories
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+The production dependency gate can close the reported transitive advisories
+without forced upgrades or package-manifest churn, while preserving a
+reproducible Desktop install and build.
+
+### Result
+
+The lockfile now refreshes `colord` 2.9.3→2.10.0, `sanitize-html`
+2.17.6→2.17.7 and both vulnerable nested `nanoid` 3.3.17 entries→3.3.19.
+`npm ci` completed successfully, `npm audit --omit=dev
+--audit-level=moderate` reported **0 vulnerabilities**, and the Desktop
+production build passed. The Windows workflow now runs this audit as a
+required gate; development-only advisories remain outside the production
+gate and are not silently forced to upgrade.
+
+## H-049 — Parametric H013 production-load profile
+
+Status: **VALIDATED — LOCAL SCALED PROFILE GREEN / CI PROFILE CONFIGURED**
+Origin: KI-008 full-duration/production-scale Desktop/Browser evidence gate
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+The existing integrated H013 harness can provide a reproducible larger release
+profile if task count, sustained rounds and an optional duration budget are
+controlled by explicit CI environment inputs, while the local default remains
+bounded and fast.
+
+### Confirming evidence expected
+
+- default local behavior remains the validated four-task plus eight-task,
+  three-round hidden-window suite;
+- the release workflow can select a larger bounded task/round profile without
+  changing source or introducing a second browser/runtime owner;
+- the scaled profile preserves controller/IPC identity, native geometry,
+  backend chat turns and explicit cleanup.
+
+### Refuting evidence expected
+
+- environment parsing permits invalid or unbounded values;
+- scaled execution exposes a window, duplicates task pages or leaks tasks after
+  cleanup;
+- the release workflow cannot distinguish the bounded local profile from the
+  stronger candidate-release evidence.
+
+### Result
+
+The H013 harness now validates explicit bounded integer inputs for task count,
+round count, duration and chat turns. The default local profile is unchanged.
+A local scaled run with **12 tasks**, a **15-second** duration budget and **4
+chat turns** passed **2 tests in 55.4s** with hidden Electron cleanup reporting
+`no_electron`. The Windows workflow selects **16 tasks**, up to **120 seconds**
+and **8 chat turns**; that candidate-release execution remains external
+evidence and is not claimed from the local run.
+
+## H-050 — H013 scaled evidence report and release assertion
+
+Status: **VALIDATED — REPORT-BASED LOCAL PROFILE GREEN / CI ASSERTION CONFIGURED**
+Origin: H-049 scaled-load gate hardening
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+An explicit H013 JSON report, checked by the Windows workflow, can distinguish
+a complete scaled candidate run from a Playwright process that merely exits
+successfully after a partial or under-sized load.
+
+### Confirming evidence expected
+
+- the report records requested and completed rounds, task count, duration and
+  real chat-turn count;
+- the workflow requires the report to be accepted and to satisfy the selected
+  16-task/120-second/8-turn profile, while allowing either the requested round
+  count or the duration budget to be the stopping boundary;
+- report generation happens only after explicit task cleanup succeeds.
+
+### Refuting evidence expected
+
+- a missing or partial report can still pass the release step;
+- the report claims completion before hide/park/destroy cleanup;
+- local default runs become dependent on a CI-only report path.
+
+### Result
+
+The H013 suite now writes an optional report only after all explicit
+hide/park/destroy operations leave zero tasks. A local report-backed run with
+**10 tasks**, a **5-second** duration budget and **2 chat turns** passed **2
+tests in 39.0s** and produced `accepted=true`, **13 completed rounds**,
+`observed_duration_ms=5165` and `no_electron` after cleanup. The Windows step
+now rejects a missing/under-sized report and requires the configured 16-task,
+120-second, 8-turn profile; the candidate workflow still supplies the required
+external release evidence.
+
+## H-051 — Full configured H013 candidate-profile local run
+
+Status: **VALIDATED — FULL CONFIGURED PROFILE GREEN / HIDDEN CLEANUP**
+Origin: H-050 report-based scaled-load gate
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Claim
+
+The exact H013 profile selected by the Windows release workflow—16 concurrent
+BrowserTasks, a 120-second sustained duration budget and 8 real backend chat
+turns—completes with the same identity, geometry and cleanup invariants on the
+current Windows toolchain while remaining hidden.
+
+### Confirming evidence expected
+
+- the report is accepted, reaches the configured duration or round boundary,
+  and records at least 16 tasks and 8 chat turns;
+- all controller/IPC/resource/event and native geometry assertions remain green;
+- explicit cleanup leaves no tasks and no Electron process remains afterward.
+
+### Refuting evidence expected
+
+- the full profile times out, loses task identity, leaks a page/task or reveals
+  a native window;
+- report validation cannot prove the configured load boundary.
+
+### Result
+
+The exact configured profile passed **2 tests in 3.0 minutes**: **16 tasks**,
+**170 completed rounds**, `requested_duration_ms=120000`,
+`observed_duration_ms=120651`, **8 real backend chat turns** and
+`accepted=true`. Controller/IPC/resource/event, native geometry and explicit
+cleanup assertions remained green; the post-run process check reported
+`no_electron`. This is strong local Windows/toolchain evidence for the scaled
+profile, but it does not promote clean-machine or release-candidate evidence.
+
+## H-048 — H013 formatted rerun and final process cleanup
+
+Status: **VALIDATED — REPEAT GREEN / NO ELECTRON LEFT RUNNING**
+Origin: final regression after the H013 fixture/test formatting pass
+Date / ref: 2026-09-12 / current Workstation working tree
+
+### Evidence
+
+After the mechanical Prettier correction, Desktop typecheck passed with zero
+errors and the same hidden-window H013 suite passed **2 tests in 38.8s**. The
+rerun covered the four-task controller/IPC scenario plus **8 tasks × 3 rounds**,
+three real backend chat turns, native maximize/restore reconciliation and
+hide/park/destroy cleanup. The post-test process check reported `no_electron`;
+the 36.6s run in H-047 remains valid prior-run evidence, while the duration
+variation is expected for this local Windows environment. Clean-machine,
+full-duration/production-scale and broader compositor-race evidence remain
+open gates.
+
 ## WP-02 — Mainline Consolidation Gate
+
+## H-013 — Roadmap V3.1/V3.2 gaps require extensions over existing owners
+
+Status: ACTIVE — REGISTERED BEFORE PRODUCT CHANGE
+Origin: User objective / roadmap audit
+Date / ref: 2026-09-10 / `main@d77901a685`
+
+### Claim
+
+The remaining V3.1/V3.2 roadmap work can be implemented as a set of typed,
+testable extensions over `ExecutionJournal`, `ProceduralMemory` and
+`WorkerRegistry`, without introducing a second SessionDB, Kanban, Memory,
+BrowserTask page store or agent core.
+
+### Confirming evidence expected
+
+- current code has no EvidenceState, independent supervisor, Recovery Plane,
+  promoted routine runner, persistent worker lifecycle or typed resource bus;
+- new modules can persist only projections/operational metadata and retain
+  existing owners for journal, memory and lineage;
+- focused tests can prove stale-state, recovery, drift and worker-control
+  invariants without replacing existing integration paths.
+
+### Refuting evidence expected
+
+An existing owner already provides the missing semantics, or the proposed
+extension requires duplicating canonical task/session/memory/browser state or
+changing the model tool schema during a conversation.
+
+### Current classification
+
+**PARTIALLY VALIDATED — implementation and integration evidence pending.**
+
+### Practical implication
+
+Implement one foundation task at a time. Do not mark V3.1/V3.2 complete until
+native, multi-process and soak boundaries named by the roadmap are exercised.
+
+## H-014 — V3 runtime contracts remain compatible with canonical owners
+
+Status: PARTIALLY VALIDATED — REGISTERED BEFORE NATIVE GATES
+Origin: V3.1–V3.4 implementation cycle
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+Evidence, event, resource, supervisor, recovery, routine, worker, memory,
+session, replay, protocol and evaluation behavior can be added without
+replacing Hermes SessionDB/Kanban/Memory/BrowserTask ownership or changing the
+model tool schema.
+
+### Observed evidence
+
+- `python -m pytest workstation/tests -q -p no:cacheprovider`: **141 passed**;
+- focused tests cover independent child-process restart, multi-process session
+  lease rejection, stale evidence reconciliation, bounded event queues,
+  durable worker queue/reconstruction, canonical journal delivery, Recovery
+  Plane CLI quarantine, memory snapshots, side-effect-free replay and
+  model-independent regression budgets;
+- `python -m compileall -q workstation`: passed;
+- all new durable projections use caller/HERMES_HOME paths and atomic replace;
+- no new SessionDB, Kanban database, browser page store, scheduler or core
+  model tool was introduced.
+
+### Evidence still required
+
+The Python contracts do not prove clean-machine installation, Electron/Desktop
+composition, cross-engine browser behavior, or long-duration multi-process
+soak. Those claims remain open until the native gates below complete.
+
+### Practical implication
+
+Treat the V3 modules as implementation-ready contracts, but do not promote the
+V3.1–V3.4 roadmap headings to complete solely from unit/contract evidence.
+
+## H-015 — Existing broad Windows Desktop red is outside the V3 Python delta
+
+Status: OBSERVED — NO CAUSAL REGRESSION FOUND
+Origin: native validation ladder
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Observed result
+
+- `workstation\doctor.ps1`: passed environment, committed integration, lock and
+  license checks;
+- `apps\desktop\npm run typecheck`: passed with 0 errors after running with
+  approved build-file access;
+- `apps\desktop\npm test`: **7,389 passed, 36 failed, 5 skipped** across 717
+  files. Failures are existing Windows path/permission/mode/SSH/WSL/locale and
+  unrelated UI expectations; no changed V3 Python module is imported by those
+  failing Desktop specs;
+- versioned H010 native BrowserSessionState probe: **H010_CLASSIFICATION=VALIDATED**
+  on Windows 10.0.26200 / Electron 40.10.2, including clean restart, failed
+  write convergence, explicit destroy cleanup and abrupt restart.
+
+### Classification
+
+The broad Desktop red remains a pre-existing portability/test debt and is not
+converted into a green claim. The native H010 result validates the existing
+browser boundary only; it does not claim that Python V3 runtime contracts are
+Electron-integrated.
+
+### Practical implication
+
+Keep KI-006 open for a separate baseline-controlled portability fix. V3
+roadmap evidence must be reported by contract/native/soak boundary rather than
+by the broad Desktop aggregate.
+
+## H-016 — V3 process-boundary contracts pass the Windows smoke
+
+Status: VALIDATED — CONTRACT BOUNDARY
+Origin: V3.1/V3.2 acceptance probe
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Observed evidence
+
+The versioned probe
+`workstation/context/engineering-journal/probes/v3-runtime-hardening-smoke.py`
+emitted:
+
+- `V3_SUPERVISOR_START_PASS`;
+- `V3_SUPERVISOR_RECOVERY_PASS` after terminating the child process;
+- `V3_SESSION_OWNERSHIP_PASS` from a real second Python process;
+- `V3_EVIDENCE_RECONCILIATION_PASS`;
+- `V3_RUNTIME_HARDENING_CLASSIFICATION=VALIDATED_CONTRACT_BOUNDARY`.
+
+### Boundary
+
+This validates the independent supervisor, cross-process lease and evidence
+state contracts on Windows. It does not substitute for Desktop/client wiring,
+clean-machine release qualification, cross-engine browser testing or soak;
+those remain explicit roadmap evidence gates.
 
 ### Preconditions closed
 
@@ -73,6 +789,814 @@ journal; protect ordering/disposition with executable contracts.
 
 **Classification:** `VALIDATED / READY TO PROMOTE`. V1 #1.5 may branch only
 after this gate candidate is merged into `main`.
+
+## H-017 — The committed Workstation installer preserves the working tree
+
+Status: VALIDATED — DEPENDENCY-SKIPPING INSTALLATION GATE
+Origin: V3.3 release-qualification boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The dependency-skipping installation path validates committed integration,
+component-lock and license gates, checks the Node toolchain, prepares runtime
+directories and leaves repository source plus untracked checkout state
+unchanged.
+
+### Confirming evidence expected
+
+- `workstation\install.ps1 -SkipDependencies` completes successfully;
+- the installer’s source-cleanliness assertion reports no checkout mutation;
+- the existing `workstation\doctor.ps1` remains green afterward.
+
+### Refuting evidence expected
+
+The installer mutates source or creates an unignored artifact, or one of the
+committed integration/lock/license/toolchain checks fails on this workstation.
+
+### Observed result
+
+`powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File
+workstation\install.ps1 -SkipDependencies` completed successfully. Integration,
+component-lock, license and Node checks passed; runtime directories were
+prepared under `%LOCALAPPDATA%\HermesWorkstation`; the installer reported that
+committed source was not modified. Existing tracked edits and the untracked
+user icon artifact were preserved.
+
+### Additional full-install evidence
+
+The normal `workstation\install.ps1` path also completed successfully:
+editable Python installation, `npm ci` from the committed lockfile,
+`hermes_cli` import and final checkout-clean assertion all passed. npm reported
+13 dependency audit findings and deprecation warnings; no lockfile or source
+change was made because automatic audit remediation would be an unreviewed
+dependency change.
+
+### Classification
+
+`VALIDATED` for the local dependency-skipping and full-install paths. A truly
+fresh machine/release artifact qualification, including packaging and runtime
+launch, remains a separate gate.
+
+## H-018 — The installed Desktop source produces a clean production build
+
+Status: VALIDATED — LOCAL PRODUCTION BUILD GATE
+Origin: V3.3 release-qualification boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+With dependencies installed from the committed lockfile, the Desktop package
+can execute its production build (renderer, bundled Electron main process and
+native dependency staging) without changing tracked source or requiring an
+uncommitted fallback.
+
+### Confirming evidence expected
+
+- `npm run build` completes in `apps\desktop`;
+- the post-build assertion succeeds;
+- tracked source remains unchanged after the build.
+
+### Refuting evidence expected
+
+The build fails, its post-build assertion is bypassed, or it changes tracked
+source/assets unexpectedly.
+
+### Observed result
+
+`npm run build` completed successfully after a clean TypeScript build: Vite
+transformed 15,142 modules, the Electron main/preload bundles were produced,
+native `node-pty`/`get-windows` dependencies were staged, and
+`assert-dist-built.mjs` passed. The build emitted the expected dirty-checkout
+warning and Vite/deprecation notices, but no tracked source change.
+
+### Classification
+
+`VALIDATED` for the local production build path. Installer freshness, signed
+release artifacts and runtime launch on a clean machine remain separate gates.
+
+## H-019 — The packaged Desktop artifact is structurally launchable
+
+Status: VALIDATED — LOCAL UNPACKED PACKAGING GATE
+Origin: V3.3 release-qualification boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The Desktop packaging pipeline can assemble an unpacked Windows artifact from
+the built source without publishing or signing, and its output contains the
+expected executable/runtime payload.
+
+### Confirming evidence expected
+
+- `npm run pack` completes with `--dir --publish never`;
+- electron-builder emits an unpacked artifact and required native/runtime files;
+- tracked source remains unchanged.
+
+### Refuting evidence expected
+
+Packaging fails, the artifact is incomplete, or packaging mutates tracked
+source/assets unexpectedly.
+
+### Observed result
+
+`npm run pack` completed with electron-builder 26.15.3 for Windows x64 and
+Electron 40.10.2. The unpacked artifact was assembled at
+`apps\desktop\release\win-unpacked`, Electron integrity was updated, the
+Hermes executable was stamped with the configured icon/identity, and signing
+was explicitly skipped by the requested `--publish never`/directory mode.
+
+### Classification
+
+`VALIDATED` for unsigned local unpacked artifact assembly. Signed publication,
+clean-machine installation and actual end-user launch remain separate gates.
+
+## H-020 — The Windows NSIS release target can be assembled locally
+
+Status: VALIDATED — LOCAL NSIS PACKAGING GATE
+Origin: V3.3 release-qualification boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The supported Windows NSIS target can be built from the current installed
+dependencies without silently using a missing packaged runtime or changing
+tracked source.
+
+### Confirming evidence expected
+
+- `npm run dist:win:nsis` completes;
+- electron-builder emits a Windows installer artifact;
+- the output is structurally consistent with the thin-installer policy and
+  tracked source remains unchanged.
+
+### Refuting evidence expected
+
+The NSIS target fails, ships a stale/fat Hermes payload, or mutates tracked
+source/assets unexpectedly.
+
+### Observed result
+
+`npm run dist:win:nsis` completed for Windows x64 and Electron 40.10.2,
+producing `apps\desktop\release\Hermes-0.17.0-win-x64.exe` plus its blockmap.
+The artifact validator then passed without rebuilding: the unpacked app,
+thin-installer negative payload assertion, install stamp, renderer payload and
+three `node-pty` native binaries were all present. The build used the
+repository's explicit unsigned/local packaging mode.
+
+### Classification
+
+`VALIDATED` for local NSIS assembly and structural artifact validation. A
+clean-machine install/launch, signed publication and cross-engine/long-soak
+acceptance remain separate roadmap gates.
+
+## H-021 — The packaged Desktop client launches and renders in isolation
+
+Status: VALIDATED — PACKAGED GUI E2E GATE
+Origin: V3.2 typed-resource/client evidence boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The actual packaged Windows executable opens through the supported Electron
+client path in a credential-free sandbox, renders the root UI and survives the
+boot/HUD geometry smoke without requiring a provider or mutating user state.
+
+### Confirming evidence expected
+
+- `e2e/launch-packaged-app.spec.ts` passes against `release\win-unpacked\Hermes.exe`;
+- the fixture uses isolated `HERMES_HOME`/userData and cleans up after the run;
+- tracked source remains unchanged.
+
+### Refuting evidence expected
+
+The packaged client fails to launch/render, leaks into the user's normal state,
+or the smoke requires an unavailable provider/credential.
+
+### Observed result
+
+The first failing runs were traced to the Workstation controller eagerly
+restoring a detached `WebContentsView` on app startup. Electron exposed that
+view as a page target without an owning `BrowserWindow`, so Playwright waited
+forever for its frame tree while the real Hermes window was already loaded.
+The controller now starts lazily, and the E2E fixture assigns a temporary
+`HERMES_WORKSTATION_HOME` so global browser state cannot enter the test. The
+packaged fixture also injects Playwright's Electron loader for its custom
+executable path.
+
+The final isolated run completed `5 passed (26.4s)`, including the Hermes title,
+renderer DOM, HUD containment, boot state and screenshot artifact. The HUD
+assertion retains the geometry checks and allows only a 1 px subpixel tolerance
+for native Windows scaling.
+
+### Classification
+
+`VALIDATED / PROMOTED` for the packaged GUI E2E gate on this workstation. The
+clean-machine release qualification, broader client wiring, cross-engine
+coverage and production soak gates remain separate and are not implied by this
+single packaged smoke.
+
+## H-022 — BrowserTask resources can be consumed by multiple client surfaces
+
+Status: PARTIALLY VALIDATED — CLIENT CONTRACT WIRED
+Origin: V3.2 typed-resource/client evidence boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+Desktop IPC, the Dashboard REST surface and the TUI gateway can consume one
+versioned Workstation resource envelope derived from Electron BrowserTask/page
+ownership and the canonical Execution Journal, without creating a second task
+or journal store.
+
+### Observed result
+
+- Electron exposes `/resources` on the authenticated loopback controller and a
+  matching `hermes:workstation-browser:resources` IPC method, plus bounded
+  `/events` and `hermes:workstation-browser:events` projections;
+- `BrowserView` consumes the IPC projection for its resource count, while the
+  Dashboard `/workstation` page polls `/api/workstation/resources`;
+- `workstation.resources` is registered as a read-only, pooled TUI JSON-RPC
+  adapter over the same Python transport client, with `workstation.events`
+  providing the bounded journal event view;
+- task resources preserve BrowserTask/session/Kanban/run lineage, advertise
+  control only when the controller is ready, and fail closed to `read` when
+  evidence is unavailable;
+- journal details are bounded to the latest 200 events in the primary resource
+  projection; the existing task-journal inspection path remains the deep-log
+  surface;
+- the resource helper/runtime tests passed, Dashboard typecheck/lint passed,
+  Python client tests passed, and the Desktop/Dashboard production builds
+  completed;
+- the rebuilt packaged Electron E2E completed `6 passed (28.3s)`, including the
+  live IPC-versus-loopback resource identity comparison.
+
+### Classification
+
+`VALIDATED` for the implemented client contract and build boundaries. A live
+two-surface session proving identical resources against one running task and a
+long-duration soak remain open gates; cross-engine browser coverage is recorded
+separately below.
+
+## H-023 — Dashboard smoke passes in Chromium and Firefox
+
+Status: VALIDATED — CROSS-ENGINE CLIENT SMOKE
+Origin: V3.4 evaluation gate
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The built Dashboard served by the real Python backend can load the Workstation
+resource page in both Chromium and Firefox without page-level errors, using an
+isolated provider-free Hermes home.
+
+### Observed result
+
+- the first run exposed a missing Playwright Chromium headless-shell and an
+  ambiguous shell/page heading selector; both were harness defects and were
+  corrected without changing product behavior;
+- after installing the matching local Playwright Chromium and Firefox
+  runtimes, `npx playwright test -c playwright.dashboard.config.ts` completed
+  **2 passed (9.3s)** — one test in each browser project;
+- the backend was started with `hermes dashboard --skip-build` against a
+  PID-qualified temporary `HERMES_HOME`, and global setup/teardown isolated the
+  fixture from user state;
+- the smoke covers the `/workstation` route, BrowserTask empty state and the
+  absence of browser page exceptions. It does not claim Electron packaged
+  behavior or Safari/WebKit support.
+
+### Classification
+
+`VALIDATED` for the initial Chromium/Firefox Dashboard smoke. Additional
+supported engines and long-duration production-like soak remain separate gates.
+
+## H-024 — Release evidence and canonical reconnect soak are executable
+
+Status: PARTIALLY VALIDATED — LOCAL EVIDENCE RUNNER
+Origin: V3.3/V3.4 release and evaluation gates
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+Release qualification and reconnect soak evidence can be collected through
+bounded, read-only runners without treating a local dirty checkout as a clean
+release or adding another SessionDB/worker/journal owner.
+
+### Observed result
+
+- `python -m workstation.release_qualification` records ordered stage evidence,
+  bounds subprocess output/time and stops at the first missing or failed gate;
+- the clean-install stage requires an accepted JSON report carrying the exact
+  candidate `HEAD` revision, so the local runner cannot infer clean-machine
+  evidence;
+- the Windows Workstation workflow now performs a fresh install and Desktop
+  production build, verifies the checkout stays clean, emits that evidence and
+  feeds it back into the release qualification gate;
+- `python -m workstation.soak --duration 10 --iterations 3 --sessions 3`
+  completed **3/3 fresh-process iterations, 3 sessions, 0 failures, 36 journal
+  events, 9 memory snapshots, 6 worker reconstructions, 6 model changes and 6
+  cold reloads**, exercising session lease, model changes, migration, cold-session
+  reload, memory snapshot/restore and worker stop/reconstruct lineage;
+- `python -m workstation.soak --duration 60 --iterations 1000 --sessions 3`
+  completed **77 fresh-process iterations, 0 failures, 1,155 actions, 924
+  journal events, 26,796 memory records, 231 snapshots, 228 worker
+  reconstructions, 228 model changes and 228 cold reloads**; `timed_out=true`
+  records that the requested duration budget was reached, not a failed child;
+- the complete Workstation suite after the client-parity addition completed
+  **151 passed in 10.37s**.
+
+### Classification
+
+`VALIDATED` for bounded local evidence collection and contract-level
+session/worker reconnect behavior. Clean-machine promotion and long-duration
+Desktop/Browser production soak remain open acceptance gates.
+
+## H-025 — HW-018 closes the KI-006 Windows portability class
+
+Status: VALIDATED — BROAD WINDOWS SUITES GREEN
+Origin: follow-up to H-015 baseline evidence
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Changed boundary
+
+The implementation fixed the actual Desktop-owned portability assumptions
+identified by H-015: deterministic UI locale formatting, session-scoped
+Preview promotion, injected POSIX/Windows path grammars, platform-correct
+permission assertions, native Git physical-path comparison and non-repository
+probe behavior, explicit SSH mux/no-mux test contracts, non-blocking WSL UNC
+selection and executable-mode staging seams.
+
+### Confirming evidence
+
+- Desktop UI: **591 files / 5,669 tests passed**;
+- Desktop platform/Electron: **126 files / 1,760 tests passed, 5 skipped**;
+- Desktop TypeScript typecheck: **0 errors**;
+- no coverage was deleted or disabled to obtain the result.
+
+### Classification
+
+`KI-006=RESOLVED_ON_CURRENT_WORKING_TREE`. The old H-015 counts and the
+Implementation 4 baseline comparison remain historical causality evidence;
+the current broad suites no longer reproduce that failure class. V3 clean-
+machine, deeper client-parity and long-duration production soak gates remain
+independent and open.
+
+## H-026 — Dashboard and TUI adapters share one authenticated resource boundary
+
+Status: VALIDATED — HIGH-LEVEL CLIENT PARITY
+Origin: V3.2 typed-resource/client evidence boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The Dashboard REST handler and the TUI JSON-RPC handler can consume the same
+versioned resource envelope for one BrowserTask/session/journal projection
+through the shared authenticated controller client, without introducing a
+client-owned persistence store.
+
+### Observed result
+
+- a real authenticated loopback HTTP controller boundary served one task,
+  session and journal resource set;
+- the Dashboard route and `workstation.resources` JSON-RPC method each issued
+  one controller read and returned the exact same normalized envelope;
+- the identity assertion covered the browser resource, task resource and
+  execution-journal resource, including task/session lineage;
+- `python -m pytest workstation/tests/test_client.py -q -p no:cacheprovider`
+  completed **4 passed**, and the complete Workstation suite completed **151
+  passed**.
+
+### Classification
+
+`VALIDATED` for the high-level Python client adapters and their live HTTP
+transport boundary. Electron packaged two-surface rendering, future remote
+clients and production-like soak remain separate gates; this evidence does
+not claim those boundaries complete.
+
+## H-027 — Dashboard and TUI adapters share bounded journal events
+
+Status: VALIDATED — EVENT PROJECTION PARITY
+Origin: V3.2 event/resource client evidence boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+Dashboard REST, TUI JSON-RPC and Desktop IPC expose bounded operational journal
+events from the canonical Electron Workstation runtime without creating a
+second event store or leaking an unknown task's journal.
+
+### Observed result
+
+- the Electron runtime provides versioned `/events` responses with a maximum
+  of 200 events and task-scoped filtering against known BrowserTasks;
+- Desktop preload/IPC, Dashboard `/api/workstation/events` and TUI
+  `workstation.events` are wired to that projection;
+- the Dashboard renders the bounded recent-event list while the existing task
+  journal remains the deep inspection surface;
+- the real authenticated loopback adapter test compared both high-level
+  surfaces and passed **5/5** client tests; the Electron runtime event test
+  passed as part of **11/11** focused runtime/resource tests;
+- the complete Workstation suite passed **152/152**, Desktop and web
+  typechecks passed, the Dashboard production build passed, and the broad
+  Desktop platform suite passed **1,761 tests with 5 skipped**.
+
+### Classification
+
+`VALIDATED` for the current Desktop IPC, Dashboard REST and TUI JSON-RPC event
+projection. Remote-client expansion, packaged two-surface rendering and
+production-like soak remain separate evidence gates.
+
+## H-028 — Extended multi-session reconnect soak remains failure-free
+
+Status: VALIDATED — EXTENDED LOCAL SOAK
+Origin: V3.2/V3.4 session, worker and evaluation evidence gate
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The canonical Workstation reconnect scenario remains stable across a longer
+local budget with multiple sessions, process restarts, model changes, cold
+reloads, memory snapshots and persistent worker reconstruction.
+
+### Observed result
+
+- `python -m workstation.soak --duration 180 --iterations 3000 --sessions 4`
+  completed **221 fresh-process iterations with 0 failures**;
+- the run recorded **4,420 actions, 3,536 journal events, 391,170 memory
+  records, 884 snapshots and 880 reconstructed workers** across four sessions;
+- all four sessions were migrated, with 880 model changes and 880 cold reloads;
+- the duration budget ended with the explicit expected marker `timed_out=true`;
+- this strengthens local contract evidence but does not claim the separate
+  production-like Desktop/Browser soak gate, clean-machine qualification or
+  packaged two-surface rendering.
+
+### Classification
+
+`VALIDATED` for the extended local session/memory/worker/reconnect scenario;
+external production-like and clean-machine evidence boundaries remain open.
+
+## H-029 — Dashboard smoke passes in Chromium, Firefox and Edge
+
+Status: VALIDATED — THREE-ENGINE DASHBOARD SMOKE
+Origin: V3.4 cross-engine WebUI evaluation gate
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The provider-free Dashboard Workstation route renders without page-level errors
+across the supported Chromium and Firefox projects and an installed Microsoft
+Edge system browser, using one isolated Python backend.
+
+### Observed result
+
+- the Playwright configuration detects a supported Edge executable and adds an
+  `msedge` project only when that browser is present;
+- `npx playwright test --config=playwright.dashboard.config.ts` completed
+  **3/3 tests in 9.2 seconds** across Chromium, Firefox and Edge;
+- the smoke verified the Workstation heading, Browser tasks section, Recent
+  events section and provider-free empty state, with no `pageerror` events;
+- environments without a supported Edge installation continue to run the
+  Chromium/Firefox baseline instead of failing due to an unavailable browser.
+
+### Classification
+
+`VALIDATED` for the current three-engine Dashboard smoke on this Windows host;
+packaged Electron two-surface rendering and production-like Desktop/Browser
+evidence remain separate gates.
+
+## H-030 — Packaged artifact preserves resource and event identity across IPC
+
+Status: VALIDATED — PACKAGED PROJECTION BOUNDARY
+Origin: V3.2 typed resources/event client acceptance boundary
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The exact Windows `win-unpacked` Desktop artifact renders its packaged GUI/HUD
+surfaces and exposes the same Workstation resource and event projections through
+Desktop IPC and its authenticated loopback controller, without requiring a
+visible native window.
+
+### Observed result
+
+- the packaged E2E fixture now sets `HERMES_DESKTOP_E2E_HEADLESS=1`; the main
+  window remains hidden while its renderer, preload and controller initialize;
+- the identity test compared schema/runtime, resource identities and event
+  envelopes from IPC and `/resources` + `/events`;
+- `npx playwright test e2e/launch-packaged-app.spec.ts --config=playwright.config.ts
+  --workers=1` passed **6/6 in 22.5 seconds**, including renderer boot, HUD
+  composer containment and screenshot capture;
+- the run used the explicit headless E2E flag, so it validates packaged DOM,
+  IPC, controller and geometry behavior but does not infer visible-window
+  behavior on a user's desktop session.
+
+### Classification
+
+`VALIDATED` for the packaged GUI/HUD and IPC/controller boundary in headless
+E2E; visible desktop-session behavior, clean-machine qualification and
+production-like soak remain open evidence gates.
+
+## H-031 — Windows gate tracks E2E harness changes
+
+Status: VALIDATED — CI TRIGGER COVERAGE
+Origin: V3.3 release qualification and V3.4 cross-engine evidence governance
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+Changes to the Desktop E2E harness and Playwright configurations cannot bypass
+the Windows Workstation gate through the workflow path filter.
+
+### Observed result
+
+- `.github/workflows/workstation-browser-windows.yml` now includes
+  `apps/desktop/e2e/**` and `apps/desktop/playwright*.config.ts` in its pull
+  request paths;
+- the canonical source contract test asserts both paths alongside the existing
+  clean-install, build, UI and platform gate requirements;
+- the bootstrap/context regression run passed **11/11**, and `git diff --check`
+  passed.
+
+### Classification
+
+`VALIDATED` for CI trigger coverage of the current Desktop/Workstation E2E
+harness; the workflow's external clean-machine execution remains a separate
+release evidence gate.
+
+## H-032 — Windows workflow executes browser and packaged evidence gates
+
+Status: VALIDATED — RELEASE WORKFLOW COVERAGE
+Origin: V3.3 upstream ownership/release qualification gate
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The Windows Workstation workflow exercises the cross-engine Dashboard smoke and
+the packaged Desktop GUI boundary, rather than leaving those checks as local
+manual commands.
+
+### Observed result
+
+- after clean-install evidence and the production build, the workflow installs
+  the Chromium/Firefox Playwright browsers and runs the provider-free
+  cross-engine config (Edge is auto-detected when present);
+- it builds the unpacked Desktop artifact, runs `launch-packaged-app.spec.ts`
+  with the fixture's headless mode, and uploads both E2E result directories;
+- each new step has an explicit outcome ID and the final preservation step
+  fails if cross-engine, packaging or packaged GUI E2E is not successful;
+- the workflow path filter already includes the E2E/config files, and the
+  canonical bootstrap/context regression run passed **11/11** with typecheck
+  and `git diff --check` clean.
+
+### Classification
+
+`VALIDATED` for source-level CI coverage of the browser/release evidence gates;
+the actual clean-machine workflow result still requires execution by the
+external Windows runner on a candidate release.
+
+## H-033 — Windows I/O tests tolerate legitimate Git/PowerShell startup cost
+
+Status: VALIDATED — PLATFORM REGRESSION STABILITY
+Origin: HW-018 Windows portability closure
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The broad Desktop platform suite remains green under concurrent Windows load;
+tests that create Git clones/worktrees or invoke PowerShell have enough timeout
+headroom to measure behavior instead of failing on the Vitest five-second
+default.
+
+### Observed result
+
+- isolated reproductions of the two timeout sites passed within the normal
+  path, while the broad run exposed their sensitivity under suite load;
+- the Git worktree remote-tracking test and Windows hand-off-marker test now
+  use explicit 15-second test budgets, preserving their assertions and cleanup;
+- the full platform suite then passed **126 files / 1,761 tests**, with 5
+  intentional skips; no coverage was deleted or disabled.
+
+### Classification
+
+`VALIDATED` as a Windows test-harness stability fix; the underlying Git,
+PowerShell and cleanup behavior remains covered by the same assertions.
+
+## H-034 — Release workflow command parity and full contract rerun
+
+Status: VALIDATED — LOCAL RELEASE-CHECK PARITY
+Origin: V3 release-evidence follow-up
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The newly wired Windows release-workflow commands remain executable against the
+current checkout, and the complete Workstation contract suite is still green
+after the workflow and Windows timeout-hardening changes.
+
+### Observed result
+
+- the exact workflow packaging command
+  `npm run builder --workspace apps/desktop -- --dir --publish never` completed
+  successfully without launching a visible Electron process;
+- the canonical bootstrap/context contracts passed **11/11**;
+- the release-qualification/isolation contracts passed **10/10** when run with
+  the required native temporary-directory access;
+- the complete Workstation suite passed **152/152**;
+- `git diff --check --no-ext-diff --unified=0` passed and a final process check
+  found no running Electron instance;
+- an initial sandboxed isolation run reached 6 passing cases but four
+  `tmp_path` fixtures failed before test execution with `WinError 5`; the
+  authorized rerun reproduced all ten passes, so this is classified as an
+  environment ACL limitation rather than a product or test-contract failure.
+
+### Classification
+
+`VALIDATED` for local command parity and Workstation contract integrity. The
+external Windows clean-machine workflow and production-like long-duration soak
+remain separate acceptance gates and are not inferred from this run.
+
+## H-035 — Windows workflow retains bounded reconnect-soak evidence
+
+Status: VALIDATED — RELEASE WORKFLOW COVERAGE
+Origin: V3.2 long-lived runtime evidence gate
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The Windows release workflow now executes the canonical multi-session,
+multi-process reconnect scenario and preserves enough structured output to
+audit failures without converting a bounded contract run into a production
+soak claim.
+
+### Observed result
+
+- the workflow invokes `workstation.soak` for four sessions with a 180-second
+  duration budget and a 3,000-iteration cap;
+- it validates zero failures/errors and requires at least one completed fresh
+  process iteration before reporting success;
+- the JSON report and durable soak root are uploaded as a separate artifact;
+- the final outcome-preservation step requires the soak outcome to be
+  `success`, alongside the existing UI/platform/browser/package gates;
+- the canonical workflow source contract passed after updating its intentional
+  aggregator-message expectation.
+
+### Classification
+
+`VALIDATED` for reproducible CI coverage of the bounded Workstation reconnect
+contract. Clean-machine promotion, future-client parity and long-duration
+production-like Desktop/Browser soak remain explicit external gates.
+
+## H-036 — Release qualification failure no longer hides downstream evidence
+
+Status: VALIDATED — DIAGNOSTIC NON-MASKING
+Origin: V3 release-workflow hardening
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The Windows workflow can collect the soak, cross-engine and packaged GUI
+results even when release qualification itself fails, while the final job
+still fails on the original release outcome.
+
+### Observed result
+
+- the release qualification step now has an explicit `release_qualification`
+  outcome and `continue-on-error: true`;
+- the final preservation step reads that original outcome and requires
+  `success`, so continuation is diagnostic only and cannot turn a red release
+  gate green;
+- the workflow source contract covers both the release outcome and the
+  downstream soak outcome, and the documentation continues to distinguish
+  bounded CI evidence from production acceptance.
+
+### Classification
+
+`VALIDATED` as failure-observability hardening. Required gates remain strict;
+the change only prevents an early release-gate failure from masking later
+evidence.
+
+## H-037 — Operational memory compaction bounds reconnect soak growth
+
+Status: VALIDATED — MEMORY RETENTION CONTRACT
+Origin: V3.2/V3.4 long-lived runtime acceptance
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The canonical memory owner can compact operational task-context records by an
+explicit workspace/type policy, persist that deletion safely, and expose a
+bounded live-memory metric in the reconnect soak without pruning procedures or
+unrelated memory kinds.
+
+### Observed result
+
+- `ProceduralMemory.compact_memory()` retains the newest records within an
+  explicit scope and carries deletion IDs through merge-on-write so compacted
+  records are not resurrected by the persistence merge path;
+- focused memory/soak tests passed **6/6**, and the complete Workstation suite
+  passed **154/154**;
+- the final 180-second, four-session soak completed **128 fresh-process
+  iterations with 0 failures and 0 errors**, including 512 snapshots, 508
+  worker reconstructions/model changes/cold reloads and 2,048 journal events;
+- cumulative memory work produced 15,888 records, while live memory peaked at
+  **32 records**, exactly eight per session, proving the operational bound;
+- the soak still reports `timed_out=true` at the duration budget and remains
+  contract evidence rather than a production-like Desktop/Browser claim.
+
+### Classification
+
+`VALIDATED` for explicit operational-memory retention and bounded reconnect
+soak behavior. User-facing procedures/facts remain untouched unless a caller
+explicitly selects them for compaction; clean-machine promotion, future-client
+parity and production-like Desktop/Browser soak remain external gates.
+
+## H-038 — Windows soak gate enforces the operational memory bound
+
+Status: VALIDATED — RELEASE GATE INVARIANT
+Origin: V3.2/V3.4 bounded-memory follow-up
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The Windows release workflow does not merely check that the reconnect soak had
+no failures; it also rejects reports that omit or exceed the explicit
+eight-record-per-session operational memory bound.
+
+### Observed result
+
+- the soak validation calculates `memoryBound = session_count * 8` from the
+  report and requires `max_live_memory_records` to be present and no greater
+  than that bound;
+- the source contract asserts the report metric and bound check, while the
+  final workflow aggregator still requires the soak step's original outcome
+  to be `success`;
+- the final 180-second soak report contained `max_live_memory_records=32` for
+  four sessions, satisfying the same invariant that CI now enforces.
+
+### Classification
+
+`VALIDATED` as a fail-closed release-workflow invariant. The check bounds
+operational task context only; it does not imply a production-like
+Desktop/Browser soak or alter the separate clean-machine evidence boundary.
+
+## H-039 — Strict doctor closes the bootstrap gate without opening Desktop
+
+Status: VALIDATED — WINDOWS BOOTSTRAP GATE
+Origin: V1 #14 clean-install/start acceptance
+Date / ref: 2026-09-11 / working tree on `main@d77901a685`
+
+### Claim
+
+The Windows release workflow now exercises a real strict bootstrap diagnostic
+after installation, and a failed required dependency/integration check cannot
+be reported as accepted clean-install evidence.
+
+### Observed result
+
+- `workstation\\doctor.ps1 -Strict` preserves the default warning-oriented
+  diagnostic mode but returns exit code 1 when required Git/Node/npm/Python,
+  `.venv`, integration, lock or license checks fail;
+- the local strict doctor passed on the current checkout with Python 3.13,
+  Node 26, npm, `.venv`, integration anchors, lock and license policy;
+- the Windows workflow invokes `workstation\\doctor.cmd -Strict`, carries its
+  original outcome into clean-install evidence and requires that outcome in
+  the final aggregator;
+- the doctor source contract and workflow/documentation contracts pass, and no
+  Electron process is launched by this validation.
+
+### Classification
+
+`VALIDATED` for strict bootstrap diagnostics and failure propagation. The
+one-click launcher still owns the user-facing install → doctor → start flow;
+external clean-machine and visible Desktop-session acceptance remain separate
+evidence gates.
+
+## H-040 — Root launcher changes trigger the Windows gate
+
+Status: VALIDATED — CI PATH COVERAGE
+Origin: V1 #14 one-click bootstrap hardening
+Date / ref: 2026-09-12 / working tree on `main@d77901a685`
+
+### Claim
+
+A change to the repository-root one-click Workstation launcher cannot bypass
+the Windows validation workflow merely because the launcher is outside the
+`workstation/` directory.
+
+### Observed result
+
+- `.github/workflows/workstation-browser-windows.yml` now includes
+  `START-HERMES-WORKSTATION.bat` in its pull-request path filter;
+- the canonical source test checks that filter alongside the launcher’s strict
+  doctor delegation;
+- the launcher remains source-only in this validation, so no visible Electron
+  process is started.
+
+### Classification
+
+`VALIDATED` for CI trigger coverage of the one-click bootstrap entrypoint.
+Actual clean-machine launcher execution and visible Desktop-session behavior
+remain environment-specific acceptance gates.
 
 ## Why this journal exists
 
@@ -1085,6 +2609,7 @@ Classification used at promotion: `KI-006_ONLY_BY_CONTROLLED_EQUIVALENCE`.
 | E-019 | documentation rewrite removed tested canonical heading               | Workstation CI failed 1/24 although product code unchanged                                     | Documentation contract regression   | Inspect context-doc tests before restructuring canonical docs; documentation-only commits still require CI.                                      |
 | E-020 | contributor email unmapped at final promotion                        | repository-wide attribution check failed                                                       | Process gate, corrected             | Merge hygiene is part of promotion; fix the mapping instead of dismissing/bypassing the gate.                                                    |
 | E-021 | post-merge canonical docs still said Impl4 was pending               | code/GitHub and `CURRENT_STATE`/`ROADMAP` disagreed after merge                                | Post-promotion documentation defect | Promotion is not complete until canonical state documents reflect the new `main`; correct via a separate docs closure and run context contracts. |
+| E-022 | Windows broad Desktop portability debt                               | Historical UI/platform failures reduced to 0 after contract-aware fixes and full reruns        | KI-006 resolved                      | Preserve platform-specific behavior explicitly; never hide a broad failure by deleting or weakening coverage.                                    |
 
 ## Stable anti-patterns / rules learned
 

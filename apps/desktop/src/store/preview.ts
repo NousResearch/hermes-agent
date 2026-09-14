@@ -411,9 +411,45 @@ export const $sessionPreviewTabs = persistentAtom<Record<string, PreviewTab[]>>(
 
 let currentActiveSessionKey: string | null = null
 let isSyncingSessionTabs = false
+let lastSelectedStoredSessionId: string | null = null
 
 export function activeSessionKey(): string | null {
   return $selectedStoredSessionId.get() || $activeSessionId.get() || null
+}
+
+/** Promote the tabs opened by a fresh runtime session onto the stored id that
+ * arrives when the first turn is persisted. The runtime id and stored id are
+ * aliases for that one conversation; treating the stored id as a brand-new
+ * session would clear the rail in the middle of the first turn. */
+function promoteRuntimeSessionTabs(runtimeSessionKey: string, storedSessionKey: string) {
+  if (currentActiveSessionKey !== runtimeSessionKey) {
+    syncSessionPreviewTabs(storedSessionKey)
+
+    return
+  }
+
+  const currentTabs = $previewTabs.get()
+  const map = { ...$sessionPreviewTabs.get() }
+  const nextTabs = currentTabs.length > 0 ? currentTabs : (map[storedSessionKey] ?? [])
+
+  if (nextTabs.length > 0) {
+    map[storedSessionKey] = [...nextTabs]
+  } else {
+    delete map[storedSessionKey]
+  }
+
+  delete map[runtimeSessionKey]
+  $sessionPreviewTabs.set(map)
+  currentActiveSessionKey = storedSessionKey
+
+  isSyncingSessionTabs = true
+
+  try {
+    $previewTabs.set([...nextTabs])
+    selectRightRailTab(nextTabs[0]?.id ?? null)
+  } finally {
+    isSyncingSessionTabs = false
+  }
 }
 
 export function syncSessionPreviewTabs(nextSessionKey: string | null) {
@@ -455,8 +491,19 @@ export function syncSessionPreviewTabs(nextSessionKey: string | null) {
 
 if (typeof window !== 'undefined') {
   currentActiveSessionKey = activeSessionKey()
+  lastSelectedStoredSessionId = $selectedStoredSessionId.get()
 
   $selectedStoredSessionId.listen(id => {
+    const wasFreshDraft = lastSelectedStoredSessionId === null
+    const runtimeSessionId = $activeSessionId.get()
+    lastSelectedStoredSessionId = id
+
+    if (wasFreshDraft && id && runtimeSessionId && currentActiveSessionKey === runtimeSessionId) {
+      promoteRuntimeSessionTabs(runtimeSessionId, id)
+
+      return
+    }
+
     syncSessionPreviewTabs(id || $activeSessionId.get() || null)
   })
 
@@ -481,4 +528,3 @@ if (typeof window !== 'undefined') {
     }
   })
 }
-

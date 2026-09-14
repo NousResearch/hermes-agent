@@ -13,7 +13,7 @@ if errorlevel 1 goto :install_failed
 
 echo.
 echo [2/3] Running Hermes Workstation Doctor...
-call "%~dp0workstation\doctor.cmd"
+call "%~dp0workstation\doctor.cmd" -Strict
 if errorlevel 1 goto :doctor_failed
 
 echo.

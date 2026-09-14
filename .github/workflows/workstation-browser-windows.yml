@@ -8,6 +8,8 @@ on:
       - "apps/desktop/electron/workstation-browser-task.ts"
       - "apps/desktop/electron/workstation-browser-*.test.ts"
       - "apps/desktop/src/app/browser/**"
+      - "apps/desktop/e2e/**"
+      - "apps/desktop/playwright*.config.ts"
       - "workstation/**"
       - "tools/browser_workstation.py"
       - "tools/browser_tool.py"
@@ -20,6 +22,7 @@ on:
       - "apps/desktop/src/plugins/kanban/plugin.tsx"
       - "apps/desktop/package.json"
       - "package-lock.json"
+      - "START-HERMES-WORKSTATION.bat"
       - ".github/workflows/workstation-browser-windows.yml"
 
 jobs:
@@ -49,6 +52,12 @@ jobs:
           python-version: "3.13"
       - name: Validate committed Workstation integration
         run: python workstation/scripts/apply_core_integration.py --root . --check
+      - name: Allocate isolated Workstation home
+        shell: pwsh
+        run: |
+          $cleanHome = Join-Path $env:RUNNER_TEMP ("hermes-clean-workstation-home-{0}-{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
+          "HERMES_WORKSTATION_HOME=$cleanHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Clean Workstation home: $cleanHome"
       - name: Install Workstation from committed source
         shell: cmd
         run: workstation\install.cmd
@@ -60,6 +69,167 @@ jobs:
             $dirty | Write-Host
             throw "Workstation install changed the committed checkout."
           }
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: Workstation doctor
+        id: workstation_doctor
+        continue-on-error: true
+        shell: cmd
+        run: workstation\doctor.cmd -Strict
+      - name: Desktop production build
+        run: npm run build --workspace apps/desktop
+      - name: Assert build kept checkout clean
+        shell: pwsh
+        run: |
+          $dirty = @(git status --porcelain=v1 --untracked-files=all)
+          if ($dirty.Count -ne 0) {
+            $dirty | Write-Host
+            throw "Desktop build changed the committed checkout."
+          }
+      - name: Prepare Workstation validation dependencies
+        shell: pwsh
+        run: |
+          & .venv\Scripts\python.exe -m pip install -e ".[dev]"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not install the Workstation validation dependencies."
+          }
+      - name: Emit clean-machine install evidence
+        id: clean_machine_evidence
+        shell: pwsh
+        run: |
+          $evidencePath = Join-Path $env:RUNNER_TEMP "hermes-clean-install-evidence.json"
+          $doctorOutcome = "${{ steps.workstation_doctor.outcome }}"
+          $doctorAccepted = $doctorOutcome -eq "success"
+          $evidence = [ordered]@{
+            accepted = $doctorAccepted
+            candidate_revision = (git rev-parse HEAD).Trim()
+            generated_at = (Get-Date).ToUniversalTime().ToString("o")
+            stages = @("clean_install")
+            environment = "GitHub Actions windows-latest"
+            workstation_home = $env:HERMES_WORKSTATION_HOME
+            installer = "workstation\install.cmd"
+            doctor = $doctorOutcome
+            build = "npm run build --workspace apps/desktop"
+          }
+          foreach ($requiredDirectory in @("Runtime", "Browser")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $env:HERMES_WORKSTATION_HOME $requiredDirectory))) {
+              throw "Clean Workstation home is missing its $requiredDirectory directory."
+            }
+          }
+          $evidence | ConvertTo-Json -Depth 4 | Set-Content -Path $evidencePath -Encoding utf8
+          "path=$evidencePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Release qualification gate
+        id: release_qualification
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & .venv\Scripts\python.exe -m workstation.release_qualification `
+            --root . `
+            --python .venv\Scripts\python.exe `
+            --clean-install-evidence "${{ steps.clean_machine_evidence.outputs.path }}" `
+            --report "$env:RUNNER_TEMP\hermes-release-qualification.json"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Workstation release qualification failed with exit code $LASTEXITCODE."
+          }
+      - name: Upload release qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workstation-release-qualification
+          path: |
+            ${{ steps.clean_machine_evidence.outputs.path }}
+            ${{ runner.temp }}/hermes-release-qualification.json
+          if-no-files-found: ignore
+      - name: Workstation reconnect soak
+        id: workstation_soak
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $soakRoot = Join-Path $env:RUNNER_TEMP "hermes-workstation-soak"
+          $reportPath = Join-Path $env:RUNNER_TEMP "hermes-workstation-soak.json"
+          & .venv\Scripts\python.exe -m workstation.soak `
+            --duration 180 `
+            --iterations 3000 `
+            --sessions 4 `
+            --root $soakRoot `
+            --report $reportPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Workstation reconnect soak failed with exit code $LASTEXITCODE."
+          }
+          $report = Get-Content -Raw -Path $reportPath | ConvertFrom-Json
+          $errors = @($report.result.errors)
+          $memoryBound = [int]$report.session_count * 8
+          if ($null -eq $report.result -or $null -eq $report.max_live_memory_records -or [int]$report.result.failures -ne 0 -or $errors.Count -ne 0 -or [int]$report.result.completed_iterations -le 0 -or [int]$report.max_live_memory_records -gt $memoryBound) {
+            throw "Workstation reconnect soak produced incomplete or failing evidence."
+          }
+          Write-Host ("Workstation live memory peak: {0} / bound {1}" -f $report.max_live_memory_records, $memoryBound)
+      - name: Upload Workstation soak evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workstation-soak
+          path: |
+            ${{ runner.temp }}/hermes-workstation-soak.json
+            ${{ runner.temp }}/hermes-workstation-soak
+          if-no-files-found: ignore
+      - name: Install Dashboard smoke browsers
+        working-directory: apps/desktop
+        run: npx playwright install chromium firefox
+      - name: Dashboard cross-engine smoke
+        id: dashboard_cross_engine
+        continue-on-error: true
+        working-directory: apps/desktop
+        run: npx playwright test --config=playwright.dashboard.config.ts --workers=1
+      - name: Desktop unpacked package
+        id: desktop_packaged_build
+        continue-on-error: true
+        run: npm run builder --workspace apps/desktop -- --dir --publish never
+      - name: Packaged Desktop GUI E2E
+        id: packaged_gui_e2e
+        continue-on-error: true
+        working-directory: apps/desktop
+        run: npx playwright test e2e/launch-packaged-app.spec.ts --config=playwright.config.ts --workers=1
+      - name: Integrated Desktop Browser headless load E2E
+        id: desktop_browser_load_e2e
+        continue-on-error: true
+        working-directory: apps/desktop
+        shell: pwsh
+        run: |
+          $reportPath = Join-Path $env:RUNNER_TEMP "hermes-desktop-browser-load.json"
+          $env:HERMES_DESKTOP_E2E_HEADLESS = "1"
+          # Keep local runs bounded, but exercise the candidate-release path
+          # with a larger sustained BrowserTask/backend profile.
+          $env:HERMES_DESKTOP_E2E_SUSTAINED_TASKS = "16"
+          $env:HERMES_DESKTOP_E2E_SUSTAINED_ROUNDS = "300"
+          $env:HERMES_DESKTOP_E2E_SUSTAINED_DURATION_MS = "120000"
+          $env:HERMES_DESKTOP_E2E_SUSTAINED_CHAT_TURNS = "8"
+          $env:HERMES_DESKTOP_E2E_REPORT = $reportPath
+          npx playwright test e2e/workstation-headless-load.spec.ts --config=playwright.config.ts --workers=1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Integrated Desktop/Browser H013 E2E failed with exit code $LASTEXITCODE."
+          }
+          if (-not (Test-Path -LiteralPath $reportPath)) {
+            throw "Integrated Desktop/Browser H013 evidence report was not produced."
+          }
+          & .venv\Scripts\python.exe -m workstation.desktop_load_evidence `
+            --report $reportPath `
+            --min-tasks 16 `
+            --min-rounds 300 `
+            --min-duration-ms 120000 `
+            --min-chat-turns 8
+          if ($LASTEXITCODE -ne 0) {
+            throw "Integrated Desktop/Browser H013 evidence report is incomplete or under-sized."
+          }
+      - name: Upload Desktop E2E evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workstation-desktop-e2e
+          path: |
+            apps/desktop/test-results
+            apps/desktop/playwright-report
+            ${{ runner.temp }}/hermes-desktop-browser-load.json
+          if-no-files-found: ignore
       - name: Candidate diff check
         run: git diff --check origin/main...HEAD
       - name: Desktop typecheck
@@ -108,6 +278,67 @@ jobs:
         run: |
           $env:H010_EXPECTED_SHA = "${{ github.event.pull_request.head.sha || github.sha }}"
           node workstation/context/engineering-journal/probes/h010-native-browser-session-state-smoke.mjs
+      - name: Native Browser runtime reconnect soak
+        id: native_browser_runtime_soak
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $nativeRoot = Join-Path $env:RUNNER_TEMP "hermes-native-browser-soak"
+          $reportPath = Join-Path $env:RUNNER_TEMP "hermes-native-browser-soak.json"
+          $env:H011_DURATION_MS = "60000"
+          $env:H011_CHILD_ITERATIONS = "24"
+          $env:H011_WORK_ROOT = $nativeRoot
+          $env:H011_REPORT = $reportPath
+          node workstation/context/engineering-journal/probes/h011-native-browser-runtime-soak.mjs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native Browser runtime soak failed with exit code $LASTEXITCODE."
+          }
+          $report = Get-Content -Raw -Path $reportPath | ConvertFrom-Json
+          if ($null -eq $report -or $report.accepted -ne $true -or [int]$report.episodes -lt 2 -or [int]$report.totalIterations -le 0) {
+            throw "Native Browser runtime soak produced incomplete evidence."
+          }
+          Write-Host ("Native Browser runtime soak: {0} episodes / {1} iterations" -f $report.episodes, $report.totalIterations)
+      - name: Upload native Browser runtime soak evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workstation-native-browser-soak
+          path: |
+            ${{ runner.temp }}/hermes-native-browser-soak.json
+            ${{ runner.temp }}/hermes-native-browser-soak/workstation/Runtime/*.json
+          if-no-files-found: ignore
+      - name: Headless backend multi-session reconnect soak
+        id: headless_backend_soak
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $backendRoot = Join-Path $env:RUNNER_TEMP "hermes-headless-backend-soak"
+          $reportPath = Join-Path $env:RUNNER_TEMP "hermes-headless-backend-soak.json"
+          $env:H012_DURATION_MS = "120000"
+          $env:H012_SESSION_COUNT = "4"
+          $env:H012_MAX_CYCLES = "12"
+          $env:H012_RESTARTS = "2"
+          $env:H012_RESTART_EVERY = "3"
+          $env:H012_WORK_ROOT = $backendRoot
+          $env:H012_REPORT = $reportPath
+          & .venv\Scripts\python.exe workstation\context\engineering-journal\probes\h012-headless-backend-reconnect-soak.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "Headless backend reconnect soak failed with exit code $LASTEXITCODE."
+          }
+          $report = Get-Content -Raw -Path $reportPath | ConvertFrom-Json
+          if ($null -eq $report -or $report.accepted -ne $true -or [int]$report.completed_cycles -le 0 -or [int]$report.reconnects -lt 4 -or [int]$report.backend_restarts -lt 2 -or [int]$report.max_concurrent_turns -lt 4) {
+            throw "Headless backend reconnect soak produced incomplete evidence."
+          }
+          Write-Host ("Headless backend soak: {0} cycles / {1} turns / {2} reconnects / {3} backend restarts" -f $report.completed_cycles, $report.turns, $report.reconnects, $report.backend_restarts)
+      - name: Upload headless backend soak evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workstation-headless-backend-soak
+          path: |
+            ${{ runner.temp }}/hermes-headless-backend-soak.json
+            ${{ runner.temp }}/hermes-headless-backend-soak/hermes-home/**/*.json
+          if-no-files-found: ignore
       - name: Desktop UI tests
         id: desktop_ui_tests
         continue-on-error: true
@@ -124,14 +355,32 @@ jobs:
           $format = "${{ steps.browser_session_format.outcome }}"
           $browserFoundation = "${{ steps.browser_foundation_tests.outcome }}"
           $nativeSession = "${{ steps.native_browser_session_state.outcome }}"
+          $nativeBrowserSoak = "${{ steps.native_browser_runtime_soak.outcome }}"
+          $headlessBackendSoak = "${{ steps.headless_backend_soak.outcome }}"
           $ui = "${{ steps.desktop_ui_tests.outcome }}"
           $platform = "${{ steps.desktop_platform_tests.outcome }}"
+          $doctor = "${{ steps.workstation_doctor.outcome }}"
+          $release = "${{ steps.release_qualification.outcome }}"
+          $soak = "${{ steps.workstation_soak.outcome }}"
+          $crossEngine = "${{ steps.dashboard_cross_engine.outcome }}"
+          $packagedBuild = "${{ steps.desktop_packaged_build.outcome }}"
+          $packagedE2e = "${{ steps.packaged_gui_e2e.outcome }}"
+          $desktopBrowserLoad = "${{ steps.desktop_browser_load_e2e.outcome }}"
           Write-Host "BrowserSessionState ESLint: $lint"
           Write-Host "BrowserSessionState Prettier: $format"
           Write-Host "Browser foundation focused tests: $browserFoundation"
           Write-Host "Native BrowserSessionState smoke: $nativeSession"
+          Write-Host "Native Browser runtime reconnect soak: $nativeBrowserSoak"
+          Write-Host "Headless backend multi-session reconnect soak: $headlessBackendSoak"
           Write-Host "Desktop UI tests: $ui"
           Write-Host "Desktop platform tests: $platform"
-          if ($lint -ne "success" -or $format -ne "success" -or $browserFoundation -ne "success" -or $nativeSession -ne "success" -or $ui -ne "success" -or $platform -ne "success") {
-            throw "One or more Desktop gates failed. Static BrowserSessionState checks, focused Browser foundation, native BrowserSessionState, UI, and platform suites were all allowed to run so one failure does not mask the others."
+          Write-Host "Workstation doctor: $doctor"
+          Write-Host "Release qualification: $release"
+          Write-Host "Workstation reconnect soak: $soak"
+          Write-Host "Dashboard cross-engine smoke: $crossEngine"
+          Write-Host "Desktop unpacked package: $packagedBuild"
+          Write-Host "Packaged Desktop GUI E2E: $packagedE2e"
+          Write-Host "Integrated Desktop Browser headless load E2E: $desktopBrowserLoad"
+          if ($lint -ne "success" -or $format -ne "success" -or $browserFoundation -ne "success" -or $nativeSession -ne "success" -or $nativeBrowserSoak -ne "success" -or $headlessBackendSoak -ne "success" -or $ui -ne "success" -or $platform -ne "success" -or $doctor -ne "success" -or $release -ne "success" -or $soak -ne "success" -or $crossEngine -ne "success" -or $packagedBuild -ne "success" -or $packagedE2e -ne "success" -or $desktopBrowserLoad -ne "success") {
+            throw "One or more Desktop/Workstation gates failed. Static BrowserSessionState checks, focused Browser foundation, native BrowserSessionState, native Browser runtime soak, headless backend soak, UI, platform, reconnect soak, cross-engine, packaging, packaged GUI and integrated Desktop Browser load suites were all allowed to run so one failure does not mask the others."
           }

@@ -592,9 +592,19 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 
     makeFakeGetWindows(srcRoot)
 
-    stageGetWindowsInto(srcRoot, destRoot, { platform: 'darwin' })
+    const chmodCalls = []
+    stageGetWindowsInto(srcRoot, destRoot, {
+      platform: 'darwin',
+      chmod: (filePath, mode) => {
+        chmodCalls.push({ filePath, mode })
+        fs.chmodSync(filePath, mode)
+      }
+    })
 
-    assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    assert.deepEqual(chmodCalls, [{ filePath: join(destRoot, 'main'), mode: 0o755 }])
+    if (process.platform !== 'win32') {
+      assert.equal(fs.statSync(join(destRoot, 'main')).mode & 0o777, 0o755)
+    }
     const staged = fs.readFileSync(join(destRoot, 'lib', 'windows.js'), 'utf8')
     assert.match(staged, /Rewritten by stage-native-deps\.mjs/)
     assert.ok(!staged.includes('node-pre-gyp'), 'pre-gyp loader must not survive staging')

@@ -21,6 +21,50 @@ persistent Electron Session
 BrowserTask + task binding + controller + journal + safety
 ```
 
+## V3 runtime and control boundary
+
+The long-lived runtime is split into operational projections around the same
+Hermes owners:
+
+```text
+Independent RuntimeSupervisor
+  -> starts, checks, restarts and rolls back the runtime process
+
+RecoveryPlane / recovery_cli
+  -> diagnoses and quarantines optional components when rich UI paths fail
+
+EvidenceStateStore + RuntimeEventBus
+  -> projects live evidence, bounded lifecycle events and recovery state
+
+SessionLifecycleStore / WorkerRegistry / ProceduralMemory
+  -> durable bindings, worker queues and typed temporal memory over canonical
+     Hermes sessions, journal, Kanban and memory ownership
+
+Typed resources + protocol adapters
+  -> reconnectable client views; A2A/ACP/UHP remain adapters, never state owners
+```
+
+`RUNNING` is only valid while a task has live operational evidence. Expired
+evidence reconciles to `STALLED`, and worker failure, missing approval or
+external failure is never converted into successful completion. Event delivery
+uses bounded subscriber queues so one slow client cannot block unrelated work.
+Deadlines/cancellation are explicit at the operation boundary, and persistent
+worker messages/results retain parent task and session lineage.
+
+V3 durable artifacts are projections or recovery copies, not replacements for
+SessionDB, Kanban, BrowserTask, the Hermes Memory owner or the agent core. The
+Recovery Plane has a tiny CLI surface:
+
+```text
+python -m workstation.recovery_cli status
+python -m workstation.recovery_cli quarantine <component> <reason>
+python -m workstation.recovery_cli restore <component>
+```
+
+Native process-boundary evidence is versioned in
+`context/engineering-journal/probes/v3-runtime-hardening-smoke.py`; Electron
+browser evidence remains versioned separately in the H010 probe.
+
 ### Internal Browser
 
 The primary Workstation browser is not a second application. Hermes Desktop is

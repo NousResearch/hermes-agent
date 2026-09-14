@@ -308,6 +308,50 @@ export interface SessionQueryOptions {
   excludeSources?: string[];
 }
 
+export interface WorkstationResource {
+  resource_type: "browser" | "browser_task" | "execution_journal";
+  resource_id: string;
+  task_id: string | null;
+  session_id: string | null;
+  permissions: string[];
+  state: Record<string, unknown>;
+  updated_at: string;
+}
+
+export interface WorkstationResourcesResponse {
+  available: boolean;
+  schema_version: number;
+  runtime: string | null;
+  generated_at: string | null;
+  resources: WorkstationResource[];
+  error: string | null;
+}
+
+export interface WorkstationEvent {
+  event_id: string;
+  kind: string;
+  task_id: string;
+  session_id: string;
+  message: string;
+  timestamp: string;
+  elapsed_seconds?: number;
+  url?: string | null;
+  browser_tab_id?: string | null;
+  risk?: string;
+  metadata?: Record<string, unknown>;
+  evidence?: Array<Record<string, unknown>>;
+}
+
+export interface WorkstationEventsResponse {
+  available: boolean;
+  schema_version: number;
+  runtime: string | null;
+  generated_at: string | null;
+  task_id: string | null;
+  events: WorkstationEvent[];
+  error: string | null;
+}
+
 function normalizeSessionQueryOptions(
   profileOrOptions?: string | SessionQueryOptions,
   order: "created" | "recent" = "created",
@@ -337,6 +381,13 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
 export const api = {
   buildWsUrl,
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
+  getWorkstationResources: () =>
+    fetchJSON<WorkstationResourcesResponse>("/api/workstation/resources"),
+  getWorkstationEvents: (taskId?: string, limit = 50) => {
+    let url = appendQueryParam("/api/workstation/events", "limit", String(limit));
+    if (taskId) url = appendQueryParam(url, "task_id", taskId);
+    return fetchJSON<WorkstationEventsResponse>(url);
+  },
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
    *

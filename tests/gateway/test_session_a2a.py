@@ -149,5 +149,7 @@ async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(t
     from gateway.session_policy import build_policy
     plain = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {'platform_toolsets': {'cli': []}})
     assert row_turn_author(plain, row) is None
+    # An ordinary API session has no policy at all; it names nobody rather than failing admission.
+    assert row_turn_author(None, row) is None
     await conn.close()
     authority.db.close()

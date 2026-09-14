@@ -25,7 +25,7 @@ def build_forward_policy(params, config, *, private_secrets):
 
 
 def is_forward_policy(policy):
-    if policy.source != 'a2a' or policy.platform != 'a2a':
+    if policy is None or policy.source != 'a2a' or policy.platform != 'a2a':
         return False
     try:
         request = json.loads(policy.request_json)

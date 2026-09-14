@@ -583,7 +583,7 @@ def test_unlink_rejects_self_edge(worker_env):
 
 def test_unlink_refuses_delegated_children(monkeypatch, worker_env):
     from agent import delegation_context
-    monkeypatch.setattr(delegation_context, "is_delegated_child_context", lambda: True)
+    monkeypatch.setattr(delegation_context, "is_delegated_child_process_context", lambda: True)
     from model_tools import handle_function_call
 
     out = json.loads(handle_function_call("kanban_unlink", {

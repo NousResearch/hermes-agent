@@ -143,6 +143,7 @@ import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
+  invalidatePersistedDisplayTranscriptAuthority,
   suppressTranscriptForView,
   withoutTranscriptProvenance
 } from './transcript-provenance'
@@ -1607,7 +1608,10 @@ export function useSessionActions({
             ? null
             : getLatestSessionMessages(storedSessionId, sessionRestScope)
 
-        let resumeRuntimeBaselineMessages: ChatMessage[] = []
+        // Same-ID snapshots detach the foreground while awaiting the RPC. Keep
+        // the request-time cache baseline, not the reply-time cache, so accepted
+        // tails arriving during that await remain concurrent changes.
+        let resumeRuntimeBaselineMessages: ChatMessage[] = options?.authoritativeSnapshot ? warmHit?.state.messages ?? [] : []
         const resumeStartedAt = Date.now() / 1000
 
         const resumePromise = singleFlightSessionResume(
@@ -1634,8 +1638,10 @@ export function useSessionActions({
             }),
           { requiresMessages: options?.authoritativeSnapshot, scope: sessionOwner }
         ).then(resumed => {
-          resumeRuntimeBaselineMessages =
-            sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
+          if (!options?.authoritativeSnapshot || resumed.session_id !== warmHit?.runtimeId) {
+            resumeRuntimeBaselineMessages =
+              sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
+          }
 
           return resumed
         })
@@ -1872,7 +1878,9 @@ export function useSessionActions({
         updateSessionState(
           resumed.session_id,
           state => ({
-            ...state,
+            // Only an explicit authoritative snapshot supersedes in-flight
+            // post-turn REST reads; ordinary transcript refreshes still merge.
+            ...(options?.authoritativeSnapshot ? invalidatePersistedDisplayTranscriptAuthority(state) : state),
             ...(runtimeInfo ?? {}),
             messages: visibleMessagesForView,
             transcriptProvenance,

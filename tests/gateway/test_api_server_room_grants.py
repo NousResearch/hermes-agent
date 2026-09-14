@@ -1,5 +1,6 @@
 """Compatibility seams for the extracted RoomLink grant HTTP surface."""
 
+import contextlib
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -93,6 +94,57 @@ def test_grant_refresh_accepts_the_authorized_execution_policy():
     )
 
 
+@pytest.mark.asyncio
+async def test_grant_refresh_rechecks_authority_after_mint(monkeypatch):
+    from gateway import hosted_rooms
+    from gateway import hosted_room_peer
+    from gateway import hosted_room_execution_policy
+
+    claims = {
+        "room_id": "room-1",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "install-home",
+        "authority_epoch": 1,
+        "member_id": "member-reviewer",
+        "target_install_id": "install-target",
+        "target_profile": "reviewer",
+        "execution_policy_digest": "a" * 64,
+        "permissions": ["dispatch", "status"],
+        "expires_at": time.time() + 3600,
+        "status_expires_at": time.time() + 7200,
+    }
+    adapter = MagicMock()
+    adapter._read_json_body = AsyncMock(return_value=({}, None))
+    adapter._room_grant_claims.side_effect = [
+        claims,
+        room_grants.RoomGrantReauthorizationRequired("room grant is revoked"),
+    ]
+    adapter._profile_scope.return_value = contextlib.nullcontext()
+    monkeypatch.setattr(
+        hosted_rooms,
+        "local_authority_gateway_id",
+        lambda: "install-target",
+    )
+    monkeypatch.setattr(
+        hosted_room_execution_policy,
+        "execution_policy_mapping",
+        lambda **_kwargs: {"policy_digest": "a" * 64},
+    )
+    minted = MagicMock(return_value="replacement.room.grant")
+    monkeypatch.setattr(hosted_room_peer, "issue_room_grant", minted)
+
+    response = await room_grants._handle_room_member_grant_refresh(
+        adapter,
+        object(),
+        _openai_error=lambda message, **kwargs: {"message": message, **kwargs},
+        _api_request_profile=MagicMock(get=lambda: "reviewer"),
+    )
+
+    assert response.status == 403
+    assert adapter._room_grant_claims.call_count == 2
+    minted.assert_called_once()
+
+
 def test_room_grant_secret_stays_gateway_owned_on_named_profile(
     tmp_path, monkeypatch
 ):
@@ -177,6 +229,13 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
     from gateway import hosted_rooms
+    from gateway.platforms import api_server_room_attachments
+
+    monkeypatch.setattr(
+        api_server_room_attachments,
+        "roomlink_attachments_available",
+        lambda: True,
+    )
 
     adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
     request = object()
@@ -205,7 +264,70 @@ async def test_capability_handler_uses_legacy_claims_monkeypatch(monkeypatch):
     assert response.status == 200
     assert body["object"] == "hermes.room_member.capabilities"
     assert body["target_profile"] == "worker"
+    assert body["catalog"]["attachments"] is True
     adapter._room_grant_claims.assert_called_once_with(
         request,
         permission="status",
     )
+
+
+@pytest.mark.asyncio
+async def test_grant_revoke_cleans_reciprocal_control_on_the_target(monkeypatch):
+    from gateway import hosted_room_control_client, hosted_room_peer, hosted_rooms
+
+    adapter = api_server.APIServerAdapter.__new__(api_server.APIServerAdapter)
+    adapter._read_json_body = AsyncMock(return_value=({}, None))
+    adapter._room_grant_token = MagicMock(return_value="grant-token")
+    adapter._room_grant_secret = MagicMock(return_value=b"s" * 32)
+    claims = {
+        "room_id": "room-1",
+        "member_id": "member-peer",
+        "target_profile": "reviewer",
+        "target_install_id": "install-target",
+        "expires_at": 200,
+        "status_expires_at": 300,
+    }
+    monkeypatch.setattr(hosted_room_peer, "decode_room_grant", lambda *_a, **_k: claims)
+    monkeypatch.setattr(
+        hosted_rooms, "local_authority_gateway_id", lambda: "install-target"
+    )
+    revoke_grant = MagicMock()
+    monkeypatch.setattr(hosted_rooms, "revoke_room_grant_scope", revoke_grant)
+    revoke_control = MagicMock(return_value=1)
+    monkeypatch.setattr(
+        hosted_room_control_client,
+        "revoke_stored_peer_control",
+        revoke_control,
+    )
+    profile_token = api_server._api_request_profile.set("reviewer")
+    try:
+        response = await room_grants._handle_room_member_grant_revoke(
+            adapter,
+            object(),
+            _openai_error=api_server._openai_error,
+            _api_request_profile=api_server._api_request_profile,
+        )
+    finally:
+        api_server._api_request_profile.reset(profile_token)
+
+    assert response.status == 200
+    revoke_grant.assert_called_once()
+    revoke_control.assert_called_once_with(
+        hosted_rooms.default_db_path(),
+        room_id="room-1",
+        member_id="member-peer",
+    )
+
+    revoke_control.side_effect = RuntimeError("home unreachable")
+    profile_token = api_server._api_request_profile.set("reviewer")
+    try:
+        retryable = await room_grants._handle_room_member_grant_revoke(
+            adapter,
+            object(),
+            _openai_error=api_server._openai_error,
+            _api_request_profile=api_server._api_request_profile,
+        )
+    finally:
+        api_server._api_request_profile.reset(profile_token)
+    assert retryable.status == 503
+    assert json.loads(retryable.text)["error"]["code"] == "room_control_cleanup_pending"

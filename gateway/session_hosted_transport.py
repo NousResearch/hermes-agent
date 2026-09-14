@@ -105,7 +105,7 @@ def source_attachment_chunk(service, member, room_id, manifest, params):
 
     Serves one slice per call; the row's stored SHA-256 (verified at upload) rides along
     so the target can verify the reassembled file without the source re-hashing 15 MB
-    per 24 KiB chunk.
+    per chunk.
     """
     index, offset = params.get('index'), params.get('offset')
     if (type(index) is not int or not 0 <= index < len(manifest)
@@ -292,15 +292,19 @@ def _check_remote_hosted_admission(authority, ref, row):
             raise ValueError('owner changed')
         # Bytes are not re-transferred here: the durable row is compared against the
         # payload the attested prompt, manifest and source-verified digests commit to.
-        from gateway.session_hosted_attachments import attested_submission_payload, verify_attested_documents
+        from gateway.session_hosted_attachments import attested_submission_payload
         if row['payload'] != attested_submission_payload(
-                attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
+                attested['prompt'], attested['attachments'], attested.get('attachment_digests'),
+                db=authority.db, admission=row):
             raise ValueError('input changed')
+    except RuntimeStoreError as exc:
+        # Reconstruction verifies the actual accepted v3/legacy paths. A missing or
+        # changed destination copy is a storage fault, not revoked source authority.
+        if exc.reason == 'storage_unavailable':
+            raise
+        raise RuntimeStoreError('permission_denied') from exc
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
-    # Outside the permission_denied fold: a corrupted or missing retained document is a
-    # storage fault of this destination, not a revoked source binding.
-    verify_attested_documents(attested['attachments'], attested.get('attachment_digests'))
     return True
 
 

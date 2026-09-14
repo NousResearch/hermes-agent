@@ -4,7 +4,7 @@ import type { ComponentProps } from 'react'
 import { GroupRow } from './bot-row'
 import { $botMeta } from './data'
 import { $groupChats, updateGroupChat } from './group-chat'
-import type { $groupClarify, $groupNeedsYou } from './group-chat'
+import type { $groupClarify, $groupHostedNeedsYou, $groupNeedsYou } from './group-chat'
 import { groupChatNames, groupLastActivity } from './group-membership'
 import { reorderGroupRows, sortGroupRosterRows } from './group-order'
 import { groupHasPendingClarify } from './group-turns'
@@ -15,6 +15,7 @@ interface RosterGroupRowViewProps extends Omit<ComponentProps<typeof GroupRow>, 
   b: ReturnType<typeof useBots>
   groupClarify: ReturnType<typeof $groupClarify.get>
   groupNeedsYou: ReturnType<typeof $groupNeedsYou.get>
+  groupHostedNeedsYou: ReturnType<typeof $groupHostedNeedsYou.get>
   groupRooms: ReturnType<typeof $groupChats.get>
   sortedGroupRows: RosterGroupRow[]
 }
@@ -23,6 +24,7 @@ export function RosterGroupRowView({
   b,
   groupClarify,
   groupNeedsYou,
+  groupHostedNeedsYou,
   groupRooms,
   sortedGroupRows,
   ...rowProps
@@ -59,7 +61,10 @@ export function RosterGroupRowView({
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center">
       <GroupRow
         {...rowProps}
-        needsYou={Boolean(groupNeedsYou[rowProps.group]) || groupHasPendingClarify(groupClarify, rowProps.group)}
+        needsYou={
+          Boolean(groupNeedsYou[rowProps.group] || groupHostedNeedsYou[rowProps.group]) ||
+          groupHasPendingClarify(groupClarify, rowProps.group)
+        }
       />
       <div className="flex flex-col">
         {([-1, 1] as const).map(delta => (

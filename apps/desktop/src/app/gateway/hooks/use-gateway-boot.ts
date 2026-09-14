@@ -81,10 +81,10 @@ import {
   forgetProfileOnlyRuntimeOwners,
   liveSessionScopes,
   openTileGatewayScopes,
-  reconcileBusyStatesOnReconnect,
   recordSessionEventScope,
   resetTileRuntimeBindings
 } from '@/store/session-states'
+import { reconcileBusyStatesOnReconnect } from '@/store/session-states-reconnect'
 import { windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -1015,7 +1015,7 @@ export function useGatewayBoot({
       // set itself (its `foregroundScopes` hook) so the refcount-0 lease
       // releases agree with this pruner. This recompute only has to RUN when
       // they change — see the tile / selected session / hold subscriptions.
-      pruneSecondaryGateways(keep)
+      pruneSecondaryGateways(keep, { preserveTurnLeases: true })
     }
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())

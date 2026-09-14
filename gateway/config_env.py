@@ -23,6 +23,7 @@ from gateway.config import (
     _has_usable_api_server_key,
     SHARED_LISTENER_MIRROR_PLATFORMS,
 )
+from gateway.config_io import restore_matching_home_bindings, snapshot_home_bindings
 from utils import is_truthy_value
 
 # Logger name parity with the origin module: records stay under "gateway.config".
@@ -644,5 +645,7 @@ _ENV_STEPS: tuple = (
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to *config* (see ``_ENV_STEPS``)."""
+    home_bindings = snapshot_home_bindings(config)
     for step in _ENV_STEPS:
         step(config)
+    restore_matching_home_bindings(config, home_bindings)

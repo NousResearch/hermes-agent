@@ -227,3 +227,6 @@ async def test_settlement_failure_is_logged_and_does_not_kill_the_drain(tmp_path
                 if r['admission_id'] == head.admission_id]
         assert row['status'] == 'started', 'left for recovery, never silently re-settled'
         assert authority.sessions['s'].event_stream.execution == {}, 'stamp cleared even on failure'
+        failures = [rec for rec in caplog.records if 'left for recovery' in rec.getMessage()]
+        assert len(failures) == 1 and failures[0].exc_info is None
+        assert 'error_type=RuntimeStoreError' in failures[0].getMessage()

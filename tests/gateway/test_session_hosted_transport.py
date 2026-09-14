@@ -42,7 +42,8 @@ def test_authenticated_owner_transport_rechecks_source_and_cold_binding(owner, t
             assert params['execution_generation'] == 1
             if operation == 'submit' and params['prompt'] != 'input':
                 raise RuntimeStoreError('permission_denied')
-        return {'owner': 'room-owner', 'target_home': authority.profile_id, 'prompt': 'input', 'attachments': []}
+        return {'owner': 'room-owner', 'target_home': authority.profile_id, 'prompt': 'input',
+                'attachments': [], 'attachment_digests': []}
     servers = [_server(source), _server(target)]
     install_hosted_transport(servers[0], source_authority, loop, attest=attest)
     install_hosted_transport(servers[1], authority, loop, attest=lambda *a: None)

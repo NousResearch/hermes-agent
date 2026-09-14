@@ -122,3 +122,30 @@ def _reset_caches_keep_last_good():
 
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()
+
+
+def test_worker_snapshot_is_not_reinterpreted_by_live_environment_or_managed_config(homes, monkeypatch):
+    import json
+    import os
+
+    from agent import safe_worker_policy
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, managed = homes
+    _write(home / "config.yaml", USER_YAML)
+    _write(managed / "config.yaml", MANAGED_YAML)
+    captured = {
+        "model": {"default": "owner/model"},
+        "display": {"skin": "literal-${FIXTURE_USER_KEY}"},
+    }
+    policy = safe_worker_policy._SafeWorkerPolicy(os.getpid(), True, True, json.dumps(captured))
+    with monkeypatch.context() as worker:
+        worker.setattr(safe_worker_policy, "_policy", policy)
+        first = load_user_config_effective(home / "missing-worker-config.yaml", fail_closed=True)
+        assert first == captured
+        first["model"]["default"] = "caller-mutation"
+        monkeypatch.setenv("FIXTURE_USER_KEY", "later-environment")
+        _write(managed / "config.yaml", "display:\n  skin: later-managed\n")
+        assert load_user_config_effective() == captured
+
+    assert load_user_config_effective()["display"]["skin"] == "later-managed"

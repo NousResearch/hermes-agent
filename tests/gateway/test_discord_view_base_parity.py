@@ -5,7 +5,7 @@ timeout behaviour (buttons disabled, embed greyed with the expiry footer).
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -109,5 +109,11 @@ async def test_on_timeout_disables_and_greys_embed(name):
 
 @pytest.mark.asyncio
 async def test_on_timeout_without_message_is_safe():
-    for view in _views().values():
+    for name, view in _views().items():
+        if name == "choice":
+            # The gateway SDK double omits View.stop; real-SDK tests cover retirement.
+            view.stop = Mock()
         await view.on_timeout()
+        if name == "choice":
+            view.stop.assert_called_once()
+            assert view.resolved and not view.children

@@ -29,7 +29,7 @@ def initialize(conn):
 
 def _initialize_locked(conn):
     from gateway import hosted_room_work_records as work
-    tables = (work.SOURCE_TABLE, work.PENDING_TABLE)
+    tables = (work.SOURCE_TABLE, work.TARGET_TABLE, work.PENDING_TABLE)
     # Orphans are opaque evidence, not snapshots. No FK or producer can honestly
     # be supplied for them. Preserve every original column and forbid mutation.
     conn.execute(f"""CREATE TABLE IF NOT EXISTS {INVALID_TABLE} (
@@ -85,9 +85,11 @@ def _initialize_locked(conn):
             conn.execute(trigger[0])
     _guards(conn, work, tables)
     _invalid_guards(conn)
+    initialize_lineage_guards(conn)
     # Ordinary initialization owns schema/guards only. Each consuming operation
     # validates its own row; authority/enrollment triggers freeze exact-room old
     # scopes. Legacy dispositions were resolved at insertion above.
+    work.initialize_target_guards(conn)
 
 
 def scope_disposition(conn, table, row):
@@ -96,8 +98,15 @@ def scope_disposition(conn, table, row):
     if row["disposition"] != "current":
         return row["disposition"]
     current = None
-    current = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?",
-                           (row["room_id"],)).fetchone()
+    if table == work.TARGET_TABLE:
+        from gateway.hosted_room_passive_lineage import ENROLLMENTS
+        if table_exists(conn, ENROLLMENTS):
+            current = conn.execute(f"SELECT authority_gateway_id,authority_epoch FROM {ENROLLMENTS} "
+                                   "WHERE room_id=? AND is_current=1", (row["room_id"],)).fetchone()
+    else:
+        current = conn.execute("SELECT authority_gateway_id,authority_epoch FROM hosted_rooms WHERE room_id=?",
+                               (row["room_id"],)).fetchone()
+
     if current is None or tuple(current) == (row["producer_gateway_id"], row["producer_epoch"]):
         return "current"
     return "superseded_authority" if table == work.PENDING_TABLE and row["status"] != "acked" else "historical"
@@ -129,10 +138,7 @@ def _guards(conn, work, tables):
                 OR (OLD.disposition!='current' AND (NEW.record_json!=OLD.record_json OR NEW.revision!=OLD.revision
                     OR NEW.digest!=OLD.digest OR NEW.disposition!=OLD.disposition))
             BEGIN SELECT RAISE(ABORT, 'historical work record is immutable'); END""")
-        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_delete_v2 BEFORE DELETE ON {table}
-            WHEN OLD.disposition!='current' AND EXISTS (SELECT 1 FROM hosted_rooms
-                WHERE room_id=OLD.room_id AND disbanded_at IS NULL)
-            BEGIN SELECT RAISE(ABORT, 'historical work record is immutable'); END""")
+        _historical_delete_guard(conn, work, table)
         # INSERT OR REPLACE performs a delete internally. Refuse it before the
         # uniqueness conflict can remove an immutable snapshot.
         extra = " AND p.target_install_id=NEW.target_install_id" if table == work.PENDING_TABLE else ""
@@ -156,6 +162,38 @@ def _guards(conn, work, tables):
         END""")
 
 
+def _historical_delete_guard(conn, work, table):
+    from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    parent, retired = "hosted_rooms", ""
+    if table == work.TARGET_TABLE:
+        # Retirement may initialize after work storage. Never install a guard
+        # which cannot recognize its later-authorized partial-copy cleanup.
+        if not table_exists(conn, RETIREMENT_TABLE):
+            return
+        parent = "hosted_room_replicas"
+        retired = f" AND NOT EXISTS (SELECT 1 FROM {RETIREMENT_TABLE} WHERE room_id=OLD.room_id)"
+    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_delete_v2 BEFORE DELETE ON {table}
+        WHEN OLD.disposition!='current' AND EXISTS (SELECT 1 FROM {parent} WHERE room_id=OLD.room_id
+            AND disbanded_at IS NULL) {retired}
+        BEGIN SELECT RAISE(ABORT, 'historical work record is immutable'); END""")
+
+
+def initialize_lineage_guards(conn):
+    from gateway import hosted_room_work_records as work
+    from gateway.hosted_room_passive_lineage import ENROLLMENTS
+    if (not table_exists(conn, ENROLLMENTS) or "producer_epoch" not in
+            {r["name"] for r in conn.execute(f"PRAGMA table_info({work.TARGET_TABLE})")}):
+        return
+    _historical_delete_guard(conn, work, work.TARGET_TABLE)
+    for operation in ("INSERT", "UPDATE"):
+        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_enrollment_v2_{operation.lower()}
+            AFTER {operation} ON {ENROLLMENTS} WHEN NEW.is_current=1 BEGIN
+            UPDATE {work.TARGET_TABLE} SET disposition='historical' WHERE room_id=NEW.room_id
+                AND disposition='current' AND (producer_gateway_id!=NEW.authority_gateway_id
+                    OR producer_epoch!=NEW.authority_epoch);
+            END""")
+
+
 def retained_fields(table):
     from gateway import hosted_room_work_records as work
     fields = ["room_id", "revision", "digest", "record_json"]
@@ -174,6 +212,40 @@ def row_size_sql(table, prefix=""):
 def usage_sql(tables):
     return (" + ".join(f"(SELECT COALESCE(SUM({row_size_sql(t)}),0) FROM {t})" for t in tables),
             " + ".join(f"(SELECT COUNT(*) FROM {t})" for t in tables))
+
+
+def _invalid_guards(conn):
+    from gateway import hosted_room_work_records as work
+    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_invalid_update BEFORE UPDATE ON {INVALID_TABLE}
+        BEGIN SELECT RAISE(ABORT, 'invalid work evidence is immutable'); END""")
+    # No ordinary writer admits orphan evidence. Migration precedes this trigger;
+    # later legacy reconstruction refuses atomically rather than losing evidence.
+    conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_invalid_insert BEFORE INSERT ON {INVALID_TABLE}
+        BEGIN SELECT RAISE(ABORT, 'invalid work evidence is immutable'); END""")
+    from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    retired = (f"OR (OLD.source_table='{work.TARGET_TABLE}' AND EXISTS (SELECT 1 FROM {RETIREMENT_TABLE} WHERE room_id=OLD.room_id))"
+               if table_exists(conn, RETIREMENT_TABLE) else "")
+    conn.execute("DROP TRIGGER IF EXISTS trg_work_invalid_delete")
+    conn.execute(f"""CREATE TRIGGER trg_work_invalid_delete BEFORE DELETE ON {INVALID_TABLE}
+        WHEN NOT ((OLD.source_table IN ('{work.SOURCE_TABLE}','{work.PENDING_TABLE}') AND (
+                EXISTS (SELECT 1 FROM hosted_rooms WHERE room_id=OLD.room_id AND disbanded_at IS NOT NULL)
+                OR (EXISTS (SELECT 1 FROM hosted_room_id_reservations WHERE room_id=OLD.room_id AND owner_kind='authority')
+                    AND NOT EXISTS (SELECT 1 FROM hosted_rooms WHERE room_id=OLD.room_id))))
+            OR (OLD.source_table='{work.TARGET_TABLE}' AND (
+                EXISTS (SELECT 1 FROM hosted_room_replicas WHERE room_id=OLD.room_id AND disbanded_at IS NOT NULL)
+                OR (EXISTS (SELECT 1 FROM hosted_room_id_reservations WHERE room_id=OLD.room_id AND owner_kind='replica')
+                    AND NOT EXISTS (SELECT 1 FROM hosted_room_replicas WHERE room_id=OLD.room_id)))) {retired})
+        BEGIN SELECT RAISE(ABORT, 'invalid work evidence is immutable'); END""")
+    for parent, kind in (("hosted_rooms", f"source_table IN ('{work.SOURCE_TABLE}','{work.PENDING_TABLE}')"),
+                         ("hosted_room_replicas", f"source_table='{work.TARGET_TABLE}'")):
+        for operation, ref, condition in (("DELETE", "OLD", ""), ("UPDATE OF disbanded_at", "NEW", " WHEN NEW.disbanded_at IS NOT NULL")):
+            name = 'delete' if operation == 'DELETE' else 'disband'
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_invalid_{parent}_{name}
+                AFTER {operation} ON {parent}{condition} BEGIN
+                DELETE FROM {INVALID_TABLE} WHERE room_id={ref}.room_id AND {kind}; END""")
+    if table_exists(conn, RETIREMENT_TABLE):
+        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_invalid_retired AFTER INSERT ON {RETIREMENT_TABLE}
+            BEGIN DELETE FROM {INVALID_TABLE} WHERE room_id=NEW.room_id AND source_table='{work.TARGET_TABLE}'; END""")
 
 
 def validate_stored(row):
@@ -235,13 +307,3 @@ def save_locked(conn, table, record, *, target_install_id=None, route_generation
     updates = ','.join(f'{k}=excluded.{k}' for k in fields if k not in keys)
     conn.execute(f"INSERT INTO {table} ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)}) "
                  f"ON CONFLICT({','.join(keys)}) DO UPDATE SET {updates}", values)
-
-
-
-def _invalid_guards(conn):
-    # There is no reviewed retirement grant in this runtime. Opaque evidence
-    # cannot acquire a first-writer owner or be reclaimed by an ordinary writer.
-    for operation in ("INSERT", "UPDATE", "DELETE"):
-        conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_work_invalid_{operation.lower()}
-            BEFORE {operation} ON {INVALID_TABLE}
-            BEGIN SELECT RAISE(ABORT, 'invalid work evidence is immutable'); END""")

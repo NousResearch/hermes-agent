@@ -185,7 +185,9 @@ describe('round lifecycle', () => {
         thread: 't1',
         startEpoch: 1,
         binding: { isLive: () => true },
-        isCurrent: () => room.chat.$groupChats.get().Room.epoch === 1
+        isCurrent: () => room.chat.$groupChats.get().Room.epoch === 1,
+        leaseLive: () => true,
+        deliveryFailed: new Set<string>()
       }
 
       const pending = runGroupRoundMember(context, member)
@@ -361,19 +363,45 @@ describe('per-member delta', () => {
 
 describe('threads', () => {
   it('mints a new thread per composer send and lands replies in it', async () => {
-    const room = await loadRoom()
-    const member: GroupMember[] = [{ name: 'research', title: '' }]
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1788408000000)
+    let sequence = 10000
 
-    const first = room.rounds.sendToGroupChat('Rooms', member, 'first topic')
-    await settle(room, 'Rooms')
-    const second = room.rounds.sendToGroupChat('Rooms', member, 'second topic')
-    await settle(room, 'Rooms')
+    const uuid = vi
+      .spyOn(globalThis.crypto, 'randomUUID')
+      .mockImplementation(() => `00000000-0000-4000-8000-${(--sequence).toString(16).padStart(12, '0')}`)
 
-    expect(first).toBeTruthy()
-    expect(second).toBeTruthy()
-    expect(first).not.toBe(second)
-    expect(log(room, 'Rooms')[0].thread).toBe(first)
-    expect(log(room, 'Rooms')[1].thread).toBe(second)
+    try {
+      const room = await loadRoom({ turn: ({ n }) => (n === 1 ? 'first reply' : 'second reply') })
+      const member: GroupMember[] = [{ name: 'research', title: '' }]
+
+      const first = room.rounds.sendToGroupChat('Rooms', member, 'first topic')
+      await settle(room, 'Rooms')
+      const second = room.rounds.sendToGroupChat('Rooms', member, 'second topic')
+      await settle(room, 'Rooms')
+
+      expect(first).toBeTruthy()
+      expect(second).toBeTruthy()
+      expect(first).not.toBe(second)
+
+      const messages = log(room, 'Rooms')
+
+      expect(messages).toHaveLength(4)
+
+      // Equal timestamps may sort by entry ID; identity must not depend on position.
+      for (const [text, kind, thread] of [
+        ['first topic', 'user', first],
+        ['first reply', 'member', first],
+        ['second topic', 'user', second],
+        ['second reply', 'member', second]
+      ]) {
+        expect(messages.filter(message => message.text === text)).toEqual([
+          expect.objectContaining({ from: expect.objectContaining({ kind }), thread })
+        ])
+      }
+    } finally {
+      now.mockRestore()
+      uuid.mockRestore()
+    }
   })
 
   it('continues an explicit thread and scopes the member delta to it', async () => {
@@ -451,6 +479,32 @@ describe('turn prompt', () => {
 })
 
 describe('attachments', () => {
+  it('keeps a required file pending when staging fails while healthy members continue', async () => {
+    const room = await loadRoom()
+    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      if (method === 'file.attach' && String(params.session_id).includes('builder')) {
+        throw new Error('file staging unavailable')
+      }
+
+      return request(method, params)
+    }
+
+    const sent = room.rounds.sendToGroupChat('Required', MEMBERS.slice(0, 2), 'review the file', null, [
+      { kind: 'file', name: 'welcome.md', data: 'data:text/markdown;base64,aGVsbG8=' }
+    ])
+
+    await settle(room, 'Required')
+    expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(0)
+    expect(room.gateway.calls.some(call => call.profile === 'research')).toBe(true)
+    expect(room.chat.$groupChats.get().Required.watermarks[`${sent}::builder`] || 0).toBe(0)
+    host.request = request
+    await room.rounds.runGroupChatRounds('Required', MEMBERS.slice(0, 2), sent!)
+    expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
+    expect(room.gateway.attaches.some(call => call.profile === 'builder' && call.data.endsWith('aGVsbG8='))).toBe(true)
+  })
+
   it('stages them into EVERY responding member session before that member submits', async () => {
     const room = await loadRoom()
 
@@ -609,20 +663,32 @@ describe('attachments', () => {
     expect(room.gateway.calls[0].prompt).toContain('spec.pdf → @file:attachments/spec.pdf')
   })
 
-  it('names a failed group PDF attach in the member prompt instead of pretending the file is there', async () => {
+  it('refuses a failed promised PDF instead of submitting a filename-only turn', async () => {
     const room = await loadRoom({
       failAttach: { 'file.attach': Object.assign(new Error('pdftoppm not installed'), { code: 5028 }) }
     })
 
     const pdf: Attachment = { data: 'data:application/pdf;base64,JVBERi0=', kind: 'pdf', name: 'notes.pdf' }
 
-    room.rounds.sendToGroupChat('PdfFail', [{ name: 'research', title: '' }], 'summarize this', null, [pdf])
+    const sent = room.rounds.sendToGroupChat('PdfFail', [{ name: 'research', title: '' }], 'summarize this', null, [pdf])
     await settle(room, 'PdfFail')
 
+    expect(room.gateway.attaches).toEqual([expect.objectContaining({ method: 'file.attach', filename: 'notes.pdf' })])
+    expect(room.gateway.calls).toHaveLength(0)
+    expect(room.chat.$groupChats.get().PdfFail.watermarks[`${sent}::research`] || 0).toBe(0)
+  })
+
+  it('warns and submits text-only when an optional image cannot be staged', async () => {
+    const room = await loadRoom({ failAttach: { 'image.attach_bytes': new Error('image unavailable') } })
+    room.rounds.sendToGroupChat('ImageFail', [{ name: 'research', title: '' }], 'review if available', null, [IMG])
+    await settle(room, 'ImageFail')
     expect(room.gateway.calls).toHaveLength(1)
     expect(room.gateway.calls[0].prompt).toContain('could not be staged into your session')
-    expect(room.gateway.calls[0].prompt).toContain('notes.pdf')
+    expect(room.gateway.calls[0].prompt).toContain('screenshot.png')
     expect(room.gateway.calls[0].prompt).not.toContain('Attached files staged in your session workspace:')
+    expect(room.gateway.host.notifyError).toHaveBeenCalledWith(
+      expect.any(Error), 'Could not attach screenshot.png for research'
+    )
   })
 
   it('appends the file.attach ref_text to the member turn prompt', async () => {

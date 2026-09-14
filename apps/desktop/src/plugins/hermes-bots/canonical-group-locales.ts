@@ -4,6 +4,7 @@ export interface CanonicalGroupMessages {
   loadingGroups: string
   emptyGroups: string
   driverUnavailable: string
+  controlUnavailable: string
   invalidLogCursor: string
   allowOnce: string
   deny: string
@@ -13,6 +14,9 @@ export interface CanonicalGroupMessages {
   unconfirmedSend: string
   restoredPendingSend: string
   groupMessage: string
+  messagePlaceholder: string
+  userSpeaker: string
+  systemSpeaker: string
   attachFiles: string
   removeAttachment: string
   uploadFailed: string
@@ -25,6 +29,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: 'Loading gateway groups…',
     emptyGroups: 'No gateway groups found.',
     driverUnavailable: 'Group driver unavailable. Update or reconnect the owning gateway.',
+    controlUnavailable: 'Controls are unavailable here. This is a read-only observation from the execution owner.',
     invalidLogCursor: 'Invalid room log cursor',
     allowOnce: 'Allow once',
     deny: 'Deny',
@@ -34,6 +39,9 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: 'The previous send is unconfirmed. Retry its original text before sending another message.',
     restoredPendingSend: 'An unconfirmed send was restored. Retry it before sending another message.',
     groupMessage: 'Group message',
+    messagePlaceholder: 'Message the group…',
+    userSpeaker: 'User',
+    systemSpeaker: 'System',
     attachFiles: 'Attach files',
     removeAttachment: 'Remove attachment',
     uploadFailed: 'Upload failed'
@@ -44,6 +52,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: 'ゲートウェイのグループを読み込み中…',
     emptyGroups: 'ゲートウェイのグループが見つかりません。',
     driverUnavailable: 'グループの実行機能を利用できません。管理元のゲートウェイを更新するか、再接続してください。',
+    controlUnavailable: 'この接続では操作できません。実行元からの読み取り専用の状態表示です。',
     invalidLogCursor: 'ルームのログカーソルが無効です',
     allowOnce: '今回のみ許可',
     deny: '拒否',
@@ -53,6 +62,9 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: '前回の送信は未確認です。別のメッセージを送信する前に、元のテキストで再試行してください。',
     restoredPendingSend: '未確認の送信を復元しました。別のメッセージを送信する前に再試行してください。',
     groupMessage: 'グループメッセージ',
+    messagePlaceholder: 'グループにメッセージを送信…',
+    userSpeaker: 'ユーザー',
+    systemSpeaker: 'システム',
     attachFiles: 'ファイルを添付',
     removeAttachment: '添付ファイルを削除',
     uploadFailed: 'アップロードに失敗しました'
@@ -63,6 +75,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: '正在加载网关群组…',
     emptyGroups: '未找到网关群组。',
     driverUnavailable: '群组运行程序不可用。请更新或重新连接所属网关。',
+    controlUnavailable: '此处无法操作。这是执行方提供的只读状态。',
     invalidLogCursor: '群组日志游标无效',
     allowOnce: '仅允许一次',
     deny: '拒绝',
@@ -72,6 +85,9 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: '上次发送尚未确认。请先重试发送原始文本，再发送其他消息。',
     restoredPendingSend: '已恢复尚未确认的发送。请先重试，再发送其他消息。',
     groupMessage: '群组消息',
+    messagePlaceholder: '向群组发送消息…',
+    userSpeaker: '用户',
+    systemSpeaker: '系统',
     attachFiles: '附加文件',
     removeAttachment: '移除附件',
     uploadFailed: '上传失败'
@@ -82,6 +98,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: '正在載入閘道群組…',
     emptyGroups: '找不到閘道群組。',
     driverUnavailable: '群組執行程式無法使用。請更新或重新連線至所屬閘道。',
+    controlUnavailable: '此處無法操作。這是執行端提供的唯讀狀態。',
     invalidLogCursor: '群組記錄游標無效',
     allowOnce: '僅允許一次',
     deny: '拒絕',
@@ -91,6 +108,9 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: '上次傳送尚未確認。請先重試傳送原始文字，再傳送其他訊息。',
     restoredPendingSend: '已還原尚未確認的傳送。請先重試，再傳送其他訊息。',
     groupMessage: '群組訊息',
+    messagePlaceholder: '傳送訊息至群組…',
+    userSpeaker: '使用者',
+    systemSpeaker: '系統',
     attachFiles: '附加檔案',
     removeAttachment: '移除附件',
     uploadFailed: '上傳失敗'
@@ -101,6 +121,7 @@ export const CANONICAL_GROUP_LOCALES = {
     loadingGroups: 'جارٍ تحميل مجموعات البوابة…',
     emptyGroups: 'لم يتم العثور على مجموعات في البوابة.',
     driverUnavailable: 'مشغّل المجموعة غير متاح. حدّث البوابة المالكة أو أعد الاتصال بها.',
+    controlUnavailable: 'عناصر التحكم غير متاحة هنا. هذه حالة للقراءة فقط من جهة التنفيذ.',
     invalidLogCursor: 'مؤشر سجل الغرفة غير صالح',
     allowOnce: 'السماح مرة واحدة',
     deny: 'رفض',
@@ -110,6 +131,9 @@ export const CANONICAL_GROUP_LOCALES = {
     unconfirmedSend: 'الإرسال السابق غير مؤكّد. أعد المحاولة بالنص الأصلي قبل إرسال رسالة أخرى.',
     restoredPendingSend: 'تمت استعادة إرسال غير مؤكّد. أعد محاولته قبل إرسال رسالة أخرى.',
     groupMessage: 'رسالة المجموعة',
+    messagePlaceholder: 'أرسل رسالة إلى المجموعة…',
+    userSpeaker: 'المستخدم',
+    systemSpeaker: 'النظام',
     attachFiles: 'إرفاق ملفات',
     removeAttachment: 'إزالة المرفق',
     uploadFailed: 'فشل الرفع'
@@ -121,6 +145,7 @@ export const CANONICAL_GROUP_LOCALES = {
     emptyGroups: 'Группы шлюза не найдены.',
     driverUnavailable:
       'Исполнитель группы недоступен. Обновите шлюз, которому принадлежит группа, или подключитесь к нему заново.',
+    controlUnavailable: 'Управление здесь недоступно. Это состояние только для чтения от владельца выполнения.',
     invalidLogCursor: 'Недопустимый курсор журнала комнаты',
     allowOnce: 'Разрешить один раз',
     deny: 'Отклонить',
@@ -132,6 +157,9 @@ export const CANONICAL_GROUP_LOCALES = {
     restoredPendingSend:
       'Восстановлена неподтверждённая отправка. Повторите её, прежде чем отправлять другое сообщение.',
     groupMessage: 'Сообщение группе',
+    messagePlaceholder: 'Напишите сообщение группе…',
+    userSpeaker: 'Пользователь',
+    systemSpeaker: 'Система',
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Удалить вложение',
     uploadFailed: 'Не удалось загрузить файл'

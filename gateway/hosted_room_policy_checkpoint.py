@@ -56,6 +56,8 @@ _SCHEMA_DDL = (
     """CREATE INDEX IF NOT EXISTS idx_hosted_room_user_thread
        ON hosted_room_events(room_id, json_extract(payload_json, '$.thread_id'), seq)
        WHERE kind='message.user'""",
+    """CREATE INDEX IF NOT EXISTS idx_hosted_room_discussion_events
+       ON hosted_room_events(room_id, json_extract(payload_json, '$.discussion_event_id'), seq)""",
 )
 
 _ROOM_EVENT_COLUMNS = hosted_rooms._EVENT_COLUMNS
@@ -193,14 +195,20 @@ class HostedRoomPolicyCheckpoint:
         """Index member messages and terminal turn outcomes of a known discussion."""
         room_id, seq, kind = str(event["room_id"]), int(event["seq"]), _text(event, "kind")
         thread_id, discussion_event_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
-        if conn.execute(
-            "SELECT 1 FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=? LIMIT 1",
-            (room_id, discussion_event_id)).fetchone() is not None:
+        source = conn.execute(
+            "SELECT seq FROM hosted_room_policy_events WHERE room_id=? AND discussion_event_id=? ORDER BY seq LIMIT 1",
+            (room_id, discussion_event_id)).fetchone()
+        if source is None and kind == "turn.settled" and payload.get("message_event_id"):
+            source = self._restore_retry_discussion(conn, event, payload)
+        if source is not None:
             self._store_active_event(conn, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
-        # Late outcomes still need publication receipts and transcript commits,
-        # but must not resurrect a completed discussion's active projection.
+        # Keep late receipts even without an active projection. Only the guarded
+        # explicit-retry path above may reopen a still-current silent discussion.
         if kind not in _TERMINAL_KINDS:
             return
+        if source is None:
+            source = conn.execute("""SELECT seq FROM hosted_room_events
+                WHERE room_id=? AND event_id=? AND kind='message.user'""", (room_id, discussion_event_id)).fetchone()
         task_id = _text(payload, "task_id")
         execution_generation = int(payload.get("execution_generation") or 0) if kind == "turn.deferred" else 0
         if task_id:
@@ -213,7 +221,8 @@ class HostedRoomPolicyCheckpoint:
         if kind == "turn.settled" and payload.get("message_event_id"):
             committed = _settled_message(conn, room_id, discussion_event_id, payload["message_event_id"])
             if committed is not None:
-                seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+                if source is not None and seen_through_seq >= int(source["seq"]):
+                    seen_through_seq = max(seen_through_seq, int(committed["seq"]))
                 self._store_transcript_event(conn, event=committed, thread_id=thread_id, settled_seq=seq)
         else:
             # Non-visible receipts still supply historical reconstruction watermarks.
@@ -225,6 +234,49 @@ class HostedRoomPolicyCheckpoint:
                    ON CONFLICT(room_id, thread_id, member_id) DO UPDATE SET
                        seen_through_seq=MAX(hosted_room_policy_watermarks.seen_through_seq, excluded.seen_through_seq)""",
                 (room_id, thread_id, member_id, seen_through_seq))
+
+    def _restore_retry_discussion(
+        self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]
+    ) -> sqlite3.Row | None:
+        """Reopen compacted silence only after a late visible result is committed."""
+        room_id, seq = str(event["room_id"]), int(event["seq"])
+        thread_id, discussion_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
+        source = conn.execute("""SELECT * FROM hosted_room_events
+            WHERE room_id=? AND kind='message.user' AND json_extract(payload_json, '$.thread_id')=? AND seq<=?
+            ORDER BY seq DESC LIMIT 1""", (room_id, thread_id, seq)).fetchone()
+        if source is None or source["event_id"] != discussion_id:
+            return None
+        cursor = conn.execute("SELECT stopped_through_seq FROM hosted_room_policy_cursors WHERE room_id=?",
+                              (room_id,)).fetchone()
+        if int(source["seq"]) <= int(cursor["stopped_through_seq"]):
+            return None
+        # Repeated explicit retries may leave many obsolete deferrals. Retain
+        # the latest receipt per task and completion per status, not their history.
+        rows = conn.execute("""WITH history AS (
+            SELECT * FROM hosted_room_events
+            WHERE room_id=? AND json_extract(payload_json, '$.discussion_event_id')=? AND seq<=?),
+            receipts AS (
+                SELECT MAX(seq) AS seq FROM history
+                WHERE kind IN ('turn.settled', 'turn.failed', 'turn.cancelled', 'turn.deferred')
+                GROUP BY json_extract(payload_json, '$.task_id')),
+            activities AS (
+                SELECT MAX(seq) AS seq FROM history WHERE kind='room.activity'
+                GROUP BY json_extract(payload_json, '$.status'))
+            SELECT * FROM history WHERE kind='message.member'
+                OR seq IN (SELECT seq FROM receipts) OR seq IN (SELECT seq FROM activities)
+            ORDER BY seq LIMIT ?""", (room_id, discussion_id, seq, MAX_ACTIVE_POLICY_EVENTS)).fetchall()
+        events = [_event_from_room_row(row) for row in rows]
+        activities = [item for item in events if item["kind"] == "room.activity"]
+        if not any(item["payload"].get("reason_code") == "silent_round" for item in activities) or any(
+            item["payload"]["status"] == "bounded" for item in activities
+        ):
+            return None
+        if len(rows) >= MAX_ACTIVE_POLICY_EVENTS:
+            raise RuntimeError("retried room policy projection exceeded its bound")
+        self._apply_user_message(conn, _event_from_room_row(source), json.loads(source["payload_json"]))
+        for item in events:
+            self._store_active_event(conn, event=item, thread_id=thread_id, discussion_event_id=discussion_id)
+        return source
 
     def _apply_room_activity(
         self, conn: sqlite3.Connection, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -261,7 +313,7 @@ class HostedRoomPolicyCheckpoint:
         transcript_state = conn.execute(
             "SELECT schema_version FROM hosted_room_policy_transcript_state WHERE room_id=?", (room_id,)).fetchone()
         if transcript_state is None or int(transcript_state["schema_version"]) < _TRANSCRIPT_SCHEMA_VERSION:
-            # Rebuild derived history without rewriting admissions or the room log.
+            # Rebuild retry continuations and watermarks without rewriting admissions or the room log.
             for table in ("hosted_room_policy_events", "hosted_room_policy_threads",
                           "hosted_room_policy_watermarks", "hosted_room_policy_transcript"):
                 conn.execute(f"DELETE FROM {table} WHERE room_id=?", (room_id,))
@@ -386,13 +438,13 @@ class HostedRoomPolicyCheckpoint:
             if row is None or row["kind"] != "message.user":
                 return published
             source = _event_from_room_row(row)
-            events = self._discussion_events(
+            projection = self._discussion_events(
                 conn, room_id=room_id, thread_id=_text(source["payload"], "thread_id"),
                 discussion_event_id=str(source["event_id"]),
                 bound_error="task policy projection exceeded its bound")
             # The source can age out of BOTH bounded projections while a
             # deferred task remains retryable. Its frozen prompt lives in the task.
-            by_seq = {event["seq"]: event for event in (*events, *published)}
+            by_seq = {event["seq"]: event for event in (*projection, *published)}
             by_seq[source_event_seq] = source
             return [by_seq[seq] for seq in sorted(by_seq)]
 

@@ -1,3 +1,5 @@
+import { groupTurnText } from './classic-output'
+import type { GroupTurnReply } from './classic-output'
 import { clearBotAttention, noteBotAttention } from './data'
 import { recordGroupActivity } from './group-activity'
 import {
@@ -11,6 +13,8 @@ import {
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
+import type { GroupCommandFence } from './group-command-fence'
+import { GroupFileDeliveryError } from './group-file-delivery'
 import { groupMemberKey } from './group-membership'
 import { buildGroupChatTurnPrompt, formatGroupChatLine } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
@@ -23,6 +27,9 @@ export interface GroupRoundMemberContext {
   startEpoch: number
   binding: { isLive(): boolean }
   isCurrent(): boolean
+  leaseLive(): boolean
+  fence?: GroupCommandFence
+  deliveryFailed: Set<string>
 }
 
 /** #93129: a held member's skip must consume its delta exactly once —
@@ -116,7 +123,7 @@ async function runVisibleMemberTurn(
   updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
 
   try {
-    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
+    return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images, context.fence)
   } finally {
     if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
       updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
@@ -136,7 +143,7 @@ export async function runGroupRoundMember(
   }
 
   const { room, markKey, prompt, deltaImages } = prepared
-  let reply: null | string = null
+  let reply: null | GroupTurnReply = null
 
   try {
     reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
@@ -149,7 +156,7 @@ export async function runGroupRoundMember(
       clearBotAttention(groupMemberKey(member))
     }
   } catch (error: any) {
-    if (!binding.isLive()) {
+    if (!binding.isLive() || !context.leaseLive()) {
       return null
     }
 
@@ -165,6 +172,10 @@ export async function runGroupRoundMember(
         : {})
     })
     noteBotAttention(groupMemberKey(member), reason || error?.message || error)
+    if (error instanceof GroupFileDeliveryError) {
+      context.deliveryFailed.add(groupMemberKey(member))
+      return false
+    }
     reply = null // a failed turn is a pass, never a room error
   }
 
@@ -179,7 +190,7 @@ export async function runGroupRoundMember(
   // during-turn tail is anchored by entry id, not index — the history
   // trim drops entries from the FRONT, so an index slice could
   // overshoot after a mid-turn trim and silently commit a stale turn.
-  if (!binding.isLive()) {
+  if (!binding.isLive() || !context.leaseLive()) {
     return null
   }
 
@@ -227,8 +238,10 @@ export async function runGroupRoundMember(
             }
           : {})
       },
-      reply,
-      thread
+      groupTurnText(reply),
+      thread,
+      typeof reply === 'object' ? reply.images : undefined,
+      typeof reply === 'object' ? reply.entryId : undefined
     )
     // Its own message counts as seen too.
     updateGroupChat(context.group, (r: GroupChatRoom) => {
@@ -282,16 +295,21 @@ async function runGroupContinuationMember(
     deltaLines: delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map((e: GroupMessage) => formatGroupChatLine(e, member))
   })
 
-  let continuationReply: null | string = null
+  let continuationReply: null | GroupTurnReply = null
 
   try {
-    continuationReply = await runVisibleMemberTurn(context, member, prompt)
+    continuationReply = await runVisibleMemberTurn(
+      context,
+      member,
+      prompt,
+      delta.flatMap(entry => entry.images || [])
+    )
 
     if (continuationReply !== null) {
       clearBotAttention(memberKey)
     }
   } catch (error: any) {
-    if (!binding.isLive()) {
+    if (!binding.isLive() || !context.leaseLive()) {
       return null
     }
 
@@ -301,6 +319,10 @@ async function runGroupContinuationMember(
       thread
     })
     noteBotAttention(memberKey, error?.message || error)
+    if (error instanceof GroupFileDeliveryError) {
+      context.deliveryFailed.add(memberKey)
+      return false
+    }
     continuationReply = null
   }
 
@@ -326,8 +348,10 @@ async function runGroupContinuationMember(
             }
           : {})
       },
-      continuationReply,
-      thread
+      groupTurnText(continuationReply),
+      thread,
+      typeof continuationReply === 'object' ? continuationReply.images : undefined,
+      typeof continuationReply === 'object' ? continuationReply.entryId : undefined
     )
     updateGroupChat(context.group, (r: GroupChatRoom) => {
       r.watermarks[markKey] = r.log.length
@@ -357,7 +381,9 @@ export async function runGroupContinuationMembers(
       const strandedNow = ($groupChats.get()[context.group] || {}).stranded || {}
 
       const continuationResponders = citedMembers.filter(
-        (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
+        (member: GroupMember) =>
+          !context.deliveryFailed.has(groupMemberKey(member)) &&
+          !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
       )
 
       for (const member of continuationResponders) {

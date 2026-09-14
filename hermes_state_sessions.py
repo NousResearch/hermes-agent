@@ -1430,7 +1430,8 @@ class SessionSessionsMixin:
     ) -> bool:
         """Delete a session and its messages; delegate children cascade, branch/compression children
         are orphaned. *expected_delete_ids*: proceed only if parent + delegate cascade still equals that
-        set (re-walked inside the transaction on purpose: export-before-delete fails closed)."""
+        set (re-walked inside the transaction on purpose: export-before-delete fails closed).
+        Terminal receipts are retired; busy/unknown work refuses the entire transaction."""
         removed_ids: List[str] = []
         expected_ids = set(expected_delete_ids) if expected_delete_ids is not None else None
         def _do(conn):
@@ -1441,7 +1442,7 @@ class SessionSessionsMixin:
             }:
                 return False
             from hermes_state_mutation_retirement import retire_sessions
-            retire_sessions(conn, [session_id])
+            retire_sessions(conn, [session_id, *_collect_delegate_child_ids(conn, [session_id])])
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1474,9 +1475,11 @@ class SessionSessionsMixin:
             return self.delete_session(session_id)
         return bool(result)
 
-    def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
+    def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None,
+                                *, report: Optional[dict] = None) -> bool:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
-        share one transaction so a concurrent flush can't be lost."""
+        share one transaction so a concurrent flush can't be lost. Busy/unknown work refuses deletion;
+        optional *report* receives removed/skipped_protected counts after commit."""
         def _do(conn):
             eligible = conn.execute(
                 """
@@ -1494,22 +1497,25 @@ class SessionSessionsMixin:
                 (session_id,),
             ).fetchone()
             if eligible is None:
-                return False
+                return False, 0
             # Same BEGIN IMMEDIATE transaction as the check above: retire the ledger rows
             # (ON DELETE RESTRICT) and delete without re-evaluating eligibility.
             from hermes_state_mutation_retirement import retire_sessions
             retire_sessions(conn, [session_id])
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             self._delete_unreferenced_system_prompts(conn)
-            return True
-        deleted = self._execute_write(_do)
+            return True, 0
+        deleted, protected = self._execute_write(_do)
+        from hermes_state_raw_delete import report_maintenance
+        report_maintenance(report, skipped_protected=protected, removed=int(deleted))
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
 
     def delete_sessions(self, session_ids: List[str], sessions_dir: Optional[Path] = None) -> int:
         """Bulk delete with :meth:`delete_session` semantics per row, in ONE transaction. Unknown ids
-        are skipped (UI selection can race another tab's delete). Returns the number deleted."""
+        are skipped (UI selection can race another tab's delete). Returns the number deleted.
+        Busy/unknown work in any candidate/delegate rolls back the entire batch, including retirement."""
         unique_ids = list({sid for sid in session_ids or () if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
@@ -1521,7 +1527,7 @@ class SessionSessionsMixin:
             if not existing:
                 return 0
             from hermes_state_mutation_retirement import retire_sessions
-            retire_sessions(conn, existing)
+            retire_sessions(conn, [*existing, *_collect_delegate_child_ids(conn, existing)])
             removed_ids.extend(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)
@@ -1547,22 +1553,32 @@ class SessionSessionsMixin:
         "SELECT 1 FROM messages WHERE messages.session_id = sessions.id)"
     )
 
-    def count_empty_sessions(self) -> int:
-        """Count of empty, ended, non-archived sessions; ended_at guards a fresh session's first message."""
-        return self._read_one(f"SELECT COUNT(*) FROM sessions WHERE {self._EMPTY_SESSION_WHERE}")[0]
+    def count_empty_sessions(self, *, report: Optional[dict] = None) -> int:
+        """Count sweep-eligible empty, ended, non-archived sessions; report busy/unknown skips."""
+        from hermes_state_raw_delete import preview_ledger_references, report_maintenance
+        def read(conn):
+            protection = preview_ledger_references(conn, read_only=self.read_only).format(session_id='sessions.id')
+            return conn.execute(
+                f'SELECT COUNT(*), COALESCE(SUM({protection}), 0) '
+                f'FROM sessions WHERE {self._EMPTY_SESSION_WHERE}').fetchone()
+        total, protected = self._read_retrying_ioerr(read)
+        report_maintenance(report, skipped_protected=protected)
+        return total - protected
 
-    def delete_empty_sessions(self, sessions_dir: Optional[Path] = None) -> int:
+    def delete_empty_sessions(self, sessions_dir: Optional[Path] = None, *, report: Optional[dict] = None) -> int:
         """Delete every empty, ended, non-archived session in one transaction, orphaning (not cascading)
-        children; transcript files are swept too."""
-        removed_ids: list[str] = []
+        children; transcript files are swept too. Busy/unknown ledger rows are skipped; *report* receives
+        removed/skipped_protected counts from the committed selection."""
         def _do(conn):
             session_ids = {row["id"] for row in conn.execute(
                 f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             ).fetchall()}
             from hermes_state_mutation_retirement import retire_prunable
+            candidates = set(session_ids)
             session_ids = retire_prunable(conn, sorted(session_ids))
+            protected = candidates - set(session_ids)
             if not session_ids:
-                return 0
+                return [], len(protected)
             for chunk in _id_chunks(session_ids):
                 ph = _session_ids_placeholders(chunk)
                 conn.execute(f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({ph})", chunk)
@@ -1570,13 +1586,14 @@ class SessionSessionsMixin:
                 # would otherwise dangle (clean FK state).
                 conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
                 conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", chunk)
-                removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
-            return len(session_ids)
-        count = self._execute_write(_do)
+            return list(session_ids), len(protected)
+        removed_ids, protected = self._execute_write(_do)
+        from hermes_state_raw_delete import report_maintenance
+        report_maintenance(report, skipped_protected=protected, removed=len(removed_ids))
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
-        return count
+        return len(removed_ids)
 
     def archive_sessions(
         self, older_than_days: Optional[float] = None, source: str = None, **filters,

@@ -1,27 +1,39 @@
-"""Validate passive evidence against committed authority spans, never elect an owner."""
-from gateway.hosted_room_authority_history import at_sequence, read_history_locked, validate_history
+"""Bind passive work provenance to actually retained canonical authority spans."""
+
+from gateway import hosted_room_passive_lineage as lineage
+from gateway.hosted_room_authority_history import at_sequence
 
 
 def source_prefix_locked(conn, room_id, authority, seq):
-    from gateway.hosted_room_work_records import WorkRecordPrefixError, digest
-    history = read_history_locked(conn, room_id, gateway_id=authority["gateway_id"], epoch=authority["epoch"])
-    if history is None:
-        raise WorkRecordPrefixError("successor work evidence has no verified lineage")
-    spans = validate_history(history, gateway_id=authority["gateway_id"], epoch=authority["epoch"])
-    count = 0
-    import json
-    for event in conn.execute("SELECT seq,authority_epoch,actor_json,kind FROM hosted_room_events WHERE room_id=? AND seq<=? ORDER BY seq", (room_id, seq)):
-        count += 1
-        span = at_sequence(spans, count)
-        actor = json.loads(event["actor_json"])
-        boundary = span.epoch > 1 and count == span.from_seq
-        if (event["seq"] != count or event["authority_epoch"] != span.epoch
-                or (actor.get("kind") == "gateway" and actor.get("id") != span.gateway_id)
-                or (event["kind"] == "authority.claimed") != boundary):
-            raise WorkRecordPrefixError("work record history prefix is not verified")
-    if count != seq:
-        raise WorkRecordPrefixError("work record history prefix is unavailable")
-    return spans, digest(history)
+    from gateway.hosted_room_work_records import WorkRecordPrefixError
+    try:
+        history, digest = lineage.source_locked(conn, room_id, authority)
+        spans, _, _ = lineage.descriptor(history, gateway_id=authority["gateway_id"], epoch=authority["epoch"])
+        count = 0
+        for event in conn.execute("SELECT * FROM hosted_room_events WHERE room_id=? AND seq<=? ORDER BY seq", (room_id, seq)):
+            count += 1
+            if event["seq"] != count:
+                raise WorkRecordPrefixError("work record history is not contiguous")
+            lineage.event_span(spans, event)
+        if count != seq or lineage.status(spans, seq) != "verified":
+            raise WorkRecordPrefixError("work record history is not verified")
+        return spans, digest
+    except (lineage.PassiveLineageError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise WorkRecordPrefixError(str(exc)) from exc
+
+
+def target_prefix_locked(conn, row, record):
+    from gateway.hosted_room_work_records import WorkRecordPrefixError
+    try:
+        spans = lineage.replica_history_locked(conn, row)
+        if (record["lineage_sha256"] != row["lineage_sha256"]
+                or lineage.status(spans, record["history"]["seq"]) != "verified"):
+            raise WorkRecordPrefixError("work record lineage prefix is not verified")
+        validate_provenance(record, spans)
+        return spans
+    except (lineage.PassiveLineageError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise WorkRecordPrefixError(str(exc)) from exc
+
 
 
 def validate_provenance(record, spans):
@@ -38,4 +50,3 @@ def validate_provenance(record, spans):
 def task_origins(record, spans):
     return {task["task_id"]: {"gateway_id": origin.gateway_id, "epoch": origin.epoch}
             for task in record["tasks"] for origin in [at_sequence(spans, task["source_event_seq"])]}
-

@@ -45,7 +45,18 @@ UNCOMMITTED_TTL_SECONDS = 60 * 60
 DISBANDED_GRACE_SECONDS = 15 * 60
 CLASSIC_ATTACHMENT_TTL_SECONDS = 7 * 24 * 60 * 60
 
+DEFAULT_ATTACHMENT_LIST_LIMIT = 8
+MAX_ATTACHMENT_LIST_LIMIT = 32
+MAX_ATTACHMENT_LIST_QUERY_CHARS = 255
+ATTACHMENT_LIST_EVENT_SCAN_LIMIT = 256
+MAX_ATTACHMENT_LIST_CURSOR_BYTES = 4 * 1024
+MAX_ATTACHMENT_LIST_RESPONSE_BYTES = 128 * 1024
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CURSOR_RESET_MESSAGE = "attachment list cursor is invalid; return to Latest"
+_CURSOR_FIELDS = frozenset({
+    "authority_epoch", "authority_gateway_id", "last_attachment_id", "last_manifest_index", "last_seq",
+    "producer_member_id", "recipient_member_id", "query_digest", "room_id", "snapshot_seq", "version",
+})
 
 MAX_ATTACHMENT_NAME_CHARS = 255
 MAX_ATTACHMENT_MIME_CHARS = 127
@@ -1262,9 +1273,54 @@ class HostedRoomAttachmentStore:
         return row
 
 
+    def list_published(
+        self,
+        *,
+        room_id: Any,
+        authority_gateway_id: Any,
+        authority_epoch: Any,
+        cursor: Any = None,
+        limit: Any = None,
+        query: Any = None,
+        producer_member_id: Any = None,
+        recipient_member_id: Any = None,
+    ) -> dict[str, Any]:
+        """Read the bounded catalog without duplicating the byte store."""
+        from gateway.hosted_room_attachment_catalog import list_published
+
+        return list_published(
+            self, room_id=room_id, authority_gateway_id=authority_gateway_id,
+            authority_epoch=authority_epoch, cursor=cursor, limit=limit,
+            query=query, producer_member_id=producer_member_id,
+            recipient_member_id=recipient_member_id,
+        )
+
+
+    def abort_unpublished_event(self, *, room_id: Any, event_id: Any) -> bool:
+        """Revoke unpublished commitments; never roll back a durable owner event."""
+
+        room_id = _identifier(room_id, label="room_id")
+        event_id = _identifier(event_id, label="event_id")
+        now = float(self.clock())
+        with self._transaction(immediate=True) as conn:
+            if _owner_event(conn, room_id, event_id) is not None:
+                return False
+            conn.execute(
+                """UPDATE hosted_room_attachments
+                   SET event_id=NULL, recipient_member_ids_json='[]', viewer_access=0,
+                       state='uploaded', updated_at=?, expires_at=?
+                   WHERE room_id=? AND event_id=? AND state='committed'""",
+                (now, now + UNCOMMITTED_TTL_SECONDS, room_id, event_id),
+            )
+        return True
 
 
 __all__ = [
+    "ATTACHMENT_LIST_EVENT_SCAN_LIMIT",
+    "AttachmentCursorError",
+    "DEFAULT_ATTACHMENT_LIST_LIMIT",
+    "MAX_ATTACHMENT_LIST_LIMIT",
+    "MAX_ATTACHMENT_LIST_RESPONSE_BYTES",
     "AttachmentConflictError",
     "AttachmentData",
     "AttachmentError",
@@ -1353,6 +1409,18 @@ def retain_message_attachments(
     )
 
 
+def _catalog_limit(value: Any) -> int:
+    if value is None:
+        return DEFAULT_ATTACHMENT_LIST_LIMIT
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AttachmentError("attachment list limit must be an integer")
+    if not 1 <= value <= MAX_ATTACHMENT_LIST_LIMIT:
+        raise AttachmentError(
+            f"attachment list limit must be between 1 and {MAX_ATTACHMENT_LIST_LIMIT}"
+        )
+    return value
+
+
 def fold_catalog_text(value: str) -> str:
     if value.isascii():
         return value.lower()
@@ -1360,3 +1428,24 @@ def fold_catalog_text(value: str) -> str:
         char for char in unicodedata.normalize("NFKD", value).casefold()
         if not unicodedata.combining(char)
     )
+
+
+def _catalog_query(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise AttachmentError("attachment query must be a string")
+    if len(value) > MAX_ATTACHMENT_LIST_QUERY_CHARS:
+        raise AttachmentError("attachment query is too long")
+    try:
+        value.encode("utf-8")
+    except UnicodeError:
+        raise AttachmentError("attachment query must contain valid Unicode") from None
+    folded = fold_catalog_text(value.strip())
+    if len(folded) > MAX_ATTACHMENT_LIST_QUERY_CHARS * 32:
+        raise AttachmentError("attachment query is too long")
+    return folded
+
+
+class AttachmentCursorError(AttachmentError):
+    """The caller must explicitly restart discovery from Latest."""

@@ -61,11 +61,11 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     Cached on the user + managed file signatures and the values of every referenced env var."""
     from agent.safe_worker_policy import worker_config_snapshot
 
-    # A frozen-policy worker is detached from the profile's files: the owner-supplied
-    # snapshot IS the user layer (same seam load_config / read_raw_config honour).
+    # The detached owner snapshot is final for this worker, as in load_config:
+    # live environment expansion or managed overlays must not reinterpret it.
     snapshot = worker_config_snapshot()
     if snapshot is not None:
-        return _effective(snapshot)
+        return snapshot
     if config_path is None:
         config_path = _config.get_config_path()
     path_key = str(config_path)

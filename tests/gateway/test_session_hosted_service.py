@@ -80,8 +80,10 @@ def test_hosted_dequeue_checks_exact_task_member_and_frozen_input(tmp_path, monk
         tasks.start_task(db.db_path, identity, lease, expected_cancel_generation=0, clock=time.time)
         task, = tasks.list_tasks(db.db_path, room_id='room')
         rpc = service._resolve_member_transport(HostedRoomBinding('room', gateway, 1), task)
-        row = {'principal_id': 'alice', 'request_id': 'hosted:' + json.dumps([asdict(identity), task['execution_generation']]),
-               'payload': {'text': 'frozen'}}
+        from hermes_state_runtime import admit_session_input
+        db.create_session(rpc.ref.session_id, source='cli')
+        row = admit_session_input(db, epoch=authority.epoch, principal_id='alice', session_id=rpc.ref.session_id,
+            request_id='hosted:' + json.dumps([asdict(identity), task['execution_generation']]), payload={'text': 'frozen'})
         assert service.check_admission(rpc.ref, row) == task
         for bad in ({**row, 'principal_id': 'bob'}, {**row, 'payload': {'text': 'changed'}},
                     {**row, 'request_id': 'hosted:' + json.dumps([asdict(identity), 999])}):

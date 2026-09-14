@@ -50,6 +50,7 @@ vi.mock('@/store/session', () => ({
 }))
 vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() }))
 vi.mock('@/store/session-states', () => reconnectStateMocks)
+vi.mock('@/store/session-states-reconnect', () => reconnectStateMocks)
 
 const {
   activeGateway,

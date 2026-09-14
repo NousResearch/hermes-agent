@@ -87,6 +87,10 @@ def api_policy_scope():
 
 
 def admit_api_turn(adapter, **kwargs):
+    # RoomLink has no canonical custody/approval port. Refuse even callers that
+    # bypass HTTP normalization, before session binding or admission reservation.
+    if kwargs.get('room_dispatch') is not None:
+        raise RuntimeStoreError('canonical_room_peer_unsupported')
     # ``/p/<profile>/`` middleware scoped this request; the routed home's authority admits it.
     from gateway.session_authorities import active_authority
     authority = active_authority(adapter.gateway_runner)

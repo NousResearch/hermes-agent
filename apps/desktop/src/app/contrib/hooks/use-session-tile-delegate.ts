@@ -28,6 +28,7 @@ import type { SessionResumeResponse } from '@/types/hermes'
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
 import { singleFlightSessionResume } from '../../session/hooks/use-prompt-actions/single-flight-resume'
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
+import { invalidatePersistedDisplayTranscriptAuthority } from '../../session/hooks/use-session-actions/transcript-provenance'
 import {
   chatMessageArraysEquivalent,
   overlayConcurrentMessageChanges,
@@ -452,7 +453,9 @@ export function useSessionTileDelegate({
             const running = resolveResumedBusy(resumed.running ?? info?.running, busyChangedWhileResuming)
 
             return {
-              ...state,
+              // Commit the same-ID snapshot and supersede older REST hydrators
+              // together. Reopen/refreshTranscript is not this boundary.
+              ...(authoritativeSnapshot ? invalidatePersistedDisplayTranscriptAuthority(state) : state),
               ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
               ...(typeof info?.model === 'string' ? { model: info.model } : {}),
               ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),

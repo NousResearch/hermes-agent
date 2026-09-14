@@ -217,6 +217,16 @@ def async_delivery_supported() -> bool:
     return True if value is _UNSET else bool(value)
 
 
+def bind_session_source(source: str):
+    """Temporarily override only source without disturbing sibling context."""
+
+    return _SESSION_SOURCE.set(str(source or ""))
+
+
+def reset_session_source(token) -> None:
+    _SESSION_SOURCE.reset(token)
+
+
 def session_history_delivery_supported() -> bool:
     """Whether this request declares a server-history consumer for detached results.
 

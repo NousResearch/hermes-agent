@@ -65,6 +65,7 @@ def _make_runner(*, platform_extra: dict | None = None,
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
+    adapter.typed_command_prefix = "/"
     runner.adapters = {platform: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(
@@ -126,7 +127,7 @@ async def test_whoami_non_admin_lists_runnable_commands():
         }
     )
     result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="999")))
-    assert "Tier: user" in result
+    assert "Command access: limited" in result
     assert "/help" in result      # always-allowed floor
     assert "/whoami" in result    # always-allowed floor
     assert "/status" in result
@@ -152,7 +153,7 @@ async def test_non_admin_with_empty_user_commands_gets_floor_only():
     assert "No slash commands are enabled" in result
     # /whoami still works (always-allowed floor)
     whoami_result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="999")))
-    assert "Tier: user" in whoami_result
+    assert "Command access: limited" in whoami_result
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +180,7 @@ async def test_group_only_gating_leaves_dm_unrestricted():
         }
     )
     result = await runner._handle_message(_make_event("/whoami", _make_source(user_id="anyone", chat_type="dm")))
-    assert "Tier: unrestricted" in result
+    assert "Command access: unrestricted" in result
 
 
 # ---------------------------------------------------------------------------
@@ -365,4 +366,43 @@ async def test_gating_isolated_per_platform():
     # Same user_id on Telegram → must be unrestricted (Telegram has no admin list).
     tg_src = _make_source(platform=Platform.TELEGRAM, user_id="999", chat_id="t1")
     result = await runner._handle_message(_make_event("/whoami", tg_src))
-    assert "Tier: unrestricted" in result
+    assert "Command access: unrestricted" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("access", ["unrestricted", "admin", "limited"])
+@pytest.mark.parametrize("chat_type,scope", [("dm", "DM"), ("group", "group/channel")])
+@pytest.mark.parametrize("platform,prefix", [
+    (Platform.WHATSAPP, "/"), (Platform.DISCORD, "/"),
+    (Platform.MATRIX, "!"), (Platform.SLACK, "!"),
+])
+async def test_whoami_describes_dispatch_without_promising_action_rights(
+    access, chat_type, scope, platform, prefix
+):
+    from gateway.slash_access import policy_for_source
+
+    own_prefix = "group_" if chat_type == "group" else ""
+    other_prefix = "" if chat_type == "group" else "group_"
+    extra = {f"{other_prefix}allow_admin_from": ["other-admin"]}
+    if access != "unrestricted":
+        extra[f"{own_prefix}allow_admin_from"] = ["sender" if access == "admin" else "other-admin"]
+        extra[f"{own_prefix}user_allowed_commands"] = ["status"]
+    runner = _make_runner(platform=platform, platform_extra=extra)
+    runner.adapters[platform].typed_command_prefix = prefix
+    source = _make_source(platform=platform, user_id="sender", chat_type=chat_type)
+    before = policy_for_source(runner.config, source)
+
+    # Adapter ingress normalizes typed ! commands before gateway dispatch.
+    result = await runner._handle_message(_make_event("/whoami", source))
+
+    assert f"{platform.value} ({scope})" in result
+    assert "User ID: `sender`" in result
+    assert f"Command access: {access}" in result
+    assert "Some actions also require the right chat or owner access." in result
+    assert "all available" not in result
+    assert "no admin list configured" not in result
+    assert policy_for_source(runner.config, source) == before
+    assert before.can_run("sender", "model") is (access != "limited")
+    if access == "limited":
+        commands = result.split("Commands: ", 1)[1].splitlines()[0].split(", ")
+        assert commands == [f"{prefix}help", f"{prefix}whoami", f"{prefix}status"]

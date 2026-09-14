@@ -1,7 +1,7 @@
 """Production WebSocket RelayTransport — the gateway's live link to the connector.
 
 The gateway dials OUT to the connector's relay endpoint and speaks the
-newline-delimited JSON frame protocol of ``docs/relay-connector-contract.md``:
+newline-delimited JSON frame protocol of ``website/docs/developer-guide/relay-connector-contract.md``:
 gateway -> connector: hello, outbound, interrupt, going_idle, inbound_ack;
 connector -> gateway: descriptor, inbound, outbound_result, interrupt_inbound,
 going_idle_ack, passthrough_forward. Outbound calls block on a per-request future
@@ -932,7 +932,10 @@ class WebSocketRelayTransport:
     async def _on_inbound(self, frame: Dict[str, Any]) -> None:
         if self._inbound is None:
             return
-        await self._inbound(_event_from_wire(frame.get("event", {})))
+        from gateway.session_ingress_context import relay_callback
+        event = _event_from_wire(frame.get("event", {}))
+        with relay_callback(self, event):
+            await self._inbound(event)
         # A replayed buffered delivery carries a bufferId; ack AFTER the handler
         # has taken it so the connector advances its cursor (no dup).
         buffer_id = frame.get("bufferId")

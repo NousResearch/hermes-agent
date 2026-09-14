@@ -23,18 +23,20 @@
  *    it in place would break both. Localizing it needs the marker and its
  *    rendering split apart — worth doing, not doable as a rename.
  *
- * Locales follow kanban: `en` / `ja` / `zh` / `zh-hant`. Arabic falls through
- * the resolution chain (active locale → this plugin's `en` → the key) the
- * same way a missing string in any locale does. Nouns match core: ボット /
+ * Legacy Bot Mode copy covers `en` / `ja` / `zh` / `zh-hant`; canonical hosted
+ * groups additionally cover Arabic and Russian. Missing legacy keys still
+ * resolve through this plugin's English bundle. Nouns match core: ボット /
  * 机器人 / 機器人, プロファイル / 配置档案 / 設定檔, ゲートウェイ / 网关 / 閘道.
  */
 
 import { type PluginLocaleBundles, type PluginTranslate, usePluginI18n } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
+import { CANONICAL_GROUP_LOCALES, type CanonicalGroupMessages } from './canonical-group-locales'
 import { getPluginCtx } from './shared'
 
 type BotsMessages = {
+  canonical: { [K in keyof CanonicalGroupMessages]: string }
   /** Left rail: the bot + group-chat roster. */
   roster: {
     search: string
@@ -166,6 +168,7 @@ type BotsMessages = {
     deleteTitle: string
     deleteAction: string
     composerPlaceholder: string
+    slashCommandsUnsupported: string
     attachHint: string
     downloadAttachment: string
     attachmentDownloadFailed: string
@@ -328,6 +331,7 @@ type BotsMessages = {
 }
 
 const en: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.en,
   roster: {
     search: 'Search bots and group chats',
     searchPlaceholder: 'Search bots and group chats…',
@@ -451,6 +455,8 @@ const en: BotsMessages = {
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
     composerPlaceholder: 'Say something — every bot in this group hears the room.',
+    slashCommandsUnsupported:
+      'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
     attachHint: 'Attach files — every responding bot sees them',
     downloadAttachment: 'Download attachment',
     attachmentDownloadFailed: 'This attachment could not be downloaded.',
@@ -609,6 +615,7 @@ const en: BotsMessages = {
 }
 
 const ja: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.ja,
   roster: {
     search: 'ボットとグループチャットを検索',
     searchPlaceholder: 'ボットとグループチャットを検索…',
@@ -731,6 +738,8 @@ const ja: BotsMessages = {
     deleteTitle: 'グループチャットを削除しますか？',
     deleteAction: '削除',
     composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
+    slashCommandsUnsupported:
+      'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
     downloadAttachment: '添付ファイルをダウンロード',
     attachmentDownloadFailed: 'この添付ファイルをダウンロードできませんでした。',
@@ -889,6 +898,7 @@ const ja: BotsMessages = {
 }
 
 const zh: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES.zh,
   roster: {
     search: '搜索机器人和群聊',
     searchPlaceholder: '搜索机器人和群聊…',
@@ -1007,6 +1017,7 @@ const zh: BotsMessages = {
     deleteTitle: '删除群聊？',
     deleteAction: '删除',
     composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
+    slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     downloadAttachment: '下载附件',
     attachmentDownloadFailed: '无法下载此附件。',
@@ -1164,6 +1175,7 @@ const zh: BotsMessages = {
 }
 
 const zhHant: BotsMessages = {
+  canonical: CANONICAL_GROUP_LOCALES['zh-hant'],
   roster: {
     search: '搜尋機器人和群組聊天',
     searchPlaceholder: '搜尋機器人和群組聊天…',
@@ -1282,6 +1294,7 @@ const zhHant: BotsMessages = {
     deleteTitle: '刪除群組聊天？',
     deleteAction: '刪除',
     composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
+    slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     downloadAttachment: '下載附件',
     attachmentDownloadFailed: '無法下載此附件。',
@@ -1439,7 +1452,14 @@ const zhHant: BotsMessages = {
 }
 
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const BOTS_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+export const BOTS_LOCALES: PluginLocaleBundles = {
+  en,
+  ja,
+  zh,
+  'zh-hant': zhHant,
+  ar: { canonical: CANONICAL_GROUP_LOCALES.ar },
+  ru: { canonical: CANONICAL_GROUP_LOCALES.ru }
+}
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …).

@@ -53,6 +53,24 @@ curl http://localhost:8642/v1/chat/completions \
 
 Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI integration guide](/user-guide/messaging/open-webui) for step-by-step instructions.
 
+## Conversation and terminal-result semantics
+
+API requests use the gateway's durable admission queue. Structured image content stays
+structured through execution; it is not interpreted as a gateway slash command.
+
+- `/v1/runs` and `/v1/responses` retain the conversation declared by
+  `X-Hermes-Session-Key`. An explicit session or response chain takes precedence and
+  does not transfer its conversation identity to a different header.
+- A nonempty `/v1/runs` `conversation_history` is authoritative, even with an explicit
+  `session_id`. Otherwise session continuation loads history when the turn executes,
+  after earlier queued work finishes.
+- Runs polling and SSE agree on `cancelled` or `failed`. Responses uses the same
+  terminal status and `response.cancelled` / `response.failed` events, including when
+  diagnostic text is present. Chat Completions reports `finish_reason: "cancelled"`
+  for interrupted turns and `"error"` for failures, not a successful `"stop"`.
+- Session-chat replies include `status`; their streams report matching terminal run
+  events. An assistant finalization frame is not itself proof of successful execution.
+
 ## Endpoints
 
 ### POST /v1/chat/completions
@@ -451,6 +469,18 @@ When `session_id` identifies an existing Hermes session and no explicit
 that session's active transcript. Session turn leases serialize concurrent
 writers and refresh the transcript after a contended wait.
 
+**API sessions are their own sessions.** `session_id` (here) and the
+`X-Hermes-Session-Id` header (on `/v1/chat/completions` and `/v1/responses`) may
+name a session the API server created or one it may create; they cannot bind a
+session that another surface owns — a CLI, TUI, Desktop, ACP or messaging
+conversation. Such a request is refused with HTTP 409 and error code
+`permission_denied` before any admission: no run is created, no
+`Idempotency-Key` reservation is kept, and an exact retry answers 409 again. This
+replaces the previous behavior where the API server ran its own agent on the
+foreign transcript in parallel with its live owner. To work on a chat from
+another surface, attach through the gateway WebSocket (a `prompt.submit` on the
+shared session) instead of the OpenAI-compatible routes.
+
 ### GET /v1/runs/\{run_id\}
 
 Poll the current run state. This is useful for dashboards that need status without holding an SSE connection open, or for UIs that reconnect after navigation.
@@ -483,13 +513,80 @@ belongs to (so concurrent or nested fan-outs stay distinguishable); free-text fi
 redaction before leaving the process. Per-tool child events
 (`subagent.tool`, progress ticks) are intentionally **not** forwarded — they
 are high-volume UI noise; use the per-child live transcript files for
-play-by-play.
+play-by-play. These events are available while the parent stream is open; a
+late detached completion does not reopen a finished run's SSE stream or change
+its terminal status.
+
+#### Detached results and session history
+
+Background delegation requires a continuation that reads server-side session
+history: an explicit `X-Hermes-Session-Id` on Chat Completions, a native
+`/api/sessions/{id}/chat` request, or a Runs request using session history.
+Header-less Chat Completions, Responses chains, and Runs requests with
+`previous_response_id` or caller-supplied history instead execute delegation
+synchronously, returning the result in the original turn. Merely deriving a
+session ID from request content does not enable detached delivery.
+
+For resumable requests, the completion is persisted once per delegation unit.
+It is available through `GET /api/sessions/{id}/messages` and in the next real
+client turn's session history. Retries do not insert the same result again;
+interim task-failure notices have separate identities. Delivery waits while a
+client turn owns the session lease and follows compression continuations.
+Chat Completions echoes the explicit session ID you supplied in both JSON and
+streaming responses; keep sending that ID even after compression.
+
+A completion **never starts an unsolicited model turn** or bypasses a pending
+human confirmation. The client owns the next turn. Clients that continue using
+their own history snapshots should use synchronous delegation rather than
+expecting a server-side delivery row to be merged into those snapshots.
 
 Unconsumed event buffers expire after five minutes so a detached client cannot
 grow memory indefinitely. This expires transport state only: a run that is
 still executing remains visible to status polling, approval, stop control, and
 concurrency accounting until its executor work actually exits. A connected SSE
 subscriber continues draining normally.
+
+### POST /v1/runs/\{run_id\}/resolve-unknown
+
+After an authority-owner restart, a turn that was already claimed has an
+unknown execution outcome. Hermes pauses later work in that session rather than
+risk replaying the lost head. Read the exact `admission_id` and
+`execution_generation` from `GET /v1/runs/{run_id}`, then acknowledge that the
+lost execution will not finish:
+
+```json
+{
+  "admission_id": "adm_abc123",
+  "execution_generation": 7
+}
+```
+
+The request is authenticated and run-owner scoped like the other run controls;
+hosted-room callers need the existing `stop` grant. A successful response is the
+canonical terminal receipt (`outcome: "interrupted"`) plus `run_id`. It releases
+the FIFO once and schedules the queued follower without replaying the unknown
+head. Repeated resolution, a stale or non-integer generation, and a run that is
+not currently unknown return `409 stale_generation`; an admission ID that does
+not belong to the path run returns `409 not_found`. The body must contain exactly
+those two fields, or the server returns `409 invalid_params`.
+
+This recovery control is advertised as `features.run_unknown_resolution` and as
+the `run_unknown_resolution` endpoint only when the canonical session authority
+is active. Legacy API execution mode does not advertise it. Ordinary
+`POST /v1/runs/{run_id}/stop` deliberately remains separate and returns
+`409 unknown_execution` for an unknown admission.
+
+For admissions created by this version, the opaque run-owner scope is stored
+atomically with the canonical admission and retained for that admission's
+control/status lifetime, including terminal state. It is private server state,
+not a bearer credential, model input, or API response field. Non-keyed requests
+remain non-idempotent, so matching request bodies still create separate runs.
+Older non-keyed admissions have no persisted owner scope and continue to fail
+closed after an adapter restart; they cannot be safely backfilled. Older keyed
+runs continue to use the existing idempotency ledger. Explicit session
+retirement removes the canonical admission payload and its recoverable owner.
+The replay ledger and canonical admission are separate database transactions;
+this recovery control does not promise global exactly-once execution.
 
 ### POST /v1/runs/\{run_id\}/stop
 
@@ -501,6 +598,24 @@ running.
 ### POST /v1/runs/\{run_id\}/approval
 
 Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
+
+With the canonical gateway owner, `GET /v1/runs/{run_id}` exposes
+`pending_controls`, using the same `prompt_id` and `execution_generation` as
+attached WebSocket viewers. Respond with the exact current identity:
+
+```json
+{"request_id": "<prompt_id>", "execution_generation": 3, "choice": "once"}
+```
+
+Canonical controls do not accept identityless or bulk responses. Stale generations,
+foreign prompt IDs, and settled runs return HTTP 409. Existing run authentication
+and hosted-room approval restrictions still apply.
+
+### POST /v1/runs/\{run_id\}/clarify
+
+Answer a canonical clarification with `request_id`, `execution_generation`, and
+`answer` (a string). This authenticated endpoint and WebSocket `clarify.respond`
+resolve the same waiting tool; answering does not submit another inference turn.
 
 ## Jobs API (background scheduled work)
 

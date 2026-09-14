@@ -5,7 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
+import { Ear, EarOff, iconSize, Layers3, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hudMode, closeHud, resetHudLayout } from '@/store/hud'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
@@ -13,6 +13,8 @@ import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import { ModelPill } from './model-pill'
+import { ReasoningPill } from './reasoning-pill'
+import { StartVoiceButton } from './start-voice-button'
 import type { ChatBarState, VoiceStatus } from './types'
 import { VoiceMenu } from './voice-menu'
 
@@ -41,27 +43,31 @@ export function ComposerControls({
   disabled,
   foldVoice = false,
   hasComposerPayload,
+  hideModelPill = false,
   minimal = false,
   state,
   voiceStatus,
   onDictate,
   onQueue,
+  onSteer,
   onToggleAutoSpeak
 }: {
   autoSpeak: boolean
   busy: boolean
-  busyAction: 'steer' | 'queue' | 'stop'
+  busyAction: 'interrupt' | 'steer' | 'queue' | 'stop'
   canSubmit: boolean
   compactModelPill?: boolean
   conversation: ConversationProps
   disabled: boolean
   foldVoice?: boolean
   hasComposerPayload: boolean
+  hideModelPill?: boolean
   minimal?: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
   onQueue: () => void
+  onSteer?: () => void
   onToggleAutoSpeak: () => void
 }) {
   const { t } = useI18n()
@@ -76,7 +82,12 @@ export function ComposerControls({
   // Steer is just send: a payload keeps the Send affordance mid-turn. Stop
   // only when the composer is empty and a turn is running.
   const showStop = busy && !hasComposerPayload
-  const showQueueButton = busyAction !== 'stop' && hasComposerPayload
+  const showQueueButton = busy && busyAction !== 'stop' && busyAction !== 'queue' && hasComposerPayload
+
+  const sendLabel = busy
+    ? { interrupt: c.redirect, queue: c.queueMessage, steer: c.steer, stop: c.stop }[busyAction]
+    : c.send
+
   // The HUD is a Spotlight bar a few hundred pixels wide, so the four separate
   // voice toggles fold into one menu there and leave the row to the input. A
   // narrow tile hits the same wall from the other direction and folds for the
@@ -107,10 +118,30 @@ export function ComposerControls({
     <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
       {minimal ? null : (
         <>
-          <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+          {hideModelPill ? null : (
+            <>
+              <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
+              {compactModelPill ? null : <ReasoningPill disabled={disabled} model={state.model} />}
+            </>
+          )}
           {voiceControls}
         </>
       )}
+      {busy && busyAction !== 'steer' && onSteer ? (
+        <Tip label={c.steer}>
+          <Button
+            aria-label={c.steer}
+            className={GHOST_ICON_BTN}
+            disabled={disabled}
+            onClick={onSteer}
+            size="icon"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="debug-step-over" size="0.875rem" />
+          </Button>
+        </Tip>
+      ) : null}
       {showQueueButton ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
           <Button
@@ -127,33 +158,19 @@ export function ComposerControls({
         </Tip>
       ) : null}
       {showVoicePrimary ? (
-        <Tip label={c.startVoice}>
-          <Button
-            aria-label={c.startVoice}
-            className={PRIMARY_ICON_BTN}
-            disabled={disabled}
-            onClick={() => {
-              triggerHaptic('open')
-              conversation.onStart()
-            }}
-            size="icon"
-            type="button"
-          >
-            <AudioLines className={iconSize.sm} />
-          </Button>
-        </Tip>
+        <StartVoiceButton disabled={disabled} label={c.startVoice} onStart={conversation.onStart} />
       ) : (
         <Tip
           label={
             showStop ? (
               <TipKeybindLabel actionId="composer.send" text={c.stop} />
             ) : (
-              <TipKeybindLabel actionId="composer.send" text={c.send} />
+              <TipKeybindLabel actionId="composer.send" text={sendLabel} />
             )
           }
         >
           <Button
-            aria-label={showStop ? c.stop : c.send}
+            aria-label={showStop ? c.stop : sendLabel}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"

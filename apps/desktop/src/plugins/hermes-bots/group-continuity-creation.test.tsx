@@ -1,5 +1,7 @@
 import type * as HermesSdk from '@hermes/plugin-sdk'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { atom } from 'nanostores'
+import type { WritableAtom } from 'nanostores'
 import { useState } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -26,7 +28,15 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     ...original,
     host: {
       ...original.host,
-      notify: mocks.notify
+      notify: mocks.notify,
+      state: { ...original.host.state, connectionId: atom('host-a'), profile: atom('default'), gateway: atom('open') },
+      requestProfile: vi.fn(async (_route, method) => {
+        if (method === 'groups.capabilities') {
+          return { driver: false, persistent_process: false }
+        }
+
+        throw new Error(`Unexpected RPC: ${method}`)
+      })
     },
     usePluginI18n: () => translateBots
   }
@@ -119,6 +129,12 @@ beforeAll(() => {
 
 beforeEach(async () => {
   vi.clearAllMocks()
+
+  const { host } = await import('@hermes/plugin-sdk')
+
+  ;(host.state.connectionId as WritableAtom<string | null>).set('host-a')
+  ;(host.state.profile as WritableAtom<string>).set('default')
+  ;(host.state.gateway as WritableAtom<string>).set('open')
   mocks.probeHostedRoomMembers.mockResolvedValue(eligibleProbe)
   mocks.createAutonomousHostedGroupChat.mockResolvedValue({
     authorityId: 'install:studio',
@@ -199,6 +215,39 @@ describe('automatic Group Chat continuity', () => {
         message: expect.stringContaining('pause when Desktop closes')
       })
     )
+  })
+
+  it('does not adopt a hosted room after its approving profile changes', async () => {
+    let finish!: () => void
+    const onCreated = vi.fn()
+    const { host } = await import('@hermes/plugin-sdk')
+
+    mocks.createAutonomousHostedGroupChat.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finish = () =>
+            resolve({
+              authorityId: 'install:studio',
+              authorityEpoch: 1,
+              connectionId: 'host-a',
+              continuityMode: 'gateway'
+            })
+        })
+    )
+
+    const create = await renderSelectedGroup(roster, onCreated)
+
+    await waitFor(() => expect(create.disabled).toBe(false))
+    await act(async () => { fireEvent.click(create) })
+    await waitFor(() => expect(mocks.createAutonomousHostedGroupChat).toHaveBeenCalledOnce())
+    ;(host.state.profile as WritableAtom<string>).set('other')
+    await act(async () => { finish() })
+
+    const { $groupChats } = await import('./group-chat')
+
+    expect($groupChats.get()).toEqual({})
+    expect(mocks.saveBotMeta).not.toHaveBeenCalled()
+    expect(onCreated).not.toHaveBeenCalled()
   })
 
   it('keeps Desktop continuity when hosted gateways cannot preserve attachments', async () => {

@@ -61,7 +61,15 @@ const MEMBERS: GroupMember[] = [
 
 beforeEach(() => {
   vi.resetModules()
-  Object.assign(host, { notify: vi.fn() })
+  Object.assign(host, {
+    notify: vi.fn(),
+    requestProfile: vi.fn(async (_route, method) => {
+      if (method === 'groups.capabilities') {
+        return { driver: false, persistent_process: false }
+      }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+  })
   Object.defineProperty(Element.prototype, 'scrollIntoView', {
     configurable: true,
     value: vi.fn()
@@ -190,7 +198,7 @@ describe('hosted Group Chat composer durability', () => {
       try {
         await runtime.startHostedRoomRuntime(ctx.storage)
         const view = render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
-        fireEvent.click(screen.getByRole('button', { name: 'Group settings for Core' }))
+        fireEvent.click(await screen.findByRole('button', { name: 'Group settings for Core' }))
         expect(screen.getByRole('dialog').textContent).toContain('Read-only history')
         hold = true
         persistent = true
@@ -236,7 +244,7 @@ describe('hosted Group Chat composer durability', () => {
       }
     })
     render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Group settings for Core' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Group settings for Core' }))
     expect(screen.getByRole('dialog').textContent).toContain(title)
 
     if (state === 'read-only') {

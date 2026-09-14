@@ -72,6 +72,8 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     """Build the aiohttp Application from the adapter (without starting a full server)."""
     # Mirror connect(): client_max_size enforces the cap on chunked bodies.
     app = web.Application(client_max_size=adapter._max_body_bytes)
+    from tests.gateway.fixtures.webhook_route_authority import mount_authority
+    mount_authority(app, adapter)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
@@ -714,6 +716,7 @@ class TestWebhookSilenceSuppression:
         mock_target.send = AsyncMock(return_value=SendResult(success=True))
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
         adapter.gateway_runner = mock_runner
 
@@ -841,6 +844,7 @@ class TestDeliverCrossPlatformThreadId:
 
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
 
         adapter.gateway_runner = mock_runner
@@ -969,10 +973,11 @@ class TestMultiplexProfileWebhookAuthentication:
     def _configure_profiles(adapter, tmp_path, monkeypatch):
         runner = MagicMock()
         runner.config.multiplex_profiles = True
+        runner._profile_name_for_source.return_value = None
         adapter.gateway_runner = runner
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist=None: [
+            lambda multiplex: [
                 ("default", tmp_path),
                 ("worker", tmp_path / "profiles" / "worker"),
                 ("other", tmp_path / "profiles" / "other"),
@@ -1077,10 +1082,14 @@ class TestMultiplexProfileWebhookAuthentication:
         self._configure_profiles(adapter, tmp_path, monkeypatch)
         seen = []
 
-        async def _capture(event):
-            seen.append(event)
+        async def _capture(request, route_config, route_name, profile, payload, prompt,
+                           event_type, delivery_id, now):
+            seen.append((profile, prompt))
+            return web.Response(status=202)
 
-        adapter.handle_message = _capture
+        # Rendering-only boundary; the authority correctly refuses an unserved
+        # secondary home (covered independently by the native profile tests).
+        adapter._dispatch_agent_run = _capture
         body = b'{"action":"opened"}'
         headers = {
             "Content-Type": "application/json",
@@ -1095,8 +1104,8 @@ class TestMultiplexProfileWebhookAuthentication:
                 assert resp.status == 202
                 await asyncio.sleep(0.05)
         assert len(seen) == 1
-        assert seen[0].source.profile == "worker"
-        assert "Body of worker-only." in seen[0].text
+        assert seen[0][0] == "worker"
+        assert "Body of worker-only." in seen[0][1]
 
 
 def test_route_profile_validation_fails_closed():

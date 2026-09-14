@@ -1,3 +1,7 @@
+import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+
+import type { SharedControl } from './canonicalGateway.js'
+
 export interface ActiveTool {
   context?: string
   id: string
@@ -19,8 +23,6 @@ export interface ActivityItem {
   text: string
   tone: 'error' | 'info' | 'warn'
 }
-
-export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
 
 export interface SubagentProgress {
   apiCalls?: number
@@ -95,6 +97,7 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
+  sharedControl?: SharedControl
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
   choices?: string[]
@@ -120,6 +123,7 @@ export interface ClarifyBatchQuestion {
 }
 
 export interface ClarifyReq {
+  sharedControl?: SharedControl
   choices: string[] | null
   question: string
   requestId: string
@@ -188,6 +192,7 @@ export interface ProjectInfo {
 }
 
 export interface SessionInfo {
+  stored_session_id?: string
   cwd?: string
   fast?: boolean
   install_warning?: string
@@ -197,6 +202,18 @@ export interface SessionInfo {
   profile_name?: string
   project?: null | ProjectInfo
   reasoning_effort?: string
+  pending_submissions?: Array<{
+    admission_id: string
+    input_id?: string
+    target_session_id: string
+    target_profile_home: string
+    status: string
+    user: string
+    outcome?: string | null
+  }>
+  execution_epoch?: string
+  execution_generation?: number
+  execution_state?: string
   running?: boolean
   release_date?: string
   service_tier?: string
@@ -209,30 +226,6 @@ export interface SessionInfo {
   version?: string
 }
 
-export interface Usage {
-  active_subagents?: number
-  /** Rolling mean API latency over the last 10 calls (seconds). */
-  avg_latency_s?: number
-  /** Rolling output tokens/sec over the last 10 calls. */
-  avg_tps?: number
-  /** Session prompt-cache hit ratio (cache_read / prompt tokens, %). */
-  cache_hit_pct?: number
-  calls: number
-  compressions?: number
-  context_max?: number
-  context_percent?: number
-  context_estimated?: boolean
-  context_source?: string
-  context_used?: number
-  cost_status?: string
-  cost_usd?: number
-  dev_credits_spent_micros?: number
-  input: number
-  output: number
-  reasoning?: number
-  total: number
-}
-
 export interface SudoReq {
   requestId: string
 }
@@ -240,6 +233,13 @@ export interface SudoReq {
 export interface SecretReq {
   envVar: string
   prompt: string
+  requestId: string
+}
+
+/** External password-manager unlock (1Password / Bitwarden) — masked master-password prompt. */
+export interface VaultUnlockReq {
+  backend: string
+  displayName: string
   requestId: string
 }
 

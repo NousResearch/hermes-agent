@@ -49,10 +49,10 @@ const RELAY_DRAIN_INTERVAL_MS = 30_000
 //
 // These three are mirrors of backend values, so a change there must not
 // silently invalidate this constant: relay-deliver-budget.test.ts reads
-// hermes_cli/config_defaults.py and tui_gateway/methods_bot_relay.py and fails
-// if the mirrors drift or the margin stops being positive.
+// hermes_cli/config_defaults.py and tools/bot_relay.py and fails if the
+// mirrors drift or the margin stops being positive.
 const RELAY_TURN_LOCK_WAIT_MS = 120_000 // bot_mode.turn_wait_seconds default
-const RELAY_TURN_ATTEMPT_MS = 600_000 // subprocess.run(..., timeout=600)
+const RELAY_TURN_ATTEMPT_MS = 600_000 // tools/bot_relay.py TURN_ATTEMPT_TIMEOUT_SECONDS
 const RELAY_TURN_MAX_ATTEMPTS = 2 // first attempt + the policy-gated re-run
 
 const RELAY_DELIVER_BACKEND_CEILING_MS = RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_ATTEMPT_MS * RELAY_TURN_MAX_ATTEMPTS
@@ -60,6 +60,7 @@ const RELAY_DELIVER_BACKEND_CEILING_MS = RELAY_TURN_LOCK_WAIT_MS + RELAY_TURN_AT
 // Settlement + transport headroom on top of the ceiling, so a backend that
 // answers at its own limit still wins the race against this timer.
 const RELAY_DELIVER_SETTLEMENT_MARGIN_MS = 180_000
+// tools/bot_relay.py REPLY_WAIT_SECONDS rebuilds this sum and waits past it for the timeout reply below.
 const RELAY_DELIVER_TIMEOUT_MS = RELAY_DELIVER_BACKEND_CEILING_MS + RELAY_DELIVER_SETTLEMENT_MARGIN_MS
 // Push path (#93091): the gateway broadcasts `bot_relay.outbox.pending` when
 // an envelope lands on disk; a burst of signals inside this window collapses
@@ -101,6 +102,9 @@ const relay: RelayLifecycle = {
 // leases. Local routes get a no-op release inside the host (idle-reaper
 // exemption). stopBotRelay releases everything.
 const relayRouteRetentions = new Map<string, () => void>()
+// Claimed envelopes remain pinned to their sender until terminal reply ACK.
+// The sender's durable claimed directory restores these after renderer restart.
+const pendingRelays = new Map<string, Map<string, RelayEnvelope>>()
 
 /** One reachable gateway plus a representative route onto it. The route comes
  *  from `host.profileRoutes()`, which carries identity only — the optional
@@ -124,6 +128,8 @@ interface RelayAgentRow {
 interface RelayEnvelope {
   id?: string
   message?: string
+  from_profile?: string
+  from_handle?: string
   target_connection?: string
   target_profile?: string
 }
@@ -135,7 +141,7 @@ function syncRelayRetention(connections: RelayConnection[]) {
     return
   }
 
-  const live = new Set(connections.map(connection => connection.id))
+  const live = new Set(connections.map(connection => JSON.stringify(connection.route)))
 
   for (const [id, release] of [...relayRouteRetentions]) {
     if (!live.has(id)) {
@@ -154,8 +160,8 @@ function syncRelayRetention(connections: RelayConnection[]) {
   }
 
   for (const connection of connections) {
-    if (!relayRouteRetentions.has(connection.id)) {
-      relayRouteRetentions.set(connection.id, host.retainProfileSocket(connection.route))
+    if (!relayRouteRetentions.has(JSON.stringify(connection.route))) {
+      relayRouteRetentions.set(JSON.stringify(connection.route), host.retainProfileSocket(connection.route))
     }
   }
 }
@@ -186,13 +192,15 @@ async function relayConnections(): Promise<RelayConnection[]> {
     for (const route of Array.isArray(routes) ? routes : []) {
       const id = String(route?.connectionId || '')
 
-      if (id && !byConnection.has(id)) {
-        byConnection.set(id, route)
+      const key = JSON.stringify(route)
+
+      if (id && !byConnection.has(key)) {
+        byConnection.set(key, route)
       }
     }
 
-    return [...byConnection.entries()].map(([id, route]) => ({
-      id,
+    return [...byConnection.values()].map(route => ({
+      id: route.connectionId,
       route
     }))
   } catch {
@@ -357,7 +365,15 @@ async function drainRelayOutboxes() {
         continue
       }
 
+      const senderKey = JSON.stringify(sender.route)
+      const pending = pendingRelays.get(senderKey) || new Map<string, RelayEnvelope>()
+      pendingRelays.set(senderKey, pending)
+
       for (const envelope of envelopes) {
+        if (envelope.id && !pending.has(envelope.id)) {pending.set(envelope.id, structuredClone(envelope))}
+      }
+
+      for (const envelope of pending.values()) {
         if (relay.disposed) {
           return
         }
@@ -371,6 +387,7 @@ async function drainRelayOutboxes() {
               id: envelopeId,
               ...payload
             })
+            pending.delete(envelopeId)
           } catch {
             // Sender gateway unreachable — its waiter times out with guidance.
           }
@@ -393,15 +410,38 @@ async function drainRelayOutboxes() {
         const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
         try {
-          const res = await host.requestProfile<{ reply?: string }>(
-            target.route,
+          const res = await host.requestProfile<{ status?: string; delivery_id?: string; admission_id?: string; reply?: string; error?: string; reason?: string }>(
+            { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) },
             'bot_relay.deliver',
             {
+              id: envelopeId,
               profile: String(envelope?.target_profile || ''),
-              message: String(envelope?.message || '')
+              message: String(envelope?.message || ''),
+              from_profile: String(envelope?.from_profile || ''),
+              from_handle: String(envelope?.from_handle || ''),
+              from_connection: String(sender.id)
             },
             RELAY_DELIVER_TIMEOUT_MS
           )
+
+          if (res.delivery_id !== envelopeId || !res.admission_id) {
+            noteBotAttention(attentionKey, 'Delivery identity unavailable; retained for recovery')
+
+            continue
+          }
+
+          if (res.status !== 'settled' && res.status !== 'failed') {
+            if (res.status === 'ambiguous') {noteBotAttention(attentionKey, 'unknown_execution')}
+
+            continue
+          }
+
+          if (res.status === 'failed') {
+            noteBotAttention(attentionKey, res.reason || res.error || 'delivery failed')
+            await postReply({ error: res.error || res.reply || 'delivery failed', reason: res.reason })
+
+            continue
+          }
 
           clearBotAttention(attentionKey)
           await postReply({
@@ -415,6 +455,9 @@ async function drainRelayOutboxes() {
           // classified codes beat free-text re-parsing.
           const reason = String(error?.data?.reason || '').trim()
           noteBotAttention(attentionKey, reason || error?.message || error)
+
+          // A transport exception can follow a committed admission; never settle it as failure.
+          if (!reason || reason === 'runtime_unavailable') {continue}
           await postReply({
             error: String(error?.message || error || 'delivery failed'),
             ...(reason

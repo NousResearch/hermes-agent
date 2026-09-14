@@ -43,6 +43,9 @@ import { isBackfilledFacePng } from './avatar-image'
 import { AvatarPicker } from './avatar-picker'
 import { $selectedBot } from './bot-state'
 import { createCanonicalChat } from './canonical-chat'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import { registerCanonicalGroup } from './canonical-group-registry'
+import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
 import { $botMeta, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
 import {
@@ -1237,169 +1240,221 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated }: Crea
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, selectedRouteKey])
 
-  const create = async () => {
-    const base = (name.trim() || placeholder).slice(0, 64)
+  const creating = useRef(false)
 
-    if (selected.length < 2 || !base) {
+  const create = async () => {
+    if (creating.current) {
       return
     }
 
-    // Creating a group is always a FRESH room. Without this, re-creating a
-    // group under an existing name (easy — the default name is just the
-    // member names) silently reopens the old room with its full log, which
-    // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
-    // both live rooms and any bot's current grouping, then mint a fresh
-    // roomId: member sessions are titled by that roomId, so a
-    // disbanded-and-recreated group with the SAME display name still gets
-    // new sessions instead of resuming the old room's by title.
-    const taken = new Set(liveGroupChatNames())
-
-    for (const meta of Object.values($botMeta.get() || {})) {
-      for (const existing of botGroups(meta)) {
-        taken.add(existing)
-      }
-    }
-
-    const groupName = uniqueGroupChatName(base, taken)
-    let roomId = mintGroupRoomId()
-
-    setCreatePending(true)
-    setCreateError('')
+    creating.current = true
 
     try {
-      if (hostProbePending) {
+      const base = (name.trim() || placeholder).slice(0, 64)
+
+      if (selected.length < 2 || !base) {
         return
       }
 
-      // RPCs below can refresh or switch the live roster before they settle.
-      // Capture immutable member ownership now so the local projection matches
-      // the exact source routes used to create the hosted room.
-      const roomMembers = durableGroupChatMembers(selected)
+      const route = captureCanonicalGroupRoute()
+      const sourceCurrent = groupCreationSource(route)
 
-      const metadataOwners = selected.map(bot => ({
-        ...bot,
-        ...(bot.route
-          ? {
-              route: { ...bot.route }
-            }
-          : {})
-      }))
+      const capabilities = await canonicalGroupRequest<unknown>(route, 'groups.capabilities')
+      const mode = groupExecutionMode(capabilities)
 
-      const autonomousMembers = roomMembers.map((member, index) => {
-        const bot = selected[index]
-        const label = displayName(bot, botRosterMeta(bot, allMeta))
+      if (!sourceCurrent() || mode === 'unavailable') {
+        throw new Error(b.canonical.driverUnavailable)
+      }
 
-        return {
-          member,
-          profile: member.targetProfile || member.name,
-          handle: botHandle(member.name, member),
-          ...(label
+      if (mode === 'canonical' && !(resolvedProbe?.eligible && resolvedProbe.attachmentParity)) {
+        const created = await createCanonicalGroup(route, base, durableGroupChatMembers(selected))
+
+        // Creation already succeeded; leave it on its owner without adopting a stale result.
+        if (!sourceCurrent()) {
+          return
+        }
+
+        const key = registerCanonicalGroup(route, created.room)
+        onClose()
+        onCreated?.(key)
+
+        return
+      }
+
+      // Creating a group is always a FRESH room. Without this, re-creating a
+      // group under an existing name (easy — the default name is just the
+      // member names) silently reopens the old room with its full log, which
+      // reads as "not a fresh group" (db's Aug 2026 report). Uniquify against
+      // both live rooms and any bot's current grouping, then mint a fresh
+      // roomId: member sessions are titled by that roomId, so a
+      // disbanded-and-recreated group with the SAME display name still gets
+      // new sessions instead of resuming the old room's by title.
+      const taken = new Set(liveGroupChatNames())
+
+      for (const meta of Object.values($botMeta.get() || {})) {
+        for (const existing of botGroups(meta)) {
+          taken.add(existing)
+        }
+      }
+
+      const groupName = uniqueGroupChatName(base, taken)
+      let roomId = mintGroupRoomId()
+
+      setCreatePending(true)
+      setCreateError('')
+
+      try {
+        if (hostProbePending) {
+          return
+        }
+
+        // RPCs below can refresh or switch the live roster before they settle.
+        // Capture immutable member ownership now so the local projection matches
+        // the exact source routes used to create the hosted room.
+        const roomMembers = durableGroupChatMembers(selected)
+
+        const metadataOwners = selected.map(bot => ({
+          ...bot,
+          ...(bot.route
             ? {
-                displayName: label
+                route: { ...bot.route }
               }
             : {})
+        }))
+
+        const autonomousMembers = roomMembers.map((member, index) => {
+          const bot = selected[index]
+          const label = displayName(bot, botRosterMeta(bot, allMeta))
+
+          return {
+            member,
+            profile: member.targetProfile || member.name,
+            handle: botHandle(member.name, member),
+            ...(label
+              ? {
+                  displayName: label
+                }
+              : {})
+          }
+        })
+
+        const hostName = selected[0]?.connectionLabel || b.group.thisHost
+        let hosted: Awaited<ReturnType<typeof createAutonomousHostedGroupChat>> | null = null
+
+        // Keep the ordinary Desktop room when a hosted gateway cannot preserve
+        // today's file/screenshot behavior. Continuity must not silently trade
+        // away a feature the same composer already exposes.
+        if (resolvedProbe?.eligible && resolvedProbe.attachmentParity) {
+          try {
+            hosted = await createAutonomousHostedGroupChat({
+              probe: resolvedProbe,
+              roomId,
+              name: groupName,
+              members: autonomousMembers
+            })
+
+            // Creation may already exist on its original gateway, but a late
+            // result cannot be adopted after this Desktop source has moved.
+            if (!sourceCurrent()) {
+              return
+            }
+          } catch (error) {
+            if (!sourceCurrent()) {
+              return
+            }
+
+            if ((error as { fallbackSafe?: boolean })?.fallbackSafe === false) {
+              setCreateError(describeHostedRoomCreationError(error) || b.group.createFailed)
+
+              return
+            }
+
+            const retiredRoomId = roomId
+
+            markHostedRoomLocallyDeleted(retiredRoomId)
+
+            const rooms = $groupChats.get()
+
+            const withoutRetiredProjection = Object.fromEntries(
+              Object.entries(rooms).filter(([, room]) => room.roomId !== retiredRoomId)
+            )
+
+            if (Object.keys(withoutRetiredProjection).length !== Object.keys(rooms).length) {
+              $groupChats.set(withoutRetiredProjection)
+            }
+
+            roomId = mintGroupRoomId()
+
+            host.notify({
+              kind: 'info',
+              message: b.group.hostedFallbackToDesktop(hostName)
+            })
+          }
         }
-      })
 
-      const hostName = selected[0]?.connectionLabel || b.group.thisHost
-      let hosted: Awaited<ReturnType<typeof createAutonomousHostedGroupChat>> | null = null
+        // Persist every machine identity, including today's active source. That
+        // member becomes remote after a source switch and cannot rely on the new
+        // gateway's name-keyed bot metadata to remain seated in this room.
+        updateGroupChat(groupName, (room: GroupChatRoom) => {
+          room.members = roomMembers
+          room.roomId = roomId
+          room.continuityMode = hosted?.continuityMode || 'desktop'
 
-      // Keep the ordinary Desktop room when a hosted gateway cannot preserve
-      // today's file/screenshot behavior. Continuity must not silently trade
-      // away a feature the same composer already exposes.
-      if (resolvedProbe?.eligible && resolvedProbe.attachmentParity) {
-        try {
-          hosted = await createAutonomousHostedGroupChat({
-            probe: resolvedProbe,
-            roomId,
-            name: groupName,
-            members: autonomousMembers
-          })
-        } catch (error) {
-          if ((error as { fallbackSafe?: boolean })?.fallbackSafe === false) {
-            setCreateError(describeHostedRoomCreationError(error) || b.group.createFailed)
-
-            return
+          if (hosted) {
+            room.hosted = hosted.authorityId
+            room.hostedEpoch = hosted.authorityEpoch
+            room.hostedConnectionId = hosted.connectionId
+            room.hostedSeq = 0
+            room.hostedStatus = {
+              state: 'ready',
+              label: b.roster.ready
+            }
           }
 
-          const retiredRoomId = roomId
-
-          markHostedRoomLocallyDeleted(retiredRoomId)
-
-          const rooms = $groupChats.get()
-
-          const withoutRetiredProjection = Object.fromEntries(
-            Object.entries(rooms).filter(([, room]) => room.roomId !== retiredRoomId)
-          )
-
-          if (Object.keys(withoutRetiredProjection).length !== Object.keys(rooms).length) {
-            $groupChats.set(withoutRetiredProjection)
+          if (image) {
+            room.image = image
           }
 
-          roomId = mintGroupRoomId()
+          return room
+        })
 
-          host.notify({
-            kind: 'info',
-            message: b.group.hostedFallbackToDesktop(hostName)
-          })
-        }
-      }
+        // Updating the room record makes the Group Chat visible and usable. Bot
+        // metadata is a secondary cross-client projection: a failure here must
+        // not show a retry prompt that would mint a suffixed duplicate.
+        let metadataSyncFailed = false
 
-      // Persist every machine identity, including today's active source. That
-      // member becomes remote after a source switch and cannot rely on the new
-      // gateway's name-keyed bot metadata to remain seated in this room.
-      updateGroupChat(groupName, (room: GroupChatRoom) => {
-        room.members = roomMembers
-        room.roomId = roomId
-        room.continuityMode = hosted?.continuityMode || 'desktop'
+        for (const owner of metadataOwners) {
+          try {
+            const result = await saveBotMeta(
+              owner,
+              groupMembershipPatch(botRosterMeta(owner, allMeta), groupName, true)
+            )
 
-        if (hosted) {
-          room.hosted = hosted.authorityId
-          room.hostedEpoch = hosted.authorityEpoch
-          room.hostedConnectionId = hosted.connectionId
-          room.hostedSeq = 0
-          room.hostedStatus = {
-            state: 'ready',
-            label: b.roster.ready
-          }
-        }
-
-        if (image) {
-          room.image = image
-        }
-
-        return room
-      })
-
-      // Updating the room record makes the Group Chat visible and usable. Bot
-      // metadata is a secondary cross-client projection: a failure here must
-      // not show a retry prompt that would mint a suffixed duplicate.
-      let metadataSyncFailed = false
-
-      for (const owner of metadataOwners) {
-        try {
-          const result = await saveBotMeta(owner, groupMembershipPatch(botRosterMeta(owner, allMeta), groupName, true))
-
-          if (result.serverOutcome === 'failed') {
+            if (result.serverOutcome === 'failed') {
+              metadataSyncFailed = true
+            }
+          } catch {
             metadataSyncFailed = true
           }
-        } catch {
-          metadataSyncFailed = true
         }
-      }
 
-      host.notify({
-        kind: metadataSyncFailed ? 'warning' : 'info',
-        message: metadataSyncFailed
-          ? `${b.group.created(groupName, selected.length)}. ${b.group.detailsSyncPending}`
-          : b.group.created(groupName, selected.length)
-      })
-      onClose()
-      onCreated?.(groupName)
-    } catch {
-      setCreateError(b.group.createFailed)
+        host.notify({
+          kind: metadataSyncFailed ? 'warning' : 'info',
+          message: metadataSyncFailed
+            ? `${b.group.created(groupName, selected.length)}. ${b.group.detailsSyncPending}`
+            : b.group.created(groupName, selected.length)
+        })
+        onClose()
+        onCreated?.(groupName)
+      } catch {
+        setCreateError(b.group.createFailed)
+      } finally {
+        setCreatePending(false)
+      }
+    } catch (error) {
+      host.notify({ kind: 'error', message: error instanceof Error ? error.message : String(error) })
     } finally {
-      setCreatePending(false)
+      creating.current = false
     }
   }
 

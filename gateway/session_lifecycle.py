@@ -8,6 +8,8 @@ import uuid
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Optional
 
+from hermes_state_ids import new_session_id
+
 if TYPE_CHECKING:
     from gateway.session import SessionEntry, SessionSource
 
@@ -21,7 +23,7 @@ def _now() -> datetime:
 
 
 def _new_session_id(now: datetime) -> str:
-    return f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    return new_session_id(now, hex_len=8)
 
 
 def _iso(dt: Optional[datetime]) -> Optional[str]:
@@ -249,9 +251,13 @@ class SessionLifecycleMixin:
         to avoid touching long-idle sessions. Sets ``resume_pending=True`` so the next incoming message on
         the same session_key auto-resumes from the existing transcript.
         """
+        from gateway.config import Platform
         cutoff = _now() - timedelta(seconds=max_age_seconds)
 
         def _mark(entry: SessionEntry) -> bool:
+            # Canonical local routes recover through their durable FIFO, never a synthetic resume.
+            if entry.origin is not None and entry.origin.platform == Platform.LOCAL:
+                return False
             if entry.resume_pending or entry.suspended or entry.updated_at < cutoff:
                 return False
             entry.resume_pending = True

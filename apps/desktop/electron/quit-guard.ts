@@ -1,8 +1,7 @@
-// Quitting with a turn in flight kills the backend mid-tool-call: the work is
-// lost, and anything the agent had half-written to disk stays half-written.
-// Renderers publish what they're running; the main process asks before it lets
-// that go. The decision + copy live here (pure, testable) so main.ts only owns
-// the IPC and the dialog call.
+// Persistent gateways own their work independently of Desktop. Renderer reports
+// do not identify connections or client-dependent activity, so a busy report
+// still needs a scoped confirmation, not a claim that quitting loses all work.
+// The decision + copy live here so main.ts only owns the IPC and dialog call.
 
 const MAX_LISTED = 4
 
@@ -82,7 +81,8 @@ export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): nu
     detail: [
       lines.join('\n'),
       lines.length > 0 ? '' : null,
-      'Quitting stops the agent mid-turn. Any work it has not finished writing is lost.'
+      'Running and queued work on a persistent gateway continues after Desktop quits. ' +
+        'Activity that depends on this app or an older connection may be interrupted.'
     ]
       .filter(line => line !== null)
       .join('\n')

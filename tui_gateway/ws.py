@@ -58,6 +58,13 @@ def _sanitize_ws_text(text: str) -> str:
 # Max seconds a pool-dispatched handler blocks waiting for the loop to flush a WS frame before we
 # give up waiting (the transport is NOT marked dead).
 _WS_WRITE_TIMEOUT_S = 10.0
+# Max seconds one send_text may await the socket once it is actually running on the loop. A healthy
+# socket returns from send_text without waiting (the frame lands in the transport buffer); only kernel
+# backpressure parks it, so a GIL/loop stall cannot start this clock. Deliberately 3x the worker wait
+# above and under the client's 45s heartbeat deadline (apps/shared json-rpc-gateway): a peer that
+# cannot drain ~48 KiB in 30s is gone, and closing here starts its reconnect instead of leaving every
+# later frame and RPC reply parked behind the writer lock (#106369).
+_WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
@@ -85,8 +92,9 @@ class WSTransport:
         self._ws = ws
         self._loop = loop
         self._peer = peer
-        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server._ws_auth_reason``; None
-        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
+        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
+        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
+        #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
@@ -183,7 +191,17 @@ class WSTransport:
                     return
                 payload = _sanitize_ws_text(line)
                 try:
-                    await self._ws.send_text(payload)
+                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
+                except asyncio.TimeoutError:
+                    # The loop is responsive (the timer fired) but the socket never drained: unlike the
+                    # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
+                    # batches bail, and close the socket so handle_ws's read loop ends and its teardown
+                    # (session detach/reap, client reconnect) runs. See #106369.
+                    self._closed = True
+                    _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
+                                 self._peer, _WS_SEND_DEADLINE_S)
+                    self._loop.create_task(self._close_stalled_socket())
+                    return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
                     _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)
@@ -199,6 +217,14 @@ class WSTransport:
         if self._token_flush_handle is not None:
             self._token_flush_handle.cancel()
             self._token_flush_handle = None
+
+    async def _close_stalled_socket(self) -> None:
+        """Close the peer socket after a send deadline so ``handle_ws``'s ``receive_text`` unblocks and its
+        disconnect teardown runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
+        try:
+            await self._ws.close(code=1011)
+        except Exception as exc:  # noqa: BLE001 - the peer is already gone; teardown is what matters
+            _log.debug("ws close after send deadline failed peer=%s error=%s", self._peer, exc)
 
 
 def _ws_peer_label(ws: Any) -> str:
@@ -236,11 +262,13 @@ class _SendFailed(Exception):
     """Raised by handle_ws._reply when a reply could not be written: ends the read loop."""
 
 
-async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None) -> None:
+async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: str | None = None,
+                    operator: bool = False) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``. *auth_identity* is the server-minted
     ``{user_id, provider}`` recorded at WS-upgrade auth, stored as ``WSTransport.auth_identity`` (the only identity
     authority for browser-controller registration); callers that omit it (harnesses, embedded TUI child) get None."""
     peer, transport = _ws_peer_label(ws), None
+    authority_connection = None
     messages = parse_errors = dispatch_crashes = send_failures = 0
     disconnect_reason = "not_connected"
 
@@ -264,6 +292,11 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer, auth_identity=auth_identity)
+        authority = (getattr(ws, 'scope', None) or {}).get('hermes.session_authority') or getattr(
+            getattr(getattr(ws, 'app', None), 'state', None), 'session_authority', None)
+        if authority is not None:
+            from gateway.session_controls import AuthorityConnection
+            authority_connection = AuthorityConnection(authority, transport, auth_identity or {}, operator=operator)
         # resolve_skin() is sync I/O + CPU; pooled so the read loop can drain the frontend's initial RPC burst.
         skin_payload = await asyncio.to_thread(server.resolve_skin)
         # change_events: this backend broadcasts pet/cron/sessions.changed, so clients can demote legacy
@@ -330,7 +363,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # writes the response itself via transport.write (a separate thread, so that is the safe
             # path). Inline handlers return the response dict, written here from the loop.
             try:
-                resp = await asyncio.to_thread(server.dispatch, req, transport)
+                if authority_connection is not None:
+                    resp = await authority_connection.dispatch(req)
+                else:
+                    resp = await asyncio.to_thread(server.dispatch, req, transport)
             except Exception:
                 dispatch_crashes += 1
                 _log.exception("ws dispatch crash peer=%s id=%s method=%s", peer, req_id, req_method)
@@ -343,6 +379,8 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     except _SendFailed:
         pass
     finally:
+        if authority_connection is not None:
+            await authority_connection.close()
         reaped_sessions = detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)

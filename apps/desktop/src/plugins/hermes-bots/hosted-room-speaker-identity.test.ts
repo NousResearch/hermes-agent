@@ -160,7 +160,7 @@ describe('hosted speaker identity through replay and display mirrors', () => {
   })
 
   it('leaves the existing model transcript formatter unchanged', async () => {
-    const { formatGroupChatLine } = await import('./group-rounds')
+    const { formatGroupChatLine } = await import('./group-round-prompt')
     const [message] = speakerReplay()
     const { hostedIdentity: _identity, ...from } = message.from
 

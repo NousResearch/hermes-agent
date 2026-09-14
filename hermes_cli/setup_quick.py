@@ -57,7 +57,7 @@ def _run_nous_flow(config: dict, *, context: str, cancel_exc: tuple, cancel_line
 def _run_portal_one_shot(config: dict) -> None:
     """One-shot Nous Portal setup (``hermes setup --portal`` / ``hermes portal``)."""
     from hermes_cli.setup import _info, _print_banner, print_error, print_info, print_success
-    _print_banner("│     ⚕ Hermes Setup — Nous Portal (one-shot)             │")
+    _print_banner("│     ☤ Hermes Setup — Nous Portal (one-shot)             │")
     _info(None, "  One subscription, 300+ models, plus the Tool Gateway:",
           "    web search, image generation, TTS, browser automation",
           "    — all routed through your Nous Portal sub.", None,
@@ -117,10 +117,9 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
         setup_gateway(config)
         save_config(config)
     else:
-        # Messaging skipped — still install/start the gateway service so cron jobs run and
-        # platforms come alive as soon as tokens are added later (e.g. via `hermes import`).
-        from hermes_cli.gateway import ensure_gateway_service
-        ensure_gateway_service(context="setup")
+        # Messaging is optional; service persistence still requires explicit consent.
+        from hermes_cli.gateway_setup_service import ensure_gateway_service
+        ensure_gateway_service(context="setup", interactive=True, config=config)
     print()
     print_success("Setup complete! You're ready to go.")
     _info(None, "  Configure all settings:    hermes setup")

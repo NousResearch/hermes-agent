@@ -17,7 +17,20 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
   const { pluginSdkMock } = await import('./group-test-utils')
 
-  return { ...sdk, ...(await pluginSdkMock({ ...sdk.host, ...host })), usePluginI18n: () => translateBots }
+  return {
+    ...sdk,
+    ...(await pluginSdkMock({
+      ...sdk.host,
+      ...host,
+      state: {
+        ...sdk.host.state,
+        connectionId: sdk.atom<string | null>('local'),
+        gateway: sdk.atom('open'),
+        profile: sdk.atom('default')
+      }
+    })),
+    usePluginI18n: () => translateBots
+  }
 })
 
 vi.mock('./group-chat-parts', () => ({
@@ -180,6 +193,8 @@ describe('room speaker click and sidebar preview', () => {
   )
 
   it('preserves classic default and remote custom-handle labels', async () => {
+    host.requestProfile.mockResolvedValue({ driver: false, persistent_process: false })
+
     const members: GroupMember[] = [
       { name: 'default' },
       {
@@ -199,7 +214,7 @@ describe('room speaker click and sidebar preview', () => {
       ],
       members
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Hermes' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Hermes' }))
     expect(screen.getByRole('button', { name: 'Hermes (@hermes)' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Research' }))
     expect(screen.getByRole('button', { name: 'Research-Lab (@research-lab)' })).toBeTruthy()

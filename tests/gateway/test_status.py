@@ -170,6 +170,56 @@ class TestGatewayPidState:
         (process_home / "gateway.pid").unlink(missing_ok=True)
 
 
+class TestScopedGatewayPidQuery:
+    """get_running_pid(pid_path) is a scoped query into another home's identity files (#106406):
+    records are validated against the probed home (not the serve process's) and a live record is
+    never cleanup-unlinked, so a scoped status poll must not delete a live foreign gateway's
+    gateway.pid/gateway.lock."""
+
+    def _write_scoped_profile(self, tmp_path):
+        profile_dir = tmp_path / "profiles" / "wiki"
+        profile_dir.mkdir(parents=True)
+        record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "--profile", "wiki"],
+            "start_time": 123,
+            "hermes_home": str(profile_dir.resolve()),
+        }
+        pid_path = profile_dir / "gateway.pid"
+        pid_path.write_text(json.dumps(record))
+        (profile_dir / "gateway.lock").write_text(json.dumps(record))
+        return profile_dir, pid_path, record
+
+    def test_scoped_query_reports_live_foreign_profile_pid(self, tmp_path, monkeypatch):
+        # The serve process polls from the DEFAULT home; the live wiki record must still count.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
+        profile_dir, pid_path, _ = self._write_scoped_profile(tmp_path)
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "python -m hermes_cli.main gateway --profile wiki",
+        )
+        assert status.get_running_pid(pid_path) == 4242
+        assert pid_path.exists()
+        assert (profile_dir / "gateway.lock").exists()
+
+    def test_scoped_query_still_cleans_dead_pid_record(self, tmp_path, monkeypatch):
+        # A dead PID's stale record is still cleanup-unlinked, scoped or not.
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "default-home"))
+        profile_dir, pid_path, _ = self._write_scoped_profile(tmp_path)
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
+        assert status.get_running_pid(pid_path) is None
+        assert not pid_path.exists()
+        # gateway.lock is an ownership inode (gateway/runtime_ownership.py): a stale record
+        # is cleared through the PID file only; unlinking the lock would let a contender that
+        # already opened it become a second owner.
+        assert (profile_dir / "gateway.lock").exists()
+
+
 class TestGatewayRuntimeStatus:
     def test_clear_profile_platforms_preserves_primary_entries(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1173,84 +1223,32 @@ class TestLaunchdPlistRespawnGovernance:
 
 
 class TestPermissionErrorOnLockFile:
-    """Stale root-owned lock files from launchd Background sessions must not
-    crash the gateway on restart (issue #42685)."""
-
-    def test_permission_error_on_lock_file_returns_false_and_removes(self, tmp_path, monkeypatch):
-        """When the lock file is not writable (root-owned), the function should
-        remove the stale file and report the lock as inactive."""
+    @pytest.mark.linux_only
+    def test_inaccessible_lock_is_not_deleted_or_treated_as_absence(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        lock_path = tmp_path / "gateway.lock"
-        lock_path.write_text("stale", encoding="utf-8")
-
-        real_open = open
-
-        def deny_write(path, *args, **kwargs):
-            if str(path) == str(lock_path):
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_open(path, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.open", deny_write)
-
-        result = status.is_gateway_runtime_lock_active(lock_path)
-        assert result is False
-        assert not lock_path.exists(), "stale root-owned lock file should be removed"
-
-    def test_permission_error_unlink_failure_still_returns_false(self, tmp_path, monkeypatch):
-        """Even if unlinking the stale lock file fails (e.g. directory not writable),
-        the function should still return False to allow startup."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        lock_path = tmp_path / "gateway.lock"
-        lock_path.write_text("stale", encoding="utf-8")
-
-        real_open = open
-
-        def deny_write(path, *args, **kwargs):
-            if str(path) == str(lock_path):
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_open(path, *args, **kwargs)
-
-        real_unlink = Path.unlink
-
-        def deny_unlink(self, *args, **kwargs):
-            if str(self) == str(lock_path):
-                raise OSError(13, "Permission denied", str(self))
-            return real_unlink(self, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.open", deny_write)
-        monkeypatch.setattr(Path, "unlink", deny_unlink)
-
-        result = status.is_gateway_runtime_lock_active(lock_path)
-        assert result is False
-
-    def test_acquire_gateway_runtime_lock_recovers_from_permission_error(self, tmp_path, monkeypatch):
-        """acquire_gateway_runtime_lock must survive a stale root-owned lock
-        file: unlink it and retry with a fresh file instead of crashing."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        lock_path = status._get_gateway_lock_path()
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path.write_text("stale", encoding="utf-8")
-
-        real_open = open
-
-        def deny_write(path, *args, **kwargs):
-            # Simulate a root-owned file: opening fails while the ORIGINAL
-            # stale file is still on disk; after unlink, the fresh file the
-            # retry creates opens fine.
-            if (
-                str(path) == str(lock_path)
-                and lock_path.exists()
-                and lock_path.read_text(encoding="utf-8") == "stale"
-            ):
-                raise PermissionError(13, "Permission denied", str(path))
-            return real_open(path, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.open", deny_write)
-
+        lock = tmp_path / "gateway.lock"
+        lock.write_text("existing owner")
+        inode = lock.stat().st_ino
+        lock.chmod(0)
         try:
-            assert status.acquire_gateway_runtime_lock() is True
+            assert status.is_gateway_runtime_lock_active(lock) is True
+            assert status.acquire_gateway_runtime_lock() is False
+            assert lock.stat().st_ino == inode
         finally:
-            status.release_gateway_runtime_lock()
+            lock.chmod(0o600)
+        assert lock.read_text() == "existing owner"
+        assert status.acquire_gateway_runtime_lock() is True
+        status.release_gateway_runtime_lock()
+        assert lock.stat().st_ino == inode
+
+    @pytest.mark.linux_only
+    def test_runtime_lock_does_not_follow_symlink(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        target = tmp_path / "unrelated"
+        target.write_text("unchanged")
+        (tmp_path / "gateway.lock").symlink_to(target)
+        assert status.acquire_gateway_runtime_lock() is False
+        assert target.read_text() == "unchanged"
 
 
 class TestNormalizeUpdatedAt:

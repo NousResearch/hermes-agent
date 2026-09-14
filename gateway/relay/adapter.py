@@ -22,7 +22,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.descriptor import CapabilityDescriptor
@@ -826,7 +826,9 @@ class RelayAdapter(BasePlatformAdapter):
         # the connector replays its durable buffer, and a long turn straddling a
         # quiet socket drop got re-run (final answer 2-5x). Platform message identity
         # is stable across replays.
-        dedupe_key = self._inbound_dedupe_key(event)
+        runner = getattr(self._message_handler, '__self__', None)
+        native = getattr(runner, 'session_authority', None) is not None and not event.get_command()
+        dedupe_key = None if native else self._inbound_dedupe_key(event)
         if dedupe_key is not None:
             if dedupe_key in self._seen_inbound:
                 logger.info("relay inbound dropped as replay (dedupe key=%s)", dedupe_key)
@@ -840,7 +842,17 @@ class RelayAdapter(BasePlatformAdapter):
         if await self._consume_prompt_response(event):
             return
         await self._localize_inbound_media(event)
-        await self.handle_message(event)
+        if native:
+            from datetime import datetime, timezone
+            from gateway.platforms.webhook_ingress import admit_producer
+            # The connector does not transmit a provider timestamp. Local arrival
+            # time must not change the fingerprint of a retried provider identity.
+            event.timestamp = datetime.fromtimestamp(0, timezone.utc)
+            # Wait only for the SQLite receipt, never inference or outbound ACKs
+            # (those need this same WS reader). Exceptions deliberately suppress ACK.
+            await admit_producer(self, event)
+        else:
+            await self.handle_message(event)
 
     _SEEN_INBOUND_MAX = 512
 
@@ -1970,34 +1982,19 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    async def send_exec_approval(
-        self,
-        chat_id: str,
-        command: str,
-        session_key: str,
-        description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None,
-        allow_permanent: bool = True,
-        allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
-        """Native-button exec approval over the relay (same choice set as native; the
-        press resolves via tools.approval.resolve_gateway_approval). When the lane is
-        unavailable the send FAILS (success=False) so run.py's button→text fallback runs."""
-        options: list = [{"id": "once", "label": "Allow Once", "style": "primary"}]
-        if not smart_denied and allow_session:
-            options.append({"id": "session", "label": "Allow Session"})
-            if allow_permanent:
-                options.append({"id": "always", "label": "Always Allow"})
-        options.append({"id": "deny", "label": "Deny", "style": "danger"})
+    _EA_HEADER = "⚠️ **Command Approval Required**\n\n"
+    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+    _EA_CMD_BUDGET = 1500
 
-        cmd_preview = command if len(command) <= 1500 else command[:1500] + "..."
-        text = f"⚠️ **Command Approval Required**\n\n```\n{cmd_preview}\n```\nReason: {description}"
-        if smart_denied:
-            text += "\n\n**Smart DENY:** owner override applies to this one operation only."
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Native-button exec approval over the relay (the press resolves via
+        tools.approval.resolve_gateway_approval). When the lane is unavailable the send FAILS
+        (success=False) so run.py's button→text fallback runs."""
+        options = [{"id": choice, "label": label, **({"style": style} if style else {})}
+                   for label, choice, style in prompt.actions]
         result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": session_key}, chat_id, prompt_kind="approval",
-            text=text, options=options, metadata=metadata,
+            "exec_approval", {"session_key": prompt.session_key}, prompt.chat_id, prompt_kind="approval",
+            text=prompt.text, options=options, metadata=prompt.metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
 

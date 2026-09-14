@@ -278,6 +278,14 @@ class PluginLoaderMixin:
         if manifest.portable:
             self._load_portable_plugin(manifest, loaded)
             return
+        # requires_hermes gate: skip cleanly (no import, no traceback) on a version mismatch.
+        from hermes_cli.plugins_manifest import requires_hermes_error
+        reason = requires_hermes_error(manifest)
+        if reason:
+            loaded.error = reason
+            logger.warning("Plugin '%s' skipped: %s", plugin_key, reason)
+            self._plugins[plugin_key] = loaded
+            return
         # After the compat-removal date an external plugin that still imports pre-decomposition paths is
         # skipped with a clear reason instead of dying on ImportError mid-register (hermes_cli.plugin_compat).
         from hermes_cli.plugin_compat import disable_reason

@@ -38,8 +38,9 @@ _cached: dict[str, str] = {}
 
 
 def _default_home() -> str:
-    """Ambient HERMES_HOME (env, else ~/.hermes) as a string."""
-    return os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    """Ambient process HERMES_HOME (env, else the platform default) as a string."""
+    from hermes_constants import get_process_hermes_home
+    return str(get_process_hermes_home())
 
 
 def _resolve_home(home: str | os.PathLike | None) -> Path:
@@ -223,7 +224,7 @@ def _build_section(home: Path) -> str:
         f"You are `@{_handle(me)}`. Your teammates (live roster; roles from their "
         "profiles):\n"
         f"{roster_block}"
-        + _remote_paragraph(root)
+        + _remote_paragraph(home)
         + _peer_paragraph(root)
     )
 
@@ -307,7 +308,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
     # surface too: registering a peer or (dis)connecting a machine must show up.
     surface["peers"] = _peers(root)
     surface["remote_roster"] = sorted(
-        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(root)
+        f"{r['connection_id']}:{r['profile']}:{r['title']}" for r in _remote_roster(resolved)
     )
     return _swallow(
         lambda: hashlib.sha256(json.dumps(surface, sort_keys=True).encode("utf-8")).hexdigest()[:12],

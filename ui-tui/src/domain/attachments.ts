@@ -1,4 +1,5 @@
 import type { ComposerToken } from '../app/interfaces.js'
+import type { ImageAttachment } from '../lib/imageAttachments.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 
 /**
@@ -14,6 +15,10 @@ import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
  *     token sat, not stapled to the front of the turn.
  */
 export const imageToken = (index: number) => `[[ Image ${index} ]]`
+
+export const imageAttachments = (value: string, tokens: ComposerToken[]): ImageAttachment[] =>
+  tokens.flatMap(token => token.kind === 'image' && token.mime && value.includes(token.label)
+    ? [{ path: token.path, mime: token.mime }] : [])
 
 /** Highest image token index handed out so far, so a new one never collides. */
 export const nextImageIndex = (tokens: ComposerToken[]) =>
@@ -32,8 +37,8 @@ export const droppedTokens = (tokens: ComposerToken[], value: string) => {
  * Repeated identical labels expand in submission order (left to right), which
  * is why this walks matches instead of doing a global replace per token.
  *
- * An image token expands to nothing: the gateway already holds the file in
- * `session.attached_images` and splices the real vision content in at submit.
+ * An image token expands to nothing: its staged path and MIME travel in the
+ * identified prompt's attachments payload, independently of display text.
  * The token's job was to show the user where it landed, so it also eats one
  * adjacent space to avoid leaving a gap in the middle of a sentence.
  */

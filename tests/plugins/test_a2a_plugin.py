@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import os
 import socket
 import threading
@@ -176,17 +177,28 @@ class TestInjectionFilter:
 
 
 class TestOutboundRedaction:
-    def test_openai_key_redacted(self):
-        out = security.redact_outbound("my key is sk-abcdefghij1234567890XYZ")
-        assert "sk-abcdefghij" not in out
-        assert "[redacted]" in out
+    def test_every_canonical_credential_class_is_scrubbed(self):
+        """Invariant: redact_outbound masks everything redact_sensitive_text masks. A2A ships text to a
+        REMOTE peer, so a private subset here silently drops every prefix later added to agent/redact.py.
+        Corpus: one synthetic token per registered prefix pattern, built from the pattern's literal prefix."""
+        from agent import redact as R
 
-    def test_github_token_redacted(self):
-        out = security.redact_outbound("token ghp_0123456789abcdefghij0123")
-        assert "ghp_0123456789" not in out
+        bodies = ("Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "QQ7ZP2MX9VLK4NRT", "b-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "1-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  "Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0.Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0")
+        tokens = []
+        for pattern in R._PREFIX_PATTERNS + R._plugin_patterns():
+            prefix = R._extract_literal_prefix(pattern)
+            token = next((prefix + body for body in bodies if re.fullmatch(pattern, prefix + body)), None)
+            assert token, f"could not synthesize a token for {pattern!r}"
+            tokens.append(token)
+        assert len(tokens) == len(R._PREFIX_PATTERNS) + len(R._plugin_patterns())
+        for token in tokens:
+            assert token not in security.redact_outbound(f"peer, here: {token}"), token
 
-    def test_email_redacted(self):
-        out = security.redact_outbound("contact me at alice@example.com")
+    def test_bearer_and_email_redacted(self):
+        out = security.redact_outbound("Authorization: Bearer opaque0123456789abcdef; contact me at alice@example.com")
+        assert "opaque0123456789abcdef" not in out
         assert "alice@example.com" not in out
         assert "[redacted-email]" in out
 
@@ -1376,7 +1388,7 @@ class TestMultiAgentRouting:
         }))
         agent = adapter._agents["dev"]
 
-        def fake_forward(agent_arg, peer, context_id, framed_text):
+        def fake_forward(agent_arg, peer, context_id, framed_text, *, input_id):
             assert agent_arg["slug"] == "dev"
             assert peer == "peer-x"
             assert "hello" in framed_text
@@ -1581,54 +1593,31 @@ class TestV1SpecRegressionFixes:
         assert "one" in adapter._agents
         assert "two" not in adapter._agents
 
-    def test_forward_to_profile_first_contact_creates_then_resumes_fake_hermes(self, monkeypatch, tmp_path):
+    def test_forward_to_profile_uses_receipted_owner_not_local_writer(self, monkeypatch, tmp_path):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
+        from gateway import session_a2a
 
-        profile_home = tmp_path / "profile"
-        profile_home.mkdir()
-        db = profile_home / "state.db"
-        import sqlite3
-        con = sqlite3.connect(db)
-        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, started_at REAL, title TEXT)")
-        con.commit(); con.close()
-
-        fakebin = tmp_path / "bin"
-        fakebin.mkdir()
-        calls = tmp_path / "calls.jsonl"
-        hermes = fakebin / "hermes"
-        hermes.write_text("""#!/usr/bin/env python3
-import json, os, sqlite3, sys, time
-calls = os.environ['FAKE_HERMES_CALLS']
-with open(calls, 'a') as f:
-    f.write(json.dumps(sys.argv[1:]) + '\\n')
-home = os.environ['HERMES_HOME']
-con = sqlite3.connect(os.path.join(home, 'state.db'))
-if '--resume' not in sys.argv:
-    con.execute('INSERT INTO sessions (id, source, started_at, title) VALUES (?, ?, ?, ?)', ('sess-1', 'a2a', time.time(), None))
-    con.commit()
-print('fake reply')
-""")
-        hermes.chmod(0o755)
-        monkeypatch.setenv("PATH", str(fakebin) + os.pathsep + os.environ.get("PATH", ""))
-        monkeypatch.setenv("FAKE_HERMES_CALLS", str(calls))
-        monkeypatch.setattr("plugins.platforms.a2a.adapter._profile_home", lambda profile: str(profile_home))
-
+        calls = []
+        async def owner(home, **params):
+            calls.append((home, params))
+            return {'status': 'terminal', 'outcome': 'completed',
+                    'result': {'final_response': 'owner reply'}}
+        monkeypatch.setattr(session_a2a, 'forward_to_owner', owner)
+        monkeypatch.setattr('plugins.platforms.a2a.adapter._profile_home', lambda profile: str(tmp_path))
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
-            "agents": {"dev": {"profile": "dev", "tenant": "dev", "timeout": 5}}
+            'agents': {'dev': {'profile': 'dev', 'tenant': 'team', 'timeout': 5}}
         }))
-        agent = adapter._agents["dev"]
-        reply, state = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "hello")
-        assert (reply, state) == ("fake reply", protocol.STATE_COMPLETED)
-        reply2, state2 = adapter._forward_to_profile(agent, "peer", "ctx/unsafe value", "again")
-        assert (reply2, state2) == ("fake reply", protocol.STATE_COMPLETED)
-        argv_lines = [json.loads(line) for line in calls.read_text().splitlines()]
-        assert "--resume" not in argv_lines[0]
-        assert argv_lines[1][argv_lines[1].index("--resume") + 1] == "sess-1"
-        con = sqlite3.connect(db)
-        title = con.execute("SELECT title FROM sessions WHERE id='sess-1'").fetchone()[0]
-        con.close()
-        assert title == "a2a-dev-ctx-unsafe-value"
+        reply, state = adapter._forward_to_profile(adapter._agents['dev'], 'peer', 'ctx/unsafe value', 'hello')
+        assert (reply, state) == ('owner reply', protocol.STATE_COMPLETED)
+        assert calls[0][0] == str(tmp_path)
+        assert calls[0][1]['context_id'] == 'ctx/unsafe value'
+        assert calls[0][1]['peer'] == 'peer'
+        assert calls[0][1]['agent'] == 'dev'
+        assert calls[0][1]['tenant'] == 'team'
+        assert calls[0][1]['input_id']
+        assert not (tmp_path / 'state.db').exists()
+
 
 
 # --------------------------------------------------------------------------
@@ -1648,6 +1637,7 @@ _A2A_ENV_VARS = (
     "A2A_AGENT_NAME",
     "A2A_ADVERTISED_TOOLSETS",
     "A2A_AGENT_DESCRIPTION",
+    "A2A_PUBLIC_URL",
 )
 
 
@@ -1687,6 +1677,7 @@ def default_profile_env(monkeypatch):
     monkeypatch.setenv("A2A_AGENT_NAME", "default-profile-agent")
     monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "default-only-toolset")
     monkeypatch.setenv("A2A_AGENT_DESCRIPTION", "Default profile's own agent.")
+    monkeypatch.setenv("A2A_PUBLIC_URL", "https://default-profile.example.com/")
 
 
 class TestMultiplexConstructionScope:
@@ -1709,6 +1700,10 @@ class TestMultiplexConstructionScope:
         assert adapter._agents[""]["description"] == (
             "Hermes Agent — a general-purpose agent reachable over A2A."
         )
+        # _public_url was captured at construction time via a bare os.getenv, missed by the
+        # scoped retrofit the sibling fields above already got.
+        assert adapter._public_url != "https://default-profile.example.com/"
+        assert adapter._public_url == ""
 
     def test_default_profile_unscoped_keeps_env_precedence(
         self, monkeypatch, default_profile_env
@@ -1727,3 +1722,4 @@ class TestMultiplexConstructionScope:
         assert adapter.port == 9111
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
+        assert adapter._public_url == "https://default-profile.example.com/"

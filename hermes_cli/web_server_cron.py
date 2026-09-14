@@ -79,23 +79,6 @@ def _validate_dashboard_cron_context_from(refs: Optional[List[str]], profile_nam
                 detail=f"context_from job '{ref}' not found in profile '{profile_name}'")
 
 
-def _default_multiplex_profile_allowlist() -> "list[str] | None":
-    """``gateway.multiplex_profile_allowlist`` as the DEFAULT profile's config declares it (the
-    multiplexer's served set), so the Desktop ticker mirrors ``gateway/run.py::_multiplex_profile_homes``
-    instead of ticking every installed profile. ``None`` = serve all (historical behavior)."""
-    from gateway.config import _normalize_multiplex_profile_allowlist
-    from hermes_cli.config import read_user_config_raw
-    from hermes_constants import get_default_hermes_root
-
-    cfg_path = get_default_hermes_root() / "config.yaml"
-    if not cfg_path.exists():
-        return None
-    cfg = read_user_config_raw(cfg_path) or {}
-    raw = cfg.get("multiplex_profile_allowlist") if "multiplex_profile_allowlist" in cfg else (
-        cfg.get("gateway") or {}).get("multiplex_profile_allowlist")
-    return _normalize_multiplex_profile_allowlist(raw)
-
-
 def _cron_profile_dicts() -> List[Dict[str, Any]]:
     """Minimal profile records (callers only consume ``name``); avoids ``list_profiles()``,
     whose config parsing, gateway probes and skill counts are GIL pressure on large pools."""
@@ -314,21 +297,10 @@ def _fire_cron_job_for_profile(profile: str, job_id: str, *, force: bool = False
 
 
 def _profile_env_value(home: Path, key: str) -> str:
-    """Best-effort read of one KEY=VALUE line from a profile's .env file."""
-    try:
-        env_path = home / ".env"
-        if not env_path.is_file():
-            return ""
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, v = line.split("=", 1)
-            if k.strip() == key:
-                return v.strip().strip('"').strip("'")
-    except Exception:
-        pass
-    return ""
+    """One value from a profile's .env (``""`` when absent/unreadable)."""
+    from agent.secret_scope import load_env_file
+
+    return load_env_file(home / ".env").get(key, "")
 
 
 def _gateway_fire_endpoint(profile: str, home: Path) -> str:

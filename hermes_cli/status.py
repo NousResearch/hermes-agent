@@ -137,7 +137,7 @@ def _banner(lines, *styles) -> None:
 
 def _render_header(ctx):
     _banner(("┌─────────────────────────────────────────────────────────┐",
-             "│                 ⚕ Hermes Agent Status                  │",
+             "│                 ☤ Hermes Agent Status                  │",
              "└─────────────────────────────────────────────────────────┘"), Colors.CYAN)
     paused = _estop_status_line()
     if paused:
@@ -234,6 +234,10 @@ def _render_gateway(ctx):
             _kv("PID(s):", _format_gateway_pids(snapshot.gateway_pids))
         if snapshot.running and (served := multiplexer_served_secondaries()):
             _kv("Serves:", ", ".join(served))
+            from hermes_cli.gateway_multiplex_served import served_profile_ingress_urls
+            for name, per_platform in sorted(served_profile_ingress_urls().items()):
+                for platform, url in sorted(per_platform.items()):
+                    _kv(f"  {name}/{platform}:", url)
         if snapshot.has_process_service_mismatch:
             _kv("Service:", "installed but not managing the current running gateway")
         elif _is_termux() and not snapshot.gateway_pids:

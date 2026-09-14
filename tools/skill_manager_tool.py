@@ -632,7 +632,8 @@ def apply_skill_pending(payload: Dict[str, Any]) -> str:
 
 
 # Sync push debounce: a burst of skill_manage writes collapses into one push on a daemon timer.
-_sync_push_timer = None
+# One timer per profile home: in a multiplexed process B's write must not cancel A's pending push.
+_sync_push_timers: Dict[str, threading.Timer] = {}
 _sync_push_lock = threading.Lock()
 _SYNC_PUSH_DEBOUNCE_S = 5.0
 
@@ -640,23 +641,29 @@ _SYNC_PUSH_DEBOUNCE_S = 5.0
 def _maybe_debounced_sync_push(skill_name: str) -> None:
     """Debounced best-effort sync push after a skill write; never blocks the caller. Skills not
     opted into sync do nothing (no auth/network); ``maybe_push_skills`` enforces the access gate."""
-    global _sync_push_timer
     try:
         from tools.skill_usage import is_sync_enabled
         if not is_sync_enabled(skill_name):
             return
     except Exception:
         return
+    from hermes_constants import hermes_home_key
+    home_key = hermes_home_key()
+    # Timer threads start with empty ContextVars; without the scheduling turn's context the push would
+    # resolve the launch profile's home and credentials instead of the writing profile's.
+    ctx = _ctxvars.copy_context()
     def _fire():
         with suppress(Exception):
             from tools.skills_sync_client import maybe_push_skills
             maybe_push_skills(message=f"sync: {skill_name}")
     with _sync_push_lock:
-        if _sync_push_timer is not None:
-            _sync_push_timer.cancel()  # only sets an Event; never raises
-        _sync_push_timer = threading.Timer(_SYNC_PUSH_DEBOUNCE_S, _fire)
-        _sync_push_timer.daemon = True
-        _sync_push_timer.start()
+        pending = _sync_push_timers.get(home_key)
+        if pending is not None:
+            pending.cancel()  # only sets an Event; never raises
+        timer = threading.Timer(_SYNC_PUSH_DEBOUNCE_S, ctx.run, args=(_fire,))
+        timer.daemon = True
+        _sync_push_timers[home_key] = timer
+        timer.start()
 
 
 def _act_patch(a):

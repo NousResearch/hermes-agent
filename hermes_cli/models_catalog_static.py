@@ -506,14 +506,6 @@ _PROVIDER_RETIRED_ALIASES: dict[str, tuple[str, ...]] = {
 _AGGREGATOR_PROVIDERS = frozenset({"nous", "openrouter", "ai-gateway", "copilot", "kilocode"})
 
 
-# OpenRouter request-time routing variants (docs: guides/routing/model-variants): per-request
-# modifiers valid on ANY model id (":nitro" throughput sort + priority tier, ":floor" price sort +
-# flex tier, ":exacto" quality-first provider sort, ":online" web plugin). Never separate catalog
-# entries — /models lists only the base id. NOT here: ":free", ":batch", ":thinking", ":extended"
-# — those ARE distinct SKUs that appear in /models when they exist, so absence is authoritative.
-_OPENROUTER_VARIANT_SUFFIXES = frozenset({"nitro", "floor", "exacto", "online"})
-
-
 # Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last
 # resort for bare short-alias resolution (after every native-vendor catalog) so they never hijack
 # an alias from the model's native vendor. None currently defined.

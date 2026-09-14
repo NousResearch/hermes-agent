@@ -115,9 +115,21 @@ def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
         return None
 
 
+# Toolsets gated by a multi-path setup (several providers / managed auth) declare no single
+# `requires_env`, so the generic branch would call a missing credential a "system dependency".
+# Name the real fix instead (#9516).
+_TOOLSET_SETUP_HINTS: dict[str, str] = {
+    "image_gen": "(image generation unavailable — check the provider selection and its key or SDK with 'hermes tools')",
+}
+
+
+def _setup_gated(item: dict) -> bool:
+    return bool(item.get("missing_vars") or item.get("env_vars") or item.get("name") in _TOOLSET_SETUP_HINTS)
+
+
 def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
-    """Filter unavailable API-key toolsets to those enabled for the CLI."""
-    api_key_unavailable = [item for item in unavailable if item.get("missing_vars") or item.get("env_vars")]
+    """Filter unavailable setup-gated toolsets (missing key OR setup hint) to those enabled for the CLI."""
+    api_key_unavailable = [item for item in unavailable if _setup_gated(item)]
     enabled_toolsets = _enabled_cli_toolsets_for_doctor()
     return api_key_unavailable if enabled_toolsets is None else [i for i in api_key_unavailable if str(i.get("name") or "") in enabled_toolsets]
 
@@ -445,7 +457,8 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
         (check_ok if status == "ok" else check_warn)(label, detail)
     for item in unavailable:
         env_vars = item.get("missing_vars") or item.get("env_vars") or []
-        check_warn(item["name"], f"(missing {', '.join(env_vars)})" if env_vars else "(system dependency not met)")
+        detail = f"(missing {', '.join(env_vars)})" if env_vars else _TOOLSET_SETUP_HINTS.get(item["name"], "(system dependency not met)")
+        check_warn(item["name"], detail)
     # Only toolsets enabled for the CLI count toward the summary; default-off or
     # disabled toolsets may warn above but must not pollute it.
     api_disabled = _missing_api_key_toolsets_for_summary(unavailable)

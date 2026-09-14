@@ -333,6 +333,7 @@ declare global {
         viewport?: { height: number; width: number }
         webContentsId: number
       }) => Promise<string>
+      savePastedText: (text: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
@@ -356,6 +357,9 @@ declare global {
        *  (HERMES_GUEST_ONBOARDING=1 or --guest-onboarding). Read-only fact the
        *  main process also stamps onto every backend it spawns. */
       guestOnboardingEnabled?: boolean
+      /** Launch flag: skip the first-run film (HERMES_SKIP_INTRO=1 or
+       *  --skip-intro) so a fresh HERMES_HOME lands on the guided chat. */
+      skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
       setDisableF12?: (blocked: boolean) => void

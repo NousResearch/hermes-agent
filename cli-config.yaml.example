@@ -359,6 +359,9 @@ kanban:
 # Working directory behavior:
 #   - CLI (`hermes` command): Uses "." (current directory where you run hermes)
 #   - Gateway/messaging/cron: Uses terminal.cwd here; legacy .env cwd values are deprecated
+cron:
+  catch_up_missed: true  # False skips past-grace recurring misses after planned downtime.
+
 terminal:
   backend: "local"
   cwd: "."  # For local backend: "." = current directory. Ignored for remote backends unless a backend documents otherwise.

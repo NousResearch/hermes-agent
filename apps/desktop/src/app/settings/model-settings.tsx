@@ -1,3 +1,5 @@
+import type { ModelOptionProvider } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -21,13 +23,11 @@ import type {
   AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
-  ModelOptionProvider,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -165,7 +165,9 @@ export function staleAuxAssignments(
     .filter(entry => {
       const p = (entry.provider ?? '').toLowerCase()
 
-      return p && p !== 'auto' && p !== main && !entry.local_endpoint
+      // 'main' is a backend alias meaning "follow the current main provider"
+      // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
+      return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
     })
     .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
 }
@@ -1099,7 +1101,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
+          <SectionHeading icon={Cpu} title={m.moaTitle} />
           <p className="mb-2 text-xs text-muted-foreground">
             Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
             acting model.
@@ -1107,7 +1109,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
+                <SelectValue placeholder={m.moaPreset} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
@@ -1368,7 +1370,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title="Aggregator"
+              title={m.moaAggregator}
             />
           </div>
         </section>

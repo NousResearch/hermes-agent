@@ -1335,3 +1335,49 @@ class TestModelOverrides:
         assert info is not None
         assert "image" in info.input_modalities
         assert info.attachment is True
+
+
+# =========================================================================
+# OpenRouter routing-variant suffixes — catalog lookup across consumers
+# =========================================================================
+
+class TestOpenRouterRoutingVariantCatalogLookup:
+    """models.dev, like OpenRouter's /models, lists only the base id of a routed
+    `:nitro`/`:floor`/`:exacto`/`:online` model, so every catalog consumer resolves the base's
+    metadata for it (#97820). `:free` is a real SKU whose window may differ from its base
+    (z-ai/glm-5.2 1.05M vs :free 256K) — stripping it would over-report the window and fail
+    at the API, so it keeps exact-match semantics and an absent SKU still misses."""
+
+    REGISTRY = {
+        "openrouter": {
+            "id": "openrouter",
+            "models": {
+                "z-ai/glm-5.3-flash": {
+                    "id": "z-ai/glm-5.3-flash",
+                    "limit": {"context": 1310720, "output": 131072},
+                    "tool_call": True,
+                    "reasoning": True,
+                },
+                "z-ai/glm-5.2": {"id": "z-ai/glm-5.2", "limit": {"context": 1048576, "output": 131072}},
+                "z-ai/glm-5.2:free": {"id": "z-ai/glm-5.2:free", "limit": {"context": 256000, "output": 131072}},
+            },
+        },
+    }
+
+    @pytest.mark.parametrize("suffix", ["nitro", "floor", "exacto", "online"])
+    def test_routed_id_matches_base_across_consumers(self, suffix):
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            routed = f"z-ai/glm-5.3-flash:{suffix}"
+            assert lookup_models_dev_context("openrouter", routed) == 1310720
+            base_caps = get_model_capabilities("openrouter", "z-ai/glm-5.3-flash")
+            routed_caps = get_model_capabilities("openrouter", routed)
+            assert routed_caps.context_window == base_caps.context_window == 1310720
+            assert routed_caps.supports_tools == base_caps.supports_tools
+            assert get_model_info("openrouter", routed).context_window == 1310720
+            # Other providers' colon tags keep exact-match semantics.
+            assert lookup_models_dev_context("anthropic", f"claude-x:{suffix}") is None
+
+    def test_real_sku_suffix_is_not_stripped(self):
+        with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
+            assert lookup_models_dev_context("openrouter", "z-ai/glm-5.2:free") == 256000
+            assert lookup_models_dev_context("openrouter", "z-ai/glm-5.3-flash:free") is None

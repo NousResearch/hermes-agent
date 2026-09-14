@@ -12,16 +12,24 @@ import time
 from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from agent.skill_commands import describe_skill_invocation
-from utils import env_float
 from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
-    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql,
+    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
 )
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
+
+
+def _search_slow_ms() -> float:
+    """``sessions.search_slow_ms`` for the served profile (default 1000; 0 logs every call)."""
+    value = routed_sessions_setting("search_slow_ms", "HERMES_SEARCH_SLOW_MS")
+    try:
+        return 1000.0 if value is None or str(value).strip() == "" else float(value)
+    except (TypeError, ValueError):
+        return 1000.0
 
 # Characters FTS5's query grammar rejects outside a quoted phrase (anything missing
 # reaches MATCH raw and raises -> zero results). ``%`` is deliberately excluded: the
@@ -1015,7 +1023,7 @@ class SessionSearchMixin:
             return rows
         finally:
             elapsed_ms = (time.time() - started) * 1000.0
-            if elapsed_ms >= env_float("HERMES_SEARCH_SLOW_MS", 1000.0):
+            if elapsed_ms >= _search_slow_ms():
                 logger.info("slow session search: path=%s elapsed=%.0fms rows=%s query=%r",
                             self._describe_search_path(query), elapsed_ms, len(rows) if rows is not None else "err",
                             query[: 200])

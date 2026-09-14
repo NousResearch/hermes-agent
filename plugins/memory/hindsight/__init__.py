@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextlib
-import contextvars
 import json
 import logging
 import os
@@ -25,12 +24,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, RecallStatus
-from agent.secret_scope import get_secret
+from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
+from agent.secret_scope import UnscopedSecretError, get_secret
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from tools.registry import tool_error
+from utils import read_json_or_empty
 
 from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS, _build_embedded_profile_env,
@@ -63,6 +63,30 @@ def _ensure_client_dependency() -> None:
         raise ImportError(str(exc)) from exc
 
 
+def _scoped_setting(name: str, default: str = "") -> str:
+    """Profile-scoped read of a retain SHAPING value, with the provider's own default on a miss.
+
+    Under ``gateway.multiplex_profiles`` ``os.environ`` holds the DEFAULT profile's ``.env``, so a miss
+    is a miss — never ``os.environ`` (same rule as the daemon's key and base URL in ``embedded.py``).
+    Single-profile deployments are unchanged: with no scope installed ``get_secret`` still reads the
+    process env, where the value IS this profile's own.
+
+    Deliberately narrower than a bare ``get_secret``: this helper is only for presentation shaping
+    (retain source label, speaker prefixes, tags). The isolation-critical values — ``mode``,
+    ``apiKey`` and the ``bankId`` data partition — read through bare ``get_secret`` above and so
+    still fail loud on a scopeless multiplexed read, matching the other scoped credential readers.
+    In ``_load_config`` that read happens FIRST, so a missing scope raises on ``HINDSIGHT_MODE``
+    before this helper is ever reached; swallowing here therefore cannot mask an isolation failure.
+    What it does avoid is losing the whole memory provider (``initialize`` failing, and the manager
+    logging + dropping it) because a speaker prefix could not be resolved.
+    """
+    try:
+        value = get_secret(name, default)
+    except UnscopedSecretError:
+        return default
+    return default if value is None else value
+
+
 def _cloud_api_key(config: dict) -> str:
     return config.get("apiKey") or config.get("api_key") or get_secret("HINDSIGHT_API_KEY", "")
 
@@ -91,9 +115,11 @@ def _maybe_upgrade_client() -> None:
         pass  # packaging not available or other issue — proceed anyway
 
 
-# update_mode='append' capability (Hindsight >= 0.5.0), cached per API URL per
-# process so every provider on the same API shares one /version round trip.
-_append_capability_cache: Dict[str, bool] = {}
+# update_mode='append' capability (Hindsight >= 0.5.0), cached per (API URL, key fingerprint)
+# per process so every provider on the same API+key shares one /version round trip. A failed probe
+# caches False, so the key must include the credential or one profile's 401 would silently downgrade
+# a sibling profile that shares the URL with a valid key.
+_append_capability_cache: Dict[tuple[str, str | None], bool] = {}
 _append_capability_lock = threading.Lock()
 
 
@@ -123,9 +149,12 @@ def _check_api_supports_update_mode_append(api_url: str, api_key: str | None = N
     """
     if not api_url:
         return False
+    from agent.credential_persistence import fingerprint_secret_value
+
+    cache_key = (api_url, fingerprint_secret_value(api_key))
     with _append_capability_lock:
-        if api_url in _append_capability_cache:
-            return _append_capability_cache[api_url]
+        if cache_key in _append_capability_cache:
+            return _append_capability_cache[cache_key]
     version = _fetch_hindsight_api_version(api_url, api_key)
     try:  # missing/invalid version -> unsupported
         from packaging.version import Version
@@ -134,7 +163,7 @@ def _check_api_supports_update_mode_append(api_url: str, api_key: str | None = N
         supported = False
     with _append_capability_lock:
         # A concurrent probe may have filled the cache meanwhile; its answer wins.
-        supported = _append_capability_cache.setdefault(api_url, supported)
+        supported = _append_capability_cache.setdefault(cache_key, supported)
     if supported:
         logger.debug("Hindsight API %s version %s supports update_mode='append'", api_url, version)
     else:
@@ -178,14 +207,6 @@ def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     if future is None:
         raise RuntimeError("Hindsight loop unavailable")
     return future.result(timeout=timeout)
-
-
-def _context_thread(target, name: str) -> threading.Thread:
-    """Daemon thread running *target* in a snapshot of the spawner's contextvars.
-    Threads start with an EMPTY Context; under multiplex_profiles get_secret fails
-    closed without the profile's secret scope + HERMES_HOME override. (The shared
-    loop needs no wrap: run_coroutine_threadsafe inherits the submitter's context.)"""
-    return threading.Thread(target=contextvars.copy_context().run, args=(target,), daemon=True, name=name)
 
 
 RETAIN_SCHEMA = {
@@ -238,9 +259,9 @@ def _load_config() -> dict:
     """$HERMES_HOME/hindsight/config.json (profile-scoped), else ~/.hindsight/config.json
     (legacy, shared), else environment variables."""
     for path in (get_hermes_home() / "hindsight" / "config.json", Path.home() / ".hindsight" / "config.json"):
-        if path.exists():
-            with contextlib.suppress(Exception):
-                return json.loads(path.read_text(encoding="utf-8"))
+        # A corrupt (or empty) file falls through to the next source, as before the dedup.
+        if path.exists() and (data := read_json_or_empty(path)):
+            return data
     # Mode, bank (the data partition), endpoint and retain shaping are per-profile .env values like
     # the key beside them: read through the secret scope so a multiplexed secondary never inherits
     # the default profile's bank/mode. Tuning knobs (timeouts, budget) stay process-global.
@@ -251,9 +272,9 @@ def _load_config() -> dict:
         "idle_timeout": _parse_int_setting(os.environ.get("HINDSIGHT_IDLE_TIMEOUT"), _DEFAULT_IDLE_TIMEOUT),
         "retain_tags": get_secret("HINDSIGHT_RETAIN_TAGS", "") or "",
         "observation_scopes": get_secret("HINDSIGHT_RETAIN_OBSERVATION_SCOPES", "") or "",
-        "retain_source": os.environ.get("HINDSIGHT_RETAIN_SOURCE", _DEFAULT_RETAIN_SOURCE),
-        "retain_user_prefix": os.environ.get("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
-        "retain_assistant_prefix": os.environ.get("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
+        "retain_source": _scoped_setting("HINDSIGHT_RETAIN_SOURCE", _DEFAULT_RETAIN_SOURCE),
+        "retain_user_prefix": _scoped_setting("HINDSIGHT_RETAIN_USER_PREFIX", "User"),
+        "retain_assistant_prefix": _scoped_setting("HINDSIGHT_RETAIN_ASSISTANT_PREFIX", "Assistant"),
         "banks": {"hermes": {"bankId": get_secret("HINDSIGHT_BANK_ID", "") or "hermes",
                              "budget": os.environ.get("HINDSIGHT_BUDGET", "mid"), "enabled": True}},
     }
@@ -384,13 +405,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """Merge *values* into $HERMES_HOME/hindsight/config.json."""
         from utils import atomic_json_write
         config_path = Path(hermes_home) / "hindsight" / "config.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = {}
-        if config_path.exists():
-            with contextlib.suppress(Exception):
-                existing = json.loads(config_path.read_text(encoding="utf-8"))
-        existing.update(values)
-        atomic_json_write(config_path, existing, mode=0o600)
+        atomic_json_write(config_path, {**read_json_or_empty(config_path), **values}, mode=0o600)
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
         """Custom setup wizard — installs only the deps needed for the selected mode."""
@@ -514,7 +529,7 @@ class HindsightMemoryProvider(MemoryProvider):
             return
         # A previous writer may have exited after shutdown(); allow the fresh one to drain.
         self._shutting_down.clear()
-        thread = _context_thread(self._writer_loop, "hindsight-writer")
+        thread = spawn_context_thread(self._writer_loop, name="hindsight-writer")
         self._writer_thread = self._sync_thread = thread
         thread.start()
 
@@ -733,7 +748,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _apply_retain_settings(self, cfg: dict) -> None:
         def _cfg_or_env(key: str, env_var: str, default: str = "") -> Any:
-            return cfg.get(key) or os.environ.get(env_var, default)
+            # The env half is the same per-profile value ``_load_config`` resolves through the scope;
+            # a raw read here handed a multiplexed secondary the DEFAULT profile's retain shaping back.
+            return cfg.get(key) or _scoped_setting(env_var, default)
 
         self._retain_tags = _normalize_retain_tags(_cfg_or_env("retain_tags", "HINDSIGHT_RETAIN_TAGS"))
         self._tags = self._retain_tags or None
@@ -800,7 +817,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 print(f"  ⚠ {msg}", file=sys.stderr, flush=True)
             self._mode = "disabled"
             return
-        _context_thread(self._daemon_start_worker, "hindsight-daemon-start").start()
+        spawn_context_thread(self._daemon_start_worker, name="hindsight-daemon-start").start()
 
     def _daemon_start_worker(self) -> None:
         import traceback
@@ -946,7 +963,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 with self._prefetch_lock:
                     self._prefetch_result, self._prefetch_count = text, count
 
-        self._prefetch_thread = _context_thread(_run, "hindsight-prefetch")
+        self._prefetch_thread = spawn_context_thread(_run, name="hindsight-prefetch")
         self._prefetch_thread.start()
 
     # -- retain ------------------------------------------------------------------

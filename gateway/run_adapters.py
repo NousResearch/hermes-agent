@@ -19,7 +19,7 @@ import weakref as _weakref
 from agent.async_utils import consume_detached_task_result
 from contextvars import Context
 from datetime import datetime, timedelta, timezone
-from gateway.config import Platform, platform_binds_port as _platform_binds_port
+from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, Platform, platform_binds_port as _platform_binds_port
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.restart import is_global_startup_conflict
 from gateway.run_shutdown import _log_suppressed
@@ -826,10 +826,15 @@ class GatewayAdapterLifecycleMixin:
         """Bring up adapters for every non-active profile (multiplex only); returns connected count.
         Each profile connects under its own HERMES_HOME + secret scope; credential/listener collisions
         are refused here — the only point seeing every profile's credentials together."""
-        from gateway.run import (
-            MultiplexConfigError, SecondaryPortBindingConfigError, _multiplex_profile_homes
-        )
+        from gateway.run import MultiplexConfigError, _multiplex_profile_homes
+        from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
+            # ``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+            # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
+            # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
+            with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
+                from gateway.status import write_runtime_status
+                write_runtime_status(served_profiles=[])
             return 0
         try:
             from hermes_cli.profiles import get_active_profile_name
@@ -839,15 +844,14 @@ class GatewayAdapterLifecycleMixin:
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
+        self._served_profile_signatures = {}
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
+            # Preserve changes made while the initial connection is awaiting I/O.
+            self._served_profile_signatures[profile_name] = profile_serve_signature(profile_home)
             try:
                 connected += await self._start_one_profile_adapters(profile_name, profile_home, claimed)
-            except SecondaryPortBindingConfigError as e:
-                logger.warning(
-                    "Skipping secondary profile '%s' due to port-binding config error: %s", profile_name, e,
-                )
             except MultiplexConfigError:
                 raise
             except Exception as e:
@@ -879,6 +883,7 @@ class GatewayAdapterLifecycleMixin:
             from gateway.status import write_runtime_status
             from gateway.pairing import PairingStore
             served = [active] + sorted(name for name, _home in profile_homes if name != active)
+            self._note_served_profiles(profile_homes)
             for name in served:
                 if name and name not in self.pairing_stores:
                     self.pairing_stores[name] = (
@@ -888,10 +893,11 @@ class GatewayAdapterLifecycleMixin:
 
     async def _load_secondary_profile_config(self, profile_name: str, profile_home: "Path"):
         """Hydrate + enter ``profile_home``'s scope once; return its gateway config. Raises
-        ``MultiplexConfigError`` (open dm/group policy) or ``SecondaryPortBindingConfigError`` (the
-        default profile owns the single shared HTTP listener)."""
+        ``MultiplexConfigError`` (open dm/group policy). Port-binding platforms are NOT refused: the
+        default profile owns the single shared listener and a secondary's port-binders are built in
+        shared-listener mode (``/p/<profile>/...``) by ``_start_one_profile_adapters``."""
         from gateway.run import (
-            MultiplexConfigError, SecondaryPortBindingConfigError, _load_gateway_runtime_config,
+            MultiplexConfigError, _load_gateway_config,
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
         from gateway.config import load_gateway_config
@@ -899,7 +905,7 @@ class GatewayAdapterLifecycleMixin:
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_runtime_cfg = _load_gateway_runtime_config()
+            profile_runtime_cfg = _load_gateway_config()
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
             # This profile's `hooks:` block: start() registered before any profile scope existed.
@@ -914,20 +920,6 @@ class GatewayAdapterLifecycleMixin:
                 f"Profile '{profile_name}' enables {violation}. "
                 "Enable GATEWAY_ALLOW_ALL_USERS or the platform allow-all flag "
                 "for that profile, or change dm_policy/group_policy away from 'open'."
-            )
-        port_binding_platforms = sorted(
-            platform.value
-            for platform, platform_config in profile_cfg.platforms.items()
-            if platform_config.enabled and _platform_binds_port(platform.value, platform_config.extra)
-        )
-        if port_binding_platforms:
-            raise SecondaryPortBindingConfigError(
-                f"Profile '{profile_name}' enables port-binding platform(s) "
-                f"{', '.join(port_binding_platforms)}, but gateway.multiplex_profiles is on. The default "
-                f"profile owns the single shared HTTP listener and serves every "
-                f"profile through the /p/{profile_name}/ URL prefix. Remove "
-                f"these platform entries from profile '{profile_name}'s config.yaml "
-                f"or configure them only on the default profile."
             )
         return profile_cfg
 
@@ -975,6 +967,11 @@ class GatewayAdapterLifecycleMixin:
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
+            # Runtime re-scan of a served profile (config/.env changed): only platforms that are not
+            # already live or queued for reconnect are built — never a second poller on the same bot.
+            if platform in profile_map or platform in (
+                    (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}):
+                continue
             # No credential in THIS profile's scope: an adapter would fan inbound across every such profile.
             if multiplex and not _platform_has_bot_credential(platform, platform_config):
                 logger.info(
@@ -984,6 +981,14 @@ class GatewayAdapterLifecycleMixin:
                 continue
             # Relay/WhatsApp are shared process-level ingress under multiplex; a secondary would retry-loop.
             if multiplex and platform in (Platform.RELAY, Platform.WHATSAPP):
+                continue
+            # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second
+            # instance here would fight the default for the port (#100397).
+            if multiplex and platform.value in SHARED_LISTENER_MIRROR_PLATFORMS:
+                logger.info(
+                    "[MULTIPLEX] Profile '%s': %s is served by the default profile's listener at /p/%s/ — "
+                    "not starting a second listener", profile_name, platform.value, profile_name,
+                )
                 continue
             adapter = None
             with _log_suppressed(
@@ -1083,6 +1088,11 @@ class GatewayAdapterLifecycleMixin:
         # Secondary adapters carry their profile so prune paths namespace topic bindings correctly.
         # See #76423.
         adapter._hermes_profile_name = profile_name
+        # A secondary's port-binding adapter never binds: the default profile owns the one shared
+        # listener, which forwards /p/<profile>/<path> to this adapter's app (shared_ingress.py).
+        if self._multiplex_on() and platform.value not in SHARED_LISTENER_MIRROR_PLATFORMS \
+                and _platform_binds_port(platform.value, getattr(getattr(adapter, "config", None), "extra", None)):
+            adapter._shared_listener_profile = profile_name
 
     async def _secondary_reconnect_attempt(self, profile_name: str, platform: Platform):
         """One scoped attempt to rebuild+connect a secondary adapter → ``(adapter, success)``;

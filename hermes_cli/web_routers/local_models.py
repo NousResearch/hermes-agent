@@ -191,7 +191,8 @@ def _router_request(endpoint: Dict[str, Any], path: str, *, timeout: float, payl
 
 
 def _load_config() -> dict:
-    return _quiet(config_mod.load_config, {})
+    """Read-only config for status/garnish paths that must render degraded, never 500."""
+    return _quiet(config_mod.load_config_readonly, {})
 
 
 def _runtime_section() -> dict:

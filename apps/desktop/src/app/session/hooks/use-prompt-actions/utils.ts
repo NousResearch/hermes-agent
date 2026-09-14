@@ -719,6 +719,13 @@ export interface SubmitTextOptions {
    *  renders anywhere — the off-screen path for widget intents. The agent
    *  still receives the text as a normal user turn. */
   displayKind?: 'hidden'
+  /** Per-turn client surface the gateway turns into a model-bound note. The
+   *  HUD sets `hud` from its own store; a GPT-Live delegation passes
+   *  `voice-live` (spoken transcript in, speakable prose out). */
+  surface?: 'voice-live'
+  /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
+   *  model-bound note by the gateway (never persisted, never rendered). */
+  voiceContext?: string
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

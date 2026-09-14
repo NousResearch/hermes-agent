@@ -113,10 +113,18 @@ class GatewayNotificationsMixin:
         if config and getattr(source, "platform", None) == Platform.SLACK and _is_slack_ignored_channel(config, chat_id, adapter):
             logger.info("Skipping Slack platform notice for configured ignored channel %s", chat_id)
             return
-        notice_delivery = (
-            config.get_notice_delivery(source.platform) if config and hasattr(config, "get_notice_delivery")
-            else "public"
-        )
+        # The routed adapter carries ITS profile's ``platforms.<p>`` block; ``self.config`` is the
+        # launch profile's, so a served secondary's ``notice_delivery: private`` would be ignored.
+        adapter_config = getattr(adapter, "config", None)
+        adapter_extra = getattr(adapter_config, "extra", None)
+        if isinstance(adapter_extra, dict) and "notice_delivery" in adapter_extra:
+            from gateway.config import _normalize_choice
+            notice_delivery = _normalize_choice(adapter_extra.get("notice_delivery"), {"public", "private"}, "public")
+        else:
+            notice_delivery = (
+                config.get_notice_delivery(source.platform) if config and hasattr(config, "get_notice_delivery")
+                else "public"
+            )
         metadata = self._thread_metadata_for_source(source)
         if notice_delivery == "private" and getattr(source, "user_id", None):
             with _log_suppressed(
@@ -430,9 +438,10 @@ class GatewayNotificationsMixin:
         profile = str(data.get("profile") or "").strip()
         if profile:
             return profile
+        from gateway.session import profile_from_session_key_namespace
         parts = str(data.get("session_key") or "").split(":")
         if len(parts) >= 5 and parts[0] == "agent" and parts[1] not in ("main", ""):
-            return parts[1]
+            return profile_from_session_key_namespace(parts[1])
         return None
 
     def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
@@ -521,7 +530,7 @@ class GatewayNotificationsMixin:
             default_hint = f" (default: {default})" if default else ""
             _p = getattr(adapter, "typed_command_prefix", "/")
             await target.send(
-                f"⚕ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
+                f"☤ **Update needs your input:**\n\n{prompt_text}{default_hint}\n\n"
                 f"Reply `{_p}approve` (yes) or `{_p}deny` (no), or type your answer directly."
             )
         # Keep the prompt marker on disk until answered so a restarted watcher can re-forward it.
@@ -948,23 +957,26 @@ class GatewayNotificationsMixin:
         """Consume queued watch events and inject them when notifications are enabled.
 
         The queue is ALWAYS drained (so watch events don't rot or requeue-spin) but injection is
-        skipped entirely when ``display.background_process_notifications`` is ``off``.
+        skipped when the OWNING profile's ``display.background_process_notifications`` is ``off``
+        — one shared queue carries every served profile's events, so the gate is evaluated per
+        event inside its profile scope, never once for the ambient (launch) profile.
 
         See #9290.
         """
         from gateway.run import _drain_gateway_watch_events, _format_gateway_process_notification
         watch_events = _drain_gateway_watch_events(completion_queue)
-        if self._load_background_notifications_mode() == "off":
-            return
         for evt in watch_events:
-            synth_text = _format_gateway_process_notification(evt)
-            if not synth_text:
-                continue
-            try:
-                delivered = await self._inject_watch_notification(synth_text, evt)
-            except Exception:
-                logger.exception("Watch notification injection error")
-                delivered = False
+            async with self._completion_event_scope(evt):
+                if self._load_background_notifications_mode() == "off":
+                    continue
+                synth_text = _format_gateway_process_notification(evt)
+                if not synth_text:
+                    continue
+                try:
+                    delivered = await self._inject_watch_notification(synth_text, evt)
+                except Exception:
+                    logger.exception("Watch notification injection error")
+                    delivered = False
             if delivered is False:
                 completion_queue.put(evt)
 
@@ -1633,7 +1645,8 @@ class GatewayNotificationsMixin:
     def _redacted_output_tail(session, limit: int) -> str:
         """Last ``limit`` chars of process output through the secret redactors (unconditional floor)."""
         from gateway.run import _redact_gateway_user_facing_secrets
-        new_output = session.output_buffer[-limit:] if session.output_buffer else ""
+        from tools.ansi_strip import strip_ansi
+        new_output = strip_ansi(session.output_buffer[-limit:]) if session.output_buffer else ""
         if new_output:
             from agent.redact import redact_terminal_output
             new_output = redact_terminal_output(new_output, getattr(session, "command", "") or "")
@@ -1692,19 +1705,26 @@ class GatewayNotificationsMixin:
         }
 
     def _format_process_final_message(self, session_id: str, session, notify_mode: str) -> str:
+        """Human-facing completion message. Every mode shares the one-line status header; the
+        raw-output modes (all/result/error) append the bounded output tail under it instead of the
+        old bracketed ``[Background process proc_… finished~ …]`` debug wrapper (#54266)."""
         from gateway.run import _format_concise_process_notification, _redact_gateway_user_facing_secrets
         new_output = self._redacted_output_tail(session, 1000)
-        if notify_mode != "concise":
-            return (
-                f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                f"Here's the final output:\n{new_output}]"
-            )
         _started = getattr(session, "started_at", None)
         _dur = max(0.0, time.time() - _started) if isinstance(_started, (int, float)) else None
-        return _format_concise_process_notification(
-            session_id, _redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""),
-            session.exit_code, new_output, duration_seconds=_dur,
-        )
+        command = _redact_gateway_user_facing_secrets(getattr(session, "command", "") or "")
+        if notify_mode == "concise":
+            return _format_concise_process_notification(session_id, command, session.exit_code, new_output,
+                                                        duration_seconds=_dur)
+        header = _format_concise_process_notification(session_id, command, session.exit_code, "", duration_seconds=_dur)
+        return f"{header}\n\nFinal output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
+
+    def _format_process_running_message(self, session) -> str:
+        from gateway.run import _redact_gateway_user_facing_secrets, _shorten_command_for_display
+        new_output = self._redacted_output_tail(session, 500)
+        short_cmd = _shorten_command_for_display(_redact_gateway_user_facing_secrets(getattr(session, "command", "") or ""))
+        header = "⏳ Background task still running" + (f" — `{short_cmd}`" if short_cmd else "")
+        return f"{header}\n\nRecent output:\n```\n{new_output.strip()}\n```" if new_output.strip() else header
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """Poll a background process and push updates until it exits. Mode
@@ -1719,7 +1739,10 @@ class GatewayNotificationsMixin:
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
         agent_notify = watcher.get("notify_on_complete", False)
-        notify_mode = self._load_background_notifications_mode()
+        # The mode belongs to the profile that started the process; recovered watchers run in the
+        # root context, so resolve it under the owning profile's scope (no-op for the default).
+        async with self._completion_event_scope(watcher):
+            notify_mode = self._load_background_notifications_mode()
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
         silent = notify_mode == "off" and not agent_notify
@@ -1768,9 +1791,7 @@ class GatewayNotificationsMixin:
             elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output — deliver a status update (only in "all" mode; agent_notify watchers
                 # only care about completion).
-                new_output = self._redacted_output_tail(session, 500)
                 await self._send_watcher_message(
-                    platform_name, chat_id, thread_id,
-                    f"[Background process {session_id} is still running~ New output:\n{new_output}]", watcher,
+                    platform_name, chat_id, thread_id, self._format_process_running_message(session), watcher,
                 )
         logger.debug("Process watcher ended%s: %s", " (silent)" if silent else "", session_id)

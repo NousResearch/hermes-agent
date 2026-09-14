@@ -26,6 +26,11 @@ export interface ChatBarState {
     quickModels?: QuickModelOption[]
     /** Reused status-bar dropdown (built with gateway + selectModel upstream). */
     modelMenuContent?: ReactNode
+    /** The reasoning pill's dropdown (same host + controller as the model menu). */
+    reasoningMenuContent?: ReactNode
+    /** False when the catalog says the active model has no reasoning control;
+     *  undefined while unknown (loading) so the pill stays put. */
+    supportsReasoning?: boolean
   }
   tools: { enabled: boolean; label: string; suggestions?: ContextSuggestion[] }
   voice: { enabled: boolean; active: boolean }
@@ -49,12 +54,15 @@ export interface ChatBarProps {
   /** Pasted GitHub PR-comment deep link → structured review attachment.
    *  Returns true when the paste was consumed as an attachment. */
   onAttachPrCommentUrl?: (url: string) => boolean
+  onAttachPastedText?: (text: string) => Promise<boolean> | boolean
   onPasteClipboardImage?: (opts?: { silent?: boolean }) => Promise<boolean> | void
   onPickFiles?: () => void
   onPickFolders?: () => void
   onPickImages?: () => void
   onRemoveAttachment?: (id: string) => void
   onSteer?: (text: string) => Promise<boolean> | boolean
+  /** Delivers a hidden note to the model mid-turn with no user turn (gateway session.steer). */
+  onSteerHidden?: (text: string) => Promise<boolean> | boolean
   onSubmit: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }

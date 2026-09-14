@@ -61,3 +61,9 @@ runtime options.
 
 With no user mounts or mount-like arguments, isolated `execute_code` can run under
 unattended deny policy. Explicit command `approvals.deny` rules still apply.
+
+On Apple Container CLI 1.x and newer, Hermes adds `--init` so the container's
+init process forwards shutdown signals and reaps child processes. Older or
+unrecognized CLI versions retain the previous startup flags. Normal cleanup
+stops and deletes the task container; this does not recover VMs left behind
+when the owning Hermes process is abruptly killed.

@@ -18,6 +18,7 @@ import logging
 import os
 import platform
 import posixpath
+import re
 import shutil
 import subprocess
 import uuid
@@ -133,6 +134,39 @@ def _ensure_container_available() -> str:
         )
 
     return exe
+
+
+_CLI_VERSION_CACHE: dict = {}
+
+
+def _container_cli_version(exe: str) -> Optional[tuple]:
+    """Parsed ``container --version`` (e.g. ``(1, 4, 1)``), cached per executable; None if unknown."""
+    if exe in _CLI_VERSION_CACHE:
+        return _CLI_VERSION_CACHE[exe]
+    version = None
+    try:
+        result = subprocess.run(
+            [exe, "--version"], capture_output=True, text=True, timeout=5
+        )
+        out = result.stdout if result.returncode == 0 else ""
+        match = re.search(r"version\s+(\d+)\.(\d+)(?:\.(\d+))?", out)
+        if match:
+            version = tuple(int(part) for part in match.groups() if part is not None)
+    except Exception:
+        version = None
+    _CLI_VERSION_CACHE[exe] = version
+    return version
+
+
+def _supports_init_process(exe: str) -> bool:
+    """Whether ``container run --init`` (signal-forwarding init as PID 1) is available: CLI 1.x+.
+
+    ``sleep infinity`` as PID 1 does not handle SIGTERM, so normal stop can
+    wait for the grace period and escalate to a kill. Unknown or pre-1.0
+    versions keep the previous command line.
+    """
+    version = _container_cli_version(exe)
+    return bool(version) and version[0] >= 1
 
 
 def query_system_resources() -> dict:
@@ -368,6 +402,9 @@ class AppleContainerEnvironment(BaseEnvironment):
             "--tmpfs", "/var/tmp",
             "--tmpfs", "/run",
         ]
+        # Signal-forwarding init as PID 1 so stops don't wait out the grace period (CLI 1.x+).
+        if _supports_init_process(self._exe):
+            run_cmd.append("--init")
 
         # Persistent workspace via bind mount, or ephemeral tmpfs
         if self._persistent:

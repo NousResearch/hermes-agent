@@ -378,3 +378,62 @@ class TestRoundTripUnderBypass:
         finally:
             approval_module.unregister_gateway_notify(isolated_state)
         assert guardian == [KUBECTL, KUBECTL] and notified == [True, True]
+
+
+class TestRoundTripObservedOnlyByANonCommandApprovalGate:
+    """The human interval carries no guarded COMMAND at all — the only approval activity is a plugin
+    ``pre_tool_call`` escalation or a protected-write gate, both of which enter ``_run_approval_gate``
+    directly, bypassing the three command entrypoints (PR #106779 review, F-002). The shared gate has
+    to observe the transition itself, or the superseded smart grant survives the interval and revives.
+    """
+
+    def test_plugin_escalation_observes_the_interval(self, live_config, isolated_state, guardian, monkeypatch):
+        seen = _cli_prompt(monkeypatch, "session", "once", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+        assert _rule_key("smart") in approval_module._session_approved[isolated_state]
+
+        live_config("human")
+        # The ONLY gated action in the human interval: a plugin escalation for an unrelated tool.
+        assert approval_module.request_tool_approval("write_file", "plugin rule")["approved"] is True
+        assert _rule_key("smart") not in approval_module._session_approved.get(isolated_state, set()), \
+            "the plugin approval gate observed the smart -> human transition"
+
+        live_config("smart")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert guardian == [KUBECTL, KUBECTL], "the restored smart policy consulted the guardian again"
+        assert seen == [True, True, True]
+
+    def test_plugin_escalation_observes_the_interval_for_a_permanent_grant(
+            self, live_config, isolated_state, guardian, monkeypatch):
+        seen = _cli_prompt(monkeypatch, "always", "once", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+        assert _rule_key("smart") in approval_module._permanent_approved
+
+        live_config("human")
+        assert approval_module.request_tool_approval("write_file", "plugin rule")["approved"] is True
+        assert _rule_key("smart") not in approval_module._permanent_approved, \
+            "the plugin gate's observation dropped the persisted smart Always"
+        assert _rule_key("smart") not in (yaml.safe_load(live_config.path.read_text(encoding="utf-8")).get(
+            "command_allowlist") or []), "and removed it from config.yaml"
+
+        live_config("smart")
+        _simulate_restart(monkeypatch)
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert guardian == [KUBECTL, KUBECTL] and seen == [True, True, True]
+
+    def test_protected_write_gate_observes_the_interval(self, live_config, isolated_state, guardian, monkeypatch, tmp_path):
+        """The file-tool SSH-config write gate is the other direct caller of the shared gate."""
+        from tools import file_tools_write_guards
+
+        seen = _cli_prompt(monkeypatch, "session", "once", "deny")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is True
+
+        live_config("human")
+        ssh_config = str(tmp_path / ".ssh" / "config")
+        monkeypatch.setattr("agent.file_safety.is_write_approval_required", lambda p: p == ssh_config)
+        assert file_tools_write_guards._check_approval_required_write([ssh_config]) is None
+
+        live_config("smart")
+        assert check_all_command_guards(KUBECTL, "local")["approved"] is False
+        assert _rule_key("smart") not in approval_module._session_approved.get(isolated_state, set())
+        assert guardian == [KUBECTL, KUBECTL] and seen == [True, True, True]

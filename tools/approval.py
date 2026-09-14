@@ -500,6 +500,27 @@ def _forget_permanent_allowlist_entry(key: str) -> None:
         logger.warning("Could not revoke superseded allowlist entry: %s", e)
 
 
+def effective_permanent_allowlist() -> set:
+    """The ``command_allowlist`` a fresh process WOULD end up with, computed without side effects.
+
+    Same reconciliation :func:`load_permanent_allowlist` performs — the persisted list minus every
+    grant superseded by the current review policies — but it reads the rules with ``observe=False``,
+    touches no process state and writes nothing. For read-only diagnostics (``hermes approvals
+    test``); the runtime uses the loader, because there the revocation is the point.
+    """
+    try:
+        patterns = _read_permanent_allowlist()
+    except Exception as e:
+        logger.warning("Failed to read permanent allowlist: %s", e)
+        return set()
+    try:
+        from tools.approval_floors import _approval_required_rules
+        superseded = {rule.superseded_key for rule in _approval_required_rules(observe=False)}
+    except Exception:
+        superseded = set()
+    return patterns - superseded
+
+
 # --- Bypass check (yolo / mode=off) ---------------------------------------------------------------------------------
 
 def is_approval_bypass_active_for_session(session_key: str) -> bool:
@@ -953,6 +974,13 @@ def _run_approval_gate(
     ``ctx.block_message(subject, noun, advice)`` unless the caller passes an explicit
     ``*_deny_message`` (the file-tool write gates word their own).
     """
+    # A review-policy transition is a revocation, and the config is live-reloaded, so the observation
+    # must happen on EVERY approval entrypoint — not just the command gates. A plugin escalation or a
+    # protected-write approval is activity by the same human in the same process: if the only gated
+    # action during a ``smart -> human`` interval is one of those, an unobserved transition leaves the
+    # superseded smart grant alive to revive on the way back. First statement, above the yolo /
+    # ``mode: off`` bypass and the session cache, for the same reason it is first in the command gates.
+    _observe_approval_required_policies()
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
     # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
     # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,

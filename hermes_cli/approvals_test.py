@@ -35,12 +35,14 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
     """
     import tools.approval as approval
     from tools import approval_context, approval_detection, approval_floors
-    # Sync config-persisted "always" patterns so the allowlist check below sees what the runtime
-    # would see (load is read-only).
+    # The effective allowlist a fresh runtime would hold (persisted list minus grants the current
+    # review policies supersede), computed WITHOUT loading it into this process or writing config:
+    # a diagnostic advertised for automation must not be a runtime event (see
+    # approval.effective_permanent_allowlist / _approval_required_rules(observe=False)).
     try:
-        approval.load_permanent_allowlist()
+        allowlist = approval.effective_permanent_allowlist()
     except Exception:
-        pass
+        allowlist = set()
 
     variants = list(approval_detection._command_detection_variants(command))
 
@@ -102,8 +104,8 @@ def evaluate_command(command: str, env_type: str = "local") -> dict:
 
     # 6. Permanent command_allowlist — unless an approvals.command_approval_required rule matches
     #    (the rule is the more specific statement of intent and wins at runtime too).
-    required = approval_floors._match_approval_required_rule(command)
-    if required is None and approval_floors._command_matches_permanent_allowlist(command):
+    required = approval_floors._match_approval_required_rule(command, observe=False)
+    if required is None and approval_floors._matches_allowlist_patterns(command, allowlist):
         return result("allow", detail="matches command_allowlist in config.yaml (permanently approved)")
 
     # 7. Configured approval-required rule → would prompt (human, or the smart guardian first).

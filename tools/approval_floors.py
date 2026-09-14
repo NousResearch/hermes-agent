@@ -89,10 +89,15 @@ class _RequiredRule:
         return f"matches approval-required rule '{self.description}'"
 
 
-def _approval_required_rules() -> list[_RequiredRule]:
+def _approval_required_rules(observe: bool = True) -> list[_RequiredRule]:
     """Parse ``approvals.command_approval_required``: a string entry is a glob reviewed by a human;
     a dict entry is ``{pattern, description?, review?: human|smart}``. Malformed entries are
-    skipped; an unknown ``review`` falls back to ``human`` (the strict choice) with a warning."""
+    skipped; an unknown ``review`` falls back to ``human`` (the strict choice) with a warning.
+
+    ``observe=False`` parses ONLY — no transition observation, so no revocation, no process-state
+    mutation and no config write. It exists for the read-only diagnostic (``hermes approvals test``),
+    which must report the effective verdict without becoming a runtime event; every runtime caller
+    keeps the default."""
     raw = _ctx._get_approval_config().get("command_approval_required") or []
     if isinstance(raw, (str, dict)):
         raw = [raw]
@@ -121,7 +126,8 @@ def _approval_required_rules() -> list[_RequiredRule]:
                                pattern, review_raw)
             review = "human"
         rules.append(_RequiredRule(pattern, str(description).strip() or pattern, review))
-    _observe_review_policies(rules)
+    if observe:
+        _observe_review_policies(rules)
     return rules
 
 
@@ -150,11 +156,12 @@ def _observe_approval_required_policies() -> None:
         pass
 
 
-def _match_approval_required_rule(command: str) -> _RequiredRule | None:
+def _match_approval_required_rule(command: str, observe: bool = True) -> _RequiredRule | None:
     """First configured approval-required rule matching the command (config order), or None.
-    A config read failure means no rules — the built-in detectors still run."""
+    A config read failure means no rules — the built-in detectors still run. ``observe=False`` is
+    the read-only form (see :func:`_approval_required_rules`)."""
     try:
-        rules = _approval_required_rules()
+        rules = _approval_required_rules(observe=observe)
     except Exception:
         return None
     for rule in rules:
@@ -306,20 +313,27 @@ def _has_allowlist_shell_operator(command: str) -> bool:
     return has_reinterpretable and bool(_REINTERPRETED_ARGUMENT_RE.search(command))
 
 
-def _command_matches_permanent_allowlist(command: str) -> bool:
-    """True when command_allowlist holds this exact command text or a matching
-    glob. Permanent approvals historically store dangerous-pattern keys such as
-    ``recursive delete``; manual entries are command text, possibly with
-    shell-style wildcards like ``podman *``."""
-    from tools import approval as _a
+def _matches_allowlist_patterns(command: str, patterns) -> bool:
+    """True when *command* is held by one of *patterns* (exact text or a shell-style glob).
+    Pure: the caller supplies the set, so the read-only diagnostic can evaluate an effective
+    allowlist without touching the live one."""
     command = (command or "").strip()
     if not command or _has_allowlist_shell_operator(command):
         return False
-    with _a._lock:
-        patterns = tuple(_a._permanent_set())
     for pattern in patterns:
         pattern = pattern.strip() if isinstance(pattern, str) else ""
         if pattern and (command == pattern or (any(ch in pattern for ch in "*?[")
                                                and fnmatch.fnmatchcase(command, pattern))):
             return True
     return False
+
+
+def _command_matches_permanent_allowlist(command: str) -> bool:
+    """True when command_allowlist holds this exact command text or a matching
+    glob. Permanent approvals historically store dangerous-pattern keys such as
+    ``recursive delete``; manual entries are command text, possibly with
+    shell-style wildcards like ``podman *``."""
+    from tools import approval as _a
+    with _a._lock:
+        patterns = tuple(_a._permanent_set())
+    return _matches_allowlist_patterns(command, patterns)

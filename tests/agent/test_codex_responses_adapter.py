@@ -620,6 +620,20 @@ def test_issuer_kind_is_canonical_across_trailing_slash_and_host_case():
     assert _classify_responses_issuer(base_url="https://other/v1") != canonical
 
 
+def test_legacy_raw_endpoint_stamp_replays_on_canonical_issuer():
+    # WHY: items persisted before issuer canonicalisation carry the raw ``agent.base_url`` (trailing slash,
+    # host case); they must still replay on the same endpoint instead of being dropped as foreign.
+    legacy = {"type": "reasoning", "encrypted_content": "legacy-blob", "_issuer_kind": "other:https://H/v1/"}
+    items = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="other:https://h/v1", current_issuer_model="gpt-5.6-sol"
+    )
+    assert [i["encrypted_content"] for i in items if i.get("type") == "reasoning"] == ["legacy-blob"]
+    foreign = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="other:https://other/v1", current_issuer_model="gpt-5.6-sol"
+    )
+    assert not any(i.get("type") == "reasoning" for i in foreign)
+
+
 def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
     kwargs = _preflight_codex_api_kwargs(
         {

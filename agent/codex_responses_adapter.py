@@ -11,10 +11,10 @@ import unicodedata
 import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
-from urllib.parse import urlsplit, urlunsplit
 
 from agent.message_sanitization import deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from hermes_cli.route_identity import normalize_route_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,15 @@ def _classify_responses_issuer(
     # The openai SDK appends a trailing slash to ``client.base_url`` and hosts are case-insensitive, so the
     # aux adapter and the main transport must canonicalise the same endpoint to one kind or aux calls drop
     # every main-minted blob.
-    parts = urlsplit(str(base_url).strip().rstrip("/"))
-    return f"other:{urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, parts.fragment))}"
+    return f"other:{normalize_route_base_url(str(base_url).strip())}"
+
+
+def _canonical_issuer_kind(kind: Any) -> Any:
+    """Canonicalise a persisted ``other:<url>`` issuer stamp. Items stamped before canonicalisation carry the raw
+    ``agent.base_url`` (trailing slash / host case) and must still replay on the same endpoint."""
+    if isinstance(kind, str) and kind.startswith("other:"):
+        return _classify_responses_issuer(base_url=kind[len("other:"):])
+    return kind
 
 
 # Per-process throttle for the cross-issuer skip warning.
@@ -367,12 +374,12 @@ def _replay_reasoning_items(
         item_id = ri.get("id")
         if (item_id and item_id in seen_item_ids) or (ri.get("type") == "compaction" and not native_compaction_eligible):
             continue
-        item_issuer = ri.get("_issuer_kind")
+        item_issuer = _canonical_issuer_kind(ri.get("_issuer_kind"))
         item_model = ri.get("_issuer_model")
         foreign_issuer = current_issuer_kind is not None and item_issuer is not None and item_issuer != current_issuer_kind
         # No model stamp → trust the endpoint stamp. Native compaction checkpoints and reasoning persisted
-        # before model stamping exist carry none; dropping them would erase every existing session's
-        # context once. A wrong guess is caught by the invalid_encrypted_content 400 classifier.
+        # before model stamping carry none; dropping them would erase every existing session's context
+        # once. A wrong guess is caught by the invalid_encrypted_content 400 classifier.
         foreign_model = (
             current_issuer_model is not None and item_model is not None and item_model != current_issuer_model
         )
@@ -460,8 +467,8 @@ def _chat_messages_to_responses_input(
     ``replay_encrypted_reasoning``: per-session kill switch, threaded False by
     ``AIAgent._disable_codex_reasoning_replay`` after an ``invalid_encrypted_content`` 400.
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
-    ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; foreign-stamped items drop, as do
-    endpoint-stamped legacy items without model provenance when the current model is known.
+    ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; items stamped by another issuer or
+    model drop. Legacy items carrying only an endpoint stamp replay on a matching issuer.
     ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
     so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:

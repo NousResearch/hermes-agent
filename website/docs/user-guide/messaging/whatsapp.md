@@ -173,14 +173,17 @@ Hermes supports voice on WhatsApp:
 
 - **Incoming:** Voice messages (`.ogg` opus) are automatically transcribed using the configured STT provider: local `faster-whisper`, Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`)
 - **Outgoing:** TTS responses are sent as MP3 audio file attachments
-- Agent responses are prefixed with "⚕ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
+- Agent responses are prefixed with "☤ **Hermes Agent**" by default. You can customize or disable this in `config.yaml`:
 
 ```yaml
 # ~/.hermes/config.yaml
 whatsapp:
   reply_prefix: ""                          # Empty string disables the header
   # reply_prefix: "🤖 *My Bot*\n──────\n"  # Custom prefix (supports \n for newlines)
+  send_read_receipts: false                 # Mark accepted inbound messages as read (blue ticks)
 ```
+
+When `send_read_receipts` is `true`, the adapter marks policy-accepted inbound messages as read after DM/group/mention filtering passes. Rejected messages (e.g., from non-allowlisted senders) are not marked read. Disabled by default for privacy. Changing this setting automatically restarts the bridge subprocess on the next connection.
 
 ---
 
@@ -209,6 +212,16 @@ Code blocks and inline code are preserved as-is since WhatsApp supports triple-b
 
 When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
 
+### Native Polls, Clarify-as-Poll, and Locations
+
+The Baileys-bridge adapter (bot mode) supports several native WhatsApp message types:
+
+- **Polls** — the agent can send a native WhatsApp poll (question + options) via the bridge's `/send-poll` endpoint. Poll votes flow back into the conversation.
+- **Clarify questions as polls** — when the agent asks a multiple-choice clarify question, it's rendered as a native single-select poll; tapping an option answers the question. If the poll fails to send, the adapter falls back to a plain text question. Approval prompts are **never** mapped onto polls — polls are only used for genuine multiple-choice clarifies.
+- **Location pins** — the agent can send a native location pin (latitude/longitude, optional name/address) via `/send-location`, and incoming shared locations (including live locations) are delivered to the agent as location messages.
+
+All of this works out of the box in bot (Baileys) mode; no configuration needed.
+
 ### Message Batching (Debounce)
 
 WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **5s**, extended to **10s** for very long fragments). Tune via `config.yaml`:
@@ -224,6 +237,10 @@ gateway:
 ```
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
+
+### Quoted Replies
+
+Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.
 
 ---
 

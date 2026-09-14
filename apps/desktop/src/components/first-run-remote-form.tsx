@@ -7,6 +7,7 @@ import type { DesktopConnectionProbeResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { AlertCircle, Check, Loader2, LogIn } from '@/lib/icons'
+import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 
 type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
@@ -36,7 +37,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
   const probeSeq = useRef(0)
   const testSeq = useRef(0)
 
-  const trimmedUrl = remoteUrl.trim()
+  const trimmedUrl = coerceRemoteUrlScheme(remoteUrl)
 
   const invalidateTest = useCallback(() => {
     testSeq.current += 1
@@ -222,7 +223,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-background/90 p-4 backdrop-blur-md">
+    <div className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-background/90 p-4 backdrop-blur-md">
       <div className="flex w-full max-w-xl flex-col rounded-xl border border-(--stroke-nous) bg-card p-8 shadow-nous">
         <div className="flex items-start gap-4">
           <BrandMark className="size-11 shrink-0" />

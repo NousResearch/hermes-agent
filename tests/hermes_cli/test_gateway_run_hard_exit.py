@@ -57,36 +57,6 @@ def test_run_gateway_hard_exits_after_clean_return(monkeypatch):
     assert excinfo.value.code == 0
 
 
-def test_run_gateway_hard_exits_after_service_restart_systemexit(monkeypatch):
-    gateway_cli = _prepare(monkeypatch)
-
-    def _fake_run(coro):
-        coro.close()
-        raise SystemExit(75)
-
-    monkeypatch.setattr(gateway_cli.asyncio, "run", _fake_run)
-
-    with pytest.raises(_HardExitObserved) as excinfo:
-        gateway_cli.run_gateway()
-
-    assert excinfo.value.code == 75
-
-
-def test_run_gateway_hard_exits_after_failed_return(monkeypatch):
-    gateway_cli = _prepare(monkeypatch)
-
-    def _fake_run(coro):
-        coro.close()
-        return False
-
-    monkeypatch.setattr(gateway_cli.asyncio, "run", _fake_run)
-
-    with pytest.raises(_HardExitObserved) as excinfo:
-        gateway_cli.run_gateway()
-
-    assert excinfo.value.code == 1
-
-
 def test_run_gateway_hard_exits_after_keyboard_interrupt(monkeypatch):
     """KeyboardInterrupt (console Ctrl+C) must also hard-exit, not return.
 

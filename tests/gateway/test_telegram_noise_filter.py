@@ -14,22 +14,14 @@ from gateway.run import (
 
 # Every human-facing chat surface that must receive noise-filtered,
 # secret-redacted, provider-error-sanitized output (not just Telegram).
+# The filtering functions under test (_prepare_gateway_status_message /
+# _sanitize_gateway_final_response) are platform-agnostic shared logic in
+# gateway.run — a representative platform subset is sufficient; per-platform
+# copies were near-duplicate parametrizations.
 CHAT_PLATFORMS = [
     "telegram",
-    "whatsapp",
-    "discord",
     "slack",
-    "signal",
-    "matrix",
-    "mattermost",
-    "dingtalk",
     "feishu",
-    "wecom",
-    "weixin",
-    "bluebubbles",
-    "qqbot",
-    "homeassistant",
-    "sms",
 ]
 
 NOISY_STATUS_MESSAGES = [
@@ -185,7 +177,7 @@ def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, mes
     assert _prepare_gateway_status_message(platform, "warn", message) == message
 
 
-@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+@pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_provider_error(platform):
     """Provider-error bodies carrying secrets must never reach chat users.
 
@@ -207,7 +199,7 @@ def test_chat_gateways_redact_secret_in_provider_error(platform):
     assert "provider" in sanitized.lower()
 
 
-@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+@pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_non_error_body(platform):
     """Secrets must be redacted even when no provider-error rewrite fires.
 
@@ -230,10 +222,8 @@ def test_chat_gateways_redact_secret_in_non_error_body(platform):
 
     assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
     assert "sk-ABCDEF" not in sanitized
-    # The secret body is gone — assert the invariant, not the specific mask
-    # marker. The outbound redactor delegates to redact_sensitive_text (#23810),
-    # which masks as `***`/partial; the local pattern fallback uses `[REDACTED]`.
-    assert "***" in sanitized or "[REDACTED]" in sanitized
+    # redact_for_egress masks a prefix token through _mask_token: `***` or a head...tail stub.
+    assert "***" in sanitized
     # Non-secret prose is preserved — redaction is surgical, not a wholesale
     # rewrite, on bodies that are not provider-error envelopes.
     assert "here is the example request you asked for" in sanitized

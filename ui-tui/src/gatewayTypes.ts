@@ -1,25 +1,30 @@
-import type { BillingBlock, UsageModelData } from '@hermes/shared/billing'
+import type { UsageModelData } from '@hermes/shared/billing'
+import type {
+  GatewayEvent,
+  GatewayEventName,
+  GatewayTranscriptMessage,
+  SessionInflightTurn,
+  Usage
+} from '@hermes/shared/gateway-events'
 import type { HermesSkin } from '@hermes/shared/skin'
 
-import type { SessionInfo, SlashCategory, SubagentStatus, Usage } from './types.js'
+import type { SessionInfo, SlashCategory } from './types.js'
 
 /** The cross-surface skin contract (canonical shape in `@hermes/shared`).
  *  Includes the paired light_colors/dark_colors overlays from #20379. */
 export type GatewaySkin = HermesSkin
 
+/** Distributive form of the shared `GatewayEvent<K>` so `switch (ev.type)`
+ *  narrows `ev.payload` per case (the generic-defaulted interface does not). */
+export type AnyGatewayEvent = { [K in GatewayEventName]: GatewayEvent<K> }[GatewayEventName]
+
 export interface GatewayCompletionItem {
   display: string
+  /** Completion class, set by the gateway. `skill` covers skill commands and
+   *  skill bundles — the only kind offered for an inline `/skill` reference. */
+  kind?: string
   meta?: string
   text: string
-}
-
-export interface GatewayTranscriptMessage {
-  context?: string
-  display_kind?: string
-  display_metadata?: Record<string, unknown>
-  name?: string
-  role: 'assistant' | 'system' | 'tool' | 'user'
-  text?: string
 }
 
 // ── Commands / completion ────────────────────────────────────────────
@@ -64,27 +69,30 @@ export type {
   UsageModelData
 } from '@hermes/shared/billing'
 
-export type CommandDispatchResponse =
-  | { output?: string; type: 'exec' | 'plugin' }
-  | { target: string; type: 'alias' }
-  | { message?: string; name: string; type: 'skill' }
-  | { message: string; notice?: string; type: 'send' }
-  | { message: string; notice?: string; type: 'prefill' }
-
 // ── Config ───────────────────────────────────────────────────────────
 
 export interface ConfigDisplayConfig {
   battery?: boolean
   bell_on_complete?: boolean
+  bell_on_prompt?: boolean
   busy_input_mode?: string
   details_mode?: string
+  /** Focus view (/focus) — display-only reduced-output mode. */
+  focus_view?: boolean
   inline_diffs?: boolean
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean
+  /** CLI/TUI status-bar field visibility filter (shared with the classic
+   *  CLI bar — see display.status_bar.fields in configuration docs).
+   *  Raw YAML: callers must runtime-validate entries. */
+  status_bar?: { fields?: unknown }
   streaming?: boolean
   thinking_mode?: string
+  /** Show [HH:MM] timestamps on transcript rows — same key the classic CLI
+   *  honors on its user/assistant labels (#41531). */
+  timestamps?: boolean
   /**
    * Nudge the user toward the /agents spawn-tree dashboard the first time a
    * turn starts delegating, via a one-time transient activity hint.  Opens
@@ -108,13 +116,20 @@ export interface ConfigDisplayConfig {
 }
 
 export interface ConfigVoiceConfig {
-  // Raw `yaml.safe_load()` value from config; may be non-string if hand-edited.
-  // Callers must normalize/validate at runtime (parseVoiceRecordKey()).
+  // Raw `yaml.safe_load()` values from config may be non-string if hand-edited.
+  // Callers must normalize/validate at runtime.
   record_key?: unknown
+  submit_mode?: unknown
+}
+
+export interface ConfigApprovalsConfig {
+  // Raw config value: only the explicit boolean false disables the safety gate.
+  destructive_slash_confirm?: unknown
 }
 
 export interface ConfigFullResponse {
   config?: {
+    approvals?: ConfigApprovalsConfig
     display?: ConfigDisplayConfig
     voice?: ConfigVoiceConfig
     paste_collapse_threshold?: number
@@ -139,6 +154,9 @@ export interface ConfigSetResponse {
   confirm_message?: string
   confirm_required?: boolean
   credential_warning?: string
+  // A model pick made mid-turn is queued and applied at the next turn start,
+  // not live yet — the handler says "next turn" instead of "model → X".
+  deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
   value?: string
@@ -163,18 +181,6 @@ export interface SessionCreateResponse {
   session_id: string
 }
 
-export interface SessionResumeResponse {
-  inflight?: null | SessionInflightTurn
-  info?: SessionInfo
-  message_count?: number
-  messages: GatewayTranscriptMessage[]
-  resumed?: string
-  running?: boolean
-  session_id: string
-  started_at?: number
-  status?: LiveSessionStatus
-}
-
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
 
 export interface SessionActiveItem {
@@ -194,12 +200,6 @@ export interface SessionActiveListResponse {
   sessions?: SessionActiveItem[]
 }
 
-export interface SessionInflightTurn {
-  assistant?: string
-  streaming?: boolean
-  user?: string
-}
-
 export interface SessionActivateResponse {
   inflight?: null | SessionInflightTurn
   info?: SessionInfo
@@ -210,19 +210,6 @@ export interface SessionActivateResponse {
   session_key?: string
   started_at?: number
   status?: LiveSessionStatus
-}
-
-export interface SessionListItem {
-  id: string
-  message_count: number
-  preview: string
-  source?: string
-  started_at: number
-  title: string
-}
-
-export interface SessionListResponse {
-  sessions?: SessionListItem[]
 }
 
 export interface SessionDeleteResponse {
@@ -252,12 +239,17 @@ export interface SessionUndoResponse {
 
 export interface SessionUsageResponse {
   active_subagents?: number
+  avg_latency_s?: number
+  avg_tps?: number
+  cache_hit_pct?: number
   cache_read?: number
   cache_write?: number
   calls?: number
   compressions?: number
   context_max?: number
   context_percent?: number
+  context_estimated?: boolean
+  context_source?: string
   context_used?: number
   cost_status?: 'estimated' | 'exact'
   cost_usd?: number
@@ -315,6 +307,9 @@ export interface SessionSteerResponse {
 
 export interface PromptSubmitResponse {
   ok?: boolean
+  /** Set when the submitted text was a bare voice stop phrase consumed
+   *  server-side to end the voice chat instead of starting a turn. */
+  voice_stopped?: boolean
 }
 
 export interface BackgroundStartResponse {
@@ -386,6 +381,7 @@ export interface VoiceToggleResponse {
   details?: string
   enabled?: boolean
   record_key?: string
+  stop_hint?: string
   stt_available?: boolean
   tts?: boolean
 }
@@ -393,6 +389,38 @@ export interface VoiceToggleResponse {
 export interface VoiceRecordResponse {
   status?: 'busy' | 'recording' | 'stopped'
   text?: string
+}
+
+// ── Wake word ────────────────────────────────────────────────────────
+
+export interface WakeStartResponse {
+  enabled_persisted?: boolean
+  hint?: string
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
+  reason?: string
+  started?: boolean
+}
+
+export interface WakeStopResponse {
+  disabled_persisted?: boolean
+  reason?: null | string
+  stopped?: boolean
+}
+
+export interface WakeStatusResponse {
+  /** Armed but the mic delivers only silence (macOS backend-permission gap). */
+  audio_silent?: boolean
+  available?: boolean
+  /** Config truth (wake_word.enabled). */
+  enabled?: boolean
+  hint?: string
+  listening?: boolean
+  owned_by_caller?: boolean
+  owner_surface?: null | string
+  phrase?: string
+  provider?: string
 }
 
 // ── Tools (TS keeps configure since it resets local history) ─────────
@@ -404,26 +432,6 @@ export interface ToolsConfigureResponse {
   missing_servers?: string[]
   reset?: boolean
   unknown?: string[]
-}
-
-// ── Model picker ─────────────────────────────────────────────────────
-
-export interface ModelOptionProvider {
-  auth_type?: string
-  authenticated?: boolean
-  is_current?: boolean
-  key_env?: string
-  models?: string[]
-  name: string
-  slug: string
-  total_models?: number
-  warning?: string
-}
-
-export interface ModelOptionsResponse {
-  model?: string
-  provider?: string
-  providers?: ModelOptionProvider[]
 }
 
 // ── MCP ──────────────────────────────────────────────────────────────
@@ -477,35 +485,6 @@ export interface RollbackRestoreResponse {
   success?: boolean
 }
 
-// ── Subagent events ──────────────────────────────────────────────────
-
-export interface SubagentEventPayload {
-  api_calls?: number
-  cost_usd?: number
-  depth?: number
-  duration_seconds?: number
-  files_read?: string[]
-  files_written?: string[]
-  goal: string
-  input_tokens?: number
-  iteration?: number
-  model?: string
-  output_tail?: { is_error?: boolean; preview?: string; tool?: string }[]
-  output_tokens?: number
-  parent_id?: null | string
-  reasoning_tokens?: number
-  status?: SubagentStatus
-  subagent_id?: string
-  summary?: string
-  task_count?: number
-  task_index: number
-  text?: string
-  tool_count?: number
-  tool_name?: string
-  tool_preview?: string
-  toolsets?: string[]
-}
-
 // ── Delegation control RPCs ──────────────────────────────────────────
 
 export interface DelegationStatusResponse {
@@ -526,6 +505,33 @@ export interface DelegationStatusResponse {
 
 export interface DelegationPauseResponse {
   paused?: boolean
+}
+
+export interface AsyncDelegationRecord {
+  delegation_id: string
+  goal?: string | null
+  role?: string | null
+  model?: string | null
+  status?: string | null
+  dispatched_at?: number | null
+  completed_at?: number | null
+  subagent_ids?: string[]
+}
+
+export interface SubagentListResponse {
+  subagents: {
+    subagent_id: string
+    parent_id?: string | null
+    delegation_id?: string | null
+    depth?: number | null
+    goal?: string | null
+    model?: string | null
+    started_at?: number | null
+    status?: string | null
+    tool_count?: number | null
+    last_tool?: string | null
+  }[]
+  delegations: AsyncDelegationRecord[]
 }
 
 export interface SubagentInterruptResponse {
@@ -555,134 +561,3 @@ export interface SpawnTreeLoadResponse {
   started_at?: null | number
   subagents?: unknown[]
 }
-
-export type GatewayEvent =
-  | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
-  | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
-  | { payload: SessionInfo; session_id?: string; type: 'session.info' }
-  | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
-  | { payload?: { kind?: string }; session_id?: string; type: 'reaction' }
-  | { payload?: undefined; session_id?: string; type: 'message.start' }
-  | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
-  | {
-      payload?: {
-        id?: string
-        key?: string
-        kind?: 'sticky' | 'ttl'
-        level?: 'error' | 'info' | 'success' | 'warn'
-        text?: string
-        ttl_ms?: null | number
-      }
-      session_id?: string
-      type: 'notification.show'
-    }
-  | { payload?: { key?: string }; session_id?: string; type: 'notification.clear' }
-  | {
-      payload: { user_code?: string; verification_url: string }
-      session_id?: string
-      type: 'billing.step_up.verification'
-    }
-  | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
-  | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
-  | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
-  | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
-  | {
-      payload?: { level?: 'info' | 'warn' | 'error'; message?: string }
-      session_id?: string
-      type: 'browser.progress'
-    }
-  | {
-      payload?: { cwd?: string; python?: string; stderr_tail?: string }
-      session_id?: string
-      type: 'gateway.start_timeout'
-    }
-  | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
-  | {
-      payload?: { text?: string; verbose?: boolean }
-      session_id?: string
-      type: 'reasoning.delta' | 'reasoning.available'
-    }
-  | {
-      payload: { count?: number; index?: number; label?: string; text?: string }
-      session_id?: string
-      type: 'moa.reference'
-    }
-  | { payload?: { aggregator?: string }; session_id?: string; type: 'moa.aggregating' }
-  | {
-      payload?: { label?: string; refs_done?: number; refs_total?: number }
-      session_id?: string
-      type: 'moa.progress'
-    }
-  | {
-      payload?: { aggregator?: string; phase?: string; refs_done?: number; refs_total?: number }
-      session_id?: string
-      type: 'moa.phase'
-    }
-  | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
-  | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
-  | {
-      payload: { args_text?: string; context?: string; name?: string; tool_id: string; todos?: unknown[] }
-      session_id?: string
-      type: 'tool.start'
-    }
-  | {
-      payload: {
-        duration_s?: number
-        error?: string
-        inline_diff?: string
-        name?: string
-        result_text?: string
-        summary?: string
-        tool_id: string
-        todos?: unknown[]
-      }
-      session_id?: string
-      type: 'tool.complete'
-    }
-  | {
-      payload: { choices: string[] | null; question: string; request_id: string }
-      session_id?: string
-      type: 'clarify.request'
-    }
-  | {
-      payload: {
-        allow_permanent?: boolean
-        choices?: string[]
-        command: string
-        description: string
-        smart_denied?: boolean
-      }
-      session_id?: string
-      type: 'approval.request'
-    }
-  | { payload: { request_id: string }; session_id?: string; type: 'sudo.request' }
-  | { payload: { env_var: string; prompt: string; request_id: string }; session_id?: string; type: 'secret.request' }
-  | { payload: { request_id: string }; session_id?: string; type: 'secret.expire' | 'sudo.expire' }
-  | { payload: { task_id: string; text: string }; session_id?: string; type: 'background.complete' }
-  | { payload?: { text?: string }; session_id?: string; type: 'review.summary' }
-  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.spawn_requested' }
-  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.start' }
-  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.thinking' }
-  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.tool' }
-  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.progress' }
-  | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
-  | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
-  | {
-      payload: { already_streamed?: boolean; text: string }
-      session_id?: string
-      type: 'message.interim'
-    }
-  | {
-      payload?: {
-        billing?: BillingBlock
-        failure_reason?: string
-        reasoning?: string
-        rendered?: string
-        response_previewed?: boolean
-        text?: string
-        usage?: Usage
-      }
-      session_id?: string
-      type: 'message.complete'
-    }
-  | { payload?: { message?: string }; session_id?: string; type: 'error' }

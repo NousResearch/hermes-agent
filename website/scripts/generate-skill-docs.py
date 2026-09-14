@@ -333,7 +333,7 @@ def render_skill_page(
 ) -> str:
     name = fm.get("name", meta["slug"])
     description = fm.get("description", "").strip()
-    short_desc = description.split(".")[0].strip() if description else name
+    short_desc = re.split(r"\.(?:\s|$)", description, maxsplit=1)[0].strip() if description else name
     if len(short_desc) > 160:
         short_desc = short_desc[:157] + "..."
 

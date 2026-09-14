@@ -32,7 +32,13 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
   return (
     <div className="relative">
       <div
-        className={cn('overflow-y-auto overflow-x-auto', expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]', className)}
+        className={cn(
+          // `scrollbar-overlay` opts out of the app-wide classic thin gutters so
+          // this scroller keeps platform overlay bars (no always-on track).
+          'scrollbar-overlay overflow-y-auto overflow-x-auto',
+          expanded ? 'max-h-[40dvh]' : 'max-h-[7.5rem]',
+          className
+        )}
         ref={innerRef}
       >
         {children}
@@ -44,7 +50,7 @@ export function ExpandableBlock({ children, className }: ExpandableBlockProps) {
         // both sideways scrolling and text selection. Keep the fade
         // `pointer-events-none` and pin the only clickable target — a compact
         // toggle — to the right edge, clear of the draggable scrollbar track.
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-7 justify-end bg-linear-to-t from-(--ui-chat-surface-background) to-transparent">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex h-7 justify-end bg-linear-to-t from-[var(--expandable-fade-from,var(--ui-chat-surface-background))] to-transparent">
           <button
             aria-expanded={expanded}
             aria-label={expanded ? 'Collapse' : 'Expand'}

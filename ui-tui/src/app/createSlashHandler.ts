@@ -1,10 +1,12 @@
-import { parseSlashCommand } from '../domain/slash.js'
+import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
+
 import type { SlashExecResponse } from '../gatewayTypes.js'
-import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
+import { scoreSlashMenuItem } from './slash/fuzzyScore.js'
 import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { getUiState } from './uiStore.js'
@@ -69,13 +71,19 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           return handler(`${exact}${argTail}`)
         }
       } else {
-        const matches = [
-          ...new Set(
-            Object.entries(catalog.canon)
-              .filter(([alias]) => alias.startsWith(needle))
-              .map(([, canon]) => canon)
-          )
-        ]
+        // Tiered name scoring (ported from grok-cli's slash menu): prefix
+        // matches rank above substring matches, so `/hea` still resolves to
+        // /heartbeat while `/beat` now finds it too instead of dead-ending.
+        // Only the best tier survives — a substring hit never widens an
+        // unambiguous prefix hit into an "ambiguous command" complaint.
+        // Description tiers (score >= 3) are a completion-menu concern and
+        // never auto-execute a command here.
+        const scored = Object.entries(catalog.canon)
+          .map(([alias, canon]) => ({ canon, score: scoreSlashMenuItem({ id: alias.slice(1) }, needle.slice(1)) }))
+          .filter(entry => entry.score < 3)
+
+        const best = Math.min(...scored.map(entry => entry.score))
+        const matches = [...new Set(scored.filter(entry => entry.score === best).map(entry => entry.canon))]
 
         if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
           return handler(`${matches[0]}${argTail}`)
@@ -90,7 +98,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
     }
 
     const handleDispatch = (raw: unknown): void => {
-      const d = asCommandDispatch(raw)
+      const d = parseCommandDispatch(raw)
 
       if (!d) {
         return sys('error: invalid response: command.dispatch')
@@ -104,10 +112,22 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         return void handler(`/${d.target}${argTail}`)
       }
 
-      if (d.type === 'skill') {
-        sys(`⚡ loading skill: ${d.name}`)
+      // A skill/bundle dispatch's `message` is the expanded skill body —
+      // model-facing scaffolding. `display` is the invocation the gateway
+      // projected; the transcript shows that instead. An ordinary send has no
+      // projection and goes through unchanged. No client-side fallback here:
+      // the TUI spawns its gateway from this same checkout, so the two can't
+      // version-skew (unlike the desktop, which can meet an older backend).
+      const sendDispatch = (display: string | undefined, message: string) => {
+        const shown = display?.trim()
 
-        return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: skill payload missing message`)
+        return shown ? send(message, true, shown) : send(message)
+      }
+
+      if (d.type === 'skill') {
+        return d.message?.trim()
+          ? sendDispatch(d.display, d.message)
+          : sys(`/${parsed.name}: skill payload missing message`)
       }
 
       if (d.type === 'send') {
@@ -115,7 +135,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           sys(d.notice)
         }
 
-        return d.message?.trim() ? send(d.message) : sys(`/${parsed.name}: empty message`)
+        return d.message?.trim() ? sendDispatch(d.display, d.message) : sys(`/${parsed.name}: empty message`)
       }
 
       if (d.type === 'prefill') {
@@ -138,7 +158,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           return
         }
 
-        if (asCommandDispatch(r)) {
+        if (parseCommandDispatch(r)) {
           return handleDispatch(r)
         }
 

@@ -1,4 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
+import { compactNumber } from '@hermes/shared/format'
 import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
@@ -18,7 +19,6 @@ import {
   boundedLiveRenderText,
   compactPreview,
   estimateTokensRough,
-  fmtK,
   formatToolCall,
   parseToolTrailResultLine,
   pick,
@@ -332,7 +332,16 @@ function SubagentAccordion({
         ? 'warn'
         : 'dim'
 
-  const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
+  // `[6a66 3/9]` when the gateway tags the batch; `[3/9]` on older gateways.
+  const batchTag = item.delegationId?.split('_').at(-1)?.slice(0, 4)
+
+  const prefix =
+    item.taskCount > 1
+      ? `[${batchTag ? `${batchTag} ` : ''}${item.index + 1}/${item.taskCount}] `
+      : batchTag
+        ? `[${batchTag}] `
+        : ''
+
   const goalLabel = item.goal || `Subagent ${item.index + 1}`
   const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
@@ -678,6 +687,7 @@ export const ToolTrail = memo(function ToolTrail({
   commandOverride = false,
   detailsMode = 'collapsed',
   outcome = '',
+  preferExpandedThinking = false,
   reasoningActive = false,
   reasoning = '',
   reasoningAlwaysVisible = false,
@@ -695,6 +705,7 @@ export const ToolTrail = memo(function ToolTrail({
   commandOverride?: boolean
   detailsMode?: DetailsMode
   outcome?: string
+  preferExpandedThinking?: boolean
   reasoningActive?: boolean
   reasoning?: string
   // MoA reference blocks (see Msg.isMoaReference) stay visible even when
@@ -721,6 +732,9 @@ export const ToolTrail = memo(function ToolTrail({
     [commandOverride, detailsMode, sections]
   )
 
+  const thinkingDefaultExpanded =
+    visible.thinking === 'expanded' && (preferExpandedThinking || commandOverride || sections?.thinking === 'expanded')
+
   const [now, setNow] = useState(() => Date.now())
   // Local toggles own the open state once mounted.  Init from the resolved
   // section visibility so default-expanded sections (thinking/tools) render
@@ -735,7 +749,7 @@ export const ToolTrail = memo(function ToolTrail({
   // label. This only affects the initial mount value; the re-sync effect
   // below deliberately does NOT re-apply it, so a manual collapse still
   // sticks (see the no-OR-at-effect-time warning above, #14968).
-  const [openThinking, setOpenThinking] = useState(visible.thinking === 'expanded' || reasoningAlwaysVisible)
+  const [openThinking, setOpenThinking] = useState(thinkingDefaultExpanded || reasoningAlwaysVisible)
   const [openTools, setOpenTools] = useState(visible.tools === 'expanded')
   const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
   const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
@@ -766,11 +780,25 @@ export const ToolTrail = memo(function ToolTrail({
       return
     }
 
-    setOpenThinking(visible.thinking === 'expanded')
+    setOpenThinking(thinkingDefaultExpanded)
     setOpenTools(visible.tools === 'expanded')
     setOpenSubagents(visible.subagents === 'expanded')
     setOpenMeta(visible.activity === 'expanded')
-  }, [visible])
+  }, [thinkingDefaultExpanded, visible])
+
+  // `collapsed` is an auto preference: keep the panel open while reasoning
+  // is live (stream pulses keep `reasoningActive` true) and collapse it the
+  // moment the reasoning phase ends (`endReasoningPhase` flips it false).
+  // `expanded` stays fully manual, `hidden` never renders content, and MoA
+  // reference panels (reasoningAlwaysVisible) are left alone.
+  const thinkingAuto = visible.thinking === 'collapsed' && !reasoningAlwaysVisible
+  useEffect(() => {
+    if (!thinkingAuto) {
+      return
+    }
+
+    setOpenThinking(reasoningActive)
+  }, [thinkingAuto, reasoningActive])
 
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 
@@ -906,11 +934,12 @@ export const ToolTrail = memo(function ToolTrail({
 
   const toolTokenCount = toolTokens ?? 0
   const totalTokenCount = tokenCount + toolTokenCount
-  const thinkingTokensLabel = tokenCount > 0 ? `~${fmtK(tokenCount)} tokens` : null
+  const thinkingTokensLabel = tokenCount > 0 ? `~${compactNumber(tokenCount)} tokens` : null
 
-  const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
+  const toolTokensLabel =
+    toolTokens !== undefined && toolTokens > 0 ? `~${compactNumber(toolTokens)} tokens` : undefined
 
-  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
+  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${compactNumber(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 

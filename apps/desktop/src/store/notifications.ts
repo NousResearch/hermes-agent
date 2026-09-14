@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { isLocalBackendSlotWaitTimeout, requestPoolLimitsSettings } from '@/store/pool-limits'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
 
@@ -24,6 +25,8 @@ export interface AppNotification {
   message: string
   detail?: string
   action?: NotificationAction
+  /** Second, quieter button beside `action` (e.g. "Disable" next to "Sign in"). */
+  secondaryAction?: NotificationAction
   onDismiss?: () => void
   createdAt: number
   placement?: NotificationPlacement
@@ -39,6 +42,7 @@ export interface NotificationInput {
   message: string
   detail?: string
   action?: NotificationAction
+  secondaryAction?: NotificationAction
   onDismiss?: () => void
   durationMs?: number
   placement?: NotificationPlacement
@@ -76,7 +80,27 @@ function cleanErrorText(value: string) {
   return value.replace(/^Error:\s*/, '').trim()
 }
 
+/** True when an error string is a disk-full / ENOSPC / SQLITE_FULL failure. */
+export function isDiskFullErrorMessage(message: string): boolean {
+  return (
+    /no space left on device/i.test(message) ||
+    /not enough space/i.test(message) ||
+    /database or disk is full/i.test(message) ||
+    /\bENOSPC\b/i.test(message) ||
+    /disk full/i.test(message) ||
+    /full disk/i.test(message)
+  )
+}
+
 const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string) => string }[] = [
+  {
+    // Disk full / ENOSPC — session DB write, backend crash, or any path that
+    // bubbles "no space left" / SQLITE_FULL through notifyError. Match before
+    // generic length truncation so the user gets a clear "free space" toast
+    // instead of a silent send or a raw errno dump.
+    test: isDiskFullErrorMessage,
+    summarize: () => translateNow('notifications.errors.diskFull')
+  },
   {
     test: msg => /['"]code['"]\s*:\s*['"]gateway_auth_failed['"]/i.test(msg),
     summarize: () => translateNow('notifications.errors.gatewayAuthFailed')
@@ -109,6 +133,10 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
   {
     test: msg => /microphone permission/i.test(msg),
     summarize: () => translateNow('notifications.errors.microphonePermission')
+  },
+  {
+    test: msg => /Restart required:/i.test(msg),
+    summarize: () => translateNow('notifications.errors.codeSkewRestartRequired')
   }
 ]
 
@@ -122,7 +150,9 @@ function summarizeErrorMessage(message: string, fallback: string) {
   return message.length > 180 ? fallback : message || fallback
 }
 
-function readableError(error: unknown, fallback: string): { message: string; detail?: string } {
+// Exported so flows that surface errors inline (e.g. ConfirmDialog's onConfirm
+// rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
+export function readableError(error: unknown, fallback: string): { message: string; detail?: string } {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
   const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
   const cleaned = cleanErrorText(unwrapped)
@@ -146,6 +176,7 @@ export function notify(input: NotificationInput): string {
     message: input.message,
     detail: input.detail,
     action: input.action,
+    secondaryAction: input.secondaryAction,
     onDismiss: input.onDismiss,
     createdAt: Date.now(),
     placement: input.placement ?? defaultPlacement(kind, input.action)
@@ -169,12 +200,19 @@ export function notify(input: NotificationInput): string {
 
 export function notifyError(error: unknown, fallback: string): string {
   const readable = readableError(error, fallback)
+  const poolSlotTimeout = isLocalBackendSlotWaitTimeout(error)
 
   return notify({
+    action: poolSlotTimeout
+      ? {
+          label: translateNow('desktop.poolSlotTimeoutOpenSettings'),
+          onClick: requestPoolLimitsSettings
+        }
+      : undefined,
     kind: 'error',
     title: fallback,
-    message: readable.message,
-    detail: readable.detail
+    message: poolSlotTimeout ? translateNow('desktop.poolSlotTimeoutBody') : readable.message,
+    detail: poolSlotTimeout ? readable.message : readable.detail
   })
 }
 

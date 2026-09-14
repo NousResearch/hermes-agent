@@ -309,7 +309,7 @@ print(review)
 | `disabled_toolsets` | `List[str]` | `None` | 黑名单指定工具集 |
 | `save_trajectories` | `bool` | `False` | 将对话保存为 JSONL |
 | `ephemeral_system_prompt` | `str` | `None` | 自定义系统 prompt（不保存到轨迹文件） |
-| `max_iterations` | `int` | `90` | 每次对话的最大工具调用迭代次数 |
+| `max_iterations` | `int` | `500` | 每次对话的最大工具调用迭代次数 |
 | `skip_context_files` | `bool` | `False` | 跳过加载 AGENTS.md 文件 |
 | `skip_memory` | `bool` | `False` | 禁用持久化内存的读写 |
 | `api_key` | `str` | `None` | API 密钥（回退到环境变量） |
@@ -329,5 +329,5 @@ print(review)
 :::warning
 - **线程安全**：每个线程或任务创建一个 `AIAgent` 实例。切勿在并发调用中共享同一实例。
 - **资源清理**：agent 在对话结束时会自动清理资源（终端会话、浏览器实例）。若在长期运行的进程中使用，请确保每次对话正常结束。
-- **迭代限制**：默认的 `max_iterations=90` 较为宽松。对于简单的问答场景，建议适当降低该值（如 `max_iterations=10`），以防止工具调用循环失控并控制成本。
+- **迭代限制**：默认的 `max_iterations=500` 较为宽松。对于简单的问答场景，建议适当降低该值（如 `max_iterations=10`），以防止工具调用循环失控并控制成本。
 :::

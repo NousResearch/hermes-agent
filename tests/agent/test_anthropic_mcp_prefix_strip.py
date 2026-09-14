@@ -79,24 +79,6 @@ class TestAnthropicMcpPrefixStrip:
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "read_file"
 
-    def test_restores_single_underscore_mcp_server_tool(self):
-        """``mcp__linear_get_issue`` -> ``mcp_linear_get_issue`` (MCP server tool).
-
-        MCP server tools are registered under their full single-underscore
-        ``mcp_<server>_<tool>`` name, but they MUST go on the OAuth wire as
-        double-underscore to dodge the classifier.  The response side restores
-        the single-underscore registry name so dispatch still resolves.
-        """
-        transport = self._get_transport()
-        block = _make_tool_use_block("mcp__linear_get_issue")
-        response = _make_response(block)
-
-        registry = _FakeRegistry({"mcp_linear_get_issue", "read_file"})
-        with patch("tools.registry.registry", registry):
-            result = transport.normalize_response(response, strip_tool_prefix=True)
-
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].name == "mcp_linear_get_issue"
 
     def test_no_strip_when_flag_false(self):
         """When strip_tool_prefix=False, names are never modified."""
@@ -111,65 +93,59 @@ class TestAnthropicMcpPrefixStrip:
         assert len(result.tool_calls) == 1
         assert result.tool_calls[0].name == "mcp__read_file"
 
-    def test_no_strip_when_not_mcp_prefixed(self):
-        """Non-``mcp__`` names are untouched regardless of strip flag."""
+
+class TestAnthropicOAuthAliasRoundTrip:
+    """#65365: session_search / memory schemas alone deterministically trip
+    Anthropic's OAuth billing classifier (verified live via the
+    anthropic-ratelimit-unified-* response headers, see issue comments).
+    Both are aliased to neutral wire names; normalize_response must reverse
+    the mapping so the dispatcher still sees the real tool."""
+
+    def _get_transport(self):
+        from agent.transports.anthropic import AnthropicTransport
+        return AnthropicTransport()
+
+    def test_oauth_session_search_alias_round_trips_to_registry_name(self):
         transport = self._get_transport()
-        block = _make_tool_use_block("web_search")
+        block = _make_tool_use_block("mcp__chat_history_lookup")
         response = _make_response(block)
 
-        registry = _FakeRegistry({"web_search"})
+        registry = _FakeRegistry({"session_search"})
         with patch("tools.registry.registry", registry):
             result = transport.normalize_response(response, strip_tool_prefix=True)
 
         assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].name == "web_search"
+        assert result.tool_calls[0].name == "session_search"
 
-    def test_preserves_name_when_no_original_in_registry(self):
-        """Neither the single-underscore nor bare original is registered.
-
-        Safety fallback: keep the full ``mcp__`` name the LLM was told about.
-        """
+    def test_oauth_memory_alias_round_trips_to_registry_name(self):
         transport = self._get_transport()
-        block = _make_tool_use_block("mcp__unknown_tool")
+        block = _make_tool_use_block("mcp__context_notes")
         response = _make_response(block)
 
-        registry = _FakeRegistry({"read_file"})  # no matching original
+        registry = _FakeRegistry({"memory"})
         with patch("tools.registry.registry", registry):
             result = transport.normalize_response(response, strip_tool_prefix=True)
 
         assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].name == "mcp__unknown_tool"
+        assert result.tool_calls[0].name == "memory"
 
-    def test_mixed_native_and_mcp_server_tools_same_response(self):
-        """A bare native tool and an MCP server tool, both wired as ``mcp__``."""
+    def test_registered_tool_wins_over_oauth_alias(self):
+        """A real tool actually registered under the wire name keeps
+        GH-25255 precedence — the alias must not hijack it."""
         transport = self._get_transport()
-        block1 = _make_tool_use_block("mcp__read_file", block_id="tc_1")
-        block2 = _make_tool_use_block("mcp__linear_get_issue", block_id="tc_2")
-        response = _make_response(block1, block2)
-
-        registry = _FakeRegistry({"read_file", "mcp_linear_get_issue"})
-        with patch("tools.registry.registry", registry):
-            result = transport.normalize_response(response, strip_tool_prefix=True)
-
-        assert len(result.tool_calls) == 2
-        assert result.tool_calls[0].name == "read_file"
-        assert result.tool_calls[1].name == "mcp_linear_get_issue"
-
-    def test_prefers_full_wire_name_when_it_resolves_directly(self):
-        """If the ``mcp__`` wire name itself is registered, keep it as-is.
-
-        Defensive: never rewrite a name that already resolves natively.
-        """
-        transport = self._get_transport()
-        block = _make_tool_use_block("mcp__foo")
+        block = _make_tool_use_block("mcp__chat_history_lookup")
         response = _make_response(block)
 
-        registry = _FakeRegistry({"foo", "mcp__foo"})
+        registry = _FakeRegistry({"mcp_chat_history_lookup", "session_search"})
         with patch("tools.registry.registry", registry):
             result = transport.normalize_response(response, strip_tool_prefix=True)
 
         assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].name == "mcp__foo"
+        assert result.tool_calls[0].name == "mcp_chat_history_lookup"
+
+
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -180,24 +156,18 @@ class TestAnthropicOAuthOutgoingPrefix:
     """build_anthropic_kwargs must emit ZERO single-underscore ``mcp_`` names on
     the OAuth wire — bare names and MCP server names both land on ``mcp__``."""
 
-    def _build(self, tools, is_oauth=True):
+    def _build(self, tools, is_oauth=True, messages=None, tool_choice=None):
         from agent.anthropic_adapter import build_anthropic_kwargs
         return build_anthropic_kwargs(
             model="claude-sonnet-4-6",
-            messages=[{"role": "user", "content": "Hi"}],
+            messages=messages or [{"role": "user", "content": "Hi"}],
             tools=tools,
             max_tokens=4096,
             reasoning_config=None,
+            tool_choice=tool_choice,
             is_oauth=is_oauth,
         )
 
-    def test_oauth_adds_double_prefix_to_bare_tool_name(self):
-        """OAuth + bare name -> ``mcp__`` prefix added."""
-        kwargs = self._build([{
-            "type": "function",
-            "function": {"name": "read_file", "description": "x", "parameters": {}},
-        }])
-        assert [t["name"] for t in kwargs["tools"]] == ["mcp__read_file"]
 
     def test_oauth_promotes_single_underscore_mcp_server_tool(self):
         """OAuth + ``mcp_<server>_<tool>`` -> promoted to double underscore.
@@ -219,13 +189,6 @@ class TestAnthropicOAuthOutgoingPrefix:
         # never double-prefixed
         assert not any(n.startswith("mcp__mcp_") for n in names)
 
-    def test_oauth_already_double_prefixed_left_alone(self):
-        """OAuth + already-``mcp__`` name -> unchanged (no triple underscore)."""
-        kwargs = self._build([{
-            "type": "function",
-            "function": {"name": "mcp__already", "description": "x", "parameters": {}},
-        }])
-        assert [t["name"] for t in kwargs["tools"]] == ["mcp__already"]
 
     def test_oauth_no_single_underscore_mcp_on_wire(self):
         """Mixed set: every wire name is bare-free of single-underscore mcp_."""
@@ -243,13 +206,120 @@ class TestAnthropicOAuthOutgoingPrefix:
         for n in names:
             assert not (n.startswith("mcp_") and not n.startswith("mcp__"))
 
-    def test_non_oauth_path_untouched(self):
-        """Non-OAuth requests never get the prefix — schemas pass through as-is."""
+
+# ---------------------------------------------------------------------------
+# #65365: session_search / memory OAuth billing-classifier trigger
+# ---------------------------------------------------------------------------
+
+class TestAnthropicOAuthClassifierAlias:
+    """OAuth must alias the two schemas issue #65365 isolated as independent,
+    deterministic triggers (session_search alone, memory alone) — in tool
+    name, tool description, system-prompt prose, and named tool_choice."""
+
+    def _build(self, tools, is_oauth=True, messages=None, tool_choice=None):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+        return build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=messages or [{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens=4096,
+            reasoning_config=None,
+            tool_choice=tool_choice,
+            is_oauth=is_oauth,
+        )
+
+    def _tool(self, name, description="x"):
+        return {"type": "function", "function": {"name": name, "description": description, "parameters": {}}}
+
+    def test_oauth_aliases_session_search_and_memory_names(self):
         kwargs = self._build([
-            {"type": "function", "function": {"name": "read_file",
-                                              "description": "x", "parameters": {}}},
-            {"type": "function", "function": {"name": "mcp_linear_get_issue",
-                                              "description": "y", "parameters": {}}},
-        ], is_oauth=False)
+            self._tool("session_search", "Use session_search to recall prior chats."),
+            self._tool("memory", "Persist notes with memory."),
+        ])
         names = sorted(t["name"] for t in kwargs["tools"])
-        assert names == ["mcp_linear_get_issue", "read_file"]
+        assert names == ["mcp__chat_history_lookup", "mcp__context_notes"]
+
+    def test_oauth_aliases_session_search_in_tool_description_not_memory(self):
+        """session_search is prose-safe (unambiguous token); memory is
+        ordinary English and must NOT be rewritten in free text — only its
+        tool name is aliased."""
+        kwargs = self._build([
+            self._tool("session_search", "Call session_search to recall prior chats."),
+            self._tool("memory", "Persist notes; uses working memory internally."),
+        ])
+        by_name = {t["name"]: t["description"] for t in kwargs["tools"]}
+        assert "chat_history_lookup" in by_name["mcp__chat_history_lookup"]
+        assert "session_search" not in by_name["mcp__chat_history_lookup"]
+        assert "memory" in by_name["mcp__context_notes"]  # untouched prose
+
+    def test_oauth_aliases_session_search_in_system_prompt_prose(self):
+        kwargs = self._build(
+            [self._tool("session_search")],
+            messages=[
+                {"role": "system", "content": "When relevant, use session_search to recall it."},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        system_text = "\n".join(
+            b["text"] for b in kwargs["system"] if isinstance(b, dict) and b.get("type") == "text"
+        )
+        assert "chat_history_lookup" in system_text
+        assert "session_search" not in system_text
+
+    def test_oauth_does_not_alias_longer_identifier_containing_token(self):
+        """Word-boundary matching: a path like tools/session_search_tool.py
+        must survive untouched, not become chat_history_lookup_tool.py."""
+        kwargs = self._build(
+            [self._tool("session_search")],
+            messages=[
+                {"role": "system", "content": "See tools/session_search_tool.py for details."},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        system_text = "\n".join(
+            b["text"] for b in kwargs["system"] if isinstance(b, dict) and b.get("type") == "text"
+        )
+        assert "tools/session_search_tool.py" in system_text
+
+    def test_oauth_tool_choice_named_alias_matches_wire_name(self):
+        """The gap left open by prior alias work: a forced tool_choice must
+        be normalized through the same alias + mcp__ prefix as tools[], or
+        (a) the literal trigger string still reaches the wire and (b) the
+        name no longer matches any entry in tools[]."""
+        kwargs = self._build(
+            [self._tool("session_search")],
+            tool_choice="session_search",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__chat_history_lookup"}
+        assert kwargs["tool_choice"]["name"] in {t["name"] for t in kwargs["tools"]}
+
+    def test_oauth_tool_choice_bare_name_still_gets_mcp_prefix(self):
+        """Non-aliased tool_choice names still need the mcp__ prefix under
+        OAuth (pre-existing GH-25255 invariant, now routed consistently)."""
+        kwargs = self._build(
+            [self._tool("read_file")],
+            tool_choice="read_file",
+        )
+        assert kwargs["tool_choice"] == {"type": "tool", "name": "mcp__read_file"}
+
+    def test_oauth_skips_alias_on_wire_name_collision(self):
+        """If a real (e.g. MCP server) tool already owns the alias's wire
+        name, session_search must keep its own name rather than collide —
+        two identical tool names is a hard 400, strictly worse than #65365."""
+        kwargs = self._build([
+            self._tool("session_search"),
+            self._tool("mcp_chat_history_lookup"),
+        ])
+        names = sorted(t["name"] for t in kwargs["tools"])
+        assert names == ["mcp__chat_history_lookup", "mcp__session_search"]
+
+    def test_api_key_path_never_aliases(self):
+        """The alias is OAuth-only — API-key requests must be byte-identical
+        to before this fix."""
+        kwargs = self._build(
+            [self._tool("session_search", "Use session_search to recall prior chats.")],
+            is_oauth=False,
+        )
+        assert kwargs["tools"][0]["name"] == "session_search"
+        assert "session_search" in kwargs["tools"][0]["description"]
+

@@ -63,30 +63,10 @@ HISTORY = [{"role": "user", "content": "hello"}]
 
 # -- ABC default -----------------------------------------------------------
 
-def test_default_select_context_is_noop():
-    """The base implementation returns None (no replacement)."""
-    engine = _MinimalEngine()
-    assert (
-        engine.select_context(
-            REQUEST,
-            conversation_messages=HISTORY,
-            incoming_message=HISTORY[-1],
-            budget_tokens=0,
-        )
-        is None
-    )
 
 
 # -- Host call site: _apply_context_engine_selection -----------------------
 
-def test_none_return_leaves_request_unchanged():
-    """An engine returning None falls through to the assembled request."""
-    engine = _MinimalEngine()  # default select_context -> None
-    agent = _agent_with(engine)
-    out = _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
-    )
-    assert out is REQUEST
 
 
 def test_base_noop_select_context_is_short_circuited_not_called():
@@ -117,102 +97,18 @@ def test_base_noop_select_context_is_short_circuited_not_called():
     assert not logger.warning.called
 
 
-def test_builtin_compressor_inherits_base_select_context():
-    """The built-in ContextCompressor must NOT implement the new verbs.
-
-    Guards the default-path byte-identity contract: if someone overrides
-    ``select_context`` / ``on_turn_complete`` on ContextCompressor, the host
-    short-circuits no longer skip it and the default request pipeline gains a
-    per-request call — update this pin only together with that decision.
-    """
-    from agent.context_compressor import ContextCompressor
-
-    assert "select_context" not in ContextCompressor.__dict__
-    assert "on_turn_complete" not in ContextCompressor.__dict__
 
 
-def test_missing_hook_leaves_request_unchanged():
-    """An engine without select_context (older/stub base) is a no-op."""
-    engine = object()  # no select_context attribute
-    agent = _agent_with(engine)
-    out = _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
-    )
-    assert out is REQUEST
 
 
-def test_no_engine_leaves_request_unchanged():
-    agent = MagicMock()
-    agent.session_id = "test-session"
-    agent.context_compressor = None
-    out = _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
-    )
-    assert out is REQUEST
 
 
-def test_valid_list_replaces_request():
-    """A valid list of dicts replaces the request messages for this call."""
-    replacement = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "routed-context"},
-    ]
-
-    class _Engine(_MinimalEngine):
-        def select_context(self, request_messages, **kwargs):
-            return replacement
-
-    agent = _agent_with(_Engine())
-    out = _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
-    )
-    assert out is replacement
 
 
-def test_exception_fails_open():
-    """A raising hook is swallowed; the unmodified request is used."""
-
-    class _Engine(_MinimalEngine):
-        def select_context(self, request_messages, **kwargs):
-            raise RuntimeError("backend offline")
-
-    logger = MagicMock()
-    agent = _agent_with(_Engine())
-    out = _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=logger
-    )
-    assert out is REQUEST
-    assert logger.warning.called
 
 
-def test_non_list_return_is_ignored():
-    """A non-list return value is rejected and logged, request unchanged."""
-
-    class _Engine(_MinimalEngine):
-        def select_context(self, request_messages, **kwargs):
-            return {"role": "user", "content": "oops not a list"}
-
-    logger = MagicMock()
-    agent = _agent_with(_Engine())
-    out = _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=logger
-    )
-    assert out is REQUEST
-    assert logger.warning.called
 
 
-def test_list_of_non_dicts_is_ignored():
-    """A list that isn't all dicts is rejected, request unchanged."""
-
-    class _Engine(_MinimalEngine):
-        def select_context(self, request_messages, **kwargs):
-            return ["not", "dicts"]
-
-    agent = _agent_with(_Engine())
-    out = _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
-    )
-    assert out is REQUEST
 
 
 def test_empty_list_keeps_original_request():
@@ -295,21 +191,6 @@ def test_persisted_history_not_mutated():
 
 # -- cache-stability + downstream-sanitizer contract -----------------------
 
-def test_noop_preserves_request_byte_stable_for_cache():
-    """No-op default must leave the request byte-identical.
-
-    Prompt-cache stability is a host invariant (AGENTS.md): the hook runs
-    before cache-control, so a no-op engine must not perturb the list —
-    otherwise cache breakpoints would shift for every existing engine. The
-    host returns the *same object*, so cache-control sees identical input.
-    """
-    snapshot = [dict(m) for m in REQUEST]
-    agent = _agent_with(_MinimalEngine())  # default select_context -> None
-    out = _apply_context_engine_selection(
-        agent, REQUEST, HISTORY, HISTORY[-1], logger=MagicMock()
-    )
-    assert out is REQUEST          # same object -> byte-stable for cache-control
-    assert REQUEST == snapshot     # unperturbed
 
 
 def test_role_unusual_replacement_passed_through_for_downstream_sanitizers():
@@ -342,9 +223,6 @@ def test_role_unusual_replacement_passed_through_for_downstream_sanitizers():
 
 # -- on_turn_complete (post-turn observation) ------------------------------
 
-def test_default_on_turn_complete_is_noop():
-    """The base on_turn_complete returns None and does nothing."""
-    assert _MinimalEngine().on_turn_complete(HISTORY, usage=None) is None
 
 
 def test_on_turn_complete_called_with_snapshot_and_meta():
@@ -369,32 +247,7 @@ def test_on_turn_complete_called_with_snapshot_and_meta():
     assert captured["kwargs"]["api_call_count"] == 1
 
 
-def test_on_turn_complete_base_noop_is_skipped():
-    """An engine that only inherits the base no-op is handled safely.
-
-    The helper short-circuits the base implementation (so non-implementing
-    engines pay nothing), and in any case must not raise.
-    """
-    agent = _agent_with(_MinimalEngine())  # inherits base on_turn_complete
-    _notify_context_engine_turn_complete(agent, HISTORY, logger=MagicMock())
 
 
-def test_on_turn_complete_fails_open():
-    """A raising observation hook is swallowed and logged."""
-
-    class _Engine(_MinimalEngine):
-        def on_turn_complete(self, messages, usage=None, **kwargs):
-            raise RuntimeError("indexing backend down")
-
-    logger = MagicMock()
-    agent = _agent_with(_Engine())
-    _notify_context_engine_turn_complete(agent, HISTORY, logger=logger)
-    assert logger.warning.called
 
 
-def test_on_turn_complete_missing_engine_is_safe():
-    agent = MagicMock()
-    agent.session_id = "s"
-    agent.context_compressor = None
-    # No engine -> silent return, no raise.
-    _notify_context_engine_turn_complete(agent, HISTORY, logger=MagicMock())

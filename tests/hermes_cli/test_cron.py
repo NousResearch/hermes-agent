@@ -586,3 +586,49 @@ class TestSlashCronListLastStatus:
 
         out = self._run_list(tmp_cron_dir, capsys)
         assert "(ok)" in out
+
+class TestCronListErroredHeader:
+    """#99583 C: cron list must surface last_status=error in the header
+    instead of a misleading green [active]."""
+
+    def test_active_job_with_failed_last_run_shows_warning(self, tmp_cron_dir, capsys, monkeypatch):
+        from cron.jobs import create_job
+        job = create_job(prompt="x", schedule="0 11 * * *")
+        monkeypatch.setattr(
+            "cron.jobs.list_jobs",
+            lambda include_disabled=False: [
+                {**job, "last_status": "error", "last_error": "Script not found: /tmp/x.py", "failure_streak": 1}
+            ],
+        )
+        import hermes_cli.cron as cron_cli
+        cron_cli.cron_list()
+        out = capsys.readouterr().out
+        assert "[active!]" in out
+        assert "[active]" not in out.replace("[active!]", "")
+
+    def test_active_job_with_repeated_failures_shows_streak(self, tmp_cron_dir, capsys, monkeypatch):
+        from cron.jobs import create_job
+        job = create_job(prompt="x", schedule="0 11 * * *")
+        monkeypatch.setattr(
+            "cron.jobs.list_jobs",
+            lambda include_disabled=False: [
+                {**job, "last_status": "error", "last_error": "Script not found", "failure_streak": 4}
+            ],
+        )
+        import hermes_cli.cron as cron_cli
+        cron_cli.cron_list()
+        out = capsys.readouterr().out
+        assert "[active! 4 fails]" in out
+
+    def test_active_job_with_ok_last_run_stays_green(self, tmp_cron_dir, capsys, monkeypatch):
+        from cron.jobs import create_job
+        job = create_job(prompt="x", schedule="0 11 * * *")
+        monkeypatch.setattr(
+            "cron.jobs.list_jobs",
+            lambda include_disabled=False: [{**job, "last_status": "ok", "failure_streak": 0}],
+        )
+        import hermes_cli.cron as cron_cli
+        cron_cli.cron_list()
+        out = capsys.readouterr().out
+        assert "[active]" in out
+        assert "[active!]" not in out

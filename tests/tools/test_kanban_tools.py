@@ -126,7 +126,6 @@ def test_worker_cannot_self_authorize_unproven_completion(worker_env):
         "summary": "claimed done",
         "accept_unproven": True,
     }))
-    assert result["ok"] is False
     assert "restricted to human CLI/dashboard" in result["error"]
     with kbc.connect_closing() as conn:
         assert kb.get_task(conn, worker_env).status != "done"

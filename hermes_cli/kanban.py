@@ -193,7 +193,15 @@ def kanban_command(args: argparse.Namespace) -> int:
         try:
             return int(handler(args) or 0)
         except (ValueError, RuntimeError, PermissionError) as exc:
-            return _err(f"kanban: {exc}")
+            message = f"kanban: {exc}"
+            if "unknown task" in str(exc):
+                ids = _task_ids_from_unknown_task_message(str(exc))
+                if ids:
+                    with kbc.connect_closing() as conn:
+                        hint = _cross_board_hint(conn, ids)
+                    if hint:
+                        message += f"\n{hint}"
+            return _err(message)
 
 
 # --- Handlers ---
@@ -854,6 +862,51 @@ def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: 
     return None
 
 
+def _locate_task_on_other_board(conn, task_ids: list[str]) -> Optional[tuple[str, str]]:
+    """Return the first ``(task_id, board)`` found outside the active board."""
+    active = kb.get_current_board()
+    for task_id in task_ids:
+        if kb.get_task(conn, task_id) is not None:
+            continue
+        for meta in kb.list_boards():
+            other = meta.get("slug")
+            if not other or other == active:
+                continue
+            with kb.connect(db_path=kb.board_db_path(other)) as other_conn:
+                if kb.get_task(other_conn, task_id) is not None:
+                    return task_id, other
+    return None
+
+
+def _cross_board_hint(conn, task_ids: list[str]) -> Optional[str]:
+    match = _locate_task_on_other_board(conn, task_ids)
+    if match is None:
+        return None
+    task_id, other = match
+    active = kb.get_current_board()
+    return (
+        f"→ '{task_id}' is on board '{other}', not on the active board '{active}'. "
+        f"Switch with: hermes kanban boards switch {other}"
+    )
+
+
+_UNKNOWN_TASK_ID_CHARS = frozenset("t_0123456789abcdef")
+
+
+def _task_ids_from_unknown_task_message(message: str) -> list[str]:
+    """Extract ordered, unique task IDs from an unknown-task error."""
+    ids: list[str] = []
+    for token in message.replace(",", " ").split():
+        if token.startswith("t_") and all(c in _UNKNOWN_TASK_ID_CHARS for c in token) and token not in ids:
+            ids.append(token)
+    return ids
+
+
+def _failure_with_board_hint(conn, message: str, task_id: str) -> str:
+    hint = _cross_board_hint(conn, [task_id])
+    return f"{message}\n{hint}" if hint else message
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids, rc = _require_ids(args)
@@ -879,7 +932,9 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             if gate_err:
                 fail_msg[tid] = gate_err
                 return False
-            fail_msg[tid] = f"cannot complete {tid} (unknown id or terminal state)"
+            fail_msg[tid] = _failure_with_board_hint(
+                conn, f"cannot complete {tid} (unknown id or terminal state)", tid
+            )
             return kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                     expected_run_id=_worker_run_id_for(tid))
 
@@ -924,7 +979,12 @@ def _cmd_block(args: argparse.Namespace) -> int:
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
             conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
-        return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
+        return _bulk_apply(
+            ids,
+            op,
+            ok_msg,
+            lambda tid: _failure_with_board_hint(conn, f"cannot block {tid}", tid),
+        )
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:
@@ -1051,8 +1111,12 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         if purge_ids:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",
                                lambda tid: f"cannot delete {tid} (must already be archived)")
-        return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid),
-                           lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
+        return _bulk_apply(
+            ids,
+            lambda tid: kb.archive_task(conn, tid),
+            lambda tid: f"Archived {tid}",
+            lambda tid: _failure_with_board_hint(conn, f"cannot archive {tid}", tid),
+        )
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:

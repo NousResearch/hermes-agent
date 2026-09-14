@@ -606,7 +606,8 @@ class SpawnTreeListParams(ProfileParams):
 
 
 class SpawnTreeEntry(Result):
-    """``methods_session.py:2126`` index row or ``:2140`` legacy scan; no TS consumer."""
+    """``methods_session.py:2126`` index row or ``:2140`` legacy scan; TUI renders entries at
+    ``ui-tui/src/app/slash/commands/ops.ts:361``."""
 
     path: str
     session_id: str

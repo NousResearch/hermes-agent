@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
+import json
 from typing import Any, Iterable, Optional
 import sqlite3
 
@@ -18,19 +19,42 @@ def is_multistep_request(prompt: str) -> bool:
         "workflow",
         "multistep",
         "step by step",
+        "passo a passo",
         "first",
         "then",
         "finally",
+        "primeiro",
+        "depois",
         "automate",
+        "automatize",
         "extract and",
+        "extraia e",
         "sign in and",
+        "faça login",
         "fill out",
+        "preencha",
         "download and",
+        "baixe e",
         "search and",
+        "pesquise e",
         "pipeline",
         "batch",
         "follow-up",
         "scrape and",
+        "raspe e",
+        "pesquise",
+        "pesquisa",
+        "navegue",
+        "procure",
+        "browser",
+        "navegador",
+        "online",
+        "internet",
+        "site",
+        "web",
+        "busque",
+        "investigate",
+        "research",
     ]
     lower = prompt.lower()
     return any(kw in lower for kw in keywords) or ("\n" in prompt.strip() and len(prompt.strip()) > 30)
@@ -91,23 +115,41 @@ class WorkstationKanbanBridge:
         """Record a discovered child task into Kanban with parent dependency."""
         followup.validate()
 
+        evidence = [
+            {"kind": item.kind, "uri": item.uri, "summary": item.summary, "sha256": item.sha256}
+            for item in followup.evidence
+        ]
+        body = "\n".join([
+            f"Reason: {followup.reason}",
+            f"Discovered by: {followup.discovered_by}",
+            f"Origin session: {followup.origin_session_id}",
+            "Discovery evidence:",
+            json.dumps(evidence, ensure_ascii=False),
+        ])
+
         with self.get_connection() as conn:
             child_task_id = kanban_db.create_task(
                 conn,
                 title=followup.title,
-                body=f"Reason: {followup.reason}\nDiscovered by: {followup.discovered_by}",
+                body=body,
                 created_by=followup.discovered_by,
-                parents=[parent_task_id],
+                # A required child must be runnable immediately while the
+                # parent waits.  Kanban links encode prerequisites, so the
+                # dependency is child -> parent (not parent -> child). The
+                # durable parent_task_id remains in the child body/journal
+                # projection as the product hierarchy identity.
+                parents=[] if followup.required_for_parent else [parent_task_id],
                 session_id=followup.origin_session_id,
                 board=self.board,
             )
             if followup.required_for_parent:
                 try:
+                    kanban_db.link_tasks(conn, child_task_id, parent_task_id)
                     kanban_db.block_task(
                         conn,
                         parent_task_id,
                         reason=f"Blocked by required follow-up child task {child_task_id}: {followup.title}",
-                        kind="needs_input",
+                        kind="dependency",
                     )
                 except Exception as e:
                     _log.warning("Could not transition parent task %s to blocked: %s", parent_task_id, e)
@@ -125,7 +167,10 @@ class WorkstationKanbanBridge:
                 "child_task_id": child_task_id,
                 "reason": followup.reason,
                 "discovered_by": followup.discovered_by,
+                "origin_session_id": followup.origin_session_id,
+                "parent_task_id": parent_task_id,
                 "required_for_parent": followup.required_for_parent,
+                "evidence": evidence,
             },
         )
         return child_task_id

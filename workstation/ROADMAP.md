@@ -200,7 +200,7 @@ The LAN, Tailscale, external-extension, memory/perception/drift and Lightpanda M
 - Lightpanda runtime for ultra-light headless tasks (`workstation/lightpanda.py` & `workstation/routing.py` - `LightpandaAdapter`), hardened with transparent gzip/deflate decompression and fail-closed auth redirect detection (H-105).
 - Windows filesystem atomic resilience: eliminated `EPERM` / `EBUSY` in `BrowserSessionStateFilePersistence` via `copyFileSync` fallback (H-107).
 
-## V2.1 — Native Chrome Web Store Extensions Support — Completed
+## V2.1 — Native Chrome Web Store Extensions Support — Partial / Agentic Install Slice Implemented
 
 - **Chrome Web Store Extension Downloader & Unpacker** — **Completed** (`workstation/extensions.py` - `ChromeExtensionManager`):
   - Mecanismo para baixar pacotes `.crx` diretamente da Chrome Web Store a partir do ID da extensão ou URL pública (via endpoint oficial de atualização do Chromium: `clients2.google.com/service/update2/crx`).
@@ -208,10 +208,15 @@ The LAN, Tailscale, external-extension, memory/perception/drift and Lightpanda M
 - **Native Electron Runtime Loading** — **Completed** (`apps/desktop/electron/workstation-browser-runtime.ts` - `loadInstalledExtensions`):
   - Integração no `WorkstationBrowserRuntime` via `this.browserSession.loadExtension(extensionPath, { allowFileAccess: true })`.
   - Persistência e restauração automática das extensões instaladas durante a inicialização da sessão do Chromium.
-- **Agent Tooling & Extension Interaction** — **Completed** (`workstation/extensions.py`):
-  - Consulta de extensões ativas, resolução de caminhos de opções (`chrome-extension://<id>/options.html`) e integração de adblockers/extensões instaladas.
-- **Desktop UI — Extension Management Hub** — **Completed** (`workstation/extensions.py`):
-  - API de instalação, desinstalação e listagem de extensões.
+- **Agent Tooling & Governed Extension Interaction** — **Implemented vertical slice** (`tools/workstation_extensions.py`, `workstation/policy.py`, `apps/desktop/electron/workstation-browser-runtime.ts`):
+  - Ferramentas de sessão Desktop para instalar, listar, remover e abrir opções; elas não aparecem em CLI/gateway sem superfície Desktop.
+  - A instalação baixa para memória, inspeciona permissões do `manifest.json`, classifica risco e consulta `ScopedPolicyEngine`; permissões médias/altas e remoção exigem o approval gate canônico.
+  - Sucesso de instalação exige `install -> Electron load -> runtime verification`; falha de load remove o artefato local em vez de declarar a capability pronta.
+  - Todas as transições são registradas no `ExecutionJournal` canônico.
+- **Hardening remaining**:
+  - Não existe ainda um catálogo/busca semântica da Chrome Web Store: o agente recebe ID ou URL pública, em vez de selecionar extensões a partir de resultados de marketplace.
+  - Não há UI dedicada de gerenciamento de extensões no Desktop; a superfície atual é agent/tool + BrowserTask options page.
+  - Atualização in-place de uma extensão instalada ainda requer uma transação de runtime de duas versões; o slice atual é estrito para a instalação solicitada e faz rollback quando não consegue verificar a carga.
 
 ## V2.5 — Agent Runtime + System Capability Control Plane — Completed
 

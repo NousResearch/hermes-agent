@@ -161,6 +161,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         # Transports, resolved in run().  Draft: animated frames via adapter.send_draft;
         # the final still uses first-send; the first failure disables drafts.  Native
         # (WeCom msgtype "stream"): the ONLY channel — any failure falls back to edit/send.
+        # Whether the gateway routed stream deltas here. False = this consumer exists only for
+        # interim commentary (text streaming off, interim assistant messages on), so it can never
+        # carry the turn final and the gateway's duplicate-risk diagnostic must ignore it.
+        self.receives_deltas = False
         self._use_draft_streaming = False
         self._draft_id: Optional[int] = None
         self._draft_failures = 0

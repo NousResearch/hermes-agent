@@ -1,4 +1,4 @@
-"""Local argument validation for ``tool_call`` against a deferred tool's schema."""
+"""Local argument validation for ``invoke_tool`` against a deferred tool's schema."""
 
 from __future__ import annotations
 
@@ -68,11 +68,11 @@ def _validation_path(error: Any) -> str:
 def _validation_error(message: str, *, path: str, constraint: str, parameters: Any) -> str:
     return tool_error(
         message, path=path, constraint=constraint, parameters=parameters,
-        hint="Retry tool_call with 'arguments' matching the parameters schema above.")
+        hint="Retry invoke_tool with 'arguments' matching the parameters schema above.")
 
 
 def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
-    """Validate ``tool_call`` arguments against the deferred tool's schema. Models invoke
+    """Validate ``invoke_tool`` arguments against the deferred tool's schema. Models invoke
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
     downstream failure makes cheap models loop. Required-field probe first, then the same
     schema-guided coercion normal dispatch applies, then jsonschema on the repaired copy.
@@ -96,7 +96,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
                    if isinstance(required, list) else [])
         if missing:
             return _validation_error(
-                f"tool_call to '{name}' is missing required argument(s): "
+                f"invoke_tool to '{name}' is missing required argument(s): "
                 f"{', '.join(missing)}. The tool was NOT invoked.",
                 path="arguments", constraint="required", parameters=params)
         validation_schema = _schema_for_local_validation(params)
@@ -128,7 +128,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         if len(detail) > 600:
             detail = detail[:597] + "..."
         return _validation_error(
-            f"tool_call to '{name}' failed argument validation at {path} "
+            f"invoke_tool to '{name}' failed argument validation at {path} "
             f"({constraint}): {detail}. The tool was NOT invoked.",
             path=path, constraint=constraint, parameters=params)
     except Exception:  # pragma: no cover — never block dispatch on validator bugs
@@ -137,7 +137,7 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
 
 
 def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
+    """Normalize ``invoke_tool`` arguments into a ``calls[]`` list of entries.
 
     Accepts the advertised batch shape ``{"calls": [{"name", "arguments"}, ...]}``
     and, tolerantly, the legacy single shape ``{"name": ..., "arguments": ...}``
@@ -149,22 +149,22 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
     if raw_calls is None:
         # Legacy single shape.
         if not str(args.get("name") or "").strip():
-            return [], "tool_call requires 'calls' (an array of {name, arguments})"
+            return [], "invoke_tool requires 'calls' (an array of {name, arguments})"
         raw_calls = [{"name": args.get("name"), "arguments": args.get("arguments")}]
     if isinstance(raw_calls, dict):
         raw_calls = [raw_calls]
     if not isinstance(raw_calls, list) or not raw_calls:
-        return [], "tool_call 'calls' must be a non-empty array of {name, arguments}"
+        return [], "invoke_tool 'calls' must be a non-empty array of {name, arguments}"
 
     entries: List[Dict[str, Any]] = []
     for position, raw in enumerate(raw_calls):
         if not isinstance(raw, dict):
-            return [], f"tool_call calls[{position}] must be an object with 'name' and 'arguments'"
+            return [], f"invoke_tool calls[{position}] must be an object with 'name' and 'arguments'"
         name = str(raw.get("name") or "").strip()
         if not name:
-            return [], f"tool_call calls[{position}] requires a 'name'"
+            return [], f"invoke_tool calls[{position}] requires a 'name'"
         if name in BRIDGE_TOOL_NAMES:
-            return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
+            return [], f"invoke_tool cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")
         if raw_args is None:
             raw_args = {}
@@ -172,8 +172,8 @@ def normalize_tool_call_entries(args: Dict[str, Any]) -> Tuple[List[Dict[str, An
             try:
                 raw_args = json.loads(raw_args)
             except json.JSONDecodeError as e:
-                return [], f"tool_call calls[{position}].arguments is not valid JSON: {e}"
+                return [], f"invoke_tool calls[{position}].arguments is not valid JSON: {e}"
         if not isinstance(raw_args, dict):
-            return [], f"tool_call calls[{position}].arguments must be an object"
+            return [], f"invoke_tool calls[{position}].arguments must be an object"
         entries.append({"name": name, "arguments": raw_args})
     return entries, None

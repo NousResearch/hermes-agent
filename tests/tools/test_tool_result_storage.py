@@ -333,7 +333,7 @@ class TestSpillover:
         content = "x" * 60_000
         result = maybe_persist_tool_result(
             content=content,
-            tool_name="tool_call",
+            tool_name="invoke_tool",
             tool_use_id="tc_mcp_1",
             env=None,
             threshold=30_000,
@@ -412,7 +412,7 @@ class TestSpillover:
         content = "w" * 60_000
         result = maybe_persist_tool_result(
             content=content,
-            tool_name="tool_call",
+            tool_name="invoke_tool",
             tool_use_id="tc_fail_1",
             env=None,
             threshold=30_000,
@@ -456,7 +456,7 @@ class TestSpillover:
 
         maybe_persist_tool_result(
             content="v" * 60_000,
-            tool_name="tool_call",
+            tool_name="invoke_tool",
             tool_use_id="tc_prune_1",
             env=None,
             threshold=30_000,

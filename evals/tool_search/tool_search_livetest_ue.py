@@ -233,7 +233,7 @@ def run_one(scenario, mode, scale, rep, out_dir: Path):
     bridge_call_log = base._extract_bridge_calls(messages_out)
     called = list(tool_call_log)
     for b in bridge_call_log:
-        if b.get("name") == "tool_call":
+        if b.get("name") == "invoke_tool":
             inner = (b.get("args") or {}).get("name")
             if inner:
                 called.append(inner)

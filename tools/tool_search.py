@@ -1,6 +1,6 @@
 """Progressive tool disclosure ("tool search"): MCP/plugin tools and a curated set of
 event-triggered core tools are replaced in the model-visible array by three bridge tools —
-tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
+tool_search / tool_describe / invoke_tool. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
 and session-gated GUI toolsets never defer unless named in ``defer``; ANY deferrable tool
 activates the bridge (the listing scales with budget, not activation); the catalog is
 stateless — rebuilt from the live tool-defs every assembly (a session-keyed one drifts and
@@ -299,7 +299,7 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
             TOOL_CALL_NAME,
             "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
             "— one entry per invocation; a single call is an array of one. "
-            "Local tools require one entry per tool_call. Only connectors__ names "
+            "Local tools require one entry per invoke_tool. Only connectors__ names "
             "may be batched together; mixed and multi-local batches are rejected. "
             "Connector entries execute individually with results in input order. "
             f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
@@ -523,7 +523,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
 
 def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     """Deferrable names in the *pre-assembly* ``tool_defs`` of the session scope — the
-    universe ``tool_call`` may reach. Gates bridge dispatch AND the executor unwrap so a
+    universe ``invoke_tool`` may reach. Gates bridge dispatch AND the executor unwrap so a
     restricted session cannot invoke an out-of-scope tool via the bridge."""
     defer_tools = load_config_readonly().effective_defer_tools
     return frozenset(n for n in _tool_def_names(tool_defs)
@@ -531,7 +531,7 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
 
 
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
-    """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
+    """Parse an ``invoke_tool`` invocation into (underlying_name, args, error_msg).
 
     Used by:
     * the dispatcher in ``model_tools.handle_function_call``,
@@ -552,7 +552,7 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
 
     if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
         return None, {}, (
-            "Local tools require one entry per tool_call; mixed and multi-local batches are not supported."
+            "Local tools require one entry per invoke_tool; mixed and multi-local batches are not supported."
         )
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
@@ -562,7 +562,7 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
-            "list already, call it directly instead of via tool_call."
+            "list already, call it directly instead of via invoke_tool."
         )
     return name, raw_args, None
 

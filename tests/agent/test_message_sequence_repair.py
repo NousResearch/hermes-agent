@@ -1412,7 +1412,7 @@ def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
         {"role": "assistant", "content": "",
          "tool_calls": [{"id": "call_1", "type": "function",
                          "function": {
-                             "name": "tool_call",
+                             "name": "invoke_tool",
                              "arguments": ('{"name": "mcp__github__create_issue",'
                                            ' "arguments": {"title": "Bug"}}'),
                          }}]},
@@ -1422,7 +1422,7 @@ def test_sanitize_realigns_bridged_tool_result_name_with_call_name():
     ]
     out = sanitize_api_messages(list(messages))
     result = [m for m in out if m.get("role") == "tool"][0]
-    assert result["name"] == "tool_call"
+    assert result["name"] == "invoke_tool"
     # The internal name stays available for the session DB / UI, and the
     # caller's own message objects are untouched (per-call copy only).
     assert result["tool_name"] == "mcp__github__create_issue"
@@ -1472,12 +1472,12 @@ def test_sanitize_realigns_bridged_name_when_call_id_is_padded():
         {"role": "user", "content": "file an issue"},
         {"role": "assistant", "content": "",
          "tool_calls": [{"id": " call_1 ", "type": "function",
-                         "function": {"name": "tool_call", "arguments": "{}"}}]},
+                         "function": {"name": "invoke_tool", "arguments": "{}"}}]},
         {"role": "tool", "name": "mcp__github__create_issue",
          "tool_call_id": "call_1", "content": "{}"},
     ]
     out = sanitize_api_messages(list(messages))
-    assert [m["name"] for m in out if m.get("role") == "tool"] == ["tool_call"]
+    assert [m["name"] for m in out if m.get("role") == "tool"] == ["invoke_tool"]
 
 
 def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():

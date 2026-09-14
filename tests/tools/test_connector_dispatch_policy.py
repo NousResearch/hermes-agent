@@ -58,7 +58,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
     kwargs = dict(enabled_toolsets=["connections"], session_id="policy-session", tool_call_id="policy-call",
                   skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
                   skip_tool_execution_middleware=True)
-    result = json.loads(model_tools.handle_function_call("tool_call", {"calls": calls}, **kwargs))
+    result = json.loads(model_tools.handle_function_call("invoke_tool", {"calls": calls}, **kwargs))
     assert "denied" in json.dumps(result["results"][0]["error"])
     if blocked_by == "execution":
         assert result["results"][0]["error"] == {
@@ -72,7 +72,7 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
     assert result["total_count"] == 2 and result["success_count"] == result["error_count"] == 1
 
     wire.clear()
-    result = json.loads(model_tools.handle_function_call("tool_call", {"calls": calls[:1]}, **kwargs))
+    result = json.loads(model_tools.handle_function_call("invoke_tool", {"calls": calls[:1]}, **kwargs))
     assert result["error_count"] == 1
     assert not wire  # An entirely blocked batch never constructs/sends an execute request.
 
@@ -99,7 +99,7 @@ def test_stop_during_a_connector_batch_leaves_unstarted_entries_unsent(monkeypat
              for tool in ("FETCH_EMAILS", "SEND_EMAIL", "CREATE_DRAFT")]
     try:
         result = json.loads(model_tools.handle_function_call(
-            "tool_call", {"calls": calls}, enabled_toolsets=["connections"], session_id="stop-session",
+            "invoke_tool", {"calls": calls}, enabled_toolsets=["connections"], session_id="stop-session",
             skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
             skip_tool_execution_middleware=True))
     finally:

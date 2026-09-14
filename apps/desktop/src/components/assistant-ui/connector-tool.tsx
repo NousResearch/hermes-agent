@@ -379,7 +379,8 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
   const batch = Array.isArray(input.calls) ? input.calls : [input]
 
   // Mixed remote batches keep their complete disclosure and original result order.
-  if (props.toolName === 'tool_call' && calls.length !== batch.length) {
+  const isBridgeBatch = props.toolName === 'invoke_tool' || props.toolName === 'tool_call'
+  if (isBridgeBatch && calls.length !== batch.length) {
     return <ToolFallback {...props} />
   }
 
@@ -388,7 +389,7 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
 
   const repair = calls
     .filter((_call, index) => {
-      const item = recordOf(props.toolName === 'tool_call' ? results[index] : props.result)
+      const item = recordOf(isBridgeBatch ? results[index] : props.result)
 
       return ['CONNECTION_REQUIRED', 'CONNECTION_EXPIRED', 'AUTH_REQUIRED'].includes(
         String(recordOf(item.error).code ?? '')
@@ -403,7 +404,7 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
     <>
       {calls.map((call, index) => {
         const item =
-          props.toolName === 'tool_call' ? (results[index] ?? (output.error ? output : undefined)) : props.result
+          isBridgeBatch ? (results[index] ?? (output.error ? output : undefined)) : props.result
 
         const result = recordOf(item)
         // SAFETY: connectorCalls includes only names accepted by connectorToolName.

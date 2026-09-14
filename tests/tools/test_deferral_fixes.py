@@ -43,7 +43,7 @@ def _tc(name, arguments="{}", call_id=None):
 def _bridge_tc(underlying, arguments=None, call_id=None):
     """A tool_call bridge invocation as the model emits it."""
     return _tc(
-        "tool_call",
+        "invoke_tool",
         json.dumps({"name": underlying, "arguments": arguments or {}}),
         call_id=call_id,
     )
@@ -135,7 +135,7 @@ class TestBridgePeelInPlanner:
 
     def test_malformed_bridge_call_stays_a_barrier(self):
         calls = [
-            _tc("tool_call", '{"arguments": {}}', call_id="bad"),  # no name
+            _tc("invoke_tool", '{"arguments": {}}', call_id="bad"),  # no name
             _tc("web_search", '{"query": "x"}', call_id="r1"),
             _tc("web_search", '{"query": "y"}', call_id="r2"),
         ]

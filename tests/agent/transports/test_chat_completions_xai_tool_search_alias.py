@@ -57,14 +57,14 @@ class TestRenameToolSearchBridgeForXai:
         assert out[0]["function"]["parameters"] == fn["parameters"]
 
     def test_sibling_bridge_names_not_reserved(self):
-        # xAI's error names only tool_search; tool_describe / tool_call stay
+        # xAI's error names only tool_search; tool_describe / invoke_tool stay
         # on the wire unchanged so the model keeps calling them directly.
         tools = [
             {"type": "function", "function": {"name": "tool_describe"}},
-            {"type": "function", "function": {"name": "tool_call"}},
+            {"type": "function", "function": {"name": "invoke_tool"}},
         ]
         out, alias_map = _rename_tool_search_bridge_for_xai(tools)
-        assert [t["function"]["name"] for t in out] == ["tool_describe", "tool_call"]
+        assert [t["function"]["name"] for t in out] == ["tool_describe", "invoke_tool"]
         assert alias_map == {}
 
     def test_ordinary_tools_untouched(self):

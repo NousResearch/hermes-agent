@@ -108,6 +108,9 @@ _install_plugin_debug_handler()
 VALID_HOOKS: Set[str] = {
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
+    # ``tool_activity`` (list[str]) is the chronological tool names called THIS turn only
+    # (turn-boundary-scoped, same rule as agent/turn_finalizer.py::_last_turn_reasoning) — lets
+    # a hook judge "was this claim looked up?" without maintaining its own tool-call ledger.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.

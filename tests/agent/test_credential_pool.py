@@ -98,11 +98,12 @@ def test_codex_terminal_manual_refresh_failure_quarantines_only_pool_row(tmp_pat
         )
 
     monkeypatch.setattr(credential_pool.auth_mod, "refresh_codex_oauth_pure", rejected)
-    pool = credential_pool.load_pool("openai-codex")
+    first = credential_pool.load_pool("openai-codex")
+    waiter = credential_pool.load_pool("openai-codex")
 
-    assert pool.refresh_matching_api_key(stale) is None
-    assert pool.refresh_matching_api_key(stale) is None
-    selected = credential_pool.load_pool("openai-codex").select()
+    assert first.refresh_matching_api_key(stale) is None
+    assert waiter.refresh_matching_api_key(stale) is None
+    selected = waiter.select()
     assert selected is not None and selected.runtime_api_key == singleton
     assert refresh_calls == [(stale, "refresh-a")]
     stored = json.loads((tmp_path / "hermes" / "auth.json").read_text())

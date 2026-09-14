@@ -1996,6 +1996,21 @@ def _prepare_job_prompt(
             cancel_event=cancel_event,
         )
         _ran_ok, _script_output = prerun_script
+        if not _ran_ok:
+            now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+            output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {now_iso}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+
+## Pre-run Script Error
+
+```
+{_script_output}
+```
+"""
+            return False, output, "", f"pre-run script failed: {_script_output}"
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info("Job '%s' (ID: %s): wakeAgent=false, skipping agent run", job_name, job_id)
             silent_doc = (

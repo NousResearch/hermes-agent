@@ -44,4 +44,13 @@ describe('planGatewayRecovery', () => {
     expect(plan.attempts).toEqual([GATEWAY_RECOVERY_WINDOW_MS + 100])
     expect(plan.recover).toBe(true)
   })
+
+  it('allows forced recovery even when attempt budget is exhausted', () => {
+    const attempts = [1000, 2000, 3000]
+    const plan = planGatewayRecovery(null, 'sess-1', attempts, 4000, true)
+
+    expect(plan.recover).toBe(true)
+    expect(plan.sid).toBe('sess-1')
+    expect(plan.attempts).toEqual([1000, 2000, 3000, 4000])
+  })
 })

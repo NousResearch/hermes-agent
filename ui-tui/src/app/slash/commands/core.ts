@@ -766,5 +766,14 @@ export const coreCommands: SlashCommand[] = [
         })
       )
     }
+  },
+
+  {
+    help: 'recover/restart the gateway and reconnect session',
+    name: 'recover',
+    run: (_arg, ctx) => {
+      ctx.transcript.sys('recovering gateway and reconnecting session…')
+      ctx.gateway.gw.start()
+    }
   }
 ]

@@ -106,6 +106,10 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Rooms can span machines.** The New Group Chat picker seats Bots from any registered connection; each member's turns run on its own machine, in its own `Group: <name>` session there. Cross-machine members carry a device badge (`dixie · Mac Mini`) in the room and in other members' transcripts, and the disambiguated `@name-device` handle works in room mentions — so same-named agents on two machines never blur together.
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](/user-guide/features/hooks#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
 
+### Relaying into a group from another session (`hermes group`)
+
+Any agent session — a Discord thread, the CLI, a Desktop chat — can push a request into a gateway-hosted group **on your behalf** and report the deliberation back: `hermes group send <group> "…" --as "Pax via Discord" --wait`. The relaying agent is not a member; the message lands as a user message with the relay recorded as who sent it, the members deliberate headlessly in the gateway's hosted-room worker, and `--wait` streams their replies until the room settles. Run it in the background and the completion notification carries the replies into the originating session. See [`hermes group`](../reference/cli-commands.md#hermes-group).
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

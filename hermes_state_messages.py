@@ -894,8 +894,14 @@ class SessionMessagesMixin:
     def _fetch_conversation_rows(self, session_ids: List[str], active_clause: str, *, with_session_id: bool):
         """``_CONVERSATION_ROW_COLUMNS`` rows for *session_ids* ORDER BY id (timestamps are not monotonic
         and would break tool-call adjacency)."""
+        columns = self._CONVERSATION_ROW_COLUMNS
+        if self.read_only:
+            with self._read_ctx() as conn:
+                if "tool_result_format" not in self._message_column_names(conn):
+                    # Legacy read-only stores cannot migrate; absent provenance is NULL.
+                    columns = columns.replace("tool_result_format", "NULL AS tool_result_format")
         return self._read_all(
-            f"SELECT {'session_id, ' if with_session_id else ''}{self._CONVERSATION_ROW_COLUMNS} "
+            f"SELECT {'session_id, ' if with_session_id else ''}{columns} "
             f"FROM messages WHERE session_id IN ({_placeholders(session_ids)})"
             f"{active_clause} ORDER BY id", tuple(session_ids))
 

@@ -768,6 +768,17 @@ function Get-UsableUvVersion($UvPath) {
     return $null
 }
 
+# Probe the managed uv and purge it when it does not run, so a broken shim or
+# truncated download is never left in place to fail later in the venv stage.
+function Get-UsableManagedUv($ManagedUv, $FailureMessage) {
+    if (-not (Test-Path $ManagedUv)) { return $null }
+    $version = Get-UsableUvVersion $ManagedUv
+    if ($version) { return $version }
+    Write-Info $FailureMessage
+    Remove-Item $ManagedUv -Force -ErrorAction SilentlyContinue
+    return $null
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -811,15 +822,11 @@ function Install-Uv {
         return $ExePath
     }
 
-    if (Test-Path $managedUv) {
-        $version = Get-UsableUvVersion $managedUv
-        if ($version) {
-            $script:UvCmd = $managedUv
-            Write-Success "Managed uv found ($version)"
-            return $true
-        }
-        Write-Info "Existing managed uv at $managedUv is not usable; replacing it ..."
-        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+    $version = Get-UsableManagedUv $managedUv "Existing managed uv at $managedUv is not usable; replacing it ..."
+    if ($version) {
+        $script:UvCmd = $managedUv
+        Write-Success "Managed uv found ($version)"
+        return $true
     }
 
     Write-Info "Installing managed uv into $HermesHome\bin ..."
@@ -850,29 +857,18 @@ function Install-Uv {
         & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
         $installerOutput += "--- uv installer source: astral.sh ---"
         $installerOutput += @($astralOut | ForEach-Object { "$_" })
-        $managedUvVersion = if (Test-Path $managedUv) {
-            Get-UsableUvVersion $managedUv
-        }
+        $managedUvVersion = Get-UsableManagedUv $managedUv "astral.sh produced an unusable uv; removing it before trying the mirror ..."
         if ($managedUvVersion) {
             Write-Info "uv installer succeeded via astral.sh"
         } else {
-            if (Test-Path $managedUv) {
-                Write-Info "astral.sh produced an unusable uv; removing it before trying the mirror ..."
-                Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
-            }
             Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
             $ghOut = @()
             & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
             $installerOutput += "--- uv installer source: GitHub releases ---"
             $installerOutput += @($ghOut | ForEach-Object { "$_" })
-            $managedUvVersion = if (Test-Path $managedUv) {
-                Get-UsableUvVersion $managedUv
-            }
+            $managedUvVersion = Get-UsableManagedUv $managedUv "GitHub uv installer produced an unusable binary; removing it ..."
             if ($managedUvVersion) {
                 Write-Info "uv installer succeeded via GitHub releases"
-            } elseif (Test-Path $managedUv) {
-                Write-Info "GitHub uv installer produced an unusable binary; removing it ..."
-                Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
             }
         }
 
@@ -916,14 +912,11 @@ function Install-Uv {
 
         $ErrorActionPreference = $prevEAP
 
-        if (Test-Path $managedUv) {
-            $version = Get-UsableUvVersion $managedUv
-            if ($version) {
-                $script:UvCmd = $managedUv
-                Write-Success "Managed uv installed ($version)"
-                return $true
-            }
-            Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+        $version = Get-UsableManagedUv $managedUv "Installed uv at $managedUv does not run; removing it ..."
+        if ($version) {
+            $script:UvCmd = $managedUv
+            Write-Success "Managed uv installed ($version)"
+            return $true
         }
 
         Write-Err "uv installed but not found at $managedUv"
@@ -1231,17 +1224,13 @@ function Resolve-UvCmd {
     }
 
     # Check the managed location first -- this is where Install-Uv puts it.
+    # Same self-heal as Install-Uv's rerun path: a salvaged Chocolatey shim
+    # (or a truncated download) would otherwise be accepted here and fail
+    # later inside the venv stage with an unrelated-looking error.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
-    if (Test-Path $managedUv) {
-        if (Get-UsableUvVersion $managedUv) {
-            $script:UvCmd = $managedUv
-            return
-        }
-        # Same self-heal as Install-Uv's rerun path: a salvaged Chocolatey
-        # shim (or a truncated download) would otherwise be accepted here and
-        # fail later inside the venv stage with an unrelated-looking error.
-        Write-Info "Existing managed uv at $managedUv is not usable; removing it. Rerun install.ps1 -Stage uv to reinstall."
-        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+    if (Get-UsableManagedUv $managedUv "Existing managed uv at $managedUv is not usable; removing it. Rerun install.ps1 -Stage uv to reinstall.") {
+        $script:UvCmd = $managedUv
+        return
     }
 
     # Fall back to PATH (covers edge cases where the installer ran in a

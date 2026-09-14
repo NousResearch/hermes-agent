@@ -1345,6 +1345,17 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def configured_worker_resource_groups() -> Mapping[str, Any]:
+    """Read worker resource rules for the standalone dispatcher."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("worker_resource_groups")
+    except Exception:
+        return {}
+    return raw if isinstance(raw, Mapping) else {}
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -2418,7 +2429,7 @@ def run_daemon(
     SIGINT / SIGTERM so it is systemd-friendly. ``stop_event`` and ``on_tick``
     are test hooks. Each tick resolves ``kanban.max_in_progress`` exactly like
     the gateway dispatcher and ``hermes kanban dispatch`` — the standalone
-    daemon must not be the one uncapped entry point.
+    daemon must not be an unconstrained entry point.
     """
     import threading
 
@@ -2442,11 +2453,13 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            worker_resource_groups = configured_worker_resource_groups()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
+                    worker_resource_groups=worker_resource_groups,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

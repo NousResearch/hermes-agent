@@ -118,7 +118,7 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: {}, type: 'message.start' } as any)
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: { text: 'Started a todo list.' }, type: 'message.complete' } as any)
@@ -195,7 +195,7 @@ describe('createGatewayEventHandler', () => {
     const todos = [{ content: 'Serve tiny latte', id: 'serve', status: 'completed' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
     expect(getTurnState().todos).toEqual([])
@@ -214,7 +214,7 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: {}, type: 'message.start' } as any)
@@ -340,7 +340,7 @@ describe('createGatewayEventHandler', () => {
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: { name: 'todo', todos: [], tool_id: 'todo-1' }, type: 'tool.complete' } as any)
@@ -1480,7 +1480,7 @@ describe('createGatewayEventHandler', () => {
           todos: [{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }],
           tool_id: 't-1'
         },
-        type: 'tool.start'
+        type: 'tool.complete'
       } as any)
 
       // Pre-interrupt todos should land in turn state.
@@ -1494,7 +1494,7 @@ describe('createGatewayEventHandler', () => {
       })
 
       onEvent({ payload: { text: 'still thinking…' }, type: 'reasoning.delta' } as any)
-      // Post-interrupt tool.start with a todos payload — must NOT mutate todos.
+      // Post-interrupt tool.complete with a todos payload — must NOT mutate todos.
       onEvent({
         payload: {
           context: 'post',
@@ -1502,7 +1502,7 @@ describe('createGatewayEventHandler', () => {
           todos: [{ content: 'late ghost', id: 'todo-ghost', status: 'pending' }],
           tool_id: 't-2'
         },
-        type: 'tool.start'
+        type: 'tool.complete'
       } as any)
       // Late tool.generating must NOT push a 'drafting …' line into the trail.
       const trailBefore = getTurnState().turnTrail.length

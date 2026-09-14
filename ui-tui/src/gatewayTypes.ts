@@ -2,8 +2,8 @@ import type { UsageModelData } from '@hermes/shared/billing'
 import type {
   GatewayEvent,
   GatewayEventName,
-  GatewayTranscriptMessage,
-  SessionInflightTurn,
+  InflightTurn,
+  TranscriptMessage,
   Usage
 } from '@hermes/shared/gateway-events'
 import type { HermesSkin } from '@hermes/shared/skin'
@@ -201,10 +201,10 @@ export interface SessionActiveListResponse {
 }
 
 export interface SessionActivateResponse {
-  inflight?: null | SessionInflightTurn
+  inflight?: null | InflightTurn
   info?: SessionInfo
   message_count?: number
-  messages: GatewayTranscriptMessage[]
+  messages: TranscriptMessage[]
   running?: boolean
   session_id: string
   session_key?: string
@@ -273,7 +273,7 @@ export interface SessionCompressResponse {
   before_messages?: number
   before_tokens?: number
   info?: SessionInfo
-  messages?: GatewayTranscriptMessage[]
+  messages?: TranscriptMessage[]
   removed?: number
   summary?: {
     headline?: string

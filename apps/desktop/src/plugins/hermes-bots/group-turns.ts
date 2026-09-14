@@ -445,9 +445,11 @@ const GROUP_TURN_HARD_CAP_MS = 20 * 60000
  *  blocker). */
 export function syncGroupClarify(group: string, member: GroupMember, state: GroupSessionSnapshot | null): boolean {
   const key = `${group}::${groupMemberKey(member)}`
+
   const openClarify = Array.isArray(state?.open_requests)
     ? state.open_requests.find(entry => entry?.method === 'clarify' && typeof entry.id === 'string' && entry.id)
     : null
+
   const clarify: GroupPendingClarify | null = openClarify
     ? { ...(openClarify.params as GroupPendingClarify), request_id: openClarify.id }
     : null

@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
 import { stripAnsi } from '@hermes/shared/ansi'
 import { relativeLuminance } from '@hermes/shared/color'
-import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { StreamDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
@@ -920,8 +920,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         turnController.showNotice({
-          id: p.id,
-          key: p.key,
+          id: p.id ?? undefined,
+          key: p.key ?? undefined,
           kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
           level: isNoticeLevel(p.level) ? p.level : 'info',
           text: p.text,
@@ -1209,7 +1209,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        turnController.recordTodos(ev.payload.todos)
         turnController.recordToolStart(
           ev.payload.tool_id,
           ev.payload.name ?? 'tool',
@@ -1241,16 +1240,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             inlineDiffText,
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.duration_s,
+            ev.payload.duration_s ?? undefined,
             resultText
           )
         } else {
           turnController.recordToolComplete(
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.summary,
-            ev.payload.duration_s,
-            ev.payload.todos,
+            ev.payload.summary ?? undefined,
+            ev.payload.duration_s ?? undefined,
+            ev.payload.todos ?? undefined,
             resultText
           )
         }
@@ -1446,7 +1445,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.delta':
-        turnController.recordMessageDelta(ev.payload ?? {})
+        turnController.recordMessageDelta(ev.payload ?? ({} as StreamDeltaPayload))
 
         return
       case 'message.interim': {
@@ -1481,7 +1480,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         if (ev.payload?.usage) {
-          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage) }))
+          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage ?? undefined) }))
         }
 
         // Billing wall (out of credits / payment required): open a proper

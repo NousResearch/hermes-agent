@@ -62,15 +62,15 @@ class SessionLiveInfo(OpenModel):
     """``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of
     ``session.create`` / ``session.resume`` / ``session.activate`` results."""
 
-    model: str = ""
+    model: str
     provider: str = ""
     reasoning_effort: str = ""
     service_tier: str = ""
     fast: bool = False
     yolo: bool = False
     approval_mode: str = "manual"
-    tools: dict[str, list[str]] = Field(default_factory=dict)
-    skills: dict[str, JsonValue] = Field(default_factory=dict)
+    tools: dict[str, list[str]]
+    skills: dict[str, list[str]]
     cwd: str = ""
     branch: str | None = None
     project: ProjectRef | None = None
@@ -126,16 +126,20 @@ class StoredSessionRow(OpenModel):
 
 
 class TranscriptMessage(OpenModel):
-    """One stored transcript row as ``session.history`` / resume ``messages`` deliver it."""
+    """One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):
+    ``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the
+    durable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.
+    Assistant detail sidecars (``reasoning``, …) ride as extra keys."""
 
     role: str
-    content: JsonValue = None
+    text: str | None = None
     timestamp: float | None = None
-    tool_calls: list[dict[str, JsonValue]] | None = None
-    tool_call_id: str | None = None
-    name: str | None = None
-    display_kind: str | None = None
     row_id: int | None = None
+    display_kind: str | None = None
+    display_metadata: JsonValue | None = None
+    name: str | None = None
+    context: str | None = None
+    args: dict[str, JsonValue] | None = None
     reasoning: str | None = None
 
 

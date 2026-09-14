@@ -1,6 +1,6 @@
 import type { GatewayEventPayload } from '@/lib/chat-messages'
 import { $clarifyRequests, type ClarifyRequest, clearClarifyRequest } from '@/store/clarify'
-import type { SessionResumeResponse } from '@/types/hermes'
+import type { SessionResumeResult } from '@/types/hermes'
 
 export interface PendingClarifyResumeState {
   authoritativeAbsent: boolean
@@ -21,7 +21,7 @@ export interface PendingClarifyResumeState {
  * newer request that arrived while the response was in flight is left alone.
  */
 export function restorePendingClarifyFromSnapshot(
-  response: Pick<SessionResumeResponse, 'open_requests'>,
+  response: Pick<SessionResumeResult, 'open_requests'>,
   sessionId: string,
   resumeStartedAt: number,
   requestIdAtStart?: string

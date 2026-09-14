@@ -16,7 +16,7 @@ import {
   getSession,
   type ProfileScope,
   type SessionInfo,
-  type SessionResumeResponse,
+  type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -2774,7 +2774,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       session_id: 'stored-A'
     })
 
-    const deferredResume = deferred<SessionResumeResponse>()
+    const deferredResume = deferred<SessionResumeResult>()
 
     const requestGatewayMock = vi.fn((method: string, _params?: Record<string, unknown>) => {
       if (method === 'session.resume') {
@@ -3094,7 +3094,7 @@ describe('resumeSession warm-cache mapping integrity', () => {
       current: new Map([['rt-A', clientState('stored-A')]])
     }
 
-    const activated = deferred<SessionResumeResponse>()
+    const activated = deferred<SessionResumeResult>()
 
     const requestGateway = vi.fn((method: string) =>
       method === 'session.activate' ? activated.promise : Promise.resolve({})

@@ -628,7 +628,7 @@ export interface SessionMessagesResponse {
   session_id: string
 }
 
-export interface SessionResumeResponse {
+export interface SessionResumeResult {
   /** Present when the backend found a fresh crash-interrupted turn and
    *  scheduled its automatic continuation; the turn arrives as a normal
    *  message.start stream right after this resume. */

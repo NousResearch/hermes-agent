@@ -4880,7 +4880,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Billing Url"
           },
           "is_nous": {
@@ -4908,6 +4907,7 @@
           "provider",
           "provider_label",
           "model",
+          "billing_url",
           "is_nous",
           "message"
         ],
@@ -24503,7 +24503,6 @@
         "description": "The refreshed ``session.info`` view (full agent view, or the lazy shape).",
         "properties": {
           "model": {
-            "default": "",
             "title": "Model",
             "type": "string"
           },
@@ -24548,7 +24547,12 @@
             "type": "object"
           },
           "skills": {
-            "additionalProperties": true,
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "title": "Skills",
             "type": "object"
           },
@@ -24724,6 +24728,11 @@
             "title": "Lazy"
           }
         },
+        "required": [
+          "model",
+          "tools",
+          "skills"
+        ],
         "title": "SessionCwdSetResult",
         "type": "object"
       },
@@ -25348,7 +25357,6 @@
         "description": "``tui_gateway/server.py::_session_info`` \u2014 the ``session.info`` event and the ``info`` field of\n``session.create`` / ``session.resume`` / ``session.activate`` results.",
         "properties": {
           "model": {
-            "default": "",
             "title": "Model",
             "type": "string"
           },
@@ -25393,7 +25401,12 @@
             "type": "object"
           },
           "skills": {
-            "additionalProperties": true,
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "title": "Skills",
             "type": "object"
           },
@@ -25569,6 +25582,11 @@
             "title": "Lazy"
           }
         },
+        "required": [
+          "model",
+          "tools",
+          "skills"
+        ],
         "title": "SessionLiveInfo",
         "type": "object"
       },
@@ -27483,124 +27501,62 @@
         "description": "``tui_gateway/change_watcher.py::resolve_skin`` \u2014 the resolved active skin (``HermesSkin``).\n``{}`` when the skin engine failed to load. Colour maps are token \u2192 colour string.",
         "properties": {
           "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Name"
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
           },
           "colors": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Colors"
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Colors",
+            "type": "object"
           },
           "light_colors": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Light Colors"
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Light Colors",
+            "type": "object"
           },
           "dark_colors": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Dark Colors"
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Dark Colors",
+            "type": "object"
           },
           "branding": {
-            "anyOf": [
-              {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Branding"
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Branding",
+            "type": "object"
           },
           "banner_logo": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Banner Logo"
+            "default": "",
+            "title": "Banner Logo",
+            "type": "string"
           },
           "banner_hero": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Banner Hero"
+            "default": "",
+            "title": "Banner Hero",
+            "type": "string"
           },
           "tool_prefix": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tool Prefix"
+            "default": "",
+            "title": "Tool Prefix",
+            "type": "string"
           },
           "help_header": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Help Header"
+            "default": "",
+            "title": "Help Header",
+            "type": "string"
           }
         },
         "title": "SkinPayload",
@@ -30402,15 +30358,23 @@
       },
       "TranscriptMessage": {
         "additionalProperties": true,
-        "description": "One stored transcript row as ``session.history`` / resume ``messages`` deliver it.",
+        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the\ndurable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
         "properties": {
           "role": {
             "title": "Role",
             "type": "string"
           },
-          "content": {
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "default": null,
-            "title": "Content"
+            "title": "Text"
           },
           "timestamp": {
             "anyOf": [
@@ -30424,45 +30388,17 @@
             "default": null,
             "title": "Timestamp"
           },
-          "tool_calls": {
+          "row_id": {
             "anyOf": [
               {
-                "items": {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                "type": "array"
+                "type": "integer"
               },
               {
                 "type": "null"
               }
             ],
             "default": null,
-            "title": "Tool Calls"
-          },
-          "tool_call_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Tool Call Id"
-          },
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Name"
+            "title": "Row Id"
           },
           "display_kind": {
             "anyOf": [
@@ -30476,17 +30412,52 @@
             "default": null,
             "title": "Display Kind"
           },
-          "row_id": {
+          "display_metadata": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Metadata"
+          },
+          "name": {
             "anyOf": [
               {
-                "type": "integer"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
             "default": null,
-            "title": "Row Id"
+            "title": "Name"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context"
+          },
+          "args": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Args"
           },
           "reasoning": {
             "anyOf": [

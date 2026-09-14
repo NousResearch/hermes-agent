@@ -1,4 +1,4 @@
-import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus } from '@hermes/shared/gateway-events'
 
 export interface ActiveTool {
   context?: string
@@ -182,34 +182,9 @@ export interface McpServerStatus {
   transport: string
 }
 
-export interface ProjectInfo {
-  id: string
-  name: string
-  primary_path?: null | string
-  slug: string
-}
-
-export interface SessionInfo {
-  cwd?: string
-  fast?: boolean
-  install_warning?: string
-  lazy?: boolean
-  mcp_servers?: McpServerStatus[]
-  model: string
-  profile_name?: string
-  project?: null | ProjectInfo
-  reasoning_effort?: string
-  running?: boolean
-  release_date?: string
-  service_tier?: string
-  skills: Record<string, string[]>
-  system_prompt?: string
-  tools: Record<string, string[]>
-  update_behind?: number | null
-  update_command?: string
-  usage?: Usage
-  version?: string
-}
+/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
+export type SessionInfo = SessionLiveInfo
+export type { ProjectInfo }
 
 export interface SudoReq {
   requestId: string

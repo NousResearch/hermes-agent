@@ -36,15 +36,16 @@ class SkinPayload(OpenPayload):
     """``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``).
     ``{}`` when the skin engine failed to load. Colour maps are token → colour string."""
 
-    name: str | None = None
-    colors: dict[str, str] | None = None
-    light_colors: dict[str, str] | None = None
-    dark_colors: dict[str, str] | None = None
-    branding: dict[str, str] | None = None
-    banner_logo: str | None = None
-    banner_hero: str | None = None
-    tool_prefix: str | None = None
-    help_header: str | None = None
+    name: str = ""
+    description: str = ""
+    colors: dict[str, str] = Field(default_factory=dict)
+    light_colors: dict[str, str] = Field(default_factory=dict)
+    dark_colors: dict[str, str] = Field(default_factory=dict)
+    branding: dict[str, str] = Field(default_factory=dict)
+    banner_logo: str = ""
+    banner_hero: str = ""
+    tool_prefix: str = ""
+    help_header: str = ""
 
 
 class GatewayReadyPayload(Payload):
@@ -154,7 +155,7 @@ class BillingBlock(Payload):
     provider: str
     provider_label: str
     model: str
-    billing_url: str | None = None
+    billing_url: str | None
     is_nous: bool
     message: str
     unverified: bool | None = None

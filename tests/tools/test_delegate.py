@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.delegate_tool import (
@@ -22,6 +23,7 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
     _get_max_concurrent_children,
+    _open_child_session_db,
     _load_config,
     delegate_task,
     _build_child_agent,
@@ -55,6 +57,26 @@ def _make_mock_parent(depth=0):
     parent.tool_progress_callback = None
     parent.thinking_callback = None
     return parent
+
+
+class TestChildSessionDB(unittest.TestCase):
+    @patch("hermes_state_registry.acquire")
+    def test_mock_generated_parent_db_path_disables_child_persistence(self, acquire):
+        parent = MagicMock()
+        parent._session_db = MagicMock()
+
+        self.assertIsNone(_open_child_session_db(parent))
+        acquire.assert_not_called()
+
+    @patch("hermes_state_registry.acquire")
+    def test_concrete_parent_db_path_is_reused(self, acquire):
+        parent = MagicMock()
+        parent._session_db.db_path = Path("/tmp/hermes-state.db")
+        expected = object()
+        acquire.return_value = expected
+
+        self.assertIs(_open_child_session_db(parent), expected)
+        acquire.assert_called_once_with(Path("/tmp/hermes-state.db"))
 
 
 class TestDelegateRequirements(unittest.TestCase):

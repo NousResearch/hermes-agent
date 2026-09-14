@@ -157,7 +157,9 @@ def test_add_contributor_refuses_a_case_collision(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "EMAILS_DIR", d)
 
     assert mod.add_contributor("agent@example-host.local", "otherperson") == 1
-    assert not (d / "agent@example-host.local").exists()
+    # On a case-insensitive filesystem both spellings resolve to the same inode;
+    # directory enumeration proves the rejected spelling was not created.
+    assert sorted(p.name for p in d.iterdir()) == ["agent@Example-Host.local"]
 
 
 def test_add_contributor_refuses_case_collision_even_for_same_login(emails_dir, capsys):

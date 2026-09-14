@@ -20997,6 +20997,7 @@ def test_native_vision_turn_persists_a_renderable_image_ref(tmp_path):
 
     agent = AIAgent.__new__(AIAgent)
     agent._session_db = MagicMock()
+    agent._session_db.db_path = tmp_path / "sessions.db"
     agent._session_db_created = True
     agent.session_id = "s-1"
     agent._last_flushed_db_idx = 0

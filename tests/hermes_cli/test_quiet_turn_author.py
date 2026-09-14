@@ -135,3 +135,31 @@ def test_quiet_notify_loop_shares_one_linger_budget(monkeypatch):
     assert waits == [600.0]
     assert calls == []
     assert result is None
+
+
+def test_quiet_notify_loop_injects_owned_async_delegation_events(monkeypatch):
+    """Owned async_delegation results must not be consumed-and-dropped by the loop.
+
+    drain_notifications pops owned events of every type; the quiet loop is this
+    one-shot's only consumer, so an owned async_delegation text is injected as a
+    follow-up turn exactly like a completion.
+    """
+    from hermes_cli import quiet_single_query as qsq
+    from tools import process_registry as pr
+
+    monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions",
+                        lambda *a, **k: {"waited": [], "completed": [], "timed_out": []})
+    # A real drain pops owned events; round 2 finds the queue empty and the loop returns.
+    events = [({"type": "async_delegation", "session_key": "session-B"}, "[IMPORTANT: delegated reply from C]")]
+
+    def fake_drain(*a, **k):
+        return [events.pop(0)] if events else []
+
+    monkeypatch.setattr(pr.process_registry, "drain_notifications", fake_drain)
+
+    seen = []
+    result = qsq.continue_quiet_notify_completions(
+        "session-B", lambda text: seen.append(text) or {"final_response": text}, linger_budget=0.0,
+    )
+    assert seen == ["[IMPORTANT: delegated reply from C]"]
+    assert result == {"final_response": "[IMPORTANT: delegated reply from C]"}

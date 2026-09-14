@@ -63,10 +63,11 @@ def continue_quiet_notify_completions(
     for _ in range(max_rounds):
         wait = process_registry.wait_for_pending_completions(None, timeout=max(deadline - time.monotonic(), 0.0))
         drained = process_registry.drain_notifications(session_key=key, owns_event=owns_event)
-        texts = [
-            text for event, text in drained
-            if event.get("type", "completion") == "completion" and text
-        ]
+        # Every drained event type carries formatted text (completions, watch matches,
+        # async_delegation results): drain_notifications POPS owned events off the queue,
+        # so filtering by type here would consume-and-silently-drop owned
+        # async_delegation results. Keep everything that rendered.
+        texts = [text for _event, text in drained if text]
         if texts:
             last = run_turn("\n\n".join(texts))
         if wait.get("timed_out"):

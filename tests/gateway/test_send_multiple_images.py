@@ -15,12 +15,13 @@ Signal's native implementation is covered by test_signal.py.
 import asyncio
 import sys
 import types
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 def _run(coro):
@@ -364,10 +365,130 @@ class TestMattermostMultiImage:
         assert payload["channel_id"] == "channel123"
         assert len(payload["file_ids"]) == 3
 
+    def _make_local_images(self, tmp_path, n=1):
+        paths = []
+        for i in range(n):
+            p = tmp_path / f"mm_{i}.png"
+            p.write_bytes(b"\x89PNG" + b"\x00" * 20)
+            paths.append(p)
+        return [(f"file://{p}", "") for p in paths]
+
+    def test_reply_to_anchors_batch_in_thread_mode(self, adapter, tmp_path):
+        """A reply anchor on a top-level post sets root_id on the media post (thread mode)."""
+        adapter._api_get = AsyncMock(return_value={"id": "root-1", "root_id": ""})
+        _run(adapter.send_multiple_images("channel123", self._make_local_images(tmp_path),
+                                          reply_to="trigger-post"))
+        adapter._api_post.assert_awaited_once()
+        payload = adapter._api_post.await_args.args[1]
+        assert payload["root_id"] == "trigger-post"
+
+    def test_reply_to_resolves_to_true_thread_root(self, adapter, tmp_path):
+        """A reply-post anchor is resolved to its thread root before posting."""
+        adapter._api_get = AsyncMock(return_value={"id": "child-post", "root_id": "true-root"})
+        _run(adapter.send_multiple_images("channel123", self._make_local_images(tmp_path),
+                                          reply_to="child-post"))
+        payload = adapter._api_post.await_args.args[1]
+        assert payload["root_id"] == "true-root"
+
+    def test_reply_to_ignored_in_non_thread_mode(self, adapter, tmp_path):
+        adapter._reply_mode = "flat"
+        _run(adapter.send_multiple_images("channel123", self._make_local_images(tmp_path),
+                                          reply_to="trigger-post"))
+        payload = adapter._api_post.await_args.args[1]
+        assert "root_id" not in payload
+
+    def test_no_root_id_when_reply_to_absent(self, adapter, tmp_path):
+        _run(adapter.send_multiple_images("channel123", self._make_local_images(tmp_path)))
+        payload = adapter._api_post.await_args.args[1]
+        assert "root_id" not in payload
+
+    def test_fallback_loop_forwards_reply_to(self, adapter, tmp_path):
+        """When the batch post fails, the per-image fallback still carries the anchor."""
+        adapter.platform = Platform.MATTERMOST
+        adapter._api_get = AsyncMock(return_value={"id": "p", "root_id": ""})
+        # Upload succeeds, post returns no id -> fallback to base per-image loop.
+        adapter._api_post = AsyncMock(return_value=None)
+        seen = {}
+
+        async def _file(chat_id, image_path, caption=None, **kwargs):
+            seen.update(kwargs)
+            return SendResult(success=True, message_id="img")
+
+        adapter.send_image_file = _file
+        _run(adapter.send_multiple_images("channel123", self._make_local_images(tmp_path),
+                                          reply_to="trigger-post"))
+        assert seen.get("reply_to") == "trigger-post"
+
 
 # ---------------------------------------------------------------------------
 # Email
 # ---------------------------------------------------------------------------
+
+
+class TestDeliveryAnchor:
+    """The media delivery path must inherit the reply anchor the text path uses
+    (_reply_anchor_for_event), so attachments thread under the triggering post."""
+
+    def test_image_batch_and_video_document_get_anchor(self, tmp_path):
+        a = _StubAdapter()
+        a.platform = "mattermost"
+        calls = {}
+
+        async def _batch(chat_id, images, metadata=None, human_delay=0.0, reply_to=None):
+            calls["batch"] = reply_to
+
+        async def _vid(chat_id, video_path, metadata=None, reply_to=None):
+            calls["video"] = reply_to
+            return SendResult(success=True, message_id="v")
+
+        # Real async defs (not AsyncMock) so the lenient _accepts_kwarg dispatch sees reply_to
+        a.send_multiple_images = _batch
+        a.send_video = _vid
+        png = tmp_path / "screenshot.png"
+        png.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        mp4 = tmp_path / "clip.mp4"
+        mp4.write_bytes(b"\x00" * 20)
+
+        class _Src:
+            platform = "mattermost"
+            chat_id = "chan1"
+            thread_id = None
+        event = SimpleNamespace(source=_Src(), message_id="msg-9")
+        from gateway.platforms.base import _IMAGE_EXTS, _VIDEO_EXTS
+        assert png.suffix.lower() in _IMAGE_EXTS and mp4.suffix.lower() in _VIDEO_EXTS
+        _run(a._deliver_media_attachments(
+            event, [(str(mp4), False)], [str(png)],
+            force_document_attachments=False, human_delay=0.0, metadata={},
+            record_delivery=lambda r: None))
+
+        # Image batch anchored to the triggering post (top-level post: thread_id None)
+        assert calls["batch"] == "msg-9"
+        # Non-image MEDIA files anchored too
+        assert calls["video"] == "msg-9"
+
+    def test_no_anchor_when_event_has_no_message_id(self, tmp_path):
+        a = _StubAdapter()
+        a.platform = "mattermost"
+        calls = {}
+
+        async def _batch(chat_id, images, metadata=None, human_delay=0.0, reply_to=None):
+            calls["batch"] = reply_to
+
+        a.send_multiple_images = _batch
+        png = tmp_path / "x.png"
+        png.write_bytes(b"\x89PNG" + b"\x00" * 20)
+
+        class _Src:
+            platform = "mattermost"
+            chat_id = "chan1"
+            thread_id = None
+        event = SimpleNamespace(source=_Src(), message_id=None)
+        _run(a._deliver_media_attachments(
+            event, [], [str(png)],
+            force_document_attachments=False, human_delay=0.0, metadata={},
+            record_delivery=lambda r: None))
+        # No anchor: the kwarg is omitted entirely (legacy stub senders may lack it)
+        assert calls.get("batch") is None
 
 
 from plugins.platforms.email.adapter import EmailAdapter  # noqa: E402

@@ -131,6 +131,7 @@ class TruncationVerdict:
     truncated_tool_call_retries: int
     retry_count: int
     compression_attempts: int
+    codex_ack_continuations: int
 
 
 @dataclass(kw_only=True)
@@ -304,6 +305,30 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
             f"{partial_response}\n\n{notice}" if partial_response else notice,
             f"Prompt used {filled[0]} of {filled[1]} context tokens; no room to answer",
         )
+    # This exit returns to run_conversation without passing finish_text_response, so the
+    # said-continue-but-stopped guard never sees a partial that TAILS with an announced
+    # next action. Run it here (same conditions, same bounded budget, same nudge): the
+    # committed partial is already durable, so the fragments must not be joined into a
+    # recovered response a second time.
+    from agent.agent_runtime_helpers import trailing_continue_intent
+    from agent.conversation_loop import _CODEX_ACK_CONTINUATION_NUDGE
+    if (
+        bool(getattr(agent, "_stall_guards", True))
+        and agent.valid_tool_names
+        and st.codex_ack_continuations < 2
+        and trailing_continue_intent(agent._strip_think_blocks(partial_response))
+    ):
+        logger.info(
+            "Stall guard: truncation-ceiling partial ends on trailing continue-"
+            "intent with no tool calls — re-prompting to act "
+            "(%d/2)", st.codex_ack_continuations + 1,
+        )
+        st.codex_ack_continuations += 1
+        st.truncated_response_parts = []
+        append_message(messages, {"role": "user", "content": _CODEX_ACK_CONTINUATION_NUDGE})
+        agent._session_messages = messages
+        _retry.restart_with_length_continuation = True
+        return st.done("break")
     return st.end_turn(
         partial_response or _CEILING_NO_TEXT,
         "Response remained truncated after 4 continuation attempts",
@@ -352,7 +377,7 @@ def recover_from_truncation(
     messages: List[Dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
     effective_task_id: Any, current_turn_user_idx: Any, length_continue_retries: int,
     truncated_response_parts: List[str], truncated_tool_call_retries: int, retry_count: int,
-    compression_attempts: int,
+    compression_attempts: int, codex_ack_continuations: int,
 ) -> TruncationVerdict:
     """Recover from a truncated response. Order is load-bearing: thinking exhaustion and
     repetition abort BEFORE any continuation; a content-filter stall escalates to the
@@ -365,7 +390,7 @@ def recover_from_truncation(
         messages=messages, length_continue_retries=length_continue_retries,
         truncated_response_parts=truncated_response_parts,
         truncated_tool_call_retries=truncated_tool_call_retries, retry_count=retry_count,
-        compression_attempts=compression_attempts,
+        compression_attempts=compression_attempts, codex_ack_continuations=codex_ack_continuations,
     )
     st.window_filled = _prompt_filled_window(agent, response)
     agent._vprint(

@@ -34,12 +34,12 @@ def _coerce_number(value: Any, cast, default=None, *, positive: bool = False):
         return default
     try:
         number = cast(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         if cast is not int:
             return default
         try:
             number = int(float(value))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return default
     if positive and (number <= 0 or (cast is float and not math.isfinite(number))):
         return default

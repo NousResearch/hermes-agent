@@ -9,28 +9,47 @@ Handlers: ``tui_gateway/methods_groups.py``, ``tui_gateway/methods_bot_relay.py`
 
 from __future__ import annotations
 
-from .base import JsonValue, Params, Result, WireEnum
-from .common import OkResult, OpenModel, ProfileParams
+from typing import Literal
+
+from .base import JsonValue, Params, Result
+from .common import OkResult, ProfileParams
 from .registry import method
 from .server_requests import ApprovalChoice
 
 # ── shared room shapes ────────────────────────────────────────────────────────────────────────
 
 
-class RoomMember(OpenModel):
-    """One roster row (``hosted_room_discussion.validate_roster``); legacy rooms may carry
-    pre-normalisation rows, so the set stays open."""
+class RoomMemberTargetLocal(Result):
+    kind: Literal["local"]
+    profile: str
 
-    member_id: str | None = None
-    profile: str | None = None
-    handle: str | None = None
+
+class RoomMemberTargetPeer(Result):
+    kind: Literal["peer"]
+    peer_id: str
+    installation_id: str
+    profile: str
+    capability_digest: str
+
+
+class RoomMember(Result):
+    """``HostedRoomService.create_room`` serializes the validated Discussion roster."""
+
+    member_id: str
+    profile: str
+    handle: str
     display_name: str | None = None
-    target: dict[str, JsonValue] | None = None
+    target: RoomMemberTargetLocal | RoomMemberTargetPeer | None = None
 
 
 class RoomActor(Result):
-    kind: str
+    """Closed hosted-room actor shape; optional labels are omitted by ``_validate_actor``."""
+
+    kind: Literal["user", "member", "gateway", "system"]
     id: str
+    display_name: str | None = None
+    profile: str | None = None
+    connection_id: str | None = None
 
 
 class RoomEvent(Result):
@@ -42,14 +61,14 @@ class RoomEvent(Result):
     kind: str
     actor: RoomActor
     authority_epoch: int | None = None
-    payload: dict[str, JsonValue]
+    # gateway/hosted_rooms.py:493 preserves payloads for every room-event kind, including future ones.
+    payload: JsonValue
     created_at: float
     idempotent: bool = False
 
 
 class Room(Result):
-    """``gateway/hosted_rooms.py::_room_from_row`` plus the branch-only keys ``create`` (legacy
-    adoption), ``state`` (``authority_claim``) and ``rename`` (``event``) add."""
+    """``gateway/hosted_rooms.py::_room_from_row`` plus handler-added lineage and rename events."""
 
     room_id: str
     name: str
@@ -73,15 +92,27 @@ class RoomAuthority(Result):
     epoch: int
 
 
+class RoomMemberInputTargetLocal(Params):
+    kind: Literal["local"]
+    profile: str
+
+
+class RoomMemberInputTargetPeer(Params):
+    kind: Literal["peer"]
+    peer_id: str
+    installation_id: str
+    profile: str
+    capability_digest: str
+
+
 class RoomMemberInput(Params):
     """A roster row as the client proposes it; ``validate_roster`` owns the exact rules."""
 
-    member_id: str | None = None
-    profile: str | None = None
-    handle: str | None = None
+    member_id: str
+    profile: str
+    handle: str
     display_name: str | None = None
-    target: dict[str, JsonValue] | None = None
-    model_config = Params.model_config | {"extra": "allow"}
+    target: RoomMemberInputTargetLocal | RoomMemberInputTargetPeer | None = None
 
 
 class RoomParams(ProfileParams):
@@ -104,14 +135,18 @@ class RoomExecutionPolicy(Result):
     policy_digest: str
 
 
-class RoomLinkEndpoint(Result):
-    """``GatewayRoomCatalog.endpoint_mapping``: ``url``/``transport_security`` when available,
-    ``reason`` when not."""
+class RoomLinkEndpointAvailable(Result):
+    available: Literal[True]
+    url: str
+    transport_security: str
 
-    available: bool
-    url: str | None = None
-    transport_security: str | None = None
-    reason: str | None = None
+
+class RoomLinkEndpointUnavailable(Result):
+    available: Literal[False]
+    reason: str
+
+
+RoomLinkEndpoint = RoomLinkEndpointAvailable | RoomLinkEndpointUnavailable
 
 
 class RoomLinkCatalog(Result):
@@ -128,14 +163,19 @@ class RoomLinkCatalog(Result):
     endpoint: RoomLinkEndpoint | None = None
 
 
-class RoomLinkStatus(Result):
-    """``enabled`` with ``profile``/``catalog``/``endpoint``, or disabled with a ``reason``."""
+class RoomLinkEnabled(Result):
+    enabled: Literal[True]
+    profile: str
+    catalog: RoomLinkCatalog
+    endpoint: RoomLinkEndpoint
 
-    enabled: bool
-    profile: str | None = None
-    catalog: RoomLinkCatalog | None = None
-    endpoint: RoomLinkEndpoint | None = None
-    reason: str | None = None
+
+class RoomLinkDisabled(Result):
+    enabled: Literal[False]
+    reason: str
+
+
+RoomLinkStatus = RoomLinkEnabled | RoomLinkDisabled
 
 
 # ── groups.capabilities ───────────────────────────────────────────────────────────────────────
@@ -182,7 +222,7 @@ class GroupsCreateParams(ProfileParams):
     room_id: str
     name: str
     members: list[RoomMemberInput]
-    # Ignored: authority is always this gateway's install identity (a client cannot spoof it).
+    # tui_gateway/methods_groups.py:365 ignores this compatibility field; the server owns authority.
     authority_gateway_id: str | None = None
 
 
@@ -204,15 +244,31 @@ class PeerRouteStatus(Result):
     status: str
 
 
+class RoomRetryAction(Result):
+    kind: Literal["retry"]
+    task_id: str
+
+
+class RoomApprovalAction(Result):
+    kind: Literal["approval"]
+    task_id: str
+    execution_generation: int
+    run_id: str | None = None
+    session_id: str
+    request_id: str | None = None
+    # tui_gateway/hosted_room_driver.py:399 preserves the approval tool's nested, evolving payload.
+    approval: JsonValue
+    member_id: str
+
+
 class RoomDriverStatus(Result):
-    """``HostedRoomService.status(room_id)``; ``pending_actions`` rows are ``{kind: retry, task_id}``
-    or the driver's approval action (``kind: approval`` + run/session/approval context)."""
+    """``HostedRoomService.status(room_id)``."""
 
     running: bool
     working: bool
     blocked: bool
     counts: dict[str, int]
-    pending_actions: list[dict[str, JsonValue]]
+    pending_actions: list[RoomRetryAction | RoomApprovalAction]
     peer_routes: list[PeerRouteStatus]
 
 
@@ -228,16 +284,27 @@ method("groups.state", params=GroupsStateParams, result=GroupsStateResult,
 # ── groups.send / rename / log ────────────────────────────────────────────────────────────────
 
 
+class GroupsSendPayload(Params):
+    """``HostedRoomService.send`` accepts exactly the Discussion ``message.user`` payload."""
+
+    text: str
+    thread_id: str
+
+
+# tui_gateway/hosted_room_service.py:452 owns future payload admission; retain recursive JSON passthrough.
+GroupsSendPayloadValue = GroupsSendPayload | JsonValue
+
+
 class GroupsSendParams(RoomParams):
     event_id: str | None = None
-    payload: dict[str, JsonValue]
+    payload: GroupsSendPayloadValue
 
 
 class GroupsSendResult(Result):
     event: RoomEvent
-    client_event_id: str | None = None
-    accepted: bool = True
-    driver_started: bool = True
+    client_event_id: str | None
+    accepted: bool
+    driver_started: bool
 
 
 method("groups.send", params=GroupsSendParams, result=GroupsSendResult,
@@ -264,7 +331,7 @@ class GroupsLogParams(RoomParams):
 
 
 class GroupsLogResult(Result):
-    """``gateway/hosted_rooms.py::read_events`` page — also the ``page`` ``groups.replicate`` ingests."""
+    """``gateway/hosted_rooms.py::read_events`` page — also ``groups.replicate.page``."""
 
     events: list[RoomEvent]
     cursor: int
@@ -321,10 +388,11 @@ class GroupsApproveParams(RoomParams):
 
 
 class GroupsApproveResult(Result):
-    """``result`` is the local ``approval.respond`` answer or the peer's run-action receipt."""
+    """The local approval response and peer run-action receipts remain producer-owned JSON."""
 
-    approved: bool = True
-    result: dict[str, JsonValue]
+    approved: bool
+    # tui_gateway/hosted_room_service.py:517 returns local or peer approval receipts with distinct shapes.
+    result: JsonValue
 
 
 method("groups.approve", params=GroupsApproveParams, result=GroupsApproveResult,
@@ -346,7 +414,7 @@ class RoomTaskReceipt(Result):
 
 
 class GroupsRetryResult(Result):
-    retried: bool = True
+    retried: bool
     task: RoomTaskReceipt
 
 
@@ -359,8 +427,9 @@ method("groups.retry", params=GroupsRetryParams, result=GroupsRetryResult,
 
 class GroupsReplicateParams(RoomParams):
     room_name: str
-    members: list[RoomMemberInput]
-    page: dict[str, JsonValue]  # a verbatim ``groups.log`` result
+    # gateway/hosted_room_replicas.py:150 persists raw replica rosters, including pre-Discussion legacy rows.
+    members: list[JsonValue]
+    page: GroupsLogResult
 
 
 class GroupsReplicateResult(Result):
@@ -382,7 +451,8 @@ class GroupsReplicaStateParams(RoomParams):
 class GroupsReplicaStateResult(Result):
     room_id: str
     name: str
-    members: list[RoomMember]
+    # gateway/hosted_room_replicas.py:192 returns verbatim persisted replica roster rows.
+    members: list[JsonValue]
     authority: RoomAuthority
     last_seq: int
     latest_seq: int
@@ -459,7 +529,7 @@ class GroupsPeerRevokeParams(ProfileParams):
 
 
 class GroupsPeerRevokeResult(Result):
-    revoked: bool = True
+    revoked: bool
 
 
 method("groups.peer.revoke", params=GroupsPeerRevokeParams, result=GroupsPeerRevokeResult,
@@ -471,13 +541,13 @@ class GroupsPeerRegisterParams(RoomParams):
     target_url: str
     target_profile: str
     grant: str
-    catalog: dict[str, JsonValue]  # a RoomLinkCatalog mapping; ``GatewayRoomCatalog.from_mapping`` is exact
+    catalog: RoomLinkCatalog
     cancellation_scope_id: str | None = None
     trace_id: str | None = None
 
 
 class GroupsPeerRegisterResult(Result):
-    registered: bool = True
+    registered: bool
     mode: str
     transport_security: str
     target_install_id: str
@@ -492,8 +562,7 @@ method("groups.peer.register", params=GroupsPeerRegisterParams, result=GroupsPee
 
 
 class RelayAgentRow(Params):
-    """A roster row the Desktop pushes (``tools/bot_relay.py::_normalize_roster_row``); invalid
-    rows are dropped server-side, so the shape stays open."""
+    """One Desktop roster row normalized by ``tools/bot_relay.py::_normalize_roster_row``."""
 
     profile: str | None = None
     handle: str | None = None
@@ -502,7 +571,6 @@ class RelayAgentRow(Params):
     title: str | None = None
     description: str | None = None
     online: bool | None = None
-    model_config = Params.model_config | {"extra": "allow"}
 
 
 class BotRelayRosterSyncParams(ProfileParams):
@@ -521,11 +589,11 @@ class BotRelayOutboxDrainParams(ProfileParams):
     pass
 
 
-class RelayEnvelope(OpenModel):
+class RelayEnvelope(Result):
     """``tools/bot_relay.py::enqueue_envelope``."""
 
     id: str
-    created_at: int | float
+    created_at: int
     from_profile: str
     from_handle: str
     target_connection: str
@@ -584,7 +652,7 @@ class BrowserControllerRegisterParams(BrowserControllerParams):
     controller_id: str
     browser_profile_id: str
     capabilities: list[str] | None = None
-    protocol_version: JsonValue | None = None  # checked exactly by the handler (an int today)
+    protocol_version: int | None = None
     # Ignored: the principal is derived from the server-minted identity, never client-supplied.
     principal_id: str | None = None
 
@@ -610,7 +678,7 @@ method("browser.controller.register", params=BrowserControllerRegisterParams,
 
 class BrowserControllerResultParams(BrowserControllerParams):
     command_id: str
-    ok: JsonValue | None = None  # only the exact ``true`` counts as success
+    ok: bool | None = None
     result: JsonValue | None = None
     error: JsonValue | None = None
 
@@ -629,7 +697,7 @@ method("browser.controller.heartbeat", params=BrowserControllerParams, result=Ok
 
 
 class BrowserControllerDetachResult(Result):
-    detached: bool = True
+    detached: bool
 
 
 method("browser.controller.detach", params=BrowserControllerParams, result=BrowserControllerDetachResult,

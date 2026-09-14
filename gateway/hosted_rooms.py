@@ -542,7 +542,8 @@ def _prepare_event(
     gateway_bytes = _gateway_event_bytes(conn)
     if gateway_bytes + additional_bytes > gateway_byte_limit:
         _prune_disbanded_rooms_locked(
-            conn, now=None, max_gateway_event_bytes=max(0, gateway_byte_limit - additional_bytes))
+            conn, now=None, max_gateway_event_bytes=max(
+                0, gateway_byte_limit - additional_bytes - room_safety._replica_event_bytes_locked(conn)))
         room_safety._prune_disbanded_replicas_locked(
             conn, now=None, max_replica_event_bytes=max(0, gateway_byte_limit - additional_bytes - int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0])))
         gateway_bytes = _gateway_event_bytes(conn)
@@ -578,7 +579,8 @@ def _prune_disbanded_rooms_locked(
                   AND disbanded_at IS NOT NULL
                 ORDER BY disbanded_at DESC, room_id ASC LIMIT -1 OFFSET ?""", (MAX_DISBANDED_ROOM_TOMBSTONES,)))
     if max_gateway_event_bytes is not None:
-        retained_bytes = _gateway_event_bytes(conn)
+        # Callers supply an authority allowance after reserving replica bytes.
+        retained_bytes = int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0])
         if retained_bytes > max_gateway_event_bytes:
             for row in conn.execute("""SELECT room_id, event_bytes FROM hosted_rooms
                     WHERE room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
@@ -1162,7 +1164,8 @@ def disband_room(
         conn.execute(_INSERT_RETIRED, (room_id, now))
         event = _reload(
             conn, _SELECT_EVENT, (room_id, "system:room-disbanded"), "room disband event could not be reloaded")
-        _prune_disbanded_rooms_locked(conn, now=now, max_gateway_event_bytes=MAX_GATEWAY_EVENT_BYTES)
+        _prune_disbanded_rooms_locked(conn, now=now, max_gateway_event_bytes=max(
+            0, MAX_GATEWAY_EVENT_BYTES - room_safety._replica_event_bytes_locked(conn)))
     return {"room_id": room_id, "disbanded_at": now, "idempotent": False, "event": _event_from_row(event)}
 
 

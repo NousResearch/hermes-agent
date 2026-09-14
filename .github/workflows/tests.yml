@@ -14,15 +14,16 @@ concurrency:
 jobs:
   test:
     name: Run tests
-    # One 96-core runner for the whole suite. There is no slicing. Slicing
-    # existed to spread the suite over 4-core runners. It cost a matrix job, a
-    # duration cache, a per-slice artifact and a merge job to do it.
-    #
-    # 96 cores clear the floor that the slowest single test file sets (about
-    # 82s). A second slice divides work that is already at that floor, and
-    # adds a second setup.
-    runs-on: ubuntu-latest-96-core
-    timeout-minutes: 30
+    # TEMPORARY: was a 96-core Larger Runner (see git history for the original
+    # rationale — one runner for the whole suite, no slicing). Larger Runners
+    # require GitHub Team/Enterprise; this account is on Free, so every job
+    # requesting one queued forever and never ran. Falling back to the
+    # standard 4-core `ubuntu-latest` runner unblocks CI at the cost of much
+    # lower parallelism — timeout raised accordingly. Re-slicing the suite
+    # across a matrix (the pre-96-core approach) is the real fix if this
+    # remains too slow.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

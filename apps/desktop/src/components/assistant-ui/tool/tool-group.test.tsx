@@ -630,6 +630,34 @@ describe('flat tool list approval surfacing', () => {
   })
 })
 
+describe('tool error explanations', () => {
+  it('keeps lookup misses neutral and exposes actual failures when expanded', async () => {
+    for (const [error, destructive] of [
+      ['File not found: /repo/session-view.ts', false],
+      ['Permission denied reading /repo/session-view.ts', true]
+    ] as const) {
+      const message = completedOnlyMessage()
+      const part = message.content[0]!
+
+      const { container, unmount } = render(
+        <GroupHarness
+          message={{
+            ...message,
+            content: [{ ...part, result: { error }, args: { path: '/repo/session-view.ts' } } as typeof part]
+          }}
+        />
+      )
+
+      fireEvent.click(await screen.findByText('Read session-view.ts'))
+
+      await waitFor(() => expect(container.textContent).toContain(error))
+      expect(Boolean(container.querySelector('[data-tool-row] .text-destructive'))).toBe(destructive)
+      unmount()
+      $toolDisclosureStates.set({})
+    }
+  })
+})
+
 describe('tool lifecycle timestamps', () => {
   it('shows the precise call and completion times on a settled tool row', async () => {
     const { container } = render(<GroupHarness message={completedOnlyMessage()} />)

@@ -109,6 +109,44 @@ class TestGetSystemPromptForChannel:
 class TestResolveSessionAgentRuntimePriority:
     """Model/runtime priority: session /model → channel_overrides → global."""
 
+    @pytest.mark.parametrize("selected,global_model", [
+        ("claude-sonnet-4", "gpt-5"),
+        ("gpt-5", "claude-sonnet-4"),
+        (None, "gpt-5"),
+    ])
+    def test_channel_model_reaches_runtime_resolver(self, selected, global_model):
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+        runner.config = GatewayConfig(platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                channel_overrides={
+                    "channel": ChannelOverride(model=selected, provider="opencode"),
+                },
+            ),
+        })
+        source = SessionSource(platform=Platform.DISCORD, chat_id="channel", user_id="u1")
+        with patch("gateway.run._resolve_gateway_model", return_value=global_model), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                 "provider": "opencode", "api_mode": "chat_completions",
+                 "base_url": "https://provider.example/v1",
+             }) as resolve:
+            model, runtime = runner._resolve_session_agent_runtime(source=source)
+        resolve.assert_called_once_with(requested="opencode", target_model=selected)
+        assert model == (selected or global_model)
+        assert runtime["provider"] == "opencode"
+
+    def test_provider_only_resolution_remains_supported(self):
+        from gateway.run import _resolve_runtime_agent_kwargs_for_provider
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+            "provider": "opencode", "request_overrides": {"temperature": 0.4},
+        }) as resolve:
+            runtime = _resolve_runtime_agent_kwargs_for_provider("opencode")
+        resolve.assert_called_once_with(requested="opencode", target_model=None)
+        assert runtime["request_overrides"] == {"temperature": 0.4}
+
     def test_channel_override_beats_global(self):
         runner = object.__new__(GatewayRunner)
         runner._session_model_overrides = {}

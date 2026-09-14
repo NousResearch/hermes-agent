@@ -1138,11 +1138,13 @@ def list_authenticated_providers(
     _lap_bare_custom_row(b, custom_providers)
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
-    return _finalize_picker_rows(b.results, user_providers, current_model)
+    return _finalize_picker_rows(b.results, user_providers, current_model, custom_providers)
 
 
-def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
-    """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
+def _finalize_picker_rows(results: list, user_providers, current_model: str,
+                          custom_providers: list | None = None) -> list:
+    """Post-passes: drop ``providers.<name>.enabled: false`` rows, strip ``hidden_models`` IDs,
+    inject the current model, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
     # gate; matched by slug and ``provider_id``.
     try:
@@ -1156,6 +1158,62 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
                     r for r in results
                     if str(r.get("provider_id", "")).strip().lower() not in disabled
                     and str(r.get("slug", "")).strip().lower() not in disabled]
+    except Exception:
+        pass
+
+    # Per-provider ``hidden_models``: strip IDs the user excluded from every picker list. Runs
+    # before the current-model injection below so a row never hides the model you are actually
+    # running. Indexed by slug / provider_id and by normalised endpoint URL, which also covers
+    # the bare-``model:`` custom row and built-in rows serving the same endpoint.
+    try:
+        from hermes_cli.model_switch import _hidden_model_ids
+
+        by_key: dict[str, set] = {}
+        by_url: dict[str, set] = {}
+
+        def _index_hidden(key: Any, cfg: Any) -> None:
+            ids = _hidden_model_ids(cfg)
+            if not ids:
+                return
+            name = str(key or "").strip().lower()
+            if name:
+                by_key.setdefault(name, set()).update(ids)
+            if isinstance(cfg, dict):
+                url = _norm_url(cfg.get("base_url") or cfg.get("api") or cfg.get("url") or "")
+                if url:
+                    by_url.setdefault(url, set()).update(ids)
+
+        if isinstance(custom_providers, list):
+            for entry in custom_providers:
+                if isinstance(entry, dict):
+                    _index_hidden(entry.get("name") or entry.get("provider_key") or "", entry)
+        if isinstance(user_providers, dict):
+            for name, cfg in user_providers.items():
+                if isinstance(cfg, dict):
+                    _index_hidden(name, cfg)
+
+        if by_key or by_url:
+            for row in results:
+                hidden: set = set()
+                for key in (str(row.get("slug", "")).strip().lower(),
+                            str(row.get("provider_id", "")).strip().lower()):
+                    if key:
+                        hidden |= by_key.get(key, set())
+                hidden |= by_url.get(_norm_url(row.get("api_url", "")), set())
+                if not hidden:
+                    continue
+                before = list(row.get("models") or [])
+                after = [m for m in before if str(m).strip().lower() not in hidden]
+                if len(after) != len(before):
+                    try:
+                        total = int(row.get("total_models", len(before)))
+                    except (TypeError, ValueError):
+                        total = len(before)
+                    row["models"] = after
+                    row["total_models"] = max(0, total - (len(before) - len(after)))
+                # Exposed so pickers that fall back to a live catalog when ``models`` comes back
+                # empty apply the same exclusion instead of resurrecting the hidden IDs.
+                row["hidden_models"] = sorted(hidden)
     except Exception:
         pass
 

@@ -117,7 +117,7 @@ _KNOWN_PROVIDER_KEYS = {
     "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env", "key_cmd",
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
-    "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
+    "discover_models", "hidden_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -255,6 +255,10 @@ def _normalize_custom_provider_entry(
         ("context_length", lambda v: isinstance(v, int) and v > 0),
         ("rate_limit_delay", lambda v: isinstance(v, (int, float)) and v >= 0),
         ("discover_models", lambda v: isinstance(v, (bool, str))),
+        # Model IDs the user keeps out of the pickers even when the endpoint's live
+        # ``/models`` probe still offers them (a retired alias a vendor leaves in its
+        # catalog). Shape-tolerant — see ``model_switch._hidden_model_ids``.
+        ("hidden_models", lambda v: isinstance(v, (list, tuple, dict, str)) and bool(v)),
     ):
         if ok(entry.get(field)):
             normalized[field] = entry[field]
@@ -284,7 +288,7 @@ def _custom_provider_entry_to_provider_config(
     provider_entry: Dict[str, Any] = {"api": normalized["base_url"]}
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
-        "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
+        "rate_limit_delay", "discover_models", "hidden_models", "extra_body", "extra_headers",
         "ssl_ca_cert", "ssl_verify"):
         if field in normalized:
             provider_entry[field] = normalized[field]

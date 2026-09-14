@@ -21,15 +21,12 @@ import socket
 import stat
 import sys
 import threading
-from contextlib import contextmanager as _contextmanager
 import time
 import webbrowser
 from functools import partialmethod
 
-# Cross-process advisory file locking for the token store's critical sections.
-# Mirrors cron/jobs.py: fcntl is Unix-only, msvcrt is the Windows fallback, and
-# either may be absent - in which case locking degrades to in-process only
-# (the historical behaviour) rather than failing.
+# Cross-process advisory file locking for the refresh fence. Mirrors
+# cron/jobs.py: fcntl is Unix-only, msvcrt is the Windows fallback.
 try:
     import fcntl
 except ImportError:  # pragma: no cover - non-Unix
@@ -53,93 +50,10 @@ if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
 
 logger = logging.getLogger(__name__)
 
-# Bounded acquisition for the token-store lock. Deliberately short: every
-# critical section it guards is a local file read/write, never a network call.
-_TOKEN_LOCK_TIMEOUT_SECONDS = 10.0
-
-# The refresh FENCE is a different animal: the critical section it guards spans
-# the token-endpoint POST, so it must outlast a slow network round trip. Bounded
-# anyway -- a wedged peer must not strand us forever -- but generous enough that
-# a healthy refresh never trips it.
+# The refresh fence's critical section spans the token-endpoint POST, so it must
+# outlast a slow network round trip. Bounded anyway -- a wedged peer must not
+# strand us forever -- but generous enough that a healthy refresh never trips it.
 _REFRESH_FENCE_TIMEOUT_SECONDS = 60.0
-
-# In-process mutual exclusion, keyed by lock path, so threads inside one
-# process don't fight over the same file before the advisory lock is reached.
-_token_locks: dict[str, threading.RLock] = {}
-_token_locks_guard = threading.Lock()
-
-
-@_contextmanager
-def _token_store_lock(path: "Path"):
-    """Serialize a read-modify-write on one server's token file.
-
-    Two Hermes backends routinely share one HERMES_HOME (the desktop app spawns
-    ``serve`` while the scheduled task runs ``gateway run``); cron/jobs.py
-    already guards jobs.json the same way. Without this, a provider that issues
-    single-use refresh tokens can have both processes POST the same token, and
-    the loser's refresh is rejected.
-
-    Acquisition is bounded and non-blocking (the lesson of cron's #60703: a
-    plain blocking ``flock`` with no timeout lets one wedged process freeze
-    every other one forever). On timeout we log and proceed with in-process
-    locking only — a briefly-contended refresh is strictly better than a
-    permanently stuck client.
-    """
-    lock_path = path.with_suffix(path.suffix + ".lock")
-    key = str(lock_path)
-
-    with _token_locks_guard:
-        local_lock = _token_locks.setdefault(key, threading.RLock())
-
-    with local_lock:
-        lock_fd = None
-        acquired = False
-        try:
-            try:
-                secure_parent_dir(lock_path)
-                lock_fd = open(lock_path, "a+", encoding="utf-8")
-                lock_fd.seek(0)
-                deadline = time.monotonic() + _TOKEN_LOCK_TIMEOUT_SECONDS
-                while True:
-                    try:
-                        if fcntl is not None:
-                            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                            acquired = True
-                        elif msvcrt is not None:
-                            getattr(msvcrt, "locking")(
-                                lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
-                            )
-                            acquired = True
-                        break
-                    except (OSError, IOError):
-                        if time.monotonic() >= deadline:
-                            logger.warning(
-                                "Token store lock timed out after %.0fs (%s); "
-                                "proceeding with in-process locking only",
-                                _TOKEN_LOCK_TIMEOUT_SECONDS,
-                                lock_path.name,
-                            )
-                            break
-                        time.sleep(0.05)
-            except OSError as exc:
-                # An unwritable lock path must never block token access.
-                logger.debug("Token store lock unavailable (%s): %s", lock_path.name, exc)
-
-            yield
-        finally:
-            if lock_fd is not None:
-                try:
-                    if acquired:
-                        if fcntl is not None:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                        elif msvcrt is not None:
-                            getattr(msvcrt, "locking")(
-                                lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
-                            )
-                except (OSError, IOError):
-                    pass
-                finally:
-                    lock_fd.close()
 
 class RefreshFenceTimeout(RuntimeError):
     """The refresh fence could not be acquired within its bound.
@@ -157,24 +71,19 @@ class RefreshFenceTimeout(RuntimeError):
 async def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS):
     """Own one refresh generation across read -> POST -> persist.
 
-    ``_token_store_lock`` is deliberately narrow: it makes a single file
-    read or write atomic, then releases. That is not enough for a provider
-    that issues single-use refresh tokens. The damaging interleaving is:
+    Token files are written atomically (``_write_json``), so a reader never
+    sees a torn file; the only cross-process hazard is the read-modify-write
+    of a single-use refresh token. The damaging interleaving is:
 
-        A: get_tokens() -> R1   (lock taken and RELEASED)
-        B: get_tokens() -> R1   (lock taken and RELEASED)
+        A: get_tokens() -> R1
+        B: get_tokens() -> R1
         A: POST R1              -> 200, receives R2
         B: POST R1              -> 400, credential already burned
         B: clear_tokens()       -> user is logged out of a live session
 
-    Every step above respects the narrow lock, so no amount of hardening
-    inside get_tokens/set_tokens can prevent it. The fence must be held
-    across the POST, which is exactly why it cannot reuse the token-store
-    lock's file: flock/msvcrt locks are per-file-descriptor, so nesting the
-    same path would self-deadlock on Windows and silently no-op on POSIX.
-
-    A separate ``.refresh.lock`` sibling keeps the two scopes independent:
-    the fence holder can still call get_tokens()/set_tokens() normally.
+    No lock scoped to one file read or write can prevent it: the fence must
+    be held across the POST. It lives in a ``.refresh.lock`` sibling of the
+    token file so the holder can still read/write the tokens normally.
 
     Entered from the SDK's coroutine-driven auth flow, so the wait is an
     ``asyncio.sleep`` poll on a non-blocking lock: a peer's slow network
@@ -182,8 +91,8 @@ async def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOU
     in-process lock layer is needed: an advisory lock on a fresh descriptor
     already excludes sibling tasks and threads of the same process.
 
-    Unlike ``_token_store_lock``, acquisition failure RAISES. Degrading to
-    "proceed unlocked" here would reintroduce the exact race.
+    Acquisition failure RAISES. Degrading to "proceed unlocked" would
+    reintroduce the exact race.
     """
     lock_path = path.with_suffix(path.suffix + ".refresh.lock")
     try:
@@ -541,10 +450,7 @@ class HermesTokenStorage:
 
     async def get_tokens(self) -> "OAuthToken | None":
         self.loaded_issuer = None
-        # Held across the read so a peer process mid-rotation cannot expose a
-        # half-written token file (see _token_store_lock).
-        with _token_store_lock(self._tokens_path()):
-            return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
+        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)
@@ -555,8 +461,7 @@ class HermesTokenStorage:
         if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
             payload["hermes_issuer"] = self._bound_issuer
             self.loaded_issuer = self._bound_issuer
-        with _token_store_lock(self._tokens_path()):
-            _write_json(self._tokens_path(), payload)
+        _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
     def bind_issuer(self, issuer: str | None) -> None:

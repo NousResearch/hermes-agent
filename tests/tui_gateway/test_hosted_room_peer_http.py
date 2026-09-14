@@ -246,6 +246,56 @@ def test_scoped_peer_runs_client_stops_exact_run(peer_server):
     assert FakePeer.runs["run-1"]["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("scoped", [False, True])
+def test_named_profile_prefixes_every_roomlink_request(monkeypatch, scoped):
+    captured = {}
+
+    class Response:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            if captured.get("read"):
+                return b""
+            captured["read"] = True
+            return b'{"ok":true}'
+
+    def opened(request, **_kwargs):
+        captured["url"] = request.full_url
+        captured["read"] = False
+        return Response()
+
+    monkeypatch.setattr(
+        "hermes_cli.urllib_security.open_credentialed_url",
+        opened,
+    )
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test/hermes" + ("/p/reviewer%3Awest" if scoped else ""),
+        api_key="",
+        target_profile="reviewer:west",
+    )
+
+    assert client.probe(grant="signed.room.grant") == {"ok": True}
+    assert captured["url"] == (
+        "https://peer.example.test/hermes/p/reviewer%3Awest/"
+        "v1/room-members/capabilities"
+    )
+
+
+@pytest.mark.parametrize("profile", ["default", "reviewer"])
+def test_profile_scoped_endpoint_cannot_select_another_profile(profile):
+    with pytest.raises(ValueError, match="profile.*match"):
+        PeerRunsHTTPClient(
+            base_url="https://peer.example.test/hermes/p/someone-else",
+            api_key="", target_profile=profile,
+        )
+
+
 def test_remote_run_receipt_survives_home_restart(peer_server, tmp_path):
     db = tmp_path / "state.db"
     first = PeerRunsHTTPClient(
@@ -359,6 +409,127 @@ def test_ambiguous_admission_replays_the_identical_idempotency_key(tmp_path):
     assert restarted.recover_dispatch(
         dispatch=_dispatch(), grant="signed.room.grant"
     )["run_id"] == "run-recovered"
+
+
+def test_ambiguous_admission_cannot_be_downgraded_by_replay_refusal(tmp_path):
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+    )
+    requests = []
+
+    def accepted_then_replay_refused(path, **kwargs):
+        requests.append((path, kwargs))
+        if len(requests) == 1:
+            raise PeerRunsHTTPError(
+                "peer response was lost",
+                retryable=True,
+                ambiguous=True,
+            )
+        raise PeerRunsHTTPError(
+            "peer endpoint refused the replay",
+            retryable=True,
+            not_admitted=True,
+        )
+
+    client._request = accepted_then_replay_refused
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert len(requests) == 2
+    assert requests[0][1]["headers"] == requests[1][1]["headers"]
+    assert requests[0][1]["body"] == requests[1][1]["body"]
+
+
+def test_ambiguous_admission_malformed_replay_keeps_recovery_backoff(tmp_path):
+    now = [0.0]
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+        clock=lambda: now[0],
+    )
+    requests = []
+
+    def response_lost_then_missing_run_id(path, **kwargs):
+        requests.append((path, kwargs))
+        if len(requests) == 1:
+            raise PeerRunsHTTPError(
+                "peer response was lost",
+                retryable=True,
+                ambiguous=True,
+            )
+        return {}
+
+    client._request = response_lost_then_missing_run_id
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert len(requests) == 2
+    with pytest.raises(PeerRunsHTTPError, match="backing off"):
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert len(requests) == 2
+
+
+def test_initial_missing_run_id_replays_once_then_backs_off(tmp_path):
+    now = [0.0]
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+        receipt_db_path=tmp_path / "state.db",
+        clock=lambda: now[0],
+    )
+    requests = []
+
+    def missing_run_id(path, **kwargs):
+        requests.append((path, kwargs))
+        return {}
+
+    client._request = missing_run_id
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
+    assert len(requests) == 2
+    assert requests[0][1]["headers"] == requests[1][1]["headers"]
+    assert requests[0][1]["body"] == requests[1][1]["body"]
+
+    with pytest.raises(PeerRunsHTTPError, match="backing off"):
+        client.recover_dispatch(dispatch=_dispatch(), grant="signed.room.grant")
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize("body", [b"not-json", b"[]"])
+def test_malformed_post_success_is_ambiguous(monkeypatch, body):
+    monkeypatch.setattr(
+        "hermes_cli.urllib_security.open_credentialed_url",
+        lambda *_args, **_kwargs: io.BytesIO(body),
+    )
+    client = PeerRunsHTTPClient(
+        base_url="https://peer.example.test",
+        api_key="",
+    )
+
+    with pytest.raises(PeerRunsHTTPError) as caught:
+        client._request(
+            "/v1/runs",
+            method="POST",
+            body={},
+            room_grant="signed.room.grant",
+        )
+
+    assert caught.value.retryable is True
+    assert caught.value.ambiguous is True
+    assert caught.value.not_admitted is False
 
 
 def test_ambiguous_admission_recovery_is_bounded_and_backed_off(tmp_path):
@@ -959,11 +1130,16 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
         api_key="",
     )
 
+    requests = []
+
     def request(path, **_kwargs):
+        requests.append(path)
         if path == "/v1/room-members/grants/refresh":
             return {"grant": "replacement.room.grant"}
-        assert path == "/v1/room-members/capabilities"
-        return {"catalog": refreshed}
+        if path == "/v1/room-members/capabilities":
+            return {"catalog": refreshed}
+        assert path == "/v1/room-members/grants/revoke-exact"
+        return {"revoked": True}
 
     client._request = request
     with pytest.raises(PeerRunsHTTPError) as caught:
@@ -976,6 +1152,7 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
     assert caught.value.error_code == error_code
     assert caught.value.needs_reauthorization is True
     assert caught.value.not_admitted is True
+    assert requests[-1] == "/v1/room-members/grants/revoke-exact"
 
 
 def test_grant_refresh_preserves_unchanged_catalog_and_policy():
@@ -1341,3 +1518,96 @@ def _attachment_payload():
         "sha256": hashlib.sha256(data).hexdigest(),
         "data": data,
     }
+def test_renewal_budget_covers_new_clients_without_changing_foreground(monkeypatch):
+    from tui_gateway import hosted_room_peer_http as http
+
+    now = [100.0]
+    monkeypatch.setattr(http.time, "monotonic", lambda: now[0])
+    client = PeerRunsHTTPClient(base_url="https://peer.example", api_key="")
+    ordinary_timeout = client.timeout_seconds
+    foreground = []
+    with http.room_grant_request_budget(2, clock=lambda: now[0]):
+        cleanup = PeerRunsHTTPClient(base_url="https://peer.example", api_key="")
+        assert client.timeout_seconds == cleanup.timeout_seconds == 1
+        thread = threading.Thread(target=lambda: foreground.append(client.timeout_seconds))
+        thread.start()
+        thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert foreground == [ordinary_timeout]
+        now[0] += 1.25
+        with http.room_grant_request_budget(10, clock=lambda: now[0]):
+            assert client.timeout_seconds == cleanup.timeout_seconds == 0.75
+        now[0] += 0.75
+        with pytest.raises(PeerRunsHTTPError, match="budget exhausted"):
+            cleanup.timeout_seconds
+    assert client.timeout_seconds == cleanup.timeout_seconds == ordinary_timeout
+
+
+def test_receipt_only_recovery_never_replays_an_unknown_admission(monkeypatch):
+    client = PeerRunsHTTPClient(base_url="https://peer.example", api_key="")
+    requests = []
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: requests.append(args))
+    with pytest.raises(PeerRunsHTTPError, match="accepted peer run receipt is unavailable") as failure:
+        client.recover_dispatch(dispatch=_dispatch(), grant="synthetic.room.grant", receipt_only=True)
+    assert failure.value.ambiguous and failure.value.retryable
+    assert requests == []
+
+
+def test_renewal_requests_and_response_reads_share_one_deadline(monkeypatch):
+    from contextlib import contextmanager
+    from tui_gateway import hosted_room_peer_http as http
+
+    now, timeouts = [100.0], []
+    monkeypatch.setattr(http.time, "monotonic", lambda: now[0])
+
+    @contextmanager
+    def open_response(request, *, timeout, reject_redirects):
+        assert reject_redirects is True
+        timeouts.append(timeout)
+        now[0] += min(0.75, timeout)
+        response = io.BytesIO(b'{"ok": true}')
+        response.headers = {}
+        yield response
+
+    monkeypatch.setattr(http, "_open_roomlink_url", open_response)
+    with http.room_grant_request_budget(2, clock=lambda: now[0]):
+        for _ in range(2):
+            client = PeerRunsHTTPClient(base_url="https://peer.example", api_key="")
+            assert client._request("/test") == {"ok": True}
+        with pytest.raises(PeerRunsHTTPError, match="time budget"):
+            client._request("/test")
+        with pytest.raises(PeerRunsHTTPError, match="budget exhausted"):
+            client._request("/test")
+    assert timeouts == [1, 1, 0.5]
+    assert now[0] == 102
+
+
+def test_renewal_redirect_refusal_preserves_installed_transport_policy(monkeypatch):
+    from email.message import Message
+    from urllib.response import addinfourl
+    from hermes_cli import urllib_security
+    from tui_gateway.hosted_room_peer_http import room_grant_request_budget
+
+    requests = []
+
+    class PolicyTransport(urllib.request.BaseHandler):
+        handler_order = 1
+
+        def https_open(self, request):
+            requests.append(request)
+            headers = Message()
+            headers["Location"] = "https://peer.example/redirected"
+            response = addinfourl(io.BytesIO(b""), headers, request.full_url, 302)
+            response.msg = "Found"
+            return response
+
+    policy = urllib.request.build_opener(PolicyTransport())
+    policy._hermes_initial_addheaders = [("X-Installed-Policy", "present")]
+    monkeypatch.setattr(urllib_security, "_secure_opener_from_installed_policy", lambda url: policy)
+    client = PeerRunsHTTPClient(base_url="https://peer.example", api_key="")
+    with room_grant_request_budget(2):
+        with pytest.raises(PeerRunsHTTPError, match="refused an HTTP redirect"):
+            client.probe(grant="synthetic.room.grant")
+    assert len(requests) == 1
+    assert requests[0].get_header("X-installed-policy") == "present"
+    assert requests[0].get_header("Authorization") == "HermesRoom synthetic.room.grant"

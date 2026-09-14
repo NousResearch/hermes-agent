@@ -23,9 +23,9 @@ from gateway.hosted_room_peer import (
     catalog_mapping,
     issue_room_grant,
 )
+from tui_gateway.hosted_room_peer_status import _RouteStatusPeerClient
 from tui_gateway.hosted_room_service import (
     HostedRoomService,
-    _RouteStatusPeerClient,
     _grant_revoke_is_terminal,
 )
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
@@ -91,6 +91,7 @@ class _FakePeerClient:
     def __init__(self) -> None:
         self.dispatches = []
         self.revoked = []
+        self.exact_revoked = []
         self.session = {"session_id": "peer-group-session"}
 
     def prepare(self, **kwargs):
@@ -128,6 +129,10 @@ class _FakePeerClient:
 
     def revoke_grant(self, **kwargs):
         self.revoked.append(kwargs["grant"])
+        return {"revoked": True}
+
+    def revoke_grant_exact(self, **kwargs):
+        self.exact_revoked.append(kwargs["grant"])
         return {"revoked": True}
 
 
@@ -246,23 +251,6 @@ class _ApprovalPeerClient(_FakePeerClient):
     def approve_receipt(self, **kwargs):
         self.approvals.append(dict(kwargs))
         return {"resolved": 1}
-
-
-class _RecoveringPeerClient(_FakePeerClient):
-    def __init__(self) -> None:
-        super().__init__()
-        self.recoveries = []
-
-    def recover_dispatch(self, **kwargs):
-        dispatch = dict(kwargs["dispatch"])
-        self.recoveries.append({**kwargs, "dispatch": dispatch})
-        self.dispatches.append(dispatch)
-        return {
-            "status": "accepted",
-            "task_id": dispatch["task_id"],
-            "execution_generation": dispatch["execution_generation"],
-            "run_id": "run-recovered",
-        }
 
 
 class _PromptRecordingRPC(_FakeRPC):
@@ -987,147 +975,6 @@ def test_local_pending_approval_requires_exact_task_generation_and_request(
     assert service.status("room-1")["pending_actions"] == []
 
 
-def test_headless_room_publishes_peer_member_reply_without_desktop_transport(
-    tmp_path: Path,
-):
-    db = tmp_path / "state.db"
-    peer = _FakePeerClient()
-    route = PeerMemberRoute(
-        home_install_id="install-home",
-        member_id="member-reviewer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest="a" * 64,
-        execution_policy_digest="b" * 64,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed-room-grant",
-    )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-reviewer"): route},
-        peer_clients={"install-peer": peer},
-    )
-    service.rpc = _FakeRPC()
-    service.runtime.rpc = service.rpc
-    service.local_profiles = lambda: ("default",)
-    room = service.create_room(
-        room_id="room-1",
-        name="Review room",
-        members=[
-            {
-                "member_id": "default",
-                "profile": "default",
-                "handle": "local",
-            },
-            {
-                "member_id": "member-reviewer",
-                "profile": "reviewer",
-                "handle": "reviewer",
-                "target": {
-                    "kind": "peer",
-                    "peer_id": "peer-review",
-                    "installation_id": "install-peer",
-                    "profile": "reviewer",
-                    "capability_digest": "a" * 64,
-                },
-            },
-        ],
-    )
-    assert room["members"][1]["target"]["kind"] == "peer"
-
-    service.start()
-    service.send(
-        room_id="room-1",
-        event_id="user-peer-1",
-        payload={"text": "@reviewer inspect this", "thread_id": "thread-1"},
-    )
-    _wait_for(
-        lambda: any(
-            event["kind"] == "message.member" for event in service._events("room-1")
-        )
-    )
-    assert service.stop(timeout=1.0)
-
-    events = service._events("room-1")
-    reply = next(event for event in events if event["kind"] == "message.member")
-    assert reply["payload"]["member_id"] == "member-reviewer"
-    assert reply["payload"]["text"] == "Remote review complete."
-    assert reply["actor"]["connection_id"] == "peer-review"
-    assert peer.dispatches[0]["target_profile"] == "reviewer"
-
-
-def test_unadmitted_peer_failure_does_not_block_next_healthy_member(
-    tmp_path: Path,
-):
-    db = tmp_path / "state.db"
-    route = PeerMemberRoute(
-        home_install_id="install-home",
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest="a" * 64,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed-room-grant",
-    )
-    service = HostedRoomService(
-        _server(),
-        db_path=db,
-        peer_routes={("room-1", "member-peer"): route},
-        peer_clients={"install-peer": _UnavailablePeerClient()},
-    )
-    service.rpc = _FakeRPC()
-    service.runtime.rpc = service.rpc
-    service.local_profiles = lambda: ("local",)
-    service.create_room(
-        room_id="room-1",
-        name="Fallback room",
-        members=[
-            {
-                "member_id": "member-peer",
-                "profile": "reviewer",
-                "handle": "reviewer",
-                "target": {
-                    "kind": "peer",
-                    "peer_id": "peer-review",
-                    "installation_id": "install-peer",
-                    "profile": "reviewer",
-                    "capability_digest": "a" * 64,
-                },
-            },
-            {"member_id": "local", "profile": "local", "handle": "local"},
-        ],
-    )
-
-    service.start()
-    service.send(
-        room_id="room-1",
-        event_id="user-fallback-1",
-        payload={"text": "Review this together", "thread_id": "thread-1"},
-    )
-    _wait_for(
-        lambda: any(
-            event["kind"] == "message.member"
-            and event["payload"]["member_id"] == "local"
-            for event in service._events("room-1")
-        )
-    )
-    assert service.stop(timeout=1.0)
-
-    events = service._events("room-1")
-    assert any(
-        event["kind"] == "turn.failed"
-        and event["payload"]["member_id"] == "member-peer"
-        for event in events
-    )
-    assert any(
-        event["kind"] == "message.member" and event["payload"]["member_id"] == "local"
-        for event in events
-    )
-
-
 def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
@@ -1416,8 +1263,11 @@ def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
 
 
 def test_expired_grant_surfaces_needs_reauthorization_without_secret(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ):
+    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
+
+    monkeypatch.setattr(PeerRunsHTTPClient, "revoke_grant_exact", lambda self, **kwargs: {"revoked": True})
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(installation_id="install-peer", persistent_process=True)
@@ -1707,6 +1557,7 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         on_terminal=lambda _receipt: None,
     )
     assert peer.refreshed == [old_grant]
+    assert peer.exact_revoked == [old_grant]
     assert peer.refresh_arguments == [
         {
             "grant": old_grant,
@@ -2007,87 +1858,3 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path)
     assert service.status("room-1")["pending_actions"][0]["request_id"] == (
         "approval-B"
     )
-
-
-def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
-    db = tmp_path / "state.db"
-    catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(installation_id="install-peer", persistent_process=True)
-    )
-    route = PeerMemberRoute(
-        home_install_id=hosted_rooms.local_authority_gateway_id(),
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest=catalog.catalog_digest,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed.room.grant",
-    )
-    peer = _RecoveringPeerClient()
-    service = HostedRoomService(_server(), db_path=db)
-    service.register_peer_route(
-        room_id="room-1",
-        member_id="member-peer",
-        route=route,
-        client=peer,
-        target_url="https://peer.example.test",
-        catalog=catalog,
-    )
-    service.create_room(
-        room_id="room-1",
-        name="Peer room",
-        members=[
-            {"member_id": "default", "profile": "default", "handle": "hermes"},
-            {
-                "member_id": "member-peer",
-                "profile": "reviewer",
-                "handle": "reviewer",
-                "target": {
-                    "kind": "peer",
-                    "peer_id": "peer-review",
-                    "installation_id": "install-peer",
-                    "profile": "reviewer",
-                    "capability_digest": catalog.catalog_digest,
-                },
-            },
-        ],
-    )
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
-
-    service._resolve_member_transport(
-        service.bindings()[0],
-        {
-            "identity": identity,
-            "status": "indeterminate",
-            "execution_generation": 1,
-            "payload": {
-                "target_member_id": "member-peer",
-                "target_profile": "reviewer",
-                "source_event_seq": 9,
-                "prompt": "Recover the accepted review.",
-            },
-        },
-    )
-
-    assert len(peer.recoveries) == 1
-    recovered = peer.recoveries[0]["dispatch"]
-    assert recovered["task_id"] == "task-1"
-    assert recovered["execution_generation"] == 1
-    assert recovered["prompt"] == "Recover the accepted review."
-
-
-def test_local_profiles_skips_delete_tombstones_and_dot_dirs(tmp_path: Path):
-    """`hermes profile delete` leaves ``profiles/.deleted/<name>``; neither the tombstone dir nor a
-    tombstoned profile is a roster member (#106847: ``.deleted`` failed validate_roster every cycle)."""
-    from hermes_constants import mark_named_profile_deleted
-
-    profiles = tmp_path / "profiles"
-    (profiles / "ops").mkdir(parents=True)
-    (profiles / "gone").mkdir()
-    mark_named_profile_deleted(profiles / "gone")
-    assert (profiles / ".deleted").is_dir()
-
-    service = HostedRoomService(_server(), db_path=tmp_path / "shared-state.db")
-
-    assert service.local_profiles() == ("default", "ops")

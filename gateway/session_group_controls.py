@@ -12,6 +12,7 @@ GROUP_METHODS = {
     'groups.state': 'session:read',
     'groups.log': 'session:read',
     'groups.create': 'session:control',
+    'groups.peer.register': 'session:control',
     'groups.rename': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
@@ -27,6 +28,9 @@ _FIELDS = {
     'groups.state': {'room_id', 'include_disbanded'},
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
+    'groups.peer.register': {'request_id', 'room_id', 'member_id', 'target_url',
+                             'target_profile', 'grant', 'catalog', 'cancellation_scope_id',
+                             'trace_id', 'expected_grant_sha256'},
     'groups.rename': {'room_id', 'event_id', 'name'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
@@ -91,6 +95,11 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    if method == 'groups.peer.register':
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        from gateway.session_group_setup import register_peer
+        return register_peer(authority, actor, service, params)
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
@@ -150,15 +159,23 @@ def _group(authority, actor, home, method, params):
 
     def disband():
         from gateway.hosted_room_driver import list_tasks
+        from gateway.hosted_room_link_records import begin_room_link_retirement, list_room_link_records
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
+        if state.get('disbanded_at') is None:
+            if service is not None:
+                service.begin_room_disband(params.get('room_id'))
+            else:
+                begin_room_link_retirement(db_path, room_id=params.get('room_id'),
+                    authority_gateway_id=gateway_id, authority_epoch=state['authority_epoch'])
         if service is not None and state.get('disbanded_at') is None:
             service.stop_room(params.get('room_id'),
                               cancel_id=params.get('cancel_id') or 'room-disbanded',
                               require_acknowledged=True)
             service.revoke_room_routes(params.get('room_id'))
-        # Metadata control must not destroy an active execution or bypass Stop.
-        if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
-               for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
+        # Metadata control must not bypass accepted work or exact credential retirement.
+        if service is None and (any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
+               for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred'))
+               or list_room_link_records(db_path, room_id=params.get('room_id'))):
             raise RuntimeStoreError('runtime_coordination_required')
         state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
         return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),

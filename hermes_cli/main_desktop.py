@@ -886,9 +886,12 @@ def _desktop_macos_relaunchable_fixup(
         if identity != "-":
             print(
                 f"  (warning: configured macOS signing identity failed: {identity!r}; "
-                "falling back to ad-hoc — TCC grants may need to be re-granted)"
+                "refusing to replace it with an ad-hoc identity)"
             )
+            return False
         print(f"  (warning: stable macOS signing failed ({exc}); using legacy ad-hoc sign)")
+    if identity != "-":
+        return False
     return _macos_legacy_adhoc_resign(codesign, app)
 
 
@@ -1330,7 +1333,19 @@ def _promote_staged_desktop_app(desktop_dir: Path, staging_dir: Path) -> Path:
     # Locally-built apps are ad-hoc signed; make them relaunchable after an
     # in-place self-update. Signs the STAGED bundle so the live app is never
     # half-signed. No-op on non-macOS and on real-identity builds.
-    _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir)
+    signing_ok = _desktop_macos_relaunchable_fixup(desktop_dir, release_dir=staging_dir)
+    if sys.platform == "darwin":
+        try:
+            signing_ok = signing_ok and staged_executable is not None and _codesign_verify(
+                "/usr/bin/codesign", staged_executable.parents[2], check=False, timeout=30
+            ).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            signing_ok = False
+    if not signing_ok:
+        _discard_desktop_staging(staging_dir)
+        print("✗ Desktop signing or independent signature verification failed.")
+        print(_PREVIOUS_APP_KEPT)
+        sys.exit(1)
 
     # Windows integrity gate: never declare the rebuild a success on a
     # Hermes.exe Windows cannot load. Verified on the STAGED exe, so a failure

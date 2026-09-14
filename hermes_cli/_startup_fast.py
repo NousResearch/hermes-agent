@@ -34,12 +34,31 @@ def project_root_str() -> str:
     return os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 
 
+def _sys_path_entry_matches_root(entry: str, normalized_root: str) -> bool:
+    """True when *entry* realpath-equals the project root.
+
+    ``os.path.realpath`` of a relative/cwd-derived entry needs a live cwd. Cron
+    bot-chat delivery (and other short-lived children) can inherit a deleted
+    worker scratch directory — realpath then raises FileNotFoundError/ENOENT
+    via getcwd() and would crash CLI startup before argv is parsed (#102941).
+    Unresolvable entries are treated as non-matches so they stay on sys.path.
+    """
+    if not entry:
+        return False
+    try:
+        return os.path.normcase(os.path.realpath(entry)) == normalized_root
+    except OSError:
+        return False
+
+
 def ensure_project_root_on_path() -> None:
     """Put the project root at sys.path[0], deduping realpath-equivalents."""
     project_root = project_root_str()
     normalized_root = os.path.normcase(os.path.realpath(project_root))
-    sys.path[:] = [entry for entry in sys.path
-                   if not entry or os.path.normcase(os.path.realpath(entry)) != normalized_root]
+    sys.path[:] = [
+        entry for entry in sys.path
+        if not _sys_path_entry_matches_root(entry, normalized_root)
+    ]
     sys.path.insert(0, project_root)
 
 

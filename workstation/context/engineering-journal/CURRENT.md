@@ -11,6 +11,54 @@ Journal entries:
 Status: 158/158 Workstation Pytest passing, Desktop typecheck passing; broad
 Desktop UI and platform/Electron suites pass after the HW-018 KI-006 closure.
 
+## H-046 — Chrome Web Store support is not yet an agentic capability boundary
+
+Status: PARTIALLY RESOLVED — governed agentic install slice validated; discovery/catalog and dedicated UI remain open
+Origin: agentic extensions / canonical Kanban continuation
+Date / ref: 2026-09-14 / `main@9291584e6f`
+
+### Claim
+
+The V2.1 roadmap label "Completed" implies that a Desktop agent can safely
+request, approve, install, load, verify and use a Chrome Web Store extension.
+
+### Observed evidence
+
+- `workstation/extensions.py` can download, unpack and register a CRX, but is
+  not registered as an agent tool and records no policy or journal events;
+- `WorkstationBrowserRuntime.loadInstalledExtensions()` scans directories and
+  calls `session.loadExtension()` best-effort during startup, discarding both
+  success and failure identity; it exposes no controller/IPC operation for
+  immediate load, verification, removal or options navigation;
+- `ScopedPolicyEngine` has no extension capability/risk rule, and no existing
+  call site joins the manager to Hermes' approval gate;
+- the canonical `WorkstationKanbanBridge` already creates parent/child cards
+  and journals follow-up creation, but its child card body/metadata omit the
+  supplied discovery evidence.
+
+### Implemented result and evidence
+
+- Implemented the stated Desktop-session-only slice in
+  `tools/workstation_extensions.py`: four explicit tools call the canonical
+  manager, policy and approval gate. Non-Desktop sessions do not receive their
+  schemas, even if the process was launched by Electron.
+- `ChromeExtensionManager` now inspects manifests before persistence, rejects
+  unsafe ZIP paths, atomically writes its registry, and classifies permissions.
+- The Electron controller now loads, verifies and removes an extension on
+  demand, and permits a verified extension's options page only through the
+  controlled action. Startup restoration uses the same verifier instead of a
+  silent best-effort load.
+- `26 passed` across focused Python contracts (extension manager, policy,
+  Kanban follow-up dependency and Desktop-session schema surface); Electron
+  runtime focused test passed `19/19`; Desktop typecheck passed.
+
+### Remaining boundary
+
+This result proves a supplied Web Store URL/ID through policy, approval,
+install, Electron load and verification. It deliberately does not claim that
+the agent can search a marketplace or that the Desktop has a human extension
+management UI; those require a separately scoped catalog/UI capability.
+
 ## H-041 — Current Windows H010 rerun validates BrowserSessionState on the live working tree
 
 Status: VALIDATED — LOCAL NATIVE EVIDENCE; CLEAN-CHECKOUT QUALIFICATION STILL OPEN

@@ -82,7 +82,34 @@ def test_policy_require_approval_financial_action():
     )
     res = engine.evaluate(scope)
     assert res.decision == PolicyDecision.REQUIRE_APPROVAL
+
+
+def test_policy_requires_approval_for_sensitive_extension_install():
+    engine = ScopedPolicyEngine()
+    res = engine.evaluate(ActionScope(
+        task_id="extension-task",
+        session_id="desktop-session",
+        capability="browser_extension",
+        action_name="install_extension",
+        target="cjpalhdlnbpafiamejdnhcphjbkeiagm",
+        parameters={"extension_risk": "high"},
+    ))
+    assert res.decision == PolicyDecision.REQUIRE_APPROVAL
     assert res.risk_level == RiskLevel.HIGH
+
+
+def test_policy_allows_narrow_extension_install_but_gates_removal():
+    engine = ScopedPolicyEngine()
+    low = engine.evaluate(ActionScope(
+        task_id="extension-task", session_id="desktop-session", capability="browser_extension",
+        action_name="install_extension", parameters={"extension_risk": "low"},
+    ))
+    removed = engine.evaluate(ActionScope(
+        task_id="extension-task", session_id="desktop-session", capability="browser_extension",
+        action_name="uninstall_extension", parameters={"extension_risk": "low"},
+    ))
+    assert low.decision == PolicyDecision.ALLOW
+    assert removed.decision == PolicyDecision.REQUIRE_APPROVAL
 
 
 def test_policy_sandbox_untrusted():

@@ -583,6 +583,7 @@ export class WorkstationBrowserRuntime {
   private viewportGeometryListener: (() => void) | null = null
   private attached = false
   private viewportHost: 'hub' | 'chat' | string | null = null
+  private preferredTaskId: string | null = null
   private bounds: WorkstationBrowserBounds | null = null
   private paused = false
   private controlOwner: WorkstationBrowserControlOwner = 'agent'
@@ -1018,9 +1019,22 @@ export class WorkstationBrowserRuntime {
   attach(
     window: BrowserWindow,
     rawBounds: WorkstationBrowserBounds,
-    host: 'hub' | 'chat' | string = 'hub'
+    host: 'hub' | 'chat' | string = 'hub',
+    preferredTaskId?: string | null
   ): WorkstationBrowserState {
     this.ensure()
+    this.preferredTaskId = preferredTaskId || null
+    if (preferredTaskId) {
+      const tabId = this.taskTabs.get(preferredTaskId)
+      if (tabId && this.entries.has(tabId)) {
+        const candidate = this.entries.get(tabId)
+        if (candidate && !candidate.crashed && !candidate.view.webContents.isDestroyed()) {
+          if (this.activeTabId !== tabId) {
+            this.activateTab(tabId)
+          }
+        }
+      }
+    }
     const entry = this.activeEntry()
 
     if (!entry) {
@@ -1098,6 +1112,7 @@ export class WorkstationBrowserRuntime {
     }
     this.detachActiveView(true)
     this.viewportHost = null
+    this.preferredTaskId = null
     this.emitState()
 
     return this.state()
@@ -1407,13 +1422,28 @@ export class WorkstationBrowserRuntime {
     if (!action.startsWith('browser_')) {
       throw new Error('unsupported_action')
     }
+
+    // Extension operations deliberately remain on the authenticated
+    // loopback controller, but they do not need (and must not fabricate) a
+    // BrowserTask page just to load or verify a Chromium capability.
+    if (action === 'browser_extension_load') {
+      return this.loadExtensionForController(String(args.extension_id ?? ''), String(args.path ?? ''))
+    }
+    if (action === 'browser_extension_verify') {
+      return this.verifyExtensionForController(String(args.extension_id ?? ''))
+    }
+    if (action === 'browser_extension_remove') {
+      return this.removeExtensionForController(String(args.extension_id ?? ''))
+    }
+
     const mutating = new Set([
       'browser_navigate',
       'browser_click',
       'browser_type',
       'browser_scroll',
       'browser_back',
-      'browser_press'
+      'browser_press',
+      'browser_extension_open_options'
     ])
 
     if (mutating.has(action)) {
@@ -1428,7 +1458,9 @@ export class WorkstationBrowserRuntime {
       const entry = this.entryForTask(taskId, true, sessionHost, kanbanCardId, runId)!
       const url = normalizeWorkstationBrowserTarget(String(args.url ?? ''))
       await entry.view.webContents.loadURL(url)
-      this.activateTab(entry.id)
+      if (!this.activeTabId || this.activeTabId === entry.id || (this.preferredTaskId && this.preferredTaskId === taskId)) {
+        this.activateTab(entry.id)
+      }
 
       for (const [id, candidate] of this.entries.entries()) {
         if (id !== entry.id && !candidate.ownerTaskId && (candidate.safeUrl === 'about:blank' || !candidate.safeUrl)) {
@@ -1459,11 +1491,15 @@ export class WorkstationBrowserRuntime {
       if (!entry && this.activeTabId) {
         const active = this.entries.get(this.activeTabId)
 
-        if (active && !active.view.webContents.isDestroyed() && !active.crashed) {
+        if (active && !active.ownerTaskId && !active.view.webContents.isDestroyed() && !active.crashed) {
           this.taskTabs.set(taskId, active.id)
           active.ownerTaskId = taskId
           entry = active
         }
+      }
+
+      if (!entry) {
+        entry = this.entryForTask(taskId, true, sessionHost, kanbanCardId, runId)
       }
     }
 
@@ -1471,8 +1507,23 @@ export class WorkstationBrowserRuntime {
       throw new Error('no_bound_browser_tab: call browser_navigate first')
     }
 
-    if (this.activeTabId !== entry.id) {
+    if (!this.activeTabId) {
       this.activateTab(entry.id)
+    }
+
+    if (action === 'browser_extension_open_options') {
+      const extensionId = String(args.extension_id ?? '').trim().toLowerCase()
+      const optionsPath = String(args.options_path ?? 'options.html').replace(/^[/\\]+/, '')
+      if (!/^[a-p]{32}$/.test(extensionId) || !optionsPath || optionsPath.includes('..')) {
+        throw new Error('invalid_extension_options_request')
+      }
+      const verified = this.verifyExtensionForController(extensionId)
+      if (!verified.loaded) {
+        throw new Error('extension_not_loaded')
+      }
+      const optionsUrl = `chrome-extension://${extensionId}/${optionsPath}`
+      await entry.view.webContents.loadURL(optionsUrl)
+      return { ...verified, options_url: optionsUrl }
     }
 
     switch (action) {
@@ -2004,7 +2055,7 @@ export class WorkstationBrowserRuntime {
       })
     })
 
-    this.loadInstalledExtensions()
+    void this.loadInstalledExtensions()
 
     this.cacheTimer = setInterval(() => {
       void this.cleanupCache(false).catch(error => this.recordError(error))
@@ -2013,12 +2064,81 @@ export class WorkstationBrowserRuntime {
     setTimeout(() => void this.cleanupCache(false).catch(error => this.recordError(error)), 5_000).unref?.()
   }
 
-  private loadInstalledExtensions(): void {
+  private extensionRoot(): string {
+    const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes')
+    return path.resolve(hermesHome, 'workstation', 'extensions')
+  }
+
+  private extensionInfo(extensionId: string): any | null {
+    const all = (this.browserSession as any)?.getAllExtensions?.()
+    return all && typeof all === 'object' ? all[extensionId] ?? null : null
+  }
+
+  private isLoadedExtensionUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url)
+      return parsed.protocol === 'chrome-extension:' && Boolean(this.extensionInfo(parsed.hostname))
+    } catch {
+      return false
+    }
+  }
+
+  private async loadExtensionForController(extensionId: string, extensionPath: string): Promise<Record<string, unknown>> {
+    const id = extensionId.trim().toLowerCase()
+    if (!/^[a-p]{32}$/.test(id)) {
+      throw new Error('invalid_extension_id')
+    }
+    if (!this.browserSession?.loadExtension) {
+      throw new Error('extension_loading_unavailable')
+    }
+    const root = this.extensionRoot()
+    const expectedPath = path.resolve(root, id)
+    if (path.resolve(extensionPath) !== expectedPath || !expectedPath.startsWith(`${root}${path.sep}`)) {
+      throw new Error('extension_path_outside_workstation_store')
+    }
+    if (!fs.existsSync(path.join(expectedPath, 'manifest.json'))) {
+      throw new Error('extension_manifest_missing')
+    }
+    const extension = await this.browserSession.loadExtension(expectedPath, { allowFileAccess: true })
+    const loadedId = String((extension as any)?.id ?? '')
+    if (loadedId && loadedId !== id) {
+      ;(this.browserSession as any).removeExtension?.(loadedId)
+      throw new Error('extension_id_mismatch')
+    }
+    return this.verifyExtensionForController(id)
+  }
+
+  private verifyExtensionForController(extensionId: string): Record<string, unknown> {
+    const id = extensionId.trim().toLowerCase()
+    if (!/^[a-p]{32}$/.test(id)) {
+      throw new Error('invalid_extension_id')
+    }
+    const extension = this.extensionInfo(id)
+    return {
+      extension_id: id,
+      loaded: Boolean(extension),
+      name: String(extension?.name ?? ''),
+      version: String(extension?.version ?? '')
+    }
+  }
+
+  private removeExtensionForController(extensionId: string): Record<string, unknown> {
+    const id = extensionId.trim().toLowerCase()
+    if (!/^[a-p]{32}$/.test(id)) {
+      throw new Error('invalid_extension_id')
+    }
+    const loaded = Boolean(this.extensionInfo(id))
+    if (loaded) {
+      ;(this.browserSession as any)?.removeExtension?.(id)
+    }
+    return { extension_id: id, removed: loaded, loaded: false }
+  }
+
+  private async loadInstalledExtensions(): Promise<void> {
     if (!this.browserSession?.loadExtension) {
       return
     }
-    const hermesHome = process.env.HERMES_HOME || path.join(os.homedir(), '.hermes')
-    const extensionsDir = path.join(hermesHome, 'workstation', 'extensions')
+    const extensionsDir = this.extensionRoot()
 
     if (!fs.existsSync(extensionsDir)) {
       return
@@ -2033,21 +2153,21 @@ export class WorkstationBrowserRuntime {
           const manifestPath = path.join(extPath, 'manifest.json')
 
           if (fs.existsSync(manifestPath)) {
-            this.browserSession.loadExtension(extPath, { allowFileAccess: true }).catch(err => {
+            this.loadExtensionForController(entry.name, extPath).catch(err => {
               console.warn(`[workstation-browser] Failed to load extension ${entry.name}:`, err)
             })
           }
         }
       }
-    } catch {
-      // best effort
+    } catch (error) {
+      console.warn('[workstation-browser] Failed to enumerate extensions:', error)
     }
   }
 
   private wireEntry(entry: BrowserEntry): void {
     const wc = entry.view.webContents
     wc.setWindowOpenHandler(details => {
-      if (permittedTopLevelUrl(details.url)) {
+      if (permittedTopLevelUrl(details.url) || this.isLoadedExtensionUrl(details.url)) {
         const shouldActivate = this.activeTabId === entry.id
         // createTab is idempotent for ownerTaskId, so a task-owned popup is
         // redirected into the same live page instead of creating a second owner.
@@ -2058,7 +2178,7 @@ export class WorkstationBrowserRuntime {
     })
 
     const guardTopLevelNavigation = (event: { preventDefault: () => void }, url: string): void => {
-      if (!permittedTopLevelUrl(url)) {
+      if (!permittedTopLevelUrl(url) && !this.isLoadedExtensionUrl(url)) {
         event.preventDefault()
         this.lastError = `Blocked unsafe top-level navigation: ${url}`
         this.emitState()
@@ -2365,6 +2485,7 @@ export class WorkstationBrowserRuntime {
     emitter.on('resize', listener)
     emitter.on('maximize', listener)
     emitter.on('unmaximize', listener)
+    emitter.on('restore', listener)
     this.viewportGeometryWindow = window
     this.viewportGeometryListener = listener
   }
@@ -2385,13 +2506,20 @@ export class WorkstationBrowserRuntime {
       emitter.off('resize', this.viewportGeometryListener)
       emitter.off('maximize', this.viewportGeometryListener)
       emitter.off('unmaximize', this.viewportGeometryListener)
+      emitter.off('restore', this.viewportGeometryListener)
     }
     this.viewportGeometryWindow = null
     this.viewportGeometryListener = null
   }
 
   private reconcileViewportGeometry(): void {
-    if (!this.attached || !this.ownerWindow || this.ownerWindow.isDestroyed() || !this.bounds) {
+    if (
+      !this.attached ||
+      !this.ownerWindow ||
+      this.ownerWindow.isDestroyed() ||
+      (typeof this.ownerWindow.isMinimized === 'function' && this.ownerWindow.isMinimized()) ||
+      !this.bounds
+    ) {
       return
     }
 
@@ -2618,11 +2746,12 @@ function registerIpc(): void {
   ipcMain.handle('hermes:workstation-browser:reload', () => getWorkstationBrowserRuntime().reload())
   ipcMain.handle('hermes:workstation-browser:stop', () => getWorkstationBrowserRuntime().stop())
   ipcMain.handle('hermes:workstation-browser:focus', () => getWorkstationBrowserRuntime().focus())
-  ipcMain.handle('hermes:workstation-browser:attach', (event, bounds, host) =>
+  ipcMain.handle('hermes:workstation-browser:attach', (event, bounds, host, preferredTaskId) =>
     getWorkstationBrowserRuntime().attach(
       senderWindow(event),
       bounds as WorkstationBrowserBounds,
-      typeof host === 'string' ? host : 'hub'
+      typeof host === 'string' ? host : 'hub',
+      typeof preferredTaskId === 'string' ? preferredTaskId : null
     )
   )
   ipcMain.handle('hermes:workstation-browser:set-bounds', (event, bounds, expectedHost) =>

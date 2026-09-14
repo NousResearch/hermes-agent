@@ -6,13 +6,95 @@ import logging
 import os
 from pathlib import Path
 import re
+import shutil
+import tempfile
 from typing import Any, Optional
 import urllib.request
 import zipfile
 
 from hermes_constants import get_hermes_home
+from workstation.contracts import RiskLevel
 
 _log = logging.getLogger(__name__)
+
+
+_HIGH_RISK_PERMISSIONS = frozenset({
+    "cookies", "webrequest", "webrequestblocking", "nativemessaging", "debugger",
+    "management", "proxy", "enterprise.platformkeys",
+})
+_MEDIUM_RISK_PERMISSIONS = frozenset({
+    "tabs", "downloads", "clipboardread", "clipboardwrite", "history", "bookmarks",
+    "topSites", "sessions",
+})
+_LOW_RISK_PERMISSIONS = frozenset({"activetab", "storage", "contextmenus"})
+
+
+def _permission_key(value: object) -> str:
+    return str(value or "").strip().lower().replace("_", "")
+
+
+def _is_broad_host_permission(value: object) -> bool:
+    candidate = str(value or "").strip().lower()
+    return candidate in {"<all_urls>", "*://*/*", "http://*/*", "https://*/*"}
+
+
+def assess_extension_risk(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Classify manifest permissions before any extension is installed.
+
+    This is deliberately conservative: an extension is executable third-party
+    code in the authenticated Workstation profile.  Low-risk manifests are
+    narrow enough for the policy engine to permit; broader host access or
+    privileged browser APIs require a human approval boundary.
+    """
+    permissions = list(manifest.get("permissions") or [])
+    host_permissions = list(manifest.get("host_permissions") or [])
+    optional_permissions = list(manifest.get("optional_permissions") or [])
+    optional_host_permissions = list(manifest.get("optional_host_permissions") or [])
+    content_matches = [
+        match
+        for script in (manifest.get("content_scripts") or [])
+        if isinstance(script, dict)
+        for match in (script.get("matches") or [])
+    ]
+    all_permissions = permissions + optional_permissions
+    all_hosts = host_permissions + optional_host_permissions + content_matches
+    normalized = {_permission_key(item) for item in all_permissions}
+    reasons: list[str] = []
+    level = RiskLevel.LOW
+
+    high = sorted(permission for permission in normalized if permission in _HIGH_RISK_PERMISSIONS)
+    if high:
+        level = RiskLevel.HIGH
+        reasons.append(f"privileged permissions: {', '.join(high)}")
+    if any(_is_broad_host_permission(host) for host in all_hosts):
+        level = RiskLevel.HIGH
+        reasons.append("broad host access")
+    elif any(str(host).strip() for host in all_hosts):
+        level = max(level, RiskLevel.MEDIUM, key=lambda item: list(RiskLevel).index(item))
+        reasons.append("host-page access")
+
+    medium = sorted(permission for permission in normalized if permission in _MEDIUM_RISK_PERMISSIONS)
+    if medium and level != RiskLevel.HIGH:
+        level = RiskLevel.MEDIUM
+        reasons.append(f"browser-data permissions: {', '.join(medium)}")
+
+    unknown = sorted(
+        permission for permission in normalized
+        if permission and permission not in _HIGH_RISK_PERMISSIONS
+        and permission not in _MEDIUM_RISK_PERMISSIONS and permission not in _LOW_RISK_PERMISSIONS
+    )
+    if unknown and level == RiskLevel.LOW:
+        level = RiskLevel.MEDIUM
+        reasons.append(f"unclassified permissions: {', '.join(unknown)}")
+
+    return {
+        "risk_level": level.value,
+        "reasons": reasons or ["limited active-tab/local-storage permissions"],
+        "permissions": permissions,
+        "host_permissions": host_permissions,
+        "optional_permissions": optional_permissions,
+        "optional_host_permissions": optional_host_permissions,
+    }
 
 def get_extensions_dir() -> Path:
     """Resolve directory for installed Chrome extensions."""
@@ -59,9 +141,12 @@ class ChromeExtensionManager:
             raise ValueError("Failed to locate ZIP payload inside CRX archive")
 
         zip_data = crx_bytes[zip_offset:]
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
         with zipfile.ZipFile(io.BytesIO(zip_data)) as z:
+            for member in z.infolist():
+                member_path = Path(member.filename)
+                if member_path.is_absolute() or ".." in member_path.parts:
+                    raise ValueError("CRX archive contains an unsafe path")
+            dest_dir.mkdir(parents=True, exist_ok=True)
             z.extractall(dest_dir)
 
         return dest_dir
@@ -99,14 +184,35 @@ class ChromeExtensionManager:
             return {"extensions": {}}
 
     def _save_registry(self, data: dict[str, Any]) -> None:
-        with open(self.registry_file, "w", encoding="utf-8") as f:
+        temporary = self.registry_file.with_suffix(".tmp")
+        with open(temporary, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(temporary, self.registry_file)
+
+    def inspect_crx(self, ext_id: str, crx_bytes: bytes) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Read a CRX manifest without persisting executable extension files."""
+        with tempfile.TemporaryDirectory(prefix=f"hermes-extension-{ext_id}-") as temp:
+            unpacked = self.unpack_crx(crx_bytes, Path(temp) / ext_id)
+            manifest = self.get_manifest(unpacked)
+        if not isinstance(manifest, dict) or not str(manifest.get("version") or "").strip():
+            raise ValueError("Extension manifest must be an object with a version")
+        return manifest, assess_extension_risk(manifest)
 
     def install_from_bytes(self, ext_id: str, crx_bytes: bytes) -> dict[str, Any]:
         """Install extension from raw CRX bytes (useful for offline/tests)."""
         target_dir = self.storage_dir / ext_id
-        self.unpack_crx(crx_bytes, target_dir)
-        manifest = self.get_manifest(target_dir)
+        staging_dir = Path(tempfile.mkdtemp(prefix=f".{ext_id}-", dir=self.storage_dir))
+        unpacked = staging_dir / "extension"
+        try:
+            self.unpack_crx(crx_bytes, unpacked)
+            manifest = self.get_manifest(unpacked)
+            if not isinstance(manifest, dict) or not str(manifest.get("version") or "").strip():
+                raise ValueError("Extension manifest must be an object with a version")
+            if target_dir.exists():
+                shutil.rmtree(target_dir)
+            os.replace(unpacked, target_dir)
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
         name = manifest.get("name", ext_id)
         # Handle localized message __MSG_name__ fallback
@@ -121,7 +227,9 @@ class ChromeExtensionManager:
             "path": str(target_dir),
             "enabled": True,
             "permissions": manifest.get("permissions", []),
+            "host_permissions": manifest.get("host_permissions", []),
             "options_page": manifest.get("options_page") or manifest.get("options_ui", {}).get("page"),
+            "risk": assess_extension_risk(manifest),
         }
 
         reg = self._load_registry()

@@ -87,6 +87,13 @@ _WORKSTATION_SCHEMA_TOOLS = frozenset({
     "browser_get_images",
     "browser_vision",
     "browser_console",
+    # Extension management is a Desktop-session capability: the agent can
+    # request it explicitly, but non-Desktop sessions never carry these
+    # schemas. Runtime reachability/policy remain checked at dispatch.
+    "browser_extension_install",
+    "browser_extension_list",
+    "browser_extension_uninstall",
+    "browser_extension_open_options",
 })
 
 
@@ -354,7 +361,13 @@ def _dispatch(
         timeout = float(os.getenv("HERMES_WORKSTATION_BROWSER_TIMEOUT", str(_DEFAULT_TIMEOUT_SECONDS)))
     except ValueError:
         timeout = _DEFAULT_TIMEOUT_SECONDS
-    card_id = (kanban_card_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or None
+    session_card_id = ""
+    try:
+        from gateway.session_context import get_session_env
+        session_card_id = get_session_env("HERMES_KANBAN_TASK", "")
+    except Exception:
+        pass
+    card_id = (kanban_card_id or session_card_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or None
     rid = (run_id or os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip() or None
     payload: Dict[str, Any] = {
         "action": action,

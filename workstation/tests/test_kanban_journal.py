@@ -105,12 +105,18 @@ def test_kanban_bridge_followup_and_completion(tmp_path, monkeypatch):
         child = kanban_db.get_task(conn, child_id)
         assert child is not None
         assert child.title == "Approve extra luggage fee"
+        assert "Origin session: session-dogfood-2" in child.body
+        assert "Discovery evidence:" in child.body
         parent = kanban_db.get_task(conn, parent_id)
         assert parent.status in ("blocked", "todo")
 
     # Complete the child task
     with bridge.get_connection() as conn:
         kanban_db.complete_task(conn, child_id, result="Approved luggage fee")
+        kanban_db.recompute_ready(conn)
+        parent_ready = kanban_db.get_task(conn, parent_id)
+        assert parent_ready is not None
+        assert parent_ready.status == "ready"
 
     # Now complete the parent task with a Workstation report
     report = BrowserTaskReport(
@@ -153,4 +159,3 @@ def test_journal_timeline_elapsed_seconds(tmp_path):
     assert "elapsed_seconds" in timeline[1]
     assert timeline[2]["kind"] == ExecutionEventKind.TASK_COMPLETED.value
     assert timeline[2]["elapsed_seconds"] >= 0.0
-

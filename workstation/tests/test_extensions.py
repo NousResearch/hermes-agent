@@ -5,7 +5,7 @@ import json
 import zipfile
 import pytest
 
-from workstation.extensions import ChromeExtensionManager
+from workstation.extensions import ChromeExtensionManager, assess_extension_risk
 
 
 def create_mock_crx(manifest_data: dict) -> bytes:
@@ -74,3 +74,37 @@ def test_install_and_manage_extension(tmp_path):
     # Uninstall
     assert mgr.uninstall_extension(ext_id) is True
     assert len(mgr.list_installed_extensions()) == 0
+
+
+def test_extension_risk_assessment_is_conservative():
+    assert assess_extension_risk({"permissions": ["activeTab", "storage"]})["risk_level"] == "low"
+    assert assess_extension_risk({"permissions": ["tabs"]})["risk_level"] == "medium"
+    assert assess_extension_risk({"permissions": ["cookies"]})["risk_level"] == "high"
+    assert assess_extension_risk({"host_permissions": ["<all_urls>"]})["risk_level"] == "high"
+    assert assess_extension_risk({"permissions": ["unknownExperimentalPermission"]})["risk_level"] == "medium"
+
+
+def test_corrupt_and_unsafe_crx_never_registers_extension(tmp_path):
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+
+    with pytest.raises(ValueError, match="missing Cr24"):
+        mgr.install_from_bytes(ext_id, b"not-a-crx")
+
+    unsafe_zip = io.BytesIO()
+    with zipfile.ZipFile(unsafe_zip, "w") as archive:
+        archive.writestr("../outside.txt", "nope")
+        archive.writestr("manifest.json", json.dumps({"name": "unsafe", "version": "1"}))
+    with pytest.raises(ValueError, match="unsafe path"):
+        mgr.install_from_bytes(ext_id, b"Cr24" + b"\0" * 16 + unsafe_zip.getvalue())
+
+    assert mgr.list_installed_extensions() == []
+
+
+def test_reinstall_updates_the_durable_registry_entry(tmp_path):
+    mgr = ChromeExtensionManager(storage_dir=tmp_path)
+    ext_id = "cjpalhdlnbpafiamejdnhcphjbkeiagm"
+    mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "1.0.0"}))
+    updated = mgr.install_from_bytes(ext_id, create_mock_crx({"name": "Fixture", "version": "2.0.0"}))
+    assert updated["version"] == "2.0.0"
+    assert mgr.list_installed_extensions() == [updated]

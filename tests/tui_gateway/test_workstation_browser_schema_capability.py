@@ -8,6 +8,7 @@ from tools import browser_workstation
 from tools.registry import registry
 
 TARGET = "browser_navigate"
+EXTENSION_TOOL = "browser_extension_install"
 
 
 def _tool_names(platform: str, source: str) -> set[str]:
@@ -46,12 +47,14 @@ def _force_probe_false(monkeypatch):
 def test_desktop_surface_preserves_browser_schema_when_probe_is_false(monkeypatch):
     _force_probe_false(monkeypatch)
     assert TARGET in _tool_names("desktop", "desktop")
+    assert EXTENSION_TOOL in _tool_names("desktop", "desktop")
 
 
 def test_desktop_schema_cache_does_not_leak_into_tui(monkeypatch):
     _force_probe_false(monkeypatch)
     assert TARGET in _tool_names("desktop", "desktop")
     assert TARGET not in _tool_names("tui", "tui")
+    assert EXTENSION_TOOL not in _tool_names("tui", "tui")
 
 
 def test_process_desktop_env_does_not_grant_tui_browser_capability(monkeypatch):
@@ -69,6 +72,7 @@ def test_desktop_source_grants_capability_without_process_env():
         tools = browser_workstation.workstation_schema_tools_for_current_session()
         assert TARGET in tools
         assert "browser_snapshot" in tools
+        assert EXTENSION_TOOL in tools
         assert "browser_exec" not in tools
     finally:
         clear_session_vars(tokens)
@@ -91,6 +95,7 @@ def test_desktop_surface_preserves_workstation_browser_tools_when_toolset_omitte
         }
         assert TARGET in tools
         assert "browser_snapshot" in tools
+        assert EXTENSION_TOOL in tools
     finally:
         clear_session_vars(tokens_desktop)
 
@@ -106,6 +111,6 @@ def test_desktop_surface_preserves_workstation_browser_tools_when_toolset_omitte
         }
         assert TARGET not in tools_tui
         assert "browser_snapshot" not in tools_tui
+        assert EXTENSION_TOOL not in tools_tui
     finally:
         clear_session_vars(tokens_tui)
-

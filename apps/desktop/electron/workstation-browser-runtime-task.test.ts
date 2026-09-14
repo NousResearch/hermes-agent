@@ -157,9 +157,18 @@ const electron = vi.hoisted(() => {
     }
   }
 
+  const extensions: Record<string, { id: string; name: string; version: string }> = {}
   const browserSession = {
     getCacheSize: async () => 0,
-    clearCache: async () => undefined
+    clearCache: async () => undefined,
+    loadExtension: async (extensionPath: string) => {
+      const id = path.basename(extensionPath)
+      const extension = { id, name: 'Fixture extension', version: '1.0.0' }
+      extensions[id] = extension
+      return extension
+    },
+    getAllExtensions: () => extensions,
+    removeExtension: (id: string) => { delete extensions[id] }
   }
 
   return {
@@ -195,6 +204,7 @@ import { BrowserSessionStateFilePersistence } from './workstation-browser-sessio
 const tempRoots: string[] = []
 afterEach(() => {
   delete process.env.HERMES_WORKSTATION_HOME
+  delete process.env.HERMES_HOME
   electron.windows.splice(0)
 
   for (const root of tempRoots.splice(0)) {
@@ -595,6 +605,34 @@ test('C3 destroy interruption drops the removed task and orphan projection deter
   assert.equal(canonical.activeTabId, ordinary.id)
 })
 
+test('controller loads, verifies and removes only an extension from the Workstation store', async () => {
+  const home = runtimeHome()
+  process.env.HERMES_HOME = home
+  const extensionId = 'cjpalhdlnbpafiamejdnhcphjbkeiagm'
+  const extensionPath = path.join(home, 'workstation', 'extensions', extensionId)
+  fs.mkdirSync(extensionPath, { recursive: true })
+  fs.writeFileSync(path.join(extensionPath, 'manifest.json'), JSON.stringify({ name: 'Fixture', version: '1.0.0' }))
+  const runtime = new WorkstationBrowserRuntime()
+  runtime.ensure()
+
+  const loaded = await (runtime as any).executeControlRequest({
+    action: 'browser_extension_load', arguments: { extension_id: extensionId, path: extensionPath }
+  })
+  assert.equal(loaded.loaded, true)
+  assert.equal(loaded.extension_id, extensionId)
+
+  const verified = await (runtime as any).executeControlRequest({
+    action: 'browser_extension_verify', arguments: { extension_id: extensionId }
+  })
+  assert.equal(verified.loaded, true)
+
+  const removed = await (runtime as any).executeControlRequest({
+    action: 'browser_extension_remove', arguments: { extension_id: extensionId }
+  })
+  assert.equal(removed.loaded, false)
+  await runtime.destroy()
+})
+
 test('ownerTaskId is idempotent at the Chromium tab primitive', async () => {
   runtimeHome()
   const runtime = new WorkstationBrowserRuntime()
@@ -802,6 +840,71 @@ test('runtime clearError resets lastError', async () => {
   assert.equal(runtime.state().lastError, 'stale_or_unknown_ref')
   runtime.clearError()
   assert.equal(runtime.state().lastError, null)
+
+  await runtime.destroy()
+})
+
+test('concurrent multi-task isolation: background actions do not steal active tab or hijack existing task tabs', async () => {
+  runtimeHome()
+  const runtime = new WorkstationBrowserRuntime()
+  const window = hostWindow()
+  const bounds = { x: 0, y: 0, width: 900, height: 600 }
+
+  const executeControlRequest = (
+    runtime as unknown as {
+      executeControlRequest(request: Record<string, unknown>): Promise<Record<string, unknown>>
+    }
+  ).executeControlRequest.bind(runtime)
+
+  // 1. Session 1 navigates to Site A
+  runtime.attach(window as never, bounds, 'chat', 'task-sess-1')
+  await executeControlRequest({
+    action: 'browser_navigate',
+    task_id: 'task-sess-1',
+    arguments: { url: 'https://session1.test' }
+  })
+
+  const tab1 = runtime.state().tabs.find(t => t.ownerTaskId === 'task-sess-1')
+  assert.ok(tab1, 'Tab 1 must exist for session 1')
+  assert.equal(tab1.url, 'https://session1.test/')
+  assert.equal(runtime.state().activeTabId, tab1.id)
+
+  // 2. Session 2 navigates to Site B
+  runtime.attach(window as never, bounds, 'chat', 'task-sess-2')
+  await executeControlRequest({
+    action: 'browser_navigate',
+    task_id: 'task-sess-2',
+    arguments: { url: 'https://session2.test' }
+  })
+
+  const tab2 = runtime.state().tabs.find(t => t.ownerTaskId === 'task-sess-2')
+  assert.ok(tab2, 'Tab 2 must exist for session 2')
+  assert.equal(tab2.url, 'https://session2.test/')
+  assert.notEqual(tab1.id, tab2.id, 'Session 1 and Session 2 must own separate tabs')
+  assert.equal(runtime.state().activeTabId, tab2.id, 'Session 2 should be the active tab')
+
+  // Verify Tab 1 was not overwritten
+  const tab1After = runtime.state().tabs.find(t => t.id === tab1.id)
+  assert.equal(tab1After?.ownerTaskId, 'task-sess-1', 'Tab 1 must not be hijacked by Session 2')
+  assert.equal(tab1After?.url, 'https://session1.test/')
+
+  // 3. Session 1 performs background actions (snapshot, click, scroll) while Session 2 is active on-screen
+  await executeControlRequest({
+    action: 'browser_snapshot',
+    task_id: 'task-sess-1',
+    arguments: {}
+  })
+
+  // Active tab must still be Tab 2 (Session 2 view must NOT be stolen/swapped by Session 1 background work)
+  assert.equal(runtime.state().activeTabId, tab2.id, 'Session 1 background action must not steal active tab from Session 2')
+
+  // 4. Switching chat back to Session 1 via preferredTaskId activates Tab 1
+  runtime.attach(window as never, bounds, 'chat', 'task-sess-1')
+  assert.equal(runtime.state().activeTabId, tab1.id, 'Attaching to Session 1 should activate Tab 1')
+
+  // Switching back to Session 2 activates Tab 2
+  runtime.attach(window as never, bounds, 'chat', 'task-sess-2')
+  assert.equal(runtime.state().activeTabId, tab2.id, 'Attaching to Session 2 should activate Tab 2')
 
   await runtime.destroy()
 })

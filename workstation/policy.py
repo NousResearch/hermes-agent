@@ -97,6 +97,38 @@ class ScopedPolicyEngine:
         ]
 
     def evaluate(self, scope: ActionScope) -> PolicyEvaluation:
+        # Extensions execute third-party code inside the authenticated Chromium
+        # profile.  The caller supplies a manifest-derived risk assessment;
+        # never trust an action name alone to downgrade it.
+        if scope.capability == "browser_extension":
+            raw_risk = str(scope.parameters.get("extension_risk", RiskLevel.HIGH.value)).lower()
+            try:
+                extension_risk = RiskLevel(raw_risk)
+            except ValueError:
+                extension_risk = RiskLevel.HIGH
+            if scope.action_name in {"install_extension", "update_extension"} and extension_risk in {
+                RiskLevel.MEDIUM,
+                RiskLevel.HIGH,
+                RiskLevel.CRITICAL,
+            }:
+                res = PolicyEvaluation(
+                    decision=PolicyDecision.REQUIRE_APPROVAL,
+                    reason="Extension permissions can access authenticated browser data or pages",
+                    risk_level=extension_risk,
+                    constraints=["require_explicit_human_confirmation", "record_manifest_permissions"],
+                )
+                self._record_audit(scope, res)
+                return res
+            if scope.action_name == "uninstall_extension":
+                res = PolicyEvaluation(
+                    decision=PolicyDecision.REQUIRE_APPROVAL,
+                    reason="Removing an extension changes the browser capability set",
+                    risk_level=max(extension_risk, RiskLevel.MEDIUM, key=lambda item: list(RiskLevel).index(item)),
+                    constraints=["require_explicit_human_confirmation"],
+                )
+                self._record_audit(scope, res)
+                return res
+
         # 1. Fast check: dangerous destructive command patterns -> DENY
         if scope.capability == "process" or scope.action_name in ("run_command", "terminal", "exec"):
             target_cmd = scope.target or str(scope.parameters.get("command", ""))

@@ -84,6 +84,22 @@ def test_cronjob_tool_create_no_agent_without_script_errors(hermes_env):
     assert "no_agent=True requires a script" in result.get("error", "")
 
 
+def test_cronjob_tool_rejects_malformed_script_spec(hermes_env):
+    from tools.cronjob_tools import cronjob
+
+    result = json.loads(
+        cronjob(
+            action="create",
+            schedule="every 5m",
+            prompt="run check",
+            script='probe.py --label "unterminated',
+            deliver="local",
+        )
+    )
+    assert result.get("success") is False
+    assert "Invalid script specification" in result.get("error", "")
+
+
 # ---------------------------------------------------------------------------
 # scheduler.run_job: short-circuit behavior
 # ---------------------------------------------------------------------------

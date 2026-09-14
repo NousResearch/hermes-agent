@@ -2,6 +2,7 @@
 tools/cronjob_tools.py)."""
 
 import logging
+import shlex
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
@@ -295,7 +296,14 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
         return None
 
     from hermes_constants import get_hermes_home
-    raw = script.strip()
+    spec = script.strip()
+    try:
+        parts = shlex.split(spec, posix=True)
+    except ValueError as exc:
+        return f"Invalid script specification: {exc}"
+    if not parts:
+        return "Invalid script specification: empty script value"
+    raw = parts[0]
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
             f"Script path must be relative to ~/.hermes/scripts/. "

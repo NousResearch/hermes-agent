@@ -758,6 +758,63 @@ class TestMattermostFileDelivery:
         monkeypatch.setattr("gateway.channel_directory.resolve_channel_name", lambda platform, ref: ref)
         return config, session, posts, uploads
 
+    @pytest.mark.parametrize("live", [False, True])
+    @pytest.mark.parametrize("root_id", [None, "0123456789AbCdEfGhIjKlMnOp"])
+    def test_mattermost_parsed_target_reaches_native_flat_mode(self, transport, monkeypatch, live, root_id):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        config, session, posts, uploads = transport
+        config.extra["reply_mode"] = "off"
+        channel_id = "AbCdEfGhIjKlMnOpQrStUvWxY0"
+        adapter = None
+        if live:
+            adapter = MattermostAdapter(config)
+            adapter._session = session
+            assert adapter._reply_mode == "off"
+            monkeypatch.setattr("tools.send_message_tool._live_adapter", lambda platform: (None, adapter))
+            response = AsyncMock()
+            response.status = 200
+            response.json.return_value = {"id": root_id, "root_id": ""}
+            response.__aenter__.return_value = response
+            session.get.return_value = response
+
+        # The media fixture resolves opaque IDs by identity; this test must use the real parser.
+        directory = MagicMock(side_effect=AssertionError("explicit IDs must bypass the directory"))
+        monkeypatch.setattr("gateway.channel_directory.resolve_channel_name", directory)
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: SimpleNamespace(
+            platforms={Platform.MATTERMOST: config},
+            get_home_channel=lambda platform: SimpleNamespace(chat_id="home-channel")))
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setattr("tools.send_message_tool._mirror_sent_message", lambda *args: False)
+        monkeypatch.setattr("model_tools._run_async", _run_async_immediately)
+
+        target = f"mattermost:{channel_id}" + (f":{root_id}" if root_id else "")
+        result = json.loads(send_message_tool({"action": "send", "target": target, "message": "targeted reply"}))
+
+        assert result.get("success") is True, result
+        assert result["message_ids"] == ["post-1"]
+        assert "note" not in result
+        directory.assert_not_called()
+        assert not uploads
+        assert posts == [{"channel_id": channel_id, "message": "targeted reply",
+                          "props": {"disable_mentions": True}, **({"root_id": root_id} if root_id else {})}]
+        session.post.assert_called_once()
+        assert session.post.call_args.args[0] == "https://mm.example.com/api/v4/posts"
+        if live and root_id:
+            session.get.assert_called_once()
+            assert session.get.call_args.args[0] == f"https://mm.example.com/api/v4/posts/{root_id}"
+            # An ordinary gateway reply has no explicit-target flag and stays flat.
+            assert adapter is not None
+            ordinary = asyncio.run(adapter.send(channel_id, "ordinary reply", reply_to=root_id,
+                                                metadata={"thread_id": root_id}))
+            assert ordinary.success
+            assert posts[-1]["channel_id"] == channel_id
+            assert posts[-1]["message"] == "ordinary reply"
+            assert "root_id" not in posts[-1]
+            session.get.assert_called_once()
+        else:
+            session.get.assert_not_called()
+
     @pytest.mark.parametrize("caption", ["", "  caption @here\n", " \t "])
     @pytest.mark.parametrize("descriptor", ["tuple", "dict", "string"])
     @pytest.mark.asyncio

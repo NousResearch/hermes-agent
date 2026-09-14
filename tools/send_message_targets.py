@@ -8,6 +8,7 @@ logger = logging.getLogger("tools.send_message_tool")
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE  # Discord snowflakes: numeric, same "<id>[:<thread>]" shape
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
+_MATTERMOST_TARGET_RE = re.compile(r"^\s*([A-Za-z0-9]{26})(?::([A-Za-z0-9]{26}))?\s*$")
 # Slack conversation IDs: C (public), G (private/group), D (DM); uppercase alnum, 9+ chars. User IDs
 # (U...) become ``user:U...`` and are opened as D... conversations first (posting straight to a U/W
 # id fails); ``@handle`` -> ``user_name:...`` resolves via users.list.
@@ -90,6 +91,12 @@ def _parse_yuanbao(ref):
     return (f"group:{ref.strip()}", None) if ref.strip().isdigit() else _UNRESOLVED
 
 
+def _parse_mattermost(ref):
+    # Malformed numeric IDs must not fall through to the generic numeric rule.
+    match = _MATTERMOST_TARGET_RE.fullmatch(ref)
+    return (match.group(1), match.group(2)) if match else _UNRESOLVED
+
+
 def _parse_signal(ref):
     # "group:<id>" is a native group target; an empty id is not explicit.
     stripped = ref.strip()
@@ -105,6 +112,7 @@ _PLATFORM_PARSERS = {
     "discord": _parse_regex_groups(_NUMERIC_TOPIC_RE),  # "<channel>[:<thread>]" snowflakes
     "slack": _parse_slack,
     "matrix": _parse_matrix,
+    "mattermost": _parse_mattermost,
     "weixin": _parse_regex_groups(_WEIXIN_TARGET_RE, thread_group=False),
     "yuanbao": _parse_yuanbao,
     "ntfy": _parse_nonempty,

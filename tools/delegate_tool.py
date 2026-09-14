@@ -12,12 +12,14 @@ tool calls or reasoning.
 """
 
 import logging
+import os
 import time
 import weakref
 from typing import Any, Dict, List, Optional
 
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb  # noqa: F401  (used via _ChildRun.await_child)
 from utils import is_truthy_value
+from agent.implementer_workspace import is_implementer_profile
 
 logger = logging.getLogger(__name__)
 
@@ -425,6 +427,8 @@ def delegate_task(
     list/steer/stop run synchronously and bypass the pause gate, depth limit and async dispatch. ``role`` is legacy
     (per-task beats top-level; capability is depth-derived). Returns JSON with one results entry per task, or a
     dispatch handle when running in the background."""
+    if is_implementer_profile() and os.environ.get("HERMES_KANBAN_TASK"):
+        return tool_error("delegate_task refused: dispatcher-attested implementer workers are bounded executors.")
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 

@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
+from agent.implementer_workspace import is_implementer_profile
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
@@ -563,6 +564,18 @@ def _handle_list(args: dict, **kw) -> str:
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _worker_guard("kanban_complete", args)
+    try:
+        from agent.implementer_workspace import (
+            ImplementerWorkspaceError,
+            require_attested_workspace,
+            verify_original_baseline,
+        )
+        attestation = require_attested_workspace()
+        if attestation is not None:
+            _check(attestation.task_id == tid, "implementer completion task does not match workspace attestation")
+            verify_original_baseline()
+    except ImplementerWorkspaceError as exc:
+        raise _Reject(f"kanban_complete refused: {exc}") from exc
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")
@@ -848,6 +861,10 @@ def _handle_attachments(args: dict, **kw) -> str:
 def _handle_create(args: dict, **kw) -> str:
     """Create a (child) task; orchestrator workers use this to fan out."""
     _reject_delegated_child_mutation("kanban_create")
+    _check(
+        not (is_implementer_profile() and os.environ.get("HERMES_KANBAN_TASK")),
+        "kanban_create refused: dispatcher-attested implementer workers are bounded executors.",
+    )
     title = _require_text(args, "title")
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "

@@ -365,11 +365,21 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
     with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
-        entries = [
-            _managed_file_entry(policy, Path(entry.path))
-            for entry in scan
-            if not _is_sensitive_path(Path(entry.path))
-        ]
+        entries = []
+        for entry in scan:
+            entry_path = Path(entry.path)
+            if _is_sensitive_path(entry_path):
+                continue
+            # One unreadable entry must not fail the whole listing.
+            # _managed_file_entry stat()s the resolved path and raises
+            # HTTPException(500) when that stat fails, so a single dangling
+            # symlink (e.g. a stale ~/.steampath) used to 500 the entire
+            # directory — breaking the dashboard file browser for every entry
+            # in it, not just the broken one.
+            try:
+                entries.append(_managed_file_entry(policy, entry_path))
+            except (HTTPException, OSError):
+                continue
 
     entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
     locked_root = policy.locked_root

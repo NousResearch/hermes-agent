@@ -192,13 +192,8 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
 def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     """Fetch the provider catalogs the serial picker loop would block on, in parallel.
 
-    Only providers the serial call cannot serve from disk are fetched — missing,
-    fingerprint-mismatched, or hard-expired entries. TTL-expired non-empty rows are served
-    inside the stale-serve window while revalidating off-thread, and an empty local-ollama
-    catalog is authoritative inside its own short native TTL, so prefetching either trades a
-    non-blocking serial read for a parallel fetch the picker waits on. Each worker lets
-    :func:`cached_provider_model_ids` persist its own result, which it does under the shared
-    cache write lock, so concurrent writes cannot clobber each other."""
+    Only rows the serial call cannot serve from disk are fetched; each worker lets
+    :func:`cached_provider_model_ids` persist its own result under the shared write lock."""
     from hermes_cli.models import (
         _OLLAMA_LOCAL_MODELS_CACHE_TTL, _PROVIDER_MODELS_CACHE_TTL,
         _PROVIDER_MODELS_STALE_SERVE_MAX, _cache_entry_valid, _credential_fingerprint,
@@ -209,12 +204,7 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
     def _servable_from_disk(key: str, entry) -> bool:
         """True when the serial ``cached_provider_model_ids(key)`` would not go to the network.
 
-        Mirrors that function's two non-blocking tiers: a fingerprint-matched row is served
-        under its TTL, and a non-empty one keeps being served out to
-        ``_PROVIDER_MODELS_STALE_SERVE_MAX`` while an SWR thread revalidates. An empty row is
-        servable only for ``ollama`` and only inside ``_OLLAMA_LOCAL_MODELS_CACHE_TTL``, where
-        the reachable local catalog is authoritative.
-        """
+        Mirrors that function at the default ``ttl_seconds`` (no caller overrides it)."""
         is_ollama = key == "ollama"
         if not _cache_entry_valid(entry, _credential_fingerprint(key), allow_empty=is_ollama):
             return False
@@ -223,6 +213,8 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
             else _PROVIDER_MODELS_CACHE_TTL
         if age < ttl:
             return True
+        # Expired non-empty rows are served out to the stale-serve bound while an SWR thread
+        # revalidates; an empty row is authoritative only for ollama's short native TTL above.
         return bool(entry["models"]) and age < _PROVIDER_MODELS_STALE_SERVE_MAX
 
     # Gate on the row the serial call actually reads — _normalized_cache_slug keeps a bare
@@ -235,6 +227,8 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
         key = _normalized_cache_slug(slug)
         if key and not _servable_from_disk(key, cache.get(key)):
             stale_slugs.append(key)
+    # Distinct slugs can normalize to one cache key (aliases); one fetch per row is enough.
+    stale_slugs = list(dict.fromkeys(stale_slugs))
 
     if not stale_slugs:
         return

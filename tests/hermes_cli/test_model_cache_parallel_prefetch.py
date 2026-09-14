@@ -132,8 +132,7 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp_f"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
             _prefetch_provider_models_parallel(["fresh_prov", "stale_prov"])
 
         assert "fresh_prov" not in fetch_calls
@@ -161,8 +160,7 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value={}), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
             _prefetch_provider_models_parallel(slugs)
 
         assert max_concurrent[0] > 1, "fetches were serial, not parallel"
@@ -176,8 +174,7 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value={}), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
             # Should not raise
             _prefetch_provider_models_parallel(["failing_prov"])
 
@@ -230,11 +227,13 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch) as fetch, \
+             patch("hermes_cli.models.update_provider_cache_entry") as repersist:
             _prefetch_provider_models_parallel(["openrouter"])
 
         assert fetched == ["openrouter"]
+        fetch.assert_called_once_with("openrouter", force_refresh=True)
+        repersist.assert_not_called()
 
     def test_fetches_when_credentials_rotated_inside_the_window(self):
         """A fingerprint mismatch is fetched however recent the entry is.
@@ -253,11 +252,11 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
              patch("hermes_cli.models._credential_fingerprint", return_value="new_fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch) as fetch:
             _prefetch_provider_models_parallel(["openrouter"])
 
         assert fetched == ["openrouter"]
+        fetch.assert_called_once_with("openrouter", force_refresh=True)
 
     def test_fetches_entries_cached_as_empty(self):
         """An empty cached catalog is not servable — prefetch it."""
@@ -272,11 +271,11 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
-             patch("hermes_cli.models.update_provider_cache_entry"):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch) as fetch:
             _prefetch_provider_models_parallel(["openrouter"])
 
         assert fetched == ["openrouter"]
+        fetch.assert_called_once_with("openrouter", force_refresh=True)
 
     def test_bare_ollama_reads_and_warms_its_own_cache_row(self):
         """The gate must key on the row the serial call actually reads.
@@ -335,10 +334,11 @@ class TestPrefetchProviderModelsParallel:
 
         with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
              patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
-             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch):
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch) as fetch:
             _prefetch_provider_models_parallel(["ollama"])
 
         assert fetched == ["ollama"]
+        fetch.assert_called_once_with("ollama", force_refresh=True)
 
 
 # ---------------------------------------------------------------------------

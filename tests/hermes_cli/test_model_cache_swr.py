@@ -184,6 +184,25 @@ class TestProviderModelsSWR:
 
         assert held == {"at_load": True, "at_save": True}
 
+    def test_force_refresh_with_empty_live_keeps_the_stale_row_untouched(self):
+        """A failed forced fetch must not re-stamp the stale entry as fresh.
+
+        Regression pin for the prefetch worker's removed re-persist: a live
+        ``[]`` leaves the stale row's ``at`` alone, so it expires on schedule
+        instead of getting a free TTL.
+        """
+        import hermes_cli.models as mod
+
+        stale = {"openrouter": {"fp": "fp", "at": 1000.0, "models": ["m1"]}}
+        with patch.object(mod, "_load_provider_models_cache", return_value=stale), \
+             patch.object(mod, "_credential_fingerprint", return_value="fp"), \
+             patch.object(mod, "provider_model_ids", return_value=[]), \
+             patch.object(mod, "_save_provider_models_cache") as save:
+            out = mod.cached_provider_model_ids("openrouter", force_refresh=True)
+
+        assert out == ["m1"]
+        save.assert_not_called()
+
     @pytest.mark.parametrize(
         "call",
         [
@@ -200,22 +219,30 @@ class TestProviderModelsSWR:
         ],
     )
     def test_blocking_live_fetch_persists_under_the_lock(self, call):
-        """The serial path's own persist must take the lock too.
+        """The serial path's own persist must take the lock — and re-read inside it.
 
         These load the whole cache at function entry, spend seconds in a
         /v1/models round-trip, then write it back. An SWR thread's locked
         save can land inside that window, so saving the entry-time copy
-        unlocked resurrects what the thread had just replaced — undoing the
-        guarantee the lock above exists to provide.
+        resurrects what the thread had just replaced — undoing the guarantee
+        the lock exists to provide. ``lately`` below is the entry that landed
+        mid-flight: the saved file must still contain it.
         """
         import hermes_cli.models as mod
 
         held = []
+        saved = []
+        landed = {"fp": "fp", "at": time.time(), "models": ["other"]}
+
+        # First load is the function-entry read; the second is the persist's
+        # re-read under the lock, which must observe the meanwhile-written row.
+        loads = iter([{}, {"lately": landed}])
 
         def fake_save(data):
             held.append(mod._cache_write_lock.locked())
+            saved.append(data)
 
-        with patch.object(mod, "_load_provider_models_cache", return_value={}), \
+        with patch.object(mod, "_load_provider_models_cache", side_effect=lambda: next(loads)), \
              patch.object(mod, "_credential_fingerprint", return_value="fp"), \
              patch.object(mod, "_custom_endpoint_fingerprint", return_value="fp"), \
              patch.object(mod, "provider_model_ids", return_value=["m1"]), \
@@ -224,6 +251,7 @@ class TestProviderModelsSWR:
             call(mod)
 
         assert held == [True]
+        assert "lately" in saved[0], "persist wrote the entry-time snapshot, dropping a concurrent row"
 
     def test_targeted_clear_deletes_under_the_lock(self):
         """``clear_provider_models_cache(provider)`` writes too.

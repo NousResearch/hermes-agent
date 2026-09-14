@@ -1660,25 +1660,18 @@ def _store_cache_entry(cache_key: str, entry: dict) -> None:
 def _persist_cache_entry(cache_key: str, entry: dict) -> None:
     """Write one entry into the shared cache file under ``_cache_write_lock``.
 
-    Every writer here does a read-modify-write on one JSON file, and the interesting writers
-    are concurrent: the parallel prefetch pool, one stale-while-revalidate thread per expired
-    key, and the blocking live fetch on the serial picker path. They also load the cache
-    *before* a multi-second ``/v1/models`` round-trip, so a caller's in-memory copy is
-    routinely stale by the time it would be written back — saving it whole would drop every
-    entry that landed in between.
-
-    Re-reading inside the lock is what makes the write safe: the copy that gets saved is
-    always the one observed under the lock, so a writer can only ever add its own key.
-    """
+    Re-reads inside the lock: the copy that gets saved is the one observed under the lock,
+    never a snapshot loaded before a multi-second ``/v1/models`` round-trip, so a writer can
+    only ever add its own key."""
     with _cache_write_lock:
         _store_cache_entry(cache_key, entry)
 
 
 def update_provider_cache_entry(provider: str, models: list[str]) -> None:
-    """Thread-safe single-entry update for parallel prefetch workers: load-modify-save under a lock
-    so concurrent fetches don't clobber each other's rows. Best-effort, silent on any error."""
+    """Thread-safe single-entry update of the provider-models disk cache: load-modify-save under
+    ``_cache_write_lock`` so concurrent writers can't clobber each other's rows. Best-effort."""
     try:
-        normalized = normalize_provider(provider) or (provider or "")
+        normalized = _normalized_cache_slug(provider)
         if not normalized or not models:
             return
         fp = _credential_fingerprint(normalized)
@@ -1766,8 +1759,11 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _copilot_acp_session_memo = None
         if provider is None:
             path = _provider_models_cache_path()
-            if path.exists():
-                path.unlink()
+            # Same lock as the writers: unlinking outside it lets a writer that already
+            # loaded the old snapshot write the whole pre-clear dict back afterwards.
+            with _cache_write_lock:
+                if path.exists():
+                    path.unlink()
             return
         normalized = _normalized_cache_slug(provider)
         # Same lock as the writers: an unlocked delete would save a copy read before a

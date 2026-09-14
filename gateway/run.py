@@ -4510,10 +4510,45 @@ def _housekeeping_misfire_catch_up(cron_provider, adapters, loop) -> None:
         logger.info("Misfire catch-up: fired %d overdue job(s)", caught_up)
 
 
+def _spawn_curator_governance_hook(summary: str, on_summary: Callable[[str], None]) -> None:
+    """Log a curator summary and best-effort spawn the direct governance hook."""
+    try:
+        on_summary(summary)
+    except Exception as exc:
+        logger.debug("curator summary delivery failed: %s", exc)
+    _spawn_curator_governance_hook_process(summary)
+
+
+def _spawn_curator_governance_hook_process(summary: str) -> None:
+    """Spawn the governance hook detached; failures never escape housekeeping."""
+    try:
+        hook_path = get_hermes_home() / "scripts" / "curator-governance-hook.py"
+        if not hook_path.is_file():
+            logger.debug("curator governance hook not present at %s — skipping", hook_path)
+            return
+        import subprocess
+        subprocess.Popen(
+            [sys.executable, str(hook_path), "--direct"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            shell=False,
+        )
+        logger.debug("spawned curator governance hook (--direct)")
+    except Exception as exc:
+        logger.debug("curator governance hook spawn failed: %s", exc)
+
+
 def _housekeeping_curator() -> None:
     """maybe_run_curator() is gated by config.interval_hours (7 days default); this is the poll."""
     from agent.curator import maybe_run_curator
-    maybe_run_curator(idle_for_seconds=float("inf"), on_summary=lambda msg: logger.info("curator: %s", msg))
+    maybe_run_curator(
+        idle_for_seconds=float("inf"),
+        on_summary=lambda msg: _spawn_curator_governance_hook(
+            msg, lambda summary: logger.info("curator: %s", summary)
+        ),
+    )
 
 
 def _housekeeping_skill_sync() -> None:

@@ -2970,6 +2970,8 @@ def block_task(
             conn, task_id, outcome="blocked", status="blocked", summary=reason, synthesize=bool(reason),
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
+        if event_kind == "block_loop_detected":
+            _record_block_loop_evidence(conn, task_id, run_id=run_id)
         blocked_task = get_task(conn, task_id)
         if kind == "dependency":
             # Historical ordering: the dependency lane fires inside the txn.
@@ -3004,6 +3006,61 @@ def _route_block(
         payload["limit"] = BLOCK_RECURRENCE_LIMIT
         return "triage", "block_loop_detected", set_sql, (kind, recurrences), payload
     return "blocked", "blocked", set_sql, (kind, recurrences), payload
+
+
+# Block-lifecycle event kinds whose payload carries the block ``kind`` that
+# produced them — the raw material for a task's block-loop evidence trail.
+_BLOCK_KIND_EVENT_KINDS = ("blocked", "block_loop_detected", "dependency_wait")
+
+
+def _block_sequence(conn: sqlite3.Connection, task_id: str) -> list[dict]:
+    """Chronological ``[{"kind", "at"}, ...]`` of the block transitions that
+    led to the current trip: everything since the last recorded
+    ``block_loop_evidence`` for ``task_id`` (or since the beginning, for the
+    first trip) — each trip starts a fresh episode so a recurring failure
+    pattern reproduces the same sequence shape."""
+    since = conn.execute(
+        "SELECT id FROM task_events WHERE task_id = ? AND kind = 'block_loop_evidence' "
+        "ORDER BY id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    since_id = int(since["id"]) if since else 0
+    rows = conn.execute(
+        "SELECT kind, payload, created_at FROM task_events "
+        "WHERE task_id = ? AND id > ? AND kind IN (?, ?, ?) ORDER BY id ASC",
+        (task_id, since_id, *_BLOCK_KIND_EVENT_KINDS),
+    ).fetchall()
+    return [
+        {"kind": _json_dict(row["payload"]).get("kind"), "at": int(row["created_at"])}
+        for row in rows
+    ]
+
+
+def _record_block_loop_evidence(conn: sqlite3.Connection, task_id: str, *, run_id: Optional[int]) -> None:
+    """Self-heal evidence for a just-fired ``block_loop_detected``: the block
+    sequence that led here plus how many prior blocks on this task already
+    match that same sequence shape. Does not touch triage routing or the
+    watcher ping — those already happened via the ``block_loop_detected``
+    event this augments. See #111112."""
+    sequence = _block_sequence(conn, task_id)
+    shape = [item["kind"] for item in sequence]
+    prior_payloads = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'block_loop_evidence'",
+        (task_id,),
+    ).fetchall()
+    recurrence_count = sum(
+        1 for row in prior_payloads
+        if [item.get("kind") for item in _json_dict(row["payload"]).get("block_sequence", [])] == shape
+    )
+    _append_event(
+        conn, task_id, "block_loop_evidence",
+        {
+            "task_id": task_id,
+            "block_sequence": sequence,
+            "resolution": None,
+            "recurrence_count": recurrence_count,
+        },
+        run_id=run_id,
+    )
 
 
 def redact_review_value(value: Any) -> Any:

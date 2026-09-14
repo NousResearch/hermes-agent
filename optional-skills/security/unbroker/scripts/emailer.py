@@ -25,6 +25,7 @@ import json
 import os
 import re
 import smtplib
+import ssl
 import time
 from email.message import EmailMessage
 from pathlib import Path
@@ -163,8 +164,22 @@ def _respect_rate_limit(min_interval: float, sleep, now, state_path=None) -> Non
 
 
 # SMTP errors that are permanent (don't retry) vs transient (retry with backoff).
+# SMTPNotSupportedError is permanent: a server that will not STARTTLS (or refuses
+# AUTH) will not change its mind on the next attempt, and in the STARTTLS case a
+# retry would just re-offer the credentials to the same downgraded connection.
 _SMTP_PERMANENT = (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused,
-                   smtplib.SMTPSenderRefused, smtplib.SMTPDataError)
+                   smtplib.SMTPSenderRefused, smtplib.SMTPDataError,
+                   smtplib.SMTPNotSupportedError)
+
+
+def _connection_is_tls(smtp) -> bool:
+    """True when the SMTP conversation is already running over TLS.
+
+    Covers implicit-TLS connections (`SMTP_SSL` on port 465, and the injected
+    implicit-TLS test factories): those never advertise STARTTLS and don't need
+    it, so the STARTTLS step is skipped for them.
+    """
+    return isinstance(getattr(smtp, "sock", None), ssl.SSLSocket)
 
 
 def send(broker: dict, body_text: str, to: str | None = None,
@@ -176,7 +191,14 @@ def send(broker: dict, body_text: str, to: str | None = None,
     Recipient is locked to an address the broker record declares (PermissionError
     otherwise). `min_interval` paces sends across invocations (deliverability /
     account-safety); transient SMTP/socket failures retry with exponential backoff,
-    permanent ones (auth, recipient refused) raise immediately. NOTE: a successful
+    permanent ones (auth, recipient refused) raise immediately. TLS is required
+    before login: port 465 connects with implicit TLS (`SMTP_SSL`), any other
+    port must complete STARTTLS, and a server that will not STARTTLS (and is not
+    already on a TLS connection) fails permanently instead of sending the
+    password and the request over cleartext. The TLS context is verified
+    (`create_default_context`), so an internal relay with a self-signed or
+    private-CA certificate is rejected: point `EMAIL_SMTP_HOST` at a host with a
+    publicly trusted certificate. NOTE: a successful
     SMTP handoff is NOT proof of delivery - real bounces arrive later as inbound mail;
     in programmatic mode `poll-verification`/inbox review surfaces them, and the
     due-queue re-scan is the true confirmation. Returns send metadata.
@@ -208,18 +230,34 @@ def send(broker: dict, body_text: str, to: str | None = None,
 
     _respect_rate_limit(min_interval, _sleep, _now, _rate_state)
 
-    factory = _smtp_factory or smtplib.SMTP
+    def _open():
+        # An injected factory owns its own transport (the hermetic tests). With
+        # no factory, port 465 is the implicit-TLS submission port, so connect
+        # with SMTP_SSL and a verified context (TLS from the first byte, no
+        # STARTTLS). Every other port connects plaintext and must STARTTLS below.
+        if _smtp_factory is not None:
+            return _smtp_factory(settings["host"], settings["port"], timeout=30)
+        if settings["port"] == 465:
+            return smtplib.SMTP_SSL(settings["host"], settings["port"], timeout=30,
+                                    context=ssl.create_default_context())
+        return smtplib.SMTP(settings["host"], settings["port"], timeout=30)
+
     attempts = 0
     while True:
         attempts += 1
         try:
-            with factory(settings["host"], settings["port"], timeout=30) as smtp:
+            with _open() as smtp:
                 smtp.ehlo()
-                try:
-                    smtp.starttls()
+                if not _connection_is_tls(smtp):
+                    try:
+                        smtp.starttls(context=ssl.create_default_context())
+                    except smtplib.SMTPNotSupportedError as exc:
+                        raise smtplib.SMTPNotSupportedError(
+                            "server did not offer STARTTLS on a plaintext "
+                            "connection. Refusing to log in: the account "
+                            "password and the request would go out unencrypted."
+                        ) from exc
                     smtp.ehlo()
-                except smtplib.SMTPNotSupportedError:
-                    pass  # already-TLS ports / test doubles
                 smtp.login(settings["address"], settings["password"])
                 smtp.send_message(msg)
             break

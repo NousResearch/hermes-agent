@@ -20,6 +20,7 @@ import {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('subscribeToThreadForeground', () => {
@@ -87,6 +88,143 @@ describe('subscribeToThreadForeground', () => {
 
     expect(cancel).toHaveBeenCalledWith(9)
     expect(reanchor).not.toHaveBeenCalled()
+  })
+
+  // A macOS lock/unlock can produce neither `visibilitychange` nor `focus`:
+  // the window is not occluded and never loses focus, so both listeners above
+  // stay silent while rAF and ResizeObserver were frozen the whole time
+  // (#92180). The main process signal is the only edge left.
+  it('reanchors when the main process reports a power resume', () => {
+    const reanchor = vi.fn()
+    let fire: (() => void) | undefined
+
+    vi.stubGlobal('hermesDesktop', {
+      onPowerResume: (callback: () => void) => {
+        fire = callback
+
+        return () => {
+          fire = undefined
+        }
+      }
+    })
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(0)
+
+      return 1
+    })
+
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    expect(fire).toBeTypeOf('function')
+    fire?.()
+
+    expect(raf).toHaveBeenCalledOnce()
+    expect(reanchor).toHaveBeenCalledOnce()
+    unsubscribe()
+  })
+
+  it('leaves a scrolled-up reader in place on a power resume', () => {
+    const reanchor = vi.fn()
+    let fire: (() => void) | undefined
+
+    vi.stubGlobal('hermesDesktop', {
+      onPowerResume: (callback: () => void) => {
+        fire = callback
+
+        return () => undefined
+      }
+    })
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+
+    const unsubscribe = subscribeToThreadForeground(() => false, reanchor)
+
+    fire?.()
+
+    expect(raf).not.toHaveBeenCalled()
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('drops the power-resume subscription when its thread unmounts', () => {
+    const off = vi.fn()
+
+    vi.stubGlobal('hermesDesktop', { onPowerResume: () => off })
+
+    subscribeToThreadForeground(() => true, vi.fn())()
+
+    expect(off).toHaveBeenCalledOnce()
+  })
+
+  // powerMonitor fires on wake regardless of what the window is doing, so a
+  // resume can arrive at a MINIMIZED window. Re-anchoring one is worse than
+  // doing nothing: a hidden surface has no layout to measure, so the
+  // virtualizer would re-record exactly the zeroed geometry this subscription
+  // exists to replace, and the later visibilitychange would then find nothing
+  // to correct. The visibility guard predates this edge; these two pin that
+  // the new edge still routes through it, because "powerMonitor already
+  // proves we are awake" is a plausible reason for someone to skip it later.
+  it('does not reanchor a minimized window on a power resume', () => {
+    const reanchor = vi.fn()
+    let fire: (() => void) | undefined
+
+    vi.stubGlobal('hermesDesktop', {
+      onPowerResume: (callback: () => void) => {
+        fire = callback
+
+        return () => undefined
+      }
+    })
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    fire?.()
+
+    expect(raf).not.toHaveBeenCalled()
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('does not reanchor when the window is minimized between the resume and the frame', () => {
+    const reanchor = vi.fn()
+    let fire: (() => void) | undefined
+    let visibility: DocumentVisibilityState = 'visible'
+
+    vi.stubGlobal('hermesDesktop', {
+      onPowerResume: (callback: () => void) => {
+        fire = callback
+
+        return () => undefined
+      }
+    })
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      // The user minimizes while the frame is queued: the entry guard passed,
+      // the one inside the callback is the only thing left.
+      visibility = 'hidden'
+      callback(0)
+
+      return 1
+    })
+
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    fire?.()
+
+    expect(raf).toHaveBeenCalledOnce()
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('subscribes to nothing outside the desktop shell', () => {
+    // The web build and every unit test render without a preload bridge; an
+    // optional hop must stay optional rather than throwing on mount.
+    const reanchor = vi.fn()
+
+    expect(() => subscribeToThreadForeground(() => true, reanchor)()).not.toThrow()
   })
 })
 

@@ -514,6 +514,12 @@ def _dashboard_plugin_entry(data: Dict[str, Any], name: str, dashboard_dir: Path
         tab_info["override"] = override_path
     if bool(raw_tab.get("hidden")):
         tab_info["hidden"] = True
+    # ``machineLevel``: the plugin's page has no per-profile dimension (it acts
+    # on the install or the host process), so the dashboard sidebar hides it
+    # while the profile switcher manages another profile. See
+    # web/src/lib/nav-applicability.ts.
+    if bool(raw_tab.get("machineLevel")):
+        tab_info["machineLevel"] = True
     # Slots the plugin populates via ``window.registerSlot(pluginName, slotName, Component)``.
     slots_src = data.get("slots")
     slots = [s for s in slots_src if isinstance(s, str) and s] if isinstance(slots_src, list) else []

@@ -120,6 +120,10 @@ export interface Translations {
     managingProfile?: string;
     currentProfileOption?: string;
     managingProfileBanner?: string;
+    /** Machine-level page deep-linked under a management scope — optional, English fallback. */
+    machineLevelPageTitle?: string;
+    machineLevelPageBody?: string;
+    machineLevelPageSwitchCta?: string;
     /** NS-656 memory-pressure banner — optional, English fallback. */
     memoryOomRestartBanner?: string;
     memoryCriticalBanner?: string;

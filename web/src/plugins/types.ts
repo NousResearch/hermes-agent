@@ -16,6 +16,12 @@ export interface PluginManifest {
     override?: string;
     /** When true, the plugin may register without a sidebar tab (slot-only, etc.). */
     hidden?: boolean;
+    /**
+     * When true, the plugin's page has no per-profile dimension (it acts on
+     * the install or the host process). The sidebar hides it while the
+     * profile switcher manages another profile — see lib/nav-applicability.ts.
+     */
+    machineLevel?: boolean;
   };
   /** Declared for discovery; actual slots use registerSlot in the plugin bundle. */
   slots?: string[];

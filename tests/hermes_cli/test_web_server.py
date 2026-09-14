@@ -4720,6 +4720,32 @@ class TestDashboardPluginManifestExtensions:
         assert entry["tab"]["hidden"] is True
         assert entry["slots"] == ["sidebar", "header-left"]
 
+    def test_machine_level_tab_flag_carried_through(self, tmp_path, monkeypatch):
+        """``tab.machineLevel`` marks a plugin page as having no per-profile
+        dimension, so the dashboard sidebar hides it while the profile
+        switcher manages another profile (see web/src/lib/nav-applicability.ts).
+        Absent flag must stay absent — the sidebar treats it as scoped-safe."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._write_plugin(tmp_path, "machine-tab", {
+            "name": "machine-tab",
+            "label": "Machine Tab",
+            "tab": {"path": "/machine-tab", "machineLevel": True},
+            "entry": "dist/index.js",
+        })
+        self._write_plugin(tmp_path, "scoped-tab", {
+            "name": "scoped-tab",
+            "label": "Scoped Tab",
+            "tab": {"path": "/scoped-tab"},
+            "entry": "dist/index.js",
+        })
+        from hermes_cli import web_server
+        web_server._dashboard_plugins_cache = None
+        plugins = web_server._get_dashboard_plugins(force_rescan=True)
+        machine = next(p for p in plugins if p["name"] == "machine-tab")
+        scoped = next(p for p in plugins if p["name"] == "scoped-tab")
+        assert machine["tab"]["machineLevel"] is True
+        assert "machineLevel" not in scoped["tab"]
+
     def test_user_plugins_ignore_profile_home_override(self, tmp_path, monkeypatch):
         """Regression: user dashboard extensions are a dashboard-owned asset
         (like theme YAML), so they must stay visible after a context-local

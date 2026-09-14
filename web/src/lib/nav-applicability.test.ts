@@ -43,4 +43,21 @@ describe("nav applicability", () => {
       isNavPathApplicable("/some/plugin/tab", "architect", true),
     ).toBe(false);
   });
+
+  it("hides a plugin tab that declares tab.machineLevel in its manifest", () => {
+    // Plugin tabs reach the sidebar through buildNavItems, which copies the
+    // manifest flag onto the nav entry — the achievements tab is the first
+    // real consumer.
+    const pluginTabs = [
+      { path: "/achievements", label: "Achievements", machineLevel: true },
+      { path: "/kanban", label: "Kanban" },
+    ];
+    expect(filterApplicableNav(pluginTabs, "architect").map((i) => i.path)).toEqual([
+      "/kanban",
+    ]);
+    expect(filterApplicableNav(pluginTabs, "").map((i) => i.path)).toEqual([
+      "/achievements",
+      "/kanban",
+    ]);
+  });
 });

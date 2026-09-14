@@ -72,7 +72,11 @@ import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
-import { filterApplicableNav } from "@/lib/nav-applicability";
+import { MachineLevelRouteGate } from "@/components/MachineLevelRouteGate";
+import {
+  MACHINE_LEVEL_NAV_PATHS,
+  filterApplicableNav,
+} from "@/lib/nav-applicability";
 import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
 import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
 import { SharedMetricsConsentBanner } from "@/components/SharedMetricsConsentBanner";
@@ -271,6 +275,10 @@ function buildNavItems(
       path: manifest.tab.path,
       label: manifest.label,
       icon: resolveIcon(manifest.icon),
+      // Plugin pages can declare (via manifest `tab.machineLevel`) that they
+      // have no per-profile dimension; the sidebar then hides them while the
+      // profile switcher manages another profile — see nav-applicability.ts.
+      machineLevel: manifest.tab.machineLevel === true,
     };
 
     const pos = manifest.tab.position ?? "end";
@@ -342,7 +350,20 @@ function buildRoutes(
         element: <PluginPage name={om.name} />,
       });
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      routes.push({
+        key: `builtin:${path}`,
+        path,
+        // Machine-level pages render a "not applicable to <profile>" empty
+        // state instead of live controls when deep-linked under a management
+        // scope (see MachineLevelRouteGate).
+        element: MACHINE_LEVEL_NAV_PATHS.has(path) ? (
+          <MachineLevelRouteGate>
+            <Component />
+          </MachineLevelRouteGate>
+        ) : (
+          <Component />
+        ),
+      });
     }
   }
 
@@ -353,7 +374,14 @@ function buildRoutes(
     routes.push({
       key: `plugin:${m.name}`,
       path: m.tab.path,
-      element: <PluginPage name={m.name} />,
+      element:
+        m.tab.machineLevel === true ? (
+          <MachineLevelRouteGate>
+            <PluginPage name={m.name} />
+          </MachineLevelRouteGate>
+        ) : (
+          <PluginPage name={m.name} />
+        ),
     });
   }
 

@@ -101,6 +101,10 @@ export const en: Translations = {
     currentProfileOption: "this dashboard ({name})",
     managingProfileBanner:
       "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
+    machineLevelPageTitle: "This page is not tied to the managed profile",
+    machineLevelPageBody:
+      'This page reads and writes the dashboard process itself (the host filesystem, log files, installed plugins, or the running install) \u2014 not profile "{name}". Switch the dashboard back to its own profile to use it.',
+    machineLevelPageSwitchCta: "Manage this dashboard ({name})",
     memoryOomRestartBanner:
       "Your agent restarted unexpectedly, most likely because it ran out of memory. Long sessions and many concurrent tasks increase memory use.",
     memoryCriticalBanner:

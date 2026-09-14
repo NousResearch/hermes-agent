@@ -2764,6 +2764,8 @@ export interface PluginManifestResponse {
     position?: string;
     override?: string;
     hidden?: boolean;
+    /** When true, the page has no per-profile dimension and is hidden under a management scope. */
+    machineLevel?: boolean;
   };
   slots?: string[];
   entry: string;

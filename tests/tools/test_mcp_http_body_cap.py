@@ -1,4 +1,4 @@
-"""Wire-body cap for MCP HTTP/SSE transports (port of openclaw/openclaw#123194).
+"""Wire-body cap for MCP HTTP/SSE transports.
 
 Exercises ``_make_mcp_body_cap_transport`` with a real httpx AsyncClient over
 a MockTransport: oversized finite bodies and oversized SSE events fail with a

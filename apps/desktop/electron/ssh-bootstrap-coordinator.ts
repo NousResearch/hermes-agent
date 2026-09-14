@@ -114,6 +114,7 @@ function createBootstrapCoordinator() {
       // drain barrier still prevents stale resurrection.
       await Promise.allSettled(entries.flatMap(entry => [...entry.forceCleanups]).map(cleanup => cleanup()))
       await Promise.allSettled(entries.map(entry => entry.promise))
+
       // Keep the drain up through caller teardown (SSH keepalive / tunnel)
       // so a replacement start() cannot publish before the old scope is gone.
       if (afterCancel) {

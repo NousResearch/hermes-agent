@@ -318,10 +318,14 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
-        # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
-        # still needs to be released and rescheduled.
+        # A standing /goal may only continue after a genuinely successful turn. A provider failure is
+        # normalized into non-empty user-facing text, so gating on text alone would let the goal judge
+        # answer "continue" and loop on the error; require real success semantics. The /loop tick still
+        # runs on every path so an in-flight tick is released and rescheduled even when the goal is held.
         hooks = [("loop completion", self._post_turn_loop_completion)]
-        if final_text.strip():
+        from gateway.run import _should_continue_goal_after_turn  # lazy: gateway.run import cycle
+
+        if _should_continue_goal_after_turn(agent_result, final_text):
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:

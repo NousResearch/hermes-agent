@@ -90,14 +90,18 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
   // events; the texts are one click away. Detection: the immediately
   // preceding user message matches AGENT_MESSAGE_RE.
   //
-  // Owner-directed exemption: when the thread also contains a REAL user
-  // message (one that is not itself an agent delivery), the reply is likely
-  // an owner-directed report that happened to follow a bot delivery in the
-  // same thread — collapse only when the reply carries an explicit
-  // inter-agent marker OR there is no evidence a human is participating in
-  // this thread. We only exempt on high-confidence signals so the default
-  // (Grok-bots parity) collapse behaviour is preserved for genuine
-  // bot-to-bot exchanges.
+  // Owner-directed exemption: when the thread already contains a REAL user
+  // message before this reply (one that is not itself an agent delivery or an
+  // injected system notice), the reply is likely an owner-directed report
+  // that happened to follow a bot delivery in the same thread — collapse only
+  // when there is no evidence a human is participating. Human presence is read
+  // from the authoritative `isHuman` flag stamped by the chat-runtime
+  // converter, never re-derived from raw text here.
+  //
+  // The scan only looks BACKWARD from the reply (prior evidence, immutable):
+  // a later human message must not retroactively expand an already-collapsed
+  // row, and skipping future rows bounds the scan so per-message cost stays
+  // linear in thread length.
   const interAgentSender = useAuiState(s => {
     const messages = s.thread.messages
 
@@ -106,6 +110,10 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
         continue
       }
 
+      // Look only at rows before the reply — never at the reply itself or
+      // anything after it. Prior evidence is immutable; a human message that
+      // arrives later must not lift an already-collapsed row (that would
+      // shift the transcript layout under the reader).
       for (let j = i - 1; j >= 0; j--) {
         const prev = messages[j] as { content?: unknown; role?: string }
 
@@ -122,20 +130,24 @@ export const AssistantMessage: FC<AssistantMessageProps> = props => {
 
           const sender = (match[1] || match[3] || 'agent').trim()
 
-          // Exemption: only if the thread contains a genuine human message
-          // (not another agent delivery) AND this reply is not explicitly
-          // marked as an inter-agent answer. Both signals together give high
-          // confidence that this is an owner-directed report that merely
-          // follows a bot delivery — everything else keeps the default
-          // collapse so bot-to-bot exchanges stay compact.
-          const hasRealUserMessage = messages.some(
-            m => m.role === 'user' && !AGENT_MESSAGE_RE.test(messageContentText(m.content as never).trim())
-          )
+          // Exemption: if any row BEFORE the delivery is a genuine human
+          // message, this reply is an owner-directed report that merely
+          // follows a bot delivery. Uses the runtime-stamped isHuman flag
+          // (synthetic user-role rows — agent deliveries and background
+          // notices — are classified by the converter, not by an exclusion
+          // regex here). Keep scanning prior rows; no future rows involved.
+          for (let k = j - 1; k >= 0; k--) {
+            const earlier = messages[k] as { role?: string; metadata?: unknown }
+            if (earlier.role !== 'user') {
+              continue
+            }
+            const custom = (earlier.metadata as { custom?: { isHuman?: boolean } } | undefined)?.custom
+            if (custom?.isHuman === true) {
+              return null
+            }
+          }
 
-          const isExplicitAgentReply =
-            (s.message.metadata?.custom as { agentReply?: boolean } | undefined)?.agentReply === true
-
-          return !isExplicitAgentReply && hasRealUserMessage ? null : sender
+          return sender
         }
       }
 

@@ -1,5 +1,7 @@
 // Pure timeline helpers — no React/DOM; tested in thread-timeline-data.test.ts.
 
+import { PROCESS_NOTIFICATION_RE } from '@/lib/chat-messages/message-kind'
+
 export interface TimelineSourceMessage {
   id: string
   role: string
@@ -10,9 +12,6 @@ export interface TimelineEntry {
   id: string
   preview: string
 }
-
-// Injected as user messages for alternation; not human prompts (thread.tsx).
-const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
 
 const PREVIEW_MAX = 120
 

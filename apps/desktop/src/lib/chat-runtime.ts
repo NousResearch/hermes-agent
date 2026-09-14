@@ -4,6 +4,7 @@ import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { isHumanUserText } from '@/lib/chat-messages/message-kind'
 import { normalize } from '@/lib/text'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
@@ -441,13 +442,21 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       : {}
 
   if (role === 'user') {
+    // Authoritative human-participation flag: the converter sees the raw text,
+    // so it can stamp whether this row is a real human prompt vs an injected
+    // inter-agent delivery / background-process notice. The collapse gate and
+    // any future consumers read this instead of re-deriving kind from text.
+    const text = chatMessageText(message)
+    const isHuman = isHumanUserText(text)
     return {
       id: message.id,
       role,
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta, ...timelineMeta } }
+      metadata: {
+        custom: { isHuman, attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta, ...timelineMeta }
+      }
     } as ThreadMessage
   }
 

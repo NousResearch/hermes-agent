@@ -255,6 +255,48 @@ describe('toRuntimeMessage timeline metadata', () => {
   })
 })
 
+describe('toRuntimeMessage isHuman classification', () => {
+  it('stamps a real human prompt as isHuman', () => {
+    const runtime = toRuntimeMessage({
+      id: 'u1',
+      role: 'user',
+      parts: [{ text: 'please check the build', type: 'text' }]
+    })
+
+    expect((runtime.metadata?.custom as { isHuman?: boolean }).isHuman).toBe(true)
+  })
+
+  it('stamps an inter-agent delivery as not human', () => {
+    const runtime = toRuntimeMessage({
+      id: 'u2',
+      role: 'user',
+      parts: [{ text: 'Message from 🤖 Hermes (@hermes): please check the build', type: 'text' }]
+    })
+
+    expect((runtime.metadata?.custom as { isHuman?: boolean }).isHuman).toBe(false)
+  })
+
+  it('stamps a legacy agent delivery as not human', () => {
+    const runtime = toRuntimeMessage({
+      id: 'u3',
+      role: 'user',
+      parts: [{ text: "[Message from agent 'fron'] check the build", type: 'text' }]
+    })
+
+    expect((runtime.metadata?.custom as { isHuman?: boolean }).isHuman).toBe(false)
+  })
+
+  it('stamps a background-process notice as not human', () => {
+    const runtime = toRuntimeMessage({
+      id: 'u4',
+      role: 'user',
+      parts: [{ text: '[IMPORTANT: Background process 123 finished]', type: 'text' }]
+    })
+
+    expect((runtime.metadata?.custom as { isHuman?: boolean }).isHuman).toBe(false)
+  })
+})
+
 describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
   // Regression contract for #87857: two individually-clean assistant rows can
   // share a toolCallId (structural carry-over re-attaching a cached row's tool

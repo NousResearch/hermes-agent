@@ -44,14 +44,14 @@ afterEach(() => {
 
 const assistantMetadata = { unstable_state: null, unstable_annotations: [], unstable_data: [], steps: [], custom: {} }
 
-function user(id: string, text: string): ThreadMessage {
+function user(id: string, text: string, isHuman = true): ThreadMessage {
   return {
     id,
     role: 'user',
     content: [{ type: 'text', text }],
     attachments: [],
     createdAt,
-    metadata: { custom: {} }
+    metadata: { custom: { isHuman } }
   } as ThreadMessage
 }
 
@@ -117,49 +117,67 @@ describe('inter-agent collapse gate', () => {
     ).toBeTruthy()
   })
 
-  it('exempts a reply to an agent delivery when the thread contains a real user message', async () => {
+  it('exempts a reply to an agent delivery when an earlier user message is human', async () => {
     render(
       <Harness
         messages={[
-          user('u1', 'human: please do it'),
-          user('u2', DELIVERY),
+          user('u1', 'human: please do it', true),
+          user('u2', DELIVERY, false),
           assistant('a1', 'Done — here is the report for you.', false)
         ]}
       />
     )
 
-    // The reply follows an agent delivery, but the thread is not pure
-    // bot-to-bot: a real human message exists, so this is an owner-directed
-    // report and must render expanded.
+    // The reply follows an agent delivery, but an earlier row is a REAL
+    // human prompt, so this is an owner-directed report — expanded, not
+    // collapsed. The human flag is the runtime-stamped authoritative signal,
+    // not a text regex at render time.
     expect(await screen.findByText(/Done — here is the report for you/)).toBeTruthy()
     expect(screen.queryByText(/Replied to/)).toBeNull()
     expect(screen.queryByText('show reply')).toBeNull()
   })
 
-  it('still collapses when the reply is explicitly marked as an inter-agent answer', async () => {
-    const marked = {
-      ...assistant('a1', 'ACK, reviewer.', false),
-      metadata: {
-        ...assistantMetadata,
-        custom: { agentReply: true }
-      }
-    } as unknown as ThreadMessage
+  it('does not treat an agent delivery as a human message (no false exemption)', async () => {
+    render(
+      <Harness
+        messages={[
+          user('u1', DELIVERY, false),
+          user('u2', 'Message from 🤖 Hermes (@hermes): one more', false),
+          assistant('a1', 'ack', false)
+        ]}
+      />
+    )
 
-    render(<Harness messages={[user('u1', 'human: please do it'), user('u2', DELIVERY), marked]} />)
-
-    // Even with a real user message present, an explicit agent-reply marker
-    // keeps the Grok-bots collapse behaviour for genuine bot exchanges.
+    // All earlier user rows are bot deliveries (isHuman=false) even though
+    // they do not match the collapse regex at render time — the authoritative
+    // flag keeps the Grok-bots collapse for a pure bot exchange.
     expect(await screen.findByText(/Replied to/)).toBeTruthy()
     expect(screen.getByText('show reply')).toBeTruthy()
   })
 
-  it('still collapses when the thread has no real user message (pure bot exchange)', async () => {
+  it('does not treat a background-process notice as a human message', async () => {
     render(
       <Harness
         messages={[
-          user('u1', DELIVERY),
-          user('u2', 'Message from 🤖 Hermes (@hermes): one more'),
+          user('u1', '[IMPORTANT: Background process 123 finished]', false),
+          user('u2', DELIVERY, false),
           assistant('a1', 'ack', false)
+        ]}
+      />
+    )
+
+    // The injected notice is a synthetic user-role row — the converter stamps
+    // isHuman=false, so the bot exchange stays collapsed.
+    expect(await screen.findByText(/Replied to/)).toBeTruthy()
+    expect(screen.getByText('show reply')).toBeTruthy()
+  })
+
+  it('collapses when the only prior user row is the delivery (pure bot exchange)', async () => {
+    render(
+      <Harness
+        messages={[
+          user('u1', DELIVERY, false),
+          assistant('a1', 'build is green', false)
         ]}
       />
     )
@@ -168,17 +186,22 @@ describe('inter-agent collapse gate', () => {
     expect(screen.getByText('show reply')).toBeTruthy()
   })
 
-  it('exempts thread-wide: a human message after the reply also lifts the collapse', async () => {
+  it('does NOT lift an already-collapsed reply when a human message arrives later', async () => {
     render(
       <Harness
-        messages={[user('u1', DELIVERY), assistant('a1', 'build is green', false), user('u2', 'human: thanks')]}
+        messages={[
+          user('u1', DELIVERY, false),
+          assistant('a1', 'build is green', false),
+          user('u2', 'human: thanks', true)
+        ]}
       />
     )
 
-    // The exemption scans the whole thread, not just the messages preceding
-    // the reply: any real human message means the thread is not pure
-    // bot-to-bot, so the reply renders expanded.
-    expect(await screen.findByText('build is green')).toBeTruthy()
-    expect(screen.queryByText(/Replied to/)).toBeNull()
+    // The exemption is decided from PRIOR evidence only: the reply follows
+    // the bot delivery with no earlier human row, so it renders collapsed.
+    // A later human message must not retroactively expand it (that would
+    // shift the transcript layout under the reader).
+    expect(await screen.findByText(/Replied to/)).toBeTruthy()
+    expect(screen.getByText('show reply')).toBeTruthy()
   })
 })

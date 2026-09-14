@@ -4301,6 +4301,8 @@ class SlackAdapter(BasePlatformAdapter):
         # ``me_message`` passes: ``/me`` is a person speaking.
         # ``bot_message`` already passed allow_bots above; document_mention is an
         # explicit app mention from a Slack canvas, not a lifecycle notification.
+        # ``file_comment`` stays in the drop set deliberately (triage decision on
+        # #110778): a comment left on a file is not the owner talking to the bot.
         subtype = event.get("subtype")
         if subtype not in (
             None, "", "file_share", "thread_broadcast", "me_message",

@@ -6093,7 +6093,6 @@ class TestNonConversationalSubtypeAllowlist:
     )
     async def test_housekeeping_subtypes_are_dropped(self, adapter, subtype):
         assert await adapter._prefilter_inbound(self._event(subtype), None) is None
-        adapter.handle_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

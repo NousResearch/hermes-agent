@@ -1468,3 +1468,32 @@ patches:
     tests:
       - scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
     retirement: Fold into the upstream Kanban test suite when the admission kernel lands upstream.
+
+  - id: kanban-admission-kernel
+    kind: core
+    rationale: >-
+      Kanban admission kernel: fail-closed admission policy, versioned routing
+      contract, dispatcher launch protocol (8-hex live-board task IDs,
+      dispatch_once launch-protocol wiring), claim rollback and terminal
+      run-outcome primitives, seven-profile registry (orchestrator + six
+      lanes), lease+policy-hardened record_spawned, Stage-3 acceptance
+      harness with harness invariants.
+    paths:
+      - hermes_cli/kanban_admission.py
+      - hermes_cli/kanban_dispatch_wiring.py
+      - hermes_cli/kanban_launch_protocol.py
+      - hermes_cli/kanban_profiles.py
+      - hermes_cli/kanban_route_contract.py
+      - hermes_cli/kanban_wired_dispatcher.py
+      - tests/hermes_cli/kanban_harness_invariants.py
+      - tests/hermes_cli/test_kanban_admission_policy.py
+      - tests/hermes_cli/test_kanban_dispatch_wiring.py
+      - tests/hermes_cli/test_kanban_launch_protocol.py
+      - tests/hermes_cli/test_kanban_profiles.py
+      - tests/hermes_cli/test_kanban_route_contract.py
+      - tests/hermes_cli/test_kanban_wired_dispatcher.py
+      - tests/hermes_cli/test_kanban_stage3_harness.py
+      - tests/hermes_cli/test_kanban_terminal_handoff.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_kanban_admission_policy.py tests/hermes_cli/test_kanban_launch_protocol.py tests/hermes_cli/test_kanban_wired_dispatcher.py
+    retirement: Fold into the upstream Kanban admission kernel when it lands upstream.

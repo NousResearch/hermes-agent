@@ -9842,6 +9842,47 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def _apply_launch_wiring_to_spawn(spawn_fn):
+    """Decorate ``spawn_fn`` with the launch-protocol ledger when configured.
+
+    Delegates to ``hermes_cli.kanban_dispatch_wiring.apply_launch_wiring``
+    (lazy import: the wiring module imports from this one). With no wiring
+    configured this is an exact pass-through, so default dispatch behavior
+    is unchanged until the daemon path explicitly activates it.
+
+    Atomic round-3 finding 1: construction happens BEFORE the per-row claim
+    in the dispatch loop, and any construction failure is classified as a
+    normal spawn failure for that row (never a claim-stranding escape).
+    """
+    try:
+        from hermes_cli.kanban_dispatch_wiring import apply_launch_wiring
+    except Exception:
+        return spawn_fn
+    try:
+        return apply_launch_wiring(spawn_fn)
+    except Exception as exc:
+        # Atomic round-3 finding 1: WrappedSpawn construction (owner home
+        # creation, board identity canonicalization) can fail. That must
+        # not escape _dispatch_once_locked (which would bypass the
+        # per-row spawn-failure machinery and strand board claims), and
+        # not silently fall back to an unwrapped spawn either. Return a
+        # callable that fails per-row inside the guarded spawn try-block,
+        # so each claimed row is retired via _record_spawn_failure.
+        # Atomic round-4 note: bind the exception now — Python clears the
+        # ``exc`` name at except-block exit, so a closure over it would
+        # raise NameError instead of the intended RuntimeError.
+        _cause = exc
+
+        def _unwirable_spawn(
+            task: Any, workspace: str, board: Any = None, *, _err: BaseException = _cause
+        ) -> int:
+            raise RuntimeError(
+                f"launch wiring construction failed: {_err}"
+            ) from _err
+
+        return _unwirable_spawn
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -10148,6 +10189,9 @@ def _dispatch_once_locked(
             # bucket it as nonspawnable if the profile genuinely isn't
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
+    _wired_spawn = _apply_launch_wiring_to_spawn(
+        spawn_fn if spawn_fn is not None else _default_spawn
+    )
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
@@ -10286,7 +10330,12 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        # Launch-protocol wiring (kanban admission kernel): the decorated
+        # spawn callable was constructed ONCE before the claim loops (any
+        # WrappedSpawn construction failure is classified as a spawn
+        # failure and can never strand a board claim — Atomic round-3
+        # finding 1). Unconfigured — the default — exact no-op.
+        _spawn = _wired_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -10431,7 +10480,12 @@ def _dispatch_once_locked(
         claimed.skills = list(
             dict.fromkeys([*(claimed.skills or []), "sdlc-review"])
         )
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        # Launch-protocol wiring (kanban admission kernel): the decorated
+        # spawn callable was constructed ONCE before the claim loops (any
+        # WrappedSpawn construction failure is classified as a spawn
+        # failure and can never strand a board claim — Atomic round-3
+        # finding 1). Unconfigured — the default — exact no-op.
+        _spawn = _wired_spawn
         try:
             import inspect
             try:

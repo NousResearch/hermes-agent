@@ -1,9 +1,11 @@
 import { useAui, useAuiState } from '@assistant-ui/react'
-import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type FC, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { requestRevealMessage } from '@/store/thread-scroll'
 
 import {
   activeTimelineIndex,
@@ -12,6 +14,7 @@ import {
   type TimelineEntry,
   type TimelineSourceMessage
 } from './timeline-data'
+import { useTranscriptWindow } from './transcript-window'
 
 const MIN_ENTRIES = 4
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
@@ -73,23 +76,28 @@ const hoverProps = (index: number, paint: (index: number, on: boolean) => void) 
 
 // Constant-duration jump (eased), NOT native `behavior:'smooth'` — Chromium's
 // smooth scroll animates proportional to distance, so jumping across a long
-// thread crawls for seconds. A fixed ~260ms feels instant near or far. A
-// shared rAF handle cancels a prior jump so rapid tick clicks don't fight.
-let jumpRaf = 0
+// thread crawls for seconds. A fixed ~260ms feels instant near or far. The
+// returned cancel function lets the owning timeline stop an in-flight jump on
+// another click, session switch, or unmount.
+export function jumpScroll(viewport: HTMLElement, top: number, duration = 170): () => void {
+  if (prefersReducedMotion()) {
+    viewport.scrollTop = top
 
-function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
-  cancelAnimationFrame(jumpRaf)
+    return () => {}
+  }
+
   const start = viewport.scrollTop
   const delta = top - start
 
   if (Math.abs(delta) < 2) {
     viewport.scrollTop = top
 
-    return
+    return () => {}
   }
 
   const t0 = performance.now()
   const ease = (t: number) => 1 - (1 - t) ** 3 // easeOutCubic
+  let jumpRaf = 0
 
   const step = (now: number) => {
     const p = Math.min(1, (now - t0) / duration)
@@ -101,6 +109,8 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
   }
 
   jumpRaf = requestAnimationFrame(step)
+
+  return () => cancelAnimationFrame(jumpRaf)
 }
 
 // A timeline belongs to ONE chat surface, and several are mounted at once — side
@@ -110,18 +120,19 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
 
-function scrollToPrompt(root: HTMLElement | null, id: string) {
+function scrollToPrompt(root: HTMLElement | null, id: string): (() => void) | null {
   const viewport = ownViewport(root)
   const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
 
   if (!viewport || !node) {
-    return
+    return null
   }
 
   const top = viewport.scrollTop + (node.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
 
   triggerHaptic('selection')
-  jumpScroll(viewport, Math.max(0, top))
+
+  return jumpScroll(viewport, Math.max(0, top))
 }
 
 /**
@@ -151,6 +162,8 @@ export const ThreadTimeline: FC = () => {
 /** Derived prompt rail for a VISIBLE surface. Split out so the hook body — and
  *  the transcript subscription it opens — never runs for a background tab. */
 const ActiveThreadTimeline: FC = () => {
+  const { cancelReveal, revealMessage, revealScope, timelineEntries } = useTranscriptWindow()
+
   // Cheap in the selector, expensive only when it changes: the ids alone tell
   // us whether the RAIL changed. Prompt text is immutable once sent, and an
   // edit rewinds the transcript (dropping every id after it) and re-appends a
@@ -179,8 +192,13 @@ const ActiveThreadTimeline: FC = () => {
   auiRef.current = aui
 
   const previousRef = useRef<TimelineEntry[]>([])
+  const pendingJumpRef = useRef<string | null>(null)
 
   const entries = useMemo(() => {
+    if (timelineEntries) {
+      return timelineEntries
+    }
+
     const rows: TimelineSourceMessage[] = []
 
     for (const message of auiRef.current.thread().getState().messages) {
@@ -206,13 +224,133 @@ const ActiveThreadTimeline: FC = () => {
     // reads (the transcript comes off the ref) — same shape as ChatRoutesSurface's
     // gatewayState memo in app/contrib/controller.tsx.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [promptIds])
+  }, [promptIds, timelineEntries])
 
   const [activeIndex, setActiveIndex] = useState(0)
   const [open, setOpen] = useState(false)
   const closeTimerRef = useRef<number | undefined>(undefined)
   const rootRef = useRef<HTMLDivElement | null>(null)
-  const jump = useCallback((id: string) => scrollToPrompt(rootRef.current, id), [])
+  const jumpFrameRef = useRef(0)
+  const scrollCancelRef = useRef<(() => void) | null>(null)
+
+  const cancelPendingReveal = useCallback(() => {
+    if (jumpFrameRef.current) {
+      window.cancelAnimationFrame(jumpFrameRef.current)
+      jumpFrameRef.current = 0
+    }
+
+    pendingJumpRef.current = null
+  }, [])
+
+  const cancelNavigation = useCallback(() => {
+    cancelPendingReveal()
+    scrollCancelRef.current?.()
+    scrollCancelRef.current = null
+  }, [cancelPendingReveal])
+
+  const revealScopeRef = useRef(revealScope)
+
+  useLayoutEffect(() => {
+    if (revealScopeRef.current === revealScope) {
+      return
+    }
+
+    revealScopeRef.current = revealScope
+    cancelNavigation()
+  }, [cancelNavigation, revealScope])
+
+  const jump = useCallback(
+    (id: string) => {
+      cancelNavigation()
+      cancelReveal?.()
+
+      if (revealScope) {
+        requestRevealMessage(revealScope, id)
+      }
+
+      const cancelScroll = scrollToPrompt(rootRef.current, id)
+
+      if (cancelScroll) {
+        scrollCancelRef.current = cancelScroll
+
+        return
+      }
+
+      if (revealMessage) {
+        pendingJumpRef.current = id
+        revealMessage(id)
+      }
+
+      let frames = 0
+
+      const retry = () => {
+        if (pendingJumpRef.current !== id) {
+          jumpFrameRef.current = 0
+
+          return
+        }
+
+        // The store window and DOM paint budget are independent. Re-requesting
+        // is harmless until the id enters assistant-ui, then raises exactly the
+        // owning list's budget. The bounded retry waits for React to mount it.
+        if (revealScope) {
+          requestRevealMessage(revealScope, id)
+        }
+
+        const retryCancelScroll = scrollToPrompt(rootRef.current, id)
+
+        if (retryCancelScroll) {
+          pendingJumpRef.current = null
+          jumpFrameRef.current = 0
+          scrollCancelRef.current = retryCancelScroll
+
+          return
+        }
+
+        frames += 1
+
+        if (frames >= 45) {
+          cancelNavigation()
+
+          return
+        }
+
+        jumpFrameRef.current = window.requestAnimationFrame(retry)
+      }
+
+      jumpFrameRef.current = window.requestAnimationFrame(retry)
+    },
+    [cancelNavigation, cancelReveal, revealMessage, revealScope]
+  )
+
+  useLayoutEffect(() => {
+    const pendingId = pendingJumpRef.current
+
+    if (!pendingId) {
+      return
+    }
+
+    if (revealScope) {
+      requestRevealMessage(revealScope, pendingId)
+    }
+
+    const cancelScroll = scrollToPrompt(rootRef.current, pendingId)
+
+    if (cancelScroll) {
+      cancelPendingReveal()
+      scrollCancelRef.current = cancelScroll
+    }
+  }, [cancelPendingReveal, promptIds, revealScope, timelineEntries])
+
+  useEffect(() => {
+    const pendingId = pendingJumpRef.current
+
+    if (pendingId && !entries.some(entry => entry.id === pendingId)) {
+      cancelNavigation()
+    }
+  }, [cancelNavigation, entries])
+
+  useEffect(() => cancelNavigation, [cancelNavigation])
 
   // Hover sync lives on the DOM, not in React state — the tick and its popover
   // row are siblings in different subtrees, so a shared index-keyed paint() lights
@@ -345,7 +483,7 @@ const ActiveThreadTimeline: FC = () => {
 
 const TimelinePopover: FC<{
   activeIndex: number
-  entries: TimelineEntry[]
+  entries: readonly TimelineEntry[]
   onHover: (index: number, on: boolean) => void
   onJump: (id: string) => void
   open: boolean
@@ -391,7 +529,7 @@ const TimelinePopover: FC<{
 
 const TimelineTicks: FC<{
   activeIndex: number
-  entries: TimelineEntry[]
+  entries: readonly TimelineEntry[]
   onHover: (index: number, on: boolean) => void
   onJump: (id: string) => void
   tickRefs: React.RefObject<(HTMLSpanElement | null)[]>

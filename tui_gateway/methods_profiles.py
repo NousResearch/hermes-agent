@@ -4,6 +4,8 @@ server.py's globals (method_ctx.bind_module) and use them bare; module-level nam
 onto server.py, so they must not collide with its globals.
 """
 
+from __future__ import annotations
+
 import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -21,7 +23,7 @@ _ASSET_MAGIC = {"png": [(0, 8, b"\x89PNG\r\n\x1a\n")], "jpg": [(0, 3, b"\xff\xd8
 def _profile_handler(name: str, code: int):
     """``@method(name)`` whose body's uncaught exception becomes ``_err(rid, code, str(e))``."""
     def deco(fn):
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params):
             try:
                 return fn(rid, params)
             except Exception as e:
@@ -41,7 +43,7 @@ def _pin_profile_model(profile_dir, provider, model) -> None:
 
 
 def _model_provider_params(params) -> tuple:
-    return str(params.get("model") or "").strip(), str(params.get("provider") or "").strip()
+    return (params.model or "").strip(), (params.provider or "").strip()
 
 
 def _try(fn, default):
@@ -68,7 +70,7 @@ def _hermes_home_scope(path):
 
 def _resolve_profile(rid, params):
     """``(name, profile_dir, err)``; err = 4063 (name required) / 4064 (not found) response."""
-    name = str(params.get("name") or "").strip()
+    name = (params.name or "").strip()
     if not name:
         return name, None, _err(rid, 4063, "name required")
     from hermes_cli.profiles import get_profile_dir
@@ -246,11 +248,12 @@ def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
 
 
 @_profile_handler("profiles.list", 5061)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ProfilesListParams) -> ProfilesListResult | dict:
     """List Hermes profiles. ``include_sessions`` (default true) adds ``last_session`` /
     ``worker_session`` / ``canonical_session`` so a roster paints previews without N calls."""
     from hermes_cli.profiles import list_profiles
-    include_sessions = is_truthy_value(params.get("include_sessions", True))
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesListResult
+    include_sessions = is_truthy_value(params.include_sessions)
     out = []
     for p in list_profiles():
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
@@ -262,7 +265,7 @@ def _(rid, params: dict) -> dict:
         out.append(row)
     # bot_mode_protocol: this backend injects the Bot Mode teammate-messaging protocol into every
     # session, so clients must not append it to SOUL.md.
-    return _ok(rid, {"profiles": out, "bot_mode_protocol": True})
+    return ProfilesListResult(profiles=out, bot_mode_protocol=True)
 
 
 def _mirror_secret(path, launch_home, name: str, wanted) -> bool:
@@ -332,20 +335,20 @@ def _inherit_launch_model(path) -> bool:
     return True
 
 
-def _mirror_launch_credentials(path, params: dict) -> dict:
+def _mirror_launch_credentials(path, params) -> dict:
     """Copy launch .env / auth.json / voice sections into a new profile (best-effort per item).
     ``mirror_credentials`` false skips everything. ``model_inherited`` is filled in by the caller.
 
     ``share_auth`` is accepted from older clients and ignored: a profile never reads the launch
     profile's auth.json (#111724), so "shared" auth would leave it with no provider at all."""
     mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
-    if not is_truthy_value(params.get("mirror_credentials", True)):
+    if not is_truthy_value(params.mirror_credentials):
         return mirrored
     launch_home = get_hermes_home()
     # .env: only over the seeded comment-only stub (never a clone's secrets).
     mirrored["env"] = _try(lambda: _mirror_secret(path, launch_home, ".env", lambda src, dst: (
         _env_has_content(src) and not _try(lambda: _env_has_content(dst), False))), False)
-    if mirrored["env"] and not is_truthy_value(params.get("clone_channels", False)):
+    if mirrored["env"] and not is_truthy_value(params.clone_channels):
         # Provider/tool keys are what "mirror credentials" means; the launch profile's bot tokens
         # and allowlists would make the new bot collide with it over one Telegram/Discord bot.
         _best_effort(lambda: _lazy("hermes_cli.profile_channels", "strip_channel_env_file")(path / ".env"))
@@ -360,26 +363,27 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
 
 
 @method("profiles.create")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ProfilesCreateParams) -> ProfilesCreateResult | dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
     ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
     ``model`` + ``provider``, ``no_alias``, ``mirror_credentials`` (default true: a bare
     ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless);
     ``share_auth`` is accepted from older clients and ignored."""
-    name = str(params.get("name") or "").strip()
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesCreateResult
+    name = params.name.strip()
     if not name:
         return _err(rid, 4061, "name required")
     try:
         from hermes_cli import profiles as profiles_mod
-        clone_from = str(params.get("clone_from") or "").strip() or None
-        clone_all = is_truthy_value(params.get("clone_all", False))
+        clone_from = (params.clone_from or "").strip() or None
+        clone_all = is_truthy_value(params.clone_all)
         path = profiles_mod.create_profile(
             name=name, clone_from=clone_from, clone_all=clone_all,
             clone_config=bool(clone_from) and not clone_all,
-            no_skills=is_truthy_value(params.get("no_skills", False)),
-            description=str(params.get("description") or "").strip() or None,
-            clone_channels=is_truthy_value(params.get("clone_channels", False)))
+            no_skills=is_truthy_value(params.no_skills),
+            description=(params.description or "").strip() or None,
+            clone_channels=is_truthy_value(params.clone_channels))
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         return _err(rid, 4062, str(e))
     except Exception as e:
@@ -387,9 +391,9 @@ def _(rid, params: dict) -> dict:
     # CLI/REST create flow: bundled skills for fresh profiles, then the alias wrapper.
     if not clone_from:
         _best_effort(lambda: profiles_mod.seed_profile_skills(path, quiet=True))
-    if not is_truthy_value(params.get("no_alias", False)):
+    if not is_truthy_value(params.no_alias):
         _best_effort(lambda: profiles_mod.check_alias_collision(name) or profiles_mod.create_wrapper_script(name))
-    soul = params.get("soul")
+    soul = params.soul
     soul_written = isinstance(soul, str) and bool(soul.strip()) and _best_effort(
         lambda: (path / "SOUL.md").write_text(soul, encoding="utf-8"))
     mirrored = _mirror_launch_credentials(path, params)
@@ -397,10 +401,10 @@ def _(rid, params: dict) -> dict:
     model_set = False
     if model and provider:
         model_set = _best_effort(lambda: _pin_profile_model(path, provider, model))
-    elif is_truthy_value(params.get("mirror_credentials", True)):
+    elif is_truthy_value(params.mirror_credentials):
         mirrored["model_inherited"] = _try(lambda: _inherit_launch_model(path), False)
-    return _ok(rid, {"ok": True, "name": name, "path": str(path), "soul_written": soul_written,
-                     "model_set": model_set, "mirrored": mirrored})
+    return ProfilesCreateResult(ok=True, name=name, path=str(path), soul_written=soul_written,
+                                model_set=model_set, mirrored=mirrored)
 
 
 def _describe_toolsets(cfg):
@@ -427,7 +431,7 @@ def _describe_toolsets(cfg):
 
 
 @_profile_handler("profiles.describe", 5063)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ProfileNameParams) -> ProfilesDescribeResult | dict:
     """Editor snapshot; installed skills are enabled unless in ``skills.disabled``; ``mcp_servers``
     is ``[{name, enabled, transport}]`` (best-effort)."""
     name, profile_dir, err = _resolve_profile(rid, params)
@@ -454,12 +458,11 @@ def _(rid, params: dict) -> dict:
         ], []) if isinstance(mcp_cfg, dict) else []
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         meta = _try(lambda: _lazy("hermes_cli.profiles", "read_profile_meta")(profile_dir), {})
-        return _ok(rid, {
-            "name": name, "description": str(meta.get("description") or ""), "soul": soul,
-            "model": {"provider": str(model_cfg.get("provider") or ""),
-                      "default": str(model_cfg.get("default") or "")},
-            "skills": installed, "toolsets": toolsets_out,
-            "toolsets_pinned": pinned_set is not None, "mcp_servers": mcp_out})
+        from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesDescribeResult
+        return ProfilesDescribeResult(
+            name=name, description=str(meta.get("description") or ""), soul=soul,
+            model={"provider": str(model_cfg.get("provider") or ""), "default": str(model_cfg.get("default") or "")},
+            skills=installed, toolsets=toolsets_out, toolsets_pinned=pinned_set is not None, mcp_servers=mcp_out)
 
 
 def _configure_ui_meta(profile_dir, params, applied) -> None:
@@ -468,10 +471,10 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
     whole write; revisions survive deletion so a stale client cannot recreate a removed key."""
     applied["ui_meta"] = False
     try:
-        incoming = params["ui_meta"]
+        incoming = params.ui_meta
         if len(json.dumps(incoming)) > 65536:
             return
-        expected = params.get("ui_meta_expected_revisions")
+        expected = params.ui_meta_expected_revisions
         if expected is not None and not isinstance(expected, dict):
             raise ValueError("ui_meta_expected_revisions must be an object")
         with _profile_ui_meta_lock:
@@ -522,7 +525,7 @@ def _configure_model(profile_dir, params, applied):
     # writes NOTHING; the client resends with ``confirm_expensive_model: true`` once the user confirms. A
     # misbehaving guard must never break the save (treated as "no warning"), matching
     # ``_apply_model_switch``.
-    if not is_truthy_value(params.get("confirm_expensive_model", False)):
+    if not is_truthy_value(params.confirm_expensive_model):
         warn = _lazy("hermes_cli.model_selection_guards", "combined_selection_warning")
         confirm_message = _try(lambda: getattr(warn(model, provider=provider or None), "message", None), None)
     if confirm_message is None:
@@ -565,7 +568,7 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
     """Apply ``disabled_skills`` / ``enabled_toolsets`` / ``enabled_mcp_servers`` (replace
     semantics; empty toolsets clears the pin). An undefined MCP server is copied from the LAUNCH
     catalog (unknown names skipped); credentials stay in .env/auth."""
-    want_mcp = isinstance(params.get("enabled_mcp_servers"), list)
+    want_mcp = params.enabled_mcp_servers is not None
     launch_mcp = {}
     if want_mcp:  # launch catalog read BEFORE the home override flips config resolution
         load_launch = _lazy("hermes_cli.config", "load_config_readonly")
@@ -574,23 +577,23 @@ def _configure_cfg_sections(profile_dir, params, applied) -> None:
     with _hermes_home_scope(profile_dir):
         from hermes_cli.config import load_config, save_config
         cfg = load_config() or {}
-        if isinstance(params.get("disabled_skills"), list):
+        if params.disabled_skills is not None:
             try:
                 from hermes_cli.skills_config import save_disabled_skills
-                save_disabled_skills(cfg, _clean_names(params["disabled_skills"]))
+                save_disabled_skills(cfg, _clean_names(params.disabled_skills))
                 applied["skills"] = True
                 cfg = load_config() or {}
             except Exception:
                 applied["skills"] = False
-        if isinstance(params.get("enabled_toolsets"), list):
-            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params["enabled_toolsets"], save_config))
+        if params.enabled_toolsets is not None:
+            applied["toolsets"] = _best_effort(lambda: _save_toolset_pin(cfg, params.enabled_toolsets, save_config))
         if want_mcp:
             applied["mcp_servers"] = _best_effort(lambda: _save_mcp_toggles(
-                load_config() or {}, params["enabled_mcp_servers"], launch_mcp, save_config))
+                load_config() or {}, params.enabled_mcp_servers, launch_mcp, save_config))
 
 
 @_profile_handler("profiles.configure", 5064)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ProfilesConfigureParams) -> ProfilesConfigureResult | dict:
     """Editor Save: ``name`` plus any of ``ui_meta`` (+ ``ui_meta_expected_revisions``), ``soul``,
     ``description``, ``model`` + ``provider`` (+ ``confirm_expensive_model``), ``disabled_skills``,
     ``enabled_toolsets``, ``enabled_mcp_servers``; sections are independent, ``applied`` reports each."""
@@ -598,21 +601,22 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     applied = {}
-    if isinstance(params.get("ui_meta"), dict):
+    if params.ui_meta is not None:
         _configure_ui_meta(profile_dir, params, applied)
-    if isinstance(params.get("soul"), str):
-        applied["soul"] = _best_effort(lambda: (profile_dir / "SOUL.md").write_text(params["soul"], encoding="utf-8"))
-    if isinstance(params.get("description"), str):
+    if params.soul is not None:
+        applied["soul"] = _best_effort(lambda: (profile_dir / "SOUL.md").write_text(params.soul, encoding="utf-8"))
+    if params.description is not None:
         write_meta = _lazy("hermes_cli.profiles", "write_profile_meta")
         applied["description"] = _best_effort(lambda: write_meta(
-            profile_dir, description=params["description"].strip(), description_auto=False))
+            profile_dir, description=params.description.strip(), description_auto=False))
     confirm_message = _configure_model(profile_dir, params, applied)
-    if any(isinstance(params.get(k), list) for k in ("disabled_skills", "enabled_toolsets", "enabled_mcp_servers")):
+    if any(value is not None for value in (params.disabled_skills, params.enabled_toolsets, params.enabled_mcp_servers)):
         _configure_cfg_sections(profile_dir, params, applied)
     # confirm_* is the shape config.set returns, so clients reuse one confirm handler.
-    return _ok(rid, {"ok": all(applied.values()) if applied else True, "applied": applied,
-                     **({"confirm_required": True, "confirm_message": confirm_message}
-                        if confirm_message is not None else {})})
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesConfigureResult
+    return ProfilesConfigureResult(ok=all(applied.values()) if applied else True, applied=applied,
+                                   confirm_required=True if confirm_message is not None else None,
+                                   confirm_message=confirm_message)
 
 
 def _unlink_asset_files(assets_dir, asset) -> int:
@@ -622,11 +626,12 @@ def _unlink_asset_files(assets_dir, asset) -> int:
 
 
 @_profile_handler("profiles.set_asset", 5065)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ProfilesSetAssetParams) -> ProfilesSetAssetResult | dict:
     """Store ``assets/<asset>.<ext>`` atomically. Params: ``name``, ``asset`` (``"avatar"`` only),
     ``data`` (data URL or base64; PNG/JPEG/WebP ≤2MB, format sniffed) or ``clear: true``."""
-    asset = str(params.get("asset") or "avatar").strip().lower()
-    if not str(params.get("name") or "").strip():
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesSetAssetResult
+    asset = params.asset.strip().lower()
+    if not params.name.strip():
         return _err(rid, 4063, "name required")
     if asset != "avatar":
         return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
@@ -636,9 +641,9 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     assets_dir = profile_dir / "assets"
-    if is_truthy_value(params.get("clear", False)):
-        return _ok(rid, {"ok": True, "asset": asset, "size": 0, "removed": _unlink_asset_files(assets_dir, asset)})
-    data = str(params.get("data") or "")
+    if is_truthy_value(params.clear):
+        return ProfilesSetAssetResult(ok=True, asset=asset, size=0, removed=_unlink_asset_files(assets_dir, asset))
+    data = params.data or ""
     if not data:
         return _err(rid, 4067, "data required (data URL or base64)")
     match = re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.*)$", data, re.DOTALL)
@@ -656,13 +661,14 @@ def _(rid, params: dict) -> dict:
     tmp = assets_dir / f"{asset}.{ext}.tmp"
     tmp.write_bytes(blob)
     tmp.replace(assets_dir / f"{asset}.{ext}")
-    return _ok(rid, {"ok": True, "asset": asset, "size": len(blob)})
+    return ProfilesSetAssetResult(ok=True, asset=asset, size=len(blob))
 
 
 @_profile_handler("profiles.get_asset", 5066)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ProfilesGetAssetParams) -> ProfilesGetAssetResult | dict:
     """Profile asset as a data URL; absent is ``found: false``, not an error."""
-    asset = str(params.get("asset") or "avatar").strip().lower()
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesGetAssetResult
+    asset = params.asset.strip().lower()
     import base64
     _name, profile_dir, err = _resolve_profile(rid, params)
     if err is not None:
@@ -671,15 +677,19 @@ def _(rid, params: dict) -> dict:
         target = profile_dir / "assets" / f"{asset}.{ext}"
         if target.is_file():
             blob = target.read_bytes()
-            return _ok(rid, {"found": True, "mime": mime, "size": len(blob),
-                             "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"})
-    return _ok(rid, {"found": False})
+            return ProfilesGetAssetResult(found=True, mime=mime, size=len(blob),
+                                          data=f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}")
+    return ProfilesGetAssetResult(found=False)
 
 
 @_profile_handler("profiles.remember_onboarding", 5067)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ProfilesRememberOnboardingParams) -> ProfilesRememberOnboardingResult | dict:
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ProfilesRememberOnboardingResult
     from tui_gateway.onboarding_personalization import remember_onboarding
-    return _ok(rid, remember_onboarding(params.get("answers")))
+    return ProfilesRememberOnboardingResult.model_validate(remember_onboarding({
+        "name": params.answers.name, "context": params.answers.context, "theme": params.answers.theme,
+        "accent": params.answers.accent, "layout": params.answers.layout, "focus": params.answers.focus,
+        "connectors": params.answers.connectors}))
 
 
 def register(server) -> None:

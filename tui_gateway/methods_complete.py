@@ -4,6 +4,8 @@ Rebound onto server.py's globals at install time (``method_ctx.bind_module``), s
 bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
 """
 
+from __future__ import annotations
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -28,7 +30,7 @@ def _catch(fail_code: int):
     """Handler body exceptions → ``_err(rid, fail_code, str(e))``."""
 
     def deco(body):
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params):
             try:
                 return body(rid, params)
             except Exception as e:
@@ -39,9 +41,10 @@ def _catch(fail_code: int):
 
 
 @method("paste.collapse")
-def _(rid, params: dict) -> dict:
+def _(rid, params: PasteCollapseParams) -> PasteCollapseResult | dict:
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import PasteCollapseResult
     global _paste_counter
-    text = params.get("text", "")
+    text = params.text
     if not text:
         return _err(rid, 4004, "empty paste")
     _paste_counter += 1
@@ -52,7 +55,7 @@ def _(rid, params: dict) -> dict:
     paste_file = paste_dir / f"paste_{_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"
     paste_file.write_text(text, encoding="utf-8")
     placeholder = f"[Pasted text #{_paste_counter}: {line_count} lines \u2192 {paste_file}]"
-    return _ok(rid, {"placeholder": placeholder, "path": str(paste_file), "lines": line_count})
+    return PasteCollapseResult(placeholder=placeholder, path=str(paste_file), lines=line_count)
 
 
 def _profile_mention_items(prefix: str) -> list[dict]:
@@ -222,25 +225,26 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
 
 @method("complete.path")
 @_catch(5021)
-def _(rid, params: dict) -> dict:
-    word = params.get("word", "")
+def _(rid, params: CompletePathParams) -> CompletionItemsResult | dict:
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import CompletionItemsResult
+    word = params.word
     if not word:
-        return _ok(rid, {"items": []})
-    session = _sessions.get(params.get("session_id", ""))
+        return CompletionItemsResult(items=[])
+    session = _sessions.get(params.session_id or "")
     local = _effective_terminal_backend() == "local"
     # A non-local backend's cwd lives inside the target; the host cannot validate it, so take the composer's
     # session cwd (Desktop sends it) or the session's terminal cwd as-is.
-    root = _completion_cwd(params) if local else (params.get("cwd") or _terminal_task_cwd(session))
+    root = _completion_cwd(params) if local else (params.cwd or _terminal_task_cwd(session))
     session_key = session.get("session_key") if session else None
     is_context = word.startswith("@")
     query = word[1:] if is_context else word
     if is_context and not query:
-        return _ok(rid, {"items": _at_root_items()})
+        return CompletionItemsResult(items=_at_root_items())
     # Plugin `@<prefix>:<query>` runs before the built-in file/folder branching.
     if is_context and ":" in query:
         pfx, _, qval = query.partition(":")
         if pfx not in _BUILTIN_AT_PREFIXES and (plugin_items := _plugin_reference_items(pfx, qval)) is not None:
-            return _ok(rid, {"items": plugin_items})
+            return CompletionItemsResult(items=plugin_items)
     # Bare `@folder` lists as soon as the keyword is typed (the static `@folder:` hint is not accepted).
     if is_context and (query in {"file", "folder"} or query.startswith(("file:", "folder:"))):
         prefix_tag, _, path_part = query.partition(":")
@@ -262,15 +266,16 @@ def _(rid, params: dict) -> dict:
     if bare_word and not prefix_tag:
         with contextlib.suppress(Exception):
             items = _profile_mention_items(path_part) + items
-    return _ok(rid, {"items": items})
+    return CompletionItemsResult(items=items)
 
 
 @method("complete.slash")
 @_catch(5020)
-def _(rid, params: dict) -> dict:
-    text = params.get("text", "")
+def _(rid, params: CompleteSlashParams) -> CompleteSlashResult | dict:
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import CompleteSlashResult
+    text = params.text
     if not text.startswith("/"):
-        return _ok(rid, {"items": []})
+        return CompleteSlashResult(items=[])
     from hermes_cli.commands_completion import SlashCommandCompleter
     from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import to_plain_text
@@ -311,34 +316,36 @@ def _(rid, params: dict) -> dict:
         if extra_text.startswith(text_lower) and not any(item["text"] == extra_text for item in items):
             items.append({**_item(extra_text, extra_meta), "kind": "command"})
     if (details_items := _details_completions(text)) is not None:
-        return _ok(rid, {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)})
-    return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})
+        return CompleteSlashResult(items=details_items, replace_from=text.rfind(" ") + 1 if " " in text else len(text))
+    return CompleteSlashResult(items=items, replace_from=text.rfind(" ") + 1 if " " in text else 1)
 
 
-def _session_agent(params: dict):
-    session = _sessions.get(params.get("session_id", ""))
+def _session_agent(params):
+    session = _sessions.get(params.session_id or "")
     return session.get("agent") if session else None
 
 
 @method("model.options")
 @_profile_scoped
 @_catch(5033)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ModelOptionsParams) -> ModelOptionsResult | dict:
+    from tui_gateway.contracts.config_free_tier_control import ModelOptionsResult
     from hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
     # NOT clobber disk config (with_overrides is truthy-only).
-    return _ok(rid, build_model_options_payload(
-        _model_picker_context(_session_agent(params)), explicit_only=bool(params.get("explicit_only")),
-        include_unconfigured=bool(params.get("include_unconfigured")), refresh=bool(params.get("refresh"))))
+    return ModelOptionsResult.model_validate(build_model_options_payload(
+        _model_picker_context(_session_agent(params)), explicit_only=params.explicit_only,
+        include_unconfigured=params.include_unconfigured, refresh=params.refresh))
 
 
 @method("model.save_key")
 @_catch(5034)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ModelSaveKeyParams) -> ModelSaveKeyResult | dict:
     """Save an API key for ``slug``; return its refreshed provider row (model.options shape + ``authenticated``)."""
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ModelSaveKeyResult
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import is_managed
-    slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
+    slug, api_key = params.slug.strip(), params.api_key.strip()
     if not slug or not api_key:
         return _err(rid, 4001, "slug and api_key are required")
     if is_managed():
@@ -362,16 +369,17 @@ def _(rid, params: dict) -> dict:
     if provider_data is None:  # key saved but provider didn't appear — still success
         provider_data = {"slug": slug, "name": pconfig.name, "is_current": False, "models": [], "total_models": 0}
     provider_data["authenticated"] = True  # synthetic fallback bypasses picker_hints
-    return _ok(rid, {"provider": provider_data})
+    return ModelSaveKeyResult(provider=provider_data)
 
 
 @method("model.disconnect")
 @_catch(5035)
-def _(rid, params: dict) -> dict:
+def _(rid, params: ModelDisconnectParams) -> ModelDisconnectResult | dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import ModelDisconnectResult
     from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
     from hermes_cli.credential_lifecycle import remove_provider_env_credential
-    if not (slug := (params.get("slug") or "").strip()):
+    if not (slug := params.slug.strip()):
         return _err(rid, 4001, "slug is required")
     pconfig = PROVIDER_REGISTRY.get(slug)
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
@@ -380,7 +388,7 @@ def _(rid, params: dict) -> dict:
     cleared_auth = clear_provider_auth(slug)  # full disconnect: OAuth grants go too
     if not cleared_env and not cleared_auth:
         return _err(rid, 4005, f"no credentials found for {slug}")
-    return _ok(rid, {"slug": slug, "name": pconfig.name if pconfig else slug, "disconnected": True})
+    return ModelDisconnectResult(slug=slug, name=pconfig.name if pconfig else slug, disconnected=True)
 
 
 def register(server) -> None:

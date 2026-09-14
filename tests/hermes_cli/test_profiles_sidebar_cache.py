@@ -194,8 +194,13 @@ class SidebarCacheTests(unittest.TestCase):
                 mock.patch.object(profiles, "_read_profile_db", side_effect=fake_read), \
                 ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [pool.submit(profiles.get_profiles_projects_tree) for _ in range(workers)]
-            self.assertTrue(entered.wait(timeout=1))
-            time.sleep(0.05)
+            # Generous readiness bound: the runner packs ~20 workers onto one
+            # machine, so a 1s window can expire before any worker reaches
+            # fake_read (observed flake). Never assume a quiet runner.
+            self.assertTrue(entered.wait(timeout=5))
+            # Let the remaining callers attach to the in-flight scan before it
+            # is released; the coalescing assertion depends on it.
+            time.sleep(0.2)
             release.set()
             results = [future.result(timeout=2) for future in futures]
 

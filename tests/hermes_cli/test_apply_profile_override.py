@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, hermes_home: str | None, active_profile: str | None,
@@ -36,6 +38,13 @@ def _run_apply_profile_override(
         (hermes_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Path.home() alone is not enough: on Windows the platform-native root is
+    # derived from %LOCALAPPDATA%, so get_default_hermes_root() would keep
+    # pointing at the developer's real install and the active_profile read
+    # would come from there. Redirect the native resolver too.
+    monkeypatch.setattr(
+        "hermes_constants._get_platform_default_hermes_home", lambda: hermes_root
+    )
     if hermes_home is not None:
         monkeypatch.setenv("HERMES_HOME", hermes_home)
     else:
@@ -113,7 +122,9 @@ class TestApplyProfileOverrideHermesHomeGuard:
         monkeypatch.setattr(os, "geteuid", lambda: 0, raising=False)
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "elias", "gateway", "install", "--system"])
 
-        import pwd
+        # sudo semantics are POSIX-only: the invoking user is resolved through
+        # pwd, which does not exist on Windows.
+        pwd = pytest.importorskip("pwd", reason="sudo resolves the invoking user via pwd")
 
         monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)))
 
@@ -166,6 +177,12 @@ class TestSupervisedChildIgnoresStickyProfile:
         (hermes_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Windows derives the native root from %LOCALAPPDATA% (see
+        # _run_apply_profile_override), so redirect the native resolver too or
+        # the profile lookup below runs against the developer's real install.
+        monkeypatch.setattr(
+            "hermes_constants._get_platform_default_hermes_home", lambda: hermes_root
+        )
         monkeypatch.delenv("HERMES_HOME", raising=False)
         monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])

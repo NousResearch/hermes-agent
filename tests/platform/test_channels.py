@@ -125,11 +125,68 @@ def test_unknown_capabilities_are_unknown_not_false():
     assert whatsapp.capabilities["groups"].supported is None
 
 
-def test_a_provider_nobody_opened_is_not_offered():
-    """The runtime bundles 22 adapters. Offering all of them would be the checklist support
-    the phase brief forbids."""
-    with pytest.raises(SpecError, match="is not a channel NOVA offers"):
-        parse_channels(declaration(provider="matrix"))
+def test_the_catalogue_is_the_runtime_s_bundled_platforms_exactly():
+    """Superseded the old "deliberate subset" rule, and the reason is worth keeping.
+
+    NOVA used to ship a hand-written tuple of six providers while the runtime bundled
+    twenty-two, on the argument that a catalogue entry is a commitment. In practice it meant
+    the Control Centre could offer Telegram and nothing else, so the catalogue is now read
+    from the runtime's own ``plugin.yaml`` manifests.
+
+    The property that replaces it: the catalogue is neither smaller nor larger than what the
+    runtime bundles. Smaller hides a platform the deployment can reach; larger offers one it
+    cannot load, which is the failure the old rule was really guarding against.
+    """
+    from nova.channels.providers import catalogue
+    from nova.runtime.hermes.catalogue import platforms_dir
+
+    root = platforms_dir()
+    assert root is not None, "the runtime's platform plugins were not found"
+
+    on_disk = {
+        child.name.lower()
+        for child in root.iterdir()
+        if child.is_dir()
+        and (child / "__init__.py").is_file()
+        and ((child / "plugin.yaml").is_file() or (child / "plugin.yml").is_file())
+    }
+    offered = {p.id for p in catalogue()}
+    assert offered == on_disk, (
+        f"catalogue and runtime disagree — only on disk: {sorted(on_disk - offered)}; "
+        f"only offered: {sorted(offered - on_disk)}"
+    )
+
+
+def test_a_provider_the_runtime_does_not_bundle_is_refused():
+    """Discovery widened what may be declared; it did not remove the check."""
+    with pytest.raises(SpecError, match="is not a channel this deployment can connect"):
+        parse_channels(declaration(provider="myspace"))
+
+
+def test_a_discovered_provider_carries_the_manifest_s_credential_metadata():
+    """What a connect form renders comes from the manifest, not from memory."""
+    from nova.channels.providers import get_provider
+
+    slack = get_provider("slack")
+    by_name = {c["name"]: c for c in slack.credentials}
+    assert "SLACK_BOT_TOKEN" in by_name
+    token = by_name["SLACK_BOT_TOKEN"]
+    assert token["required"] is True
+    assert token["secret"] is True, "a bot token must be masked"
+    assert token["url"], "the manifest points at where to get one; the form should link it"
+    # An optional variable is present and marked as such, so the form can separate them.
+    assert any(c["required"] is False for c in slack.credentials)
+
+
+def test_a_provider_with_no_annotation_is_unknown_rather_than_guessed():
+    """Twenty-two manifests, six written-up annotations. The other sixteen must not acquire
+    invented transports or capabilities on the way through."""
+    from nova.channels.providers import Transport, get_provider
+
+    irc = get_provider("irc")
+    assert irc.label == "IRC"
+    assert irc.transport is Transport.UNKNOWN
+    assert all(cap.supported is None for cap in irc.capabilities.values())
 
 
 def test_a_webhook_provider_declares_that_it_needs_a_public_endpoint():

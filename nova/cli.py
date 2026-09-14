@@ -738,7 +738,9 @@ def _channels(args) -> int:
 
     from nova.audit import new_correlation_id
     from nova.channels.derive import plan_derivations
-    from nova.channels.providers import PROVIDERS
+    from nova.channels.providers import catalogue as _catalogue
+
+    PROVIDERS = _catalogue()
 
     if args.channels_command == "providers":
         if args.json:

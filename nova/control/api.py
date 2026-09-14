@@ -276,7 +276,7 @@ class ControlAPI:
         most a control plane should ever be able to say about a secret.
         """
         from nova.channels.derive import plan_derivations
-        from nova.channels.providers import PROVIDERS
+        from nova.channels.providers import catalogue
 
         derivations = plan_derivations(self.bundle)
         readiness = {
@@ -318,7 +318,7 @@ class ControlAPI:
                 "declared": bool(self.bundle.channels),
                 "channel_delivery": self.runtime.capabilities.channel_delivery,
                 "channels": rows,
-                "catalogue": [p.to_dict() for p in PROVIDERS],
+                "catalogue": [p.to_dict() for p in catalogue()],
             },
         )
 

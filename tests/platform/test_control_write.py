@@ -345,15 +345,39 @@ def test_a_viewer_may_read_channels_but_not_apply_them(bundle, audit_log):
     assert api.write("/platform/v1/channels/apply", VIEWER, {}).status == 403
 
 
-def test_the_channels_read_route_never_returns_a_credential(bundle, audit_log):
+def test_the_channels_read_route_never_returns_a_credential(bundle, audit_log, monkeypatch):
     """A control plane must be able to say a channel needs SLACK_BOT_TOKEN and must never be
-    able to say what it is."""
+    able to say what it is.
+
+    This used to scan for the substring ``xoxb-``. That stopped working — and stopped
+    testing anything — once the catalogue came from the runtime's own plugin manifests,
+    because Slack's manifest writes its *format hint* as ``Slack Bot Token (xoxb-...)``.
+    The hint is exactly the copy a connect form should show, so the check is now about
+    values rather than about prefixes: a real token is planted in the environment, and the
+    assertion is that no response ever carries it.
+    """
     import json
 
+    planted = "xoxb-9999-planted-secret-value-do-not-leak"
+    monkeypatch.setenv("SLACK_BOT_TOKEN", planted)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", planted + "-telegram")
+
     api = ControlAPI(bundle, RecordingRuntime(), audit=audit_log)
-    body = json.dumps(api.handle("/platform/v1/channels").body).lower()
-    for marker in ("xoxb-", "xapp-", "bearer ", "secret_value"):
-        assert marker not in body
+    body = json.dumps(api.handle("/platform/v1/channels").body)
+
+    assert planted not in body, "a credential VALUE reached the control plane's response"
+    assert planted + "-telegram" not in body
+
+    # A token-shaped string is one followed by token characters; the manifest's "(xoxb-...)"
+    # is not. Keeping a shape check alongside the value check catches a leak from a source
+    # the planting above did not anticipate.
+    import re
+
+    leaked = re.findall(r"xox[baprs]-[A-Za-z0-9]{4,}", body)
+    assert not leaked, f"token-shaped strings in the response: {leaked}"
+
+    # And the names must still be there, or the screen cannot tell an operator what to set.
+    assert "SLACK_BOT_TOKEN" in body
 
 
 def test_applying_channels_on_a_runtime_that_cannot_deliver_is_501(bundle, audit_log):

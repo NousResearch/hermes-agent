@@ -18,3 +18,17 @@ __all__ = [
     "resolve_home",
     "skin_filename",
 ]
+
+
+# The channel catalogue is the runtime's to state, not NOVA's to remember. Registering the
+# discovery here — at adapter import, which every CLI invocation and the control plane both
+# trigger — means `get_provider` sees every platform this deployment actually bundles.
+# Injected rather than imported by nova/channels, which may not name the runtime.
+def _register_channel_discovery() -> None:
+    from nova.channels import providers as _providers
+    from nova.runtime.hermes import catalogue as _catalogue
+
+    _providers.set_discovery(_catalogue.discover)
+
+
+_register_channel_discovery()

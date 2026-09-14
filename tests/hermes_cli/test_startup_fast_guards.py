@@ -22,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Modules that must NEVER be imported by the fast path. Each one either
@@ -37,6 +39,22 @@ _FORBIDDEN_MODULES = (
     "httpx",
     "openai",
 )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX: rmdir of cwd then realpath")
+def test_ensure_project_root_on_path_survives_deleted_cwd(tmp_path):
+    """``os.path.realpath('.')`` raises FileNotFoundError when cwd is gone (#102941)."""
+    import hermes_cli._startup_fast as fast
+
+    gone = tmp_path / "scratch"
+    gone.mkdir()
+    previous = os.getcwd()
+    os.chdir(gone)
+    gone.rmdir()
+    try:
+        fast.ensure_project_root_on_path()
+    finally:
+        os.chdir(previous)
 
 
 def test_startup_fast_import_weight():

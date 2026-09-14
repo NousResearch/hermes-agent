@@ -133,7 +133,8 @@ The blocklist is the floor below `--yolo`. It trips **before** the approval laye
 |---|---|
 | `rm -rf /` and obvious variants | Wipes the filesystem root |
 | `rm -rf --no-preserve-root /` | The explicit "yes I mean root" variant |
-| `:(){ :\|:& };:` (bash fork bomb) | Pegs the host until reboot |
+| `:(){ :\|:& };:` (fork bomb, under any function name) | Pegs the host until reboot |
+| `kill -9 -1` / `kill -s KILL -1` / `killall5` | Signals every process on the host. `-1` as the *target* means everything; `kill -1 <pid>` is the SIGHUP reload idiom and stays allowed |
 | `mkfs.*` on a mounted root device | Formats the live system |
 | `dd if=/dev/zero of=/dev/sd*` | Zeroes a physical disk |
 | Piping untrusted URLs to `sh` at the rootfs top level | Remote-code-execution attack vector too broad to approve |

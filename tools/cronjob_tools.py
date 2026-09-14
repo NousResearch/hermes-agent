@@ -611,6 +611,7 @@ def _action_create(a: Dict[str, Any]) -> str:
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
+            catch_up=a["catch_up"], misfire_grace_seconds=a["misfire_grace_seconds"],
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
     except CronSchedulerRegistrationError as exc:
@@ -835,6 +836,10 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
         if job.get("state") != "paused":
             updates["state"] = "scheduled"
             updates["enabled"] = True
+    if a["catch_up"] is not None:
+        updates["catch_up"] = a["catch_up"]
+    if a["misfire_grace_seconds"] is not None:
+        updates["misfire_grace_seconds"] = a["misfire_grace_seconds"]
     return None
 
 
@@ -955,6 +960,8 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    catch_up: Optional[bool] = None,
+    misfire_grace_seconds: Optional[int] = None,
     all: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
@@ -1039,6 +1046,15 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "type": "integer",
                 "description": "Optional repeat count. Omit for defaults (once for one-shot, forever for recurring)."
             },
+            "catch_up": {
+                "type": "boolean",
+                "description": "Optional per-job stale-run policy. True runs one coalesced catch-up after the grace window; false skips to the next future occurrence. Omit to inherit cron.catch_up_missed."
+            },
+            "misfire_grace_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Optional per-job lateness grace in seconds. Omit to use half the cadence, clamped to 120 seconds–2 hours."
+            },
             "deliver": {
                 "type": "string",
                 "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
@@ -1111,7 +1127,7 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "all")
+    "paused_reason", "catch_up", "misfire_grace_seconds", "all")
 
 
 def _cronjob_handler(args, **kw):

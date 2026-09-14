@@ -869,6 +869,23 @@ def _compute_grace_seconds(schedule: dict) -> int:
     return max(_MIN_GRACE_SECONDS, min(int(period_seconds) // 2, _MAX_GRACE_SECONDS))
 
 
+def _job_misfire_grace_seconds(job: Dict[str, Any], schedule: dict) -> int:
+    """Per-job grace when configured, otherwise the existing cadence-derived window."""
+    value = job.get("misfire_grace_seconds")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return _compute_grace_seconds(schedule)
+
+
+def _job_catches_up_missed(job: Dict[str, Any]) -> Tuple[bool, str]:
+    """Resolve the per-job override, falling back to the profile-wide compatibility setting."""
+    value = job.get("catch_up")
+    if isinstance(value, bool):
+        return value, "job"
+    enabled = _cron_config_number("catch_up_missed", True, lambda raw: raw is not False)
+    return bool(enabled), "config"
+
+
 # A recurring dispatch within this many seconds of schedule renders "on time": a busy once-a-minute
 # ticker can slip a couple of minutes — normal cadence, not gateway downtime.
 # See #99879.
@@ -1604,6 +1621,22 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _normalize_optional_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise ValueError("catch_up must be a boolean when set.")
+    return value
+
+
+def _normalize_misfire_grace_seconds(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("misfire_grace_seconds must be a non-negative integer when set.")
+    return value
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
@@ -1618,12 +1651,16 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "catch_up": _normalize_optional_bool,
+    "misfire_grace_seconds": _normalize_misfire_grace_seconds,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "catch_up": _normalize_optional_bool,
+    "misfire_grace_seconds": _normalize_misfire_grace_seconds,
 }
 
 
@@ -1735,6 +1772,8 @@ def create_job(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
+    catch_up: Optional[bool] = None,
+    misfire_grace_seconds: Optional[int] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -1833,6 +1872,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]),
+        ("catch_up", f["catch_up"]), ("misfire_grace_seconds", f["misfire_grace_seconds"]),
     ):
         if value is not None:
             job[key] = value
@@ -3008,6 +3048,25 @@ def _reanchor_stale_cron(d: _DueJob) -> bool:
     return False
 
 
+def _record_misfire(
+    d: _DueJob, grace: int, *, action: str, policy_source: str,
+) -> None:
+    """Persist the latest decision and append an audit event for every late run or stale skip."""
+    event = {
+        "job_id": d.job.get("id"),
+        "name": d.label,
+        "scheduled_at": d.next_run,
+        "observed_at": d.scan.now.isoformat(),
+        "lateness_seconds": round(max(0.0, (d.scan.now - d.next_run_dt).total_seconds()), 1),
+        "grace_seconds": grace,
+        "action": action,
+        "policy_source": policy_source,
+    }
+    d.job["last_misfire"] = event
+    d.scan.persist(d.job["id"], last_misfire=event)
+    _append_telemetry_record("misfires.jsonl", event, [])
+
+
 def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     """Re-anchor accumulated misses; return whether catch-up was explicitly disabled.
 
@@ -3022,12 +3081,13 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     if not new_next:
         return False
     d.scan.persist(d.job["id"], next_run_at=new_next)
-    if (_ensure_aware(datetime.fromisoformat(new_next)) > d.scan.now
-            and not _cron_config_number("catch_up_missed", True, lambda value: value is not False)):
+    catch_up, policy_source = _job_catches_up_missed(d.job)
+    if _ensure_aware(datetime.fromisoformat(new_next)) > d.scan.now and not catch_up:
         logger.info(
             "Job '%s' missed its scheduled time (%s, grace=%ds). "
-            "Skipping missed occurrence because cron.catch_up_missed is false; next run: %s",
-            d.label, d.next_run, grace, new_next)
+            "Skipping missed occurrence because catch-up is disabled by %s policy; next run: %s",
+            d.label, d.next_run, grace, policy_source, new_next)
+        _record_misfire(d, grace, action="skipped", policy_source=policy_source)
         return True
     logger.info(
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
@@ -3161,7 +3221,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
 
     if not manual_run and kind == "cron" and _reanchor_stale_cron(d):
         return False
-    grace = _compute_grace_seconds(d.schedule)
+    grace = _job_misfire_grace_seconds(job, d.schedule)
     if not manual_run and recurring and _fast_forward_missed_recurring(d, grace):
         return False
     if kind == "once":
@@ -3195,6 +3255,9 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         scan.persist(
             job["id"], last_dispatch=dispatch_stamp,
             pending_slot=pending_slot_stamp(next_run, now))
+        if lateness > _LATE_DISPATCH_TOLERANCE_SECONDS:
+            _record_misfire(
+                d, grace, action="ran", policy_source=_job_catches_up_missed(job)[1])
     return True
 
 

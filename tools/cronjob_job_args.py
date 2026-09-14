@@ -391,6 +391,12 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
+    if isinstance(job.get("catch_up"), bool):
+        result["catch_up"] = job["catch_up"]
+    if isinstance(job.get("misfire_grace_seconds"), int):
+        result["misfire_grace_seconds"] = job["misfire_grace_seconds"]
+    if isinstance(job.get("last_misfire"), dict):
+        result["last_misfire"] = job["last_misfire"]
     return result
 
 

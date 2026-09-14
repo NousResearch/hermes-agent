@@ -39,3 +39,44 @@ def test_default_and_uncomputable_still_catch_up(tmp_path, monkeypatch, uncomput
         if uncomputable:
             monkeypatch.setattr(jobs, "compute_next_run", lambda *args: None)
         assert [row["id"] for row in jobs.get_due_jobs()] == [job["id"]]
+
+
+@pytest.mark.parametrize("catch_up", [True, False])
+def test_per_job_policy_overrides_global_and_audits_decision(tmp_path, monkeypatch, catch_up):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        f"cron:\n  catch_up_missed: {str(not catch_up).lower()}\n", encoding="utf-8")
+    with jobs.use_cron_store(tmp_path / "cron"):
+        job = jobs.create_job(
+            prompt="override", schedule="every 1h", model="fixture", deliver="local",
+            catch_up=catch_up)
+        stored = jobs.load_jobs()
+        stored[0]["next_run_at"] = (jobs._hermes_now() - timedelta(hours=4)).isoformat()
+        jobs.save_jobs(stored)
+
+        due = jobs.get_due_jobs()
+
+        assert bool(due) is catch_up
+        event = jobs.load_jobs()[0]["last_misfire"]
+        assert event["action"] == ("ran" if catch_up else "skipped")
+        assert event["policy_source"] == "job"
+        audit = (tmp_path / "cron" / "misfires.jsonl").read_text(encoding="utf-8")
+        assert f'"job_id": "{job["id"]}"' in audit
+
+
+def test_per_job_grace_controls_lateness_and_is_audited(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with jobs.use_cron_store(tmp_path / "cron"):
+        job = jobs.create_job(
+            prompt="grace", schedule="every 1h", model="fixture", deliver="local",
+            catch_up=False, misfire_grace_seconds=5 * 60 * 60)
+        stored = jobs.load_jobs()
+        stored[0]["next_run_at"] = (jobs._hermes_now() - timedelta(hours=4)).isoformat()
+        jobs.save_jobs(stored)
+
+        due = jobs.get_due_jobs()
+
+        assert [row["id"] for row in due] == [job["id"]]
+        event = jobs.load_jobs()[0]["last_misfire"]
+        assert event["action"] == "ran"
+        assert event["grace_seconds"] == 5 * 60 * 60

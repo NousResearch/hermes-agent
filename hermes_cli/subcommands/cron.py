@@ -36,6 +36,16 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "state stays visible in `hermes cron list`. Omit = failures "
             "follow --deliver.")
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
+    create_catch_up = cron_create.add_mutually_exclusive_group()
+    create_catch_up.add_argument(
+        "--catch-up", dest="catch_up", action="store_true", default=None,
+        help="Run one coalesced occurrence after this job misses its grace window")
+    create_catch_up.add_argument(
+        "--skip-missed", dest="catch_up", action="store_false",
+        help="Skip stale occurrences for this job instead of running them late")
+    cron_create.add_argument(
+        "--misfire-grace-seconds", type=int,
+        help="Per-job lateness grace; default derives from the schedule cadence")
     cron_create.add_argument("--skill", dest="skills", action="append",
         help="Attach a skill. Repeat to add multiple skills.")
     cron_create.add_argument("--script",
@@ -95,6 +105,16 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Override target for failure notices (same grammar as --deliver; "
             "'local' suppresses; '' clears the override)")
     cron_edit.add_argument("--repeat", type=int, help="New repeat count")
+    edit_catch_up = cron_edit.add_mutually_exclusive_group()
+    edit_catch_up.add_argument(
+        "--catch-up", dest="catch_up", action="store_true", default=None,
+        help="Run one coalesced occurrence after this job misses its grace window")
+    edit_catch_up.add_argument(
+        "--skip-missed", dest="catch_up", action="store_false",
+        help="Skip stale occurrences for this job instead of running them late")
+    cron_edit.add_argument(
+        "--misfire-grace-seconds", type=int,
+        help="Set the per-job lateness grace in seconds")
     cron_edit.add_argument("--skill", dest="skills", action="append",
         help="Replace the job's skills with this set. Repeat to attach multiple skills.")
     cron_edit.add_argument("--add-skill", dest="add_skills", action="append",

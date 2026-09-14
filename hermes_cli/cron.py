@@ -121,6 +121,17 @@ def _dispatch_display(dispatch: dict) -> Optional[str]:
             + color(f"({lateness} late)", Colors.YELLOW))
 
 
+def _misfire_display(event: dict) -> Optional[str]:
+    """One-line durable misfire decision from ``cron/misfires.jsonl``."""
+    if not isinstance(event, dict) or event.get("action") not in {"ran", "skipped"}:
+        return None
+    action = "ran one coalesced occurrence" if event["action"] == "ran" else "skipped stale occurrence"
+    return color(
+        f"⚠ {action}: {_format_lateness(event.get('lateness_seconds', 0))} late "
+        f"(grace {_format_lateness(event.get('grace_seconds', 0))}, {event.get('policy_source', '?')} policy)",
+        Colors.YELLOW)
+
+
 def _print_banner(title: str) -> None:
     """Boxed cyan section header shared by ``cron list`` and ``cron incidents``."""
     print()
@@ -201,6 +212,7 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Mode", color("no-agent", Colors.DIM) + " (script stdout delivered directly)"
          if job.get("no_agent") else ""),
         ("Workdir", job.get("workdir")),
+        ("Misfire", _misfire_display(job.get("last_misfire"))),
         ("Last run", f"{job.get('last_run_at', '?')}  {_last_run_display(job)}"
          if job.get("last_status") else ""),
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
@@ -212,6 +224,10 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
         ("Next run", job.get("next_run_at", "?")),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
+        ("Catch-up", ("run once" if job["catch_up"] else "skip")
+         if isinstance(job.get("catch_up"), bool) else "inherit cron.catch_up_missed"),
+        ("Grace", f"{job['misfire_grace_seconds']}s (job override)"
+         if isinstance(job.get("misfire_grace_seconds"), int) else "automatic (half cadence, 2m–2h)"),
     ] + [(label, value) for label, value in optional if value]
 
 
@@ -551,7 +567,9 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("repeat", "repeat"), ("script", "script"), ("workdir", "workdir"),
                    ("model", "model"), ("provider", "model_provider"),
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
-                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"))
+                   ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
+                   ("catch_up", "catch_up"),
+                   ("misfire_grace_seconds", "misfire_grace_seconds"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:

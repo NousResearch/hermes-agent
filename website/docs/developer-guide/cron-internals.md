@@ -145,8 +145,12 @@ dropped silently. The mechanics, in the order the due scan applies them
    `[120 s, 2 h]` (`_compute_grace_seconds`); the dispatch is stamped
    `last_dispatch.kind = late`.
 5. **Past grace → collapse the backlog, fire once** (`kind = catch_up`), or skip
-   with a logged reason when the operator set `cron.catch_up_missed: false`
-   (planned downtime). One-shots past their 120 s grace are retired with a
+   with a logged reason when the job's `catch_up` override (falling back to
+   `cron.catch_up_missed`) is false. A job's `misfire_grace_seconds` overrides the
+   cadence-derived grace. Every late run or skip appends an audit event to
+   `cron/misfires.jsonl`; `catch_up_occurrences` counts only coalesced runs, not skips
+   or every collapsed slot. This lets planned-downtime jobs opt out independently.
+   One-shots past their 120 s grace are retired with a
    diagnostic, never resurrected.
 6. **Paused / disabled / terminal jobs never catch up**; the due scan drops them
    before any of the above, and pause/resume clears any pending slot.

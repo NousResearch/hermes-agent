@@ -420,6 +420,46 @@ class TestLoadEnvInlineComments:
         assert env["PASSWORD2"] == "abc #123"
 
 
+class TestLoadEnvCacheSignature:
+    def test_same_second_same_size_rewrite_is_not_served_stale(
+        self, tmp_path, monkeypatch
+    ):
+        """The load_env memo keys on st_mtime_ns like every other file-signature cache in
+        config.py. On filesystems with coarse mtime granularity two writes can share
+        st.st_mtime and st.st_size; only the ns timestamp distinguishes them."""
+        import zlib
+
+        import hermes_cli.config as config_module
+        from hermes_cli.config import invalidate_env_cache
+
+        env_path = tmp_path / ".env"
+
+        class _CoarseMtimePath(type(env_path)):
+            """stat() pins st_mtime to a whole second; st_mtime_ns tracks content."""
+
+            def stat(self, *args, **kwargs):
+                real = super().stat(*args, **kwargs)
+                seq = list(real)
+                seq[8] = 1_700_000_000.0
+                return os.stat_result(
+                    seq, {"st_mtime_ns": zlib.crc32(self.read_bytes())}
+                )
+
+        monkeypatch.setattr(
+            config_module, "get_env_path", lambda: _CoarseMtimePath(env_path)
+        )
+        try:
+            env_path.write_text("KEY=aaa\n", encoding="utf-8")
+            invalidate_env_cache()
+            assert load_env()["KEY"] == "aaa"
+
+            # Same second, same size — only st_mtime_ns changes.
+            env_path.write_text("KEY=bbb\n", encoding="utf-8")
+            assert load_env()["KEY"] == "bbb"
+        finally:
+            invalidate_env_cache()
+
+
 class TestSaveEnvValueSecure:
 
     def test_secure_save_returns_metadata_only(self, tmp_path):

@@ -185,6 +185,38 @@ describe('registry gateway WebSocket headers', () => {
     expect(new Set(consumers).size).toBe(3)
   })
 
+  // The spellings that resolve to the SAME backend must resolve to the same
+  // key, or a re-mint lands beside its own stale ticket url instead of
+  // retiring it. ensureRegistryBackend() reads an omitted connectionId as the
+  // primary and an omitted profile as 'default'.
+  it('collapses the payload spellings that select one backend', async () => {
+    const connection: RegistryGatewayWsConnection = {
+      authMode: 'oauth',
+      baseUrl: 'https://gateway.example',
+      wsUrl: 'wss://gateway.example/api/ws?ticket=stale',
+      // What the registry resolved an omitted/blank connectionId to.
+      connectionId: 'primary-one',
+      headers: accessHeaders
+    }
+
+    const consumers: Array<string | undefined> = []
+    const handler = createRegistryGatewayWsUrlHandler({
+      ensureBackend: vi.fn(async () => connection),
+      mintTicket: vi.fn(async () => 'fresh-ticket'),
+      buildTicketUrl: (baseUrl, ticket) => `${baseUrl.replace(/^https:/, 'wss:')}/api/ws?ticket=${ticket}`,
+      rememberHeaders: (_wsUrl, _headers, _connection, consumer) => {
+        consumers.push(consumer)
+      }
+    })
+
+    await handler({})
+    await handler({ connectionId: '', profile: '' })
+    await handler({ connectionId: '  ', profile: 'default' })
+    await handler({ connectionId: 'primary-one', profile: undefined })
+
+    expect(new Set(consumers)).toEqual(new Set(['registry:primary-one:default']))
+  })
+
   // The registry path is the reconnect path, so it is where a forwarded proxy
   // session has to be bound (gateway-ws-cookie.ts). Pin that rememberHeaders
   // receives the resolved connection alongside the FINAL url, and is awaited.

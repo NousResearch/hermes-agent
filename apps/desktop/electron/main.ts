@@ -8339,7 +8339,9 @@ async function freshGatewayWsUrl(profile) {
   // legacy callers and single-profile users are unchanged.
   const connection = await ensureBackend(profile)
   // One consumer per profile: a shared remote keeps a live socket for each.
-  const consumer = `ws-url:${String(connection.profile ?? profile ?? '')}`
+  // Keyed exactly as ensureBackend() keys the profile, so a re-mint of the
+  // same socket always retires its own stale ticket url.
+  const consumer = `ws-url:${String(profile ?? '').trim() || primaryProfileKey()}`
 
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)

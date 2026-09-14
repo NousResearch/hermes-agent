@@ -4,6 +4,9 @@ export interface RegistryGatewayWsConnection {
   authMode: string
   baseUrl: string
   wsUrl: string
+  // The id the registry RESOLVED for this request; an empty connectionId in
+  // the payload means the primary, so only this one identifies the socket.
+  connectionId?: string
   headers?: Record<string, string>
   profile?: null | string
   sharedRemote?: boolean
@@ -92,8 +95,13 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
     const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
     const connection = await dependencies.ensureBackend(connectionId, profile)
     // Stable across this pair's reconnects, distinct from every other pair and
-    // from the non-registry mint paths.
-    const consumer = `registry:${String(connectionId ?? '')}:${String(profile ?? '')}`
+    // from the non-registry mint paths. Normalized exactly as the backend
+    // resolution normalizes them -- an omitted connectionId means the primary
+    // and an omitted profile means 'default', so the same socket re-minting
+    // must not land under a second key and leave its stale ticket url live.
+    const consumer = `registry:${String(connection.connectionId ?? connectionId ?? '').trim()}:${
+      String(profile ?? '').trim() || 'default'
+    }`
     let wsUrl = connection.wsUrl
 
     if (connection.authMode === 'oauth') {

@@ -58,3 +58,16 @@ def test_signal_cleared_on_entry_between_calls(monkeypatch):
     assert agent._compression_skipped_due_to_lock is None, (
         "stale signal from lock-skip call 1 leaked into successful call 2"
     )
+
+
+def test_lock_holder_records_process_start_identity(monkeypatch):
+    """New compression leases can distinguish a recycled PID from their owner (#110602)."""
+    from agent.conversation_compression import _compression_lock_holder
+
+    monkeypatch.setattr(
+        "hermes_state._compression_lock_holder_process_start_identity", lambda: "123456"
+    )
+
+    holder = _compression_lock_holder(MagicMock())
+
+    assert ":start=123456:" in holder

@@ -1480,10 +1480,17 @@ def recover_rotated_compression_session(agent: Any) -> Optional[List[Dict[str, A
 
 
 def _compression_lock_holder(agent: Any) -> str:
-    """Build a unique lock holder id: ``pid:tid:agent-instance:uuid``.
+    """Build a unique lock holder id: ``pid:start:tid:agent-instance:uuid``.
     pid+tid tell crashed holders apart in diagnostics; instance id and per-acquire uuid disambiguate
     co-resident agents on one thread or pooled compressions."""
-    return f"pid={os.getpid()}:tid={threading.get_ident()}:agent={id(agent):x}:nonce={uuid.uuid4().hex[:8]}"
+    from hermes_state import _compression_lock_holder_process_start_identity
+
+    start = _compression_lock_holder_process_start_identity()
+    start_part = f":start={start}" if start else ""
+    return (
+        f"pid={os.getpid()}{start_part}:tid={threading.get_ident()}:agent={id(agent):x}:"
+        f"nonce={uuid.uuid4().hex[:8]}"
+    )
 
 
 def _supported_compression_kwargs(

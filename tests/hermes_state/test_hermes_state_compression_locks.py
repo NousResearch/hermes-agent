@@ -116,6 +116,75 @@ def test_non_expired_lock_from_dead_pid_is_reclaimed(
     assert probed == [424242]
 
 
+def test_non_expired_lock_from_recycled_pid_is_reclaimed(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live replacement PID does not own a predecessor's lease (#110602)."""
+    stale_holder = "pid=424242:start=100:tid=1:agent=abc:nonce=deadbeef"
+    assert db.try_acquire_compression_lock("sess1", stale_holder, ttl_seconds=300) is True
+
+    monkeypatch.setattr(
+        hermes_state,
+        "psutil",
+        SimpleNamespace(
+            pid_exists=lambda _pid: True,
+            Process=lambda _pid: SimpleNamespace(create_time=lambda: 200.0),
+        ),
+    )
+    monkeypatch.setattr(
+        hermes_state, "_compression_lock_holder_process_start_identity", lambda _pid: "200"
+    )
+
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=fresh", ttl_seconds=300
+    ) is True
+
+
+def test_same_process_holder_with_start_identity_is_not_probed(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = f"pid={os.getpid()}:start=100:tid=1:agent=abc:nonce=live"
+    assert db.try_acquire_compression_lock("sess1", holder, ttl_seconds=300) is True
+    monkeypatch.setattr(
+        hermes_state,
+        "psutil",
+        SimpleNamespace(pid_exists=lambda _pid: pytest.fail("same process must remain live")),
+    )
+
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
+
+
+@pytest.mark.windows_only
+def test_windows_fallback_reclaims_missing_pid_without_psutil(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Native Windows probing remains available in installations without psutil."""
+    holder = "pid=424242:start=100:tid=1:agent=abc:nonce=deadbeef"
+    assert db.try_acquire_compression_lock("sess1", holder, ttl_seconds=300) is True
+    monkeypatch.setattr(hermes_state, "psutil", None)
+    monkeypatch.setattr(hermes_state, "_windows_process_start_identity", lambda _pid: hermes_state._PROCESS_GONE)
+
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=fresh", ttl_seconds=300
+    ) is True
+
+
+@pytest.mark.windows_only
+def test_windows_fallback_reclaims_recycled_pid_without_psutil(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = "pid=424242:start=100:tid=1:agent=abc:nonce=deadbeef"
+    assert db.try_acquire_compression_lock("sess1", holder, ttl_seconds=300) is True
+    monkeypatch.setattr(hermes_state, "psutil", None)
+    monkeypatch.setattr(hermes_state, "_windows_process_start_identity", lambda _pid: "200")
+
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=fresh", ttl_seconds=300
+    ) is True
+
+
 
 
 def test_probe_doubt_keeps_lease_until_ttl(

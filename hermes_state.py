@@ -27,7 +27,9 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
+from hermes_state_common import (
+    _proc_start_ticks, escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
+)
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -118,31 +120,111 @@ class SessionExportTooLargeError(ValueError):
         )
 
 
+_PROCESS_GONE = object()
+
+
+def _windows_process_start_identity(pid: int):
+    """Return a Windows process creation-time identity, ``_PROCESS_GONE``, or ``None``.
+
+    ``OpenProcess`` plus ``GetProcessTimes`` is safe without psutil: unlike
+    ``os.kill(pid, 0)`` on Windows, it never sends a console control event.
+    Access and API failures remain unknowable so callers retain the lease.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel32.GetProcessTimes.argtypes = (
+            wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+        )
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        process = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not process:
+            return _PROCESS_GONE if ctypes.get_last_error() == 87 else None  # ERROR_INVALID_PARAMETER
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code)):
+                return None
+            if exit_code.value != 259:  # STILL_ACTIVE
+                return _PROCESS_GONE
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                process, ctypes.byref(created), ctypes.byref(exited),
+                ctypes.byref(kernel), ctypes.byref(user),
+            ):
+                return None
+            return str((created.dwHighDateTime << 32) | created.dwLowDateTime)
+        finally:
+            kernel32.CloseHandle(process)
+    except (AttributeError, OSError):
+        return None
+
+
+def _compression_lock_holder_process_start_identity(pid: Optional[int] = None) -> Optional[str]:
+    """Return a stable start identity for a local process when the OS can prove one."""
+    pid = os.getpid() if pid is None else pid
+    if pid <= 0:
+        return None
+    if os.name == "nt":
+        identity = _windows_process_start_identity(pid)
+        return identity if isinstance(identity, str) else None
+    if sys.platform.startswith("linux"):
+        ticks = _proc_start_ticks(pid)
+        return str(ticks) if ticks is not None else None
+    if psutil is not None:
+        try:
+            return f"{psutil.Process(pid).create_time():.6f}"
+        except Exception:
+            return None
+    return None
+
+
 def _compression_lock_holder_process_is_dead(holder: str) -> bool:
-    """True only when a ``pid=<n>`` lock holder's local PID is provably gone.
-    Reclaim on kernel proof only: unstructured/same-process holders (another
-    thread's live lease) and any probe doubt keep the lease until TTL expiry
-    (PID reuse must never steal a live lease; a wrongly-kept one self-heals)."""
+    """True only when a ``pid=<n>`` lock holder is gone or its PID was recycled.
+
+    Unstructured, legacy, same-process, and unprobeable holders retain their
+    lease until TTL expiry. A holder without ``start=`` remains backwards
+    compatible but cannot be distinguished from a recycled PID.
+    """
     match = re.search(r"(?:^|:)pid=(\d+)(?::|$)", holder or "")
     pid = int(match.group(1)) if match else 0
     if pid <= 0 or pid == os.getpid():
         return False
+    start_match = re.search(r"(?:^|:)start=([^:]+)(?::|$)", holder or "")
+    recorded_start = start_match.group(1) if start_match else None
     if psutil is not None:
         try:
-            return not psutil.pid_exists(pid)  # recycled PIDs read as alive (conservative)
+            if not psutil.pid_exists(pid):
+                return True
         except Exception:
             return False
-    # psutil-less fallback is POSIX-only: on Windows os.kill(pid, 0) maps sig=0 to
-    # CTRL_C_EVENT and can kill the target's console group.
-    if os.name == "nt":
+    if psutil is None:
+        if os.name == "nt":
+            current_start = _windows_process_start_identity(pid)
+            if current_start is _PROCESS_GONE:
+                return True
+            return bool(recorded_start and isinstance(current_start, str) and current_start != recorded_start)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except (OSError, OverflowError):  # PermissionError is an OSError: alive but foreign
+            return False
+    if not recorded_start:
         return False
-    try:
-        os.kill(pid, 0)  # windows-footgun: ok — nt early-returns just above
-    except ProcessLookupError:
-        return True
-    except (OSError, OverflowError):  # PermissionError is an OSError: alive but foreign
-        return False
-    return False
+    current_start = _compression_lock_holder_process_start_identity(pid)
+    return current_start is not None and current_start != recorded_start
 
 
 # Billing buckets that aren't a routable provider identity: a session that persisted only

@@ -478,6 +478,30 @@ class TestCodexBuildKwargs:
         assert messages[1]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-1"
         assert messages[3]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-2"
 
+    def test_normalize_response_stamps_wire_model_and_replay_drops_it_for_another_model(self, transport):
+        """The wire model from build_kwargs (``-900k`` stripped) is what normalize_response stamps, and a
+        later build_kwargs for another model on the same endpoint replays none of it (sealed blob → 400)."""
+        transport.build_kwargs(model="gpt-5.6-sol-900k", messages=[{"role": "user", "content": "hi"}], tools=[])
+        normalized = transport.normalize_response(SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(type="reasoning", id="rs_1", encrypted_content="sealed-sol", summary=[]),
+                SimpleNamespace(type="message", role="assistant", status="completed", id="msg_1",
+                                content=[SimpleNamespace(type="output_text", text="done")]),
+            ],
+        ))
+        captured = normalized.codex_reasoning_items[0]
+        assert captured["_issuer_model"] == "gpt-5.6-sol"
+        history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "done", "codex_reasoning_items": [captured]},
+            {"role": "user", "content": "next"},
+        ]
+        same = transport.build_kwargs(model="gpt-5.6-sol-900k", messages=history, tools=[], replay_encrypted_reasoning=True)
+        other = transport.build_kwargs(model="gpt-5.7", messages=history, tools=[], replay_encrypted_reasoning=True)
+        assert [i["encrypted_content"] for i in same["input"] if i.get("type") == "reasoning"] == ["sealed-sol"]
+        assert not any(i.get("type") == "reasoning" for i in other["input"])
+
     def test_newest_reasoning_only_keeps_compaction_checkpoints(self):
         from agent.transports.codex import _newest_reasoning_only
 

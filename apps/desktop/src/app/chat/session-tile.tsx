@@ -294,6 +294,7 @@ export function SessionChatSurface({
   const onPickFolders = useCallback(() => void pickContextPaths('folder'), [pickContextPaths])
   const onPickImages = useCallback(() => void pickImages(), [pickImages])
   const onRemoveAttachment = useCallback((id: string) => void removeAttachment(id), [removeAttachment])
+
   const retryResume = useCallback(
     () => (onRetryResume ? onRetryResume() : patchSessionTile(storedSessionId, { error: undefined })),
     [onRetryResume, storedSessionId]

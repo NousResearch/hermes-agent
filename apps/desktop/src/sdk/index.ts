@@ -1470,9 +1470,9 @@ export {
  * surface. It does not navigate or create a second gateway/transcript client;
  * it is another view of the app's canonical session state. */
 export {
-  NativeChatPanel,
   type CreateNativeChatSessionOptions,
   type NativeChatBinding,
+  NativeChatPanel,
   type NativeChatPanelProps,
   type NativeChatProfileRoute
 } from '@/app/chat/native-chat-panel'

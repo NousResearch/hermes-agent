@@ -60,6 +60,7 @@ describe('runComposerMiddleware', () => {
       'bound',
       (d, invocation) => {
         seen.push(invocation)
+
         return { ...d, text: `${d.text}:${invocation?.storedSessionId}` }
       },
       20

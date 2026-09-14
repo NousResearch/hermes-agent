@@ -259,6 +259,7 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
 
   it('does not erase a retained native attachment scope when its stash has no attachment snapshot', () => {
     const attachments = createComposerAttachmentScope()
+
     const attachment: ComposerAttachment = {
       id: 'native-file',
       kind: 'file',
@@ -266,6 +267,7 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
       occurrenceId: 'native-occurrence',
       path: '/workspace/quote.pdf'
     }
+
     attachments.add(attachment)
     clearSessionDraft('session-native')
 

@@ -1,6 +1,8 @@
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as SessionStore from '@/store/session'
+
 const {
   bindCreatedSession,
   requestGatewayForAgent,
@@ -17,7 +19,7 @@ const {
 
 vi.mock('@/store/gateway', () => ({ requestGatewayForAgent, retainGatewayForAgent }))
 vi.mock('@/store/session', async importOriginal => ({
-  ...(await importOriginal<typeof import('@/store/session')>()),
+  ...(await importOriginal<typeof SessionStore>()),
   setSessionOwnerHint
 }))
 vi.mock('@/store/session-states', () => ({
@@ -119,6 +121,7 @@ describe('createNativeChatSession', () => {
     })
 
     const reopened = _nativeChatAttachmentScopeForTests(route, 'stored-attachments')
+
     const otherOwner = _nativeChatAttachmentScopeForTests(
       { ...route, connectionId: 'scope-other' },
       'stored-attachments'

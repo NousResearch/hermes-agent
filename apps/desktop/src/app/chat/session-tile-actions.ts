@@ -153,6 +153,7 @@ export function useSessionTileActions({
 
     runtimeIdRef.current = recoveredId
     runtimeIdByStoredSessionIdRef.current.set(storedId, recoveredId)
+
     if (onRuntimeRecovered) {
       onRuntimeRecovered(recoveredId)
     } else {

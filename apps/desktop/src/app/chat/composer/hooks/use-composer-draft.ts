@@ -427,6 +427,7 @@ export function useComposerDraft({
     draftScopeRef.current = activeQueueSessionKey
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
+
     // A native embedded panel may be conditionally unmounted while its
     // conversation remains open. Its attachment scope is deliberately owned
     // outside the ChatBar, so retain those unsent chips when the generic draft

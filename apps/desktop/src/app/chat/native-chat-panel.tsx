@@ -97,6 +97,7 @@ function nativeAttachmentScope(route: NativeChatProfileRoute, storedSessionId: s
     // Refresh bounded LRU order on reopen.
     nativeAttachmentScopes.delete(key)
     nativeAttachmentScopes.set(key, existing)
+
     return existing
   }
 
@@ -220,6 +221,7 @@ function buildNativeView(storedSessionId: string, $runtimeId: ReturnType<typeof 
   const $state = computed([$runtimeId, $sessionStates], (runtimeId, states) =>
     runtimeId ? states[runtimeId] : undefined
   )
+
   const $messages = computed($state, state => state?.messages ?? NO_MESSAGES)
 
   return {
@@ -253,18 +255,17 @@ export interface NativeChatPanelProps {
  * use the existing shared session state, exact-route request router and native
  * ChatView/ChatBar implementation. */
 export function NativeChatPanel({ binding, className, focusRequest = 0 }: NativeChatPanelProps) {
-  const route = useMemo(() => normalizeRoute(binding.route), [
-    binding.route.connectionId,
-    binding.route.mode,
-    binding.route.profile,
-    binding.route.targetProfile
-  ])
+  const bindingRoute = binding.route
+  const route = useMemo(() => normalizeRoute(bindingRoute), [bindingRoute])
+
   const storedSessionId = binding.storedSessionId.trim()
   const target = `native:${storedSessionId}`
+
   const attachments = useMemo(
     () => nativeAttachmentScope(route, storedSessionId),
     [route, storedSessionId]
   )
+
   const $runtimeId = useMemo(
     () => {
       const candidate = binding.runtimeSessionId?.trim() || ''
@@ -275,6 +276,7 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
     },
     [binding.runtimeSessionId, storedSessionId]
   )
+
   const view = useMemo(() => buildNativeView(storedSessionId, $runtimeId), [$runtimeId, storedSessionId])
   const runtimeId = useStore($runtimeId)
   const delegateRevision = useStore($sessionTileDelegateRevision)
@@ -297,13 +299,18 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
   useEffect(() => {
     if (!storedSessionId) {
       setError('Native chat binding has no stored session id.')
+
       return
     }
 
     setSessionOwnerHint(storedSessionId, route)
+
     return retainForegroundSessionSurface(route, runtimeId)
   }, [route, runtimeId, storedSessionId])
 
+  // resumingRef is an in-flight request token for the resume effect below,
+  // not an atom mirror: the runtime atom only settles after the promise does.
+  // eslint-disable-next-line no-restricted-syntax -- in-flight resume latch, not an atom mirror
   useEffect(() => {
     // The shared delegate is installed by Desktop's normal session wiring. It
     // performs exact-owner resume, transcript hydration, approval restoration
@@ -357,6 +364,7 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
   }, [focusRequest, runtimeId, target])
 
   const onRuntimeRecovered = useCallback((nextRuntimeId: string) => $runtimeId.set(nextRuntimeId), [$runtimeId])
+
   const retry = useCallback(() => {
     $runtimeId.set(null)
     setError(null)

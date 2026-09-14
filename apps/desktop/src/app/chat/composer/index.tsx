@@ -132,6 +132,7 @@ export function ChatBar({
     controlDrag: hudWindowing?.controlDrag === true,
     workspaceTransfer: hudWindowing?.workspaceTransfer === true
   })
+
   const scope = useComposerScope()
 
   // Typed stop phrase during an active voice conversation ends it — same

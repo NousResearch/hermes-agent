@@ -442,10 +442,12 @@ const ChatViewContent = memo(function ChatViewContent({
   // always focused (the atom falls back to the primary's selection), so a
   // single-pane workspace never dims.
   const surfaceFocused = useStoreSelector($focusedStoredSessionId, focused => forceFocused || focused === storedId)
+
   // Dock anchor for a session drop onto this surface: the workspace pane for the
   // primary, this tile's pane id for a tile. Read by the session-drop bridge.
   const sessionAnchor =
     sessionAnchorOverride !== undefined ? sessionAnchorOverride : isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
+
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
   const activeGatewayProfile = useStore($activeGatewayProfile)
@@ -811,8 +813,8 @@ const ChatViewContent = memo(function ChatViewContent({
               onTranscribeAudio={onTranscribeAudio}
               queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
-              storedSessionId={selectedSessionId}
               state={chatBarState}
+              storedSessionId={selectedSessionId}
             />
           </Suspense>
         )}

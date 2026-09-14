@@ -471,6 +471,16 @@ describe('renderMediaTags', () => {
     expect(renderMediaTags('MEDIA:/tmp/demo.mp4')).toBe('[Video: demo.mp4](#media:%2Ftmp%2Fdemo.mp4)')
   })
 
+  it('strips markdown emphasis wrapped around a MEDIA path so it stays a valid path', () => {
+    expect(renderMediaTags('**MEDIA:/tmp/report.xlsx**')).toBe('[File: report.xlsx](#media:%2Ftmp%2Freport.xlsx)')
+    expect(renderMediaTags('**MEDIA:C:\\Users\\woody\\career\\Oodles_Task_List.xlsx**')).toContain(
+      '(#media:C%3A%5CUsers%5Cwoody%5Ccareer%5COodles_Task_List.xlsx)'
+    )
+    expect(renderMediaTags('**MEDIA:C:\\Users\\woody\\career\\Oodles_Task_List.xlsx**')).not.toContain('*')
+    expect(renderMediaTags('*MEDIA:/tmp/notes.md*')).toBe('[File: notes.md](#media:%2Ftmp%2Fnotes.md)')
+    expect(renderMediaTags('__MEDIA:/tmp/data.csv__')).toBe('[File: data.csv](#media:%2Ftmp%2Fdata.csv)')
+  })
+
   it('renders streamed assistant media once the tag is complete', () => {
     const parts = appendAssistantTextPart(appendAssistantTextPart([], 'ok\nMEDIA:'), '/tmp/voice.mp3')
     const text = chatMessageText({ id: 'a', role: 'assistant', parts })

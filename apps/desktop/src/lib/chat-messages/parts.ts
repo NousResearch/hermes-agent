@@ -10,15 +10,33 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+const MEDIA_LINE_RE =
+  /(^|\n)[\t ]*[*_]{0,2}[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+const MEDIA_TAG_RE = /[*_]{0,2}[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
 
 function unquoteMediaPath(value: string): string {
-  const trimmed = value.trim()
+  let trimmed = value.trim()
+
   const quote = trimmed[0]
 
-  return quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote) ? trimmed.slice(1, -1) : trimmed
+  if (quote && quote === trimmed.at(-1) && ['"', "'", '`'].includes(quote)) {
+    return trimmed.slice(1, -1)
+  }
+
+  // Markdown emphasis (`**`, `*`, `_`, backticks) wrapping a MEDIA path would
+  // otherwise end up inside the path itself: `**MEDIA:C:\x.xlsx**` parses as
+  // `C:\x.xlsx**`, and `*` is illegal in Windows filenames → every download of
+  // the card 400s with WinError 123. Strip the same trailing junk the artifacts
+  // rail (unquoteMediaValue) already strips, plus leading emphasis, and any
+  // quote left unpaired by that strip.
+  trimmed = trimmed.replace(/^[*_]+/, '').replace(/[`"'*_]{1,3}$/, '')
+
+  if (/^["'`]/.test(trimmed) && trimmed[0] !== trimmed.at(-1)) {
+    trimmed = trimmed.slice(1)
+  }
+
+  return trimmed
 }
 
 function mediaLink(value: string): string {

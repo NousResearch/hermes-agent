@@ -14,7 +14,7 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { TranscriptVideo } from '@/components/chat/transcript-video'
-import { ZoomableImage } from '@/components/chat/zoomable-image'
+import { ImageGallery, ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
@@ -725,23 +725,25 @@ function MarkdownTextSurface({
       fallback={() => <HugeTextFallback containerClassName={containerClassName} text={text} />}
       label="markdown-render"
     >
-      <StreamdownTextPrimitive
-        components={components}
-        containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
-        containerProps={containerProps}
-        defer={defer}
-        lineNumbers={false}
-        mode="streaming"
-        // Incomplete-markdown repair runs in preprocessWithTailRepair on the
-        // full accumulated text; the built-in tail-bounded remend is disabled
-        // because a custom parseMarkdownIntoBlocksFn is supplied, and
-        // parseIncompleteMarkdown stays false to avoid a second full-text
-        // remend pass.
-        parseIncompleteMarkdown={false}
-        parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
-        plugins={plugins}
-        preprocess={preprocessWithTailRepair}
-      />
+      <ImageGallery>
+        <StreamdownTextPrimitive
+          components={components}
+          containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
+          containerProps={containerProps}
+          defer={defer}
+          lineNumbers={false}
+          mode="streaming"
+          // Incomplete-markdown repair runs in preprocessWithTailRepair on the
+          // full accumulated text; the built-in tail-bounded remend is disabled
+          // because a custom parseMarkdownIntoBlocksFn is supplied, and
+          // parseIncompleteMarkdown stays false to avoid a second full-text
+          // remend pass.
+          parseIncompleteMarkdown={false}
+          parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
+          plugins={plugins}
+          preprocess={preprocessWithTailRepair}
+        />
+      </ImageGallery>
     </ErrorBoundary>
   )
 }

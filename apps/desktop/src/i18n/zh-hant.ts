@@ -3475,6 +3475,8 @@ export const zhHant = defineLocale({
     imageDownloadFailed: '圖片下載失敗',
     openImage: '開啟圖片',
     downloadImage: '下載圖片',
+    previousImage: '上一張圖片',
+    nextImage: '下一張圖片',
     savingImage: '正在儲存圖片',
     imagePreviewFailed: '圖片預覽失敗',
     imageAttach: '附加圖片',

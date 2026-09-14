@@ -3820,6 +3820,8 @@ export const ru = defineLocale({
     imageDownloadFailed: 'Загрузка изображения не удалась',
     openImage: 'Открыть изображение',
     downloadImage: 'Скачать изображение',
+    previousImage: 'Предыдущее изображение',
+    nextImage: 'Следующее изображение',
     savingImage: 'Сохранение изображения',
     imagePreviewFailed: 'Предпросмотр изображения не удался',
     imageAttach: 'Прикрепление изображения',

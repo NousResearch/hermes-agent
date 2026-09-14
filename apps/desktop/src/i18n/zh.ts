@@ -4277,6 +4277,8 @@ export const zh = defineLocale({
     imageDownloadFailed: '图片下载失败',
     openImage: '打开图片',
     downloadImage: '下载图片',
+    previousImage: '上一张图片',
+    nextImage: '下一张图片',
     savingImage: '正在保存图片',
     imagePreviewFailed: '图片预览失败',
     imageAttach: '附加图片',

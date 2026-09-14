@@ -3555,6 +3555,8 @@ export const ja = defineLocale({
     imageDownloadFailed: '画像のダウンロードに失敗しました',
     openImage: '画像を開く',
     downloadImage: '画像をダウンロード',
+    previousImage: '前の画像',
+    nextImage: '次の画像',
     savingImage: '画像を保存中',
     imagePreviewFailed: '画像のプレビューに失敗しました',
     imageAttach: '画像を添付',

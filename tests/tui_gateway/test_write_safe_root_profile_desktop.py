@@ -46,8 +46,7 @@ def test_routed_profile_write_safe_root_matches_profile_dotenv_not_launch_proces
     """After launch dotenv + desktop session scope, file writes use the routed profile vault.
 
     fluxkapacitor used nested ``~/Developer`` vs ``~/Developer/<app>`` on macOS; disjoint
-    sibling vaults here expose the same root cause (process ``HERMES_WRITE_SAFE_ROOT``
-    wins) with unambiguous expected/actual: own vault denied, foreign vault allowed.
+    sibling vaults here assert post-fix behavior: own vault allowed, foreign vault denied.
     """
     default_vault = tmp_path / "default-vault"
     profile_vault = tmp_path / "profile-vault"

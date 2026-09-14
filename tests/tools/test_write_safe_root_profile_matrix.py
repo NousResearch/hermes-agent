@@ -9,9 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import pytest
-
-from agent.file_safety import get_safe_write_roots, get_write_denied_error
+from agent.file_safety import get_safe_write_roots
 from hermes_cli.env_loader import load_hermes_dotenv
 from tests.tools.test_write_safe_root_profile_isolation import (
     _desktop_turn_scope,
@@ -24,14 +22,7 @@ from tools.write_safe_root_scope import get_write_safe_root_scope
 
 
 def _load_launch(tmp_path, monkeypatch, *, launch_dotenv: str, secondary_dotenv: str):
-    """Launch profile dotenv → process env; secondary profile vault + optional .env."""
-    parent_vault = tmp_path / "parent-vault"
-    child_vault = parent_vault / "child-vault"
-    foreign_vault = tmp_path / "foreign-vault"
-    parent_vault.mkdir(parents=True, exist_ok=True)
-    child_vault.mkdir(parents=True, exist_ok=True)
-    foreign_vault.mkdir()
-
+    """Launch profile dotenv → process env; secondary profile optional .env."""
     launch_home = _profile_home(tmp_path, "default", dotenv=launch_dotenv)
     secondary_home = _profile_home(tmp_path, "app", dotenv=secondary_dotenv)
 
@@ -42,9 +33,6 @@ def _load_launch(tmp_path, monkeypatch, *, launch_dotenv: str, secondary_dotenv:
     return {
         "launch_home": launch_home,
         "secondary_home": secondary_home,
-        "parent_vault": parent_vault,
-        "child_vault": child_vault,
-        "foreign_vault": foreign_vault,
         "process_wsr": os.environ.get("HERMES_WRITE_SAFE_ROOT"),
     }
 

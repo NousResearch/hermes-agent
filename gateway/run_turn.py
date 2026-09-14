@@ -1260,7 +1260,9 @@ class GatewayTurnMixin:
             logger.warning("Session hygiene auto-compress failed: %s", e)
         return attempt.history
 
-    async def _hmwa_first_contact_notes(self, source, history, turn_sidecar_notes):
+    async def _hmwa_first_contact_notes(
+        self, source, history, turn_sidecar_notes, event_metadata=None
+    ):
         """First-ever-message onboarding note + one-time 'no home channel' prompt (both only when
         the session has no history). Delivered on the user message (sidecar), NOT the ephemeral
         system prompt: present-on-turn-1/absent-on-turn-2 was a guaranteed prompt diff + rebuild."""
@@ -1321,6 +1323,7 @@ class GatewayTurnMixin:
                 f"A home channel is where Hermes delivers cron job results and cross-platform "
                 f"messages.\n\nType {sethome_cmd} to make this chat your home channel, or ignore "
                 f"to skip.",
+                event_metadata=event_metadata,
             )
 
     def _hmwa_apply_message_timestamp(self, event, message_text):
@@ -1934,7 +1937,12 @@ class GatewayTurnMixin:
                 "Use /reset only if you intentionally want to start a new conversation."
             ), _session_env_tokens
 
-        await self._hmwa_first_contact_notes(source, history, turn_sidecar_notes)
+        await self._hmwa_first_contact_notes(
+            source,
+            history,
+            turn_sidecar_notes,
+            getattr(event, "metadata", None),
+        )
 
         # Voice channel state rides the user message ONLY when changed (in the system prompt it
         # forced a rebuild + prompt-cache re-key per message).

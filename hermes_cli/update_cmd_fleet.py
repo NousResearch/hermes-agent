@@ -1744,6 +1744,12 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     # Persist completion before finalizing the receipt. Finalization clears the active receipt,
     # so a later completion-write failure could otherwise leave a durable "success" receipt and
     # no marker-backed obligation for the command boundary to correct.
+    active_receipt = None
+    with suppress(Exception):
+        import hermes_cli.update_receipt as _ur
+
+        if _ur._current is not None:
+            active_receipt = _ur._current.data
     if not restart.incomplete:
         marker = (
             _parse_fleet_restart_marker(successful_marker_body)
@@ -1752,6 +1758,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         )
         if (
             marker is None
+            or active_receipt is None
+            or not _marker_obligation_is_fulfilled(marker, active_receipt)
             or not _record_fleet_restart_completion(successful_marker_body, marker, None)
         ):
             restart.incomplete = True

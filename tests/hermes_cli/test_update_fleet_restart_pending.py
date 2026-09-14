@@ -160,6 +160,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         "hermes_cli.update_inventory.collect_runtime_inventory",
         lambda: SimpleNamespace(runtimes=[], inventory_errors=[], to_dict=lambda: {}),
     )
+    monkeypatch.setattr(update_cmd_fleet, "_marker_obligation_is_fulfilled", lambda *_args: True)
 
 
 def _update_args():
@@ -1050,6 +1051,25 @@ def test_completion_write_failure_finalizes_partial_receipt(monkeypatch, tmp_pat
 
     assert excinfo.value.code == 1
     assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    receipt = json.loads(
+        (get_hermes_home() / "logs" / "update_receipts" / "latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["outcome"] == "partial"
+
+
+def test_strict_marker_verification_failure_finalizes_partial_receipt(monkeypatch, tmp_path):
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+    monkeypatch.setattr(update_cmd_fleet, "_marker_obligation_is_fulfilled", lambda *_args: False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        hermes_main.cmd_update(args)
+
+    assert excinfo.value.code == 1
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    assert not update_cmd_fleet._fleet_restart_completion_path().exists()
     receipt = json.loads(
         (get_hermes_home() / "logs" / "update_receipts" / "latest.json").read_text(
             encoding="utf-8"

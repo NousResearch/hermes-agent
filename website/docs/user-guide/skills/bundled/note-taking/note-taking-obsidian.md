@@ -15,7 +15,7 @@ Read, search, create, and edit notes in the Obsidian vault.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/note-taking/obsidian` |
+| Path | `skills/note-taking\obsidian` |
 | Version | `1.0.0` |
 | Author | Teknium (teknium1), Hermes Agent |
 | License | MIT |

@@ -1,24 +1,27 @@
 import { useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
+import { appViewForPath, isOverlayView } from '@/app/routes'
 import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
   isPaneVisible,
   layoutHasRootSide,
-  togglePaneVisible
+  togglePaneVisible,
+  toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
+import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
 import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
-import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { openWorktreeDialog } from '@/store/coding-status'
-import { toggleCommandPalette } from '@/store/command-palette'
+import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
 import {
   $findInPage,
   findNext as findNextMatch,
@@ -34,6 +37,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { openBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
   cycleProfile,
@@ -62,6 +66,7 @@ import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import { handleComposerFocusChord } from '../chat/composer/focus-chord'
 import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
 import {
@@ -87,6 +92,8 @@ export interface KeybindRuntimeDeps {
   openNewSessionTab: () => void
   /** Pin/unpin the active session. */
   toggleSelectedPin: () => void
+  /** Archive the active session. */
+  archiveSelectedSession: () => void
 }
 
 type HandlerMap = Record<string, () => void>
@@ -96,6 +103,7 @@ type HandlerMap = Record<string, () => void>
 // mode is active (edit overlay / panel rebind) — records the pressed combo.
 export function useKeybinds(deps: KeybindRuntimeDeps): void {
   const navigate = useNavigate()
+  const location = useLocation()
   const { resolvedMode, setMode } = useTheme()
 
   // Keep the latest closures without re-subscribing the listener.
@@ -186,7 +194,17 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'composer.voice': requestVoiceToggle,
 
-    'nav.commandPalette': toggleCommandPalette,
+    // On the Settings overlay, ⌘K scopes to settings search; the second press
+    // (or Esc) still closes as usual via toggle.
+    'nav.commandPalette': () => {
+      if (!$commandPaletteOpen.get() && appViewForPath(location.pathname) === 'settings') {
+        openCommandPalettePage('settings')
+
+        return
+      }
+
+      toggleCommandPalette()
+    },
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),
@@ -200,6 +218,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create
       // selection from a prior action.
+      setWorkspaceScope('sessions')
       $newChatProfile.set(null)
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
@@ -211,6 +230,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
+    'session.archive': deps.archiveSelectedSession,
     // openWorktreeDialog resolves the target. There is no test for a repo
     // here, so the key works from a detached session that sits inside a
     // project, and not only from a session with a repo. When no repo is in
@@ -229,7 +249,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       layoutHasRootSide('right') ? toggleFileBrowserOpen() : togglePaneVisible('terminal'),
     'view.toggleReview': toggleReview,
     'view.toggleStatusbar': toggleStatusbarVisible,
+    'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
     'view.showFiles': showFiles,
+    'view.showBrowser': openBrowserTab,
     'view.toggleHud': () => toggleHud(hudTargetSessionId()),
     'view.showTerminal': () => togglePaneVisible('terminal'),
     // Create first so the pane's open-effect ensure sees a non-empty set and
@@ -253,7 +275,13 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // the Win/Linux path where ⌘W reaches the renderer directly.
     'view.closeTab': () => void closeActiveTab(id => navigate(sessionRoute(id))),
     'view.reopenTab': reopenLastClosedTile,
-    'view.findInPage': openFindBar,
+    'view.findInPage': () => {
+      // Suppress on overlay routes so it doesn't collide with overlay-specific
+      // search surfaces (e.g. Settings search bar).
+      if (!isOverlayView(appViewForPath(location.pathname))) {
+        openFindBar()
+      }
+    },
     // ⌘G / ⌘⇧G are handled by the find bar's own capture-phase listener while
     // it is open (so they don't collide with `view.toggleReview`). These
     // registry handlers cover a user-assigned dedicated chord: stepping is a
@@ -292,6 +320,16 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // An active IME composition owns the keyboard. Windows Chinese IMEs
+      // (Microsoft Pinyin, Sogou) use Ctrl+, as their punctuation-mode toggle,
+      // so without this guard that keystroke ALSO matched `nav.settings` and
+      // navigated away mid-word — unmounting the composer and destroying the
+      // unsent draft (#41079). The draft stash below makes navigation safe;
+      // this makes the IME keystroke not navigate at all.
+      if (event.isComposing) {
+        return
+      }
+
       // Capture mode: the next real key becomes the binding. Swallow everything
       // so e.g. ⌘K rebinds instead of opening the palette.
       const capturing = $capture.get()
@@ -358,7 +396,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      if (isEditableTarget(event.target) && !comboAllowedInInput(combo)) {
+      if (isEditableTarget(event.target) && !actionAllowedInInput(actionId, combo)) {
         return
       }
 
@@ -418,6 +456,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // clipboard (text AND images) into the active composer. Bubble phase so
     // editables' own paste handlers run first and mark the event handled.
     window.addEventListener('paste', handleWindowPaste)
+    // ⌘/Ctrl+L moves focus to the composer. Bubble phase so capture-phase
+    // claimants run first; the priority ladder lives in focus-chord.ts.
+    window.addEventListener('keydown', handleComposerFocusChord)
 
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true })
@@ -425,6 +466,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('contextmenu', onContextMenu, { capture: true })
       window.removeEventListener('paste', handleWindowPaste)
+      window.removeEventListener('keydown', handleComposerFocusChord)
     }
   }, [])
 }

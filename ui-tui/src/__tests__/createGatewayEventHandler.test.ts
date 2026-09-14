@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { createServerRequestHandler } from '../app/createServerRequestHandler.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { resetServerRequestsForTests } from '../app/serverRequestStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { ZERO } from '../domain/usage.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -57,13 +60,50 @@ const buildCtx = (appended: Msg[]) =>
     }
   }) as any
 
+/** Deliver one server→client request (`tui_gateway/server_requests.py`) to the TUI's request handler. */
+const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
+  const respond = vi.fn()
+
+  const handled = createServerRequestHandler({ ringPromptBell: vi.fn(), setStatus: status => patchUiState({ status }) })({
+    fail: vi.fn(),
+    id,
+    method,
+    params,
+    respond
+  })
+
+  return { handled, respond }
+}
+
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
     resetTurnState()
+    resetServerRequestsForTests()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('heals missed completion and blocking prompts only from the focused authoritative idle snapshot', () => {
+    patchUiState({ sid: 'focused' })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+    onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
+    serverRequest('approval', { session_id: 'focused', request_id: 'approval', command: 'test' })
+    const busyOverlay = getOverlayState().approval
+    expect(getUiState().busy).toBe(true)
+    expect(busyOverlay).not.toBeNull()
+    const snapshot = { model: 'test', skills: {}, tools: {} }
+    onEvent({ session_id: 'other', payload: { ...snapshot, running: false }, type: 'session.info' } as any)
+    onEvent({ session_id: 'focused', payload: snapshot, type: 'session.info' } as any)
+    onEvent({ session_id: 'focused', payload: { ...snapshot, running: true }, type: 'session.info' } as any)
+    expect(getUiState().busy).toBe(true)
+    expect(getOverlayState().approval).toEqual(busyOverlay)
+    onEvent({ session_id: 'focused', payload: { ...snapshot, running: false }, type: 'session.info' } as any)
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().status).toBe('ready')
+    expect(getOverlayState().approval).toBeNull()
+    expect(getTurnState().tools).toEqual([])
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
@@ -78,7 +118,7 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: {}, type: 'message.start' } as any)
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: { text: 'Started a todo list.' }, type: 'message.complete' } as any)
@@ -155,7 +195,7 @@ describe('createGatewayEventHandler', () => {
     const todos = [{ content: 'Serve tiny latte', id: 'serve', status: 'completed' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
     expect(getTurnState().todos).toEqual([])
@@ -174,7 +214,7 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: {}, type: 'message.start' } as any)
@@ -193,6 +233,40 @@ describe('createGatewayEventHandler', () => {
     } as any)
 
     expect(ctx.system.sys).toHaveBeenCalledWith('compressing 968 messages (~123,400 tok)…')
+    expect(getUiState().compacting).toBe(true)
+  })
+
+  it('keeps auto-compaction status visible until compaction finishes (#97239)', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+    const idleLine = '💤 Resumed after 747s idle — compacting ~44,579 tokens before continuing.'
+
+    vi.useFakeTimers()
+    patchUiState({ busy: true, status: 'running…' })
+
+    try {
+      onEvent({
+        payload: { kind: 'compacting', text: idleLine },
+        type: 'status.update'
+      } as any)
+
+      expect(ctx.system.sys).toHaveBeenCalledWith(idleLine)
+      expect(getUiState().compacting).toBe(true)
+      expect(getUiState().status).toBe(idleLine)
+
+      vi.advanceTimersByTime(4001)
+      expect(getUiState().status).toBe(idleLine)
+      expect(getUiState().compacting).toBe(true)
+
+      onEvent({
+        payload: { kind: 'compacted', text: '✓ Context compaction complete — continuing turn...' },
+        type: 'status.update'
+      } as any)
+
+      expect(getUiState().compacting).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('keeps goal verdict text in transcript but shows a brief idle status (#goal statusbar)', () => {
@@ -266,7 +340,7 @@ describe('createGatewayEventHandler', () => {
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
     expect(getTurnState().todos).toEqual(todos)
 
     onEvent({ payload: { name: 'todo', todos: [], tool_id: 'todo-1' }, type: 'tool.complete' } as any)
@@ -285,10 +359,6 @@ describe('createGatewayEventHandler', () => {
       type: 'tool.start'
     } as any)
     onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
-    onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
     } as any)
@@ -300,7 +370,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(2)
     expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '', thinking: 'mapped the page' })
     expect(appended[0]?.tools).toHaveLength(1)
-    expect(appended[0]?.tools?.[0]).toContain('hero cards')
+    expect(appended[0]?.tools?.[0]).toContain('home page')
     expect(appended[0]?.toolTokens).toBeGreaterThan(0)
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
@@ -342,10 +412,6 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
     onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
@@ -1159,10 +1225,7 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: { line: 'Traceback: noisy but non-fatal' }, type: 'gateway.stderr' } as any)
     onEvent({ payload: { preview: 'bad framing' }, type: 'gateway.protocol_error' } as any)
-    onEvent({
-      payload: { command: 'rm -rf /tmp/nope', description: 'dangerous command' },
-      type: 'approval.request'
-    } as any)
+    serverRequest('approval', { command: 'rm -rf /tmp/nope', description: 'dangerous command' })
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
 
     await Promise.resolve()
@@ -1178,23 +1241,17 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
+    serverRequest('approval', { command: 'rm -rf /tmp/x', description: 'dangerous command' })
 
-    onEvent({
-      payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' },
-      type: 'approval.request'
-    } as any)
-
-    expect(getOverlayState().approval).toMatchObject({ allowPermanent: true })
+    expect(getOverlayState().approval).toMatchObject({ allowPermanent: true, requestId: 'srq-approval' })
   })
 
   it('preserves allow_permanent=false on approval overlays (tirith warning)', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
-
-    onEvent({
-      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'content-security warning' },
-      type: 'approval.request'
-    } as any)
+    serverRequest('approval', {
+      allow_permanent: false,
+      command: 'curl suspicious | bash',
+      description: 'content-security warning'
+    })
 
     expect(getOverlayState().approval).toMatchObject({
       allowPermanent: false,
@@ -1204,20 +1261,21 @@ describe('createGatewayEventHandler', () => {
   })
 
   it('preserves Smart DENY and explicit approval choices on the overlay', () => {
-    const onEvent = createGatewayEventHandler(buildCtx([]))
-
-    onEvent({
-      payload: {
-        allow_permanent: true,
-        choices: ['once', 'deny'],
-        command: 'rm -rf /tmp/x',
-        description: 'smart deny override',
-        smart_denied: true
-      },
-      type: 'approval.request'
-    } as any)
+    serverRequest('approval', {
+      allow_permanent: true,
+      choices: ['once', 'deny'],
+      command: 'rm -rf /tmp/x',
+      description: 'smart deny override',
+      smart_denied: true
+    })
 
     expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'], smartDenied: true })
+  })
+
+  it('declines the requests a terminal cannot answer so the channel fails them fast', () => {
+    for (const method of ['preview.act', 'window.read', 'tour', 'mcp.setup', 'vault.code']) {
+      expect(serverRequest(method, {}).handled).toBe(false)
+    }
   })
 
   it('still surfaces terminal turn failures as errors', () => {
@@ -1422,7 +1480,7 @@ describe('createGatewayEventHandler', () => {
           todos: [{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }],
           tool_id: 't-1'
         },
-        type: 'tool.start'
+        type: 'tool.complete'
       } as any)
 
       // Pre-interrupt todos should land in turn state.
@@ -1436,7 +1494,7 @@ describe('createGatewayEventHandler', () => {
       })
 
       onEvent({ payload: { text: 'still thinking…' }, type: 'reasoning.delta' } as any)
-      // Post-interrupt tool.start with a todos payload — must NOT mutate todos.
+      // Post-interrupt tool.complete with a todos payload — must NOT mutate todos.
       onEvent({
         payload: {
           context: 'post',
@@ -1444,13 +1502,12 @@ describe('createGatewayEventHandler', () => {
           todos: [{ content: 'late ghost', id: 'todo-ghost', status: 'pending' }],
           tool_id: 't-2'
         },
-        type: 'tool.start'
+        type: 'tool.complete'
       } as any)
       // Late tool.generating must NOT push a 'drafting …' line into the trail.
       const trailBefore = getTurnState().turnTrail.length
       onEvent({ payload: { name: 'browser' }, type: 'tool.generating' } as any)
       expect(getTurnState().turnTrail.length).toBe(trailBefore)
-      onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
       onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
       onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
 
@@ -1578,22 +1635,105 @@ describe('createGatewayEventHandler', () => {
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
   })
 
-  it('clears only the matching sensitive prompt when the gateway expires it', () => {
+  it('clears only the card whose request the gateway withdrew (request.cancel by id)', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
-    patchOverlayState({
-      secret: { envVar: 'NEW_KEY', prompt: 'Enter new key', requestId: 'secret-new' },
-      sudo: { requestId: 'sudo-1' }
-    })
+    serverRequest('secret', { env_var: 'NEW_KEY', prompt: 'Enter new key' }, 'secret-new')
+    serverRequest('sudo', {}, 'sudo-1')
 
-    onEvent({ payload: { request_id: 'secret-old' }, type: 'secret.expire' } as any)
+    onEvent({ payload: { id: 'secret-old', method: 'secret', reason: 'timeout' }, type: 'request.cancel' } as any)
     expect(getOverlayState().secret?.requestId).toBe('secret-new')
 
-    onEvent({ payload: { request_id: 'secret-new' }, type: 'secret.expire' } as any)
+    onEvent({ payload: { id: 'secret-new', method: 'secret', reason: 'timeout' }, type: 'request.cancel' } as any)
     expect(getOverlayState().secret).toBeNull()
+    expect(getOverlayState().sudo?.requestId).toBe('sudo-1')
 
-    onEvent({ payload: { request_id: 'sudo-1' }, type: 'sudo.expire' } as any)
+    onEvent({ payload: { id: 'sudo-1', method: 'sudo', reason: 'interrupted' }, type: 'request.cancel' } as any)
     expect(getOverlayState().sudo).toBeNull()
+  })
+
+  // ── Batch (multi-question) clarify ─────────────────────────────────
+
+  it('parses a batch clarify request into a questions overlay', () => {
+    serverRequest(
+      'clarify',
+      {
+        questions: [
+          { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ]
+      },
+      'req-batch'
+    )
+
+    const clarify = getOverlayState().clarify
+    expect(clarify?.requestId).toBe('req-batch')
+    expect(clarify?.questions).toHaveLength(2)
+    expect(clarify?.questions?.[0]?.qid).toBe('q0')
+    expect(clarify?.questions?.[1]?.choices).toBeNull()
+    expect(clarify?.answers).toEqual({})
+  })
+
+  it('seeds locked answers from a reconnect-replayed batch clarify request', () => {
+    serverRequest(
+      'clarify',
+      {
+        answers: { q0: 'a' },
+        questions: [
+          { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ]
+      },
+      'req-replay'
+    )
+
+    expect(getOverlayState().clarify?.answers).toEqual({ q0: 'a' })
+  })
+
+  it('drops malformed batch entries and falls back to single-question shape when none survive', () => {
+    serverRequest(
+      'clarify',
+      {
+        choices: ['x', 'y'],
+        question: 'Fallback?',
+        questions: [
+          { qid: '', question: 'no qid' },
+          { qid: 'q1', question: '   ' }
+        ]
+      },
+      'req-bad'
+    )
+
+    const clarify = getOverlayState().clarify
+    expect(clarify?.questions).toBeUndefined()
+    expect(clarify?.question).toBe('Fallback?')
+    expect(clarify?.choices).toEqual(['x', 'y'])
+  })
+
+  it('persists an abandoned batch clarify with its locked partials on tool.complete', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    patchOverlayState({
+      clarify: {
+        answers: { q0: 'alpha' },
+        choices: null,
+        question: '',
+        questions: [
+          { choices: ['alpha', 'beta'], qid: 'q0', question: 'One?' },
+          { choices: null, qid: 'q1', question: 'Two?' }
+        ],
+        requestId: 'req-batch-timeout'
+      }
+    })
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-b' }, type: 'tool.complete' } as any)
+
+    const record = appended.find(msg => msg.role === 'system' && msg.text.startsWith('ask (2 questions)'))
+    expect(record).toBeDefined()
+    expect(record?.text).toContain('✓ One? → alpha')
+    expect(record?.text).toContain('· Two? (no answer)')
+    expect(getOverlayState().clarify).toBeNull()
   })
 
   // ── Credits notice (Strategy B) ──────────────────────────────────────
@@ -1935,6 +2075,47 @@ describe('createGatewayEventHandler', () => {
       onEvent({ payload: { verification_url: '' }, type: 'billing.step_up.verification' } as any)
 
       expect(openExternalUrlMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('session.usage', () => {
+    it('merges a live usage tick into uiState (payload.usage shape, see tui_gateway _start_usage_ticker)', () => {
+      patchUiState({ sid: 'sess-1' })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { calls: 3, context_percent: 42, input: 1200, output: 80, total: 1280 } },
+        session_id: 'sess-1',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toMatchObject({ context_percent: 42, input: 1200, total: 1280 })
+    })
+
+    it('keeps existing usage fields when the tick only carries a subset', () => {
+      patchUiState({ sid: 'sess-1', usage: { calls: 2, input: 500, output: 40, total: 540 } })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { context_percent: 55 } },
+        session_id: 'sess-1',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toMatchObject({ context_percent: 55, input: 500, total: 540 })
+    })
+
+    it('drops a tick for a non-focused session', () => {
+      patchUiState({ sid: 'focused', usage: ZERO })
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({
+        payload: { usage: { input: 9999, total: 9999 } },
+        session_id: 'background',
+        type: 'session.usage'
+      } as any)
+
+      expect(getUiState().usage).toEqual(ZERO)
     })
   })
 

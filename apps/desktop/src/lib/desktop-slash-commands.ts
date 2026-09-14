@@ -173,7 +173,7 @@ const rpc = (
  * catalog marks them unavailable/hidden. New commands and plugins declare
  * `argument_mode` / `desktop` on the Python registry instead of adding a row.
  */
-const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
+export const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
   { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
   {
@@ -281,6 +281,136 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: rpc('session.status', ctx => ({ session_id: ctx.sessionId }))
   }
 ]
+
+/**
+ * Per-command popover glyph, by canonical command name (leading slash).
+ * Codicon names only, every one verified against the bundled
+ * `@vscode/codicons` font — an unknown name renders a blank box. Aliases ride
+ * with their canonical row so `/fork` shows the same branch glyph as `/branch`.
+ * Commands missing here fall back to the group-kind icon, so backend additions
+ * degrade to today's look instead of breaking.
+ */
+export const DESKTOP_SLASH_COMMAND_ICONS: Record<string, string> = {
+  '/new': 'add',
+  '/reset': 'add',
+  '/stop': 'debug-stop',
+  '/branch': 'git-branch',
+  '/fork': 'git-branch',
+  '/yolo': 'flame',
+  '/wake': 'mic',
+  '/handoff': 'send',
+  '/profile': 'account',
+  '/skin': 'symbol-color',
+  '/title': 'tag',
+  '/help': 'question',
+  '/commands': 'question',
+  '/browser': 'browser',
+  '/journey': 'map',
+  '/learning': 'map',
+  '/memory-graph': 'map',
+  '/model': 'chip',
+  '/resume': 'comment-discussion',
+  '/sessions': 'comment-discussion',
+  '/switch': 'comment-discussion',
+  '/compress': 'archive',
+  '/compact': 'archive',
+  '/btw': 'comment',
+  '/pet': 'heart',
+  '/pets': 'heart',
+  '/hatch': 'sparkle',
+  '/generate-pet': 'sparkle',
+  '/save': 'save',
+  '/status': 'dashboard',
+  '/retry': 'refresh',
+  '/prompt': 'edit',
+  '/undo': 'discard',
+  '/worktree': 'worktree',
+  '/rollback': 'history',
+  '/snapshot': 'file',
+  '/export': 'cloud-upload',
+  '/import': 'cloud-download',
+  '/pause': 'debug-stop',
+  '/approve': 'check',
+  '/deny': 'close',
+  '/bg': 'layers',
+  '/agents': 'hubot',
+  '/queue': 'list-ordered',
+  '/steer': 'arrow-right',
+  '/goal': 'target',
+  '/subgoal': 'target',
+  '/heartbeat': 'bell',
+  '/refine': 'book',
+  '/review': 'git-pull-request',
+  '/loop': 'watch',
+  '/plan': 'tasklist',
+  '/moa': 'combine',
+  '/egress': 'console',
+  '/context': 'list-tree',
+  '/whoami': 'shield',
+  '/sethome': 'home',
+  '/config': 'settings-gear',
+  '/codex-runtime': 'server',
+  '/personality': 'robot',
+  '/statusbar': 'info',
+  '/battery': 'zap',
+  '/timestamps': 'calendar',
+  '/diff': 'diff',
+  '/verbose': 'output',
+  '/focus': 'fold',
+  '/footer': 'quote',
+  '/approvals': 'check',
+  '/reasoning': 'lightbulb',
+  '/fast': 'play',
+  '/voice': 'unmute',
+  '/busy': 'circle-slash',
+  '/tools': 'tools',
+  '/toolsets': 'tools',
+  '/memory': 'database',
+  '/bundles': 'library',
+  '/learn': 'mortar-board',
+  '/init': 'file',
+  '/suggestions': 'inbox',
+  '/blueprint': 'layout',
+  '/curator': 'gear',
+  '/kanban': 'project',
+  '/plugins': 'plug',
+  '/reload': 'sync',
+  '/reload-mcp': 'sync',
+  '/reload-skills': 'sync',
+  '/skills': 'zap',
+  '/login': 'sign-in',
+  '/subscription': 'credit-card',
+  '/topup': 'credit-card',
+  '/usage': 'graph',
+  '/insights': 'eye',
+  '/platforms': 'globe',
+  '/platform': 'globe',
+  '/copy': 'copy',
+  '/paste': 'clippy',
+  '/image': 'file-media',
+  '/update': 'rocket',
+  '/version': 'gist',
+  '/debug': 'bug',
+  '/palette': 'filter',
+  '/restart': 'debug-restart',
+  '/clear': 'clear-all',
+  '/history': 'comment-discussion'
+}
+
+/**
+ * Codicon for a slash row, by command token (`/resume abc` → the resume
+ * glyph). Aliases resolve to their canonical row. Returns undefined for
+ * skill/extension commands and anything unknown — callers fall back to the
+ * group-kind icon.
+ */
+export function slashCommandCodicon(command: string): string | undefined {
+  const normalized = normalizeCommand(command)
+  // Local aliases first, then the live catalog's canon map (backend aliases
+  // like /tasks → /agents) — the same resolution order the dispatcher uses.
+  const canonical = ALIAS_TO_CANONICAL.get(normalized) ?? catalogCanonical(normalized) ?? normalized
+
+  return DESKTOP_SLASH_COMMAND_ICONS[canonical] ?? DESKTOP_SLASH_COMMAND_ICONS[normalized]
+}
 
 /**
  * Offline fallback for the registry's `desktop=` metadata, dumped from

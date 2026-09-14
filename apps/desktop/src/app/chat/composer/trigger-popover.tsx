@@ -6,12 +6,14 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { slashCommandCodicon } from '@/lib/desktop-slash-commands'
 import { cn } from '@/lib/utils'
 
 import { COMPLETION_DRAWER_BELOW_CLASS, COMPLETION_DRAWER_CLASS, CompletionDrawerEmpty } from './completion-drawer'
 import type { DirectiveScope } from './text-utils'
 
 interface RowMeta {
+  command?: string
   display?: string
   group?: string
   meta?: string
@@ -197,6 +199,12 @@ export function ComposerTriggerPopover({
           const active = index === activeIndex
           const refKind = referenceKind(rowKind(item, isSlash))
 
+          // Per-command glyph for slash rows (accent stays kind-based, so the
+          // row still reads as the chip it becomes). Unknown and skill rows
+          // keep today's group-kind glyph.
+          const codicon =
+            (isSlash && slashCommandCodicon(meta?.command ?? display)) || referenceStyle(refKind).codicon
+
           return (
             <Fragment key={item.id}>
               {showHeader && <div className={cn(GROUP_HEADER_CLASS, isFirstHeader ? 'pt-0.5' : 'pt-2')}>{group}</div>}
@@ -226,7 +234,7 @@ export function ComposerTriggerPopover({
                   ) : (
                     <>
                       <span className="grid size-4 shrink-0 place-items-center text-(--ref-color)" data-ref={refKind}>
-                        <Codicon name={referenceStyle(refKind).codicon} size="0.875rem" />
+                        <Codicon name={codicon} size="0.875rem" />
                       </span>
                       <span className="min-w-0 shrink truncate font-medium leading-5 text-foreground">{display}</span>
                       {description && (

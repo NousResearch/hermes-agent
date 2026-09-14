@@ -247,3 +247,43 @@ confirm applied, refresh, confirm it persisted.
 **Not claimable without a live scheduler:** that an automation *executed*. Hermes' cron
 ticker runs inside the gateway (`hermes_cli/cron.py:70`); there is no standalone daemon. The
 UI will keep distinguishing a declared schedule from a recorded execution.
+
+
+---
+
+## 8. What landed, and what has not
+
+Added after implementation, so this document does not read as a plan that was never checked
+against its result.
+
+### Done, and verified
+
+| # | Item | Verified by |
+|---|---|---|
+| 1 | Channel catalogue is the runtime's 22, read from `plugin.yaml` | a test asserting catalogue == platforms on disk |
+| 2 | Bundle writer: validated, atomic, traversal-proof | unit tests incl. a `../../` escape attempt |
+| 3 | Agent create / update / duplicate / archive / restore / delete | 34 tests in `test_agent_management.py` |
+| 4 | Soul editing that survives a later apply | applies twice around the edit, checks the runtime's own `SOUL.md` |
+| 5 | Soul editor in the Control Centre | driven in a real browser: edit → save → "Applied" → reload → still there |
+| 6 | Schedule editing via `update_job` | adapter test; the objective is deliberately not settable |
+| 7 | Execution history from `list_executions` | exposed at `/agents/<id>/automations` |
+| 8 | Channels screen lists all 22 with credential names | rendered in a browser |
+| 9 | RBAC, audit, CSRF on every new route | a viewer is refused on all seven; intent → committed/failed with the actor |
+
+### Not done
+
+Stated plainly rather than left to be discovered.
+
+- **Agent create/edit forms in the UI.** The routes exist, are tested and are callable; the
+  Control Centre has no form for them yet, so creating an agent today means calling the API.
+  The Soul editor is the pattern the rest should follow.
+- **Schedule editing in the UI.** Same: route done, no form.
+- **Channel connect/disconnect from the UI.** Deliberate, per §5b. Connecting means writing
+  a customer's secret, and `.env` is on `materialize.NEVER_WRITE` so that NOVA cannot hold
+  one. The screen says what each platform needs and where to put it.
+- **Connection testing.** Per §5a there is no uniform Hermes call for it. Credential
+  *presence* is reported and labelled as that.
+- **Logs surface.** Per-profile `agent.log` / `errors.log` are readable but not exposed. The
+  right shape is a bounded tail on an authenticated route; it is not written yet.
+- **Live-proven cron execution.** Unchanged and unchangeable from here: Hermes' ticker runs
+  inside the gateway, so a control plane with no gateway cannot observe an execution.

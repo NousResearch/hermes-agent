@@ -519,14 +519,12 @@ export function ChannelsScreen({
 }: { channels: Loaded<{ declared: boolean; channel_delivery: boolean; channels: Channel[]; catalogue: any[] }> }) {
   return (
     <PanelBody state={channels} empty={(d) =>
+      // Only a runtime that cannot deliver at all is a dead end. "Nothing connected yet" is
+      // not: that is exactly when someone needs to see what they could connect.
       !d.channel_delivery ? {
         title: "This runtime cannot deliver channels",
         detail: "A declared channel would be carried and never delivered, so none are offered.",
-      } : d.channels.length ? null : {
-        title: "No channels connected",
-        detail: `The workforce is reachable only through NOVA itself. Available providers: ${(d.catalogue ?? []).map((c: any) => c.label).join(", ")}.`,
-        hint: "channels.yaml in the tenant bundle",
-      }}>
+      } : null}>
       {(data) => (
         <div className="space-y-4">
           {data.channels.map((channel) => {
@@ -612,9 +610,114 @@ export function ChannelsScreen({
               </GlassCard>
             );
           })}
+
+          <ChannelCatalogue
+            catalogue={data.catalogue ?? []}
+            connected={new Set(data.channels.map((c: any) => c.provider))}
+          />
         </div>
       )}
     </PanelBody>
+  );
+}
+
+/* Every platform this deployment can actually reach.
+ *
+ * Read from the runtime's own plugin manifests, so the list is what Hermes bundles rather
+ * than a shorter one NOVA remembered. Each entry shows the credential *names* its adapter
+ * reads and never a value — NOVA does not hold them, and `.env` is on the materialiser's
+ * never-write list precisely so it cannot.
+ *
+ * There is no Connect button, and that is deliberate rather than unfinished. Connecting
+ * means two things NOVA will not do from a browser: writing a customer's secret, and
+ * claiming a connection works without having opened one. What it can do is say exactly
+ * what a connection needs and where to put it, which is what this does.
+ */
+function ChannelCatalogue({
+  catalogue, connected,
+}: { catalogue: any[]; connected: Set<string> }) {
+  const [open, setOpen] = React.useState<string | null>(null);
+  if (!catalogue.length) return null;
+
+  return (
+    <GlassPanel className="p-5">
+      <SectionHeader
+        title="Available to connect"
+        detail="Every platform this runtime bundles an adapter for."
+        action={<span className="text-ink-faint text-[11.5px]">{catalogue.length} platforms</span>}
+      />
+      <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {catalogue.map((provider: any) => {
+          const live = connected.has(provider.id);
+          const required = (provider.credentials ?? []).filter((c: any) => c.required);
+          const expanded = open === provider.id;
+          return (
+            <li key={provider.id}>
+              <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => setOpen(expanded ? null : provider.id)}
+                className="border-glass-border hover:bg-glass w-full rounded-lg border p-3 text-left transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-ink truncate text-[13px] font-medium">{provider.label}</span>
+                  {live ? <StatusPill state="running">Declared</StatusPill> : null}
+                </div>
+                <p className="text-ink-faint mt-1 font-mono text-[11px]">{provider.id}</p>
+                <p className="text-ink-faint mt-1.5 text-[11.5px]">
+                  {required.length
+                    ? `${plural(required.length, "credential")} required`
+                    : "no credentials declared"}
+                </p>
+
+                {expanded ? (
+                  <div className="border-glass-border mt-2.5 space-y-2 border-t pt-2.5">
+                    {provider.description ? (
+                      <p className="text-ink-muted text-[12px] leading-relaxed">
+                        {provider.description}
+                      </p>
+                    ) : null}
+                    {(provider.credentials ?? []).length ? (
+                      <div>
+                        <p className="text-ink-faint text-[11px] tracking-wide uppercase">
+                          Variables its adapter reads
+                        </p>
+                        <ul className="mt-1.5 space-y-1">
+                          {(provider.credentials ?? []).map((c: any) => (
+                            <li key={c.name} className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-ink font-mono text-[11.5px]">{c.name}</span>
+                              {c.required ? (
+                                <span className="text-waiting text-[11px]">required</span>
+                              ) : (
+                                <span className="text-ink-faint text-[11px]">optional</span>
+                              )}
+                              {c.secret ? (
+                                <span className="text-ink-faint text-[11px]">· secret</span>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                        <p className="text-ink-faint mt-2 text-[11px] leading-relaxed">
+                          Set these in the agent&rsquo;s <span className="font-mono">.env</span>.
+                          NOVA reports the names and never reads or writes the values.
+                        </p>
+                      </div>
+                    ) : null}
+                    {provider.caveat ? (
+                      <p className="text-ink-faint text-[11.5px] leading-relaxed">{provider.caveat}</p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="text-ink-faint mt-3 text-[11.5px] leading-relaxed">
+        Declare a connection in <span className="font-mono">channels.yaml</span> to route
+        conversations to an agent over it.
+      </p>
+    </GlassPanel>
   );
 }
 

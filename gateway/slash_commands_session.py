@@ -127,7 +127,7 @@ class GatewaySessionCommandsMixin:
         return None
 
     @contextlib.asynccontextmanager
-    async def _paused_recovery_admission(self, source):
+    async def _paused_recovery_admission(self, source, *, force=False):
         """Claim the native slot for a paused command, releasing only this exact owner.
 
         The synchronous identity check at release is authoritative across /new's
@@ -144,7 +144,8 @@ class GatewaySessionCommandsMixin:
         if busy is not None:
             yield entry, busy
             return
-        if getattr(entry, "compression_paused", False) is not True:
+        manual = "manual_fallback_index" in (getattr(entry, "metadata", None) or {})
+        if not force and not manual and getattr(entry, "compression_paused", False) is not True:
             yield entry, None
             return
         if self._is_session_running(session_key):
@@ -169,6 +170,68 @@ class GatewaySessionCommandsMixin:
                 self._release_running_agent_state(
                     session_key, run_generation=current.persistent.run_generation,
                 )
+
+    async def _handle_fallback_command(self, event):
+        """Durable, index-only manual selection. Automatic fallback and pauses are independent."""
+        from gateway.run import _manual_fallback_runtime
+        from agent.redact import redact_sensitive_text
+
+        action = event.get_command_args().strip().lower() or "status"
+        if action not in {"status", "on", "off"}:
+            return "Usage: /fallback [on|off|status]"
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
+        if action == "status":
+            entry = await self.async_session_store.lookup_by_session_key(session_key)
+            selected = "manual_fallback_index" in (getattr(entry, "metadata", None) or {})
+            agent = self._cached_agent_for(session_key)
+            automatic = getattr(agent, "_fallback_activated", False) is True
+            label = ""
+            if automatic:
+                label = " (" + " / ".join(
+                    " ".join(redact_sensitive_text(str(getattr(agent, key, "") or ""), force=True, redact_url_credentials=True).split())[:120]
+                    for key in ("model", "provider")
+                ) + ")"
+            return (f"Manual fallback: {'ON' if selected else 'OFF'} (persisted selection)\n"
+                    f"Automatic fallback: {'active' if automatic else 'inactive'}{label}")
+        async with self._paused_recovery_admission(source, force=True) as (entry, refusal):
+            if refusal is not None:
+                return refusal
+            try:
+                if action == "on":
+                    def validate():
+                        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                            from gateway.run import _profile_runtime_scope
+                            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                                return _manual_fallback_runtime(0)
+                        return _manual_fallback_runtime(0)
+
+                    # Terminal policy also reads profile files: enter the whole scope off-loop.
+                    # Settle scope entry, validation and restoration before releasing admission.
+                    # Cancellation never reaches the separate persistence step below.
+                    await self._await_session_policy_commit(asyncio.to_thread(validate))
+                async def commit():
+                    current = entry
+                    if current is None:
+                        if action == "off":
+                            return
+                        current = await self.async_session_store.get_or_create_session(source)
+                    if action == "on":
+                        committed = await self.async_session_store.set_session_metadata(
+                            session_key, "manual_fallback_index", 0, require_primary=True,
+                            expected_session_id=current.session_id,
+                        )
+                    else:
+                        committed = await self.async_session_store.delete_session_metadata(
+                            session_key, "manual_fallback_index", expected_session_id=current.session_id,
+                        )
+                    if not committed:
+                        raise RuntimeError("Session changed before manual selection")
+                    self._evict_cached_agent(session_key)
+                await self._await_session_policy_commit(commit())
+            except Exception:
+                return "Manual fallback could not be changed. Check configuration/storage, or use /fallback off or /new."
+            return f"Manual fallback: {action.upper()}"
 
     # ------------------------------------------------------------------ /new, /reset
 
@@ -213,7 +276,8 @@ class GatewaySessionCommandsMixin:
         async with self._paused_recovery_admission(event.source) as (old_entry, refusal):
             if refusal is not None:
                 return refusal
-            paused = getattr(old_entry, "compression_paused", False) is True
+            paused = (getattr(old_entry, "compression_paused", False) is True
+                      or "manual_fallback_index" in (getattr(old_entry, "metadata", None) or {}))
             return await self._reset_command_with_entry(event, session_key, old_entry, paused)
 
     async def _commit_reset_command(self, event, session_key, old_entry, paused):
@@ -266,6 +330,7 @@ class GatewaySessionCommandsMixin:
         else:
             new_entry = await self.async_session_store.reset_session(session_key)
         return new_entry
+
 
     async def _reset_command_with_entry(self, event, session_key, old_entry, paused):
         """Native /new cleanup and presentation around the routing commit."""
@@ -656,7 +721,7 @@ class GatewaySessionCommandsMixin:
             # Context lives in the server-side thread of the LIVE cached agent; a temporary agent
             # has none (and finally-eviction would destroy the real context).
             return await self._compress_codex_app_server_session(session_key, session_entry.session_id)
-        if not runtime_kwargs.get("api_key"):
+        if not (runtime_kwargs.get("api_key") or runtime_kwargs.get("has_header_auth")):
             return t("gateway.compress.no_provider")
         # FULL transcript (tool results included), like auto-compress: user/assistant-only starves
         # tool-result pruning and can trip the protect-first/last early-return.
@@ -721,7 +786,8 @@ class GatewaySessionCommandsMixin:
         _checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"),
             default=False)
-        tmp_agent = AIAgent(**runtime_kwargs, model=model, max_iterations=4, quiet_mode=True,
+        from gateway.run import _runtime_kwargs_for_agent_constructor
+        tmp_agent = AIAgent(**_runtime_kwargs_for_agent_constructor(runtime_kwargs), model=model, max_iterations=4, quiet_mode=True,
                             skip_memory=not _checkpoint_required, enabled_toolsets=["memory"],
                             session_id=session_id,
                             session_db=getattr(self._session_db, "_db", self._session_db))
@@ -1039,7 +1105,9 @@ class GatewaySessionCommandsMixin:
             return t("gateway.resume.already_on", name=name)
         if getattr(current_entry, "compression_paused", False) is True:
             async def commit_switch():
-                entry = await self.async_session_store.switch_session(session_key, target_id)
+                entry = await self.async_session_store.switch_session(
+                    session_key, target_id, clear_model_override=True,
+                )
                 if entry is not None:
                     self._clear_conversation_scope(session_key, reason="resume")
                     self._evict_cached_agent(session_key)
@@ -1057,7 +1125,9 @@ class GatewaySessionCommandsMixin:
                 return self._compression_pause_notice(persistence_failed=True)
         else:
             self._release_running_agent_state(session_key)
-            new_entry = await self.async_session_store.switch_session(session_key, target_id)
+            new_entry = await self.async_session_store.switch_session(
+                session_key, target_id, clear_model_override=True,
+            )
         if not new_entry:
             return t("gateway.resume.switch_failed")
         # Conversation boundary: all conversation-scoped state + security state in one funnel call.
@@ -1065,10 +1135,6 @@ class GatewaySessionCommandsMixin:
         # #10702, one-turn restores, model notes, last-resolved cache #58403, /queue overflow) + security
         # state in one funnel call. See _CONVERSATION_SCOPED_STATE in gateway/run.py.
         self._clear_conversation_scope(session_key, reason="resume")
-        # switch_session keeps the route's persisted /model pin (a re-pin is not a boundary,
-        # #119864); /resume IS one, and the funnel above clears only in-memory state — without this
-        # the next turn's _rehydrate_session_model_override resurrects the pin it just cleared.
-        await self.async_session_store.set_model_override(session_key, None)
         # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)

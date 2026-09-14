@@ -475,7 +475,8 @@ async def test_goal_hook_is_suppressed_but_loop_bookkeeping_runs(env, authority)
 async def test_terminal_exhaustion_does_not_drain_pending_input(env, deferred):
     r = env.runner
     result = None if deferred is None else {"compression_exhausted": True, "compression_deferred": deferred}
-    ctx = SimpleNamespace(result_holder=[result], streaming_tts_consumer_holder=[None], stream_consumer_holder=[None])
+    ctx = SimpleNamespace(result_holder=[result], streaming_tts_consumer_holder=[None],
+                          stream_consumer_holder=[None], mute_notification_reply=False)
     disp = SimpleNamespace(_native_slack_task_cards=False, needs_progress_queue=False, log_mode_enabled=False)
     r._get_proxy_url = lambda: None
     r._run_agent_display_settings = lambda source: disp
@@ -1008,6 +1009,13 @@ async def test_native_recovery_owns_admission_through_cancelled_commit(
 ):
     e = native_env
     mark(e)
+    pin = {"model": "previous-model", "provider": "custom",
+           "base_url": "https://previous-provider.invalid/v1"}
+    if command in {"resume", "sessions"}:
+        e.store.set_model_override(e.key, pin)
+        e.runner._session_state(e.key).conversation.model_override = dict(pin)
+        persisted = reload_entry(e)
+        assert persisted is not None and persisted.model_override == pin
     text = native_recovery_command(e, monkeypatch, command)
     entered, release = threading.Event(), threading.Event()
     obj, attr = ((e.db, "replace_gateway_routing_entries") if boundary == "primary"
@@ -1046,7 +1054,23 @@ async def test_native_recovery_owns_admission_through_cancelled_commit(
     assert task.cancelled()
     assert not e.runner._is_session_running(e.key)
     assert lease.released
-    assert reload_entry(e).compression_paused is (fail and boundary == "primary")
+    persisted = reload_entry(e)
+    assert persisted is not None
+    assert persisted.compression_paused is (fail and boundary == "primary")
+    if command in {"resume", "sessions"}:
+        if fail and boundary == "primary":
+            assert persisted.session_id == e.entry.session_id
+            assert persisted.model_override == pin
+            assert e.runner._session_model_override(e.key) == pin
+        else:
+            assert persisted.session_id == "authorized-target"
+            assert persisted.model_override is None
+            assert e.runner._session_model_override(e.key) is None
+            # The next turn must not resurrect the previous conversation's billing route.
+            with patch("gateway.run._resolve_runtime_agent_kwargs_for_provider") as resolve:
+                e.runner._rehydrate_session_model_override(e.key)
+            resolve.assert_not_called()
+            assert e.runner._session_model_override(e.key) is None
     assert e.db.get_messages(e.entry.session_id), "archived history lost"
 
 

@@ -1143,6 +1143,22 @@ class SessionStore(
                 entry._compression_pause_pending = False
             return True
 
+    def delete_session_metadata(self, session_key: str, key: str, *, expected_session_id: str) -> bool:
+        """Strict primary deletion; publish only after commit, preserving the activity clock."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            data, generation = self._snapshot_routing_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.session_id != expected_session_id:
+                return False
+            if key not in entry.metadata:
+                return True
+            metadata = {k: v for k, v in entry.metadata.items() if k != key}
+            data[session_key] = replace(entry, metadata=metadata).to_dict()
+            self._persist_routing_data(data, generation, require_primary=True)
+            entry.metadata = metadata
+            return True
+
     def commit_manual_compression(
         self, session_key: str, expected_session_id: str, new_session_id: str,
     ) -> bool:
@@ -1226,7 +1242,7 @@ class SessionStore(
             origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
             transport_profile=old_entry.transport_profile, **fields,
         )
-        if require_primary or old_entry.compression_paused:
+        if require_primary or old_entry.compression_paused or "manual_fallback_index" in old_entry.metadata:
             data, generation = self._snapshot_routing_locked()
             if self._entries.get(session_key) is not old_entry:
                 raise RuntimeError("Session route changed before replacement")
@@ -1294,6 +1310,7 @@ class SessionStore(
         self, session_key: str, target_session_id: str, *, require_primary: bool = False,
         expected_session_id: Optional[str] = None,
         telegram_topic_binding: Optional[Dict[str, str]] = None,
+        clear_model_override: bool = False,
     ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
         reopens the target so resume matches the CLI. Explicit topic restores also commit
@@ -1302,6 +1319,8 @@ class SessionStore(
         ``expected_session_id`` makes the repoint a compare-and-swap: ``None`` is returned when
         the key no longer points at that session, so a caller that resolved against a snapshot
         across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
+        ``clear_model_override`` drops the /model pin in the same route write when switching
+        to a different session at a conversation boundary; other repins retain it by default.
         """
         if telegram_topic_binding is not None:
             self._telegram_topic_restore_db(telegram_topic_binding["_db_path"])
@@ -1334,7 +1353,8 @@ class SessionStore(
                 return old_entry
             new_entry = self._replace_route_locked(
                 session_key, old_entry, target_session_id, _now(),
-                display_name=old_entry.display_name, model_override=old_entry.model_override,
+                display_name=old_entry.display_name,
+                model_override=None if clear_model_override else old_entry.model_override,
                 require_primary=require_primary, telegram_topic_binding=telegram_topic_binding,
             )
 

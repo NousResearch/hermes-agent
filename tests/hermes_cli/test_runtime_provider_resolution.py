@@ -118,7 +118,7 @@ def test_snapshot_empty_is_authoritative_through_pool_and_terminal(pooled, monke
     if pooled:
         entry = SimpleNamespace(runtime_api_key="pool-key", base_url="https://openrouter.ai/api/v1", source="manual")
         monkeypatch.setattr(rp, "load_pool", lambda name: SimpleNamespace(
-            provider="openrouter", has_credentials=lambda: True, select=lambda: entry))
+            provider="openrouter", has_credentials=lambda: True, select=lambda model=None: entry))
     result = rp.resolve_runtime_provider(requested="openrouter", config={})
     assert result["api_mode"] == "chat_completions"
     assert result["base_url"] == "https://openrouter.ai/api/v1"

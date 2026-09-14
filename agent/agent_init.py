@@ -1064,7 +1064,7 @@ def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
     ]
 
 
-def _init_fallback_chain(agent, fallback_model):
+def _init_fallback_chain(agent, fallback_model, fallback_service_tier_override=None):
     # Stable pool-entry identity: OAuth refreshes can replace the token before a failed
     # request is recovered, so the key value alone can't attribute the failure.
     from agent.agent_runtime_helpers import sync_credential_pool_entry_id
@@ -1077,6 +1077,10 @@ def _init_fallback_chain(agent, fallback_model):
     agent._active_fallback_service_tier_override = getattr(
         agent, "_active_fallback_service_tier_override", None,
     )
+    if not agent._fallback_activated:
+        activate_fallback_service_tier_override(
+            agent, {"service_tier_override": fallback_service_tier_override}, log=logger,
+        )
     # Legacy attribute kept for backward compat (tests, external callers)
     agent._fallback_model = agent._fallback_chain[0] if agent._fallback_chain else None
     chain = agent._fallback_chain
@@ -2386,6 +2390,7 @@ def init_agent(
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    fallback_service_tier_override: Optional[str] = None,
 ):
     _install_safe_stdio()
 
@@ -2452,7 +2457,7 @@ def init_agent(
     _setup_logging(agent)
     _set_defaults(agent, _STREAM_STATE)
     _build_client(agent, api_key, base_url, fallback_model)
-    _init_fallback_chain(agent, fallback_model)
+    _init_fallback_chain(agent, fallback_model, fallback_service_tier_override)
     _load_tools(agent, enabled_toolsets, disabled_toolsets)
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,

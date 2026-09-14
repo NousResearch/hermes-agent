@@ -1727,3 +1727,21 @@ class TestMultiplexBackgroundScope:
                 t.join(timeout=5)
         assert created == ["p1-secret"]
         assert "Daemon started successfully" in (home / "logs" / "hindsight-embed.log").read_text()
+    def test_daemon_start_logs_warning_on_stale_pid_pg0(self, scoped_embedded, caplog):
+        """Stale PID in pg0 after reboot triggers a clear actionable warning (issue #110838)."""
+        created, home = scoped_embedded
+        p = HindsightMemoryProvider()
+        p._config = {"profile": "hermes"}
+        def _failing_ensure_started():
+            raise RuntimeError(
+                "Failed to start embedded PostgreSQL after 5 attempts. Last error: Error: Instance already running (pid: 1020)"
+            )
+        mock_client = MagicMock()
+        mock_client._ensure_started.side_effect = _failing_ensure_started
+        p._get_client = lambda: mock_client
+        with caplog.at_level("WARNING", logger="plugins.memory.hindsight"):
+            p._daemon_start_worker()
+
+        assert any("PostgreSQL reports 'instance already running'" in r.message for r in caplog.records)
+        assert any("vectorize-io/pg0#37" in r.message for r in caplog.records)
+        assert "Daemon startup failed" in (home / "logs" / "hindsight-embed.log").read_text()

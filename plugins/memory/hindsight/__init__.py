@@ -858,7 +858,21 @@ class HindsightMemoryProvider(MemoryProvider):
             client._ensure_started()
             _log("\n=== Daemon started successfully ===\n")
         except Exception as e:
+            err_msg = f"{e}\n{traceback.format_exc()}"
             _log(f"\n=== Daemon startup failed: {e} ===\n" + traceback.format_exc())
+            # Surface actionable warnings for known failure modes instead of failing silently (issue #110838).
+            err_lower = err_msg.lower()
+            if "failed to start embedded postgresql" in err_lower or "instance already running" in err_lower:
+                msg = (
+                    "Hindsight embedded daemon failed to start: PostgreSQL reports 'instance already running'. "
+                    "This often occurs after a reboot due to a stale PID in pg0 (vectorize-io/pg0#37). "
+                    "Verify with 'lsof -nP -iTCP:5432 -sTCP:LISTEN' and check ~/.pg0/instances/hindsight-embed-*/data/postmaster.pid."
+                )
+                logger.warning(msg)
+                with contextlib.suppress(Exception):
+                    print(f"  ⚠ {msg}", file=sys.stderr, flush=True)
+            else:
+                logger.warning("Hindsight embedded daemon failed to start (%s); check %s for details.", e, log_path)
 
     def system_prompt_block(self) -> str:
         mode = self._memory_mode if self._memory_mode in _SYSTEM_PROMPT_TAILS else "hybrid"

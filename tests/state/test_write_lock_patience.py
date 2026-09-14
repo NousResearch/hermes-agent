@@ -175,3 +175,29 @@ class TestOpenLockPatience:
             SessionDB(db_path=bad_path)
         # Must fail well before a full patience window (loose bound).
         assert time.monotonic() - t0 < 15.0
+
+
+class TestSlowTxnHoldWarn:
+    def test_long_write_txn_is_named_in_warning(self, db, monkeypatch, caplog):
+        """A write txn holding the lock > _SLOW_TXN_HOLD_WARN_S must log the culprit
+        function name, so the next contention storm has a named cause."""
+        import time as _time
+        monkeypatch.setattr(SessionDB, "_SLOW_TXN_HOLD_WARN_S", 0.05)
+
+        def _slow_set_meta(conn):
+            _time.sleep(0.15)
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES ('k','v') "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+            )
+
+        try:
+            db.meta_table_name
+        except Exception:
+            pass
+        with caplog.at_level("WARNING"):
+            db._execute_write(_slow_set_meta)
+        assert any(
+            "held the lock" in r.message and "_slow_set_meta" in r.message
+            for r in caplog.records
+        )

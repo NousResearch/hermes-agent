@@ -374,6 +374,11 @@ class SessionDB(
     _WRITE_RETRY_SLOW_MIN_S, _WRITE_RETRY_SLOW_MAX_S = 0.250, 1.000
     # PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Hold-time observability: a write txn holding the lock this long starves sibling processes'
+    # lease heartbeats (their patience budget is 20s). Warn so the culprit FUNCTION is named in
+    # the log instead of only the downstream 'database is locked' victims (2026-09-14 storm:
+    # 10 timeouts, zero culprit rows).
+    _SLOW_TXN_HOLD_WARN_S = 5.0
     # Bounded FTS ``'merge'`` (ms of lock each) instead of ``'optimize'`` (9-18s per index on a 10GB
     # DB, longer than a writer's patience); up to _COMMANDS_PER_PASS per index, stopping on no-progress.
     _FTS_MERGE_EVERY_N_WRITES, _FTS_MERGE_MAX_PAGES_PER_INDEX, _FTS_MERGE_COMMANDS_PER_PASS = 1000, 500, 4
@@ -835,6 +840,7 @@ class SessionDB(
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
+                    _txn_t0 = time.monotonic()
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
                         fn_started = True
@@ -846,6 +852,14 @@ class SessionDB(
                         except Exception:
                             pass
                         raise
+                    _txn_hold_s = time.monotonic() - _txn_t0
+                if _txn_hold_s > self._SLOW_TXN_HOLD_WARN_S:
+                    logger.warning(
+                        "state.db write txn held the lock %.1fs (>%ss budget) via %s — "
+                        "siblings' lease heartbeats are starved by holds like this",
+                        _txn_hold_s, self._SLOW_TXN_HOLD_WARN_S,
+                        getattr(fn, "__qualname__", getattr(fn, "__name__", "<fn>")),
+                    )
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:

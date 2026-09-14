@@ -304,6 +304,7 @@ from gateway.config import Platform, PlatformConfig, discord_channel_id_from_lin
 
 from gateway.platforms.helpers import (
     MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets, is_discord_channel_obfuscated,
+    numbered_clarify_choices,
 )
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
@@ -5759,6 +5760,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             clean_choices = [s for s in (_flatten_choice(c) for c in (choices or [])) if s][:24]
             if clean_choices:
                 hint = t("platform.discord.prompt.clarify_hint_buttons")
+                # Button labels clip past ~40 columns on mobile with no tooltip (#78115): when
+                # any option is that long, the numbered full text goes in the content too.
+                numbered = numbered_clarify_choices(clean_choices, max_label_cols=40)
+                if numbered:
+                    hint = f"{numbered[:1000]}\n\n{hint}"
                 view = ClarifyChoiceView(
                     choices=clean_choices, clarify_id=clarify_id,
                     allowed_user_ids=self._allowed_user_ids,

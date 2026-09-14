@@ -45,7 +45,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
@@ -5417,8 +5417,15 @@ class SlackAdapter(BasePlatformAdapter):
         def _build() -> tuple[str, list]:
             # Escape mrkdwn control chars so the question renders literally;
             # budget against the 3000-char section cap.
-            q = (question or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            body = f"❓ {q}"
+            def _esc(text: str) -> str:
+                return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            body = f"❓ {_esc(question or '')}"
+            # Slack clips button labels well under its 75-char API cap (narrower still on
+            # mobile) with no tooltip, so a long option is unreadable as a label (#78115):
+            # render the full numbered list in the body and label the buttons positionally.
+            numbered = numbered_clarify_choices(choices, max_label_cols=48, escape=_esc)
+            if numbered:
+                body = f"{body}\n\n{numbered}"
             budget = 3000 - len("...")
             if len(body) > budget:
                 body = body[:budget] + "..."
@@ -5426,7 +5433,7 @@ class SlackAdapter(BasePlatformAdapter):
             # chunk anyway so larger lists degrade gracefully instead of 400ing.
             elements = []
             for idx, choice in enumerate(choices):
-                label = str(choice).strip() or t("platform.slack.clarify.option_n", n=str(idx + 1))
+                label = str(idx + 1) if numbered else (str(choice).strip() or t("platform.slack.clarify.option_n", n=str(idx + 1)))
                 elements.append(
                     self._button(
                         label[:75], f"hermes_clarify_choice_{idx}",

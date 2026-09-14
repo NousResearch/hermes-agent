@@ -31,6 +31,7 @@ _SIX_ASPECTS = ("21:9", "16:9", "4:3", "1:1", "3:4", "9:16")
 # MiniMax H3 uses capitalized/2K-style resolution enums; aliases map the tool's usual values. Max tops out at 768P.
 _H3_ALIASES = {"480p": "768P", "540p": "768P", "720p": "768P", "768p": "768P", "1080p": "2K", "2k": "2K", "4k": "4K", "2160p": "4K"}
 _H3_MAX_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "768P", "2k": "768P", "4k": "768P", "2160p": "768P"}
+_H3_MAX_TURBO_ALIASES = {"480p": "480P", "540p": "480P", "720p": "768P", "768p": "768P", "1080p": "1080P", "2k": "1080P", "4k": "1080P", "2160p": "1080P"}
 
 FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     # ─── Cheap / fast tier ─────────────────────────────────────────────
@@ -59,6 +60,13 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
                               "adherence/aesthetics, 768p in seconds, 5-15s.", "minimax/h3-max/text-to-video", "minimax/h3-max/image-to-video",
                               duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=_SIX_ASPECTS, resolutions=("480P", "768P"),
                               resolution_aliases=_H3_MAX_ALIASES, durations=(5, 15), static_payload={"prompt_expansion_mode": "balanced"}, audio_native=True, seed=True),
+    # Same schema shape as Max (required prompt_expansion_mode, no i2v aspect_ratio) but adds a 1080P tier and an end_image_url
+    # the tool surface doesn't expose; throughput-tuned so it's the fastest premium H3 tier ($0.025-0.08/s list).
+    "minimax-h3-max-turbo": _family("MiniMax H3 Max Turbo (fal post-train)", "~5-20s", "premium", "fal's throughput-tuned H3 Max variant. Near-Max "
+                                    "quality at a fraction of the price/latency, 480P-1080P, 5-15s.", "minimax/h3-max-turbo/text-to-video",
+                                    "minimax/h3-max-turbo/image-to-video", duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=_SIX_ASPECTS,
+                                    resolutions=("480P", "768P", "1080P"), resolution_aliases=_H3_MAX_TURBO_ALIASES, durations=(5, 15),
+                                    static_payload={"prompt_expansion_mode": "balanced"}, audio_native=True, seed=True),
     "flux-3": _family("FLUX 3 (via FAL)", "~60-120s", "premium", "Black Forest Labs frontier video. Native audio, 5-20s, 8 aspect ratios.",
                       "blackforestlabs/flux-3/text-to-video", "blackforestlabs/flux-3/image-to-video", duration_int=True,  # enum "auto" | 5..20 ints
                       aspect_ratios=("21:9", "2:1", "16:9", "4:3", "1:1", "3:4", "9:16"), resolutions=("720p", "1080p"), durations=(5, 20), audio=True),
@@ -221,9 +229,13 @@ def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
     try:
         return _get_managed_fal_video_client(managed_gateway).submit(endpoint, arguments=arguments, headers=headers)
     except Exception as exc:
-        from tools.fal_common import _extract_http_status
+        from tools.fal_common import _extract_http_status, _managed_fal_billing_error
         status = _extract_http_status(exc)
         if status is not None and 400 <= status < 500:
+            billing = _managed_fal_billing_error(exc, "endpoint")
+            if billing is not None:
+                raise ValueError(
+                    f"Nous Subscription gateway rejected endpoint '{endpoint}' (HTTP {status}): {billing}") from exc
             raise ValueError(f"Nous Subscription gateway rejected endpoint '{endpoint}' (HTTP {status}). This model may not yet be enabled "
                              f"on the Nous Portal's FAL proxy. Either:\n  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
                              f"  • Pick a different model via `hermes tools` → Video Generation.") from exc

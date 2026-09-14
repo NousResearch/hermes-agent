@@ -1,3 +1,5 @@
+import type { ModelOptionProvider } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -18,15 +20,14 @@ import {
 } from '@/hermes'
 import type {
   AuxiliaryModelsResponse,
+  AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
-  ModelOptionProvider,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -144,6 +145,32 @@ export const moaConfigComplete = (config: MoaConfigResponse): boolean =>
       preset.reference_models.every(moaSlotComplete) &&
       moaSlotComplete(preset.aggregator)
   )
+
+// Persistent mismatch: any aux slot pinned to a provider different from the
+// current main, regardless of whether the user just switched. Catches the
+// "I pinned aux months ago and forgot, now it bills a dead provider" case.
+// A pin on a private/LAN endpoint (per-task base_url, e.g. a home Ollama box)
+// never bills a provider, so the backend's `local_endpoint` verdict exempts it.
+export function staleAuxAssignments(
+  tasks: readonly AuxiliaryTaskAssignment[],
+  mainProvider: string
+): StaleAuxAssignment[] {
+  const main = mainProvider.toLowerCase()
+
+  if (!main) {
+    return []
+  }
+
+  return tasks
+    .filter(entry => {
+      const p = (entry.provider ?? '').toLowerCase()
+
+      // 'main' is a backend alias meaning "follow the current main provider"
+      // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
+      return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
+    })
+    .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
+}
 
 interface StaleAuxWarningProps {
   applying: boolean
@@ -500,24 +527,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
 
   const auxiliaryTaskLabel = useCallback((key: string) => m.tasks[key]?.label ?? key, [m.tasks])
 
-  // Persistent mismatch: any aux slot pinned to a provider different from the
-  // current main, regardless of whether the user just switched. Catches the
-  // "I pinned aux months ago and forgot, now it bills a dead provider" case.
-  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(() => {
-    const mainProvider = (mainModel?.provider ?? '').toLowerCase()
-
-    if (!mainProvider || !auxiliary) {
-      return []
-    }
-
-    return auxiliary.tasks
-      .filter(entry => {
-        const p = (entry.provider ?? '').toLowerCase()
-
-        return p && p !== 'auto' && p !== mainProvider
-      })
-      .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
-  }, [auxiliary, mainModel])
+  const persistentStaleAux = useMemo<StaleAuxAssignment[]>(
+    () => staleAuxAssignments(auxiliary?.tasks ?? [], mainModel?.provider ?? ''),
+    [auxiliary, mainModel]
+  )
 
   // Capabilities of the APPLIED main model — gates the profile-default
   // reasoning/speed controls the same way the composer picker gates per-model
@@ -1069,6 +1082,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   description={
                     <span className="font-mono text-[0.68rem]">
                       {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                      {!isAuto && current.base_url && (
+                        <span className="text-muted-foreground"> · {current.base_url}</span>
+                      )}
                     </span>
                   }
                   title={
@@ -1085,7 +1101,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
+          <SectionHeading icon={Cpu} title={m.moaTitle} />
           <p className="mb-2 text-xs text-muted-foreground">
             Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
             acting model.
@@ -1093,7 +1109,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
+                <SelectValue placeholder={m.moaPreset} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
@@ -1354,7 +1370,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title="Aggregator"
+              title={m.moaAggregator}
             />
           </div>
         </section>

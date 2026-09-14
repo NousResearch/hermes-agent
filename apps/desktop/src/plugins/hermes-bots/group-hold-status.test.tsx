@@ -7,7 +7,8 @@ import type { GroupMember } from './types'
 const { host } = vi.hoisted(() => ({ host: {} as Record<string, unknown> }))
 
 vi.mock('@hermes/plugin-sdk', async () => {
-  const { pluginSdkMock } = await import('./group-test-utils')
+  const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
+  Object.assign(host, createGroupGateway().host)
   const base = await pluginSdkMock(host)
 
   return {
@@ -161,6 +162,6 @@ describe('durable group holds', () => {
 
     render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
 
-    expect(screen.getByRole('status').textContent).toContain('Paused: Research')
+    expect((await screen.findByRole('status')).textContent).toContain('Paused: Research')
   })
 })

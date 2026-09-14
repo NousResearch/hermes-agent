@@ -22,6 +22,6 @@ describe('preview target detection', () => {
     expect(stripPreviewTargets('ready\n/tmp/mycelium-bunnies.html\nopen it')).toBe(
       'ready\n/tmp/mycelium-bunnies.html\nopen it'
     )
-    expect(stripPreviewTargets('[Preview: demo.html](#preview:%2Ftmp%2Fdemo.html)\nopen it')).toBe('open it')
+    expect(stripPreviewTargets('[Preview: demo.html](#preview:%2Ftmp%2Fdemo.html)\nopen it')).toBe('\nopen it')
   })
 })

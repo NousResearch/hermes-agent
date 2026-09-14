@@ -131,5 +131,5 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
             cmd, 0, stdout=str(repo_a), stderr=""
         ),
     )
-    monkeypatch.setattr("hermes_state.SessionDB", lambda: real_db(db_path=state_db))
+    monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
     assert _resolve_last_session("cli") == "repo_a"

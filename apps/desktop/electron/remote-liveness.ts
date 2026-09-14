@@ -1,9 +1,13 @@
+import { isMissingHealthEndpointError } from './backend-health'
+
 export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
 // Dispatch is synchronous user intent: a cached descriptor must prove its
-// forwarded endpoint is alive before it can be returned. Keep this probe much
-// shorter than the background liveness budget so a dead tunnel reconnects
-// promptly instead of making the click feel hung.
-export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = 2_500
+// forwarded endpoint is alive before it can be returned. Probe cheap
+// /api/health — not /api/status, whose cold payload (gateway probe, topology,
+// state.db session count) on a fresh SSH forward routinely runs seconds — and
+// reuse the background liveness budget so a quiet-box cold-start (~6-8s) can
+// finish instead of failing the probe and kicking off a reconnect storm.
+export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = REMOTE_LIVENESS_TIMEOUT_MS
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -100,9 +104,22 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       return reconnect()
     }
 
-    await probe(connection, '/api/status', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
-    })
+    try {
+      await probe(connection, '/api/health', {
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      })
+    } catch (healthError) {
+      // A remote that predates /api/health would otherwise 404 every dispatch,
+      // retire the tunnel and reconnect forever; the boot probe falls back the
+      // same way (backend-health.ts).
+      if (!isMissingHealthEndpointError(healthError)) {
+        throw healthError
+      }
+
+      await probe(connection, '/api/status', {
+        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      })
+    }
   } catch (error) {
     if (currentConnectionPromise() === connectionPromise) {
       await retire(error)
@@ -189,10 +206,9 @@ export interface RevalidatePooledRemoteBackendsOptions<TConnection extends Remot
 /**
  * Probe pooled REMOTE descriptors and drop the dead ones.
  *
- * A pooled entry backed by a remote host has no child process, so the 'exit'
- * handler that clears a dead local backend never fires, and the renderer's
- * keepalive touch keeps the idle reaper off it. Without this the pool serves a
- * descriptor for an unreachable host indefinitely.
+ * A pooled entry is a cached descriptor with no child process, so nothing
+ * signals its host's death. Without this the pool serves a descriptor for an
+ * unreachable host indefinitely.
  *
  * Entries share the primary's failure policy, keyed per base URL, so a profile
  * pointing at the same host as another does not burn the streak twice as fast.
@@ -256,7 +272,7 @@ export interface RevalidateSuspectPooledRemoteBackendsOptions<TConnection extend
  *
  * After a sleep/wake or network restore every pooled SSH tunnel is suspect:
  * the SSH master died with the network, but the local forward's descriptor is
- * still cached and the renderer keepalive keeps the idle reaper off it. Unlike
+ * still cached. Unlike
  * the background policy in revalidatePooledRemoteBackends — which tolerates a
  * failure streak because transient blips are common in steady state — a
  * suspect descriptor that fails ONE bounded probe after resume is dead: retire

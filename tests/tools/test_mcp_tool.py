@@ -315,6 +315,114 @@ class TestMCPStatus:
         assert statuses["disabled"]["status"] == "disabled"
         assert statuses["disabled"]["disabled"] is True
 
+    def test_status_ignores_a_runtime_owned_by_another_profile(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_config as _mcp_config
+        from tools import mcp_tool_discovery as _mcp_discovery
+
+        monkeypatch.setattr(
+            _mcp_config, "_load_mcp_config",
+            lambda: {"shared": {"command": "shared-mcp"}},
+        )
+        monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: "profile:work")
+        foreign_server = MagicMock(spec=mcp_tool.MCPServerTask)
+        foreign_server.session = object()
+        foreign_server._registered_tool_names = ["secret_tool"]
+        foreign_server._tools = []
+        foreign_server._sampling = None
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_scopes = dict(mcp_tool._server_scope_keys)
+            mcp_tool._servers["shared"] = foreign_server
+            mcp_tool._server_scope_keys["shared"] = "profile:other"
+
+        try:
+            [status] = _mcp_discovery.get_mcp_status()
+            with mcp_tool._lock:
+                mcp_tool._server_scope_keys.pop("shared", None)
+            [unscoped_status] = _mcp_discovery.get_mcp_status()
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_scope_keys.clear()
+                mcp_tool._server_scope_keys.update(saved_scopes)
+
+        assert status["status"] == "configured"
+        assert status["tools"] == 0
+        assert unscoped_status["status"] == "configured"
+
+
+    def test_scoped_shutdown_clears_only_its_connection_status(self, monkeypatch):
+        import tools.mcp_tool as mcp_tool
+        from tools import mcp_tool_lifecycle, mcp_tool_loop, mcp_tool_discovery
+
+        monkeypatch.setattr(mcp_tool_loop, "_stop_mcp_loop", lambda **_kwargs: None)
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_scopes = dict(mcp_tool._server_scope_keys)
+            saved_connecting = set(mcp_tool._server_connecting)
+            saved_errors = dict(mcp_tool._server_connect_errors)
+            saved_retry_after = dict(mcp_tool._server_connect_retry_after)
+            saved_failures = dict(mcp_tool._server_connect_failures)
+            mcp_tool._servers.clear()
+            mcp_tool._server_scope_keys.clear()
+            mcp_tool._server_scope_keys.update({
+                "work-connecting": "profile:work",
+                "work-failed": "profile:work",
+                "other-failed": "profile:other",
+            })
+            mcp_tool._server_connecting.clear()
+            mcp_tool._server_connecting.add("work-connecting")
+            mcp_tool._server_connect_errors.clear()
+            mcp_tool._server_connect_errors.update({
+                "work-failed": "work error",
+                "other-failed": "other error",
+            })
+            mcp_tool._server_connect_retry_after.clear()
+            mcp_tool._server_connect_retry_after.update({
+                "work-failed": 1.0,
+                "other-failed": 2.0,
+            })
+            mcp_tool._server_connect_failures.clear()
+            mcp_tool._server_connect_failures.update({
+                "work-failed": 1,
+                "other-failed": 2,
+            })
+
+        try:
+            mcp_tool_lifecycle.shutdown_mcp_servers(scope="profile:work")
+
+            with mcp_tool._lock:
+                assert mcp_tool._server_connecting == set()
+                assert mcp_tool._server_connect_errors == {
+                    "other-failed": "other error"
+                }
+                assert mcp_tool._server_scope_keys == {
+                    "other-failed": "profile:other"
+                }
+                assert mcp_tool._server_connect_retry_after == {
+                    "other-failed": 2.0
+                }
+                assert mcp_tool._server_connect_failures == {
+                    "other-failed": 2
+                }
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_scope_keys.clear()
+                mcp_tool._server_scope_keys.update(saved_scopes)
+                mcp_tool._server_connecting.clear()
+                mcp_tool._server_connecting.update(saved_connecting)
+                mcp_tool._server_connect_errors.clear()
+                mcp_tool._server_connect_errors.update(saved_errors)
+                mcp_tool._server_connect_retry_after.clear()
+                mcp_tool._server_connect_retry_after.update(saved_retry_after)
+                mcp_tool._server_connect_failures.clear()
+                mcp_tool._server_connect_failures.update(saved_failures)
+
+
 
 class TestLifecycleConfig:
     def test_get_lifecycle_seconds_accepts_top_level_and_nested_values(self):
@@ -1283,6 +1391,29 @@ class TestBuildSafeEnv:
         assert result["ALPACA_API_KEY"] == "from-bws-key"
         assert result["NOTION_TOKEN"] == "from-op"
         assert "UNTRACKED_SECRET_KEY" not in result
+
+    def test_secret_source_vars_resolve_through_active_profile_scope(self, monkeypatch):
+        """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
+        never the launch profile's os.environ copy; a name the profile lacks is omitted."""
+        from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+        from hermes_cli import env_loader
+        from tools.mcp_tool_config import _build_safe_env
+
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
+        fake_env = {"PATH": "/usr/bin", "GITHUB_TOKEN": "default-profile", "NOTION_TOKEN": "default-notion"}
+        set_multiplex_active(True)
+        token = set_secret_scope({"GITHUB_TOKEN": "profile-b"})
+        try:
+            with patch.dict("os.environ", fake_env, clear=True):
+                result = _build_safe_env(None)
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+        assert result["PATH"] == "/usr/bin"
+        assert result["GITHUB_TOKEN"] == "profile-b"
+        assert "NOTION_TOKEN" not in result
 
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""
@@ -2871,7 +3002,7 @@ class TestMCPDiscoveryCrossProcessLock:
         if sys.platform == "win32":
             import portalocker
 
-            self._lock_exclusive(fh)
+            portalocker.lock(fh, portalocker.LOCK_EX | portalocker.LOCK_NB)
         else:
             import fcntl
 

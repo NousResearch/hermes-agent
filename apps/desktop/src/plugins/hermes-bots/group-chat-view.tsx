@@ -24,6 +24,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  gatewayActivationEpoch,
   host,
   Input,
   queryClient,
@@ -38,6 +39,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import type { GroupExecutionMode } from './canonical-group-capabilities'
+import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
+import { CanonicalGroupWorkspace } from './canonical-group-workspace'
+import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -63,7 +69,6 @@ import {
   $groupChatWorkspace,
   $groupClarify,
   $groupNeedsYou,
-  groupSpeakerLabel,
   groupThreadOf,
   scheduleGroupChatServerSync,
   setGroupChatImage,
@@ -94,9 +99,9 @@ import {
 } from './group-panes'
 import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
-import { clearGroupClarify } from './group-turns'
+import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
-import { displayName, slugify, stripPreviewMarkdown } from './labels'
+import { displayName, slugify } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
@@ -238,7 +243,7 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
  *  rename, so even a member whose sid is later lost falls back to the same
  *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
  *  Returns the new name, or null when the target name is taken. */
-async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
+export async function renameGroupChat(oldName: string, newName: string, members: GroupMember[] | null | undefined) {
   const next = String(newName || '')
     .trim()
     .slice(0, 64)
@@ -299,9 +304,9 @@ async function renameGroupChat(oldName: string, newName: string, members: GroupM
     $groupNeedsYou.set(needs)
   }
 
-  // Mirrored clarify cards key by group name; drop the old room's — the
-  // next poll re-mirrors any still-blocking question under the new name.
-  clearGroupClarify(oldName)
+  // Mirrored clarify cards key by group name; a pending prompt's attention
+  // must follow the room to its new name, not disappear.
+  renameGroupClarify(oldName, next)
 
   // Local memberships: swap the name inside each member's canonical groups
   // list (syncs cross-machine via ui_meta). Remote members' seating lives in
@@ -449,13 +454,6 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
 // work. Member turns are scoped to the thread that triggered them — deltas,
 // watermarks, and responder resolution all key on the thread id.
 
-/** One thread's slice of the room log, with each entry's index in that log. */
-interface GroupThreadBucket {
-  entries: Array<{ entry: GroupMessage; index: number }>
-  id: string
-  startIndex: number
-}
-
 interface GroupChatWorkspaceProps {
   group: string
   members: GroupMember[]
@@ -463,7 +461,77 @@ interface GroupChatWorkspaceProps {
   visible?: boolean
 }
 
-export function GroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
+export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
+  const bindings = useValue($canonicalGroupBindings)
+  const binding = bindings[props.group]
+
+  if (binding) {return <CanonicalGroupWorkspace binding={binding} onBack={props.onBack} visible={props.visible} />}
+
+  return <GroupExecutionGate {...props} />
+}
+
+function GroupExecutionGate(props: GroupChatWorkspaceProps) {
+  const b = useBots()
+  const connectionId = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const gateway = useValue(host.state.gateway)
+  const activationEpoch = gatewayActivationEpoch()
+  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
+  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
+  const mode = capability?.source === source ? capability.mode : 'checking'
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    setCapability(null)
+    setError('')
+
+    if (gateway !== 'open') {
+      setCapability({ source, mode: 'unavailable' })
+
+      return
+    }
+
+    void canonicalGroupRequest<unknown>({ connectionId: connectionId ?? '', profile }, 'groups.capabilities')
+      .then(result => { if (!cancelled) {setCapability({ source, mode: groupExecutionMode(result) })} })
+      .catch(e => {
+        if (!cancelled) {
+          setCapability({ source, mode: 'unavailable' })
+          setError(String(e))
+        }
+      })
+
+    return () => { cancelled = true }
+  }, [connectionId, profile, gateway, source])
+
+  if (mode === 'legacy') {return <LegacyGroupChatWorkspace {...props} />}
+
+  return <div className="grid gap-3 p-3">
+    <h2>{props.group}</h2>
+    <p>{mode === 'canonical' ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.' : mode === 'unavailable' ? b.canonical.driverUnavailable : 'Checking group driver…'}</p>
+    {error && <p role="alert">{error}</p>}
+    <Button disabled={mode !== 'canonical' || busy} onClick={() => {
+      const route = { connectionId: connectionId ?? '', profile }
+
+      const sourceCurrent = groupCreationSource(route, activationEpoch)
+
+      if (mode !== 'canonical' || !sourceCurrent()) {
+        setError(b.canonical.driverUnavailable)
+
+        return
+      }
+
+      setBusy(true)
+      void createCanonicalGroup(route, props.group, props.members)
+        .then(({ room }) => {
+          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
+        })
+        .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
+    }}>Start gateway group</Button>
+  </div>
+}
+
+function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: GroupChatWorkspaceProps) {
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
   const allMeta: Record<string, BotMeta> = useValue($botMeta)
@@ -524,12 +592,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
   const [revealedSpeaker, setRevealedSpeaker] = useState<null | string>(null)
-  // Threads, the Slack/Discord shape: entries carry a thread id. The most
-  // recently active thread renders open; older ones collapse to summary rows.
-  // `openThreads` is the user's explicit expand/collapse overrides, and
-  // `replyThread` is the thread whose reply box currently owns the composer
-  // (null = the main composer, which STARTS a new thread).
-  const [openThreads, setOpenThreads] = useState<Record<string, boolean>>({})
+  // Thread replies retain their own draft; the main composer starts a new topic.
   // Pending image attachments per composer: `null` thread key = the main
   // composer, otherwise the reply box of that thread. Data URLs, already
   // downscaled — they ride the send into every responding member's session.
@@ -826,12 +889,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // connection fields so their turns route to their own machines.
     const minted = sendToGroupChat(group, memberDescriptors(), text, null, images)
 
-    if (minted) {
-      setOpenThreads(prev => ({
-        ...prev,
-        [minted]: true
-      }))
-    } else {
+    if (!minted) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
 
       if (restored) {
@@ -866,12 +924,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     // scoped to it.
     const sent = sendToGroupChat(group, memberDescriptors(), text, thread, images)
 
-    if (sent) {
-      setOpenThreads(prev => ({
-        ...prev,
-        [thread]: true
-      }))
-    } else {
+    if (!sent) {
       const restored = restoreGroupComposerDraft(composerKeyRef.current, cleared.revision, before)
 
       if (restored) {
@@ -1061,100 +1114,23 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
     )
   }
 
-  // Threads: group entries by thread id (hydration assigned legacy ids, but
-  // guard live pre-thread entries too), ordered by last activity — oldest
-  // first, so the busiest/newest thread sits at the bottom by the composer.
-  // The most recently ACTIVE thread renders open; older ones collapse to a
-  // Slack-style summary row unless explicitly opened. Every open thread gets
-  // its own reply box, which continues THAT thread.
-  const threadsById = new Map<string, GroupThreadBucket>()
-
-  for (let i = 0; i < room.log.length; i++) {
-    const entry = room.log[i]
-    const id = groupThreadOf(entry)
-    let bucket = threadsById.get(id)
-
-    if (!bucket) {
-      bucket = {
-        entries: [],
-        id,
-        startIndex: i
-      }
-      threadsById.set(id, bucket)
-    }
-
-    bucket.entries.push({
-      entry,
-      index: i
-    })
-  }
-
-  const threads = [...threadsById.values()].sort(
-    (a, b) => (a.entries[a.entries.length - 1].entry.at || 0) - (b.entries[b.entries.length - 1].entry.at || 0)
-  )
-
-  const newestThread = threads.length ? threads[threads.length - 1].id : null
+  // The public room is one arrival-ordered conversation. Thread ids scope
+  // replies and prompts, not visibility: a newer topic must never hide a
+  // member's completed answer or move it ahead of intervening messages.
+  const threadEnds = new Map<string, number>()
+  room.log.forEach((entry, index) => threadEnds.set(groupThreadOf(entry), index))
   const logChildren: ReactNode[] = []
-  threads.forEach(threadBucket => {
-    const { entries, id } = threadBucket
-    const head = entries.find(({ entry }) => entry.from.kind === 'user')?.entry || entries[0].entry
-    const isNewest = id === newestThread
-    const expanded = openThreads[id] ?? isNewest
+  room.log.forEach((entry, index) => {
+    logChildren.push(renderEntry(entry, index))
+    const id = groupThreadOf(entry)
 
-    if (!expanded) {
-      const replies = entries.length - 1
-      const headText = stripPreviewMarkdown(head?.text || '').slice(0, 80)
-      logChildren.push(
-        <RowButton
-          className="flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2 py-1.5 text-left text-xs text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover)"
-          key={`fold:${id}`}
-          onClick={() =>
-            setOpenThreads(prev => ({
-              ...prev,
-              [id]: true
-            }))
-          }
-          title={b.group.openThread}
-        >
-          <Codicon className="shrink-0 text-[0.65rem]" name="chevron-right" />
-          <span className="min-w-0 flex-1 truncate">{headText || b.group.threadFallback}</span>
-          <span className="shrink-0 text-[0.625rem] text-(--ui-text-quaternary)">{`${b.group.replyCount(replies)} · ${relativeTime(entries[entries.length - 1].entry.at)}`}</span>
-        </RowButton>
-      )
-
+    if (threadEnds.get(id) !== index) {
       return
-    }
-
-    // Open thread: a rail-indented block — collapse affordance, its entries,
-    // and its own reply box (Slack's "reply in thread").
-    const threadRows: ReactNode[] = []
-
-    if (!isNewest || openThreads[id] !== undefined) {
-      threadRows.push(
-        <RowButton
-          className="flex w-full items-center gap-1.5 px-2 pt-1 text-left text-[0.65rem] text-(--ui-text-quaternary) transition-colors hover:text-foreground"
-          key={`unfold:${id}`}
-          onClick={() =>
-            setOpenThreads(prev => ({
-              ...prev,
-              [id]: false
-            }))
-          }
-          title={b.group.collapseThreadLabel}
-        >
-          <Codicon className="text-[0.6rem]" name="chevron-down" />
-          {b.group.collapseThread}
-        </RowButton>
-      )
-    }
-
-    for (const { entry, index } of entries) {
-      threadRows.push(renderEntry(entry, index))
     }
 
     // Reply-in-thread: the newest thread's continuation ALSO lives here, so
     // the main composer below can stay "new thread" without ambiguity.
-    threadRows.push(
+    logChildren.push(
       replyThread === id ? (
         <form
           className="grid gap-0 px-2 pb-1"
@@ -1198,11 +1174,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
           {b.group.replyInThread}
         </Button>
       )
-    )
-    logChildren.push(
-      <div className="grid gap-1.5 border-l-2 border-(--ui-stroke-secondary) pl-1.5" key={`thread:${id}`}>
-        {threadRows}
-      </div>
     )
   })
 
@@ -1257,7 +1228,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               {roomClarifies.length
                 ? b.group.waitingForAnswer
                 : room.turn
-                  ? b.group.memberThinking(groupSpeakerLabel(room.turn))
+                  ? b.group.memberThinking(displayName(room.turn, botRosterMeta(room.turn, allMeta)))
                   : b.group.roomWorking}
             </div>
           ) : null}

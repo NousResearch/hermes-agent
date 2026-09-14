@@ -1,5 +1,5 @@
 """Gateway session management: message sources, the persisted routing index (SessionStore),
-reset policy and the dynamic "Current Session Context" system prompt section."""
+explicit resets and the dynamic "Current Session Context" system prompt section."""
 
 import asyncio
 import hashlib
@@ -189,6 +189,18 @@ _PII_SAFE_PLATFORMS = frozenset({
 })
 
 
+def _should_redact_pii(platform: Platform, enabled: bool) -> bool:
+    """Keep model-visible identifiers usable on platforms requiring raw mentions."""
+    if not enabled or platform in _PII_SAFE_PLATFORMS:
+        return enabled
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform.value)
+        return bool(entry and entry.pii_safe)
+    except Exception:
+        return False
+
+
 def _slack_tools_loaded() -> bool:
     """True iff the agent will actually have Slack tools this session.
 
@@ -357,13 +369,7 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
     user/chat IDs become deterministic hashes for the LLM only; routing keeps the originals.
     """
     src = context.source
-    if redact_pii and src.platform not in _PII_SAFE_PLATFORMS:
-        try:
-            from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(src.platform.value)
-            redact_pii = bool(entry and entry.pii_safe)
-        except Exception:
-            redact_pii = False
+    redact_pii = _should_redact_pii(src.platform, redact_pii)
 
     def _chat_label(chat_id: str) -> str:
         return _hash_chat_id(chat_id) if redact_pii else chat_id
@@ -483,20 +489,14 @@ class SessionEntry:
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
     last_prompt_tokens: int = 0  # last API-reported prompt tokens (compression pre-check)
-    # Created because the previous session expired; consumed once to inject a notice.
+    # Suspension replacement metadata; historical automatic-reset rows retain these fields.
     was_auto_reset: bool = False
-    auto_reset_reason: Optional[str] = None  # "idle" or "daily"
-    reset_had_activity: bool = False  # the expired session had messages
-    prev_session_id: Optional[str] = None  # replaced by auto-reset; feeds the continuity note
-    # Explicit /new or /reset; consumed once to re-inject topic/channel skills. Distinct from
-    # was_auto_reset, whose "expired due to inactivity" notice is wrong for a manual reset.
-    # Set by reset_session() when the user explicitly sends /new or /reset. Consumed once by
-    # _handle_message_with_agent to trigger topic/channel skill re-injection on the first message of the new
-    # session. We can't reuse was_auto_reset for this because that flag fires the "session expired due to
-    # inactivity" user-facing notice and a misleading context-note prepend — both wrong for an explicit
-    # manual reset. See issue #6508.
+    auto_reset_reason: Optional[str] = None
+    reset_had_activity: bool = False
+    prev_session_id: Optional[str] = None  # feeds the continuity note
+    # Explicit /new or /reset triggers topic/channel skill re-injection on the first turn.
     is_fresh_reset: bool = False
-    # Set by the expiry watcher after finalizing; persisted so restarts don't re-run finalization.
+    # Historical finalization fence; timers no longer write it.
     expiry_finalized: bool = False
     # Next get_or_create_session() auto-resets; set by /stop to break stuck-resume loops.
     # When True the next call to get_or_create_session() will auto-reset this session (create a new
@@ -625,8 +625,21 @@ def is_shared_multi_user_session(
 def _session_key_namespace(profile: Optional[str]) -> str:
     """``agent:<ns>`` prefix for a session key: default/None profile → ``agent:main``
     (BYTE-IDENTICAL to every historical key); named profile → ``agent:<name>`` so two
-    profiles serving the same chat never collide."""
-    return "agent:main" if not profile or profile == "default" else f"agent:{profile}"
+    profiles serving the same chat never collide. A profile literally named ``main`` would
+    otherwise produce the default's namespace and share every session (routing index, agent
+    cache, store) with it, so it is marked ``main~``: ``~`` is outside the profile-id alphabet,
+    so the marked form can never be another profile's id."""
+    if not profile or profile == "default":
+        return "agent:main"
+    return "agent:main~" if profile == "main" else f"agent:{profile}"
+
+
+def profile_from_session_key_namespace(namespace: str) -> str:
+    """Inverse of :func:`_session_key_namespace` for the ``<ns>`` slot of a key: ``"default"`` for
+    ``main``, ``"main"`` for the marked ``main~``, else the slot is the profile id."""
+    if namespace == "main":
+        return "default"
+    return "main" if namespace == "main~" else namespace
 
 
 def _canonical_participant(source: SessionSource) -> Optional[str]:
@@ -895,13 +908,13 @@ class SessionStore(
         with self._lock:
             self._ensure_loaded_locked()
             observed = self._entries.get(session_key)
-        # Phase 1b (no lock): compression tip + stale check + reset policy.
+        # Phase 1b (no lock): compression tip + stale check + explicit suspension.
         checks = None
         if not force_new and observed is not None:
             sid = observed.session_id
             checks = _RouteChecks(
                 sid, self._compression_tip_for_session_id(sid), self._is_session_ended_in_db(sid),
-                self._route_reset_reason(observed, source, now),
+                self._route_reset_reason(observed),
             )
         # Phase 2 (lock): apply the decisions to _entries.
         decision = self._apply_route_checks(session_key, checks, force_new, touch_activity, now)
@@ -960,7 +973,7 @@ class SessionStore(
                     session_key, entry.session_id,
                 )
             if stale_hit or reset_reason:
-                # Honour an expiry/reset decision instead of silently reopening via recovery.
+                # Honour an explicit suspension/reset decision instead of silently reopening via recovery.
                 if reset_reason:
                     decision.schedule_reset(reset_reason, entry, entry.last_prompt_tokens > 0)
                 self._entries.pop(session_key, None)
@@ -980,10 +993,6 @@ class SessionStore(
         """Adopt a recoverable state.db row, or schedule its reset (no lock held on entry)."""
         recovered = self._query_recoverable_session(session_key=session_key, source=source, now=now)
         if recovered is None:
-            return
-        reset_reason = self._should_reset(recovered, source)
-        if reset_reason:
-            decision.schedule_reset(reset_reason, recovered, recovered.reset_had_activity)
             return
         self._reopen_session_row(session_key, recovered.session_id)
         with self._lock:
@@ -1047,22 +1056,28 @@ class SessionStore(
         """Persist a small JSON-serializable metadata value. Deliberately does NOT advance
         ``updated_at``: a background write must not make an idle session look fresh.
 
-        Metadata writes are internal bookkeeping and deliberately do NOT advance ``updated_at``: it is the
-        user-activity clock that drives idle/daily reset policy and the restart-resume freshness gate
-        (#85709), and a background write must not make an idle session look fresh.
+        Internal bookkeeping must not advance the user-activity clock used by housekeeping
+        and restart recovery.
         """
         return self._update_entry(session_key, lambda e: e.metadata.__setitem__(key, value))
 
     def set_model_override(self, session_key: str, override: Optional[Dict[str, Any]]) -> None:
         """Persist (or clear, with ``None``) the /model override; non-secret keys only."""
+        from dataclasses import replace
+
         cleaned = sanitize_model_override(override)
 
-        def _apply(entry: SessionEntry):
-            if entry.model_override == cleaned:
-                return False
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            if entry is None or entry.model_override == cleaned:
+                return
+            # Publish only after persistence so a failed clear remains retryable.
+            data, generation = self._snapshot_routing_locked()
+            # Snapshot reconciliation may replace the entry after database recovery.
+            entry = self._entries[session_key]
+            data[session_key] = replace(entry, model_override=cleaned).to_dict()
+            self._persist_routing_data(data, generation)
             entry.model_override = cleaned
-
-        self._update_entry(session_key, _apply)
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
         """Return the persisted /model override for *session_key*, if any."""
@@ -1078,6 +1093,9 @@ class SessionStore(
                 return None
             now = _now()
             session_id = _new_session_id(now)
+            if old_entry.origin and old_entry.origin.platform == Platform.LOCAL:
+                from gateway.session_local_recovery import reset_local_session
+                return reset_local_session(self, old_entry, session_id, now, display_name)
             new_entry = self._replace_route_locked(
                 session_key, old_entry, session_id, now,
                 display_name=display_name if display_name is not None else old_entry.display_name,
@@ -1107,7 +1125,7 @@ class SessionStore(
         return new_entry
 
     # Compression repoint is store bookkeeping, not user activity — leave ``updated_at`` alone so a
-    # background compression on an idle session cannot make it look fresh to reset policy or the
+    # background compression on an idle session cannot make it look fresh to the
     # restart-resume freshness gate (#85709).
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
@@ -1145,8 +1163,9 @@ class SessionStore(
             entries = list(self._entries.values())
         if active_minutes is not None:
             cutoff = _now() - timedelta(minutes=active_minutes)
-            entries = [e for e in entries if e.updated_at >= cutoff]
-        entries.sort(key=lambda e: e.updated_at, reverse=True)
+            entries = [e for e in entries if e.updated_at.timestamp() >= cutoff.timestamp()]
+        # Legacy local timestamps and canonical UTC timestamps can coexist after recovery.
+        entries.sort(key=lambda e: e.updated_at.timestamp(), reverse=True)
         return entries
 
     def lookup_by_session_id(self, session_id: str) -> Optional[SessionEntry]:

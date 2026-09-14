@@ -233,20 +233,24 @@ def test_show_status_reports_gateway_session_last_activity(monkeypatch, capsys, 
     monkeypatch.setattr(auth_mod, "get_xai_oauth_auth_status", lambda: {}, raising=False)
     monkeypatch.setattr(gateway_mod, "find_gateway_pids", lambda exclude_pids=None: [], raising=False)
 
-    class _FakeDB:
-        def list_gateway_sessions(self, active_only=True):
-            return [
-                {"id": "gw-old", "last_active": time.time() - 7200},
-                {"id": "gw-new", "last_active": time.time() - 90},
-            ]
+    import sqlite3
+    from contextlib import closing
 
-        def close(self):
-            return None
-
-    monkeypatch.setattr(hermes_state, "SessionDB", _FakeDB)
+    path = tmp_path / "state.db"
+    db = hermes_state.SessionDB(db_path=path)
+    for sid in ("gw-old", "gw-new"):
+        db.create_session(sid, "telegram")
+    db.close()
+    with closing(sqlite3.connect(path)) as conn:
+        for sid, age in (("gw-old", 7200), ("gw-new", 90)):
+            conn.execute("UPDATE sessions SET session_key=?, started_at=?, last_activity_at=? WHERE id=?",
+                         (sid, time.time() - age, time.time() - age, sid))
+        conn.commit()
+    before = path.read_bytes()
 
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
     output = capsys.readouterr().out
     assert "Active:       2 session(s)" in output
     assert "Last activity:" in output
     assert "1m ago" in output
+    assert path.read_bytes() == before

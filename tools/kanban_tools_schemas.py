@@ -229,6 +229,24 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
             ),
             "additionalProperties": True,
         },
+        "artifacts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional list of absolute paths to deliverable "
+                "files this handoff names — generated charts, "
+                "PDFs, spreadsheets, images, archives. Examples: "
+                "['/tmp/q3-revenue.png', '/tmp/report.pdf']. "
+                "A review handoff is the last implementer "
+                "transition, so the kernel copies these into the "
+                "task's durable attachments before the reviewer's "
+                "completion cleans the scratch workspace up, and "
+                "the gateway notifier uploads them as native "
+                "attachments to the subscribed chat. A missing "
+                "declared scratch artifact keeps the task in place "
+                "so you can fix the path and retry."
+            ),
+        },
     },
     ["summary"],
 )
@@ -457,6 +475,10 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "blocks the task for human review). Use this for "
                 "open-ended cards where one shot rarely finishes the "
                 "work. Defaults to false (classic single-shot worker)."
+        )),
+        "completion_contract": _prop("string", (
+            "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
+            "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
         )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "

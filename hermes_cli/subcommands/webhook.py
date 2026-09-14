@@ -27,6 +27,12 @@ def build_webhook_parser(subparsers, *, cmd_webhook: Callable) -> None:
         "--deliver-chat-id", default="", help="Target chat ID for cross-platform delivery")
     wh_sub.add_argument("--secret", default="", help="HMAC secret (auto-generated if omitted)")
     wh_sub.add_argument(
+        "--route-profile", dest="route_profile", default=None, metavar="PROFILE",
+        help="Bind the route to a multiplexed profile: only POSTs to /p/PROFILE/webhooks/<name> "
+        "are accepted and the agent runs as that profile (default: default; kept on update). "
+        "Distinct from the global -p/--profile, which picks the gateway whose subscriptions "
+        "file is written.")
+    wh_sub.add_argument(
         "--deliver-only", action="store_true",
         help="Skip the agent — deliver the rendered prompt directly as the "
         "message. Zero LLM cost. Requires --deliver to be a real target "

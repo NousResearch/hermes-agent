@@ -11,6 +11,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Optional
+from utils import atomic_json_write
 
 # Multiplexer / terminal-emulator identity env vars, checked in order when no real tty path is
 # available (e.g. stdin piped but stdout still a pty owned by a known terminal).
@@ -86,9 +87,7 @@ def write_breadcrumb(session_id: str, cwd: Optional[str] = None) -> None:
         directory.mkdir(parents=True, exist_ok=True)
         now = time.time()
         payload = {"session_id": session_id, "cwd": cwd or os.getcwd(), "ts": now}
-        tmp = directory / f".{terminal_id}.tmp"
-        tmp.write_text(json.dumps(payload), encoding="utf-8")
-        os.replace(tmp, directory / terminal_id)
+        atomic_json_write(directory / terminal_id, payload, indent=None)
         _prune_stale(directory, now)
     except Exception:
         pass
@@ -126,8 +125,9 @@ def resolve_breadcrumb_session() -> Optional[str]:
         return None
     try:
         from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
 
-        db = SessionDB()
+        db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
     except Exception:
         return None
     try:

@@ -81,6 +81,7 @@ def test_non_notify_background_processes_are_not_waited_on(registry):
 
 def test_already_exited_session_not_waited_on(registry):
     s = _make_session(exited=True)
+    s._completion_event.set()
     with registry._lock:
         registry._running[s.id] = s
     result = registry.wait_for_pending_completions(timeout=30)

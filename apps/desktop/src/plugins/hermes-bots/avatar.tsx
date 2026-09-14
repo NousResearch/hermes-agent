@@ -601,8 +601,22 @@ interface FacePose {
   turn: number
 }
 
-/** Grok-style pose. thinking/working lean and sway. idle is a small sine. */
+/** Working poses lean and sway; idle stays small. */
 function facePose(mood: FaceMood | string, t: number): FacePose {
+  if (mood === 'think') {
+    return {
+      turn: -18 + Math.sin(t * 0.55) * 14,
+      tilt: Math.sin(t * 0.48) * 12 + Math.sin(t * 1.35) * 3,
+      roll: Math.sin(t * 0.95) * 10,
+      gazeX: Math.sin(t * 0.7) * 3.6,
+      gazeY: -2.2 + Math.sin(t * 0.4) * 2.2,
+      blink: t % 1.45 > 1.26,
+      d0: 0.2 + 0.8 * Math.max(0, Math.sin(t * 2.4)),
+      d1: 0.2 + 0.8 * Math.max(0, Math.sin(t * 2.4 - 0.7)),
+      d2: 0.2 + 0.8 * Math.max(0, Math.sin(t * 2.4 - 1.4))
+    }
+  }
+
   if (mood === 'work') {
     return {
       turn: -11 + Math.sin(t * 0.48) * 8,
@@ -637,10 +651,41 @@ interface NumericAttrNode {
   setAttribute(name: string, value: number | string): void
 }
 
+const faceTransitions = new WeakMap<SVGSVGElement, { mood: string; pose: FacePose; from: FacePose; since: number }>()
+
+/** Blend from the last painted pose in elapsed time, even after a paused clock. */
+function settlePose(svg: SVGSVGElement, mood: string, target: FacePose, t: number): FacePose {
+  let state = faceTransitions.get(svg)
+
+  if (!state) {
+    state = { mood, pose: target, from: target, since: t - 0.4 }
+    faceTransitions.set(svg, state)
+  }
+
+  if (state.mood !== mood) {
+    state.mood = mood
+    state.from = state.pose
+    state.since = t
+  }
+
+  const progress = Math.min(1, Math.max(0, (t - state.since) / 0.4))
+  const blend = 1 - (1 - progress) ** 2
+  const pose = { ...target }
+  const keys = ['turn', 'tilt', 'roll', 'gazeX', 'gazeY', 'd0', 'd1', 'd2'] as const
+
+  for (const key of keys) {
+    pose[key] = state.from[key] + (target[key] - state.from[key]) * blend
+  }
+
+  state.pose = pose
+
+  return pose
+}
+
 function paintMathFace(svg: SVGSVGElement, t: number) {
   const mood = svg.getAttribute('data-hb-mood') || 'idle'
   const shape = svg.getAttribute('data-hb-shape') || 'circle'
-  const pose = facePose(mood, t)
+  const pose = settlePose(svg, mood, facePose(mood, t), t)
   const body = svg.querySelector('[data-hb-body]')
   const open = svg.querySelector('[data-hb-open]')
   const shut = svg.querySelector('[data-hb-shut]')
@@ -1016,7 +1061,7 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
     )
   }
 
-  const working = mood === 'work'
+  const working = mood === 'work' || mood === 'think'
   const eyeFill = isDarkColor(color) ? 'rgba(232,220,195,0.95)' : 'rgba(0,0,0,0.85)'
   // Catchlight contrast follows the pupil, not the body: dark pupils get the
   // white sparkle, light (cream) pupils on dark bodies get a dark one — a
@@ -1024,7 +1069,7 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
   // maroon/ink/oxblood avatars.
   const hlFill = isDarkColor(color) ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.85)'
   const ring = sampleFaceRing(shape)
-  const rest = facePose(working ? 'work' : 'idle', 0)
+  const rest = facePose(mood, 0)
   // Shape-aware initial eye line — the cloud body sits lower, so its eyes
   // (and their catchlights) start at the cloud position instead of jumping
   // there on the first clock paint.
@@ -1036,7 +1081,7 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
       className="block overflow-visible"
       data-bot-face={name}
       data-hb-math="1"
-      data-hb-mood={working ? 'work' : 'idle'}
+      data-hb-mood={mood}
       data-hb-shape={shape || 'circle'}
       height={size}
       viewBox="0 0 40 44"
@@ -1066,13 +1111,11 @@ export function BotFace({ shape, color, image, size = 36, name = 'agent', mood =
         strokeLinecap="round"
         strokeWidth={2}
       />
-      {working ? (
-        <g>
-          <circle cx={16.4} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d0} r={1.15} />
-          <circle cx={20} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d1} r={1.15} />
-          <circle cx={23.6} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d2} r={1.15} />
-        </g>
-      ) : null}
+      <g>
+        <circle cx={16.4} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d0} r={1.15} />
+        <circle cx={20} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d1} r={1.15} />
+        <circle cx={23.6} cy={41.2} data-hb-dot="1" fill={color} opacity={rest.d2} r={1.15} />
+      </g>
     </svg>
   )
 }

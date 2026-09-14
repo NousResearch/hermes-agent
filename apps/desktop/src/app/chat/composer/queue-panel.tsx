@@ -13,6 +13,9 @@ interface QueuePanelProps {
   editingId: null | string
   entries: QueuedPromptEntry[]
   onDelete: (id: string) => void
+  /** Acknowledge a turn the gateway lost across a restart (`unknown` row) so
+   *  the queued turns behind it flow again. Absent on non-canonical hosts. */
+  onDiscardLost?: (id: string) => void
   onEdit: (entry: QueuedPromptEntry) => void
   /** Lift a park (explicit Stop/Esc halt) and let the queue flow again. */
   onResume: () => void
@@ -25,13 +28,16 @@ interface QueuePanelProps {
 }
 
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
-  (entry.displayText ?? entry.text).trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
+  entry.displayKind === 'hidden'
+    ? c.hiddenQueued
+    : (entry.displayText ?? entry.text).trim() || (entry.attachments.length > 0 ? c.attachmentOnly : c.emptyTurn)
 
 export function QueuePanel({
   busy,
   editingId,
   entries,
   onDelete,
+  onDiscardLost,
   onEdit,
   onResume,
   onSendNow,
@@ -46,10 +52,6 @@ export function QueuePanel({
   }
 
   return (
-    // Keyed on the park flag: StatusSection owns its collapse state from
-    // defaultCollapsed, so remount on park/unpark. A Stop must EXPAND the
-    // panel — the halted prompts' only presence is here, and leaving them
-    // behind a collapsed "N queued" pill is how they read as vanished.
     <StatusSection
       accessory={
         parked ? (
@@ -66,9 +68,7 @@ export function QueuePanel({
           </Tip>
         ) : undefined
       }
-      defaultCollapsed={!parked}
       icon={<Codicon className="text-muted-foreground/70" name={parked ? 'debug-pause' : 'layers'} size="0.8rem" />}
-      key={parked ? 'parked' : 'flowing'}
       label={parked ? c.queuedPaused(entries.length) : c.queued(entries.length)}
     >
       {entries.map(entry => {
@@ -77,6 +77,9 @@ export function QueuePanel({
         // Steer only surfaces where it can actually deliver: a live turn to
         // redirect and an entry the redirect can carry (text-only, no slash).
         const canSteer = busy && Boolean(onSteerNow) && isSteerableEntry(entry)
+        // The owner died mid-turn and recovered this row as `unknown`: the
+        // FIFO behind it is paused until someone acknowledges the loss.
+        const lost = entry.serverStatus === 'unknown'
 
         return (
           <StatusRow
@@ -86,7 +89,21 @@ export function QueuePanel({
             )}
             key={entry.id}
             trailing={
-              <>
+              lost && onDiscardLost ? (
+                <Tip label={c.queueLostDiscardTip}>
+                  <Button
+                    aria-label={c.queueLostDiscard}
+                    className="h-5 rounded-md px-1.5 text-[0.66rem]"
+                    data-slot="queue-lost-discard"
+                    onClick={() => onDiscardLost(entry.id)}
+                    size="micro"
+                    type="button"
+                    variant="text"
+                  >
+                    {c.queueLostDiscard}
+                  </Button>
+                </Tip>
+              ) : !entry.serverStatus && <>
                 <Tip label={c.queueEdit}>
                   <Button
                     aria-label={c.queueEdit}
@@ -142,12 +159,13 @@ export function QueuePanel({
                 </Tip>
               </>
             }
-            trailingVisible={isEditing}
+            trailingVisible={isEditing || lost}
           >
             <div className="min-w-0 flex-1">
               <p className="truncate text-[0.73rem] leading-4 text-foreground/92">{entryPreview(entry, c)}</p>
-              {(attachmentsCount > 0 || isEditing) && (
+              {(attachmentsCount > 0 || isEditing || lost) && (
                 <div className="mt-0.5 flex items-center gap-1.5 text-[0.64rem] text-muted-foreground/75">
+                  {lost && <span data-slot="queue-lost-note">{c.queueLostNote}</span>}
                   {attachmentsCount > 0 && <span>{c.attachments(attachmentsCount)}</span>}
                   {isEditing && (
                     <span className="text-[color-mix(in_srgb,var(--dt-composer-ring)_78%,var(--muted-foreground))]">

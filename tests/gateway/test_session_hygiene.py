@@ -22,7 +22,8 @@ import pytest
 
 from agent.model_metadata import estimate_messages_tokens_rough
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource
 
 
@@ -1704,7 +1705,9 @@ async def test_hygiene_does_not_wait_ceiling_after_fence_cancel(
 
         assert result == "ok"
         assert worker_started.wait(timeout=2)
-        assert elapsed < 2.0, (
+        # The bug this guards against is a 600s ceiling; a saturated CI runner
+        # legitimately adds seconds of scheduling latency, so the bound is loose.
+        assert elapsed < 20.0, (
             f"hygiene host waited {elapsed:.1f}s after fence cancel — "
             "must not extend toward the 600s ceiling (#96953)"
         )

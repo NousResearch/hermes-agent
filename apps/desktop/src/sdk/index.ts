@@ -21,6 +21,11 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
+import { capabilityScoped, getApiRequestConnection } from '@/api/client'
+
+import { createSessionMutationClient, type SessionMutationSnapshot } from '../../../shared/src/session-http-mutations'
+
+const mutatePersistedVisibility = createSessionMutationClient()
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
@@ -43,6 +48,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -65,6 +71,7 @@ import {
   newSessionInAgent,
   newSessionInProfile,
   normalizeProfileKey,
+  prewarmProfileBackend,
   refreshProfiles,
   selectProfile,
   setActiveProfile,
@@ -329,6 +336,7 @@ export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
  *  and paint durable history. Bot Mode opts into one retry, so its effective
  *  ceiling is two bounded attempts rather than an unbounded wait. */
 export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
+
 let openSessionGeneration = 0
 
 export interface PluginOpenSessionOptions {
@@ -637,26 +645,52 @@ export const host = {
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
   logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
 
+  /** Complete client-local MCP sign-in for a pinned bot profile, optionally
+   *  installing its catalog entry first. Uses the same OAuth flow as Settings. */
+  completeMcpOAuth: async (options: Parameters<typeof completeMcpDesktopOAuth>[0] & { catalogPreset?: string }) => {
+    const profile = capabilityScoped(options.profile)
+
+    if (options.catalogPreset) {
+      const added = await requestGatewayForAgent<{ ok?: boolean; error?: string }>(
+        profile.connectionId ?? null,
+        profile.profile || 'default',
+        'mcp.servers.add',
+        { name: options.serverName, preset: options.catalogPreset }
+      )
+
+      if (!added.ok) {
+        throw new Error(added.error || 'Could not add server')
+      }
+    }
+
+    return completeMcpDesktopOAuth({ ...options, profile })
+  },
+
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {
     window.location.hash = path.startsWith('#') ? path : `#${path}`
   },
 
   /** Pre-dial a profile's gateway socket in the background — pool-only, no
-   *  activation, no navigation, no scope change (openGatewayForProfile; it
-   *  already no-ops for shared-remote routes and the primary). Roster UIs
-   *  call this after mount so the FIRST click on an agent doesn't pay the
-   *  whole backend spawn + socket dial latency. Fire-and-forget: failures
-   *  are swallowed — the click path re-runs its own ensure and surfaces
-   *  errors properly. */
+   *  activation, no navigation, no scope change. Delegates to
+   *  prewarmProfileBackend so plugin surfaces get the SAME pool-saturation
+   *  guard, hover dwell, and per-profile throttle as the built-in rail
+   *  (#91545): a pointer sweep across a plugin roster (bot-row's
+   *  onPointerEnter fires with no dwell of its own) previously spawned at
+   *  pointer speed, filled the local backend pool past maxBackends, and left
+   *  the next profile's spawn queued until the 30s slot timeout — observed
+   *  as a profile surface that hangs forever while every other profile
+   *  renders. It already no-ops for shared-remote routes and the primary.
+   *  Fire-and-forget: failures are swallowed — the click path re-runs its
+   *  own ensure and surfaces errors properly. */
   warmProfile: (profile: string): void => {
     const name = (profile ?? '').trim()
 
-    if (!name || name === $activeGatewayProfile.get()) {
+    if (!name) {
       return
     }
 
-    void openGatewayForProfile(name).catch(() => undefined)
+    prewarmProfileBackend(name)
   },
 
   /** Delete a profile THROUGH the desktop's teardown-routed REST path — the
@@ -792,11 +826,13 @@ export const host = {
   },
 
   /** Pre-dial an agent's socket on ITS source — the (connection, profile)
-   *  analogue of warmProfile. Fire-and-forget, same semantics.
+   *  analogue of warmProfile. Fire-and-forget, same semantics, same guarded
+   *  resolver (prewarmProfileBackend): a pointer sweep across a
+   *  multi-source roster must not spawn past the pool cap either.
    *  `undefined` is accepted alongside `null` because a roster row's
    *  `connectionId` is optional; both mean "no explicit source". */
   warmAgent: (connectionId: null | string | undefined, profile: string): void => {
-    void openGatewayForAgent(connectionId ?? null, (profile ?? '').trim() || 'default').catch(() => undefined)
+    prewarmProfileBackend((profile ?? '').trim() || 'default', connectionId ?? null)
   },
 
   /** Activate an agent's gateway (dialing it if needed) so subsequent
@@ -1235,6 +1271,17 @@ export const host = {
    *  (`typeof host.paneVisibility === 'function'`). */
   paneVisibility: (paneId: string): ReadableAtom<boolean> => $paneVisible(paneId),
 
+  /** Reveal a contributed pane and its zone from an explicit user action. */
+  revealPane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (!id) {
+      return
+    }
+
+    revealTreePane(id)
+  },
+
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.
    *  Listeners are isolated; a throw can't affect app dispatch. */
@@ -1368,12 +1415,15 @@ export const host = {
       throw new Error('Persisted session updates require a profile and session id')
     }
 
-    return hermesApi<{ ok: boolean; hidden: boolean }>({
-      ...(route ? { connectionId: route.connectionId } : {}),
-      path: `/api/sessions/${encodeURIComponent(options.sessionId)}`,
-      method: 'PATCH',
-      body: { hidden: options.hidden, profile }
-    })
+    const scope = { connectionId: route?.connectionId || getApiRequestConnection() || 'local' }
+    const path = `/api/sessions/${encodeURIComponent(options.sessionId)}`
+    const payload = { hidden: options.hidden, profile }
+
+    return mutatePersistedVisibility(JSON.stringify([scope, options.sessionId, payload]),
+      () => hermesApi<SessionMutationSnapshot>({ ...scope,
+        path: `${path}/mutation-snapshot?profile=${encodeURIComponent(profile)}` }),
+      identity => hermesApi<{ ok: boolean; hidden: boolean }>({ ...scope, path,
+        method: 'PATCH', body: { ...payload, ...identity } }))
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
@@ -1624,9 +1674,6 @@ export { type BudgetedLoop, type BudgetedLoopOptions, createBudgetedLoop } from 
 /** The blank transcript as a contribution area: claim the sessions you own and
  *  render what stands in the gap. Core's own splash keeps a fresh draft. */
 export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from '@/lib/chat-empty'
-/** THE compact-number formatter — every user-facing count/token figure goes
- *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
-export { compactNumber } from '@/lib/format'
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface
@@ -1658,17 +1705,11 @@ export { PROFILE_SWATCHES, profileColor, profileColorSoft } from '@/lib/profile-
  *  `ctx.socket` frame invalidating a query). Inside components keep using
  *  `useQueryClient`. */
 export { queryClient } from '@/lib/query-client'
+/** Compact labels for the reasoning levels exported from @hermes/shared, so a
+ *  plugin surfacing a thinking depth uses the same spelling as the app. */
+export { reasoningEffortLabel } from '@/lib/reasoning-effort'
 
 export const PANES_AREA = 'panes'
-/** Hermes' reasoning levels + their compact labels, so a plugin surfacing a
- *  thinking depth uses the same scale and spelling as the rest of the app. */
-export {
-  DEFAULT_REASONING_EFFORT,
-  REASONING_EFFORT_VALUES,
-  REASONING_EFFORTS,
-  type ReasoningEffort,
-  reasoningEffortLabel
-} from '@/lib/reasoning-effort'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
@@ -1691,6 +1732,7 @@ export {
   type TranscriptDirectiveProps
 } from '@/lib/transcript-directives'
 export { cn } from '@/lib/utils'
+export { gatewayActivationEpoch } from '@/store/gateway'
 /** THE unread store behind `SessionStatusDot`'s emerald dot. A plugin that
  *  learns out-of-band that a session produced something the user hasn't seen
  *  (a roster poll's activity watermark, say) writes HERE rather than keeping
@@ -1710,10 +1752,10 @@ export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } fr
  *  a setting, so a plugin that sets it must clear it on dispose. */
 export { $accentOverride, setAccentOverride } from '@/themes/accent-override'
 /** OKLCH colour maths, for anything deriving a palette rather than hardcoding
- *  one: perceptual conversion, the sRGB gamut boundary, WCAG contrast, and
- *  hue-stable blending. */
+ *  one: perceptual conversion, the sRGB gamut boundary, and hue-stable
+ *  blending. `readableOn` is the SDK's public name for the desktop's ink pick
+ *  (`#161616` or `#ffffff`, whichever measures better on the background). */
 export {
-  contrastRatio,
   hexToOklch,
   hueDelta,
   maxChroma,
@@ -1722,7 +1764,7 @@ export {
   type Oklch,
   oklchToHex,
   oklchToSrgb255,
-  readableOn
+  readableInk as readableOn
 } from '@/themes/color'
 /** The painted theme, its name, and the appearance it resolved to — plus
  *  `setTheme` / `setMode` to change it from a component. */
@@ -1735,7 +1777,23 @@ export { requestTheme } from '@/themes/request'
 export { retintTheme, themeHue } from '@/themes/retint'
 export type { DesktopTheme, DesktopThemeColors } from '@/themes/types'
 export { THEMES_AREA } from '@/themes/user-themes'
-export type { RpcEvent, StatusResponse } from '@/types/hermes'
+export type { StatusResponse } from '@/types/hermes'
+/** Public SDK name for the shared gateway wire event; kept stable for plugins. */
+export type { GatewayEvent as RpcEvent } from '@hermes/shared'
+/** THE compact-number formatter — every user-facing count/token figure goes
+ *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
+export { compactNumber } from '@hermes/shared'
+/** Hermes' reasoning levels, so a plugin surfacing a thinking depth uses the
+ *  same scale as the rest of the app (labels: `reasoningEffortLabel`). */
+export {
+  DEFAULT_REASONING_EFFORT,
+  REASONING_EFFORT_VALUES,
+  REASONING_EFFORTS,
+  type ReasoningEffort
+} from '@hermes/shared'
+/** WCAG contrast, from the sRGB primitives shared with the TUI (`null` for
+ *  an unparseable colour, never a fake 0). */
+export { contrastRatio } from '@hermes/shared/color'
 /** Subscribe a component to a `host.state` atom. */
 export { useStore as useValue } from '@nanostores/react'
 /** The app's data-fetching layer. Plugins share the ONE QueryClient mounted at

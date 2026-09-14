@@ -47,24 +47,11 @@ _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
 
 
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
-    """KEY names assigned in a dotenv file (including empty ``KEY=``). A fast line scanner (works in early
-    bootstrap without python-dotenv); decode errors fall back to latin-1 like ``_load_dotenv_with_fallback``."""
-    keys: set[str] = set()
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        try:
-            text = path.read_text(encoding="latin-1", errors="replace")
-        except Exception:
-            return keys
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key = line.removeprefix("export ").split("=", 1)[0].strip()
-        if key:
-            keys.add(key)
-    return keys
+    """KEY names assigned in a dotenv file (including empty ``KEY=``), via the same tokenizer that installs
+    profile scopes — a key the installer sees is a key the dashboard scrub sees (BOM'd first line included)."""
+    from agent.secret_scope import load_env_file
+
+    return set(load_env_file(path))
 
 
 def _clear_known_keys_missing_from_dotenv(path: Path) -> None:
@@ -88,6 +75,12 @@ def get_secret_source(env_var: str) -> str | None:
     return _SECRET_SOURCES.get(env_var)
 
 
+def secret_source_names() -> tuple[str, ...]:
+    """Every env-var name some profile's external secret source supplied (names only — the map is
+    process-wide, so a value must be resolved through the active profile's secret scope)."""
+    return tuple(_SECRET_SOURCES)
+
+
 def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Return the external-secret value snapshot for ``hermes_home``."""
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
@@ -104,9 +97,17 @@ def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, 
 
 def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     """Locked implementation for :func:`hydrate_profile_secret_sources`."""
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    if worker_config_snapshot() is not None:
+        return {}
     home_key = str(home.resolve())
     if home_key in _APPLIED_HOMES:
         return get_secret_source_values(home)
+
+    # A retry must not keep serving a partial result after the source is removed, disabled, or can no
+    # longer be evaluated. Publish only the snapshot established by this attempt.
+    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
 
     try:
         cfg = _load_secrets_config(home)
@@ -137,7 +138,11 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     if not report.sources:
         return {}
 
-    _APPLIED_HOMES.add(home_key)
+    # Routed profiles have no runtime reset path. Keep a failed source retryable so correcting its
+    # profile-local bootstrap credentials takes effect on the next turn; successful sources from a
+    # mixed report are still snapshotted below and can be used while the failed source recovers.
+    if all(src.result.ok for src in report.sources):
+        _APPLIED_HOMES.add(home_key)
     values: dict[str, str] = {}
     for name, applied in report.provenance.items():
         value = local_env.get(name)
@@ -145,16 +150,25 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
-    if values:
-        _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
+    _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     return dict(values)
 
 
-def reset_secret_source_cache() -> None:
-    """Forget applied homes so the next load re-pulls (tests, long-running processes after config edits)."""
-    _APPLIED_HOMES.clear()
-    _SECRET_SOURCES.clear()
-    _SECRET_SOURCE_VALUES_BY_HOME.clear()
+def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> None:
+    """Forget applied homes so the next load re-pulls (tests, long-running processes after config edits).
+
+    ``hermes_home`` limits the reset to ONE home: a multiplex gateway keeps every profile's snapshot in
+    this process, and a per-fire cron re-pull or a plugin-discovery refresh for one home must not wipe
+    a sibling's hydrated snapshot — the sibling's next scope build would run empty until it re-hydrated
+    (#102041)."""
+    if hermes_home is None:
+        _APPLIED_HOMES.clear()
+        _SECRET_SOURCES.clear()
+        _SECRET_SOURCE_VALUES_BY_HOME.clear()
+        return
+    home_key = str(Path(hermes_home).resolve())
+    _APPLIED_HOMES.discard(home_key)
+    _SECRET_SOURCE_VALUES_BY_HOME.pop(home_key, None)
 
 
 def format_secret_source_suffix(env_var: str) -> str:
@@ -316,7 +330,16 @@ def load_hermes_dotenv(
 ) -> list[Path]:
     """Load Hermes env files: ``~/.hermes/.env`` overrides stale shell exports; project ``.env`` is a dev
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not)."""
-    home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    from agent.safe_worker_policy import worker_config_snapshot
+
+    # The private bootstrap supplies credentials explicitly; do not rehydrate
+    # profile behavior, external secret plugins, or managed env in this worker.
+    if worker_config_snapshot() is not None:
+        return []
+    # Process home on purpose (never the per-turn override): a startup .env load must not follow a routed
+    # profile — see the multiplex guard below.
+    from hermes_constants import get_process_hermes_home
+    home_path = Path(hermes_home) if hermes_home else get_process_hermes_home()
 
     # Multiplex gateway: while a routed profile-home override is active, copying that profile's .env
     # into os.environ would expose its credentials to sibling turns and every spawned child. Unscoped
@@ -470,19 +493,26 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # Marking AFTER the attempt keeps the earlier failure paths retryable.
     _APPLIED_HOMES.add(home_key)
 
-    # A real fetch attempt happened (success OR error). Mark the home now so the 3-5 import-time
-    # load_hermes_dotenv() calls per startup don't re-fetch / re-print — error retries within one process
-    # are opt-in via reset_secret_source_cache(). Marking AFTER the attempt (not before, see #40597) is what
-    # lets the earlier failure paths stay retryable.
     if report.applied_any:
         _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env
-        # Re-run the ASCII sanitization pass: vault values are user-supplied and might have the same
-        # copy-paste corruption as a manually edited .env (see #6843).
-        values: dict[str, str] = {}
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
-            if name in os.environ:
-                values[name] = os.environ[name]
+
+    # Snapshot EVERY name a source supplied, not just the newly applied ones. A name the source supplied
+    # but the pre-existing process value won (``skipped_existing``) is still this home's effective value
+    # for it — and on the unscoped path os.environ IS this home's environment. Skipping those names
+    # latched an EMPTY snapshot whenever the key was already in the env: after the first cron/plugin
+    # re-pull (the previous apply's own write-back shadows every key) or from boot under systemd
+    # ``EnvironmentFile=``. Under multiplex the scope is the only credential source, so an empty
+    # snapshot failed every default-profile turn for the process lifetime (#102041).
+    values: dict[str, str] = {}
+    supplied = set(report.provenance)
+    for src in report.sources:
+        supplied.update(src.skipped_existing)
+    for name in supplied:
+        if name in os.environ:
+            values[name] = os.environ[name]
+    if values:
         _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
 
     for src in report.sources:

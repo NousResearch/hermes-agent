@@ -27,7 +27,7 @@ import {
   createBackgroundReleaseHandle,
   restartMockServer,
   SIDEBAR_CROSS_TEXTS,
-} from './mock-server'
+} from '../../../tests-js/scripts/mock-server'
 
 /** Finished-unread dot aria-label. */
 const UNREAD_DOT_LABEL = 'Finished — unread'

@@ -79,8 +79,7 @@ class SpecifyOutcome:
 
 
 def _truncate(text: str, limit: int) -> str:
-    # Stored history is untrusted for display — remove escape sequences and control chars so a recap line
-    # can't clear the screen / retitle the window when echoed to a terminal (openai/codex#31494 bug class).
+    # Plain length clamp for LLM prompt fields; these never reach a terminal, so no escape stripping here.
     if len(text) <= limit:
         return text
     return text[: limit - 1] + "…"

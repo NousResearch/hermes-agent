@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import gateway.slash_commands as slash_commands
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
 

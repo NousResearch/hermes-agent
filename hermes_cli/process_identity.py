@@ -37,6 +37,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # Module-global job handle: must live exactly as long as this process so the
 # kernel closes it (and kills the job) when we die. Never close it manually.
 _JOB_HANDLE = None
+_CHILD_JOB_HANDLES: list = []
 _LEDGER_LOCK = threading.Lock()
 
 
@@ -433,4 +434,87 @@ def attach_self_to_kill_on_close_job() -> bool:
         return True
     except Exception:
         logger.debug("job object self-attach failed", exc_info=True)
+        return False
+
+
+
+def assign_process_to_kill_on_close_job(proc_or_pid) -> bool:
+    """Assign a child process (Popen instance or int PID) to a Windows job object with KILL_ON_JOB_CLOSE.
+
+    Idempotent and Windows-only. The job handle is retained in the parent process so if the parent
+    exits or crashes, Windows terminates the target process and its entire child tree.
+    """
+    if not _IS_WINDOWS:
+        return False
+    try:
+        pid = proc_or_pid.pid if hasattr(proc_or_pid, "pid") else int(proc_or_pid)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+        JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x0800
+        JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x1000
+        JobObjectExtendedLimitInformation = 9
+        PROCESS_SET_QUOTA = 0x0100
+        PROCESS_TERMINATE = 0x0001
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_ulonglong) for n in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER), ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.POINTER(wintypes.ULONG)), ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ("IoInfo", IO_COUNTERS),
+                *((n, ctypes.c_size_t) for n in (
+                    "ProcessMemoryLimit", "JobMemoryLimit", "PeakProcessMemoryUsed", "PeakJobMemoryUsed")),
+            ]
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return False
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = (
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK
+        )
+        ok = kernel32.SetInformationJobObject(job, JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info))
+        if not ok:
+            kernel32.CloseHandle(job)
+            return False
+
+        h_proc = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, wintypes.DWORD(pid))
+        if not h_proc:
+            kernel32.CloseHandle(job)
+            return False
+
+        assigned = kernel32.AssignProcessToJobObject(job, h_proc)
+        kernel32.CloseHandle(h_proc)
+        if not assigned:
+            kernel32.CloseHandle(job)
+            return False
+
+        if hasattr(proc_or_pid, "_win_job_handle"):
+            setattr(proc_or_pid, "_win_job_handle", job)
+        _CHILD_JOB_HANDLES.append(job)
+        logger.debug("assigned pid %s to kill-on-close job object", pid)
+        return True
+    except Exception:
+        logger.debug("assigning pid %s to job object failed", pid, exc_info=True)
         return False

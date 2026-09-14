@@ -205,6 +205,14 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
         logger.info("running server's presets predate the staged models; "
                     "replacing it so every model launches with a policy")
         _stop_state_server(state)
+    else:
+        # Boot-time orphan sweep: if state file does not exist or recorded server is dead,
+        # sweep any orphaned llama-server processes left behind by an ungraceful shutdown.
+        try:
+            from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+            LlamaServerSupervisor.reap_orphaned_server_processes()
+        except Exception as _reap_err:
+            logger.debug("boot-time orphan sweep skipped: %s", _reap_err)
 
     try:
         from hermes_cli.local_runtime.binaries import (

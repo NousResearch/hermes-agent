@@ -180,6 +180,14 @@ class LlamaServerSupervisor:
         self.proc = subprocess.Popen(cmd, stdout=self._log_handle,
                                      stderr=subprocess.STDOUT, cwd=str(exe.parent))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
+        # On Windows, assign the router process to a kill-on-close Job Object so that
+        # if the parent Hermes / Electron process exits or crashes ungracefully, Windows
+        # automatically terminates the entire llama-server tree (router and model children).
+        try:
+            from hermes_cli.process_identity import assign_process_to_kill_on_close_job
+            assign_process_to_kill_on_close_job(self.proc)
+        except Exception as _job_err:
+            logger.debug("job object attach for llama-server skipped: %s", _job_err)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
         # readiness probe racing the boot doesn't throw the app back to onboarding.
@@ -269,6 +277,40 @@ class LlamaServerSupervisor:
         for child in children:
             _quiet(lambda: child.is_running() and child.kill())
 
+    @classmethod
+    def reap_orphaned_server_processes(cls, install_dir: Path | None = None) -> list[int]:
+        """Reap orphaned llama-server processes on startup or before respawn.
+
+        Matches any process running the managed llama-server binary whose parent is gone.
+        Its VRAM and system memory are freed immediately.
+        """
+        reaped: list[int] = []
+        try:
+            import psutil
+        except Exception:
+            return reaped
+        try:
+            target_exe = str(server_binary(install_dir)) if install_dir else None
+        except Exception:
+            target_exe = None
+        for p in psutil.process_iter(["exe", "name", "ppid"]):
+            with suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                name = (p.info.get("name") or "").lower()
+                exe = p.info.get("exe") or ""
+                if target_exe:
+                    if exe != target_exe:
+                        continue
+                else:
+                    if not (name.startswith("llama-server") or "llama-server" in exe.lower()):
+                        continue
+                ppid = p.info.get("ppid") or 0
+                if ppid and psutil.pid_exists(ppid):
+                    continue
+                logger.warning("reaping orphaned llama-server process pid=%s exe=%s", p.pid, exe)
+                p.kill()
+                reaped.append(p.pid)
+        return reaped
+
     def _reap_orphaned_children(self) -> None:
         """Kill model children orphaned by a router crash, before respawn.
 
@@ -276,21 +318,7 @@ class LlamaServerSupervisor:
         llama-server binary whose parent is gone is an orphan of a previous router. Its VRAM must
         come back before the new router loads models next to the ghosts.
         """
-        try:
-            import psutil
-
-            exe = str(server_binary(self.install_dir))
-        except Exception:  # noqa: BLE001
-            return
-        own_pid = self.proc.pid if self.proc is not None else None
-        for p in psutil.process_iter(["exe", "ppid"]):
-            with suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-                ppid = p.info.get("ppid") or 0
-                if (p.info.get("exe") != exe or p.pid == own_pid
-                        or (ppid and psutil.pid_exists(ppid))):
-                    continue
-                logger.warning("reaping orphaned llama-server child pid=%s", p.pid)
-                p.kill()
+        self.reap_orphaned_server_processes(self.install_dir)
 
     # ── model management (router endpoints) ──────────────────
 

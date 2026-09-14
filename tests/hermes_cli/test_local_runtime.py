@@ -811,3 +811,66 @@ def test_bootstrap_failure_never_raises(tmp_path, monkeypatch):
         "hermes_cli.local_runtime.binaries.ensure_runtime_installed", boom)
     result = bootstrap.ensure_local_runtime({"local_runtime": {"enabled": True}})
     assert result is None  # no exception escaped
+
+
+
+def test_supervisor_assigns_windows_job_object(tmp_path, monkeypatch):
+    """Verify that _spawn assigns the spawned process to a Windows kill-on-close job object."""
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+    import hermes_cli.process_identity as pi
+
+    assigned_pids = []
+
+    def mock_assign(proc_or_pid):
+        pid = proc_or_pid.pid if hasattr(proc_or_pid, "pid") else int(proc_or_pid)
+        assigned_pids.append(pid)
+        return True
+
+    monkeypatch.setattr(pi, "assign_process_to_kill_on_close_job", mock_assign)
+
+    install_dir = tmp_path / "bin"
+    install_dir.mkdir()
+    fake_exe = install_dir / "llama-server"
+    fake_exe.touch(mode=0o755)
+
+    sup = LlamaServerSupervisor(install_dir, tmp_path / "models", port=18434)
+
+    class DummyProc:
+        pid = 99999
+        returncode = None
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **kwargs: DummyProc())
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.server_binary", lambda d: fake_exe)
+
+    sup._spawn()
+    assert 99999 in assigned_pids
+
+
+def test_reap_orphaned_server_processes(monkeypatch):
+    """Verify reap_orphaned_server_processes identifies and kills orphaned server processes."""
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    killed = []
+
+    class FakeProcInfo:
+        def __init__(self, pid, name, exe, ppid):
+            self.pid = pid
+            self.info = {"name": name, "exe": exe, "ppid": ppid}
+        def kill(self):
+            killed.append(self.pid)
+
+    procs = [
+        FakeProcInfo(101, "llama-server", "/opt/llama-server", 100),  # parent dead
+        FakeProcInfo(102, "llama-server", "/opt/llama-server", 200),  # parent alive
+        FakeProcInfo(103, "python", "/usr/bin/python", 100),          # different binary
+    ]
+
+    import psutil
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs: procs)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid == 200)
+
+    reaped = LlamaServerSupervisor.reap_orphaned_server_processes()
+    assert reaped == [101]
+    assert killed == [101]

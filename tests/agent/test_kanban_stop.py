@@ -8,6 +8,7 @@ from agent.kanban_stop import (
     build_kanban_stop_nudge,
     kanban_stop_nudge_enabled,
     session_called_kanban_terminal,
+    successful_kanban_terminal_transition,
 )
 
 
@@ -76,6 +77,64 @@ def test_no_nudge_after_kanban_complete(clear_kanban_env):
 
 
 
+
+
+
+
+def _call(name: str, call_id: str = "current") -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": "{}"},
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["kanban_complete", "kanban_block", "kanban_request_review", "kanban_request_changes"],
+)
+def test_successful_current_terminal_transition_is_detected(clear_kanban_env, name):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = [
+        {"role": "tool", "name": name, "tool_call_id": "current",
+         "content": '{"ok": true, "task_id": "t_abc"}'},
+    ]
+    assert successful_kanban_terminal_transition([_call(name)], messages) == name
+
+
+def test_failed_terminal_transition_does_not_stop_worker(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = [
+        {"role": "tool", "name": "kanban_block", "tool_call_id": "current",
+         "content": '{"error": "could not block"}'},
+    ]
+    assert successful_kanban_terminal_transition(
+        [_call("kanban_block")], messages
+    ) is None
+
+
+def test_foreign_task_transition_does_not_stop_worker(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = [
+        {"role": "tool", "name": "kanban_block", "tool_call_id": "current",
+         "content": '{"ok": true, "task_id": "t_other"}'},
+    ]
+    assert successful_kanban_terminal_transition(
+        [_call("kanban_block")], messages
+    ) is None
+
+
+def test_prior_terminal_result_is_not_current_round_success(clear_kanban_env):
+    clear_kanban_env.setenv("HERMES_KANBAN_TASK", "t_abc")
+    messages = [
+        {"role": "tool", "name": "kanban_block", "tool_call_id": "old",
+         "content": '{"ok": true, "task_id": "t_abc"}'},
+        {"role": "tool", "name": "kanban_heartbeat", "tool_call_id": "current",
+         "content": '{"ok": true, "task_id": "t_abc"}'},
+    ]
+    assert successful_kanban_terminal_transition(
+        [_call("kanban_heartbeat")], messages
+    ) is None
 
 
 # ── Integration: agent nudge + dispatcher bounded retry ──────────────

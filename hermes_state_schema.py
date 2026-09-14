@@ -645,8 +645,16 @@ class SessionSchemaMixin:
             if include_trigram:
                 rebuild_sql += "INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild');"
             rebuild_sql += _CLEAR_REBUILD_MARKERS_SQL + ";"
+        # Recovery indexes full canonical tool output. Move the boundary in the
+        # same transaction so later deletes use the same content representation.
+        stamp_sql = (
+            "INSERT INTO state_meta (key, value) VALUES ("
+            f"'{FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY}', "
+            "(SELECT CAST(COALESCE(MAX(id), 0) AS TEXT) FROM messages)) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
+        )
         recovery_sql = (
-            "BEGIN IMMEDIATE;" + drop_sql + rebuild_sql
+            "BEGIN IMMEDIATE;" + drop_sql + stamp_sql + rebuild_sql
             + f"DELETE FROM state_meta WHERE key IN ('{FTS_STALE_KEY}', '{FTS_REBUILD_DEFERRAL_KEY}');COMMIT;"
         )
         try:

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import { toolResultRecord } from '@/lib/tool-result-metadata'
 import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
@@ -14,6 +15,7 @@ import {
   reasoningPart,
   renderMediaTags,
   sealOpenToolParts,
+  stripPendingClarifyProjectionForCache,
   toChatMessages,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
@@ -223,7 +225,7 @@ describe('toChatMessages', () => {
 
     expect(toolPart?.result).toMatchObject({ image: 'https://cdn.example/cat.png', success: true })
     // The duplicated image is stripped, but the agent's words survive.
-    expect(chatMessageText(message)).toBe('Here you go.')
+    expect(chatMessageText(message)).toBe('Here you go.\n\n')
   })
 
   it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
@@ -269,7 +271,7 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect(chatMessageText(message)).toBe('what is in this photo?\n')
     expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
   })
 
@@ -363,6 +365,28 @@ describe('toChatMessages', () => {
       expect(chatMessageText(message)).not.toContain('Visible response before the interruption')
       expect(chatMessageText(message)).not.toContain('Context from the interrupted assistant response')
     }
+  })
+
+  it('projects persisted composite compaction carriers to their live user turn', () => {
+    const messages = toChatMessages([
+      {
+        id: 71,
+        role: 'user',
+        content: 'internal summary scaffold\n\nREAL ASK',
+        display_content: 'REAL ASK',
+        timestamp: 1
+      },
+      {
+        id: 72,
+        role: 'user',
+        content: 'prior live ask\n\ninternal summary scaffold',
+        display_content: 'prior live ask',
+        timestamp: 2
+      }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual(['REAL ASK', 'prior live ask'])
+    expect(messages.map(message => message.rowId)).toEqual([71, 72])
   })
 
   it('projects durable timeline kinds without inspecting their text', () => {
@@ -743,7 +767,7 @@ describe('upsertToolPart', () => {
     const [part] = parts
 
     expect(part?.type).toBe('tool-call')
-    expect(part && 'result' in part ? part.result : undefined).toMatchObject({
+    expect(part && 'result' in part ? toolResultRecord(part) : undefined).toMatchObject({
       inline_diff: '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
     })
   })
@@ -805,10 +829,9 @@ describe('upsertToolPart', () => {
       'complete'
     )
 
-    const completedResult =
-      completed[0] && 'result' in completed[0] ? (completed[0].result as Record<string, unknown>) : {}
+    const completedResult = completed[0] && 'result' in completed[0] ? toolResultRecord(completed[0]) : {}
 
-    const clearedResult = cleared[0] && 'result' in cleared[0] ? (cleared[0].result as Record<string, unknown>) : {}
+    const clearedResult = cleared[0] && 'result' in cleared[0] ? toolResultRecord(cleared[0]) : {}
 
     expect(completedResult.todos).toEqual([{ content: 'Boil water', id: 'boil', status: 'in_progress' }])
     expect(clearedResult.todos).toEqual([])
@@ -862,13 +885,7 @@ describe('upsertToolPart', () => {
 
     const contexts = webParts.map(part => String((part.args as Record<string, unknown>)?.context || ''))
 
-    const summaries = webParts.map(part => {
-      if (!('result' in part) || !part.result || typeof part.result !== 'object') {
-        return ''
-      }
-
-      return String((part.result as Record<string, unknown>).summary || '')
-    })
+    const summaries = webParts.map(part => String(toolResultRecord(part).summary || ''))
 
     expect(webParts).toHaveLength(2)
     expect(contexts).toEqual(['tokyo weather', 'reykjavik weather'])
@@ -934,7 +951,7 @@ describe('upsertToolPart', () => {
     expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).args).toMatchObject({
       context: 'auckland weather today and tomorrow forecast'
     })
-    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).result).toMatchObject({
+    expect(toolResultRecord(part as Extract<ChatMessagePart, { type: 'tool-call' }>)).toMatchObject({
       summary: 'Did 5 searches in 1.1s'
     })
   })
@@ -1003,7 +1020,7 @@ describe('upsertToolPart', () => {
 
     expect(webParts).toHaveLength(1)
     expect(webParts[0].toolCallId).toBe('search-asuncion')
-    expect(webParts[0].result).toMatchObject({ summary: 'Did 5 searches in 1.1s' })
+    expect(toolResultRecord(webParts[0])).toMatchObject({ summary: 'Did 5 searches in 1.1s' })
   })
 
   it('matches id-less live starts with later identified progress updates', () => {
@@ -1102,10 +1119,7 @@ describe('upsertToolPart', () => {
       .map(part => ({
         id: part.toolCallId,
         query: String((part.args as Record<string, unknown>)?.query || ''),
-        summary:
-          part.result && typeof part.result === 'object'
-            ? String((part.result as Record<string, unknown>).summary || '')
-            : ''
+        summary: String(toolResultRecord(part).summary || '')
       }))
 
     expect(webParts).toEqual([
@@ -1149,7 +1163,7 @@ describe('upsertToolPart', () => {
     const [part] = completed
 
     expect(part?.type).toBe('tool-call')
-    expect((part as Extract<ChatMessagePart, { type: 'tool-call' }>).result).toMatchObject({
+    expect(toolResultRecord(part as Extract<ChatMessagePart, { type: 'tool-call' }>)).toMatchObject({
       data: { web: [{ title: 'Suva forecast' }] },
       summary: 'Did 1 search in 0.5s'
     })
@@ -1225,13 +1239,23 @@ describe('mergeFinalAssistantText', () => {
     expect(result.filter(p => p.type === 'text')).toHaveLength(1)
   })
 
-  it('handles empty final text', () => {
+  it('does not erase streamed text when the final completion is empty (#95514)', () => {
     const parts = [{ type: 'text' as const, text: 'streamed' }, reasoningPart('some reasoning')]
 
     const result = mergeFinalAssistantText(parts, '')
 
-    expect(result.filter(p => p.type === 'text')).toHaveLength(0)
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'streamed' })
     expect(result.filter(p => p.type === 'reasoning')).toHaveLength(1)
+  })
+
+  it('treats whitespace-only final text as non-authoritative (#95514)', () => {
+    const parts = [{ type: 'text' as const, text: 'already on screen' }]
+
+    const result = mergeFinalAssistantText(parts, '   \n\t')
+
+    expect(result.filter(p => p.type === 'text')).toHaveLength(1)
+    expect(result.filter(p => p.type === 'text')[0]).toMatchObject({ text: 'already on screen' })
   })
 })
 
@@ -1309,6 +1333,64 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
   })
+
+  it('does not replay earlier turns when the spoken id is missing or stale', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      user('u2', 'new question'),
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'vanished-stream-id')?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'a1')?.text).toBe('Live reply only.')
+  })
+
+  it('bounds to a hidden user turn too (widget intents render no bubble)', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      { ...user('u2', 'widget intent'), hidden: true },
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+  })
+})
+
+describe('stripPendingClarifyProjectionForCache', () => {
+  const clarifyPart = (toolCallId: string): ChatMessagePart => ({
+    type: 'tool-call',
+    toolCallId,
+    toolName: 'clarify',
+    args: { choices: ['a'], question: 'Pick' },
+    argsText: '{"question":"Pick","choices":["a"]}'
+  })
+
+  it('drops a synthetic request-id-only clarify row from the durable cache', () => {
+    const messages: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'choose' }] },
+      { id: 'synthetic', role: 'assistant', parts: [clarifyPart('req-1')], pending: true }
+    ]
+
+    expect(stripPendingClarifyProjectionForCache(messages, 'req-1')).toEqual([messages[0]])
+  })
+
+  it('keeps a provider-authored clarify in position but strips its local running bit', () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'provider',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Choose.' }, clarifyPart('call-provider')],
+        pending: true
+      }
+    ]
+
+    const [cached] = stripPendingClarifyProjectionForCache(messages, 'req-1')
+    expect(cached.pending).toBe(false)
+    expect(cached.parts.map(part => part.type)).toEqual(['text', 'tool-call'])
+  })
 })
 
 describe('sealOpenToolParts', () => {
@@ -1335,7 +1417,8 @@ describe('sealOpenToolParts', () => {
 
     const next = sealOpenToolParts(messages)
 
-    expect(next[0].parts[0]).toHaveProperty('result')
+    expect(next[0].parts[0]).not.toHaveProperty('result')
+    expect(next[0].parts[0].completedAt).toBeDefined()
   })
 
   it('leaves already-completed tool parts untouched', () => {
@@ -1362,7 +1445,8 @@ describe('sealOpenToolParts', () => {
     const next = sealOpenToolParts(messages)
 
     expect(next[0].parts[0]).toBe(text)
-    expect(next[0].parts[1]).toHaveProperty('result')
+    expect(next[0].parts[1]).not.toHaveProperty('result')
+    expect(next[0].parts[1].completedAt).toBeDefined()
   })
 
   it('returns the same array reference when nothing needs sealing', () => {

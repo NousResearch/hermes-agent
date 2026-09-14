@@ -366,6 +366,20 @@ export interface Translations {
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
+    // Catalog section (en-only fallback convention — optional keys).
+    catalogHeading?: string;
+    catalogHint?: string;
+    catalogSearchPlaceholder?: string;
+    catalogEmpty?: string;
+    catalogEmptyDocsLink?: string;
+    catalogInstallBtn?: string;
+    catalogInstalledBadge?: string;
+    catalogUpdateBtn?: string;
+    catalogRemovedBadge?: string;
+    catalogConfirmTitle?: string;
+    catalogConfirmInstallNote?: string;
+    catalogRequiresEnv?: string;
+    removedFromCatalog?: string;
   };
 
   // ── Profiles page ──
@@ -551,6 +565,7 @@ export interface Translations {
     copyCliCommand: string;
     connect: string;
     sessionExpires: string;
+    sessionExpiredNoError: string;
     initiatingLogin: string;
     exchangingCode: string;
     connectedClosing: string;

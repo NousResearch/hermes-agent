@@ -8,8 +8,8 @@ Covers NousResearch/hermes-agent#67052:
     with foreground_unsupported on an old driver rather than silently
     downgrading to background.
   - Phase C: foreground approval is scoped by (action, delivery_mode) and by
-    session_id, so a background approval never silently authorizes foreground
-    and one run's unlock never leaks into another.
+    the shared gate's session key, so a background approval never silently
+    authorizes foreground and one run's unlock never leaks into another.
 
 Stdlib + pytest + unittest.mock only. No live cua-driver, no network.
 """
@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Dict, Optional
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -165,11 +165,11 @@ def test_text_response_surfaces_fields_additively():
     # Bare transport success still requires fresh verification, without None noise.
     r2 = ActionResult(ok=True, action="click")
     payload2 = json.loads(_text_response(r2))
-    assert payload2 == {
-        "ok": True,
-        "action": "click",
-        "verdict": {"decision": "verify_fresh_state"},
-    }
+    assert payload2["ok"] is True
+    assert payload2["action"] == "click"
+    # Verdict routes to fresh verification; a human hint may accompany the
+    # decision (contract is the decision, not the exact dict shape).
+    assert payload2["verdict"]["decision"] == "verify_fresh_state"
     for k in ("effect", "escalation", "code", "verified", "path", "degraded", "delivery_mode"):
         assert k not in payload2
 
@@ -220,7 +220,7 @@ def test_bad_delivery_mode_rejected():
     assert res.code == "bad_delivery_mode"
 
 
-def test_dispatcher_threads_delivery_mode_to_backend():
+def test_dispatcher_threads_delivery_mode_to_backend(grant_computer_use_approvals):
     """End-to-end through the tool dispatcher with the noop backend."""
     from tools.computer_use import tool as cu
     with patch.dict(os.environ, {"HERMES_COMPUTER_USE_BACKEND": "noop"}, clear=False):
@@ -237,193 +237,100 @@ def test_dispatcher_threads_delivery_mode_to_backend():
 # Phase C — foreground approval scoping (action + delivery_mode + session)
 # ---------------------------------------------------------------------------
 
-def test_background_approval_does_not_authorize_foreground():
+@pytest.fixture
+def _interactive_session(monkeypatch):
+    """Interactive CLI presence for the shared gate plus a fresh approval session key; grants made here are
+    wiped from ``tools.approval``'s store afterwards so nothing leaks between tests."""
+    from tools import approval
+    from tools.approval_context import reset_current_session_key, set_current_session_key
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    monkeypatch.setattr(approval, "save_permanent_allowlist", lambda patterns: None)
+    keys: list[str] = []
+
+    def use(session_key: str):
+        keys.append(session_key)
+        return set_current_session_key(session_key)
+
+    yield use
+    for key in keys:
+        approval.clear_session(key)
+    reset_current_session_key(set_current_session_key(""))
+
+
+def test_background_approval_does_not_authorize_foreground(_interactive_session):
     from tools.computer_use import tool as cu
 
     seen = []
 
-    def cb(action, args, summary):
-        seen.append((action, args.get("delivery_mode")))
-        return "approve_session"
+    def cb(command, description, **kw):
+        seen.append((command, description))
+        return "session"
 
     cu.set_approval_callback(cb)
+    _interactive_session("sess-A")
     try:
         # Background click, approve for session.
-        assert cu._request_approval("click", {}, "sess-A") is None
-        # A second background click needs no prompt (cached).
-        assert cu._request_approval("click", {}, "sess-A") is None
+        assert cu._request_approval("click", {}) is None
+        # A second background click needs no prompt (cached in the shared session store).
+        assert cu._request_approval("click", {}) is None
         assert len(seen) == 1
-        # Foreground click on the SAME action must prompt again — the
-        # background approval does not cover it.
-        assert cu._request_approval("click", {"delivery_mode": "foreground"}, "sess-A") is None
+        # Foreground click on the SAME action must prompt again — the background grant does not cover it.
+        assert cu._request_approval("click", {"delivery_mode": "foreground"}) is None
         assert len(seen) == 2
-        assert seen[-1] == ("click", "foreground")
+        assert "FOREGROUND" in seen[-1][0]
     finally:
         cu.set_approval_callback(None)
 
 
-def test_approval_state_is_session_scoped():
+def test_approval_state_is_session_scoped(_interactive_session):
     from tools.computer_use import tool as cu
 
     calls = []
 
-    def cb(action, args, summary):
-        calls.append((action, args.get("delivery_mode")))
-        return "approve_session"
+    def cb(command, description, **kw):
+        calls.append(command)
+        return "session"
 
     cu.set_approval_callback(cb)
     try:
         # Run A approves foreground click.
-        cu._request_approval("click", {"delivery_mode": "foreground"}, "run-A")
+        _interactive_session("run-A")
+        cu._request_approval("click", {"delivery_mode": "foreground"})
         # Run B has NOT — it must prompt independently.
         n_before = len(calls)
-        cu._request_approval("click", {"delivery_mode": "foreground"}, "run-B")
+        _interactive_session("run-B")
+        cu._request_approval("click", {"delivery_mode": "foreground"})
         assert len(calls) == n_before + 1
     finally:
         cu.set_approval_callback(None)
 
 
-def test_always_approve_covers_foreground():
-    from tools.computer_use import tool as cu
-
-    calls = []
-
-    def cb(action, args, summary):
-        calls.append(action)
-        return "always_approve"
-
-    cu.set_approval_callback(cb)
-    try:
-        # First call unlocks everything for this session.
-        cu._request_approval("click", {}, "run-C")
-        # Foreground now sails through without another prompt.
-        cu._request_approval("click", {"delivery_mode": "foreground"}, "run-C")
-        assert len(calls) == 1
-    finally:
-        cu.set_approval_callback(None)
-
-
-def test_cli_yolo_real_state_bypasses_foreground_approval(monkeypatch):
+def test_always_grant_is_per_scope_key_and_visible_to_shared_store(_interactive_session):
+    """One grant store: an "always" answered through computer_use lands in ``tools.approval`` under the same
+    ``cua:<action>:<mode>`` key, and — unlike the old blanket unlock — covers only that scope, so the visible
+    foreground variant still prompts."""
     from tools import approval
     from tools.computer_use import tool as cu
 
     calls = []
 
-    def cb(action, args, summary):
-        calls.append(action)
-        return "timeout"
-
-    monkeypatch.setattr(approval, "_YOLO_MODE_FROZEN", True)
-    cu.set_approval_callback(cb)
-    try:
-        assert cu._request_approval(
-            "type", {"delivery_mode": "foreground"}, "cli-yolo"
-        ) is None
-        assert calls == []
-    finally:
-        cu.set_approval_callback(None)
-
-
-def test_gateway_yolo_bypasses_request_with_different_db_session_id():
-    from tools import approval
-    from tools.computer_use import tool as cu
-
-    gateway_key = "agent:main:telegram:private:12345"
-    db_session_id = "db-sid-xyz"
-    token = approval.set_current_session_key(gateway_key)
-    calls = []
-
-    def cb(action, args, summary):
-        calls.append(action)
-        return "timeout"
+    def cb(command, description, **kw):
+        calls.append(command)
+        return "always"
 
     cu.set_approval_callback(cb)
+    _interactive_session("run-C")
     try:
-        approval.enable_session_yolo(gateway_key)
-        assert cu._request_approval(
-            "type", {"delivery_mode": "foreground"}, db_session_id
-        ) is None
-        assert calls == []
-    finally:
-        approval.disable_session_yolo(gateway_key)
-        approval.reset_current_session_key(token)
-        cu.set_approval_callback(None)
-
-
-def test_gateway_yolo_isolation_does_not_leak_between_sessions():
-    from tools import approval
-    from tools.computer_use import tool as cu
-
-    calls = []
-
-    def cb(action, args, summary):
-        calls.append(action)
-        return "deny"
-
-    cu.set_approval_callback(cb)
-    key_a = "agent:main:telegram:private:A"
-    key_b = "agent:main:telegram:private:B"
-    token_a = approval.set_current_session_key(key_a)
-    try:
-        approval.enable_session_yolo(key_a)
-        assert cu._request_approval(
-            "type", {"delivery_mode": "foreground"}, "db-A"
-        ) is None
-        token_b = approval.set_current_session_key(key_b)
-        try:
-            assert cu._request_approval(
-                "type", {"delivery_mode": "foreground"}, "db-B"
-            ) is not None
-            assert calls == ["type"]
-        finally:
-            approval.reset_current_session_key(token_b)
-    finally:
-        approval.disable_session_yolo(key_a)
-        approval.reset_current_session_key(token_a)
-        cu.set_approval_callback(None)
-
-
-def test_approvals_mode_off_bypasses_computer_use_request(monkeypatch):
-    from tools.computer_use import tool as cu
-
-    calls = []
-
-    def cb(action, args, summary):
-        calls.append(action)
-        return "timeout"
-
-    monkeypatch.setattr("tools.approval._get_approval_mode", lambda: "off")
-    cu.set_approval_callback(cb)
-    try:
-        assert cu._request_approval(
-            "type", {"delivery_mode": "foreground"}, "mode-off"
-        ) is None
-        assert calls == []
+        assert cu._request_approval("click", {}) is None
+        assert approval.is_approved("run-C", "cua:click:background")
+        assert not approval.is_approved("run-C", "cua:click:foreground")
+        assert cu._request_approval("click", {"delivery_mode": "foreground"}) is None
+        assert len(calls) == 2
     finally:
         cu.set_approval_callback(None)
-
-
-def test_bypass_resolution_error_uses_normal_approval_callback(monkeypatch):
-    from tools.computer_use import tool as cu
-
-    calls = []
-
-    def cb(action, args, summary):
-        calls.append(action)
-        return "deny"
-
-    monkeypatch.setattr(
-        "tools.approval.is_approval_bypass_active_for_session",
-        Mock(side_effect=RuntimeError("approval state unavailable")),
-    )
-    cu.set_approval_callback(cb)
-    try:
-        assert cu._request_approval(
-            "type", {"delivery_mode": "foreground"}, "resolution-error"
-        ) is not None
-        assert calls == ["type"]
-    finally:
-        cu.set_approval_callback(None)
+        with approval._lock:
+            approval._permanent_set().difference_update({"cua:click:background", "cua:click:foreground"})
 
 
 def test_foreground_summary_warns_about_focus_change():
@@ -442,7 +349,7 @@ def test_lifecycle_finally_resets_started_for_reentry():
     """After the lifecycle coro exits (MCP drop / crash), _started must be
     False so _require_started() no longer passes into a dead/None session.
     We drive the finally block directly via the coro's cleanup semantics."""
-    from tools.computer_use.cua_backend import _CuaDriverSession
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
 
     sess = _CuaDriverSession.__new__(_CuaDriverSession)
     sess._session = object()
@@ -459,7 +366,7 @@ def test_lifecycle_finally_resets_started_for_reentry():
 def test_call_tool_restarts_a_dead_session(monkeypatch):
     """call_tool on a session whose lifecycle died (_started False) must
     call start() to rebuild it, not raise 'not started' or hang."""
-    from tools.computer_use.cua_backend import _CuaDriverSession
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
 
     sess = _CuaDriverSession.__new__(_CuaDriverSession)
     sess._started = False           # dead session

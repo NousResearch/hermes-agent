@@ -617,6 +617,9 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     monkeypatch.setenv("HERMES_SESSION_KEY", "session-A")
     monkeypatch.setenv("HERMES_UI_SESSION_ID", "ui-A")
     monkeypatch.setenv("HERMES_SESSION_ID", "session-A")
+    monkeypatch.setenv("HERMES_SESSION_PROFILE", "profile-A")
+    # A session-* knob, not identity: stripping it would break the child's watcher tuning.
+    monkeypatch.setenv("HERMES_SESSION_STALL_TIMEOUT", "97")
 
     assert TURN_AUTHOR_ENV not in bot_relay.delivery_env(None)
     env = bot_relay.delivery_env(bot_relay.delivery_turn_author("ops", "ops"))
@@ -625,3 +628,5 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert "HERMES_SESSION_KEY" not in env
     assert "HERMES_UI_SESSION_ID" not in env
     assert "HERMES_SESSION_ID" not in env
+    assert "HERMES_SESSION_PROFILE" not in env
+    assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"

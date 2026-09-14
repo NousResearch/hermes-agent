@@ -1444,6 +1444,19 @@ _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
 _OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
 
 
+# Token Plan ``/compatible-mode/v1/models`` listings mix modalities: image (wan2.7-image*,
+# qwen-image-*), audio (qwen-audio-*) and video (happyhorse-*) SKUs sit next to the chat
+# models. The picker this feeds is a CHAT picker and those SKUs 400 on ``/chat/completions``
+# (chat-probed 2026-09-19), so offering one is a guaranteed failure. Their Hermes
+# integration is the dashscope image/video plugins, which reuse the same ``sk-sp-`` token —
+# keep them out of the chat catalog for both token-plan slugs.
+_TOKEN_PLAN_NON_CHAT_PREFIXES = ("wan", "happyhorse", "qwen-image", "qwen-audio")
+_NON_CHAT_LIVE_EXCLUDED_PROVIDERS: dict[str, tuple[str, ...]] = {
+    "alibaba-token-plan": _TOKEN_PLAN_NON_CHAT_PREFIXES,
+    "alibaba-token-plan-cn": _TOKEN_PLAN_NON_CHAT_PREFIXES,
+}
+
+
 def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     """Generic live fetch for any provider registered in providers/ with ``auth_type="api_key"``.
 
@@ -1452,6 +1465,8 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
     ``_LIVE_FIRST_PICKER_PROVIDERS`` (OpenCode Zen/Go, authoritative live API) live-first so stale
     curated entries stop polluting the top. Plugin providers without a static entry use the
     profile's ``fallback_models`` as the curated list (Fireworks lists an image model first).
+    Providers in ``_NON_CHAT_LIVE_EXCLUDED_PROVIDERS`` drop known non-chat live entries before
+    the merge (token-plan lists image/audio SKUs that 400 on chat).
     """
     from providers import get_provider_profile
 
@@ -1464,6 +1479,11 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
         # live-first, so it filters them out here (#111749).
         live = [m for m in live if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
+    non_chat_prefixes = _NON_CHAT_LIVE_EXCLUDED_PROVIDERS.get(normalized)
+    if live and non_chat_prefixes:
+        # Token-plan listings mix image/audio SKUs next to the chat models; they 400 on
+        # /chat/completions, so the chat picker must never offer them.
+        live = [m for m in live if not str(m).lower().startswith(non_chat_prefixes)]
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())

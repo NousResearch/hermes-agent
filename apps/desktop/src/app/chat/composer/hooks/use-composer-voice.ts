@@ -65,7 +65,7 @@ export function useComposerVoice({
 }: UseComposerVoiceArgs) {
   const { t } = useI18n()
   // A tile's composer speaks ITS transcript, not the primary chat's.
-  const { $messages } = useComposerScope()
+  const { $messages, ownerConnectionId, ownerProfile } = useComposerScope()
   const [voiceConversationActive, setVoiceConversationActive] = useState(false)
   // Engine selection is latched at conversation START (a Settings change
   // applies to the next conversation, never mid-call).
@@ -194,7 +194,11 @@ export function useComposerVoice({
     pendingResponse: pendingTurnResponse,
     // Before the conversation opens the mic, wait for any in-flight wake.pause
     // to finish releasing the capture device (see wakePauseBarrierRef).
-    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined
+    beforeMicOpen: () => wakePauseBarrierRef.current ?? undefined,
+    voiceScope:
+      ownerProfile || ownerConnectionId
+        ? { connectionId: ownerConnectionId, profile: ownerProfile }
+        : undefined
   })
 
   const liveConversation = useVoiceLiveConversation({

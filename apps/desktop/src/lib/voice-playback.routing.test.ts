@@ -119,4 +119,16 @@ describe('resolveSpeakStreamUrl', () => {
 
     await expect(pending).resolves.toBeNull()
   })
+
+  it('prefers an explicit Bot owner profile over the ambient active profile (#100864)', async () => {
+    setApiRequestConnection('local')
+    setApiRequestProfile('launch-profile')
+
+    const url = await resolveSpeakStreamUrl({ connectionId: 'local', profile: 'bot-rachel' })
+
+    expect(url).toContain('profile=bot-rachel')
+    expect(url).not.toContain('profile=launch-profile')
+    expect(getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'bot-rachel' })
+    expect(getConnection).not.toHaveBeenCalled()
+  })
 })

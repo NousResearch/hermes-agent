@@ -61,8 +61,25 @@ const CONFIG_TTL_MS = 60_000
 let cached: { key: string; at: number; config: VoiceClientConfig } | null = null
 let inflight: { key: string; promise: Promise<null | VoiceClientConfig> } | null = null
 
-function scopeKey(): string {
-  return `${getApiRequestConnection() ?? 'local'}::${getApiRequestProfile() ?? 'default'}`
+/** Optional pin for Bot chats whose owner profile differs from the ambient
+ *  gateway profile (`keepAllProfilesScope`). Undefined fields fall back to
+ *  `getApiRequestConnection` / `getApiRequestProfile`. */
+export interface VoiceClientScope {
+  connectionId?: null | string
+  profile?: null | string
+}
+
+function resolveScope(scope?: VoiceClientScope): { connectionId: null | string; profile: null | string } {
+  return {
+    connectionId: scope?.connectionId !== undefined ? scope.connectionId : getApiRequestConnection(),
+    profile: scope?.profile !== undefined ? scope.profile : getApiRequestProfile()
+  }
+}
+
+function scopeKey(scope?: VoiceClientScope): string {
+  const resolved = resolveScope(scope)
+
+  return `${resolved.connectionId ?? 'local'}::${resolved.profile ?? 'default'}`
 }
 
 /** Drop cached credentials (used by tests; scope changes rotate the key). */
@@ -71,8 +88,9 @@ export function clearVoiceClientConfigCache(): void {
   inflight = null
 }
 
-export async function fetchVoiceClientConfig(): Promise<null | VoiceClientConfig> {
-  const key = scopeKey()
+export async function fetchVoiceClientConfig(scope?: VoiceClientScope): Promise<null | VoiceClientConfig> {
+  const key = scopeKey(scope)
+  const resolved = resolveScope(scope)
 
   if (cached && cached.key === key && Date.now() - cached.at < CONFIG_TTL_MS) {
     return cached.config
@@ -87,8 +105,12 @@ export async function fetchVoiceClientConfig(): Promise<null | VoiceClientConfig
       // hermesApi carries connectionScoped(); profileScoped() adds the
       // profile — the same routing every relay audio call uses, so the
       // config comes from the backend the user is actually talking to.
+      // An explicit Bot owner scope overrides the ambient active profile
+      // (#100864): Bot Mode keeps chrome on the launch profile while the
+      // chat's TTS must resolve against the Bot's own profile config.
       const response = await hermesApi<{ ok: boolean } & VoiceClientConfig>({
-        ...profileScoped(),
+        ...profileScoped(resolved.profile),
+        ...(resolved.connectionId ? { connectionId: resolved.connectionId } : {}),
         path: '/api/audio/voice-config'
       })
 
@@ -272,8 +294,8 @@ export async function transcribeAudioClientDirect(audio: Blob): Promise<null | s
 // ---------------------------------------------------------------------------
 
 /** Resolve the profile's TTS config when it is client-callable, else null. */
-export async function directTtsConfig(): Promise<DirectTtsConfig | null> {
-  const config = await fetchVoiceClientConfig()
+export async function directTtsConfig(scope?: VoiceClientScope): Promise<DirectTtsConfig | null> {
+  const config = await fetchVoiceClientConfig(scope)
 
   return config?.tts && config.tts.mode === 'direct' ? config.tts : null
 }

@@ -72,8 +72,19 @@ function currentState(
 }
 
 export interface VoicePlaybackOptions {
+  /** Bot / tile owner registry connection. Overrides ambient when set. */
+  connectionId?: null | string
   messageId?: string | null
+  /** Bot / tile owner profile. Overrides ambient active gateway profile (#100864). */
+  profile?: null | string
   source: VoicePlaybackSource
+}
+
+function voiceClientScope(options?: Pick<VoicePlaybackOptions, 'connectionId' | 'profile'>) {
+  return {
+    ...(options?.connectionId !== undefined ? { connectionId: options.connectionId } : {}),
+    ...(options?.profile !== undefined ? { profile: options.profile } : {})
+  }
 }
 
 export function stopVoicePlayback() {
@@ -105,7 +116,9 @@ export function stopVoicePlayback() {
 
 /** Exported for tests: the (connection, profile) routing contract below is
  *  exactly what broke in the desktop-remote voice report — keep it pinned. */
-export async function resolveSpeakStreamUrl(): Promise<null | string> {
+export async function resolveSpeakStreamUrl(
+  scope?: Pick<VoicePlaybackOptions, 'connectionId' | 'profile'>
+): Promise<null | string> {
   const desktop = window.hermesDesktop
 
   if (!desktop?.getConnection) {
@@ -123,8 +136,13 @@ export async function resolveSpeakStreamUrl(): Promise<null | string> {
     // replies would synthesize with the local (often unconfigured) TTS
     // instead of the profile the user is actually talking to (#90051-adjacent
     // desktop-remote voice report, Aug 2026).
-    const profile = getApiRequestProfile()
-    const connectionId = getApiRequestConnection()
+    //
+    // Bot Mode (#100864): an explicit owner scope wins over the ambient
+    // active gateway profile so each Bot speaks with its own TTS config.
+    const profile =
+      scope?.profile !== undefined ? scope.profile : getApiRequestProfile()
+    const connectionId =
+      scope?.connectionId !== undefined ? scope.connectionId : getApiRequestConnection()
 
     // Both awaits below are IPC round-trips into the main process with no
     // timeout of their own (#93454) — a wedged main-process round-trip
@@ -522,7 +540,8 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
  * `playSpeechText`).
  */
 export async function startSpeechStream(options: VoicePlaybackOptions): Promise<null | SpeechStreamSession> {
-  const direct = await directTtsConfig().catch(() => null)
+  const scope = voiceClientScope(options)
+  const direct = await directTtsConfig(scope).catch(() => null)
 
   if (direct) {
     stopVoicePlayback()
@@ -539,7 +558,7 @@ export async function startSpeechStream(options: VoicePlaybackOptions): Promise<
     return session
   }
 
-  const wsUrl = await resolveSpeakStreamUrl()
+  const wsUrl = await resolveSpeakStreamUrl(scope)
 
   if (!wsUrl) {
     return null
@@ -573,7 +592,7 @@ async function playSpeechDataUrl(
   options: VoicePlaybackOptions,
   isCurrent: () => boolean
 ): Promise<boolean> {
-  const response = await speakText(speakableText)
+  const response = await speakText(speakableText, voiceClientScope(options))
 
   if (!isCurrent()) {
     return false
@@ -669,7 +688,8 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
   try {
     // Ladder: client-direct synthesis (profile's own TTS, no gateway audio
     // hop) → streaming WS relay → POST data-URL fallback.
-    const direct = await directTtsConfig().catch(() => null)
+    const scope = voiceClientScope(options)
+    const direct = await directTtsConfig(scope).catch(() => null)
 
     if (direct && isCurrent()) {
       const session = openClientDirectSpeechSession(direct, options)
@@ -693,7 +713,7 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
       return false
     }
 
-    const streamUrl = await resolveSpeakStreamUrl()
+    const streamUrl = await resolveSpeakStreamUrl(scope)
 
     if (streamUrl && isCurrent()) {
       const outcome = await playSpeechStream(streamUrl, speakableText, options)

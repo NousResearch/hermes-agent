@@ -209,7 +209,7 @@ def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
     A transient homeserver outage surfaces as a 5xx whose body may be an HTML
     error page (Umbrel's app-proxy returns one). Naive substring checks like
     ``"403" in str(exc)`` false-positive on digits embedded in that HTML (an SVG
-    coordinate such as ``40.4302`` contains ``403``) or in the ``since`` token
+    path coordinate such as ``1403.2`` contains ``403``) or in the ``since`` token
     echoed by a timeout message, which stopped the sync loop permanently on a
     passing blip. mautrix raises ``MatrixRequestError`` with ``errcode`` and
     ``http_status`` for every non-2xx, so classify on those alone; anything

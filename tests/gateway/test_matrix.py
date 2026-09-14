@@ -1375,9 +1375,9 @@ class TestMatrixSyncLoop:
     @pytest.mark.parametrize(
         "exc",
         [
-            # Umbrel app-proxy 502: the SVG coordinate 40.4302 embeds "403".
+            # Umbrel app-proxy 502: an SVG path coordinate embeds "403".
             _sync_error.__func__(
-                '502: <!DOCTYPE html><svg><path d="M17.4517 40.4302C12.7214 40.4302"/></svg>',
+                '502: <!DOCTYPE html><svg><path d="M17.4517 1403.2C12.7214 1403.2"/></svg>',
                 http_status=502,
             ),
             # Plain timeout echoing the pagination token, which embeds "401".

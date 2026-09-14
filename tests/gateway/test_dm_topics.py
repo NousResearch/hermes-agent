@@ -594,6 +594,27 @@ def test_stampless_location_does_not_inherit_topic_lane():
     assert event.source.thread_id is None
 
 
+def test_stampless_text_clears_lane_before_next_media():
+    """A plain-DM text is an explicit transition to the default lane: it must clear the cached
+    topic so a media message arriving afterward does not inherit a topic the conversation already
+    left (topic text -> plain text -> plain photo must resolve to 100 / None / None, not 100 / None
+    / 100)."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter()
+
+    stamped = _make_mock_message(chat_id=111, user_id=42, thread_id=100, text="hi")
+    first = adapter._build_message_event(stamped, MessageType.TEXT)
+
+    plain_text = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="hello again")
+    second = adapter._build_message_event(plain_text, MessageType.TEXT)
+
+    plain_photo = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="")
+    third = adapter._build_message_event(plain_photo, MessageType.PHOTO)
+
+    assert (first.source.thread_id, second.source.thread_id, third.source.thread_id) == ("100", None, None)
+
+
 # ── DM-topic lane inheritance through the real dispatch handlers (#109527 follow-up) ──
 # The tests above call _build_message_event() directly. These go through the actual
 # _handle_text_message / _handle_command / _handle_location_message entry points so the
@@ -680,3 +701,31 @@ async def test_dispatch_stampless_location_does_not_inherit_topic_lane():
 
     event = adapter.handle_message.await_args_list[-1].args[0]
     assert event.source.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_plain_dm_text_clears_lane_before_next_media():
+    """Through _handle_text_message, an ordinary stamp-less DM text is a real transition to the
+    default lane: topic text -> plain-DM text -> plain-DM photo must resolve thread ids
+    100 / None / None, not 100 / None / 100 (a plain-DM message must not leave the topic lane
+    cached for the next stamp-less media to inherit)."""
+    adapter = _make_adapter()
+    adapter._bot = None
+    adapter.handle_message = AsyncMock()
+    adapter._text_batch_delay_seconds = 0.01
+
+    stamped = _make_dispatch_message(thread_id=100, text="hi", is_topic_message=True)
+    await adapter._handle_text_message(_make_dispatch_update(stamped, update_id=1), SimpleNamespace())
+    await asyncio.sleep(0.05)
+
+    plain_text = _make_dispatch_message(thread_id=None, text="hello again")
+    await adapter._handle_text_message(_make_dispatch_update(plain_text, update_id=2), SimpleNamespace())
+    await asyncio.sleep(0.05)
+
+    from gateway.platforms.event import MessageType
+    plain_photo = _make_mock_message(chat_id=111, user_id=42, thread_id=None, text="")
+    photo_event = adapter._build_message_event(plain_photo, MessageType.PHOTO)
+
+    thread_ids = [call.args[0].source.thread_id for call in adapter.handle_message.await_args_list]
+    assert thread_ids == ["100", None]
+    assert photo_event.source.thread_id is None

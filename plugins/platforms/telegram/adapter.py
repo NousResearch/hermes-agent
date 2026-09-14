@@ -5208,6 +5208,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
         return thread_id
 
+    def _forget_dm_topic_lane(self, lane_key: str) -> None:
+        """Drop any cached topic lane for ``lane_key``: an ordinary stamp-less message is an explicit
+        transition to the default lane, not a gap to inherit through (#109527 follow-up)."""
+        lanes = self.__dict__.get("_dm_topic_lanes")
+        if lanes:
+            lanes.pop(lane_key, None)
+
     # Decides only whether a FOREIGN @handle is bot-shaped; our own handle is matched by identity, never
     # shape (collectible/Fragment bot usernames need not end in "bot").
     _FOREIGN_BOT_HANDLE_RE = re.compile(r"[a-z0-9_]{2,29}bot", re.IGNORECASE)
@@ -6375,6 +6382,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._remember_dm_topic_lane(lane_key, thread_id_str)
             elif msg_type in self._DM_TOPIC_LANE_MEDIA_TYPES:
                 thread_id_str = self._recall_dm_topic_lane(lane_key)
+            else:
+                # An ordinary stamp-less text/command/location always carries a real stamp when it is
+                # actually inside a topic, so its absence is an explicit move back to the default lane —
+                # not a gap to paper over. Clear the cached lane so a later stamp-less media message
+                # doesn't inherit a topic the conversation has since left (#109527 follow-up).
+                self._forget_dm_topic_lane(lane_key)
         chat_topic, topic_skill = self._resolve_topic_binding(message, chat_type, thread_id_str)
         has_full_name = hasattr(chat, "full_name")
         if user:

@@ -48,7 +48,9 @@ def share(service, actor, version):
     assert dispatch_group_files(service, actor, "groups.attachment.upload", request) == {**uploaded, "idempotent": True}
     # The parent-owned client fix projects the five manifest fields before Send.
     entry = {key: uploaded[key] for key in ("attachment_id", "kind", "name", "size", "mime")}
-    payload = validate_user_payload(dict(text="Shared", thread_id=f"thread-{version}", attachments=[entry]))
+    payload = validate_user_payload(
+        dict(text="Shared", thread_id=f"thread-{version}", attachments=[entry]),
+        member_ids=[member["member_id"] for member in service._room("room")["members"]])
     append_user_event(service, room_id="room", event_id=f"event-{version}",
                       payload=payload, gateway_id=gateway, epoch=epoch)
     event = hosted_rooms.read_events(service.db_path, room_id="room")["events"][-1]
@@ -111,3 +113,18 @@ def test_handlers_refuse_foreign_or_changed_authority_before_returning_bytes(fil
     monkeypatch.setattr(HostedRoomAttachmentStore, "_read_blob", read_then_reassign)
     with pytest.raises(RuntimeStoreError, match="permission_denied"):
         dispatch_group_files(service, actor, "groups.attachment.download", selected)
+
+
+def test_download_refuses_replaced_authority_during_real_blob_read(files, monkeypatch):
+    from gateway.session_group_files import dispatch_group_files
+    service, actor, _gateway, _db = files
+    saved = share(service, actor, 1)
+    original = HostedRoomAttachmentStore._read_blob
+    def read_then_replace(store, **kwargs):
+        data = original(store, **kwargs)
+        service.authority = SimpleNamespace(**vars(service.authority))
+        return data
+    monkeypatch.setattr(HostedRoomAttachmentStore, "_read_blob", read_then_replace)
+    with pytest.raises(RuntimeStoreError, match="attachment_scope_changed"):
+        dispatch_group_files(service, actor, "groups.attachment.download",
+            dict(room_id="room", event_id="event-1", attachment_id=saved["attachment_id"]))

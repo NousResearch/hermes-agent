@@ -18,7 +18,6 @@ from typing import Any, Literal
 from gateway import hosted_room_driver as driver
 from gateway import hosted_rooms
 from gateway import hosted_rooms_common as common
-from gateway.hosted_room_attachments import MAX_TASK_ATTACHMENT_BYTES, MAX_TASK_ATTACHMENTS
 from gateway.hosted_room_task_input import validate_task_input
 from gateway.hosted_rooms_common import compact_json
 

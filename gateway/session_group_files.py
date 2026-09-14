@@ -137,10 +137,16 @@ def dispatch_group_files(service, actor, method: str, params: dict) -> dict:
     if capability is None:
         raise RuntimeStoreError("invalid_params")
     home = _check_principal(service, actor, capability)
+    authority, db = service.authority, service.authority.db
+    db_path = Path(db.db_path).resolve()
     supplied = _validate_params(method, params, home)
     try:
         origin = _authorize(service, actor, supplied, capability)
         result = _HANDLERS[method](service, actor, supplied, *origin)
+        if (service.authority is not authority or authority.db is not db
+                or Path(db.db_path).resolve() != db_path
+                or Path(service.db_path).resolve() != db_path):
+            raise RuntimeStoreError("attachment_scope_changed")
         # The catalog/store fences room state. Recheck the canonical principal's
         # room-owner binding too, after snapshot/hash/file I/O and before return.
         if _authorize(service, actor, supplied, capability) != origin:

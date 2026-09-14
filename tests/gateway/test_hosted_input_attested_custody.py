@@ -18,6 +18,7 @@ async def test_attested_preflight_uses_accepted_private_copy_without_source_tran
         receipt = await rpc._submit(dict(task=TaskIdentity('room', 'task', 'thread', 'turn'),
             execution_generation=1, prompt='read', attachments=[item], on_terminal=lambda value: None))
         row = get_session_admission(db, admission_id=receipt['admission_id'])
+        assert row is not None
         def no_source_read(*args, **kwargs):
             pytest.fail('execution preflight re-transferred source bytes')
         monkeypatch.setattr('gateway.hosted_room_input_preparation.resolve_inputs', no_source_read)

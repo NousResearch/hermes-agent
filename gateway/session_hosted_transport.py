@@ -15,6 +15,7 @@ from pathlib import Path
 import socket
 import threading
 import time
+from types import SimpleNamespace
 
 from gateway.hosted_room_driver import TaskIdentity
 from gateway.session_contract import Principal
@@ -290,11 +291,13 @@ def _check_remote_hosted_admission(authority, ref, row):
         attested = _attest(binding, 'execute', params)
         if attested['owner'] != binding['owner']:
             raise ValueError('owner changed')
+        if not isinstance(attested.get('attachment_digests'), list):
+            raise ValueError('source digests missing')
         from gateway.hosted_room_input_preparation import reconstruct_accepted_payload
         rpc = SimpleNamespace(authority=authority, **binding['selector'])
         if row['payload'] != reconstruct_accepted_payload(
                 rpc, attested['prompt'], attested['attachments'], row,
-                source_digests=attested.get('attachment_digests')):
+                source_digests=attested['attachment_digests']):
             raise ValueError('input changed')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc

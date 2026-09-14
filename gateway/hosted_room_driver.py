@@ -974,20 +974,3 @@ def defer_not_admitted_task(
         if updated.rowcount != 1:
             raise StaleTaskError("running task changed during deferral")
         return _task_from_row(_load_task(conn, attempt.identity))
-
-
-def get_task_for_turn(
-    db_path: DbPath,
-    identity: TaskIdentity,
-) -> dict[str, Any] | None:
-    """Read the immutable admission for a turn, including older payload versions."""
-    conn = _connect(db_path)
-    try:
-        row = conn.execute(
-            """SELECT * FROM hosted_room_driver_tasks
-               WHERE room_id=? AND thread_id=? AND turn_id=?""",
-            (identity.room_id, identity.thread_id, identity.turn_id),
-        ).fetchone()
-        return _task_from_row(row) if row is not None else None
-    finally:
-        conn.close()

@@ -79,7 +79,7 @@ def _(rid, params: dict) -> dict:
     for cls in external_backend_classes():
         live = enabled.get(cls.name)
         rows.append({"name": cls.name, "display_name": cls.display_name, "enabled": live is not None,
-                     "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()),
+                     "needs_unlock": cls.needs_unlock, "unlocked": bool(live and live.is_unlocked()),
                      "installed": is_installed(cls.name)})
     return _ok(rid, {"sources": rows})
 

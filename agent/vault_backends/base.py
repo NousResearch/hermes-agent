@@ -9,12 +9,15 @@ namespaced by ``prefix`` so ``backend_for_handle`` needs no lookup table.
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from agent.vault_store import VaultItemMeta
+
+logger = logging.getLogger(__name__)
 
 
 class UnlockRequired(Exception):
@@ -30,6 +33,10 @@ class LoginBackend(ABC):
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
+
+    def is_available(self) -> bool:
+        """Whether this backend can service calls; cheap and network-free."""
+        return True
 
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)
@@ -97,7 +104,9 @@ def _cfg() -> Dict:
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+    from agent.vault_backends.registry import list_backend_classes
+
+    return (OnePasswordLoginBackend, BitwardenLoginBackend, *list_backend_classes())
 
 
 def is_installed(name: str) -> bool:
@@ -110,7 +119,17 @@ def is_installed(name: str) -> bool:
     if name == "onepassword":
         from agent.secret_sources.onepassword import find_op
         return find_op() is not None
-    return shutil.which("bw") is not None
+    if name == "bitwarden":
+        return shutil.which("bw") is not None
+    cls = next((candidate for candidate in external_backend_classes() if candidate.name == name), None)
+    if cls is None:
+        return False
+    try:
+        backend = cls(section if isinstance(section, dict) else {})
+        return bool(backend.is_available())
+    except Exception:  # noqa: BLE001 — a broken plugin must not break vault discovery
+        logger.warning("Login backend '%s' availability check failed; skipping", name, exc_info=True)
+        return False
 
 
 def is_enabled(name: str) -> bool:

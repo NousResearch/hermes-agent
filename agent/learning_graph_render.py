@@ -185,6 +185,26 @@ def _skill_category_counts(nodes: Iterable[dict[str, Any]]) -> Counter:
     return Counter(str(n.get("category") or "skill") for n in nodes if not _is_memory(n))
 
 
+def _node_meta(node: dict[str, Any]) -> str:
+    if node.get("kind") == "memory":
+        mem_source = str(node.get("memorySource") or "memory")
+        if mem_source == "profile":
+            source = "profile memory"
+        elif mem_source == "memory":
+            source = "memory"
+        else:
+            # External memory provider (e.g. "honcho memory").
+            source = f"{mem_source} memory"
+        return f"{source} · {format_date(_to_ts(node.get('timestamp')))}"
+    bits = [str(node.get("category") or "skill"), format_date(_to_ts(node.get("timestamp")))]
+    count = int(node.get("useCount", 0) or 0)
+    if count:
+        bits.append(f"x{count}")
+    if node.get("pinned"):
+        bits.append("pinned")
+    return " · ".join(bits)
+
+
 # ── Timeline chart frame ─────────────────────────────────────────────────────
 
 class _ChartBucket:

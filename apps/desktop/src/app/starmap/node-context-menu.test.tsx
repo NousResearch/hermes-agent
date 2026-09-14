@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { NodeContextMenu, type NodeMenuTarget } from './node-context-menu'
@@ -14,7 +15,12 @@ vi.mock('@/hermes', () => ({
   getLearningNode: vi.fn()
 }))
 vi.mock('@/store/notifications', () => ({ notifyError: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ evictStarmapNode: vi.fn(), loadStarmapGraph: vi.fn() }))
+vi.mock('@/store/profile', () => ({
+  $profiles: atom([]),
+  normalizeProfileKey: (name: string) => name,
+  profileLabel: (profile: { name: string }) => profile.name
+}))
+vi.mock('@/store/starmap', () => ({ $starmapSelectedProfiles: atom([]), evictStarmapNode: vi.fn(), loadStarmapGraph: vi.fn() }))
 vi.mock('../hooks/use-on-profile-switch', () => ({ useOnProfileSwitch: vi.fn() }))
 
 const target: NodeMenuTarget = { id: 'memory-1', kind: 'memory', label: 'Test memory', x: 1000, y: 750 }
@@ -23,7 +29,7 @@ afterEach(cleanup)
 
 describe('NodeContextMenu', () => {
   it('opens a collision-aware menu anchored at the click point', async () => {
-    render(<NodeContextMenu onClose={vi.fn()} onNodeRemoved={vi.fn()} target={target} />)
+    render(<NodeContextMenu onClose={vi.fn()} onNodeRemoved={vi.fn()} onShowProvenance={vi.fn()} target={target} />)
 
     // Radix stamps the side it resolved after collision handling; the
     // hand-rolled fixed div had no such engine and clipped near the edges.
@@ -36,7 +42,7 @@ describe('NodeContextMenu', () => {
   it('keeps the destructive row functional through the shared menu', async () => {
     const onClose = vi.fn()
 
-    render(<NodeContextMenu onClose={onClose} onNodeRemoved={vi.fn()} target={target} />)
+    render(<NodeContextMenu onClose={onClose} onNodeRemoved={vi.fn()} onShowProvenance={vi.fn()} target={target} />)
 
     const row = await screen.findByRole('menuitem', { name: 'Delete memory' })
 

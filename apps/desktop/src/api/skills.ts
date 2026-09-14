@@ -43,12 +43,37 @@ export function setSkillEnabled(
   })
 }
 
-export function getStarmapGraph(): Promise<StarmapGraph> {
+export function getStarmapGraph(profile?: string): Promise<StarmapGraph> {
   return hermesApi<StarmapGraph>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     // Backend REST contract — stays /api/learning even though the UI feature is
     // now "star map". Renaming this would break against an un-upgraded backend.
     path: '/api/learning/graph'
+  })
+}
+
+/** Fetch a merged learning graph from multiple profiles. Each node/edge/card
+ *  is tagged with its source profile, and node ids are prefixed to avoid
+ *  collisions. */
+export function getStarmapGraphMultiProfile(profiles: string[]): Promise<StarmapGraph> {
+  const params = new URLSearchParams({ profiles: profiles.join(',') })
+
+  return hermesApi<StarmapGraph>({
+    path: `/api/learning/graph?${params.toString()}`
+  })
+}
+
+/** Cross-profile memory insertion: copy a node's content from one profile
+ *  into another profile's MEMORY.md. */
+export function crossInsertLearningNode(
+  id: string,
+  sourceProfile: string,
+  targetProfile: string
+): Promise<{ message: string; ok: boolean }> {
+  return hermesApi<{ message: string; ok: boolean }>({
+    body: { id, source_profile: sourceProfile, target_profile: targetProfile },
+    method: 'POST',
+    path: '/api/learning/node/cross-insert'
   })
 }
 

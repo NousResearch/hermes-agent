@@ -512,6 +512,64 @@ def test_explicit_desktop_and_terminal_cwds_are_context_workspaces():
     ) is False
 
 
+def test_configured_local_terminal_cwd_is_a_context_workspace(tmp_path, monkeypatch):
+    """A profile-configured local ``terminal.cwd`` is deliberate intent, so a desktop
+    session on it is NOT a launch artifact — its AGENTS.md must load (#106012)."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": str(tmp_path)}) is False
+
+
+def test_missing_configured_terminal_cwd_stays_launch_artifact(tmp_path, monkeypatch):
+    """A configured cwd that does not exist falls back to the launch dir, so it stays an
+    artifact — keeping this gate in agreement with resolve_context_cwd()."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "does-not-exist"))
+    assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": "/opt/hermes"}) is True
+
+
+def test_trivial_terminal_cwd_stays_launch_artifact(monkeypatch):
+    """Sentinel values (``.``/``auto``/``cwd``) carry no workspace intent."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.setenv("TERMINAL_CWD", "auto")
+    assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": "/opt/hermes"}) is True
+
+
+def test_non_local_backend_terminal_cwd_stays_launch_artifact(tmp_path, monkeypatch):
+    """Non-local backends (docker/ssh) keep the launch-artifact classification: their cwd lives
+    inside the target environment and the fallback can be a previous session's launch dir."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "docker")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    assert server._context_cwd_is_launch_artifact({"source": "desktop", "cwd": str(tmp_path)}) is True
+
+
+def test_bound_profile_configured_cwd_is_a_context_workspace(tmp_path, monkeypatch):
+    """The intent gate is session-scoped: a session bound to a sibling profile takes its intent
+    from THAT profile's config, not the launch env. Here the launch env is unset but the bound
+    profile configures a real ``terminal.cwd``, so the desktop session is a context workspace."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    profile_home = tmp_path / "profiles" / "ops"
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(f"terminal:\n  cwd: {workspace}\n", encoding="utf-8")
+    session = {"source": "desktop", "cwd": str(workspace), "profile_home": str(profile_home)}
+    assert server._context_cwd_is_launch_artifact(session) is False
+
+
+def test_bound_profile_without_config_ignores_launch_env(tmp_path, monkeypatch):
+    """A bound sibling profile with no configured ``terminal.cwd`` must NOT inherit the launch
+    profile's ``TERMINAL_CWD`` (#40334): the gate stays session-scoped, so the desktop session
+    remains a launch artifact even though the launch env points at a real directory."""
+    monkeypatch.setattr(server, "_effective_terminal_backend", lambda: "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))  # launch profile's dir — exists, not a sentinel
+    profile_home = tmp_path / "profiles" / "ops"
+    profile_home.mkdir(parents=True)  # no config.yaml → no configured cwd for this profile
+    session = {"source": "desktop", "cwd": str(tmp_path), "profile_home": str(profile_home)}
+    assert server._context_cwd_is_launch_artifact(session) is True
+
+
 @pytest.mark.parametrize(
     ("explicit_cwd", "launch_artifact"),
     [(True, False), (False, True)],

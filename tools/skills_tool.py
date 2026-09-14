@@ -16,7 +16,9 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
+    is_inside_skill_package as _is_inside_skill_package,
+    is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -343,10 +345,15 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
             if (found_skill_md.parent.name == name
                     or _safe_frontmatter(found_skill_md).get("name") == name):
                 _record(found_skill_md.parent, found_skill_md)
-        # Legacy flat <name>.md anywhere under the dir; support docs are excluded
-        # (they load via file_path and must not shadow real skills sharing the basename).
+        # Legacy flat <name>.md anywhere under the dir; support docs and package-internal
+        # Markdown are excluded (they load via file_path and must not shadow real skills
+        # sharing the basename, whatever the internal directory is named).
         for found_md in search_dir.rglob(f"{name}.md"):
-            if found_md.name != "SKILL.md" and not _is_skill_support_path(found_md):
+            if (
+                found_md.name != "SKILL.md"
+                and not _is_skill_support_path(found_md)
+                and not _is_inside_skill_package(found_md, root=search_dir)
+            ):
                 _record(None, found_md)
     return candidates
 

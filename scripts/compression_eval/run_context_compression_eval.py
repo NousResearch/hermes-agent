@@ -56,9 +56,14 @@ def _resolve_clean_source(path: Path) -> tuple[Path, str]:
 def _command_runtime_fingerprint(command: list[str]) -> str:
     executable = command[0]
     resolved = shutil.which(executable) if not Path(executable).is_absolute() else executable
-    if resolved is None and Path(executable).is_file():
+    if Path(executable).is_file():
         first = Path(executable).read_text(encoding="utf-8", errors="replace").splitlines()[:1]
-        resolved = first[0][2:].strip() if first and first[0].startswith("#!") else executable
+        if first and first[0].startswith("#!"):
+            parts = first[0][2:].split()
+            if parts and Path(parts[0]).name == "env":
+                parts = parts[1:]
+            if parts:
+                resolved = shutil.which(parts[0]) or parts[0]
     if resolved:
         try:
             version = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=5, check=False)

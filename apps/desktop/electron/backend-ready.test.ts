@@ -216,3 +216,25 @@ test('waitForDashboardReadyFile rejects when the child exits before file readine
     tmp.cleanup()
   }
 })
+
+test('waitForDashboardPort resolves when announcement arrives on stderr', async () => {
+  const child = makeFakeChild() as any
+  child.stderr = new EventEmitter()
+  const p = waitForDashboardPort(child, 1000)
+  child.stderr.emit('data', 'HERMES_BACKEND_READY port=62345\n')
+  assert.equal(await p, 62345)
+})
+
+test('waitForDashboardPortAnnouncement resolves if stdout arrives before ready file', async () => {
+  const tmp = mkTmpReadyFile()
+  const child = makeFakeChild()
+
+  try {
+    const p = waitForDashboardPortAnnouncement(child, { readyFile: tmp.file, timeoutMs: 1000 })
+    child.stdout.emit('data', 'HERMES_BACKEND_READY port=63456\n')
+    assert.equal(await p, 63456)
+  } finally {
+    tmp.cleanup()
+  }
+})
+

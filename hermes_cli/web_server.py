@@ -325,33 +325,40 @@ def _warm_gateway_module() -> None:
     the ~14s cold-start stall (#60800). Warm them all here so the cost
     is paid in a worker thread while the server socket is already open.
     """
-    for mod in (
-        "hermes_cli.gateway",
-        # setup.status / setup.runtime_check resolve provider auth state,
-        # which imports copilot_auth (→ subprocess module) and scans
-        # credential files. First import is noticeably slow on Windows.
-        "hermes_cli.auth",
-        "hermes_cli.copilot_auth",
-        "hermes_cli.runtime_provider",
-        # resolve_skin() reads config + initialises the skin engine.
-        # Even though handle_ws now calls it via asyncio.to_thread
-        # (see tui_gateway/ws.py), warming it here avoids the first-call
-        # import cost inside that thread.
-        "hermes_cli.skin_engine",
-        # model.options / picker context — parses provider catalogs and
-        # the models.dev cache on first use.
-        "hermes_cli.inventory",
-        "hermes_cli.model_switch",
-        # tui_gateway / ws transport — pre-warm the JSON-RPC WebSocket server
-        # so the Desktop / Chat-tab ready-probe is not stalled by module
-        # imports on the event loop during cold startup.
-        "tui_gateway.server",
-        "tui_gateway.ws",
-    ):
-        try:
-            __import__(mod)
-        except Exception:
-            pass
+    saved_stdout = sys.stdout
+    try:
+        for mod in (
+            "hermes_cli.gateway",
+            # setup.status / setup.runtime_check resolve provider auth state,
+            # which imports copilot_auth (→ subprocess module) and scans
+            # credential files. First import is noticeably slow on Windows.
+            "hermes_cli.auth",
+            "hermes_cli.copilot_auth",
+            "hermes_cli.runtime_provider",
+            # resolve_skin() reads config + initialises the skin engine.
+            # Even though handle_ws now calls it via asyncio.to_thread
+            # (see tui_gateway/ws.py), warming it here avoids the first-call
+            # import cost inside that thread.
+            "hermes_cli.skin_engine",
+            # model.options / picker context — parses provider catalogs and
+            # the models.dev cache on first use.
+            "hermes_cli.inventory",
+            "hermes_cli.model_switch",
+            # tui_gateway / ws transport — pre-warm the JSON-RPC WebSocket server
+            # so the Desktop / Chat-tab ready-probe is not stalled by module
+            # imports on the event loop during cold startup.
+            "tui_gateway.server",
+            "tui_gateway.ws",
+        ):
+            try:
+                __import__(mod)
+            except Exception:
+                pass
+    finally:
+        # tui_gateway.server unconditionally redirects sys.stdout to sys.stderr
+        # at import time (assuming stdio JSON-RPC). In web_server, stdout must
+        # be preserved for parent process port announcement.
+        sys.stdout = saved_stdout
 
 
 def _resolve_restart_drain_timeout() -> float:
@@ -17572,7 +17579,9 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
+    saved_stdout = sys.stdout
     from tui_gateway.ws import handle_ws
+    sys.stdout = saved_stdout
 
     # The authenticated identity (ticket / internal credential) was stamped
     # onto the WS object by _ws_auth_reason; carry it into the gateway
@@ -19594,7 +19603,14 @@ def start_server(
             # plain backend, not a dashboard, so it announces a neutral token;
             # `dashboard` keeps the legacy one. The desktop matches either.
             ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-            print(f"{ready_token} port={actual_port}", flush=True)
+            ready_line = f"{ready_token} port={actual_port}"
+            real_out = sys.__stdout__ or sys.stdout
+            try:
+                real_out.write(f"{ready_line}\n")
+                real_out.flush()
+            except Exception:
+                pass
+            print(ready_line, flush=True)
             if headless:
                 # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
                 # advertise a paste-and-connect URL, just announce the bind.

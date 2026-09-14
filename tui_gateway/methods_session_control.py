@@ -397,6 +397,41 @@ def _dispatch_envelope(response: dict) -> dict:
     }
 
 
+@method("session.retitle")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Regenerate the current stored session title from a small recent-history snapshot."""
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return _err(rid, 4001, "session has no stored key")
+
+    with session["history_lock"]:
+        history = list(session.get("history") or [])
+
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5031)
+            with _session_profile_runtime_scope(session):
+                from agent.session_retitle import retitle_session
+                title = retitle_session(db, session_key, history)
+    except ValueError as exc:
+        return _err(rid, 4004, str(exc))
+    except Exception as exc:
+        logger.debug("session.retitle failed: %s", exc, exc_info=True)
+        return _err(rid, 5031, f"session.retitle failed: {exc}")
+
+    if not title:
+        return _err(rid, 4018, "no conversation context available for retitle")
+    return _ok(rid, {"title": title})
+
+
 def register(server) -> None:
     """Rebind this module's handlers onto the server namespace."""
     bind_module(globals(), server, skip=("_",))
+    # Title generation can block on an auxiliary-model request; keep it off the
+    # JSON-RPC reader thread just like the other model-backed session methods.
+    server._LONG_HANDLERS = frozenset({*server._LONG_HANDLERS, "session.retitle"})

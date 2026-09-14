@@ -47,8 +47,13 @@ class TestBuildLearnPrompt:
         # description length — otherwise distilled skills miss platform gating,
         # author credit, and the tool-framing table. Lock the coverage in.
         std = _AUTHORING_STANDARDS.lower()
-        # #1 description: the count-and-trim self-check (the reported bug).
-        assert "count" in std and "60" in std
+        # #1 description: length is verified through a tool, never by the
+        # model "counting" (models cannot count characters; see the repeated
+        # over-limit rejects in #110008).
+        assert "print(len(sys.argv[1]))" in _AUTHORING_STANDARDS
+        assert "`terminal`" in _AUTHORING_STANDARDS
+        assert "count the characters" not in std
+        assert "60" in std
         # #3 platforms gating against OS-bound primitives.
         assert "platforms" in std
         # author is always the literal Hermes, never the host/OS identity (#52368).

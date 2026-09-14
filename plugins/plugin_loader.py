@@ -158,9 +158,9 @@ def load_named(name: str, plugin_dir: Path, load_from_dir: Callable[[Path], Opti
     except Exception as e:
         logger.warning("Failed to load %s '%s': %s", kind.lower(), name, e)
         return None
-    if not instance:
+    if instance is None:
         logger.warning("%s '%s' loaded but no %s instance found", kind, name, noun)
-    return instance or None
+    return instance
 
 
 def probe_availability(load: Callable[[], Optional[Any]]) -> bool:

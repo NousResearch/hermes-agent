@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from evolver.gates import (Patch, activation_gate, credit_gate,
-                           paired_bootstrap_ci, validity_gate)
+from evolver.gates import (CREDIT_MIN_PAIRS, Patch, activation_gate,
+                           credit_gate, paired_bootstrap_ci, validity_gate)
 
 
 @pytest.fixture()
@@ -51,6 +51,36 @@ def test_validity_rejects_empty_diff(repo):
     res = validity_gate(Patch(diff=""), repo)
     assert not res.passed
     assert res.detail["reason"] == "empty_diff"
+
+
+def test_validity_rejects_base_mismatch_unresolvable(repo):
+    diff = _diff_for(repo, "mod.py", "VALUE = 2\n")
+    res = validity_gate(
+        Patch(diff=diff, base_sha="0" * 40), repo)
+    assert not res.passed
+    assert res.detail["reason"] == "base_mismatch"
+
+
+def test_validity_rejects_base_mismatch_wrong_commit(repo):
+    diff = _diff_for(repo, "mod.py", "VALUE = 2\n")
+    (repo / "other.py").write_text("X = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "second"], cwd=repo, check=True)
+    first = subprocess.run(["git", "rev-parse", "HEAD~1"], cwd=repo,
+                           capture_output=True, text=True,
+                           check=True).stdout.strip()
+    res = validity_gate(Patch(diff=diff, base_sha=first), repo)
+    assert not res.passed
+    assert res.detail["reason"] == "base_mismatch"
+
+
+def test_validity_accepts_matching_base_sha(repo):
+    diff = _diff_for(repo, "mod.py", "VALUE = 2\n")
+    head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo,
+                          capture_output=True, text=True,
+                          check=True).stdout.strip()
+    res = validity_gate(Patch(diff=diff, base_sha=head), repo)
+    assert res.passed, res.detail
 
 
 def test_validity_rejects_non_applying_diff(repo):
@@ -111,6 +141,28 @@ def test_activation_fails_when_patch_does_not_fix(tmp_path):
     assert res.detail["reason"] == "not_fixed"
 
 
+def test_activation_records_base_run_crash(tmp_path):
+    def boom(checkout, _test_ref):
+        raise RuntimeError("repro exploded")
+    base, patched = tmp_path / "base", tmp_path / "patched"
+    res = activation_gate(Patch(diff="x"), boom, "t", base, patched)
+    assert not res.passed
+    assert res.detail["reason"] == "base_run_crashed"
+    assert "RuntimeError" in res.detail["error"]
+
+
+def test_activation_records_patched_run_crash(tmp_path):
+    def flaky(checkout, _test_ref):
+        if str(checkout).endswith("patched"):
+            raise RuntimeError("patched run exploded")
+        return False  # red on base
+    base, patched = tmp_path / "base", tmp_path / "patched"
+    res = activation_gate(Patch(diff="x"), flaky, "t", base, patched)
+    assert not res.passed
+    assert res.detail["reason"] == "patched_run_crashed"
+    assert res.detail["red_on_base"] is True
+
+
 def test_credit_grants_on_clear_lift():
     res = credit_gate([0.5] * 8, [1.5] * 8)
     assert res.passed, res.detail
@@ -139,6 +191,17 @@ def test_credit_fails_closed_on_thin_data():
 
 def test_credit_fails_closed_on_unpaired_data():
     res = credit_gate([0.0] * 5, [1.0] * 6)
+    assert not res.passed
+    assert res.detail["reason"] == "insufficient_data"
+
+
+def test_credit_boundary_min_pairs():
+    # Exactly CREDIT_MIN_PAIRS pairs is a measurement; one fewer is a guess.
+    n = CREDIT_MIN_PAIRS
+    res = credit_gate([0.5] * n, [1.5] * n)
+    assert res.passed, res.detail
+    assert res.detail["n"] == n
+    res = credit_gate([0.5] * (n - 1), [1.5] * (n - 1))
     assert not res.passed
     assert res.detail["reason"] == "insufficient_data"
 

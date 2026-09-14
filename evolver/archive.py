@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -43,15 +43,26 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def make_span(name: str, status: str = "ok", **attributes) -> dict:
-    """Build one OpenTelemetry-flavored span dict."""
-    return {
+def make_span(name: str, status: str = "ok",
+              duration_s: float | None = None, **attributes) -> dict:
+    """Build one OpenTelemetry-flavored span dict.
+
+    ``duration_s`` records how long the span took; it is what makes the
+    "timeout" failure class measurable rather than a label.
+    """
+    started = datetime.now(timezone.utc)
+    ended = (started + timedelta(seconds=duration_s)
+             if duration_s is not None else datetime.now(timezone.utc))
+    span = {
         "name": name,
-        "started_at": utcnow_iso(),
-        "ended_at": utcnow_iso(),
+        "started_at": started.isoformat(timespec="seconds"),
+        "ended_at": ended.isoformat(timespec="seconds"),
         "status": {"code": status},
         "attributes": {k: str(v) for k, v in attributes.items()},
     }
+    if duration_s is not None:
+        span["attributes"]["duration_s"] = str(duration_s)
+    return span
 
 
 def make_record(task: dict, trace_spans: list, failure_class: str,

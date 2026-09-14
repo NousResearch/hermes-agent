@@ -26,8 +26,15 @@ def test_record_from_fix_result_maps_fields():
     assert record["task"]["kind"] == "bugfix"
     assert record["failure_class"] == "regression"  # red_on_base present
     assert record["failure_class"] in FAILURE_CLASSES
+    # parked_contested is unresolved, not a failure
+    assert record["outcome"]["status"] == "unknown"
     statuses = {s["status"]["code"] for s in record["trace"]["spans"]}
     assert statuses == {"ok", "error"}
+
+
+def test_record_pr_opened_maps_to_passed():
+    record = record_from_fix_result(_fix_result(status="pr_opened"))
+    assert record["outcome"]["status"] == "passed"
 
 
 def test_record_without_red_proof_is_test_failure():

@@ -49,6 +49,20 @@ def test_empty_spans_rejected():
     assert any("spans" in e for e in validate_record(record))
 
 
+def test_make_record_rejects_invalid_failure_class():
+    with pytest.raises(ValueError):
+        make_record(_task(), [make_span("t")], "mystery", _source())
+
+
+def test_make_span_records_duration():
+    from datetime import datetime
+    span = make_span("slow", status="error", duration_s=90.0)
+    assert span["attributes"]["duration_s"] == "90.0"
+    started = datetime.fromisoformat(span["started_at"])
+    ended = datetime.fromisoformat(span["ended_at"])
+    assert (ended - started).total_seconds() >= 90.0
+
+
 def test_archive_round_trip_jsonl(tmp_path):
     archive = TraceArchive(tmp_path / "a.jsonl")
     record = make_record(_task(), [make_span("t", status="error")],

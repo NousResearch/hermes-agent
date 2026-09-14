@@ -20,12 +20,6 @@ from pathlib import Path
 
 from .archive import make_record, make_span
 
-_STATUS_TO_SPAN = {
-    "passed": "ok",
-    "failed": "error",
-}
-
-
 def _span_status(value: str) -> str:
     v = str(value).strip().lower()
     if v.startswith("pass"):
@@ -33,6 +27,21 @@ def _span_status(value: str) -> str:
     if v.startswith("fail"):
         return "error"
     return "unset"
+
+
+def _outcome_status(data: dict) -> str:
+    """Map the factory record's status to an outcome status.
+
+    "parked" (e.g. parked_contested) is UNRESOLVED, not a failure: the fix
+    may be fine and merely contested. Only explicit failure signals map to
+    "failed".
+    """
+    status = str(data.get("status", "")).lower()
+    if "fail" in status:
+        return "failed"
+    if "merged" in status or "fixed" in status or "pr_open" in status:
+        return "passed"
+    return "unknown"
 
 
 def record_from_fix_result(data: dict, source_path: str = "") -> dict:
@@ -56,10 +65,7 @@ def record_from_fix_result(data: dict, source_path: str = "") -> dict:
     else:
         failure_class = "unknown"
 
-    status = str(data.get("status", "unknown")).lower()
-    outcome_status = "failed" if "parked" in status or "fail" in status else (
-        "passed" if "pr" in status or "merged" in status or "fixed" in status
-        else "unknown")
+    status = _outcome_status(data)
 
     return make_record(
         task={
@@ -70,7 +76,7 @@ def record_from_fix_result(data: dict, source_path: str = "") -> dict:
         },
         trace_spans=spans,
         failure_class=failure_class,
-        outcome={"status": outcome_status, "red_on_base": red_proof[:500]},
+        outcome={"status": status, "red_on_base": red_proof[:500]},
         source={"type": "factory", "path": source_path,
                 "branch": data.get("branch", ""),
                 "commit": data.get("commit", "")},

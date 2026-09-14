@@ -5,7 +5,25 @@ Offline tooling for evolving Hermes' own agent scaffold. This package is
 from the wheel): it runs offline, never in the hot path, and proposes
 changes that a human merges.
 
-Full plan: `~/workspace/frontier-kb/notes/harness-evolver-hermes-plan.md`.
+Full plan: issues #110671–#110676 (this repo).
+
+## Trigger and cost
+
+Nothing here runs in the hot path or on any schedule. The evolver is
+invoked manually, offline:
+
+- `collect.py` — reads JSON files, milliseconds.
+- `validity_gate` — one scratch worktree + `git apply --check` + an AST
+  parse per touched file. Seconds.
+- `activation_gate` — two runs of one regression test file via
+  `scripts/run_tests.sh`. Minutes, bounded by the test itself.
+- `credit_gate` — 10k bootstrap resamples over ≤ dozens of pairs.
+  Sub-second, deterministic (seeded).
+- `calibrate.py` — ~15 single-file test runs across scratch worktrees
+  (each capped at 300 s). Slow on purpose: it is the kill criterion.
+
+A patch that never reaches a human merge gate costs nothing but compute;
+a patch that does reach it costs a review.
 
 ## Phase 0 scope (this PR)
 

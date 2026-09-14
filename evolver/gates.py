@@ -53,12 +53,6 @@ class GateResult:
     duration_s: float = 0.0
 
 
-def _timed(fn, *args, **kwargs):
-    t0 = time.monotonic()
-    result = fn(*args, **kwargs)
-    return result, time.monotonic() - t0
-
-
 def _touched_py_files(diff: str) -> list:
     files = []
     for line in diff.splitlines():
@@ -69,12 +63,21 @@ def _touched_py_files(diff: str) -> list:
     return files
 
 
+def _git(repo: Path, args: list) -> str | None:
+    """Run a git plumbing command; return stripped stdout, or None on failure."""
+    r = subprocess.run(["git", *args], capture_output=True, text=True,
+                       cwd=repo, timeout=30)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
 def validity_gate(patch: Patch, repo: str | Path) -> GateResult:
     """Gate 1: the patch is well-formed and safe to attempt.
 
-    Checks, in order: non-empty diff; ``git apply --check`` against the base
-    tree; every touched ``.py`` file parses after the patch is applied (in a
-    scratch worktree, so the caller's tree is never modified).
+    Checks, in order: non-empty diff; when ``patch.base_sha`` is set, that
+    the repo's HEAD is that commit (a diff checked against the wrong tree
+    is not a measurement — fail closed); ``git apply --check`` against the
+    base tree; every touched ``.py`` file parses after the patch is applied
+    (in a scratch worktree, so the caller's tree is never modified).
     """
     t0 = time.monotonic()
 
@@ -84,6 +87,16 @@ def validity_gate(patch: Patch, repo: str | Path) -> GateResult:
     if not patch.diff or not patch.diff.strip():
         return done(False, reason="empty_diff")
     repo = Path(repo)
+    # 0. The diff must be against the tree we are checking it on.
+    if patch.base_sha:
+        head = _git(repo, ["rev-parse", "HEAD"])
+        want = _git(repo, ["rev-parse", "--verify",
+                           f"{patch.base_sha}^{{commit}}"])
+        if head is None or want is None or head != want:
+            return done(False, reason="base_mismatch",
+                        detail_note="repo HEAD does not match patch.base_sha",
+                        head=(head or "?")[:12],
+                        base_sha=patch.base_sha[:12])
     # 1. Applies cleanly to the base tree?
     check = subprocess.run(
         ["git", "apply", "--check", "-"],
@@ -141,8 +154,11 @@ def activation_gate(patch: Patch, run_test, test_ref: str,
     """Gate 2: the failure reproduces on base (red) and the patch fixes it.
 
     ``run_test(checkout, test_ref)`` returns True when the regression test
-    passes. Both directions are required: a test that passes on base proves
-    nothing, and a patch that leaves it red fixes nothing.
+    passes. Contract on the caller: ``patched_checkout`` must actually have
+    the patch applied, and ``run_test`` must be hermetic in the checkout
+    (same test, same environment, both trees) — otherwise the comparison
+    is meaningless. Both directions are required: a test that passes on
+    base proves nothing, and a patch that leaves it red fixes nothing.
     """
     t0 = time.monotonic()
 

@@ -424,7 +424,7 @@ def _chat_messages_to_responses_input(
     ``is_xai_responses``: signature compatibility only (xAI DOES replay encrypted reasoning).
     ``replay_encrypted_reasoning``: per-session kill switch, threaded False by
     ``AIAgent._disable_codex_reasoning_replay`` after an ``invalid_encrypted_content`` 400.
-    ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
+    ``is_github_responses``: drops connection-bound message ids and encrypted reasoning.
     ``current_issuer_kind``: cross-issuer guard; foreign-stamped items drop, legacy items replay.
     ``native_compaction_eligible``: THIS request carries ``context_management``; gates both replaying ``compaction``
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
@@ -435,13 +435,13 @@ def _chat_messages_to_responses_input(
     replayed ``encrypted_content`` reasoning items minted by prior turns, and we stripped them. That
     decision was wrong — xAI explicitly relies on Hermes threading encrypted reasoning back across turns for
     cross-turn coherence (the whole point of their partnership integration). We now replay encrypted
-    reasoning on every Responses transport (xAI, native Codex, custom relays) and let xAI tell us explicitly
+    reasoning on non-Copilot Responses transports (xAI, native Codex, custom relays) and let xAI tell us explicitly
     if a specific surface ever rejects a payload.
-    The Copilot backend (api.githubcopilot.com/responses) binds these ids to a specific backend "connection"
+    The Copilot backend (api.githubcopilot.com/responses) binds ids and encrypted reasoning to a backend "connection"
     — credential-pool rotation, a gateway restart, or routine load-balancer churn between turns all
-    invalidate it — and rejects a stale id with HTTP 401 "input item ID does not belong to this connection"
-    even for short ids (see #32716). ``phase``/ ``status``/``content`` are still replayed; only ``id`` is
-    unsafe to reuse across a Copilot connection.
+    invalidate it — and rejects stale replay with HTTP 401 "input item does not belong to this connection"
+    or ``invalid_encrypted_content`` (see #32716 and #70481). Visible assistant content, ``phase`` and
+    ``status`` are still replayed; only connection-bound state is omitted.
     ``native_compaction_eligible`` mirrors, for THIS request, the decision made by
     ``native_compaction.native_compaction_context_management`` — it is True only when that gate returned a
     payload, i.e. when the request actually carries ``context_management``. It controls two things that must
@@ -485,7 +485,7 @@ def _chat_messages_to_responses_input(
         if role == "user":
             emit([{"role": role, "content": content_parts or content_text}], msg)
             continue
-        reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
+        reasoning_items = [] if not replay_encrypted_reasoning or is_github_responses else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
             native_compaction_eligible=native_compaction_eligible,
         )
@@ -643,6 +643,9 @@ def _preflight_function_call_output(item: Dict[str, Any], idx: int, ctx: _Prefli
 
 def _preflight_encrypted(item: Dict[str, Any], idx: int, ctx: _PreflightCtx) -> Optional[Dict[str, Any]]:
     """``reasoning`` / ``compaction`` items: opaque, issuer-sealed; forward only API-defined fields."""
+    # Request overrides run after history conversion and can reintroduce stale Copilot ciphertext.
+    if ctx.is_github_responses and item["type"] == "reasoning":
+        return None
     encrypted = item.get("encrypted_content")
     if not _nonempty_str(encrypted):
         return None
@@ -832,6 +835,12 @@ def _preflight_codex_api_kwargs(
     extra_body = _optional_dict(api_kwargs, "extra_body")
     if extra_body:
         normalized["extra_body"] = dict(extra_body)
+        # Explicit extra_body.input wins over top-level input at SDK dispatch.
+        if is_github_responses and isinstance(extra_body.get("input"), list):
+            normalized["extra_body"]["input"] = [
+                item for item in extra_body["input"]
+                if not isinstance(item, dict) or item.get("type") != "reasoning"
+            ]
     stream = api_kwargs.get("stream")
     if not allow_stream and "stream" in api_kwargs:
         raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")

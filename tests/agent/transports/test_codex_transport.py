@@ -203,6 +203,53 @@ class TestCodexBuildKwargs:
         assert message_item["status"] == "in_progress"
         assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
 
+    @pytest.mark.parametrize("route", ["github", "codex", "xai"])
+    def test_github_responses_drops_connection_bound_reasoning(self, transport, route):
+        messages = [{
+            "role": "assistant",
+            "content": "done",
+            "codex_reasoning_items": [{
+                "type": "reasoning",
+                "encrypted_content": "copilot-connection-bound-ciphertext",
+                "summary": [{"type": "summary_text", "text": "analysis"}],
+            }],
+        }]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_github_responses=route == "github",
+            is_codex_backend=route == "codex",
+            is_xai_responses=route == "xai",
+        )
+
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert bool(reasoning) is (route != "github")
+        assert any(item.get("content") == "done" for item in kw["input"])
+        assert messages[0]["codex_reasoning_items"][0]["encrypted_content"] == "copilot-connection-bound-ciphertext"
+
+    @pytest.mark.parametrize("extra_body", [False, True])
+    def test_github_preflight_drops_reintroduced_reasoning(self, transport, extra_body):
+        message = {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "done"}],
+        }
+        override = {"input": [{"type": "reasoning", "encrypted_content": "stale-ciphertext"}, message]}
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "continue"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"extra_body": override} if extra_body else override,
+        )
+
+        preflight = transport.preflight_kwargs(kw, is_github_responses=True)
+
+        effective_body = preflight["extra_body"] if extra_body else preflight
+        assert effective_body["input"] == [message]
+        assert override["input"][0]["encrypted_content"] == "stale-ciphertext"
+
 
 
     def test_non_github_responses_keeps_message_item_id_end_to_end(self, transport):

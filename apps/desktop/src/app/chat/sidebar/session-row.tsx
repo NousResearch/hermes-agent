@@ -46,6 +46,7 @@ import {
   SidebarRowLeadGlyph,
   SidebarRowShell
 } from './chrome'
+import type { ShellDragProps } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
@@ -68,7 +69,14 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   onResume: () => void
   reorderable?: boolean
   dragging?: boolean
+  /** Full dnd-kit handle (role/tabIndex + keyboard + pointer activators) —
+   *  spread ONLY on SidebarRowGrab. The shell must use shellDragProps. */
   dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  /** Pointer-only dnd listeners for the row SHELL — never the keyboard
+   *  activator or role/tabIndex. The shell contains real controls (⋯ menu,
+   *  row body); those must stay ordinary focus targets whose Space/Enter do
+   *  their own thing, not start or feed a dnd-kit drag. */
+  shellDragProps?: ShellDragProps
   /** Tag the row with its owning profile (initial chip + tooltip). Used by
    *  flat cross-profile lists — Pinned and search results in the All-profiles
    *  view — where no group header communicates ownership (#66003). */
@@ -135,6 +143,7 @@ function SidebarSessionRowImpl({
   reorderable = false,
   dragging = false,
   dragHandleProps,
+  shellDragProps,
   showProfile = false,
   card = false,
   className,
@@ -377,7 +386,11 @@ function SidebarSessionRowImpl({
         // target (the session drop denies: side chrome hosts no main tile);
         // over the tree only the session drop does (no sortable row there).
         // Whichever one the release lands on is the one that commits.
-        {...dragHandleProps}
+        //
+        // The shell gets ONLY the pointer activator: shellDragProps is typed
+        // to carry just onPointerDown (forwarded below), never the keyboard
+        // activator or role/tabIndex — a focused row control can't start a
+        // dnd-kit drag or feed its Space/Enter end codes.
         onPointerDown={event => {
           // The grabber already carries these same listeners, and the ⋯
           // cluster keeps its own gestures.
@@ -390,7 +403,7 @@ function SidebarSessionRowImpl({
           // stay ordinary clicks, so resume / pin / open-in-window are
           // untouched.
           startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
-          dragHandleProps?.onPointerDown?.(event)
+          shellDragProps?.onPointerDown?.(event)
         }}
         // Hovering a row from another profile (the all-profiles view) telegraphs
         // a cross-profile resume — start that backend's spawn now so the click

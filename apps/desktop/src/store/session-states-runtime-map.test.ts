@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } from '@/store/session'
 import { isSessionOwnerResolutionError } from '@/store/session-owner-resolution'
 import {
   $sessionTiles,
   clearAllSessionStates,
+  dropSessionState,
   knownOwnerForSession,
   publishSessionState,
+  recordSessionEventScope,
   requestForOwnedSession,
   storedSessionIdForRuntimeId
 } from '@/store/session-states'
@@ -125,5 +129,86 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
       requestForOwnedSession('rt-orphan', ambient as never, 'approval.respond', { session_id: 'rt-orphan' })
     ).resolves.toEqual({ ok: true })
     expect(ambient).toHaveBeenCalledWith('approval.respond', { session_id: 'rt-orphan' })
+  })
+
+  it('routes a connection-tagged orphan runtime through the owner its inbound event recorded (#97511)', () => {
+    // Registry topology, multiple profiles, no tile/hint/row binding for the
+    // runtime — the approval.request event itself proved the exact owner.
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    recordSessionEventScope({ connectionId: 'homelab', profile: 'omar', session_id: 'rt-unbound' })
+
+    expect(knownOwnerForSession('rt-unbound')).toEqual({ connectionId: 'homelab', profile: 'omar' })
+
+    // An event without a profile tag still records the 'default' convention
+    // every other owner source uses.
+    recordSessionEventScope({ connectionId: 'homelab', session_id: 'rt-unprofiled' })
+    expect(knownOwnerForSession('rt-unprofiled')).toEqual({ connectionId: 'homelab', profile: 'default' })
+  })
+
+  it('still prefers the durable stored owner when a stale runtime ledger entry collides with a stored id (#97511)', () => {
+    // Pathological collision: some dead runtime's id equals a live stored id.
+    // The persisted hint (durable identity) must outrank the ledger entry.
+    setSessionOwnerHint('stored-live', { connectionId: 'local', profile: 'omar' })
+    recordSessionEventScope({ connectionId: 'spark', profile: 'default', session_id: 'stored-live' })
+
+    expect(knownOwnerForSession('stored-live')).toEqual({ connectionId: 'local', profile: 'omar' })
+  })
+
+  it('keeps failing closed for untagged or unknown runtimes in multi-profile topology (#97511)', () => {
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    // Untagged events carry no connectionId and record nothing.
+    recordSessionEventScope({ profile: 'omar', session_id: 'rt-untagged' })
+
+    expect(knownOwnerForSession('rt-untagged')).toBeUndefined()
+    expect(knownOwnerForSession('rt-never-seen')).toBeUndefined()
+  })
+
+  it('drops the recorded event owner together with the runtime state (#97511)', () => {
+    recordSessionEventScope({ connectionId: 'homelab', profile: 'omar', session_id: 'rt-dropped' })
+    expect(knownOwnerForSession('rt-dropped')).toEqual({ connectionId: 'homelab', profile: 'omar' })
+
+    dropSessionState('rt-dropped')
+    expect(knownOwnerForSession('rt-dropped')).toBeUndefined()
+  })
+
+  it('answers an approval on a sole-local registry install through the primary socket (#96394)', async () => {
+    // The reported topology: a modern Desktop (connections bridge present,
+    // registry loaded with exactly one `local` connection), one profile, and
+    // an approval.request whose runtime id has no tile / hint / row binding.
+    // hasRegistryTopology() is true here, so the ambient escape hatch is
+    // closed by design — the exact owner must come from the event itself.
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { connections: { list: async () => null } }
+    $connectionsRegistry.set({
+      activeConnectionId: 'local',
+      connections: [{ id: 'local', kind: 'local', label: 'Local' }]
+    } as never)
+    $profiles.set([{ name: 'default' }] as never)
+
+    const primaryRequest = vi.fn(async (method: string, params: unknown) => ({ method, params, via: 'primary' }))
+
+    setPrimaryGateway({ onEvent: () => () => undefined, request: primaryRequest, state: 'open' } as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'local' })
+
+    const ambient = vi.fn(async () => ({ via: 'ambient' }))
+
+    try {
+      // Before the event lands the owner is unknown and routing still fails closed.
+      await expect(
+        requestForOwnedSession('rt-approval', ambient as never, 'approval.respond', { session_id: 'rt-approval' })
+      ).rejects.toSatisfy(isSessionOwnerResolutionError)
+
+      // use-gateway-boot stamps every primary event with the active connection
+      // id (Electron resolves the sole local connection to `local`).
+      recordSessionEventScope({ connectionId: 'local', profile: 'default', session_id: 'rt-approval' })
+
+      await expect(
+        requestForOwnedSession('rt-approval', ambient as never, 'approval.respond', { session_id: 'rt-approval' })
+      ).resolves.toEqual({ method: 'approval.respond', params: { session_id: 'rt-approval' }, via: 'primary' })
+      expect(ambient).not.toHaveBeenCalled()
+    } finally {
+      setPrimaryGateway(null)
+      $connectionsRegistry.set(null)
+      delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    }
   })
 })

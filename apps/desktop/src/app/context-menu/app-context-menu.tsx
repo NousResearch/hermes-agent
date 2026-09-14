@@ -17,7 +17,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
-import { hostPathLabel, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
+import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
@@ -137,6 +137,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   const linkUrl = target.linkUrl ? normalizeExternalUrl(target.linkUrl) : ''
   const linkIsWeb = isWebUrl(linkUrl)
   const imageIsWeb = isWebUrl(target.imageUrl)
+  const openInApp = !hudForcesNativeLinks()
   const showResolvedCopy = linkIsWeb && isRemoteGateway() && isLoopbackUrl(linkUrl)
 
   // The edit verbs and spell-check actions act on the sender's FOCUSED
@@ -194,7 +195,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   if (linkUrl) {
     sections.push(
       [
-        linkIsWeb ? (
+        linkIsWeb && openInApp ? (
           <Item
             icon="globe"
             key="link-open-app"
@@ -234,7 +235,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
   if (target.onImage) {
     sections.push(
       [
-        imageIsWeb ? (
+        imageIsWeb && openInApp ? (
           <Item
             icon="globe"
             key="image-open-app"
@@ -382,6 +383,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
   const sections: ReactNode[][] = []
   const linkUrl = params.linkURL
   const imageUrl = params.srcURL
+  const openInApp = !hudForcesNativeLinks()
 
   // Same trap-timing rule as the dom side: dispatch AFTER the menu closes,
   // so the webview's focus() is not stolen back by the radix content.
@@ -393,7 +395,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
   if (linkUrl) {
     sections.push(
       [
-        isWebUrl(linkUrl) ? (
+        isWebUrl(linkUrl) && openInApp ? (
           <Item
             icon="globe"
             key="guest-link-open-app"

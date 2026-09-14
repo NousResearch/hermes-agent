@@ -82,22 +82,22 @@ class TestPerCapabilityBackendSelection:
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
             "backend": "firecrawl",
-            "search_backend": "tavily",
+            "search_backend": "keenable",
         })
-        monkeypatch.setenv("TAVILY_API_KEY", "test-key")
-        assert web_tools._get_search_backend() == "tavily"
+        monkeypatch.setenv("KEENABLE_API_KEY", "test-key")
+        assert web_tools._get_search_backend() == "keenable"
 
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
-            "backend": "tavily",
+            "backend": "keenable",
         })
-        monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+        monkeypatch.setenv("KEENABLE_API_KEY", "test-key")
         # No search_backend or extract_backend set — both fall through
-        assert web_tools._get_search_backend() == "tavily"
-        assert web_tools._get_extract_backend() == "tavily"
+        assert web_tools._get_search_backend() == "keenable"
+        assert web_tools._get_extract_backend() == "keenable"
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +180,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         for k in (
             "BRAVE_SEARCH_API_KEY",
             "SEARXNG_URL",
-            "TAVILY_API_KEY",
+            "KEENABLE_API_KEY",
             "EXA_API_KEY",
             "PARALLEL_API_KEY",
             "FIRECRAWL_API_KEY",
@@ -218,7 +218,7 @@ class TestUnconfiguredErrorEnvelopeParity:
 
     def test_explicit_firecrawl_unconfigured_uses_firecrawl_keyless(self, monkeypatch):
         """``web.backend: firecrawl`` with no creds routes through Firecrawl's
-        keyless cloud client (PR #50659 salvage) — keyless Tavily must not
+        keyless cloud client (PR #50659 salvage) — a keyless ring peer must not
         silently take over, and the request must hit api.firecrawl.dev.
         """
         from tools import web_tools
@@ -279,7 +279,7 @@ class TestDispatchersTriggerPluginDiscovery:
     even when the user has both the config key set AND the API key
     exported.
 
-    Mirrors :func:`tools.browser_tool._ensure_browser_plugins_loaded` —
+    Mirrors :func:`tools.browser_tool_cloud._ensure_browser_plugins_loaded` —
     every other plugin-backed dispatcher (image_gen, video_gen, browser,
     skills) already does this.
     """

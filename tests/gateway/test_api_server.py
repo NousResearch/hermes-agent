@@ -30,11 +30,13 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
+    _api_request_profile,
     _IdempotencyCache,
     _derive_chat_session_id,
     _hermes_version,
     _redact_api_error_text,
     _request_agent_overrides,
+    _request_relay_metadata,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -147,9 +149,70 @@ class TestIdempotencyCache:
         assert first_result == second_result == ("response", {"total_tokens": 1})
 
 
-# ---------------------------------------------------------------------------
-# Adapter initialization
-# ---------------------------------------------------------------------------
+class TestRunIdempotentProfileScope:
+    """``_idem_cache`` is process-global; under multiplex every profile's ``/p/<profile>/v1/...`` mirror
+    shares it, so the cache key must carry the request's profile/principal scope and logical route."""
+
+    @pytest.mark.asyncio
+    async def test_same_key_different_profiles_do_not_share_a_cached_response(self, adapter, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
+        calls = []
+
+        async def compute():
+            calls.append(1)
+            return (f"response-{len(calls)}", {"total_tokens": len(calls)})
+
+        token_a = _api_request_profile.set("profile-a")
+        try:
+            outcome_a, err_a = await adapter._run_idempotent(
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
+        finally:
+            _api_request_profile.reset(token_a)
+
+        token_b = _api_request_profile.set("profile-b")
+        try:
+            outcome_b, err_b = await adapter._run_idempotent(
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
+        finally:
+            _api_request_profile.reset(token_b)
+
+        assert err_a is None and err_b is None
+        assert len(calls) == 2, "each profile must run its own turn, not reuse the other's cached response"
+        assert outcome_a != outcome_b
+
+    @pytest.mark.asyncio
+    async def test_same_key_same_profile_still_dedupes(self, adapter, monkeypatch):
+        """Regression guard: profile-scoping the cache key must not break same-profile dedup,
+        which is the whole point of the Idempotency-Key contract."""
+        monkeypatch.setattr("gateway.platforms.api_server._idem_cache", _IdempotencyCache())
+        request = MagicMock()
+        request.headers = {"Idempotency-Key": "client-supplied-key"}
+        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}]}
+        calls = []
+
+        async def compute():
+            calls.append(1)
+            return (f"response-{len(calls)}", {"total_tokens": len(calls)})
+
+        token = _api_request_profile.set("profile-a")
+        try:
+            outcome_1, err_1 = await adapter._run_idempotent(
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
+            outcome_2, err_2 = await adapter._run_idempotent(
+                request, body, compute, log_label="test", fingerprint_keys=["model", "messages"],
+                route="chat_completions")
+        finally:
+            _api_request_profile.reset(token)
+
+        assert err_1 is None and err_2 is None
+        assert len(calls) == 1, "second call with the same key+profile+fingerprint must reuse the cached response"
+        assert outcome_1 == outcome_2
 
 
 class TestAdapterInit:
@@ -429,6 +492,36 @@ class TestAgentExecution:
         assert mock_agent._gateway_turn_process_baseline == frozenset()
 
 
+class TestRelayMetadataForwarding:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("endpoint", "payload"),
+        [
+            (
+                "/v1/chat/completions",
+                {"messages": [{"role": "user", "content": "hi"}]},
+            ),
+            ("/v1/responses", {"input": "hi"}),
+        ],
+    )
+    async def test_openai_requests_forward_metadata_to_relay(
+        self, adapter, endpoint, payload
+    ):
+        app = _create_app(adapter)
+        metadata = {"request_id": "req-123", "context": {"tenant": "example"}}
+        with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (
+                {"final_response": "ok", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(endpoint, json={**payload, "metadata": metadata})
+
+        assert response.status == 200
+        assert mock_run.call_args.kwargs["relay_metadata"] == metadata
+        assert mock_run.call_args.kwargs["relay_metadata"] is not metadata
+
+
 class TestDisconnectedAgentReap:
     """#76188 review: SSE disconnect handlers must reap only the background
     processes the disconnected turn created, and must no-op when no turn
@@ -611,7 +704,9 @@ class TestDisconnectedAgentReap:
         adapter._active_run_agents["run_x"] = agent
 
         request = MagicMock()
+        request.headers = {}
         request.match_info = {"run_id": "run_x"}
+        adapter._run_owners["run_x"] = adapter._run_idempotency_scope(request)
         resp = await adapter._handle_stop_run(request)
         assert resp.status == 200
 
@@ -708,7 +803,10 @@ class TestHealthDetailedEndpoint:
             "active_agents": 2,
             "exit_reason": None,
             "updated_at": "2026-04-14T00:00:00Z",
-        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"):
+        }), patch("gateway.run._resolve_gateway_model", return_value="test/model"), patch(
+            "gateway.readiness.shutil.disk_usage",
+            return_value=types.SimpleNamespace(total=100, used=25, free=75),
+        ):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
@@ -870,12 +968,26 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["runs_idempotency"] == {
+                "supported": True,
+                "durable": True,
+                "retention_seconds": 86400,
+            }
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+
+    @pytest.mark.asyncio
+    async def test_capabilities_reports_in_memory_idempotency_fallback(self, adapter):
+        adapter._run_idempotency_store._db_path = None
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.get("/v1/capabilities")
+            data = await response.json()
+        assert data["features"]["runs_idempotency"]["durable"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -2340,6 +2452,7 @@ class TestSessionIdHeader:
         ]
         mock_db = MagicMock()
         mock_db.get_messages_as_conversation.return_value = db_history
+        mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
         auth_adapter._session_db = mock_db
         app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -2822,6 +2935,30 @@ class TestKeyRejectionSetsNonRetryableFatalError:
     async def test_missing_key_sets_non_retryable_fatal_error(self, monkeypatch):
         adapter = self._make_adapter("", monkeypatch)
         await self._assert_key_rejection_is_fatal(adapter)
+
+
+# ---------------------------------------------------------------------------
+# Relay metadata extraction
+# ---------------------------------------------------------------------------
+
+
+class TestRequestRelayMetadata:
+    def test_copies_all_metadata_fields(self):
+        metadata = {
+            "request_id": "req-123",
+            "attempt": 2,
+            "tags": ["batch", "evaluation"],
+            "context": {"tenant": "example"},
+        }
+
+        extracted = _request_relay_metadata({"metadata": metadata})
+
+        assert extracted == metadata
+        assert extracted is not metadata
+
+    @pytest.mark.parametrize("body", [None, [], {}, {"metadata": "invalid"}])
+    def test_ignores_non_object_metadata(self, body):
+        assert _request_relay_metadata(body) == {}
 
 
 # ---------------------------------------------------------------------------

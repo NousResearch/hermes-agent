@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import time
-import threading
 
 from agent.monitoring.emitter import MonitoringEmitter
-from agent.monitoring.events import GatewayHealthEvent
 
 
 def test_emit_never_raises_when_disabled():

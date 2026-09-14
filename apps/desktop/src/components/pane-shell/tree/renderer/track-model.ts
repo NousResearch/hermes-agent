@@ -47,6 +47,11 @@ export interface PaneSizing {
 interface PaneChrome extends PaneSizing {
   /** Leaves the grid on narrow viewports; revealed as an edge overlay. */
   collapsible?: boolean
+  /** Arrive minimized — a rail tab rather than an open zone. For a pane that
+   *  docks to an edge this is the vertical strip; the user's first expand is
+   *  persisted on the zone and wins from then on. Applied when the pane ENTERS
+   *  the tree, not on every boot, so it is a default and not an invariant. */
+  defaultCollapsed?: boolean
   /** Extra ids accepted from PANE_TOGGLE_REVEAL_EVENT (the real app's pane
    *  ids, e.g. `chat-sidebar` for `sessions`). */
   revealAliases?: string[]
@@ -283,11 +288,27 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
   return cssMax(sizes) ?? null
 }
 
-/** True when every pane in the subtree is hidden/narrow-collapsed. */
+/**
+ * True when every pane in the subtree is hidden/narrow-collapsed — the zone
+ * renders `display:none` and its siblings absorb the space.
+ *
+ * MAIN IS THE FLOOR. A subtree that hosts a registered `placement: 'main'`
+ * pane never goes, however many of its tabs are gone: absorbing the main zone
+ * leaves the window with nothing but chrome, and the sidebar stretched across
+ * where the app used to be. (Bot Mode reached exactly that state by filtering
+ * every sessions-scoped tile out of the center and then closing its last bot
+ * chat.) An emptied main zone renders its own placeholder instead. Chrome
+ * toggles over a terminal, a review rail or an unregistered plugin pane still
+ * collapse and still hand their space to their neighbors.
+ */
 export function subtreeGone(node: LayoutNode, ctx: TrackContext): boolean {
   const ids = allPaneIds(node)
 
-  return ids.length > 0 && ids.every(ctx.paneGone)
+  if (ids.length === 0 || !ids.every(ctx.paneGone)) {
+    return false
+  }
+
+  return !ids.some(id => paneChrome(ctx.paneFor(id)).placement === 'main')
 }
 
 /**

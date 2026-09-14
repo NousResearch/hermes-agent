@@ -471,9 +471,9 @@ def _render_inline_elements(elements: list) -> str:
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:
-    """Render ``rich_text`` blocks to readable lines, preserving quotes, lists and code.
-    Quoted/forwarded content lives in nested ``rich_text_quote`` elements that the event's plain
-    ``text`` field omits."""
+    """Render ``rich_text`` blocks to readable lines (quotes, lists, code) and ``table`` blocks as
+    pipe rows. Quoted/forwarded content lives in nested ``rich_text_quote`` elements and pasted
+    tables in ``table`` blocks; the event's plain ``text`` field omits both."""
     if not blocks:
         return ""
     parts: list[str] = []
@@ -560,13 +560,10 @@ def _render_slack_table_block(
 ) -> str:
     """Render a Slack ``table`` block as ``cell | cell | cell`` lines.
 
-    Slack represents a **pasted table** as ``blocks[]`` entries of type
-    ``table`` (usually nested inside ``attachments[].blocks[]``). The table
-    appears in neither the message ``text`` nor the file list, so without
-    this projection the agent receives the sentence before the table and
-    nothing else — the table silently does not exist.
-
-    Ported from qwibitai/nanoclaw#3666 (``slack-raw-text.ts``).
+    Slack represents a **pasted table** as ``blocks[]`` entries of type ``table`` (usually nested
+    inside ``attachments[].blocks[]``). It appears in neither the message ``text`` nor the file
+    list, so without this projection the agent receives the sentence before the table and
+    nothing else.
     """
     rows = block.get("rows") if isinstance(block, dict) else None
     if not isinstance(rows, list):
@@ -680,9 +677,8 @@ def _extract_additional_text_from_slack_blocks(
     for block in blocks or []:
         block_type = (block or {}).get("type")
         if block_type == "table":
-            # Pasted tables (qwibitai/nanoclaw#3666): a top-level ``table``
-            # block never appears in the plain text, and the JSON serializer
-            # drops ``rows``, so this is the only path that surfaces it.
+            # A top-level ``table`` block never appears in the plain text and the JSON serializer
+            # drops ``rows``, so this is the only path that surfaces a pasted table.
             table_text = _render_slack_table_block(block)
             if table_text:
                 parts.append(table_text)

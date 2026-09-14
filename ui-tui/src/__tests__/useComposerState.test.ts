@@ -1,6 +1,43 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { looksLikeDroppedPath } from '../app/useComposerState.js'
+import { looksLikeDroppedPath, requestClipboardImage } from '../app/useComposerState.js'
+
+describe('requestClipboardImage', () => {
+  it('uploads local image bytes when the TUI is attached to a remote gateway', async () => {
+    const response = { attached: true, name: 'upload.png', path: '/gateway/upload.png' }
+    const gw = { request: vi.fn().mockResolvedValue(response) }
+    const readImage = vi.fn().mockResolvedValue({ contentBase64: 'cG5n', filename: 'clipboard.png' })
+
+    await expect(
+      requestClipboardImage(gw, 'session-1', readImage, { HERMES_TUI_GATEWAY_URL: 'ws://gateway.test/api/ws' })
+    ).resolves.toEqual(response)
+    expect(gw.request).toHaveBeenCalledWith('image.attach_bytes', {
+      content_base64: 'cG5n',
+      filename: 'clipboard.png',
+      session_id: 'session-1'
+    })
+  })
+
+  it('keeps gateway-side clipboard extraction for a spawned local gateway', async () => {
+    const response = { attached: true, path: '/local/clip.png' }
+    const gw = { request: vi.fn().mockResolvedValue(response) }
+    const readImage = vi.fn()
+
+    await expect(requestClipboardImage(gw, 'session-1', readImage, {})).resolves.toEqual(response)
+    expect(readImage).not.toHaveBeenCalled()
+    expect(gw.request).toHaveBeenCalledWith('clipboard.paste', { session_id: 'session-1' })
+  })
+
+  it('does not inspect the remote gateway clipboard when the client has no image', async () => {
+    const gw = { request: vi.fn() }
+    const readImage = vi.fn().mockResolvedValue(null)
+
+    await expect(
+      requestClipboardImage(gw, 'session-1', readImage, { HERMES_TUI_GATEWAY_URL: 'ws://gateway.test/api/ws' })
+    ).resolves.toBeNull()
+    expect(gw.request).not.toHaveBeenCalled()
+  })
+})
 
 describe('looksLikeDroppedPath', () => {
   it('recognizes macOS screenshot temp paths and file URIs', () => {

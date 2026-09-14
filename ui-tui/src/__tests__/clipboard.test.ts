@@ -1,6 +1,84 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { isUsableClipboardText, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { isUsableClipboardText, readClipboardImage, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+
+/** Minimal 1x1 PNG — signature must match what readClipboardImage accepts. */
+const MINIMAL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64'
+)
+const MINIMAL_PNG_BASE64 = MINIMAL_PNG.toString('base64')
+
+describe('readClipboardImage', () => {
+  it('extracts a PNG from the native Windows clipboard via PowerShell', async () => {
+    const run = vi.fn().mockResolvedValue({ stdout: `${MINIMAL_PNG_BASE64}\r\n` })
+
+    await expect(readClipboardImage('win32', run)).resolves.toEqual({
+      contentBase64: MINIMAL_PNG_BASE64,
+      filename: 'clipboard.png'
+    })
+    expect(run).toHaveBeenCalledWith(
+      'powershell',
+      expect.arrayContaining(['-NoProfile', '-NonInteractive', '-Command']),
+      expect.objectContaining({ encoding: 'utf8', timeout: 3_000, windowsHide: true })
+    )
+    expect(run.mock.calls[0]![1].at(-1)).toContain('[System.Windows.Forms.Clipboard]::GetImage()')
+  })
+
+  it('uses the Windows clipboard first from WSL', async () => {
+    const run = vi.fn().mockResolvedValue({ stdout: MINIMAL_PNG_BASE64 })
+
+    await expect(readClipboardImage('linux', run, { WSL_INTEROP: '/tmp/socket' })).resolves.toEqual({
+      contentBase64: MINIMAL_PNG_BASE64,
+      filename: 'clipboard.png'
+    })
+    expect(run).toHaveBeenCalledWith(
+      'powershell.exe',
+      expect.any(Array),
+      expect.objectContaining({ encoding: 'utf8', timeout: 3_000 })
+    )
+  })
+
+  it('skips non-PNG stdout and tries the next clipboard backend', async () => {
+    const junkBase64 = Buffer.from('png bytes').toString('base64')
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({ stdout: junkBase64 })
+      .mockResolvedValueOnce({ stdout: MINIMAL_PNG_BASE64 })
+
+    await expect(
+      readClipboardImage('linux', run, { WSL_INTEROP: '/tmp/socket', WAYLAND_DISPLAY: 'wayland-1' })
+    ).resolves.toEqual({
+      contentBase64: MINIMAL_PNG_BASE64,
+      filename: 'clipboard.png'
+    })
+    expect(run).toHaveBeenNthCalledWith(1, 'powershell.exe', expect.any(Array), expect.anything())
+    expect(run).toHaveBeenNthCalledWith(
+      2,
+      'wl-paste',
+      ['--type', 'image/png'],
+      expect.objectContaining({ encoding: 'base64', timeout: 3_000 })
+    )
+  })
+
+  it('returns null when a backend times out and no later backend yields a PNG', async () => {
+    const timedOut = Object.assign(new Error('timed out'), { killed: true, code: 'ETIMEDOUT' })
+    const run = vi.fn().mockRejectedValue(timedOut)
+
+    await expect(readClipboardImage('win32', run)).resolves.toBeNull()
+    expect(run).toHaveBeenCalledWith(
+      'powershell',
+      expect.any(Array),
+      expect.objectContaining({ timeout: 3_000 })
+    )
+  })
+
+  it('returns null when no local clipboard backend yields image bytes', async () => {
+    const run = vi.fn().mockRejectedValue(new Error('no image'))
+
+    await expect(readClipboardImage('win32', run)).resolves.toBeNull()
+  })
+})
 
 describe('readClipboardText', () => {
   it('reads text from pbpaste on macOS', async () => {

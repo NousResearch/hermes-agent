@@ -609,6 +609,7 @@ export class JsonRpcRequestChannel {
           // socket that owns them.
           const result = responseResult(frame)
           this.deliverOpenRequests(result)
+
           if (call.responseKind === 'typed') {
             // SAFETY: the typed branch preserves the method/result pairing at request registration.
             call.call.resolve(asResponseResult(result) as JsonValue)

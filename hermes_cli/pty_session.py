@@ -52,7 +52,9 @@ class PtySession:
         self.last_detached_at: Optional[float] = None
         self._read_timeout = read_timeout
         self._ws = None
+        self._attach_generation = 0
         self._drain_task: Optional[asyncio.Task] = None
+        self._write_lock = asyncio.Lock()
 
     async def start(self) -> None:
         self._drain_task = asyncio.create_task(self._drain())
@@ -75,7 +77,25 @@ class PtySession:
             except Exception:
                 pass                                 # detached mid-send; keep buffering
 
-    async def attach(self, ws, *, force_redraw: bool = False) -> None:
+    async def write(self, ws, data: bytes) -> bool:
+        """Serialize input and discard bytes from a superseded socket."""
+        async with self._write_lock:
+            if self._ws is not ws:
+                return True
+            generation = self._attach_generation
+            delivered = await self.bridge.write(data)
+            # A replacement socket can attach while the bridge write is
+            # suspended on backpressure. A late failure from the superseded
+            # socket must not poison the replacement's shared PTY session.
+            if (
+                not delivered
+                and self._ws is ws
+                and self._attach_generation == generation
+            ):
+                self.alive = False
+            return delivered
+
+    async def attach(self, ws, *, force_redraw: bool = False) -> bool:
         """Attach a browser terminal and replay buffered PTY output.
 
         The TUI renders differentially on an alternate screen, so a bounded ANSI tail is not a
@@ -84,12 +104,14 @@ class PtySession:
         if self._ws is not ws:
             await _close_ws(self._ws, WS_CLOSE_SUPERSEDED)
         self._ws = ws
+        self._attach_generation += 1
         self.attached = True
         self.last_detached_at = None
         if snap := self.buffer.snapshot():
             await ws.send_bytes(snap)
         if force_redraw:
-            self.bridge.write(TUI_FORCE_REDRAW)
+            return await self.write(ws, TUI_FORCE_REDRAW)
+        return True
 
     def detach(self, ws) -> None:
         # Only the currently-attached socket may mark the session detached: a superseded socket's
@@ -102,6 +124,7 @@ class PtySession:
         self.last_detached_at = time.monotonic()
 
     async def close(self) -> None:
+        self.alive = False
         if self._drain_task is not None:
             self._drain_task.cancel()
             try:
@@ -168,7 +191,12 @@ class PtySessionRegistry:
             if not s.alive or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
         ]
         for key in doomed:
-            await self._sessions.pop(key).close()
+            # Reaps overlap (attach_or_spawn and the background reaper) and close()
+            # awaits, so a concurrent reap can have popped this key already — skip
+            # it instead of raising KeyError into the websocket handler.
+            session = self._sessions.pop(key, None)
+            if session is not None:
+                await session.close()
 
     def _reap_one_idle_or_raise(self) -> None:
         idle = [s for s in self._sessions.values() if not s.attached and s.last_detached_at is not None]
@@ -180,4 +208,8 @@ class PtySessionRegistry:
 
     async def close_all(self) -> None:
         for key in list(self._sessions):
-            await self._sessions.pop(key).close()
+            # Same overlap window as reap_idle: an in-flight reap may have popped
+            # a snapshot key while we awaited an earlier close().
+            session = self._sessions.pop(key, None)
+            if session is not None:
+                await session.close()

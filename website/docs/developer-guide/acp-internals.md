@@ -173,9 +173,19 @@ ACP temporarily installs an approval callback on the terminal tool during prompt
 - non-text prompt blocks are currently ignored for request text extraction
 - editor-specific UX varies by ACP client implementation
 
+### Verifying manual compression recovery
+
+A successful `/compress` response proves that the live ACP process produced a
+smaller history. It does not by itself prove that the new history survived in
+`state.db`. Before restarting or resuming important work, verify that a fresh
+`SessionManager` reload of the same ACP session returns the compacted active
+history, that the summary marker is present, and that the earlier rows remain
+as inactive compaction archives. Treat a success response with an unchanged
+active transcript as a persistence failure.
+
 ## Related files
 
-- `tests/acp/` — ACP test suite
+- `tests/acp_adapter/` — ACP test suite
 - `toolsets.py` — `hermes-acp` toolset definition
 - `hermes_cli/main.py` — `hermes acp` CLI subcommand
 - `pyproject.toml` — `[acp]` optional dependency + `hermes-acp` script

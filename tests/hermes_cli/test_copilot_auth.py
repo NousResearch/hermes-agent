@@ -14,6 +14,18 @@ class TestTokenValidation:
         assert "Classic Personal Access Tokens" in msg
         assert "ghp_" in msg
 
+    @pytest.mark.parametrize("token", ["gho_abcdefghijklmnop1234", "github_pat_abcdefghijklmnop1234", "ghu_abcdefghijklmnop1234"])
+    def test_supported_token_families_accepted(self, token):
+        from hermes_cli.copilot_auth import validate_copilot_token
+        assert validate_copilot_token(token) == (True, "OK")
+
+    def test_arbitrary_string_rejected(self):
+        """A non-GitHub value in GITHUB_TOKEN must fail validation instead of reaching the API (#12650)."""
+        from hermes_cli.copilot_auth import validate_copilot_token
+        valid, msg = validate_copilot_token("not_a_github_token")
+        assert valid is False
+        assert "Supported token prefixes" in msg
+
 
 class TestResolveToken:
     """Token resolution with env var priority."""
@@ -37,7 +49,7 @@ class TestResolveToken:
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="ghp_classic"):
-            with pytest.raises(ValueError, match="classic PAT"):
+            with pytest.raises(ValueError, match="Classic Personal Access Tokens"):
                 resolve_copilot_token()
 
     def test_invalid_env_var_skips_gh_cli_fallback(self, monkeypatch):

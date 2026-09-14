@@ -73,6 +73,7 @@ test('dismissal is remembered for the same report and forgotten for a different 
     ...REPORT,
     plugins: { ...REPORT.plugins, gamma: [{ file: 'g.py', line: 1, old: 'x.y', new: 'z.y' }] }
   }
+
   fs.writeFileSync(path.join(home, REPORT_FILE), JSON.stringify(grown))
   const second = pendingNotice(home, userData)
   assert.ok(second)

@@ -9,6 +9,7 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
+import { ConnectorExecution, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { McpSetupTool } from '@/components/assistant-ui/mcp-setup-tool'
 import { AgentDeliveryNotice, deliveryTargetFromCommand } from '@/components/assistant-ui/thread/agent-delivery'
@@ -20,8 +21,11 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useI18n } from '@/i18n'
+import { connectorCalls } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
+import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
@@ -64,7 +68,7 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
 
 const ChainToolFallback: FC<TimelineToolCallProps> = props => {
   // todo parts are hoisted to a dedicated panel above the message content.
-  if (props.toolName === 'todo') {
+  if (isTodoToolName(props.toolName)) {
     return null
   }
 
@@ -102,6 +106,14 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
         <ClarifyTool {...props} />
       </>
     )
+  }
+
+  if (isOnboardingEnabled() && props.toolName === 'manage_connections') {
+    return <ConnectorTool {...props} />
+  }
+
+  if (isOnboardingEnabled() && connectorCalls(props.toolName, props.args).length > 0) {
+    return <ConnectorExecution {...props} />
   }
 
   if (props.toolName === 'setup_mcp') {
@@ -333,8 +345,8 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
     <MarkdownTextContent
       containerClassName="text-xs leading-snug text-muted-foreground/85"
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
-      disableArtifacts
       isRunning={status.type === 'running' || messageRunning}
+      scratchpad
       text={separateGluedReasoningBlocks(text.trimStart())}
     />
   )

@@ -1015,6 +1015,7 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
     import hermes_cli.web_server as ws
 
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "default-action-provider-key")
     monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
     # Isolate the module-global proc registry: _spawn_hermes_action stores
     # _FakeProc (no poll()) in _ACTION_PROCS, and later tests' lifespan
@@ -1036,6 +1037,135 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     assert "_HERMES_GATEWAY" not in captured["env"]
     assert captured["env"]["HERMES_NONINTERACTIVE"] == "1"
+    # Default-profile actions preserve the historical process environment.
+    assert captured["env"]["OPENAI_API_KEY"] == "default-action-provider-key"
+
+
+def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypatch, tmp_path):
+    """A dashboard action for a named profile must not borrow the dashboard profile's
+    platform/provider environment, while the target profile's own dotenv still loads in the child."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import hermes_cli.env_loader as env_loader
+    import hermes_cli.web_server as ws
+
+    user_home = tmp_path / "user"
+    default_home = user_home / ".hermes"
+    target_home = default_home / "profiles" / "verifier"
+    target_home.mkdir(parents=True)
+
+    (default_home / ".env").write_text(
+        "\n".join([
+            "DISCORD_BOT_TOKEN=default-discord",
+            "API_SERVER_ENABLED=true",
+            "API_SERVER_KEY=default-api-server",
+            "BLUEBUBBLES_SERVER_URL=http://127.0.0.1:1234",
+            "BLUEBUBBLES_PASSWORD=default-bluebubbles",
+            "NTFY_TOPIC=default-topic",
+            "NTFY_TOKEN=default-ntfy",
+            "OPENAI_API_KEY=default-openai",
+            "ZAI_API_KEY=default-zai",
+            # Locally named routing credentials must be isolated too, even without a secret suffix.
+            "A2A_AUTH_MINI=default-a2a-auth",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    (target_home / ".env").write_text(
+        "\n".join(["A2A_PORT=9917", "OPENAI_API_KEY=target-openai", "TARGET_ONLY_TOKEN=target-only"]) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(Path, "home", lambda: user_home)
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
+    for key, value in {
+        "DISCORD_BOT_TOKEN": "default-discord",
+        "API_SERVER_ENABLED": "true",
+        "API_SERVER_KEY": "default-api-server",
+        "BLUEBUBBLES_SERVER_URL": "http://127.0.0.1:1234",
+        "BLUEBUBBLES_PASSWORD": "default-bluebubbles",
+        "NTFY_TOPIC": "default-topic",
+        "NTFY_TOKEN": "default-ntfy",
+        "OPENAI_API_KEY": "default-openai",
+        "ZAI_API_KEY": "default-zai",
+        "A2A_AUTH_MINI": "default-a2a-auth",
+        "EXTERNAL_PROFILE_AUTH": "default-secret-source-auth",
+        "HERMES_ACP_AUTH_METHOD": "default-acp",
+        "PROFILE_ENV_TEST_BENIGN": "keep-me",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
+    monkeypatch.setattr(
+        env_loader,
+        "get_secret_source_values",
+        lambda home: (
+            {"EXTERNAL_PROFILE_AUTH": "default-secret-source-auth"}
+            if Path(home).resolve() == default_home.resolve() else {}
+        ),
+    )
+
+    captured = {}
+    real_popen = subprocess.Popen
+
+    class _FakeProc:
+        pid = 4321
+
+    def _fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return _FakeProc()
+
+    monkeypatch.setattr(ws.subprocess, "Popen", _fake_popen)
+    _web_server_gateway._spawn_hermes_action(["-p", "verifier", "gateway", "restart"], "gateway-restart")
+
+    child_env = captured["env"]
+    assert captured["cmd"][-4:] == ["-p", "verifier", "gateway", "restart"]
+    assert child_env["HERMES_HOME"] == str(target_home)
+    assert child_env["HERMES_NONINTERACTIVE"] == "1"
+    assert child_env["PROFILE_ENV_TEST_BENIGN"] == "keep-me"
+    for leaked_key in (
+        "DISCORD_BOT_TOKEN", "API_SERVER_ENABLED", "API_SERVER_KEY", "BLUEBUBBLES_SERVER_URL",
+        "BLUEBUBBLES_PASSWORD", "NTFY_TOPIC", "NTFY_TOKEN", "OPENAI_API_KEY", "ZAI_API_KEY",
+        "A2A_AUTH_MINI", "EXTERNAL_PROFILE_AUTH", "HERMES_ACP_AUTH_METHOD",
+    ):
+        assert leaked_key not in child_env, leaked_key
+
+    # Exercise the real dotenv loader in a fresh interpreter with precisely the environment handed
+    # to the named child: the target profile's own values must load without reviving any
+    # default-profile value.
+    monkeypatch.setattr(ws.subprocess, "Popen", real_popen)
+    probe = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import json, os; "
+            "from hermes_cli.env_loader import load_hermes_dotenv; "
+            "load_hermes_dotenv(hermes_home=os.environ['HERMES_HOME']); "
+            "keys=['A2A_PORT','OPENAI_API_KEY','TARGET_ONLY_TOKEN','DISCORD_BOT_TOKEN',"
+            "'API_SERVER_ENABLED','API_SERVER_KEY','BLUEBUBBLES_SERVER_URL','BLUEBUBBLES_PASSWORD',"
+            "'NTFY_TOPIC','NTFY_TOKEN','ZAI_API_KEY','A2A_AUTH_MINI','EXTERNAL_PROFILE_AUTH']; "
+            "print(json.dumps({key: os.environ.get(key) for key in keys}))",
+        ],
+        cwd=Path(ws.PROJECT_ROOT), env=child_env, check=True, capture_output=True, text=True,
+    )
+    loaded = json.loads(probe.stdout.strip().splitlines()[-1])
+    assert loaded == {
+        "A2A_PORT": "9917",
+        "OPENAI_API_KEY": "target-openai",
+        "TARGET_ONLY_TOKEN": "target-only",
+        "DISCORD_BOT_TOKEN": None,
+        "API_SERVER_ENABLED": None,
+        "API_SERVER_KEY": None,
+        "BLUEBUBBLES_SERVER_URL": None,
+        "BLUEBUBBLES_PASSWORD": None,
+        "NTFY_TOPIC": None,
+        "NTFY_TOKEN": None,
+        "ZAI_API_KEY": None,
+        "A2A_AUTH_MINI": None,
+        "EXTERNAL_PROFILE_AUTH": None,
+    }
 
 
 # ---------------------------------------------------------------------------

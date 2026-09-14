@@ -1,6 +1,8 @@
+import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
+  signal?: AbortSignal
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
   prepareLocalBackend: () => Backend | Promise<Backend>
@@ -80,34 +82,36 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
   prepareLocalBackend,
   resolveRemote,
   waitForDecision,
-  waitForLocalStart
+  waitForLocalStart,
+  signal
 }: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
   PrimaryBackendStartupResult<RuntimeBackend, Connection>
 > {
-  const savedRemote = await resolveRemote()
+  const step = <T>(run: () => T | Promise<T>) => runBackendStartStep(signal, run)
+  const savedRemote = await step(resolveRemote)
 
   if (savedRemote) {
-    return { kind: 'remote', connection: await connectRemote(savedRemote) }
+    return { kind: 'remote', connection: await step(() => connectRemote(savedRemote)) }
   }
 
-  await waitForLocalStart()
+  await step(waitForLocalStart)
 
-  const backend = await prepareLocalBackend()
-  const decision = await waitForDecision(backend)
+  const backend = await step(prepareLocalBackend)
+  const decision = await step(() => waitForDecision(backend))
 
   if (decision === 'remote-applied') {
-    const appliedRemote = await resolveRemote()
+    const appliedRemote = await step(resolveRemote)
 
     if (!appliedRemote) {
       throw new Error('First-run remote setup completed without a saved remote backend.')
     }
 
-    return { kind: 'remote', connection: await connectRemote(appliedRemote) }
+    return { kind: 'remote', connection: await step(() => connectRemote(appliedRemote)) }
   }
 
   if (decision === 'reset') {
     throw new FirstRunSetupResetError()
   }
 
-  return { kind: 'local', backend: await ensureLocalRuntime(backend) }
+  return { kind: 'local', backend: await step(() => ensureLocalRuntime(backend)) }
 }

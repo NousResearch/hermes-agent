@@ -37,6 +37,7 @@ import {
   $lastRoster,
   botHandle,
   botMentionTag,
+  botSelectionKey,
   cachedUnionRoster,
   isActiveRosterBot,
   migrateBotMeta,
@@ -245,6 +246,8 @@ export default {
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,
+                  rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
+                  pinned: Boolean(room.pinned),
                   syncRevision: Math.max(0, Number(room.syncRevision || 0)),
                   epoch: 0,
                   running: false
@@ -665,7 +668,7 @@ export default {
             // server-side by name), matching either the durable row id or
             // the compression-lineage tip currently on screen.
             const roster = $lastRoster.get()
-            const row = Array.isArray(roster) ? roster.find(bot => bot?.name === activeBot) : null
+            const row = Array.isArray(roster) ? roster.find(bot => botSelectionKey(bot) === activeBot) : null
 
             // The STORED id, which is the id space canonical_session is keyed
             // in. `host.state.activeSessionId` is the runtime id and could

@@ -29,11 +29,23 @@ class HermesProviderMixin:
 
     _hermes_logger: logging.Logger = logger
 
-    def __init__(self, *args: Any, token_user_agent: str | None = None, **kwargs: Any):
+    def __init__(self, *args: Any, token_user_agent: str | None = None, oauth_flow: str = "browser", **kwargs: Any):
         super().__init__(*args, **kwargs)
+        self._hermes_oauth_flow = oauth_flow
         # oauth.user_agent — stamped onto token-endpoint requests only; some authorization servers/WAFs
         # reject httpx's default (#75576).
         self._hermes_token_user_agent = token_user_agent
+
+    async def _perform_authorization(self):
+        info = self.context.client_info
+        grants = getattr(info, "grant_types", None) or []
+        if (getattr(self, "_hermes_oauth_flow", "browser") == "device"
+                or ("urn:ietf:params:oauth:grant-type:device_code" in grants and "authorization_code" not in grants)):
+            from tools.mcp_oauth import OAuthNonInteractiveError
+            raise OAuthNonInteractiveError(
+                "MCP device authorization requires `hermes mcp login <server> --flow device`; "
+                "background reconnects cannot start a device login")
+        return await super()._perform_authorization()
 
     def _prepare_token_request(self, request):
         """Stamp the configured User-Agent onto a token/refresh request."""
@@ -62,9 +74,23 @@ class HermesProviderMixin:
         self._coerce_client_secret_post()
         return self._prepare_token_request(await super()._refresh_token())
 
+    async def _initialize(self) -> None:
+        """Load stored state, restore persisted server metadata when the SDK has none (so the issuer
+        check and any refresh see the discovered ``issuer``/``token_endpoint`` instead of SDK guesses),
+        then enforce refresh-token issuer binding."""
+        await super()._initialize()
+        storage = self.context.storage
+        from tools.mcp_oauth import HermesTokenStorage
+        if isinstance(storage, HermesTokenStorage) and self.context.oauth_metadata is None:
+            meta = storage.load_oauth_metadata()
+            if meta is not None:
+                self.context.oauth_metadata = meta
+        enforce_refresh_token_issuer(self.context)
+
     async def _store_tokens(self, token_response) -> None:
         self.context.current_tokens = token_response
         self.context.update_token_expiry(token_response)
+        bind_issuer_from_context(self.context)
         await self.context.storage.set_tokens(token_response)
 
     async def _handle_token_response(self, response):
@@ -95,8 +121,63 @@ class HermesProviderMixin:
             self._hermes_logger.warning("Invalid refresh response: %s", response.status_code)
             self.context.clear_tokens()
             return False
+        # RFC 6749 §6: a refresh response may omit refresh_token (AS does not rotate) and scope
+        # (unchanged). The SDK's own _handle_refresh_response carries both forward; this override
+        # must too, or every non-rotating refresh erases the stored refresh_token and the server
+        # dies at the NEXT expiry with a forced browser re-auth (#62333).
+        prior = self.context.current_tokens
+        if prior is not None:
+            if token_response.refresh_token is None:
+                token_response.refresh_token = prior.refresh_token
+            if token_response.scope is None:
+                token_response.scope = prior.scope
         await self._store_tokens(token_response)
         return True
+
+
+def _metadata_issuer(context: Any) -> str | None:
+    """Discovered authorization-server issuer from the SDK auth context, without trailing slash."""
+    meta = getattr(context, "oauth_metadata", None)
+    issuer = getattr(meta, "issuer", None) if meta is not None else None
+    return (str(issuer).rstrip("/") or None) if issuer else None
+
+
+def bind_issuer_from_context(context: Any) -> None:
+    """Record the discovered issuer so the next ``storage.set_tokens`` (exchange or refresh) carries
+    it. No-op when metadata is not discovered yet or storage is not Hermes'."""
+    from tools.mcp_oauth import HermesTokenStorage
+    storage = getattr(context, "storage", None)
+    issuer = _metadata_issuer(context)
+    if isinstance(storage, HermesTokenStorage) and issuer:
+        storage.bind_issuer(issuer)
+
+
+def enforce_refresh_token_issuer(context: Any) -> None:
+    """Refuse to reuse a refresh token minted by a different issuer.
+
+    The authorization server discovered for an MCP server can change (DNS takeover, protected-resource
+    metadata edit, server migration); sending the stored refresh token to the new issuer hands it a
+    long-lived credential. On mismatch the refresh token is stripped (memory + disk) while an unexpired
+    access token stays usable; full re-authorization happens at expiry. Token files predating the field
+    adopt the current issuer once rather than forcing a re-login. Runs after ``_initialize`` restored
+    tokens + metadata, before the SDK's ``can_refresh_token()`` decision."""
+    from tools.mcp_oauth import HermesTokenStorage
+    storage = getattr(context, "storage", None)
+    tokens = getattr(context, "current_tokens", None)
+    if not isinstance(storage, HermesTokenStorage) or tokens is None or not getattr(tokens, "refresh_token", None):
+        return
+    current = _metadata_issuer(context)
+    if current is None:  # not discovered yet; the SDK's 401-branch discovery + _store_tokens stamp it later
+        return
+    stored = (storage.loaded_issuer or "").rstrip("/") or None
+    if stored is None:
+        storage.stamp_issuer(current)
+        return
+    if stored != current:
+        logger.warning("MCP OAuth: authorization server issuer changed (%s -> %s); dropping the stored "
+                       "refresh token rather than sending it to a different issuer", stored, current)
+        storage.strip_refresh_token()
+        tokens.refresh_token = None
 
 
 def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict | None) -> tuple[dict, "HermesTokenStorage"]:
@@ -127,4 +208,5 @@ def build_provider_kwargs(cfg: dict, storage: "HermesTokenStorage", *, ssh_proxy
         # `oauth.timeout` bounds the callback waiter's poll loop instead.
         "callback_handler": mo._make_callback_waiter(port, cfg.get("_cimd_url"), timeout=float(cfg.get("timeout", 300))),
         "token_user_agent": mo.token_request_user_agent(cfg),
+        "oauth_flow": cfg.get("flow", "browser"),
         **mo.cimd_provider_kwargs(cfg)}

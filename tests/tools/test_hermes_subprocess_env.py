@@ -169,10 +169,12 @@ class TestDelegatedChildMarker:
                 env = hermes_subprocess_env(inherit_credentials=True)
 
         assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
+        # Worker identity is scrubbed; board location and workspace routing survive so the
+        # fenced descendant can still read the board it belongs to.
         assert "HERMES_KANBAN_TASK" not in env
         assert "HERMES_KANBAN_RUN_ID" not in env
-        assert "HERMES_KANBAN_DB" not in env
-        assert "HERMES_KANBAN_WORKSPACE" not in env
+        assert env["HERMES_KANBAN_DB"] == "/tmp/parent-kanban.db"
+        assert env["HERMES_KANBAN_WORKSPACE"] == "/tmp/parent-workspace"
         assert env["MY_APP_VAR"] == "keep-me"
 
 

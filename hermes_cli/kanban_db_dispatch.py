@@ -1218,12 +1218,82 @@ def check_respawn_guard(
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be
     imported (local import avoids a cycle; callers fall back to trusting the
-    assignee)."""
+    assignee).
+
+    When a per-home claim allowlist is configured (``kanban.dispatch_profiles``
+    or ``HERMES_KANBAN_DISPATCH_PROFILES``, #110995), the returned predicate
+    additionally requires the assignee to be listed — so a card assigned to
+    ``default`` is only claimable by homes that opted into it. Foreign
+    assignees land in the existing ``skipped_nonspawnable`` bucket.
+    """
     try:
-        from hermes_cli.profiles import profile_exists
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
     except Exception:
         return None
-    return profile_exists
+    allowlist = _dispatch_profile_allowlist(normalize_profile_name)
+    if allowlist is None:
+        return profile_exists
+
+    def _gated(name: str) -> bool:
+        try:
+            canon = normalize_profile_name(name)
+        except ValueError:
+            canon = (name or "").strip().lower()
+        return canon in allowlist and bool(profile_exists(name))
+
+    return _gated
+
+
+# Env-var bridge for the per-home kanban dispatch claim allowlist (#110995).
+# Non-secret behavioral settings live in config.yaml; this is the fleet-friendly
+# runtime override (containers set env per home more easily than per-home
+# config.yaml edits), mirroring terminal.cwd -> TERMINAL_CWD.
+KANBAN_DISPATCH_PROFILES_ENV = "HERMES_KANBAN_DISPATCH_PROFILES"
+
+
+def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
+    """Per-home claim allowlist for the kanban dispatcher (#110995).
+
+    On a shared board (one ``kanban.db`` mounted across several Hermes homes),
+    every home's ``profile_exists`` returns True for ``default`` — the root
+    profile every home has — so a card assigned to ``default`` is claimable by
+    every home's dispatcher. A home opts out of foreign claims by declaring
+    which assignees it may claim, canonically in config.yaml:
+
+        kanban:
+          dispatch_profiles: ["sage", "researcher"]   # or "sage,researcher"
+
+    (``HERMES_KANBAN_DISPATCH_PROFILES`` overrides config at runtime.)
+
+    Returns ``None`` when neither is set (upstream behavior: any existing
+    profile is claimable). The special value ``none`` (or an empty value)
+    yields an empty allowlist — the home claims nothing.
+    """
+    raw = os.environ.get(KANBAN_DISPATCH_PROFILES_ENV)
+    if raw is None:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+            raw = kanban_cfg.get("dispatch_profiles")
+        except Exception:
+            return None
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)):
+        names = [str(n) for n in raw]
+    else:
+        names = str(raw).split(",")
+    names = [n.strip() for n in names if n.strip()]
+    if not names or all(n.casefold() == "none" for n in names):
+        return frozenset()
+    allowed = set()
+    for n in names:
+        try:
+            allowed.add(normalize_profile_name(n))
+        except ValueError:
+            allowed.add(n.strip().lower())
+    return frozenset(allowed)
 
 
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:

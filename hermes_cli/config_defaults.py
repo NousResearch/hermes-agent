@@ -1768,6 +1768,13 @@ DEFAULT_CONFIG = {
         # fan-out workflows that would otherwise saturate one profile's local model / API quota / browser
         # pool while leaving other profiles idle. See #21582.
         "max_in_progress_per_profile": None,
+        # Per-home claim allowlist for shared boards (#110995): profile names this
+        # home's dispatcher may claim, as a list or comma-separated string. Unset
+        # (None) = any existing profile is claimable (upstream behavior);
+        # ["none"] = claim nothing. On a shared kanban.db, every home's
+        # profile_exists("default") is True, so without this each home can claim
+        # default-assigned cards. Runtime override: HERMES_KANBAN_DISPATCH_PROFILES.
+        "dispatch_profiles": None,
         # Auto-run the decomposer on Triage tasks every tick. False = manual via `hermes kanban
         # decompose <id>` or the dashboard's Decompose button.
         "auto_decompose": True,

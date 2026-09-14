@@ -282,7 +282,25 @@ kanban:
   review_dispatch: true            # default: spawn the assigned profile with
                                    # the bundled sdlc-review skill. Set false
                                    # for human-only review boards.
+  dispatch_profiles: null           # default: this home may claim cards for any
+                                   # existing profile. Set to a list (or
+                                   # comma-separated string) of profile names to
+                                   # restrict which assignees this home claims.
+                                   # ["none"] claims nothing. Override at
+                                   # runtime with HERMES_KANBAN_DISPATCH_PROFILES.
 ```
+
+### Shared boards across homes
+
+Mounting one `kanban.db` in several Hermes homes (containers, fleet hosts) shares
+the board, but profile names are home-local: every home has a root profile named
+`default`, and the dispatcher's spawn gate checks `profile_exists(assignee)`
+against the *claiming* home. Without further configuration, every home's
+dispatcher considers a card assigned to `default` claimable, so the wrong home
+can claim and run it. Either give each home unique profile names, or set
+`kanban.dispatch_profiles` per home to declare exactly which assignees that home
+may claim — anything else lands in the dispatcher's `skipped_nonspawnable`
+bucket instead of spawning.
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
 for debugging. Standard gateway supervision applies: run `hermes gateway

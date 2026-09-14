@@ -498,6 +498,7 @@ class TestValidateConfigKey:
         "mcp_servers.foo.command",
         "providers.openrouter.api_key",
         "gateway.strict",
+        "gateway.auto_multiplex_migration",
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",

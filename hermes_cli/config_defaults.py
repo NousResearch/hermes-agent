@@ -1972,7 +1972,7 @@ DEFAULT_CONFIG = {
         # Set to False to stay on per-profile gateways — a durable opt-out that survives updates, so
         # the decision is not re-litigated on every release. Only the AUTOMATIC path reads this:
         # `hermes gateway migrate --multiplex` is an explicit request and always proceeds.
-        "auto_migrate": True,
+        "auto_multiplex_migration": True,
         # Route inbound chats of the default profile's bots to another profile
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
         # Most-specific match wins; only read by the multiplexing default gateway.

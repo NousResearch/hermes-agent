@@ -80,6 +80,9 @@ const DEFAULT_TTL_MS = 120_000
 // Live urls are one-per-gateway and short-lived; the cap is only a backstop
 // against a pathological number of distinct owners accumulating entries.
 const MAX_ENTRIES = 32
+// Owners are (gateway, consumer) pairs drawn from the user's own connections,
+// so this only stops the generation ledger growing for a process lifetime.
+const MAX_OWNERS = 256
 
 interface GatewayWsCookieEntry {
   expiresAt: number
@@ -92,6 +95,10 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
   const entries = new Map<string, GatewayWsCookieEntry>()
   // Latest generation issued per owner, and the current logout epoch per
   // partition. Both are read before the jar await and re-checked after it.
+  // Generations come from one process-wide counter rather than a per-owner
+  // one, so a forgotten owner can never reissue a number a pending read is
+  // still holding: that read simply finds no generation and stands down.
+  let sequence = 0
   const generations = new Map<string, number>()
   const epochs = new Map<string, number>()
   // Sign-outs still clearing their jar, per partition.
@@ -138,10 +145,22 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     // Namespaced by baseUrl so a consumer label can never span two gateways.
     const owner = `${baseUrl}\n${consumer ?? ''}`
     const partition = dependencies.resolvePartition(baseUrl)
-    const generation = (generations.get(owner) ?? 0) + 1
+    const generation = ++sequence
     const epoch = epochs.get(partition) ?? 0
 
+    // Re-inserted so the map stays in least-recently-registered order.
+    generations.delete(owner)
     generations.set(owner, generation)
+
+    while (generations.size > MAX_OWNERS) {
+      const oldest = generations.keys().next().value
+
+      if (oldest === undefined) {
+        break
+      }
+
+      generations.delete(oldest)
+    }
 
     // True only while this registration is still the newest one for its
     // gateway AND no sign-out emptied the jar it read from. Checked on both
@@ -175,8 +194,8 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
       .map(cookie => `${cookie.name}=${cookie.value}`)
       .join('; ')
 
-    // Replace, never accumulate: only this gateway's newest ticket url stays
-    // authorized. Other gateways sharing the jar keep theirs.
+    // Replace, never accumulate: only this consumer's newest ticket url stays
+    // authorized. Other consumers and gateways keep theirs.
     dropWhere(entry => entry.owner === owner)
 
     if (header) {

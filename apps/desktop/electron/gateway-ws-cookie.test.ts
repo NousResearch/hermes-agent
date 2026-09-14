@@ -388,6 +388,29 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(onError).toHaveBeenCalledWith('partition unavailable')
   })
 
+  // The generation ledger is bounded, so an owner can age out of it. A pending
+  // read that finds its generation gone must stand down rather than publish
+  // against a number some later registration might reuse.
+  it('stands down when its owner has aged out of the generation ledger', async () => {
+    const jar = deferred<GatewayCookie[]>()
+    let reads = 0
+    const store = createGatewayWsCookieStore({
+      readCookies: () => (++reads === 1 ? jar.promise : Promise.resolve(proxyJar)),
+      resolvePartition: () => LEGACY
+    })
+
+    const pending = store.register(WS_URL, GATEWAY, 'ws-url:default')
+
+    for (let index = 0; index < 300; index += 1) {
+      await store.register(`wss://gateway.example/api/ws?ticket=${index}`, GATEWAY, `churn:${index}`)
+    }
+
+    jar.resolve(proxyJar)
+    await pending
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
   it('preserves headers already merged for the request and appends to any Cookie', async () => {
     const { store } = createStore()
 

@@ -32,3 +32,26 @@ def test_no_duplicate_skills_subparser():
                 "See issue #898 for details."
             ) from e
         raise
+
+
+def test_skills_tap_refresh_subparser():
+    """Verify 'hermes skills tap refresh [repo]' parses both specific and omitted repo."""
+    from hermes_cli.main import build_skills_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_skills_parser(subparsers, cmd_skills=lambda a: None)
+
+    # Specific tap repo
+    args = parser.parse_args(["skills", "tap", "refresh", "callacat/hermes-capabilities"])
+    assert args.command == "skills"
+    assert args.skills_action == "tap"
+    assert args.tap_action == "refresh"
+    assert args.repo == "callacat/hermes-capabilities"
+
+    # All taps (repo omitted)
+    args_all = parser.parse_args(["skills", "tap", "refresh"])
+    assert args_all.command == "skills"
+    assert args_all.skills_action == "tap"
+    assert args_all.tap_action == "refresh"
+    assert args_all.repo == ""

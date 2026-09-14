@@ -299,7 +299,17 @@ def _gateway_service_matches_profile(profile: str, service: object) -> bool:
     """
     name = str(service).removesuffix(".service").rsplit("/", 1)[-1]
     if profile == "default":
-        return name in {"hermes-gateway", "ai.hermes.gateway", "gateway", "gateway-default"}
+        if name in {"hermes-gateway", "ai.hermes.gateway", "gateway", "gateway-default"}:
+            return True
+        # HERMES_HOME outside ~/.hermes uses hermes-gateway-<8hex>.service (see
+        # _profile_suffix() in hermes_cli/gateway.py). The inventory still
+        # records profile "default", so the reconciliation must credit it.
+        # See #110238.
+        if name.startswith("hermes-gateway-") and len(name) == len("hermes-gateway-") + 8:
+            suffix = name[len("hermes-gateway-") :]
+            if all(c in "0123456789abcdef" for c in suffix):
+                return True
+        return False
     return name in {f"hermes-gateway-{profile}", f"ai.hermes.gateway-{profile}", f"gateway-{profile}"}
 
 

@@ -171,6 +171,26 @@ def _memory_fields(item: Any, *keys: str) -> dict:
             for k in keys}
 
 
+def _result_text(item: Any) -> str:
+    """Recall text for a search/profile result, wherever the SDK put it.
+
+    ``memory`` holds extracted memories, but document and full-session hits carry
+    their text in ``chunk`` (with ``memory`` left as ``None``) and chunked hits in
+    ``chunks[].content``. Reading only ``memory`` makes every document-derived hit
+    look empty, and ``_format_prefetch_context`` then drops it (its dedupe key is
+    ``item.get("memory", "")``, and a falsy key filters the item out).
+    """
+    for attr in ("memory", "chunk", "context"):
+        value = getattr(item, attr, None)
+        if value:
+            return str(value)
+    chunks = getattr(item, "chunks", None) or []
+    if chunks:
+        first = chunks[0]
+        return str(first.get("content") or "") if isinstance(first, dict) else str(getattr(first, "content", "") or "")
+    return ""
+
+
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str,
                  search_mode: str = "hybrid", base_url: str = ""):
@@ -206,7 +226,7 @@ class _SupermemoryClient:
         kwargs: dict[str, Any] = {"q": query, "container_tag": container_tag or self._container_tag, "limit": limit,
                                   **({"search_mode": mode} if mode in _VALID_SEARCH_MODES else {})}
         response = self._client.search.memories(**kwargs)
-        return [{**_memory_fields(item, "id", "memory", "similarity", "updated_at", "metadata"), "memory": getattr(item, "memory", "") or ""}
+        return [{**_memory_fields(item, "id", "similarity", "updated_at", "metadata"), "memory": _result_text(item)}
                 for item in (getattr(response, "results", None) or [])]
 
     def get_profile(self, query: Optional[str] = None, *, container_tag: Optional[str] = None) -> dict:
@@ -216,7 +236,8 @@ class _SupermemoryClient:
         raw_results = getattr(search_data, "results", None) or search_data or []
         return {
             **{k: (getattr(profile_data, k, []) or []) if profile_data else [] for k in ("static", "dynamic")},
-            "search_results": [item if isinstance(item, dict) else _memory_fields(item, "memory", "updated_at", "similarity")
+            "search_results": [item if isinstance(item, dict)
+                               else {**_memory_fields(item, "updated_at", "similarity"), "memory": _result_text(item)}
                                for item in raw_results] if isinstance(raw_results, list) else [],
         }
 

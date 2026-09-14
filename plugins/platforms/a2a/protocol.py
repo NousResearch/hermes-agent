@@ -46,7 +46,26 @@ def _env_int(name: str, default: int) -> int:
     return _coerce_int(os.getenv(name, default), default)
 
 
-def max_pingpong_turns() -> int:
+def max_pingpong_turns(peer: Optional[str] = None) -> int:
+    """Return the anti-loop turn cap.
+
+    ``peer`` is an optional peer name used to look up a per-peer override in
+    the A2A config (``a2a_agents.<peer>.max_turns``). When no override exists
+    or the peer is unknown, fall back to the global ``A2A_MAX_PINGPONG_TURNS``
+    env variable (default 5, hard max 20).
+    """
+    # Per-peer override from config
+    if peer:
+        try:
+            from . import tools as _tools  # local import to avoid cycle
+            cfg = _tools._load_config()
+            entry = (cfg.get("a2a_agents") or {}).get(peer, {})
+            if isinstance(entry, dict) and "max_turns" in entry:
+                v = int(entry["max_turns"])
+                return max(1, min(v, _HARD_MAX_PINGPONG))
+        except Exception:
+            pass  # config missing or unreadable — fall through to env
+
     v = _env_int("A2A_MAX_PINGPONG_TURNS", _DEFAULT_MAX_PINGPONG)
     return max(1, min(v, _HARD_MAX_PINGPONG))
 
@@ -123,6 +142,21 @@ def new_task_id() -> str:
     return "task-" + uuid.uuid4().hex[:16]
 
 
+def deterministic_task_id(context_id: str, message_text: str) -> str:
+    """Generate a stable task ID from context_id and message content.
+
+    Used by clients to make retry-safe POSTs: the same (context, message) pair
+    always produces the same task ID, so a 524 retry hits the server with an
+    ID it has already seen and can deduplicate against.
+
+    The hash is SHA-256 truncated to 16 hex chars (collision-resistant enough
+    for per-context dedup; not security-critical).
+    """
+    import hashlib
+    payload = f"{context_id or 'default'}:{message_text or ''}".encode("utf-8")
+    return "task-" + hashlib.sha256(payload).hexdigest()[:16]
+
+
 def new_context_id() -> str:
     return "ctx-" + uuid.uuid4().hex[:16]
 
@@ -182,10 +216,24 @@ def extract_context_id(params: dict) -> str:
     return (str(msg.get("contextId") or "") if isinstance(msg, dict) else "") or str(params.get("contextId") or "")
 
 
-def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", *, created_at: str = "") -> dict:
+def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", *,
+               created_at: str = "", turn: Optional[int] = None, max_turns: Optional[int] = None) -> dict:
     """A2A v1.0 Task. ``created_at`` is accepted but NOT serialized: the v1.0 Task proto has no
-    createdAt and strict ProtoJSON parsers (a2a-sdk) reject unknown fields."""
+    createdAt and strict ProtoJSON parsers (a2a-sdk) reject unknown fields.
+
+    ``turn`` and ``max_turns`` surface the anti-loop budget so peers know how many turns remain
+    before rejection. They live under ``metadata.turnBudget`` (non-spec but tolerated by lenient
+    parsers; strict clients ignore it).
+    """
     task: dict[str, Any] = {"id": task_id, "contextId": context_id, "status": {"state": state, "timestamp": now_iso()}}
+    if turn is not None and max_turns is not None:
+        task["metadata"] = {
+            "turnBudget": {
+                "current": turn,
+                "max": max_turns,
+                "remaining": max(0, max_turns - turn),
+            }
+        }
     if agent_text:
         task["status"]["message"] = text_message(ROLE_AGENT, agent_text, context_id)
         if state == STATE_COMPLETED:
@@ -240,6 +288,25 @@ class TurnTracker:
     def reset(self, context_id: str) -> None:
         with self._lock:
             self._turns.pop(context_id, None)
+
+    def refund(self, context_id: str) -> int:
+        """Decrement the turn count for a context (transport failure refund).
+
+        When a turn is consumed by a transport failure (timeout, empty reply,
+        dispatch error) — not genuine agent work — it should not count toward
+        the anti-loop cap. Returns the new count (floor 0).
+        """
+        with self._lock:
+            current = self._turns.get(context_id, (0, time.time()))[0]
+            if current > 0:
+                self._turns[context_id] = (current - 1, time.time())
+                return current - 1
+            return 0
+
+    def get_count(self, context_id: str) -> int:
+        """Return current turn count without incrementing."""
+        with self._lock:
+            return self._turns.get(context_id, (0, time.time()))[0]
 
 
 class RateLimiter:
@@ -430,9 +497,14 @@ class TaskStore:
         return task
 
 
+def _conv_dir() -> Path:
+    """Directory root for per-context conversation + reply stores."""
+    return get_hermes_home() / "a2a_conversations"
+
+
 def _conv_path(context_id: str) -> Path:
     safe = "".join(c for c in (context_id or "default") if c.isalnum() or c in "-_") or "default"
-    return get_hermes_home() / "a2a_conversations" / f"{safe}.jsonl"
+    return _conv_dir() / f"{safe}.jsonl"
 
 
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
@@ -465,6 +537,89 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 def list_conversations() -> list[str]:
     """Context-ids that have persisted conversations."""
     return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
+
+
+class ReplyStore:
+    """Persist the last agent reply per (context_id, turn) to disk.
+
+    When a client retries a 524'd POST, the server can return the persisted
+    reply for the same task_id instead of re-executing the action. The store
+    is a simple JSON file per context, with turn-indexed entries.
+
+    The store also serves as the dedup cache: task IDs that have already
+    been processed are recorded here, so a retry with the same task ID
+    returns the cached result without re-running the action.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _path(context_id: str) -> Path:
+        safe = "".join(c for c in (context_id or "default") if c.isalnum() or c in "-_") or "default"
+        return _conv_dir() / f"{safe}_replies.json"
+
+    def save(self, context_id: str, task_id: str, turn: int,
+             state: str, reply: str) -> None:
+        """Persist a reply for (context_id, turn). Overwrites existing."""
+        path = self._path(context_id)
+        with self._lock:
+            data = self._load_locked(path)
+            data[str(turn)] = {
+                "task_id": task_id,
+                "state": state,
+                "reply": reply,
+                "ts": time.time(),
+            }
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("w", encoding="utf-8") as fh:
+                    json.dump(data, fh, ensure_ascii=False)
+            except Exception:
+                pass
+
+    def get_by_task_id(self, context_id: str, task_id: str) -> Optional[dict]:
+        """Find a persisted reply by task_id (any turn). Returns the record or None."""
+        path = self._path(context_id)
+        with self._lock:
+            data = self._load_locked(path)
+        for turn, rec in data.items():
+            if rec.get("task_id") == task_id:
+                return dict(rec)
+        return None
+
+    def get_by_turn(self, context_id: str, turn: int) -> Optional[dict]:
+        """Get the persisted reply for a specific turn."""
+        path = self._path(context_id)
+        with self._lock:
+            data = self._load_locked(path)
+        rec = data.get(str(turn))
+        return dict(rec) if rec else None
+
+    def get_last(self, context_id: str) -> Optional[dict]:
+        """Get the most recent persisted reply for a context."""
+        path = self._path(context_id)
+        with self._lock:
+            data = self._load_locked(path)
+        if not data:
+            return None
+        latest_turn = max(data.keys(), key=lambda t: int(t))
+        rec = data[latest_turn]
+        return dict(rec) if rec else None
+
+    @staticmethod
+    def _load_locked(path: Path) -> dict:
+        """Load reply data from disk. Caller must hold the lock."""
+        if not path.exists():
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+
+reply_store = ReplyStore()
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -803,3 +803,242 @@ class TestSSRFProtection:
     def test_empty_url_blocked(self):
         assert security.is_safe_callback_url("") is False
         assert security.is_safe_callback_url(None) is False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Idempotent retry and deduplication (Issue #1)
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.integration
+class TestIdempotentRetry:
+    def test_duplicate_task_id_returns_cached_result(self, monkeypatch):
+        """Retrying a task with the same task_id should return the cached reply."""
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            await adapter.connect()
+
+            # First request
+            task_id = protocol.deterministic_task_id("ctx-dedup", "hello")
+            body1 = _send_body("hello", "ctx-dedup")
+            body1["params"]["taskId"] = task_id
+            resp1 = await asyncio.to_thread(_post_json, base + "/", body1)
+            assert resp1["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            first_reply = protocol.extract_text(resp1["result"]["task"]["status"]["message"])
+
+            # Retry with same task_id (simulating 524 retry)
+            body2 = _send_body("hello", "ctx-dedup")
+            body2["params"]["taskId"] = task_id
+            resp2 = await asyncio.to_thread(_post_json, base + "/", body2)
+            assert resp2["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            second_reply = protocol.extract_text(resp2["result"]["task"]["status"]["message"])
+
+            # Should return the same reply
+            assert first_reply == second_reply
+
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+    def test_client_uses_deterministic_task_id(self, monkeypatch):
+        """Client tools should generate deterministic task IDs for retries."""
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"peer1": {"url": "http://localhost:9999"}}})
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured["body"] = body
+            ctx = body["params"]["message"].get("contextId", "c1")
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", ctx, protocol.STATE_COMPLETED, "reply"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+
+        # First call
+        tools.a2a_call({"agent": "peer1", "message": "test message", "context_id": "ctx-test"})
+        task_id1 = captured["body"]["id"]
+
+        # Second call with same context and message
+        tools.a2a_call({"agent": "peer1", "message": "test message", "context_id": "ctx-test"})
+        task_id2 = captured["body"]["id"]
+
+        # Should use the same deterministic task_id
+        assert task_id1 == task_id2
+        assert task_id1.startswith("task-")
+
+    def test_different_messages_get_different_task_ids(self, monkeypatch):
+        """Different messages should produce different task IDs."""
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"peer1": {"url": "http://localhost:9999"}}})
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+
+        captured = {}
+
+        def fake_post(url, body, headers, timeout):
+            captured["body"] = body
+            ctx = body["params"]["message"].get("contextId", "c1")
+            return protocol.jsonrpc_result(
+                body["id"],
+                protocol.build_task("t", ctx, protocol.STATE_COMPLETED, "reply"),
+            )
+
+        monkeypatch.setattr(tools, "_http_post_json", fake_post)
+
+        # First message
+        tools.a2a_call({"agent": "peer1", "message": "message A", "context_id": "ctx-test"})
+        task_id1 = captured["body"]["id"]
+
+        # Different message
+        tools.a2a_call({"agent": "peer1", "message": "message B", "context_id": "ctx-test"})
+        task_id2 = captured["body"]["id"]
+
+        # Should use different task IDs
+        assert task_id1 != task_id2
+
+    def test_reply_persistence_across_restarts(self, monkeypatch, tmp_path):
+        """ReplyStore should persist replies to disk and survive restarts."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # First adapter instance saves a reply
+        store1 = protocol.ReplyStore()
+        store1.save("ctx-persist", "task-persist", 1, "TASK_STATE_COMPLETED", "saved reply")
+
+        # Second adapter instance (simulating restart) should load it
+        store2 = protocol.ReplyStore()
+        result = store2.get_by_turn("ctx-persist", 1)
+
+        assert result is not None
+        assert result["task_id"] == "task-persist"
+        assert result["reply"] == "saved reply"
+        assert result["state"] == "TASK_STATE_COMPLETED"
+
+    def test_adapter_deduplication_with_pending_task(self, monkeypatch):
+        """Retrying a task that's still in progress should wait for the original."""
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            await adapter.connect()
+
+            task_id = protocol.deterministic_task_id("ctx-pending", "slow task")
+
+            # First request (will be slow)
+            body1 = _send_body("slow task", "ctx-pending")
+            body1["params"]["taskId"] = task_id
+
+            # Start first request in background
+            async def first_request():
+                return await asyncio.to_thread(_post_json, base + "/", body1)
+
+            task1 = asyncio.create_task(first_request())
+
+            # Wait a bit for first request to start processing
+            await asyncio.sleep(0.1)
+
+            # Second request with same task_id (retry)
+            body2 = _send_body("slow task", "ctx-pending")
+            body2["params"]["taskId"] = task_id
+            resp2 = await asyncio.to_thread(_post_json, base + "/", body2)
+
+            # Should return completed result (either from cache or waiting)
+            assert resp2["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+
+            # Wait for first request to complete
+            resp1 = await task1
+            assert resp1["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+
+            # Both should have the same reply
+            reply1 = protocol.extract_text(resp1["result"]["task"]["status"]["message"])
+            reply2 = protocol.extract_text(resp2["result"]["task"]["status"]["message"])
+            assert reply1 == reply2
+
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Reply persistence and cross-restart deduplication
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class TestReplyStore:
+    def test_save_and_get_by_task_id(self, tmp_path, monkeypatch):
+        """ReplyStore.save must accept (context_id, task_id, turn, state, reply)."""
+        monkeypatch.setattr(protocol, "_conv_dir", lambda: tmp_path)
+        store = protocol.ReplyStore()
+        store.save("ctx-1", "task-abc", 0, protocol.STATE_COMPLETED, "the reply")
+        rec = store.get_by_task_id("ctx-1", "task-abc")
+        assert rec is not None
+        assert rec["state"] == protocol.STATE_COMPLETED
+        assert rec["reply"] == "the reply"
+
+    def test_get_by_turn(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(protocol, "_conv_dir", lambda: tmp_path)
+        store = protocol.ReplyStore()
+        store.save("ctx-2", "task-xyz", 3, protocol.STATE_COMPLETED, "turn 3 reply")
+        rec = store.get_by_turn("ctx-2", 3)
+        assert rec is not None
+        assert rec["reply"] == "turn 3 reply"
+        assert store.get_by_turn("ctx-2", 99) is None
+
+    def test_get_last(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(protocol, "_conv_dir", lambda: tmp_path)
+        store = protocol.ReplyStore()
+        store.save("ctx-3", "task-1", 0, protocol.STATE_COMPLETED, "first")
+        store.save("ctx-3", "task-2", 1, protocol.STATE_COMPLETED, "second")
+        store.save("ctx-3", "task-3", 2, protocol.STATE_INPUT_REQUIRED, "need more")
+        rec = store.get_last("ctx-3")
+        assert rec is not None
+        assert rec["reply"] == "need more"
+
+    def test_persistence_across_instances(self, tmp_path, monkeypatch):
+        """Two ReplyStore instances sharing the same directory see each other's data."""
+        monkeypatch.setattr(protocol, "_conv_dir", lambda: tmp_path)
+        store1 = protocol.ReplyStore()
+        store1.save("ctx-persist", "task-p", 0, protocol.STATE_COMPLETED, "persisted")
+        store2 = protocol.ReplyStore()
+        rec = store2.get_by_task_id("ctx-persist", "task-p")
+        assert rec is not None
+        assert rec["reply"] == "persisted"
+
+
+@pytest.mark.integration
+class TestCrossRestartDedup:
+    def test_retry_returns_persisted_reply_after_taskstore_eviction(self, monkeypatch, tmp_path):
+        """When TaskStore doesn't have the task (e.g. after restart), fall back to ReplyStore."""
+        monkeypatch.setattr(protocol, "_conv_dir", lambda: tmp_path)
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        adapter, base = _make_live_adapter(monkeypatch)
+
+        async def run():
+            await adapter.connect()
+
+            task_id = protocol.deterministic_task_id("ctx-restart", "do something")
+
+            # First request — completes normally
+            body = _send_body("do something", "ctx-restart")
+            body["params"]["taskId"] = task_id
+            resp1 = await asyncio.to_thread(_post_json, base + "/", body)
+            assert resp1["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            reply1 = protocol.extract_text(resp1["result"]["task"]["status"]["message"])
+
+            # Simulate server restart: evict from TaskStore only, keep ReplyStore on disk
+            adapter.tasks._tasks.pop(task_id, None)
+
+            # Retry with same task_id — should find the reply in ReplyStore
+            body2 = _send_body("do something", "ctx-restart")
+            body2["params"]["taskId"] = task_id
+            resp2 = await asyncio.to_thread(_post_json, base + "/", body2)
+            assert resp2["result"]["task"]["status"]["state"] == "TASK_STATE_COMPLETED"
+            reply2 = protocol.extract_text(resp2["result"]["task"]["status"]["message"])
+            assert reply1 == reply2
+
+            await adapter.disconnect()
+
+        asyncio.run(run())

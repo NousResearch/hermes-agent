@@ -1422,6 +1422,128 @@ class TestMatrixSyncLoop:
 
         await adapter.disconnect()
 
+    # -- sync error classification ------------------------------------------
+    # Regression basis: 2026-08-31 incident. Cloudflare served a 502 HTML page
+    # on a /sync request; the page contains the literal text "401", and the
+    # old substring classifier ("401" in str(exc)) classified it as a
+    # permanent auth failure, killing Matrix inbound for ~16 minutes.
+
+    def _sync_loop_client(self, adapter, sync_side_effect):
+        """Build the minimal fake client _sync_loop needs."""
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=sync_side_effect)
+        fake_client.sync_store = mock_sync_store
+        adapter._client = fake_client
+        return fake_client
+
+    def test_permanent_auth_error_classification_structural(self):
+        """Classification must use MatrixRequestError's structured fields.
+
+        Real homeserver auth failures carry M_* errcodes; proxy/CDN error
+        pages arrive as MatrixUnknownRequestError (status, errcode=None) and
+        must be retryable no matter what text the page contains.
+        """
+        from mautrix.errors import (
+            MatrixUnknownRequestError,
+            MForbidden,
+            MUnknownToken,
+        )
+
+        adapter = _make_adapter()
+
+        cf_page = (
+            "<!DOCTYPE html>... error code: 502 ... "
+            "cloudflare.com/5xx-error-landing ... 401 Unauthorized ..."
+        )
+        assert adapter._is_permanent_auth_error(
+            MatrixUnknownRequestError(http_status=502, text=cf_page)
+        ) is False
+        assert adapter._is_permanent_auth_error(
+            ConnectionError("connection reset by peer")
+        ) is False
+        assert adapter._is_permanent_auth_error(
+            asyncio.TimeoutError()
+        ) is False
+        # Plain-exception text mentioning 401/403 must NOT be trusted either.
+        assert adapter._is_permanent_auth_error(
+            RuntimeError("request failed: 401 unauthorized")
+        ) is False
+
+        # Genuine homeserver auth verdicts.
+        assert adapter._is_permanent_auth_error(
+            MUnknownToken(401, "Invalid macaroon")
+        ) is True
+        assert adapter._is_permanent_auth_error(
+            MForbidden(403, "You are not invited to this room.")
+        ) is True
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_survives_cloudflare_502_html_containing_401(self):
+        """A 502 whose error page contains "401" must retry, not stop."""
+        from mautrix.errors import MatrixUnknownRequestError
+
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        cf_page = (
+            "<!DOCTYPE html><html><head><title>502 Bad Gateway</title></head>"
+            "<body>... error code: 502 ... cloudflare.com/5xx-error-landing "
+            "... 401 Unauthorized ... Visit cloudflare.com ...</body></html>"
+        )
+        calls = {"n": 0}
+
+        async def _sync_once(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise MatrixUnknownRequestError(http_status=502, text=cf_page)
+            adapter._closing = True
+            return {"next_batch": "s2"}
+
+        self._sync_loop_client(adapter, _sync_once)
+
+        with patch(
+            "plugins.platforms.matrix.adapter.asyncio.sleep", new=AsyncMock()
+        ) as sleep_mock:
+            await adapter._sync_loop()
+
+        assert calls["n"] == 2  # retried after the 502 instead of stopping
+        assert sleep_mock.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_stops_on_real_unknown_token_error(self):
+        """Genuine M_UNKNOWN_TOKEN (HTTP 401) still stops the loop — the fix
+        must not overcorrect into retrying everything."""
+        from mautrix.errors import MUnknownToken
+
+        adapter = _make_adapter()
+        adapter._closing = False
+
+        calls = {"n": 0}
+
+        async def _sync_once(**kwargs):
+            calls["n"] += 1
+            raise MUnknownToken(401, "Invalid macaroon issued for this device")
+
+        self._sync_loop_client(adapter, _sync_once)
+
+        # Bounded wait: fixed code returns in milliseconds; broken code
+        # retries forever (real M_UNKNOWN_TOKEN messages don't contain the
+        # substrings "401"/"unauthorized" the old text-matcher needed).
+        stopped = True
+        try:
+            await asyncio.wait_for(adapter._sync_loop(), timeout=2.0)
+        except asyncio.TimeoutError:
+            stopped = False
+
+        assert stopped, (
+            "sync loop kept retrying on M_UNKNOWN_TOKEN — "
+            "permanent auth error was not classified"
+        )
+        assert calls["n"] == 1  # stopped after the first failure
+
 
 class TestMatrixUploadAndSend:
 

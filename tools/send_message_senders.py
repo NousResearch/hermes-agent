@@ -497,6 +497,26 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
 
 # "ephemeral connect (may re-init E2EE per send, see #46310)",
+def _gateway_process_running() -> bool:
+    """True when a gateway process is running for the current profile.
+
+    Same verified detector as ``hermes cron status`` (PID file + runtime
+    lock + start-time/cmdline match) — a stale PID file from a crashed
+    gateway does not count. Kept as a module-level function so tests (and
+    any future callers) can patch it hermetically.
+
+    Fork note: upstream's decomposition dropped this guard when rewriting
+    the senders module; it is a fork feature (e887633e) — see the refusal
+    branch in _send_matrix_via_adapter below.
+    """
+    try:
+        from gateway.status import get_running_pid
+
+        return get_running_pid() is not None
+    except Exception:
+        return False
+
+
 async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Matrix adapter send (native media preserved). Prefer the live gateway adapter's persistent
     olm/megolm session: ephemeral per-send connects re-init E2EE and claim one-time keys, which
@@ -515,6 +535,27 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
         return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+    if _gateway_process_running():
+        # No live adapter in THIS process, but a gateway process is running
+        # for the profile (e.g. the desktop cron ticker won the .tick.lock
+        # race). Booting a second OlmMachine here would race the gateway's
+        # OTK claims and account-pickle saves on the shared crypto store —
+        # the E2EE split brain behind permanently undecryptable messages
+        # (UTD, #46310). Fail loudly; the delivery is retried/reported by
+        # the caller, never silently poisons E2EE state. With no gateway
+        # running, the ephemeral connect is the only Matrix path and stays
+        # correct.
+        logger.error(
+            "Matrix: refusing ephemeral adapter while a gateway process is "
+            "running — a second OlmMachine on the shared crypto store causes "
+            "E2EE split brain (see #46310); route this send through the "
+            "gateway's live adapter"
+        )
+        return _error(
+            "Matrix send refused: an ephemeral adapter would race the running "
+            "gateway's E2EE state. Route delivery through the gateway (live "
+            "adapter) instead."
+        )
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:

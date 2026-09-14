@@ -26,6 +26,18 @@ from types import SimpleNamespace
 import pytest
 
 from plugins.platforms.a2a import protocol, security, tools
+from tools.registry import invalidate_check_fn_cache
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tool_gate_cache():
+    """Upstream's registry memoizes check_fn results (~30s TTL). Within one
+    pytest process, an earlier test evaluating the A2A gate with a patched or
+    absent config poisons the cache for later convention tests — drop it
+    before and after each test in this file."""
+    invalidate_check_fn_cache()
+    yield
+    invalidate_check_fn_cache()
 
 
 def _free_port() -> int:
@@ -136,6 +148,107 @@ class TestTrustedPeers:
         monkeypatch.setenv("A2A_ALLOW_ALL_USERS", "true")
         monkeypatch.setenv("A2A_TRUSTED_PEERS", "alice")
         assert security.A2ASecurityContext.capture().is_trusted_peer("mallory") is True
+
+
+# --------------------------------------------------------------------------
+# Reply persistence and idempotent retries
+# --------------------------------------------------------------------------
+
+class TestReplyPersistence:
+    def test_save_and_load_by_turn(self, monkeypatch, tmp_path):
+        """Test saving and retrieving replies by turn number."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        
+        store = protocol.ReplyStore()
+        store.save("ctx-1", "task-abc", 1, "completed", "reply 1")
+        store.save("ctx-1", "task-def", 2, "completed", "reply 2")
+        
+        result = store.get_by_turn("ctx-1", 1)
+        assert result is not None
+        assert result["task_id"] == "task-abc"
+        assert result["reply"] == "reply 1"
+        assert result["state"] == "completed"
+        
+        result = store.get_by_turn("ctx-1", 2)
+        assert result is not None
+        assert result["task_id"] == "task-def"
+        assert result["reply"] == "reply 2"
+    
+    def test_get_by_task_id(self, monkeypatch, tmp_path):
+        """Test retrieving replies by task_id."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        
+        store = protocol.ReplyStore()
+        store.save("ctx-1", "task-xyz", 3, "completed", "the answer")
+        
+        result = store.get_by_task_id("ctx-1", "task-xyz")
+        assert result is not None
+        assert result["reply"] == "the answer"
+        assert result["state"] == "completed"
+        
+        # Non-existent task_id returns None
+        result = store.get_by_task_id("ctx-1", "task-999")
+        assert result is None
+    
+    def test_get_last(self, monkeypatch, tmp_path):
+        """Test retrieving the most recent reply for a context."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        
+        store = protocol.ReplyStore()
+        store.save("ctx-2", "task-1", 1, "completed", "first")
+        store.save("ctx-2", "task-2", 2, "completed", "second")
+        store.save("ctx-2", "task-3", 3, "failed", "third")
+        
+        result = store.get_last("ctx-2")
+        assert result is not None
+        assert result["task_id"] == "task-3"
+        assert result["reply"] == "third"
+    
+    def test_empty_context(self, monkeypatch, tmp_path):
+        """Test that non-existent contexts return None."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        
+        store = protocol.ReplyStore()
+        assert store.get_last("ctx-missing") is None
+        assert store.get_by_turn("ctx-missing", 1) is None
+        assert store.get_by_task_id("ctx-missing", "task-x") is None
+
+
+class TestDeterministicTaskId:
+    def test_same_input_same_output(self):
+        """Test that the same (context, message) produces the same task_id."""
+        id1 = protocol.deterministic_task_id("ctx-1", "hello")
+        id2 = protocol.deterministic_task_id("ctx-1", "hello")
+        assert id1 == id2
+    
+    def test_different_input_different_output(self):
+        """Test that different inputs produce different task_ids."""
+        id1 = protocol.deterministic_task_id("ctx-1", "hello")
+        id2 = protocol.deterministic_task_id("ctx-1", "goodbye")
+        id3 = protocol.deterministic_task_id("ctx-2", "hello")
+        assert id1 != id2
+        assert id1 != id3
+        assert id2 != id3
+    
+    def test_format(self):
+        """Test that task_ids have the correct format."""
+        task_id = protocol.deterministic_task_id("ctx-1", "test")
+        assert task_id.startswith("task-")
+        # Should be a hex string after the prefix (truncated SHA256 to 16 hex chars)
+        hex_part = task_id[5:]
+        assert len(hex_part) == 16  # truncated to match new_task_id() format
+        assert all(c in "0123456789abcdef" for c in hex_part)
+    
+    def test_empty_inputs(self):
+        """Test that empty inputs still produce valid task_ids."""
+        id1 = protocol.deterministic_task_id("", "message")
+        id2 = protocol.deterministic_task_id("ctx", "")
+        id3 = protocol.deterministic_task_id("", "")
+        assert id1.startswith("task-")
+        assert id2.startswith("task-")
+        assert id3.startswith("task-")
+        assert id1 != id2
+        assert id2 != id3
 
 
 class TestInjectionFilter:
@@ -450,7 +563,7 @@ class TestClientTools:
             description="finds things",
             skills=[{"id": "s", "name": "search", "description": "web search"}],
         )
-        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: card)
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t, ao=(): card)
         out = tools.a2a_discover({"url": "http://localhost:9999"})
         assert "researcher" in out
         assert "search" in out
@@ -460,11 +573,11 @@ class TestClientTools:
         """Outbound params: contextId inside the message, v1.0 role, no kind."""
         monkeypatch.setattr(tools, "_load_config",
                             lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
-        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t, ao=(): None)
 
         captured = {}
 
-        def fake_post(url, body, headers, timeout):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             captured["body"] = body
             ctx = body["params"]["message"].get("contextId", "c1")
             return protocol.jsonrpc_result(
@@ -490,9 +603,9 @@ class TestClientTools:
     def test_call_reports_input_required(self, monkeypatch):
         monkeypatch.setattr(tools, "_load_config",
                             lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
-        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t, ao=(): None)
 
-        def fake_post(url, body, headers, timeout):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             return protocol.jsonrpc_result(
                 body["id"],
                 protocol.build_task("t", "ctx-q", protocol.STATE_INPUT_REQUIRED, "Which repo?"),
@@ -550,15 +663,46 @@ class TestRegistryDispatchConvention:
         out = registry.dispatch("a2a_list", {})
         assert "No peers configured" in out
 
+    def test_registered_schemas_are_flat_not_double_wrapped(self, monkeypatch, tmp_path):
+        """The registry stores schemas as-is and ``get_definitions()`` wraps
+        them in {"type": "function", "function": ...}. ``register_tools``
+        must unwrap ``_SCHEMAS``'s OpenAI-style wrapper first — otherwise the
+        model gets a nested {"function": {"function": {...}}} with no
+        parameters and tool calls fail validation."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # Upstream's registry (#95681 era) now filters get_definitions by
+        # check_fn, so the gate must be open for the schema assertions to
+        # run; the fork's older registry registered/defined unconditionally.
+        monkeypatch.setattr(tools, "_load_config",
+                            lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}})
+        from tools.registry import registry
+
+        class _Ctx:
+            def register_tool(self, name, toolset, schema, handler, **kw):
+                registry.register(name=name, toolset=toolset, schema=schema,
+                                  handler=handler, override=True, **kw)
+
+        tools.register_tools(_Ctx())
+
+        defs = registry.get_definitions({"a2a_call", "a2a_discover"})
+        by_name = {d["function"].get("name"): d for d in defs}
+        assert set(by_name) == {"a2a_call", "a2a_discover"}
+        call_fn = by_name["a2a_call"]["function"]
+        assert "function" not in call_fn  # double-wrap would nest one here
+        assert "agent" in call_fn["parameters"]["properties"]
+        assert call_fn["description"]
+        assert by_name["a2a_discover"]["function"]["description"]
+
+
     def test_a2a_call_accepts_agent_name_alias(self, monkeypatch):
         """Models reach for 'agent_name' (observed live). Accept it as an
         alias for 'agent' so the call doesn't fail the required-arg guard."""
         monkeypatch.setattr(tools, "_load_config",
                             lambda: {"a2a_agents": {"peer": {"url": "http://localhost:9999"}}})
-        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t: None)
+        monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t, ao=(): None)
         captured = {}
 
-        def fake_post(url, body, headers, timeout):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             captured["sent"] = True
             return protocol.jsonrpc_result(
                 body["id"],
@@ -1410,7 +1554,7 @@ class TestClientTenantAndDiscovery:
     def test_rpc_body_echoes_tenant_from_agent_card(self, monkeypatch):
         posted = {}
 
-        def fake_get(url, headers, timeout):
+        def fake_get(url, headers, timeout, allowed_origins=()):
             assert url.endswith("/.well-known/agent-card.json")
             return protocol.build_agent_card(
                 name="dev",
@@ -1419,7 +1563,7 @@ class TestClientTenantAndDiscovery:
                 tenant="dev-team",
             )
 
-        def fake_post(url, body, headers, timeout):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             posted["url"] = url
             posted["body"] = body
             return {"jsonrpc": "2.0", "id": body["id"], "result": protocol.build_task(
@@ -1438,7 +1582,7 @@ class TestClientTenantAndDiscovery:
     def test_discovery_falls_back_to_legacy_agent_json(self, monkeypatch):
         calls = []
 
-        def fake_get(url, headers, timeout):
+        def fake_get(url, headers, timeout, allowed_origins=()):
             calls.append(url)
             if url.endswith("agent-card.json"):
                 raise urllib.error.HTTPError(url, 404, "not found", {}, None)
@@ -1488,11 +1632,11 @@ class TestV1SpecRegressionFixes:
     def test_client_sends_v1_method_and_unwraps_response(self, monkeypatch):
         posted = {}
 
-        def fake_get(url, headers, timeout):
+        def fake_get(url, headers, timeout, allowed_origins=()):
             return protocol.build_agent_card(
                 name="dev", url="http://peer.example/dev/", description="dev", tenant="dev-team")
 
-        def fake_post(url, body, headers, timeout):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             posted["headers"] = headers
             posted["body"] = body
             return {"jsonrpc": "2.0", "id": body["id"], "result": {"task": protocol.build_task(
@@ -1643,6 +1787,9 @@ print('fake reply')
         assert title == "a2a-dev-ctx-unsafe-value"
 
 
+# --------------------------------------------------------------------------
+# Client HTTP edge cases: GET-layer headers, collision precedence,
+# 524 retry budget
 # --------------------------------------------------------------------------
 # Multiplex secondary-profile scope (construction-time config leak)
 # --------------------------------------------------------------------------

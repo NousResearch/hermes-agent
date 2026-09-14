@@ -60,6 +60,12 @@ except ImportError:
         "PRIVATE": "private_chat", "PUBLIC": "public_chat", "TRUSTED_PRIVATE": "trusted_private_chat"})
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
+try:
+    from mautrix.errors import MatrixRequestError
+except ImportError:  # pragma: no cover - module must import without mautrix
+    class MatrixRequestError(Exception):  # type: ignore[no-redef]
+        """Stub so the module is importable without mautrix installed."""
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
@@ -1756,6 +1762,36 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id, p.read_bytes(), fname, mimetypes.guess_type(fname)[0] or "application/octet-stream", msgtype,
             caption, reply_to, metadata, is_voice, voice_metadata)
 
+    def _is_permanent_auth_error(self, exc: Exception) -> bool:
+        """Classify a sync-loop exception as a permanent auth failure.
+
+        Must use the exception's STRUCTURED fields (type, http_status,
+        errcode), never substring matching over str(exc): proxy/CDN error
+        pages are delivered as MatrixUnknownRequestError and their HTML can
+        contain arbitrary text (the 2026-08-31 Cloudflare 502 page contained
+        "401"). M_* auth errcodes come only from the homeserver itself, so
+        they are the authoritative permanent-auth verdict.
+        """
+        # Not a homeserver response at all (connection reset, timeout, ...)
+        if not isinstance(exc, MatrixRequestError):
+            return False
+
+        # Homeserver-verdict auth errors are unambiguous. M_UNKNOWN_TOKEN
+        # (raised as the MatrixInvalidToken subclass) carries the errcode.
+        errcode = getattr(exc, "errcode", None)
+        if errcode in ("M_UNKNOWN_TOKEN", "M_MISSING_TOKEN", "M_FORBIDDEN"):
+            return True
+
+        # Legacy/edge servers may report auth failures as a bare HTTP
+        # status with no M_* errcode. Status 401/403 from the HOMESERVER
+        # (errcode absent but the exception typed as a Matrix response)
+        # is authoritative; nothing else is.
+        http_status = getattr(exc, "http_status", 0) or 0
+        if errcode is None and http_status in (401, 403):
+            return True
+
+        return False
+
     async def _sync_loop(self) -> None:
         client = self._client
         next_batch = await client.sync_store.get_next_batch()  # resume from the initial sync
@@ -1776,8 +1812,15 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                if any(k in str(exc).lower() for k in ("401", "403", "unauthorized", "forbidden")):
-                    logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
+                # Permanent auth/permission failures: classify via the
+                # exception's structured fields (type / M_* errcode /
+                # HTTP status). Never substring-match str(exc): CDN/proxy
+                # error pages (e.g. Cloudflare 502 HTML containing "401")
+                # ride in as MatrixUnknownRequestError and are retryable.
+                if self._is_permanent_auth_error(exc):
+                    logger.error(
+                        "Matrix: permanent auth error: %s — stopping sync", exc
+                    )
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)

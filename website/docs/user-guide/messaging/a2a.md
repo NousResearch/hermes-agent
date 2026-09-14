@@ -62,7 +62,35 @@ a2a_agents:
     capabilities: [web_search, research]
 ```
 
+Peers fronted by a header-authenticating proxy — e.g. **Cloudflare Access**
+with a service token — take a `headers` map that is merged into every
+outbound request (card fetch and task submit alike):
+
+```yaml
+a2a_agents:
+  hermes-server:
+    url: "https://hermes-server-a2a.example.com"
+    auth: { type: bearer, token: "..." }
+    headers:
+      CF-Access-Client-Id: "<client id>"
+      CF-Access-Client-Secret: "<client secret>"
+    timeout: 300
+```
+
 Then just ask: *"Ask the researcher agent to summarize today's arXiv postings."* Direct URLs work too — `a2a_call` accepts any A2A endpoint.
+
+**Header precedence.** Custom `headers` override the derived `Authorization` (a proxy may require its own auth scheme — the collision is logged as a warning), but protocol-owned `Content-Type` and `A2A-Version` can never be clobbered by config. `User-Agent` stays overridable since some proxies filter it.
+
+**Credential destination.** Auth and custom headers are only sent to the **configured origin**. If the peer's Agent Card advertises an RPC interface on a different origin, the send refuses to follow it (a card-controlled host must not receive your service tokens) and uses the configured origin instead. Redirects are covered by the same policy: a 3xx pointing at a different origin is refused rather than followed. To trust a card-advertised cross-origin endpoint, pin its origin explicitly:
+
+```yaml
+a2a_agents:
+  hermes-server:
+    url: "https://hermes-server-a2a.example.com"
+    allowed_rpc_origins: ["https://rpc.internal.example.com"]   # origin: scheme+host+port, any path
+```
+
+**524 responses are typed indeterminate.** A Cloudflare 524 means the proxy gave up on the response — the origin may have already executed the task. Hermes never auto-retries a send on a 524: without a proven server-side idempotency contract, a replay could execute the task twice. The error surfaces as an explicit indeterminate outcome (`_A2aIndeterminateError`) with guidance not to blindly re-send mutating requests; recovery for long tasks composes with task polling (`GetTask` on a known task id) instead of blind replay.
 
 ## Inbound: being callable
 

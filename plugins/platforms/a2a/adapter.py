@@ -531,9 +531,39 @@ class A2AAdapter(BasePlatformAdapter):
         agent = agent or self._agents[""]
         text = protocol.extract_text(params)
         context_id = protocol.extract_context_id(params) or protocol.new_context_id()
-        task_id = protocol.new_task_id()
+
+        # Idempotent retries: a retried request carries the client's original
+        # task_id (deterministic on fork clients, derived from context+message).
+        # Return the cached result instead of re-executing the action.
+        client_task_id = str(params.get("taskId") or params.get("id") or "").strip()
+        scope = self._scope_for_agent(agent)
+        if client_task_id:
+            existing = self.tasks.get(client_task_id, *scope)
+            if existing:
+                if existing["state"] in protocol.TERMINAL_STATES:
+                    # Task already completed — return cached reply
+                    logger.info("A2A: dedup — returning cached result for task %s", client_task_id)
+                    return protocol.build_task(client_task_id, context_id, existing["state"],
+                                               existing.get("reply", ""),
+                                               created_at=existing.get("created_iso", "")), None
+                # Task still in progress — join the existing future
+                fut = self.tasks.watch(client_task_id, *scope)
+                if fut is not None:
+                    logger.info("A2A: dedup — task %s still in progress, joining", client_task_id)
+                    return None, {"task_id": client_task_id, "context_id": context_id, "peer": peer,
+                                  "future": fut, "created_iso": existing.get("created_iso", ""),
+                                  "started": existing.get("created_at", time.time()), "dedup": True}
+            else:
+                # TaskStore doesn't have it — check disk-backed ReplyStore (survives restarts)
+                cached = protocol.reply_store.get_by_task_id(context_id, client_task_id)
+                if cached:
+                    logger.info("A2A: dedup — returning persisted reply for task %s (cross-restart)", client_task_id)
+                    return protocol.build_task(client_task_id, context_id, cached["state"],
+                                               cached.get("reply", "")), None
+
+        task_id = client_task_id or protocol.new_task_id()
         turn = self._turns.track(context_id)
-        max_turns = protocol.max_pingpong_turns()
+        max_turns = protocol.max_pingpong_turns(peer)
         rec = self.tasks.create(task_id, context_id, peer, *self._scope_for_agent(agent))
         if turn > max_turns:
             protocol.metrics.anti_loop_triggers += 1
@@ -569,7 +599,8 @@ class A2AAdapter(BasePlatformAdapter):
             finally:
                 self._pop_pending(task_id)
         self.tasks.set_state(task_id, protocol.STATE_WORKING)
-        return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut, "created_iso": rec["created_iso"], "started": time.time()}
+        return None, {"task_id": task_id, "context_id": context_id, "peer": peer, "future": fut,
+                      "created_iso": rec["created_iso"], "started": time.time(), "turn": turn}
 
     def _forward_to_profile(self, agent: dict, peer: str, context_id: str, framed_text: str) -> tuple[str, str]:
         """Forward a routed task to another local profile via ``hermes chat``. First contact creates a
@@ -619,8 +650,33 @@ class A2AAdapter(BasePlatformAdapter):
                 m.record_latency(time.time() - started)
         else:
             m.tasks_failed += 1
+        if state == protocol.STATE_FAILED and self._is_transport_failure(reply):
+            # Transport failure (timeout, disconnect, dispatch error, empty
+            # reply) — not genuine agent work. Refund the turn so recovery
+            # loops don't trip the anti-loop cap.
+            self._turns.refund(context_id)
+            logger.debug("A2A: refunded turn for context %s (transport failure)", context_id)
         self.tasks.complete(task_id, state, reply)
         self._send_push_notification(task_id, context_id, reply, state)
+
+    @staticmethod
+    def _is_transport_failure(reply: str) -> bool:
+        """Detect if a failure message indicates a transport issue rather than
+        genuine agent work. Returns True for timeouts, empty replies, dispatch
+        errors, and client disconnections.
+        """
+        if not reply:
+            return True
+        # Match known transport failure patterns
+        transport_markers = (
+            "[agent did not reply in time]",
+            "[client disconnected]",
+            "Dispatch failed:",
+            "Agent gateway not ready",
+            "Profile dispatch failed:",
+            "[profile did not reply in time]",
+        )
+        return any(marker in reply for marker in transport_markers)
 
     def _finalize_task(self, pending: dict, state: str, reply: str) -> tuple[str, str]:
         """Record a dispatched task's outcome; returns (state, reply) after redaction and
@@ -632,6 +688,12 @@ class A2AAdapter(BasePlatformAdapter):
             if state == protocol.STATE_COMPLETED and stripped.upper().startswith(protocol.INPUT_REQUIRED_MARKER):
                 state, reply = protocol.STATE_INPUT_REQUIRED, stripped[len(protocol.INPUT_REQUIRED_MARKER):].strip()
             self._record_outcome(task_id, context_id, peer, state, reply, started=pending["started"])
+            if not pending.get("dedup"):
+                # Persist reply for cross-restart deduplication (dedup joins must
+                # not re-save - the first completion already did).
+                turn = pending.get("turn")
+                if turn is not None:
+                    protocol.reply_store.save(context_id, task_id, turn, state, reply)
             return state, reply
         finally:
             self._pop_pending(task_id)

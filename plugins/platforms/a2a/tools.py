@@ -5,10 +5,13 @@ capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 r
 from __future__ import annotations
 
 import contextlib
+import http.client
 import json
 import logging
 import os
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Optional
@@ -35,6 +38,7 @@ def _configured_peers() -> dict:
 
 def _peer_from_entry(entry: dict, **extra: Any) -> dict:
     return {"url": entry.get("url", ""), "auth": entry.get("auth", {}) or {},
+            "headers": entry.get("headers", {}) or {},
             "timeout": int(entry.get("timeout", _DEFAULT_TIMEOUT)), **extra}
 
 
@@ -43,37 +47,102 @@ def _resolve_peer(agent: str) -> Optional[dict]:
     if agent.startswith(("http://", "https://")):
         return {"url": agent, "auth": {}, "timeout": _DEFAULT_TIMEOUT, "capabilities": []}
     entry = _configured_peers().get(agent)
-    return _peer_from_entry(entry, capabilities=entry.get("capabilities", []) or [], tenant=entry.get("tenant", "")) if entry else None
+    return _peer_from_entry(entry, capabilities=entry.get("capabilities", []) or [], tenant=entry.get("tenant", ""),
+                            idempotency=bool(entry.get("idempotency", False)),
+                            allowed_rpc_origins=entry.get("allowed_rpc_origins") or []) if entry else None
 
 
 def _auth_header(auth: dict) -> dict:
     return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
 
 
-def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (configured peers)
+class _NoCredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Fail-closed redirect policy for credential-bearing requests.
+
+    A redirect hop is followed with the full header map only when its target
+    is same-origin with the ORIGINAL request URL or is one of the operator's
+    pinned allowed origins. Any other hop is refused (HTTPError), never
+    followed — urllib's built-in cross-host Authorization stripping is
+    partial (scheme/port changes, custom headers); we enforce it uniformly.
+    """
+
+    def __init__(self, allowed_origins: tuple[str, ...] = ()):
+        self.allowed_origins = allowed_origins
+        super().__init__()
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        original = req.full_url
+        if _url_same_origin(newurl, original) or any(
+                _url_same_origin(newurl, o) for o in self.allowed_origins):
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+        raise urllib.error.HTTPError(
+            req.full_url, code,
+            f"A2A redirect to cross-origin {newurl} refused (not same-origin, not in allowed_rpc_origins)",
+            headers, fp)
+
+
+def _open_url_no_redirect_leak(req: urllib.request.Request, timeout: int,
+                               allowed_origins: tuple[str, ...] = ()) -> Any:
+    """urlopen with fail-closed cross-origin redirect handling."""
+    opener = urllib.request.build_opener(_NoCredentialRedirectHandler(allowed_origins))
+    return opener.open(req, timeout=timeout)
+
+
+def _http_get_json(url: str, headers: dict, timeout: int,
+                   allowed_origins: tuple[str, ...] = ()) -> dict:
+    req = urllib.request.Request(url, headers={"User-Agent": "Hermes-A2A/1.0", **headers}, method="GET")
+    with _open_url_no_redirect_leak(req, timeout, allowed_origins) as resp:  # noqa: S310 (configured peers)
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _http_get_json(url: str, headers: dict, timeout: int) -> dict:
-    return _http_json(url, headers, timeout, "GET")
 
 
-def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
-    hdrs = {"Content-Type": "application/json", "A2A-Version": protocol.PROTOCOL_VERSION, **headers}
-    return _http_json(url, hdrs, timeout, "POST", json.dumps(body).encode("utf-8"))
+
+class _A2aIndeterminateError(Exception):
+    """A 524 (origin timeout) — the peer may have executed the task, but the
+    response was lost. Mutating sends are NEVER auto-retried on this class:
+    without a proven server-side idempotency contract a replay could execute
+    the task twice. The caller surfaces the indeterminate outcome; recovery
+    composes with explicit task-identity polling (upstream #94880) instead."""
 
 
-def _fetch_card(base_url: str, headers: dict, timeout: int) -> dict:
+def _http_post_json(url: str, body: dict, headers: dict, timeout: int,
+                    allowed_origins: tuple[str, ...] = ()) -> dict:
+    data = json.dumps(body).encode("utf-8")
+    # Custom peer headers are operator-controlled but Content-Type and
+    # A2A-Version are protocol-owned and must not be clobbered; a config typo
+    # would otherwise cause peer rejection or protocol-version mismatches.
+    # User-Agent stays overridable (some proxies filter user agents).
+    hdrs = {
+        "User-Agent": "Hermes-A2A/1.0",
+        **headers,
+        "Content-Type": "application/json",
+        "A2A-Version": protocol.PROTOCOL_VERSION,
+    }
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+
+    try:
+        with _open_url_no_redirect_leak(req, timeout, allowed_origins) as resp:  # noqa: S310 (configured peers)
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 524:
+            raise _A2aIndeterminateError(
+                f"peer origin timed out behind its proxy (HTTP 524); the task "
+                f"may have executed — outcome indeterminate, not retried"
+            ) from e
+        raise
+
+
+def _fetch_card(base_url: str, headers: dict, timeout: int,
+                allowed_origins: tuple[str, ...] = ()) -> dict:
     """GET the v1.0 agent-card.json; on 404 fall back to the v0.2 agent.json alias."""
     base = base_url.rstrip("/")
     try:
-        return _http_get_json(base + "/.well-known/agent-card.json", headers, timeout)
+        return _http_get_json(base + "/.well-known/agent-card.json", headers, timeout, allowed_origins)
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
-    return _http_get_json(base + "/.well-known/agent.json", headers, timeout)
+    return _http_get_json(base + "/.well-known/agent.json", headers, timeout, allowed_origins)
 
 
 def _select_jsonrpc_interface(card: Optional[dict]) -> Optional[dict]:
@@ -93,21 +162,102 @@ def _rpc_url(base_url: str, card: Optional[dict]) -> str:
     return base_url.rstrip("/")
 
 
+def _url_origin(url: str) -> tuple[str, str]:
+    """(scheme, host:port) of a URL, lowercased; port defaulted per scheme."""
+    parsed = urllib.parse.urlsplit(url.strip())
+    host = (parsed.hostname or "").lower()
+    # parsed.port is None when absent; explicit :0 is a real (if unroutable)
+    # port and must not be silently defaulted.
+    port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+    return parsed.scheme.lower(), f"{host}:{port}"
+
+
+def _url_same_origin(candidate: str, configured: str) -> bool:
+    """True when candidate and configured share scheme + host + port."""
+    try:
+        return _url_origin(candidate) == _url_origin(configured)
+    except ValueError:
+        return False
+
+
+def _allowed_rpc_origins(peer: dict) -> list[str]:
+    """Operator-pinned cross-origin RPC URLs exempt from the origin check.
+
+    Entries are compared by ORIGIN (scheme + host + port), so an entry pins
+    the whole service, not one exact path.
+    """
+    raw = peer.get("allowed_rpc_origins") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(u).rstrip("/") for u in raw if str(u).strip()]
+
+
+def _origin_allowed(candidate: str, peer: dict) -> bool:
+    """True when candidate's origin is the configured origin or a pinned
+    allowed origin (origin-level match, not exact string)."""
+    try:
+        cand = _url_origin(candidate)
+    except ValueError:
+        return False
+    # Same origin as the configured base URL (any path) is always allowed —
+    # a card may move the RPC within its own service.
+    try:
+        if _url_same_origin(candidate, peer.get("url", "")):
+            return True
+    except ValueError:
+        pass
+    for entry in _allowed_rpc_origins(peer):
+        try:
+            if _url_origin(entry) == cand:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+
+def _task_id_for(ctx: str, safe_message: str, peer: dict) -> str:
+    """Task id policy: idempotent peers (operator-asserted dedupe) get a
+    deterministic id, so a stream-death fallback resend is replay-safe.
+    Everyone else gets a random id — unconditional determinism would let
+    a peer-side dedup swallow legitimate repeats of an identical message
+    in the same context."""
+    if peer.get("idempotency", False):
+        return protocol.deterministic_task_id(ctx, safe_message)
+    return protocol.new_task_id()
+
+
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
     ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
     base_url = peer.get("url", "")
-    headers = _auth_header(peer.get("auth", {}) or {})
+    # Per-peer custom headers over the derived auth header; a custom
+    # Authorization is operator-controlled proxy auth and wins, with a
+    # warning so the override is never silent.
+    headers = {**_auth_header(peer.get("auth", {}) or {}), **(peer.get("headers", {}) or {})}
     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+    auth = peer.get("auth", {}) or {}
+    if auth and any(k.lower() == "authorization" for k in (peer.get("headers", {}) or {})):
+        logger.warning(
+            "A2A: peer '%s' custom headers override the derived Authorization "
+            "header — deliberate proxy auth schemes only",
+            agent_label)
+    # Operator asserts this peer dedupes on message identity, making the
+    # stream-death message/send fallback resend safe. Without it, a stream
+    # that died after frames is surfaced as indeterminate, never resent.
+    idempotency = bool(peer.get("idempotency", False))
+    allowed = tuple(_allowed_rpc_origins(peer))
     try:
-        card = _fetch_card(base_url, headers, min(timeout, 30))  # best-effort, to learn the rpc URL
+        card = _fetch_card(base_url, headers, min(timeout, 30), allowed)  # best-effort, to learn the rpc URL
     except Exception:
         card = None
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
+    task_id = _task_id_for(ctx, safe_message, peer)
     # v1.0: contextId lives inside the Message, not at the params top level.
-    rpc_body = {"jsonrpc": "2.0", "id": protocol.new_task_id(), "method": "SendMessage",
-                "params": {"message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx)}}
+    rpc_body = {"jsonrpc": "2.0", "id": task_id, "method": "SendMessage",
+                "params": {"taskId": task_id,
+                           "message": protocol.text_message(protocol.ROLE_USER, safe_message, context_id=ctx)}}
     iface = _select_jsonrpc_interface(card)
     tenant = str(iface["tenant"]) if iface and iface.get("tenant") else str(peer.get("tenant") or "")
     if tenant:
@@ -115,7 +265,68 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     security.audit("outbound", agent_label, rpc_body["id"], safe_message)
     protocol.persist_message(ctx, "user", safe_message, rpc_body["id"])
     protocol.metrics.outbound_total += 1
-    resp = _http_post_json(_rpc_url(base_url, card), rpc_body, headers, timeout)
+    rpc_url = _rpc_url(base_url, card)
+    if not _origin_allowed(rpc_url, peer):
+        # The card advertised an RPC interface on a different origin than the
+        # configured base URL. Sending there would forward operator secrets
+        # (bearer tokens, proxy service tokens) to a card-controlled host.
+        # Refuse: fall back to the configured origin, never follow the card.
+        logger.warning(
+            "A2A: peer '%s' card advertised cross-origin RPC URL %s; not in "
+            "peer's allowed_rpc_origins — using configured origin %s instead",
+            agent_label, rpc_url, base_url)
+        rpc_url = base_url.rstrip("/")
+
+    # Streaming path: if the peer advertises streaming, SendStreamingMessage
+    # keeps bytes flowing (SSE keepalives) so proxies with idle timeouts
+    # (e.g. Cloudflare's ~100s) do not kill long-running turns. The vetted
+    # rpc_url above is reused for both paths (never re-derived from the card).
+    if isinstance(card, dict) and (card.get("capabilities") or {}).get("streaming"):
+        try:
+            return _send_task_stream(agent_label, rpc_url, rpc_body,
+                                     headers, timeout, ctx, rpc_body["id"],
+                                     allowed_origins=allowed)
+        except _A2aTransportError as exc:
+            # Zero-frame transport failure: task provably never reached the
+            # peer's engine -> message/send is a clean first dispatch.
+            # Frames-received death: outcome INDETERMINATE (peer may have
+            # executed). Fall back only when the operator asserted
+            # idempotency for this peer (dedup on resend);
+            # otherwise return an explicit indeterminate result.
+            frames_seen = getattr(exc, "frames_received", False)
+            if frames_seen and not idempotency:
+                logger.warning(
+                    "A2A: streaming send for %s died after frames (%s); "
+                    "outcome indeterminate — NOT falling back to message/send",
+                    agent_label, exc)
+                return _indeterminate_outcome(agent_label, exc, ctx, rpc_body["id"])
+            if frames_seen:
+                logger.warning(
+                    "A2A: streaming send for %s died after frames (%s); "
+                    "peer asserted idempotency — falling back to message/send",
+                    agent_label, exc)
+            else:
+                logger.debug(
+                    "A2A: streaming send failed for %s (%s); falling back to message/send",
+                    agent_label, exc)
+        except urllib.error.HTTPError as exc:
+            if exc.code not in _STREAM_FALLBACK_HTTP_CODES:
+                raise
+            logger.debug(
+                "A2A: streaming endpoint returned %s for %s; falling back to message/send",
+                exc.code, agent_label)
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException) as exc:
+            # Connection-level failures (DNS, refused, reset, bad framing,
+            # read timeout) before any frame -> clean fallback.
+            logger.debug(
+                "A2A: streaming connection failed for %s (%s); falling back to message/send",
+                agent_label, exc)
+
+    try:
+        resp = _http_post_json(rpc_url, rpc_body, headers, timeout, allowed_origins=allowed)
+    except _A2aIndeterminateError as exc:
+        exc.task_id = rpc_body["id"]  # deterministic id IS known here
+        raise
     if "error" in resp:
         raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))
@@ -127,6 +338,241 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     protocol.persist_message(reply_ctx, "agent", reply, rpc_body["id"])
     protocol.metrics.inbound_total += 1
     return reply, reply_ctx, state
+
+
+# HTTP statuses where the peer effectively does not serve the streaming
+# endpoint (card advertised streaming, endpoint disagrees) -> fall back.
+_STREAM_FALLBACK_HTTP_CODES = frozenset({404, 405, 501})
+
+# SSE per-read idle cap. Server keepalives arrive every ~5s; 30s of silence
+# means the stream is starved, not merely slow.
+_STREAM_READ_TIMEOUT_S = 30.0
+
+
+class _A2aTransportError(ValueError):
+    """Transport-level failure of the A2A streaming path.
+
+    Distinct from application-level JSON-RPC errors so _send_task can fall
+    back to message/send for transport problems (endpoint missing, stream
+    died, truncated response) WITHOUT resubmitting a task the peer already
+    processed and rejected at the application level.
+
+    ``frames_received`` records whether the dead stream had produced any
+    frames before the failure. A zero-frame failure is a provably clean
+    first dispatch (message/send fallback is safe). A frames-received
+    failure is an INDETERMINATE outcome: it falls back only when the peer
+    config asserts idempotency (the peer dedupes on resend); otherwise the
+    caller must not resubmit.
+
+    ``seen_ctx`` is the last contextId the stream established;
+    ``frame_count`` is how many frames arrived before the stream died.
+    """
+
+    def __init__(self, *args: object, frames_received: bool = False,
+                 seen_ctx: str = "", frame_count: int = 0) -> None:
+        super().__init__(*args)
+        self.frames_received = frames_received
+        self.seen_ctx = seen_ctx
+        self.frame_count = frame_count
+
+
+def _http_post_sse(url: str, body: dict, headers: dict, timeout: int,
+                    allowed_origins: tuple[str, ...] = ()):
+    """POST with Accept: text/event-stream and yield decoded SSE data payloads.
+
+    Yields each ``data:`` frame's parsed JSON. Malformed data lines are
+    skipped silently. Comment lines (keepalives) and event/id fields are
+    consumed without yielding. Raises urllib errors / _A2aTransportError for
+    the caller to format.
+
+    Timeout semantics: the socket's per-read timeout is capped at
+    ``_STREAM_READ_TIMEOUT_S`` (keepalive-starvation detection — server
+    keepalives arrive every ~5s), and the *total* turn is bounded by a
+    wall-clock deadline of ``timeout + _STREAM_READ_TIMEOUT_S``. Without the
+    deadline, a peer that keeps sending keepalives could hold the stream
+    open indefinitely, since a per-read timeout resets on every byte.
+    """
+    data = json.dumps(body).encode("utf-8")
+    # Accept is protocol-owned for this streaming request, alongside
+    # Content-Type/A2A-Version (same precedence policy as _http_post_json).
+    hdrs = {
+        "User-Agent": "Hermes-A2A/1.0",
+        **headers,
+        "Accept": "text/event-stream",
+        "Content-Type": "application/json",
+        "A2A-Version": protocol.PROTOCOL_VERSION,
+    }
+    req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
+    deadline = time.monotonic() + timeout + _STREAM_READ_TIMEOUT_S
+    # Same fail-closed redirect policy as _http_post_json: a 302 from the
+    # peer must never carry the credential map to a foreign origin.
+    with _open_url_no_redirect_leak(req, min(timeout, _STREAM_READ_TIMEOUT_S), allowed_origins) as resp:  # noqa: S310 (configured peers)
+        ctype = resp.headers.get("Content-Type", "")
+        if not ctype.startswith("text/event-stream"):
+            # Peer ignored the stream request; body is a plain JSON-RPC response.
+            # A 200 with a non-JSON body (HTML error page, empty body behind
+            # a misbehaving proxy) is a transport problem, not an application
+            # answer — wrap it so _send_task falls back to message/send
+            # instead of hard-failing on an unhandled JSONDecodeError.
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                yield json.loads(raw)
+            except (json.JSONDecodeError, RecursionError):
+                raise _A2aTransportError(
+                    f"non-SSE response was not valid JSON-RPC "
+                    f"(Content-Type: {ctype!r}, first bytes: {raw[:64]!r})"
+                ) from None
+            return
+        for raw in resp:
+            if time.monotonic() > deadline:
+                raise _A2aTransportError(
+                    f"stream exceeded total deadline of {timeout}s")
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue  # keepalive comments, event/id fields
+            payload = line[len("data:"):].strip()
+            try:
+                yield json.loads(payload)
+            except (json.JSONDecodeError, RecursionError):
+                continue  # malformed/hostile frame — skip, do not abort
+
+
+def _send_task_stream(agent_label: str, rpc_url: str, rpc_body: dict, headers: dict,
+                      timeout: int, ctx: str, task_id: str,
+                      allowed_origins: tuple[str, ...] = ()) -> tuple[str, str, str]:
+    """Send one SendStreamingMessage and collect the terminal StreamResponse.
+
+    Frames are JSON-RPC-wrapped StreamResponse objects (A2A v1.0 §9.4); the
+    stream closes on the terminal state. Returns (reply_text, context_id, state).
+
+    Raises _A2aTransportError when the stream cannot produce a result
+    (closed before any result frame, or closed without a terminal state).
+    A zero-frame failure is safe to retry via message/send; a frames-received
+    failure carries ``frames_received=True`` (plus ``seen_ctx`` and
+    ``frame_count``) so the caller can treat it as an indeterminate outcome
+    rather than resubmit. Mid-stream connection deaths (wall-clock deadline,
+    read timeout, reset) are re-qualified the same way: the reader raises
+    them without bookkeeping, so the loop re-tags them against the frames it
+    actually consumed before the failure. Raises ValueError for
+    application-level JSON-RPC errors — the peer processed and rejected the
+    task, so retrying would duplicate side effects.
+    """
+    rpc_body = dict(rpc_body, method="SendStreamingMessage")
+    result = None
+    saw_terminal = False
+    artifact_parts: list = []
+    task_id_out = task_id
+    # Peers may establish the context in an early frame and omit it from
+    # later ones (spec-legal). Track the latest non-empty value so history
+    # lands under the peer's own addressing.
+    seen_ctx = ctx
+    frame_count = 0
+    try:
+        for frame in _http_post_sse(rpc_url, rpc_body, headers, timeout, allowed_origins):
+            if not isinstance(frame, dict):
+                continue
+            frame_count += 1
+            if frame.get("error"):
+                # Application-level rejection on a healthy stream: return it
+                # to the caller, never fall back (would resubmit the task).
+                raise ValueError(f"Peer '{agent_label}' returned an error: "
+                                 f"{frame['error'].get('message', frame['error'])}")
+            candidate = frame.get("result")
+            if not isinstance(candidate, dict):
+                continue
+            # StreamResponse is member-discriminated (A2A v1.0): task snapshots,
+            # statusUpdate events, artifactUpdate events, bare messages.
+            if isinstance(candidate.get("artifactUpdate"), dict):
+                art = candidate["artifactUpdate"].get("artifact") or {}
+                if art.get("parts"):
+                    artifact_parts.extend(art["parts"])
+                continue
+            if isinstance(candidate.get("statusUpdate"), dict):
+                upd = candidate["statusUpdate"]
+                cand = {"status": upd.get("status") or {},
+                        "contextId": upd.get("contextId", ""),
+                        "taskId": upd.get("taskId", "")}
+            elif isinstance(candidate.get("task"), dict):
+                cand = candidate["task"]
+            elif isinstance(candidate.get("message"), dict):
+                cand = {"status": {"state": "", "message": candidate["message"]},
+                        "contextId": candidate["message"].get("contextId", "")}
+            else:
+                cand = candidate
+            result = cand
+            if cand.get("taskId"):
+                task_id_out = cand["taskId"]  # peer-assigned id keys the history
+            frame_ctx = str(cand.get("contextId") or "")
+            if frame_ctx:
+                seen_ctx = frame_ctx
+            state = (cand.get("status") or {}).get("state", "")
+            if state in protocol.TERMINAL_STATES:
+                saw_terminal = True
+                break
+    except _A2aTransportError as exc:
+        # The SSE reader raises without frame bookkeeping (wall-clock
+        # deadline exceeded, non-SSE/non-JSON body guard). Re-qualify it
+        # here: once frames have arrived the death is an indeterminate
+        # outcome, not a clean zero-frame failure.
+        if not exc.frames_received:
+            exc.frames_received = frame_count > 0
+            exc.seen_ctx = seen_ctx
+            exc.frame_count = frame_count
+        raise
+    except urllib.error.HTTPError:
+        # HTTP status errors keep their existing semantics (404/405/501 ->
+        # fallback, others propagate) and are handled by _send_task.
+        raise
+    except (urllib.error.URLError, TimeoutError, http.client.HTTPException) as exc:
+        # Mid-stream connection death after _http_post_sse may have already
+        # yielded frames. Zero-frame stays a clean first dispatch;
+        # frames-received is an indeterminate outcome.
+        raise _A2aTransportError(
+            f"stream failed mid-read: {exc}",
+            frames_received=(frame_count > 0), seen_ctx=seen_ctx,
+            frame_count=frame_count) from exc
+    if result is None:
+        raise _A2aTransportError(
+            f"Peer '{agent_label}' stream closed without a result",
+            frames_received=(frame_count > 0), seen_ctx=seen_ctx,
+            frame_count=frame_count)
+    if not saw_terminal:
+        # Truncated stream (peer died after WORKING): indistinguishable from
+        # success if we returned here, so fail loud.
+        raise _A2aTransportError(
+            f"Peer '{agent_label}' stream closed without a terminal state",
+            frames_received=True, seen_ctx=seen_ctx, frame_count=frame_count)
+    if artifact_parts:
+        # Accumulate every artifact part (multi-artifact/chunked streams);
+        # artifacts carry the final output ahead of status messages.
+        result = dict(result, artifacts=[{"parts": artifact_parts}])
+    reply = _reply_text_from_result(result)
+    reply_ctx = result.get("contextId") or seen_ctx
+    state = (result.get("status") or {}).get("state", "")
+    protocol.persist_message(reply_ctx, "agent", reply, task_id_out)
+    protocol.metrics.inbound_total += 1
+    return reply, reply_ctx, state
+
+
+def _indeterminate_outcome(agent_label: str, exc: _A2aTransportError,
+                           ctx: str, task_id: str) -> tuple[str, str, str]:
+    """Return an explicit indeterminate result instead of resubmitting.
+
+    The stream produced frames but died without a terminal state: the peer
+    may have already executed the task, and it has no proven retry-safe
+    idempotency contract, so a message/send fallback could run it twice.
+    """
+    frame_count = getattr(exc, "frame_count", 0) or 0
+    reply_ctx = getattr(exc, "seen_ctx", "") or ctx
+    reply = (
+        f"Peer '{agent_label}' stream died mid-task after {frame_count} "
+        f"frame{'s' if frame_count != 1 else ''} — outcome unknown; the task "
+        f"may have already run. No automatic retry (a replay could run it "
+        f"twice); use a2a_call again with a new message if intended."
+    )
+    protocol.persist_message(reply_ctx, "agent", reply, task_id)
+    protocol.metrics.inbound_total += 1
+    return reply, reply_ctx, ""
 
 
 def _reply_text_from_result(result: Any) -> str:
@@ -183,6 +629,11 @@ def a2a_call(args: dict, **_: Any) -> str:
         return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
     try:
         reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+    except _A2aIndeterminateError as e:
+        return (f"Error: call to '{agent}' is INDETERMINATE — {e}. "
+                f"Do not blindly retry a mutating request; check with the peer "
+                f"(task id {getattr(e, 'task_id', 'unknown')}) or retry only "
+                f"if the operation is safe to repeat.")
     except urllib.error.HTTPError as e:
         return _HTTP_CALL_ERRORS.get(e.code, "Error: call to '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
     except ValueError as e:

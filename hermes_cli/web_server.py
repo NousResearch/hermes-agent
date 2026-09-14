@@ -74,6 +74,22 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
 )
 
 
+def _gateway_process_running() -> bool:
+    """True when a gateway process is running for the current profile.
+
+    Uses the same verified detector as ``hermes cron status`` (PID file +
+    runtime lock + start-time/cmdline match), so a stale PID file left by
+    a crashed gateway does not count. Patchable at module level so tests
+    stay hermetic on machines that legitimately run a gateway.
+    """
+    try:
+        from gateway.status import get_running_pid
+
+        return get_running_pid() is not None
+    except Exception:
+        return False
+
+
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
@@ -85,11 +101,32 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     single-store behavior (registries are not profile-scoped). Cross-process
     safe: the built-in tick takes the per-store ``cron/.tick.lock``.
 
-    Every local profile's store is ticked, not just this backend's own (#69377's desktop sibling): the
-    desktop pools per-profile backends and reaps them after ~10 idle minutes, so a secondary profile's
-    ticker dies with its backend and that profile's jobs silently stop firing until the user next opens it
-    ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
-    """
+    Every local profile's store is ticked, not just this backend's own
+    (#69377's desktop sibling): the desktop pools per-profile backends and
+    reaps them after ~10 idle minutes, so a secondary profile's ticker dies
+    with its backend and that profile's jobs silently stop firing until the
+    user next opens it ("tasks on the sleeping profile could be idle" —
+    community report, Aug 2026). The primary backend outlives the pool, so it
+    owns every profile's tick, exactly like a multiplex gateway. External
+    providers keep the single-store behavior — their registries are not
+    profile-scoped (see _notify_cron_provider_for_profile).
+
+    Cross-process safe: the built-in provider's ``cron.scheduler.tick`` takes
+    the per-store ``cron/.tick.lock`` file lock, so this never double-fires
+    alongside a real gateway or a live pool backend on the same profile home —
+    whichever process grabs the lock first wins the tick.
+
+    But winning the tick is only safe when no gateway is running. The gateway
+    delivers through its live platform adapters (E2EE-capable); this backend
+    has none, so any fire it wins from the lock race falls back to standalone
+    per-platform sends. For Matrix that path boots a second OlmMachine on the
+    same crypto store and device id — the split brain whose racing OTK claims
+    and account-pickle saves corrupt E2EE state and permanently drop megolm
+    key shares (recipients see UTD; #46310). The lock serializes ticks; it
+    does not hand the fire to the better-equipped process, so dispatch is
+    gated here instead: while a gateway process owns this profile, leave due
+    jobs untouched for its ticker. If the gateway dies, the gate opens on a
+    later tick and this backend fires them itself (failover, not defer-only).    """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()
@@ -126,6 +163,14 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
             _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")
 
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
+
+    # External providers own their remote scheduling contract (fires arrive
+    # via the api-server webhook, which resolves live adapters) - only the
+    # in-process ticker polls the local store, so only it gets the
+    # gateway-liveness gate. Mirrors the isinstance guard used for
+    # can_dispatch elsewhere.
+    if isinstance(provider, InProcessCronScheduler):
+        start_kwargs["can_dispatch"] = lambda: not _gateway_process_running()
     provider.start(stop_event, **start_kwargs)
 
 

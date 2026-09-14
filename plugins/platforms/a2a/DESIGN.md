@@ -114,6 +114,12 @@ Peers resolved from `config.yaml` → `a2a_agents`, or a direct URL.
 - **Anti-loop:** per-context turn cap (`A2A_MAX_PINGPONG_TURNS`, default 5,
   hard max 20) rejects (v1.0 `TASK_STATE_REJECTED`) runaway agent↔agent
   ping-pong; `tasks/cancel` resets the counter for the task's context.
+  **Turn budget surfacing:** every response includes `metadata.turnBudget`
+  with `current`, `max`, and `remaining` fields so peers know their budget.
+  **Transport failure refunds:** turns consumed by timeouts, empty replies,
+  or dispatch errors are refunded so recovery loops don't trip the hard cap.
+  **Per-peer configuration:** `a2a_agents.<peer>.max_turns` overrides the
+  global limit for specific peers.
 - **Audit log:** append-only `~/.hermes/a2a_audit.jsonl` for every exchange.
 
 ## State placement

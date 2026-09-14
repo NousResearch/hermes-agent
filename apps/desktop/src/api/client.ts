@@ -1,4 +1,4 @@
-import { JsonRpcGatewayClient } from '@hermes/shared'
+import { JsonRpcGatewayClient, type GatewayClientOptions } from '@hermes/shared'
 
 import type { HermesApiRequest } from '@/global'
 
@@ -26,13 +26,14 @@ const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 export const PROMPT_SUBMIT_REQUEST_TIMEOUT_MS = 1_800_000
 
 export class HermesGateway extends JsonRpcGatewayClient {
-  constructor() {
+  constructor(options?: Partial<GatewayClientOptions>) {
     super({
       closedErrorMessage: 'Hermes gateway connection closed',
       connectErrorMessage: 'Could not connect to Hermes gateway',
       createRequestId: nextId => nextId,
       notConnectedErrorMessage: 'Hermes gateway is not connected',
-      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS
+      requestTimeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
+      ...options
     })
   }
 }

@@ -15,8 +15,6 @@ closed, so a drifted emitter fails the suite (``registry.check_payload`` raises 
 
 from __future__ import annotations
 
-from pydantic import Field
-
 from .base import JsonValue, Payload, WireEnum
 from .common import MessageReaction, SessionLiveInfo, SubagentStatus, Usage
 from .config_free_tier_control import SessionControlSnapshot
@@ -32,29 +30,27 @@ class OpenPayload(Payload):
 # ── gateway lifecycle ─────────────────────────────────────────────────────────────────────────
 
 
-class SkinPayload(OpenPayload):
-    """``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``).
-    ``{}`` when the skin engine failed to load. Colour maps are token → colour string."""
+class SkinPayload(Payload):
+    """``change_watcher.resolve_skin`` returns ``{}`` when the skin engine fails."""
 
-    name: str = ""
-    description: str = ""
-    colors: dict[str, str] = Field(default_factory=dict)
-    light_colors: dict[str, str] = Field(default_factory=dict)
-    dark_colors: dict[str, str] = Field(default_factory=dict)
-    branding: dict[str, str] = Field(default_factory=dict)
-    banner_logo: str = ""
-    banner_hero: str = ""
-    tool_prefix: str = ""
-    help_header: str = ""
+    name: str | None = None
+    colors: dict[str, str] | None = None
+    light_colors: dict[str, str] | None = None
+    dark_colors: dict[str, str] | None = None
+    branding: dict[str, str] | None = None
+    banner_logo: str | None = None
+    banner_hero: str | None = None
+    tool_prefix: str | None = None
+    help_header: str | None = None
 
 
 class GatewayReadyPayload(Payload):
-    """``tui_gateway/entry.py`` (stdio) / ``tui_gateway/ws.py`` (WebSocket) first frame."""
+    """``entry.py`` / ``ws.py`` first frame; stdio omits ``heartbeat``."""
 
     skin: SkinPayload
     change_events: bool
     replay_epoch: str
-    heartbeat: bool | None = None  # WebSocket transport only
+    heartbeat: bool | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,
@@ -143,14 +139,32 @@ class TurnStatus(WireEnum):
 
 
 class ErrorSurface(Payload):
-    """``agent/error_surface.py::_surface`` — advisory {layer, code, retryable} (+ identity, + auth hint)."""
+    """``agent/error_surface.py::_surface`` — advisory failure classification."""
 
     layer: str
     code: str
     retryable: bool
     provider: str | None = None
     model: str | None = None
-    model_config = Payload.model_config | {"extra": "allow"}
+    auth_kind: str | None = None
+    provider_label: str | None = None
+
+
+class NotificationLevel(WireEnum):
+    """Levels emitted by ``agent.credits_tracker.AgentNotice``."""
+
+    info = "info"
+    warn = "warn"
+    error = "error"
+    success = "success"
+
+
+class NotificationKind(WireEnum):
+    """Notice display modes emitted by the credits tracker and startup path."""
+
+    sticky = "sticky"
+    ttl = "ttl"
+    agent = "agent"
 
 
 class BillingBlock(Payload):
@@ -166,11 +180,9 @@ class BillingBlock(Payload):
 
 
 class MessageCompletePayload(Payload):
-    """``prompt_turn._complete_turn_payload`` / ``session_auto_continue._emit_terminal_turn_error`` /
-    ``agent_callbacks._mirror_subagent_to_child`` (child watch mirror: ``text`` only) /
-    ``compute_host_bridge`` (``text`` + ``status``)."""
+    """``prompt_turn`` terminal payload and its error/mirrored variants."""
 
-    text: str | JsonValue = ""
+    text: JsonValue  # Producer preserves non-string model output verbatim.
     usage: Usage | None = None
     status: TurnStatus | None = None
     reasoning: str | None = None
@@ -308,15 +320,14 @@ event("todo.updated", TodoUpdatedPayload, doc="Full todo snapshot after a todo t
 
 
 class NotificationShowPayload(Payload):
-    """``agent/credits_tracker.py::AgentNotice`` via notice_callback, and ``server._await_agent_ready``'s
-    slow-build notice. ``level``: info | warn | error | success; ``kind``: sticky | ttl | agent."""
+    """``AgentNotice`` and the startup notice both set every display field."""
 
     text: str
-    level: str
-    kind: str
-    ttl_ms: int | None = None
-    key: str | None = None
-    id: str | None = None
+    level: NotificationLevel
+    kind: NotificationKind
+    ttl_ms: int | None
+    key: str | None
+    id: str | None
 
 
 class NotificationClearPayload(Payload):
@@ -398,17 +409,31 @@ event("billing.step_up.verification", BillingStepUpVerificationPayload,
 # ── side agents (methods_prompt._spawn_side_agent) ────────────────────────────────────────────
 
 
-class SideAgentCompletePayload(Payload):
-    """``methods_prompt._spawn_side_agent``: ``{task_id, **extra, text}``; btw adds ``question``."""
+class BackgroundCompletePayload(Payload):
+    """``methods_prompt._spawn_side_agent`` background completion."""
 
     task_id: str
     text: str
-    question: str | None = None
 
 
-event("background.complete", SideAgentCompletePayload, doc="A /background side agent finished.")
-event("btw.complete", SideAgentCompletePayload, doc="A /btw side question was answered.")
-event("preview.restart.complete", SideAgentCompletePayload, doc="The hidden preview-restart agent finished.")
+class BtwCompletePayload(Payload):
+    """``methods_prompt._spawn_side_agent`` BTW completion includes its question."""
+
+    task_id: str
+    question: str
+    text: str
+
+
+class PreviewRestartCompletePayload(Payload):
+    """``methods_prompt._spawn_side_agent`` preview-restart completion."""
+
+    task_id: str
+    text: str
+
+
+event("background.complete", BackgroundCompletePayload, doc="A /background side agent finished.")
+event("btw.complete", BtwCompletePayload, doc="A /btw side question was answered.")
+event("preview.restart.complete", PreviewRestartCompletePayload, doc="The hidden preview-restart agent finished.")
 
 
 class PreviewRestartProgressPayload(Payload):
@@ -478,7 +503,7 @@ for _name, _doc in (
 
 
 class MoaReferencePayload(Payload):
-    """``tool_progress._progress_moa_reference``."""
+    """``tool_progress._progress_moa_reference`` omits counters when unavailable."""
 
     label: str
     text: str
@@ -497,6 +522,8 @@ class MoaProgressPayload(Payload):
 
 
 class MoaPhasePayload(Payload):
+    """``tool_progress._progress_moa_phase`` adds counters and aggregator conditionally."""
+
     phase: str
     refs_done: int | None = None
     refs_total: int | None = None
@@ -513,30 +540,30 @@ event("moa.phase", MoaPhasePayload, doc="MoA phase transition (currently only ``
 
 
 class PreviewOpenPayload(Payload):
-    """``tools/open_preview_tool.py``."""
+    """``tools/open_preview_tool.py`` always sets the normalized URL and label."""
 
     url: str
-    label: str = ""
+    label: str
 
 
 class PreviewClosePayload(Payload):
-    """``tools/preview_tool.py`` / ``tools/close_preview_tool.py``; ``url`` '' closes every tab."""
+    """Preview close producers always set URL; ``""`` closes every tab."""
 
-    url: str = ""
+    url: str
 
 
 event("preview.open", PreviewOpenPayload, doc="Open a URL / file in the desktop preview pane.")
 event("preview.close", PreviewClosePayload, doc="Close the preview pane or one tab.")
 
 
-class LayoutApplyPayload(OpenPayload):
-    """``tools/apply_layout_tool.py``."""
+class LayoutApplyPayload(Payload):
+    """``tools/apply_layout_tool.py`` sends only the normalized preset."""
 
     preset: str
 
 
-class PaneRevealPayload(OpenPayload):
-    """``tools/focus_pane_tool.py``."""
+class PaneRevealPayload(Payload):
+    """``tools/focus_pane_tool.py`` sends only the selected pane."""
 
     pane: str
 
@@ -571,11 +598,18 @@ event("agent.terminal.output", TerminalOutputPayload, doc="Output chunk from an 
 event("terminal.close", TerminalClosePayload, doc="An agent-owned background process closed.")
 
 
+class BrowserProgressLevel(WireEnum):
+    """Levels passed to ``methods_browser.announce``."""
+
+    info = "info"
+    error = "error"
+
+
 class BrowserProgressPayload(Payload):
-    """``methods_browser`` announce(); ``level``: info | warn | error."""
+    """``methods_browser.announce`` emits connection progress."""
 
     message: str
-    level: str
+    level: BrowserProgressLevel
 
 
 event("browser.progress", BrowserProgressPayload, doc="Browser (CDP) connect / install progress line.")
@@ -585,21 +619,21 @@ event("browser.progress", BrowserProgressPayload, doc="Browser (CDP) connect / i
 
 
 class BrowserControllerCommandPayload(Payload):
-    """``gateway/browser_control_broker.py`` FRAME_COMMAND params."""
+    """``browser_control_broker.dispatch`` always includes controller routing keys."""
 
     command_id: str
     action: str
     arguments: dict[str, JsonValue]
-    controller_id: str | None = None
-    browser_profile_id: str | None = None
-    tool_call_id: str | None = None
+    controller_id: str | None
+    browser_profile_id: str | None
+    tool_call_id: str | None
 
 
 class BrowserControllerCancelPayload(Payload):
-    """``gateway/browser_control_broker.py::_cancel_frame``."""
+    """``browser_control_broker._cancel_frame`` includes ``tool_call_id``, possibly null."""
 
     command_id: str
-    tool_call_id: str | None = None
+    tool_call_id: str | None
 
 
 event("browser.controller.command", BrowserControllerCommandPayload, doc="Dispatch one browser action to the attached controller.")
@@ -643,8 +677,8 @@ event("wake.detected", WakeDetectedPayload, doc="A wake phrase fired.")
 # ── pets ──────────────────────────────────────────────────────────────────────────────────────
 
 
-class PetChangedPayload(OpenPayload):
-    """``change_watcher._pet_changed_payload`` — ``pet.info.meta``-shaped; ``{enabled: false}`` when off."""
+class PetChangedPayload(Payload):
+    """``change_watcher._pet_changed_payload`` omits metadata when pets are disabled."""
 
     enabled: bool
     slug: str | None = None
@@ -653,8 +687,8 @@ class PetChangedPayload(OpenPayload):
     spritesheetRevision: str | None = None  # noqa: N815 - wire key
 
 
-class PetGenerateProgressPayload(OpenPayload):
-    """``methods_session`` pet.generate: token-only init frame, then one per draft."""
+class PetGenerateProgressPayload(Payload):
+    """``methods_session`` emits an init row, then draft rows without ``None`` values."""
 
     token: str
     count: int
@@ -662,8 +696,8 @@ class PetGenerateProgressPayload(OpenPayload):
     dataUri: str | None = None  # noqa: N815 - wire key
 
 
-class PetHatchProgressPayload(OpenPayload):
-    """``methods_session`` pet.hatch ``_on_progress``: ``{event, detail}`` or the parsed row form."""
+class PetHatchProgressPayload(Payload):
+    """``methods_session`` emits either detail or parsed row fields."""
 
     event: str
     detail: str | None = None
@@ -680,8 +714,8 @@ event("pet.hatch.progress", PetHatchProgressPayload, doc="Pet hatch (row drawing
 # ── change watcher signals (payload is {} today) ─────────────────────────────────────────────
 
 
-class ChangeSignalPayload(OpenPayload):
-    """``change_watcher._CHANGE_WATCHES`` payload fn — ``{}`` for every watch except pet.changed."""
+class ChangeSignalPayload(Payload):
+    """``change_watcher._CHANGE_WATCHES`` sends ``{}`` for these signals."""
 
 
 event("cron.changed", ChangeSignalPayload, doc="cron/jobs.json moved; refetch the cron list.")
@@ -692,19 +726,18 @@ event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox e
 
 
 __all__ = [
-    "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
-    "BrowserControllerCommandPayload", "BrowserProgressPayload", "ChangeSignalPayload", "ErrorPayload",
-    "ErrorSurface", "GatewayReadyPayload", "LayoutApplyPayload", "MessageCompletePayload",
-    "MessageInterimPayload", "MessageReaction", "MessageReactionPayload", "MoaAggregatingPayload",
-    "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
-    "NotificationClearPayload", "NotificationShowPayload", "OpenPayload", "PaneRevealPayload",
-    "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload", "PreviewClosePayload",
-    "PreviewOpenPayload", "PreviewRestartProgressPayload", "ReactionPayload", "ResumePhaseStatus",
-    "ReviewSummaryPayload", "SessionControlSnapshot", "SessionControlUpdatePayload",
-    "SessionReclaimedPayload", "SessionResumeProgressPayload", "SessionTitlePayload", "SessionUsagePayload",
-    "SetupReadyPayload", "SideAgentCompletePayload", "SkinPayload", "StatusUpdatePayload",
-    "StreamDeltaPayload", "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload",
-    "TerminalOutputPayload", "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload",
-    "ToolGeneratingPayload", "ToolOutputRiskPayload", "ToolStartPayload", "TurnStatus", "VoiceStatusPayload",
-    "VoiceTranscriptPayload", "WakeDetectedPayload",
+    "BackgroundCompletePayload", "BillingBlock", "BillingStepUpVerificationPayload", "BrowserControllerCancelPayload",
+    "BrowserControllerCommandPayload", "BrowserProgressLevel", "BrowserProgressPayload", "BtwCompletePayload",
+    "ChangeSignalPayload", "ErrorPayload", "ErrorSurface", "GatewayReadyPayload", "LayoutApplyPayload",
+    "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload",
+    "MoaAggregatingPayload", "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
+    "NotificationClearPayload", "NotificationKind", "NotificationLevel", "NotificationShowPayload", "OpenPayload",
+    "PaneRevealPayload", "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload",
+    "PreviewClosePayload", "PreviewOpenPayload", "PreviewRestartCompletePayload", "PreviewRestartProgressPayload",
+    "ReactionPayload", "ResumePhaseStatus", "ReviewSummaryPayload", "SessionControlSnapshot",
+    "SessionControlUpdatePayload", "SessionReclaimedPayload", "SessionResumeProgressPayload", "SessionTitlePayload",
+    "SessionUsagePayload", "SetupReadyPayload", "SkinPayload", "StatusUpdatePayload", "StreamDeltaPayload",
+    "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload", "TerminalOutputPayload",
+    "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload", "ToolGeneratingPayload", "ToolOutputRiskPayload",
+    "ToolStartPayload", "TurnStatus", "VoiceStatusPayload", "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

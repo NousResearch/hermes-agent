@@ -179,6 +179,27 @@ class TestTranscribeOpenAI:
         assert result["success"] is True
         assert "language" not in mock_client.audio.transcriptions.create.call_args.kwargs
 
+    def test_azure_foundry_uses_configured_endpoint_and_language_hint(self, monkeypatch, tmp_path):
+        """Azure Foundry STT is OpenAI-v1-compatible but authenticates through its own env vars."""
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = SimpleNamespace(text="Olá Gus")
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "azure-test-key")
+        monkeypatch.setenv("AZURE_FOUNDRY_BASE_URL", "https://gus-foundry.openai.azure.com/openai/v1")
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value={
+                 "azure_foundry": {"model": "gpt-4o-mini-transcribe", "language": "pt"},
+             }), \
+             patch("openai.OpenAI", return_value=mock_client) as client_cls:
+            from tools.transcription_tools import _transcribe_azure_foundry
+            result = _transcribe_azure_foundry(str(audio_file), "gpt-4o-mini-transcribe")
+
+        assert result == {"success": True, "transcript": "Olá Gus", "provider": "azure_foundry"}
+        assert client_cls.call_args.kwargs["api_key"] == "azure-test-key"
+        assert client_cls.call_args.kwargs["base_url"] == "https://gus-foundry.openai.azure.com/openai/v1"
+        assert mock_client.audio.transcriptions.create.call_args.kwargs["language"] == "pt"
+
 
 # ---------------------------------------------------------------------------
 # Main transcribe_audio() dispatch

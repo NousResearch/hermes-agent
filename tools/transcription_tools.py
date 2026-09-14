@@ -20,7 +20,7 @@ from typing import Optional, Dict, Any
 
 from utils import is_truthy_value
 from tools.transcription_common import (
-    BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
+    AZURE_FOUNDRY_STT_MODELS, BUILTIN_STT_PROVIDERS, CLOUD_STT_PROVIDERS, DEFAULT_ELEVENLABS_STT_MODEL,
     DEFAULT_GROQ_STT_MODEL, DEFAULT_LOCAL_MODEL, DEFAULT_MISTRAL_STT_MODEL, DEFAULT_PROVIDER,
     DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV, _error_result,
     _get_stt_section, _ok_result)
@@ -33,8 +33,8 @@ from tools.transcription_local import (
     _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
-    _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
-    _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
+    _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_azure_foundry,
+    _transcribe_deepinfra, _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
     _transcribe_xai)
 from tools.transcription_command import (
     _apply_pre_transcription_hook, _dispatch_to_plugin_provider, _enforce_prompt_length_limit,
@@ -149,6 +149,12 @@ def _has_key(env_var: str, provider: str, *, needs_openai: bool = False, needs_m
     return probe
 
 
+def _has_azure_foundry_stt_credentials() -> bool:
+    """Azure Foundry STT is enabled only when its own v1 endpoint and key exist."""
+    return bool(str(get_env_value("AZURE_FOUNDRY_API_KEY") or "").strip()
+                and str(get_env_value("AZURE_FOUNDRY_BASE_URL") or "").strip())
+
+
 def _has_xai_stt_credentials_quietly() -> bool:
     try:
         return _has_xai_stt_credentials()
@@ -212,6 +218,10 @@ _CLOUD_PROVIDER_SPECS = {
     "openai": (None, lambda: _HAS_OPENAI and _has_openai_audio_backend(),
                None,
                "No local STT available, using OpenAI Whisper API"),
+    "azure_foundry": (_has_azure_foundry_stt_credentials, _has_azure_foundry_stt_credentials,
+                        "STT provider 'azure_foundry' configured but AZURE_FOUNDRY_API_KEY or "
+                        "AZURE_FOUNDRY_BASE_URL is not set",
+                        "No local STT available, using Azure Foundry transcription"),
     "mistral": (_has_mistral_key, _has_mistral_key,
                 "STT provider 'mistral' configured but mistralai package not installed or MISTRAL_API_KEY not set",
                 "No local STT available, using Mistral Voxtral Transcribe API"),
@@ -445,6 +455,7 @@ _BUILTIN_MODEL_KEYS = {
     "local_command": ("local", "model", DEFAULT_LOCAL_MODEL, False),
     "groq": ("groq", "model", DEFAULT_GROQ_STT_MODEL, True),
     "openai": ("openai", "model", DEFAULT_STT_MODEL, False),
+    "azure_foundry": ("azure_foundry", "model", "gpt-4o-mini-transcribe", False),
     "mistral": ("mistral", "model", DEFAULT_MISTRAL_STT_MODEL, False),
     "elevenlabs": ("elevenlabs", "model_id", DEFAULT_ELEVENLABS_STT_MODEL, False),
     "deepinfra": ("deepinfra", "model", "", True)}

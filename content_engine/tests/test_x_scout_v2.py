@@ -6,13 +6,14 @@ blog cross-reference, and the scout's verdict->artifact routing.
 import json
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 CE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CE))
-sys.path.insert(0, str(Path.home() / ".hermes" / "scripts"))
+sys.path.insert(0, str(CE.parent / 'scripts' / 'content_engine'))
 
 import x_ingest
 from x_ingest import (
@@ -43,7 +44,9 @@ def test_registry_bad_json_falls_back(monkeypatch, tmp_path):
 
 # ── snowflake freshness ──────────────────────────────────────────────────
 
-def test_tweet_age_is_sane():
+def test_tweet_age_is_sane(monkeypatch):
+    # Freeze evaluation time: age is in hours, not days.
+    monkeypatch.setattr(x_ingest.time, 'time', lambda: 1789167600.0)
     # 2026-09-11 era id (from live scout data)
     age = tweet_age("2097553728945480119")
     assert age is not None
@@ -65,7 +68,11 @@ def test_apply_freshness_drops_stale_keeps_fresh():
     fresh_id = _mk_id(1)     # ~1h old
     stale_id = _mk_id(30 * 24)  # ~30d old
     kept = apply_freshness(
-        [{"id": fresh_id, "text": "new"}, {"id": stale_id, "text": "old"}],
+        [{"id": tid, "text": text, "url": f"https://x.com/fixture/status/{tid}",
+          "created_at": datetime.fromtimestamp(
+              ((int(tid) >> 22) + x_ingest._SNOWFLAKE_EPOCH) / 1000, timezone.utc
+          ).isoformat(), "origin": "for_you"}
+         for tid, text in ((fresh_id, "new"), (stale_id, "old"))],
         hours=6,
     )
     assert {r["text"] for r in kept} == {"new"}
@@ -85,9 +92,13 @@ def test_tweet_age_rejects_implausible_ids():
 
 
 def test_apply_freshness_keeps_unparseable_but_flags():
-    rows = [{"id": "not-a-number", "text": "mystery"}]
-    kept = apply_freshness(rows, hours=6)
-    assert kept[0]["age_unknown"] is True
+    # Legacy test name retained for attribution; unknown identity now fails closed.
+    # Otherwise valid provenance isolates the malformed ID, not absent metadata.
+    rows = [{"id": "not-a-number", "text": "mystery",
+             "url": "https://x.com/fixture/status/not-a-number",
+             "created_at": datetime.now(timezone.utc).isoformat(), "origin": "for_you"}]
+    assert tweet_age(rows[0]["id"]) is None
+    assert apply_freshness(rows, hours=6) == []
 
 
 def test_dedupe_by_id():

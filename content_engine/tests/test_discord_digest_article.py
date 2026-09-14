@@ -1,5 +1,13 @@
 """Tests for discord_digest.post_article — article preview delivery."""
 import discord_digest as dd
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_previews(monkeypatch, tmp_path):
+    import content_preview
+    monkeypatch.setattr(dd, '_PREVIEWS_DIR', tmp_path / 'previews')
+    monkeypatch.setattr(content_preview, '_PREVIEWS_DIR', tmp_path / 'previews')
 
 
 def _bundle(tmp_path, body=None, title="How I tuned routing"):

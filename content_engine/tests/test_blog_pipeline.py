@@ -96,7 +96,7 @@ def test_run_stream_skips_when_router_returns_none(monkeypatch, tmp_path):
     assert result["status"] == "skipped_router"
 
 
-def test_run_stream_skips_when_excluded_by_policy(monkeypatch, tmp_path):
+def test_run_stream_skips_when_excluded_by_policy(monkeypatch, tmp_path, blog_exclusions):
     """Excluded topics are rejected before generation begins."""
     repo = _setup_tmp_repo(tmp_path)
     plan = {

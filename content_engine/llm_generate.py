@@ -427,14 +427,14 @@ def _resolve_runtime(**kwargs) -> dict:
     return resolve_runtime_provider(**kwargs)
 
 
-def _llm_configs(longform: bool = False) -> list[dict]:
+def _llm_configs(longform: bool = False, *, config=None) -> list[dict]:
     """Resolve the governed, exact-model route chain using Hermes runtime APIs.
 
     ``longform`` is retained for API compatibility; route policy belongs to the
     governed content surface's generated config, never to this application module.
     """
     del longform
-    config = _load_hermes_config()
+    config = _load_hermes_config() if config is None else config
     model_cfg = config.get("model") if isinstance(config, dict) else {}
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
     primary_model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
@@ -518,9 +518,9 @@ def _classify_failure_reason(status_code, body_text) -> Optional[str]:
 
 
 def _call_llm_chain(system: str, user: str, *, timeout: int = 90,
-                    max_tokens: int = 3000, longform: bool = False) -> Optional[str]:
+                    max_tokens: int = 3000, longform: bool = False, configs=None) -> Optional[str]:
     """Try every governed route, rotating a native pool after failed calls."""
-    for cfg in _llm_configs(longform=longform):
+    for cfg in (_llm_configs(longform=longform) if configs is None else configs):
         attempted_ids: set[str] = set()
         while True:
             credential_id = str(cfg.get("_credential_id") or "")

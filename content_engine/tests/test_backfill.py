@@ -115,7 +115,7 @@ def test_backfill_skips_existing_and_respects_cap(monkeypatch, tmp_path):
         f"spend {result['total_spend_gbp']} exceeded cap {cfg.BACKFILL_SPEND_CAP_GBP}"
 
 
-def test_backfill_excludes_seeded_topics_before_generation(monkeypatch, tmp_path):
+def test_backfill_excludes_seeded_topics_before_generation(monkeypatch, tmp_path, blog_exclusions):
     import blog.backfill as bf
     import config as cfg
 

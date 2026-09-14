@@ -38,7 +38,7 @@ def test_stage_draft_raises_on_git_add_failure(monkeypatch, tmp_path):
         raise AssertionError("stage_draft should raise on git add failure")
 
 
-def test_stage_draft_raises_when_excluded(monkeypatch, tmp_path):
+def test_stage_draft_raises_when_excluded(monkeypatch, tmp_path, blog_exclusions):
     from blog import blog_publisher as bp
 
     mdx = tmp_path / "src/content/blog/cheap-first-model-routing.mdx"

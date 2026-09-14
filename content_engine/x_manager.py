@@ -9,9 +9,10 @@ Three lanes, all approval-gated:
 3. **Morning finished X Article drafts** — take the day's chosen signals and
    emit a finished, text-first X Article draft.
 
-Every artifact MUST carry an ``ArgumentPack`` — ``claim``, ``evidence``,
-``mechanism``, ``position`` — plus lane-appropriate ``context``. An artifact
-with an incomplete pack is rejected (fail closed) and never staged.
+Every artifact carries an ``ArgumentPack`` envelope plus source context.
+Unrestricted prose requires complete ``claim``, ``evidence``, ``mechanism``
+and ``position`` fields. Verifiable factual source pointers/attributions in
+reply and quote lanes may omit those fields (``x_argument_policy``).
 
 The manager has **no publish path**. It only ever stages artifacts as
 ``pending`` for explicit human approval. It deliberately does not import the
@@ -145,6 +146,11 @@ CREATE TABLE IF NOT EXISTS x_manager_artifacts (
     decided_by  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS x_manager_sources (
+    source_id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL,
+    staged_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_x_manager_status ON x_manager_artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_x_manager_lane ON x_manager_artifacts(lane);
 """
@@ -156,6 +162,9 @@ def init_db() -> None:
     conn = sqlite3.connect(str(DB_PATH))
     try:
         conn.executescript(SCHEMA)
+        conn.execute('BEGIN IMMEDIATE')
+        from x_source_history import backfill_source_history
+        backfill_source_history(conn)
         conn.commit()
     finally:
         conn.close()
@@ -167,7 +176,40 @@ def _validate_artifact(artifact: XArtifact) -> None:
         raise XManagerError(f"unknown lane: {artifact.lane!r}")
     if artifact.status not in _STATUSES:
         raise XManagerError(f"unknown status: {artifact.status!r}")
-    missing = artifact.pack.missing_fields()
+    from x_ingest import source_freshness_issues
+    from x_voice_gate import voice_gate_issues, load_voice_corpus
+    corpus = load_voice_corpus()
+    # Published history is soft context, not an authorisation gate.
+    # Fresh source provenance, voice checks and publication approval still apply.
+    voice_issues = voice_gate_issues(artifact.body, evidence=corpus)
+    if artifact.lane == LANE_ARTICLE:
+        voice_issues = [i for i in voice_issues if not i.startswith('over 60 words')]
+    if voice_issues:
+        raise XManagerError('voice rejected: ' + '; '.join(voice_issues))
+    sources = artifact.pack.context.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise XManagerError("source provenance missing")
+    for source in sources:
+        if not isinstance(source, dict) or not source.get("created_at"):
+            raise XManagerError("source creation timestamp missing")
+        from urllib.parse import urlsplit
+        try:
+            url = urlsplit(source.get("url", ""))
+            created = datetime.fromisoformat(source["created_at"].replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - created).total_seconds()
+            valid = (bool(source.get("id")) and bool(source.get("origin"))
+                     and url.scheme == "https" and bool(url.hostname)
+                     and not url.username and not url.password and 0 <= age <= 21600)
+        except (ValueError, TypeError):
+            valid = False
+        if not valid:
+            raise XManagerError("source provenance/freshness invalid")
+        if url.hostname in {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}:
+            issues = source_freshness_issues(source)
+            if issues:
+                raise XManagerError("source rejected: " + "; ".join(issues))
+    from x_argument_policy import requires_argument_pack
+    missing = artifact.pack.missing_fields() if requires_argument_pack(artifact) else []
     if missing:
         raise XManagerError(
             f"incomplete argument pack for {artifact.id}: missing {missing}"
@@ -184,9 +226,19 @@ def stage_for_approval(artifact: XArtifact) -> str:
     ``XManagerError`` (and writes nothing) if the artifact is incomplete.
     """
     _validate_artifact(artifact)
+    artifact.pack.context["staged_at"] = datetime.now(timezone.utc).isoformat()
     init_db()
     conn = sqlite3.connect(str(DB_PATH))
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute('SELECT 1 FROM x_manager_history_review LIMIT 1').fetchone():
+            raise XManagerError('legacy source history requires human review before staging')
+        for source in artifact.pack.context["sources"]:
+            try:
+                conn.execute("INSERT INTO x_manager_sources VALUES (?, ?, ?)",
+                             (source["id"], artifact.id, artifact.pack.context["staged_at"]))
+            except sqlite3.IntegrityError as exc:
+                raise XManagerError("source already staged") from exc
         conn.execute(
             """
             INSERT INTO x_manager_artifacts
@@ -366,8 +418,6 @@ def scan_quote_tweet_candidates(
         # reject it rather than manufacturing a weak candidate.
         if quote_draft.casefold() == source_text.casefold():
             continue
-        if not pack.is_complete():
-            continue
         context = dict(pack.context or {})
         context.setdefault("tweet_id", tweet_id)
         context.setdefault("author", author)
@@ -385,6 +435,9 @@ def scan_quote_tweet_candidates(
                 context=context,
             ),
         )
+        from x_argument_policy import requires_argument_pack
+        if requires_argument_pack(artifact) and not pack.is_complete():
+            continue
         _validate_artifact(artifact)
         artifacts.append(artifact)
 

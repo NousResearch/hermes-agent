@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from cron.delivery_expiry import dispatch_before_expiry
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
@@ -951,8 +952,10 @@ def _send_media_via_adapter(
                 method, path_kw = "send_image_file", "image_path"
             else:
                 method, path_kw = "send_document", "file_path"
-            coro = getattr(adapter, method)(
-                chat_id=chat_id, metadata=metadata, **{path_kw: media_path})
+            coro = dispatch_before_expiry(
+                [(media_path, _is_voice)],
+                lambda method=method, path_kw=path_kw, media_path=media_path: getattr(adapter, method)(
+                    chat_id=chat_id, metadata=metadata, **{path_kw: media_path}))
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
                 _note_target_error(
@@ -982,8 +985,10 @@ def _send_media_via_adapter(
     if doc_files and not batch_adapter:
         for media_path, _is_voice in doc_files:
             try:
-                coro = adapter.send_document(
-                    chat_id=chat_id, metadata=metadata, file_path=media_path)
+                coro = dispatch_before_expiry(
+                    [(media_path, _is_voice)],
+                    lambda media_path=media_path: adapter.send_document(
+                        chat_id=chat_id, metadata=metadata, file_path=media_path))
                 future = safe_schedule_threadsafe(coro, loop)
                 if future is None:
                     _note_target_error(
@@ -1005,9 +1010,10 @@ def _send_media_via_adapter(
         return errors
     if doc_files:
         try:
-            coro = adapter.send_multiple_documents(
-                chat_id=chat_id, documents=doc_files, metadata=metadata,
-            )
+            coro = dispatch_before_expiry(
+                doc_files,
+                lambda: adapter.send_multiple_documents(
+                    chat_id=chat_id, documents=doc_files, metadata=metadata))
             future = safe_schedule_threadsafe(coro, loop)
             if future is None:
                 _note_target_error(
@@ -1303,7 +1309,7 @@ def _live_route_metadata(t: _TargetDelivery) -> tuple[Optional[str], dict, dict]
 
 def _live_send_text(
     t: _TargetDelivery, text_to_send: str, route_thread_id: Optional[str], route_metadata: dict, *,
-    target_errors: list, delivery_errors: list, unverified_targets: list,
+    target_errors: list, delivery_errors: list, unverified_targets: list, media_files=(),
 ) -> tuple[bool, bool, Any]:
     """Schedule the text send on the gateway loop; returns ``(adapter_ok, timed_out, message_id)``.
     Re-raises a real send error so the caller falls through to standalone."""
@@ -1316,7 +1322,10 @@ def _live_send_text(
     # Thread routing goes via the target, not a bare metadata "thread_id": the router only applies
     # its Telegram DM-topic detection when thread_id/message_thread_id are absent from metadata.
     future = safe_schedule_threadsafe(
-        router._deliver_to_platform(route_target, text_to_send, route_metadata), t.loop)
+        dispatch_before_expiry(
+            media_files,
+            lambda: router._deliver_to_platform(route_target, text_to_send, route_metadata)),
+        t.loop)
     if future is None:
         target_errors.append("live adapter event loop scheduling failed")
         return False, False, None
@@ -1470,7 +1479,7 @@ def _deliver_via_live_adapter(
             adapter_ok, timed_out, delivered_message_id = _live_send_text(
                 t, text_to_send, route_thread_id, route_metadata,
                 target_errors=target_errors, delivery_errors=delivery_errors,
-                unverified_targets=unverified_targets,
+                unverified_targets=unverified_targets, media_files=media_files,
             )
 
         # Media rides the same DM-topic-aware routing as text. Skipped after a confirmation
@@ -1519,9 +1528,11 @@ def _standalone_send(
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
     def _send():
-        return _send_to_platform(
-            t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
-            media_files=media_files)
+        return dispatch_before_expiry(
+            media_files,
+            lambda: _send_to_platform(
+                t.platform, t.pconfig, t.chat_id, content, thread_id=t.thread_id,
+                media_files=media_files))
 
     def _warned(msg: str) -> tuple[None, str]:
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -1540,12 +1551,19 @@ def _standalone_send(
     # success=True for empty content WITHOUT an API call) — a phantom delivery would result.
     if not content.strip() and not media_files:
         return _warned(f"standalone send skipped (empty text and no media) for {t.where}")
-    coro = _send()
+    def _run_send():
+        # Create inside the executing thread. If executor submission fails,
+        # there is no abandoned coroutine; mocked/refused asyncio.run also closes it.
+        coro = _send()
+        try:
+            return asyncio.run(coro)
+        finally:
+            coro.close()
+
     try:
-        return asyncio.run(coro), None
+        return _run_send(), None
     except RuntimeError as run_err:
-        # asyncio.run() refuses inside a running loop; close the unstarted coro, retry in a thread.
-        coro.close()
+        # asyncio.run() refuses inside a running loop; retry creation in a thread.
         if _sched._interpreter_shutting_down(run_err):
             return _warned(shutdown_msg)
         # The fallback can itself raise (SMTP, result timeout); catch it or remaining targets skip.
@@ -1554,7 +1572,7 @@ def _standalone_send(
             try:
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
-                return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
+                return pool.submit(contextvars.copy_context().run, _run_send).result(
                     timeout=30), None
             finally:
                 pool.shutdown(wait=False)

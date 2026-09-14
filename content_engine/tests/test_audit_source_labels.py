@@ -4,7 +4,13 @@ Run: cd content_engine && PYTHONPATH=. ../.venv/bin/python3 -m pytest \
     tests/test_audit_source_labels.py -q
 """
 
-from tools.audit_source_labels import audit_all, audit_post
+import importlib.util
+from pathlib import Path
+_spec = importlib.util.spec_from_file_location('ce_source_audit', Path(__file__).resolve().parents[1] / 'tools/audit_source_labels.py')
+assert _spec is not None and _spec.loader is not None
+_audit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_audit)
+audit_all, audit_post = _audit.audit_all, _audit.audit_post
 
 
 def test_research_paper_with_reference_is_ok(tmp_path):

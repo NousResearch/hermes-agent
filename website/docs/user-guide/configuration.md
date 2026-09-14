@@ -2837,6 +2837,7 @@ Secret redaction and the website blocklist:
 ```yaml
 security:
   redact_secrets: true           # Redact API key patterns in tool output and logs (on by default)
+  secret_name_pattern: null      # Optional regex override for env-var names treated as secrets (exact-value redaction)
   website_blocklist:             # See Website Blocklist section below
     enabled: false
     domains: []
@@ -2844,6 +2845,7 @@ security:
 ```
 
 - `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **On by default**. Set to `false` explicitly only when you need raw credential-like strings for debugging or redactor development. Reading a secret-bearing file (`.env`-style files, shell rc/profile files, the Hermes `config.yaml` under `HERMES_HOME` and its `backups/config/` copies) with `read_file`, `search_files` or a terminal `cat`/`grep` also masks credential-shaped assignments (`SOME_API_TOKEN: …`) with a non-reusable `«redacted-secret»` marker, whatever the value looks like; ordinary source and project config files keep only the vendor-prefix patterns so fixtures such as `MAX_TOKENS: 100` are never mangled.
+- `secret_name_pattern` — optional regex that marks an environment-variable NAME as a secret in the exact-value redaction pass. Any `.env` variable whose name matches this pattern (case-insensitive) has its exact value masked in every redacted surface, even when the value has no recognizable vendor prefix. Defaults to a built-in pattern (`TOKEN`, `PASSWORD`, `SECRET`, `KEY`, `CREDENTIAL`, `AUTH`, and variants). An invalid pattern, a non-string value, or an empty string falls back to the built-in default with a warning.
 
 Earlier releases also had `tirith_*` keys for a bundled command scanner; it was removed and upgrading drops those keys. Content-level command checks are described in [Content-Level Command Checks](security.md#content-level-command-checks).
 

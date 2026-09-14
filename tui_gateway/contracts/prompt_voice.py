@@ -195,6 +195,7 @@ class InputDetectDropResult(ImageMeta):
     matched: bool
     is_image: bool | None = None
     path: str | None = None
+    name: str | None = None
     count: int | None = None
     text: str | None = None
 
@@ -239,7 +240,8 @@ method("preview.restart", params=PreviewRestartParams, result=TaskIdResult,
 class ClarifyLockParams(Params):
     request_id: str
     question_id: str
-    answer: str
+    # A client may select a structured choice; the handler serializes it for the lock store.
+    answer: JsonValue
 
 
 class ClarifyLockStatus(WireEnum):

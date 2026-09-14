@@ -109,6 +109,7 @@ def _admit_prompt_turn(
     sid: str, session: dict, text: Any, image_paths: list[str] | None,
     queued_prompt_generation: int | None, display_kind: str | None,
     display_metadata: dict | None) -> tuple[list[str], Any] | None:
+    from tui_gateway.contracts.events import ErrorPayload
     """Ownership + liveness gate every turn source must cross; ``(images, agent)`` or None.
     Synthesized turns (auto-continue, wake-ups) call ``_run_prompt_submit`` directly — the
     bypass that once let a second backend run a duplicate turn."""
@@ -120,8 +121,7 @@ def _admit_prompt_turn(
             getattr(ownership_refusal, "reason", None) or "refused")
         with session["history_lock"]:
             session["running"] = False
-            session.pop("_submit_user_row", None)  # no turn runs: the submit-time row stays as the send
-        _emit("error", sid, {"message": str(ownership_refusal)})
+        _emit("error", sid, ErrorPayload(message=str(ownership_refusal)))
         return None
     with session["history_lock"]:
         if session.get("_closing") or (
@@ -325,6 +325,7 @@ def _turn_outcome(result: Any, error_surface: dict | None = None) -> tuple[Any, 
 
 def _goal_followup_after_turn(
     sid: str, session: dict, result: Any, status: str, raw: Any) -> str | None:
+    from tui_gateway.contracts.events import StatusUpdatePayload
     """/goal continuation (mirrors gateway/run._post_turn_goal_continuation): the prompt to
     chain once ``running`` is released, or None.  Compression failures are never judge
     input: the error text is not work toward the goal, and judging it spends a turn."""
@@ -336,7 +337,7 @@ def _goal_followup_after_turn(
         if recovery_notice:
             from gateway.warning_notifications import render_notification
             render_notification(
-                lambda: _emit("status.update", sid, {"kind": "goal", "text": recovery_notice}),
+                lambda: _emit("status.update", sid, StatusUpdatePayload(kind="goal", text=recovery_notice)),
                 platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
         goal_followup = recovery_prompt or None
     except Exception as _goal_recovery_exc:
@@ -357,7 +358,7 @@ def _goal_followup_after_turn(
             decision = goal_mgr.evaluate_after_turn(
                 raw, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
             if verdict_msg := decision.get("message") or "":
-                _emit("status.update", sid, {"kind": "goal", "text": verdict_msg})
+                _emit("status.update", sid, StatusUpdatePayload(kind="goal", text=verdict_msg))
             if decision.get("should_continue") and (
                 cont_prompt := decision.get("continuation_prompt") or ""):
                 goal_followup = cont_prompt
@@ -367,6 +368,7 @@ def _goal_followup_after_turn(
 
 
 def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> None:
+    from tui_gateway.contracts.events import StatusUpdatePayload
     """Hooks for a ``complete`` turn: /loop tick evaluation, pending title, voice fallback."""
     try:
         from hermes_cli.loops import LoopManager
@@ -377,7 +379,7 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
             if loop_state is not None and loop_state.awaiting_response:
                 loop_decision = loop_mgr.complete_tick(raw if isinstance(raw, str) else "")
                 if loop_msg := loop_decision.get("message") or "":
-                    _emit("status.update", sid, {"kind": "loop", "text": loop_msg})
+                    _emit("status.update", sid, StatusUpdatePayload(kind="loop", text=loop_msg))
     except Exception as _loop_exc:
         _hook_failure("loop completion hook", _loop_exc)
     # Apply pending_title now that the DB row exists — in the session-owned profile store.
@@ -488,6 +490,7 @@ class _TurnRun:
 
 
 def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images: list[str]):
+    from tui_gateway.contracts.events import ErrorPayload
     """Bind scopes, sync the agent, snapshot history, build the run message; returns
     ``(prompt, run_message, cols, streamer)`` or None when @-expansion was refused.
     Scopes fill field by field so a failure midway still leaves every bound token for the
@@ -543,7 +546,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
             prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
         if ctx.blocked:
             _emit(
-                "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})
+                "error", sid, ErrorPayload(message="\n".join(ctx.warnings) or "Context injection refused."))
             return None
         prompt = ctx.message
     st.prompt_text = prompt if isinstance(prompt, str) else ""
@@ -566,6 +569,7 @@ def _invoke_agent(
     turn_author: dict | None = None, text: Any = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
+    from tui_gateway.contracts.events import MessageInterimPayload, SessionTitlePayload, StreamDeltaPayload
     agent = st.agent
     # Bot Chat mirrors gateway.stream_consumer: deltas are withheld while the streamed buffer
     # could still resolve to a silence marker ("NO"->"NO_REPLY"), so a bare marker is never
@@ -589,14 +593,14 @@ def _invoke_agent(
             payload["rendered"] = r
         if st.tts_queue is not None and isinstance(delta, str):
             st.tts_queue.put(delta)
-        _emit("message.delta", sid, payload)
+        _emit("message.delta", sid, StreamDeltaPayload(**payload))
 
     # Interim assistant text (commentary beside tool calls, pre-nudge final answer) is sealed
     # by the desktop as its own segment instead of being lost to message.complete.
     def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
         if getattr(agent, "_mute_notification_reply", False):
             return
-        _emit("message.interim", sid, {"text": text, "already_streamed": already_streamed})
+        _emit("message.interim", sid, MessageInterimPayload(text=text, already_streamed=already_streamed))
     agent.interim_assistant_callback = (
         _interim_assistant_cb if _load_interim_assistant_messages() else None)
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
@@ -621,7 +625,7 @@ def _invoke_agent(
     # Live-rename hook: auto-titling fires inside the turn prologue.
     _title_key = session.get("session_key") or sid
     agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
-        "session.title", sid, {"session_id": _k, "title": t})
+        "session.title", sid, SessionTitlePayload(session_id=_k, title=t))
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
     try:
         from agent.notification_presentation import notification_turn, event_presentation_muted
@@ -757,6 +761,7 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
 
 
 def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseException) -> None:
+    from tui_gateway.contracts.events import ErrorPayload
     """Except-path of the turn: crash log, history restore, terminal error frame."""
     import traceback
     with contextlib.suppress(Exception):
@@ -785,7 +790,7 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
         print(
             f"[gateway-turn] terminal error emit failed: {type(emit_exc).__name__}: {emit_exc}",
             file=sys.stderr, flush=True)
-        _emit("error", sid, {"message": str(e)})
+        _emit("error", sid, ErrorPayload(message=str(e)))
 
 
 def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
@@ -877,6 +882,7 @@ def _run_prompt_submit(
             session.get("session_key") or sid)
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
+    from tui_gateway.contracts.events import MessageCompletePayload
     if admitted is None:
         return False
     images, agent = admitted
@@ -931,7 +937,7 @@ def _run_prompt_submit(
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
-            _emit("message.complete", sid, payload)
+            _emit("message.complete", sid, MessageCompletePayload(**payload))
             goal_followup = _goal_followup_after_turn(sid, session, st.result, status, raw)
             if status == "complete":
                 _after_complete_turn(sid, session, st, raw)

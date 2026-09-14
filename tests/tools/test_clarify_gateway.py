@@ -12,6 +12,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 
 def _clear_clarify_state():
     """Reset module-level state between tests."""
@@ -338,6 +340,98 @@ class TestMultiSelectTextFallback:
         from tools import clarify_gateway as cm
         entry = cm.register("s4", "sk", "Q?", ["A", "B"])
         assert cm._coerce_text_response(entry, "b") == "B"
+
+    @pytest.mark.parametrize(
+        ("reply", "expected"),
+        [
+            ("1st", "Alpha (Recommended)"),
+            ("first", "Alpha (Recommended)"),
+            ("1번", "Alpha (Recommended)"),
+            ("1 번", "Alpha (Recommended)"),
+            ("첫 번째", "Alpha (Recommended)"),
+            ("second", "Beta"),
+            ("두 번째", "Beta"),
+        ],
+    )
+    def test_single_select_accepts_unambiguous_ordinals(self, reply, expected):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ss-ordinal",
+            "sk-ordinal",
+            "Pick one",
+            ["Alpha (Recommended)", "Beta"],
+        )
+        assert cm._coerce_text_response(entry, reply) == expected
+
+    @pytest.mark.parametrize("reply", ["recommended", "추천안", "추천한 걸로"])
+    def test_single_select_accepts_recommendation_intent(self, reply):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ss-recommended",
+            "sk-recommended",
+            "Pick one",
+            ["Safe rollout (Recommended)", "Fast rollout"],
+        )
+        assert cm._coerce_text_response(entry, reply) == "Safe rollout (Recommended)"
+
+    @pytest.mark.parametrize(
+        ("reply", "expected"),
+        [
+            ("re-entry button only", "Add re-entry button only (Recommended)"),
+            ("A8 B10", "3. Use A=8 / B=10"),
+            ("재진입 버튼만", "재진입 버튼만 추가"),
+        ],
+    )
+    def test_single_select_accepts_unique_normalized_fragment(self, reply, expected):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ss-fragment",
+            "sk-fragment",
+            "Pick one",
+            [
+                "Add re-entry button only (Recommended)",
+                "Add re-entry button and automatic retry",
+                "3. Use A=8 / B=10",
+                "Use A=12 / B=14",
+                "재진입 버튼만 추가",
+            ],
+        )
+        assert cm._coerce_text_response(entry, reply) == expected
+
+    def test_single_select_ambiguous_fragment_fails_closed(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ss-ambiguous",
+            "sk-ambiguous",
+            "Pick one",
+            ["Add re-entry button only", "Add re-entry button and retry"],
+        )
+        value, reason = cm._coerce_text_response_detailed(entry, "re-entry button")
+        assert value is None
+        assert reason == "invalid_selection"
+        assert cm.attempt_text_response_for_session(
+            "sk-ambiguous", "re-entry button"
+        ) == cm.TEXT_REJECTED_SELECTION
+        assert not entry.event.is_set()
+
+    def test_single_select_unrelated_prose_still_falls_through(self):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register(
+            "ss-unrelated",
+            "sk-unrelated",
+            "Pick one",
+            ["Add re-entry button only", "Add automatic retry"],
+        )
+        value, reason = cm._coerce_text_response_detailed(
+            entry, "I have another question about the deployment"
+        )
+        assert value is None
+        assert reason == "prose"
 
 
 class TestNativeRejectClassification:

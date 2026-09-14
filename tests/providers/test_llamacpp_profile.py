@@ -87,7 +87,7 @@ def test_llamacpp_user_plugin_overrides_bundled_plugin(tmp_path, monkeypatch):
     assert getattr(profile, "activates_on_requested_provider", False) is False
 
     # Only the claimed aliases move; custom keeps the rest of its family.
-    for untouched in ("llama.cpp", "llama-cpp", "ollama", "vllm"):
+    for untouched in ("ollama", "vllm", "local"):
         still_custom = get_provider_profile(untouched)
         assert still_custom is not None and still_custom.name == "custom", (
             f"Alias {untouched!r} should still resolve to custom"

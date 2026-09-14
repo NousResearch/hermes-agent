@@ -240,15 +240,56 @@ def _sanitize_loaded_credentials() -> None:
         )
 
 
+# Frozen copy of os.environ taken once at module import — before any dotenv load mutates the
+# process environment.  Used by _load_dotenv_with_fallback to resolve ${VAR} self-references
+# against the original boot value rather than the already-mutated live env, making repeated
+# reloads idempotent.  Without this, a line like  PATH=/opt/bin:${PATH}  grows by the prefix
+# on every reload until every execve fails with E2BIG (~40 h at one reload/min).  See #109902.
+_BOOT_ENV: dict[str, str] = dict(os.environ)
+
+
+def _resolve_dotenv_stream_against_boot(path: Path, encoding: str) -> io.StringIO:
+    """Read *path* and return a StringIO where every ``${KEY}`` / ``$KEY`` self-reference in a
+    value is pre-expanded against ``_BOOT_ENV`` before python-dotenv sees it.
+
+    The substitution is line-scoped: only values where the referenced KEY matches the LHS key
+    of that same line are replaced.  Cross-key references (``BAR=${FOO}`` where FOO != BAR)
+    are left alone — python-dotenv resolves those correctly by walking the file top-to-bottom.
+    This deliberately narrow scope avoids interfering with intentional cross-key chaining.
+    """
+    import re
+    text = path.read_text(encoding=encoding, errors="replace")
+    lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("#") or "=" not in stripped:
+            lines.append(line)
+            continue
+        lhs, _, rhs = stripped.partition("=")
+        key = lhs.strip().lstrip("export").strip()
+        boot_val = _BOOT_ENV.get(key)
+        if boot_val is not None:
+            # Replace ${KEY} and $KEY self-references with the boot-time value.
+            rhs = re.sub(
+                r"\$\{" + re.escape(key) + r"\}|\$" + re.escape(key) + r"(?=[^a-zA-Z0-9_]|$)",
+                boot_val.replace("\\", "\\\\"),
+                rhs,
+            )
+            line = lhs + "=" + rhs
+        lines.append(line)
+    return io.StringIO("".join(lines))
+
+
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
-        # utf-8-sig strips a leading BOM (PowerShell 5.1 / Notepad); plain utf-8 would keep U+FEFF on the
-        # first key name and silently drop it from os.environ under its canonical name.
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8-sig")
+        # Resolve self-referential ${VAR} expansions against the boot-time env snapshot so
+        # repeated reloads are idempotent (fixes the E2BIG accumulation bug, #109902).
+        stream = _resolve_dotenv_stream_against_boot(path, encoding="utf-8-sig")
+        load_dotenv(stream=stream, override=override)
     except UnicodeDecodeError:
         raw = path.read_bytes()  # strip the BOM by hand: utf-8-sig can't once we decode latin-1
         if raw.startswith(codecs.BOM_UTF8):
-            raw = raw[len(codecs.BOM_UTF8) :]
+            raw = raw[len(codecs.BOM_UTF8):]
         load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 

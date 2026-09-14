@@ -4,9 +4,17 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import simpleGit from 'simple-git'
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath, REVIEW_FILE_CAP, reviewList } from './git-review-ops'
+import {
+  gitFor,
+  repoStatus,
+  resolveRenamePath,
+  REVIEW_FILE_CAP,
+  reviewList,
+  SIMPLE_GIT_UNSAFE_BINARY_WARN
+} from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -36,6 +44,54 @@ test('resolveRenamePath: plain path is unchanged', () => {
 
 test('gitFor accepts an internally resolved git binary path containing spaces', () => {
   assert.doesNotThrow(() => gitFor(process.cwd(), 'C:\\Program Files\\Git\\cmd\\git.exe'))
+})
+
+test('gitFor accepts internally resolved git paths with restricted non-space characters', () => {
+  // simple-git's whitelist is `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`, so parentheses
+  // (`Program Files (x86)`), `+`, and accented profile dirs (`C:\Users\João\...`)
+  // are rejected exactly like a space — a `/\s/` guess still throws on them.
+  const restrictedBinaries = [
+    String.raw`C:\Git(x86)\cmd\git.exe`,
+    String.raw`C:\tools\git+portable\cmd\git.exe`,
+    String.raw`C:\Users\João\AppData\Local\hermes\git\cmd\git.exe`
+  ]
+
+  for (const binary of restrictedBinaries) {
+    assert.doesNotThrow(() => gitFor(process.cwd(), binary), `should accept ${binary}`)
+  }
+})
+
+test('gitFor suppresses only the known custom-binary warning and restores console.warn', () => {
+  const spacedBin = String.raw`C:\Program Files\Git\cmd\git.exe`
+  // `windowsGitHost()` resolves nothing in this process (no configured roots, no
+  // HERMES_DESKTOP_PYTHON), so `gitBin` itself is what simple-git validates — the
+  // spaced `Program Files` path, which warns once per factory call.
+  const warnings: unknown[][] = []
+  const originalWarn = console.warn
+
+  const recordingWarn = (...args: unknown[]) => {
+    warnings.push(args)
+  }
+
+  console.warn = recordingWarn
+
+  try {
+    for (let i = 0; i < 5; i += 1) {
+      gitFor(process.cwd(), spacedBin)
+    }
+
+    assert.equal(console.warn, recordingWarn)
+
+    // The escape hatch used directly still warns: the message gitFor filters is a
+    // live emission of the installed simple-git, so the filter cannot go stale
+    // silently (an upgrade that rewords it fails this test, not production).
+    simpleGit({ baseDir: process.cwd(), binary: spacedBin, unsafe: { allowUnsafeCustomBinary: true } })
+    console.warn('unrelated warning')
+  } finally {
+    console.warn = originalWarn
+  }
+
+  assert.deepEqual(warnings, [[SIMPLE_GIT_UNSAFE_BINARY_WARN], ['unrelated warning']])
 })
 
 test('resolveRenamePath: simple rename resolves to the new path', () => {

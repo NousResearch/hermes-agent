@@ -365,6 +365,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._timeout, self._idle_timeout = _DEFAULT_TIMEOUT, _DEFAULT_IDLE_TIMEOUT
         self._bank_id, self._budget, self._bank_id_template = "hermes", "mid", ""
         self._bank_mission, self._bank_retain_mission = "", None
+        self._mission_synced_banks: set[str] = set()
         self._memory_mode = "hybrid"  # "context", "tools", or "hybrid"
         self._prefetch_method = "recall"  # "recall" or "reflect"
         for name in _SESSION_KWARGS:
@@ -540,9 +541,26 @@ class HindsightMemoryProvider(MemoryProvider):
         """Schedule *coro* on the shared loop using the configured timeout."""
         return _run_sync(coro, timeout=self._timeout)
 
+    def _ensure_bank_mission(self) -> None:
+        """Push configured ``bank_mission`` / ``bank_retain_mission`` to the bank once per
+        process per bank (config was previously read but never sent). Re-applied on every
+        start so config edits take effect; fail-open — a bank-config error never blocks memory."""
+        bank_id = self._bank_id
+        updates = {k: v.strip() for k, v in (("reflect_mission", self._bank_mission),
+                                            ("retain_mission", self._bank_retain_mission)) if v and v.strip()}
+        if not updates or not bank_id or bank_id in self._mission_synced_banks:
+            return
+        self._mission_synced_banks.add(bank_id)  # before the call: one attempt, no retry storm
+        try:
+            self._run_sync(self._get_client().aupdate_bank_config(bank_id, **updates))
+            logger.info("Hindsight: applied %s to bank %s", "/".join(updates), bank_id)
+        except Exception as exc:
+            logger.warning("Hindsight: could not apply bank mission config to bank %s: %s", bank_id, exc)
+
     def _run_hindsight_operation(self, operation):
         """Run an async client operation; for local_embedded, a stale-daemon
         connection failure recreates the client and retries once."""
+        self._ensure_bank_mission()
         try:
             return self._run_sync(operation(self._get_client()))
         except Exception as exc:

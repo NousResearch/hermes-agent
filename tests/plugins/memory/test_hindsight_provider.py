@@ -323,6 +323,33 @@ class TestConfig:
         assert p._recall_max_input_chars == 500
         assert p._bank_mission == "Test agent mission"
 
+    def test_bank_missions_pushed_once_per_bank(self, provider_with_config):
+        p = provider_with_config(bank_mission="Reflect mission", bank_retain_mission="Extract key facts")
+        p._client.aupdate_bank_config = AsyncMock(return_value={})
+        p.handle_tool_call("hindsight_retain", {"content": "a"})
+        p.handle_tool_call("hindsight_retain", {"content": "b"})
+        p._client.aupdate_bank_config.assert_awaited_once_with(
+            "test-bank", reflect_mission="Reflect mission", retain_mission="Extract key facts")
+
+    def test_bank_mission_only_sends_configured_fields(self, provider_with_config):
+        p = provider_with_config(bank_retain_mission="Extract key facts")
+        p._client.aupdate_bank_config = AsyncMock(return_value={})
+        p.handle_tool_call("hindsight_retain", {"content": "a"})
+        p._client.aupdate_bank_config.assert_awaited_once_with("test-bank", retain_mission="Extract key facts")
+
+    def test_no_bank_config_call_without_missions(self, provider):
+        provider._client.aupdate_bank_config = AsyncMock(return_value={})
+        provider.handle_tool_call("hindsight_retain", {"content": "a"})
+        provider._client.aupdate_bank_config.assert_not_awaited()
+
+    def test_bank_mission_failure_is_nonfatal(self, provider_with_config):
+        p = provider_with_config(bank_mission="Reflect mission")
+        p._client.aupdate_bank_config = AsyncMock(side_effect=RuntimeError("config api disabled"))
+        result = json.loads(p.handle_tool_call("hindsight_retain", {"content": "a"}))
+        assert result["result"] == "Memory stored successfully."
+        p.handle_tool_call("hindsight_retain", {"content": "b"})
+        assert p._client.aupdate_bank_config.await_count == 1  # no retry storm
+
     def test_retain_source_defaults_empty(self, provider):
         # Opt-in per AGENTS.md: no attribution tag ships by default.
         assert provider._retain_source == ""

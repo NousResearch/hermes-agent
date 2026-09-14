@@ -211,6 +211,12 @@ $GAPI calendar create --summary "Team Standup" --start 2026-03-01T10:00:00-06:00
 $GAPI calendar create --summary "Lunch" --start 2026-03-01T12:00:00Z --end 2026-03-01T13:00:00Z --location "Cafe"
 $GAPI calendar create --summary "Review" --start 2026-03-01T14:00:00Z --end 2026-03-01T15:00:00Z --attendees "alice@co.com,bob@co.com"
 
+# Update an existing event in place (patch semantics: only the fields you pass
+# change). Prefer this over delete-and-recreate — it keeps the event ID and
+# attendee RSVPs intact.
+$GAPI calendar update EVENT_ID --start 2026-03-01T11:00:00-06:00 --end 2026-03-01T11:30:00-06:00
+$GAPI calendar update EVENT_ID --summary "Team Standup (moved)" --location "Room 2"
+
 # Delete event
 $GAPI calendar delete EVENT_ID
 ```

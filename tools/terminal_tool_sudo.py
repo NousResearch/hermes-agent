@@ -106,12 +106,45 @@ _SUDO_WRONG_PASSWORD_MARKERS = (
     "sudo: maximum 3 incorrect authentication attempts",
     "sudo: 3 incorrect password attempts",
 )
+# sudo -S prints "sudo: N incorrect password attempt(s)" after exhausting its
+# N tries; the singular/plural marker pair above only catches the per-try echo.
+_SUDO_WRONG_PASSWORD_COUNT_RE = re.compile(r"sudo: \d+ incorrect password attempts?")
 
 
 def _sudo_wrong_password_failure(output: str) -> bool:
     """Return True when sudo rejected a piped password."""
     lowered = (output or "").lower()
+    if _SUDO_WRONG_PASSWORD_COUNT_RE.search(lowered):
+        return True
     return any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS)
+
+
+def _annotate_empty_configured_sudo_password(command: str | None, output: str) -> str:
+    """Explain that sudo failed on a piped EMPTY password.
+
+    ``SUDO_PASSWORD=""`` deliberately reaches ``sudo -S`` as a blank line (a
+    passwordless-sudo host accepts it), so this is not treated as
+    misconfiguration upstream. But when sudo then REJECTS that blank line, the
+    operator sees "incorrect password attempt" and hunts for a wrong password
+    that was never set. A one-line note closes that gap without changing the
+    rewrite contract."""
+    if (
+        not _sudo_wrong_password_failure(output)
+        or _count_real_sudo_invocations(command or "") == 0
+    ):
+        return output
+    try:
+        from agent.secret_scope import get_secret
+        configured = get_secret("SUDO_PASSWORD")
+    except Exception:
+        configured = os.environ.get("SUDO_PASSWORD")
+    if configured:
+        return output
+    return output + (
+        "\n\n⚠️ SUDO_PASSWORD is set to an empty string, so sudo was fed a blank "
+        "line. Either set a real password in your .env or remove the entry so sudo "
+        "fails with its plain no-password error instead."
+    )
 
 
 def _invalidate_cached_sudo_on_auth_failure(command: str | None, output: str) -> bool:

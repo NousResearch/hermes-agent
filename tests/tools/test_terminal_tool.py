@@ -1,5 +1,7 @@
 """Regression tests for sudo detection and sudo password handling."""
 
+import os
+
 import tools.terminal_tool as terminal_tool
 import tools.terminal_tool_sudo as terminal_tool_sudo
 
@@ -146,3 +148,62 @@ def test_sudo_rewrite_preserves_env_operands_and_prose(monkeypatch):
 def test_count_real_sudo_invocations_ignores_mentions(monkeypatch):
     assert terminal_tool_sudo._count_real_sudo_invocations("grep sudo README.md") == 0
     assert terminal_tool_sudo._count_real_sudo_invocations("sudo a; sudo b") == 2
+
+
+def test_empty_configured_sudo_password_gets_explainer_note(monkeypatch):
+    """SUDO_PASSWORD="" still pipes a blank line (kept contract), but a sudo
+    rejection of that blank line must tell the operator the value is EMPTY,
+    not wrong."""
+    monkeypatch.setenv("SUDO_PASSWORD", "")
+    output = (
+        "[sudo] password for root: Sorry, try again.\n[sudo] password for root:\n"
+        "sudo: no password was provided\nsudo: 1 incorrect password attempt"
+    )
+    annotated = terminal_tool_sudo._annotate_empty_configured_sudo_password(
+        "sudo true", output
+    )
+    assert "SUDO_PASSWORD is set to an empty string" in annotated
+    assert "sudo: 1 incorrect password attempt" in annotated
+
+
+def test_counted_incorrect_password_attempts_count_as_auth_failure():
+    assert terminal_tool_sudo._sudo_wrong_password_failure(
+        "sudo: 2 incorrect password attempts"
+    )
+
+
+def test_wrong_password_note_absent_for_real_password():
+    monkeyback = os.environ.get("SUDO_PASSWORD")
+    os.environ["SUDO_PASSWORD"] = "realpw"
+    try:
+        output = "sudo: incorrect password attempt"
+        annotated = terminal_tool_sudo._annotate_empty_configured_sudo_password(
+            "sudo true", output
+        )
+        assert annotated == output
+    finally:
+        if monkeyback is None:
+            del os.environ["SUDO_PASSWORD"]
+        else:
+            os.environ["SUDO_PASSWORD"] = monkeyback
+
+
+def test_wrong_password_note_absent_when_no_sudo_in_command(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    output = "sudo: 1 incorrect password attempt"
+    annotated = terminal_tool_sudo._annotate_empty_configured_sudo_password(
+        "echo hi", output
+    )
+    assert annotated == output
+
+
+def test_sudo_annotations_surfaced_for_empty_configured_password(monkeypatch):
+    """The empty-password explainer must ride the same annotation seam the
+    terminal executor already uses, not just the helper in isolation."""
+    monkeypatch.setenv("SUDO_PASSWORD", "")
+    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "0")
+    from tools.terminal_tool_result import _sudo_annotations
+    output = "sudo: 1 incorrect password attempt"
+    annotated, auth_failed, _ = _sudo_annotations("sudo true", output, env_type="local")
+    assert auth_failed is True
+    assert "SUDO_PASSWORD is set to an empty string" in annotated

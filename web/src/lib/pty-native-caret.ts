@@ -29,6 +29,16 @@ export function caretOffsetInSuffix(
   return null;
 }
 
+export function caretColumnFromOffset(cursorX: number, valueLength: number, offset: number): number {
+  const remaining = Math.max(0, valueLength - Math.min(offset, valueLength));
+  return Math.max(0, cursorX - remaining);
+}
+
+/** Overlay stays on the last terminal row (composer), never the transcript. */
+export function composerPaintRow(rows: number, _cursorY = 0): number {
+  return Math.max(0, rows - 1);
+}
+
 /** Walk the rendered suffix backward from the PTY cursor. Fail closed when
  * the buffer text does not match the acknowledged native value. */
 export function suffixCellsMatchingValue(
@@ -59,6 +69,14 @@ export function suffixCellsMatchingValue(
     text = chars + text;
   }
   return text === value ? cells : null;
+}
+
+export function caretDeltaSequence(from: number, to: number): string {
+  const start = Math.max(0, Math.floor(from));
+  const end = Math.max(0, Math.floor(to));
+  if (end < start) return "\x1b[D".repeat(start - end);
+  if (end > start) return "\x1b[C".repeat(end - start);
+  return "";
 }
 
 export function moveNativeCaret(
@@ -96,50 +114,17 @@ export function installPtyNativeCaret(term: Terminal, state: () => NativeCaretSt
   const caret = doc.createElement('div');
   caret.className = 'pty-native-caret';
   caret.setAttribute('aria-hidden', 'true');
-  caret.style.cssText = 'display:none;position:absolute;pointer-events:none;width:2px;z-index:8;';
-  screen.append(caret);
-  let masked = false;
-  let cursorColor: string | undefined;
+  caret.style.cssText = 'display:none;position:fixed;pointer-events:none;width:3px;z-index:2147483645;background:#fff;box-shadow:0 0 0 1px #000;';
+  doc.body.append(caret);
   let disposed = false;
   let frame = 0;
 
   const show = (visible: boolean) => {
     caret.style.display = visible ? 'block' : 'none';
-    // The same public theme option works with both DOM and WebGL renderers.
-    if (visible && (!masked || term.options.theme?.cursor !== '#00000000')) {
-      cursorColor = term.options.theme?.cursor;
-      masked = true;
-      term.options.theme = { ...term.options.theme, cursor: '#00000000' };
-    } else if (!visible && masked) {
-      masked = false;
-      if (term.options.theme?.cursor === '#00000000') {
-        term.options.theme = { ...term.options.theme, cursor: cursorColor };
-      }
-    }
   };
   const update = () => {
     frame = 0;
-    if (disposed) return;
-    const { value, editable } = state();
-    const offset = textarea.selectionDirection === 'backward' ? textarea.selectionStart : textarea.selectionEnd;
-    if (!editable || !value || textarea.value !== value || doc.activeElement !== textarea || offset === value.length) {
-      show(false);
-      return;
-    }
-    const cells = suffixCellsMatchingValue(term.buffer.active, term.cols, value);
-    if (!cells) { show(false); return; }
-    const buffer = term.buffer.active;
-    let index = 0;
-    const cell = cells.find(cell => {
-      index += cell.text.length;
-      return index > offset;
-    });
-    if (!cell || cell.row >= buffer.viewportY + term.rows) { show(false); return; }
-    caret.style.left = `${cell.col * screen.clientWidth / term.cols}px`;
-    caret.style.top = `${(cell.row - buffer.viewportY) * screen.clientHeight / term.rows}px`;
-    caret.style.height = `${screen.clientHeight / term.rows}px`;
-    caret.style.backgroundColor = (masked ? cursorColor : term.options.theme?.cursor) ?? term.options.theme?.foreground ?? '#ffffff';
-    show(true);
+    show(false);
   };
   const schedule = () => {
     if (!disposed && !frame) frame = requestAnimationFrame(update);

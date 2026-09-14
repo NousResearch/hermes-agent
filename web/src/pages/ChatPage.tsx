@@ -39,7 +39,8 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { installPtyBrowserInput } from "@/lib/pty-browser-input";
-import { preparePtyTextareaForDictation } from "@/lib/pty-ios-textarea";
+import { composerTextareaBox, preparePtyTextareaForDictation, watchPtyTextareaLayout } from "@/lib/pty-ios-textarea";
+import { ACCESSORY_BAR_HEIGHT_PX, PTY_ETX, mountPtyMobileAccessory, shouldShowMobileAccessory, terminalBottomReservePx } from "@/lib/pty-mobile-accessory";
 import { shouldDropPtyMouseReport } from "@/lib/pty-mouse";
 import { shouldRestoreTerminalFocus } from "@/lib/pty-focus";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
@@ -71,7 +72,7 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
-import { advanceTouchAnchor, isTouchPan, touchLineTravel, touchScrollLines, wheelScrollLines } from "@/lib/pty-touch-scroll";
+import { advanceTouchAnchor, isTouchPan, ptyWheelSequence, touchLineTravel, touchScrollLines, wheelScrollLines } from "@/lib/pty-touch-scroll";
 import { ptyAboOauthChannelKey, ptyAboOauthParams } from "@/lib/pty-abo-oauth";
 import {
   imageFilesFromTransfer,
@@ -290,15 +291,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPtyState("connecting");
     setReconnectNonce((n) => n + 1);
   }, [clearReconnectTimer, searchParams, setSearchParams]);
-  // Clear mobile-input tracking refs when the tab is hidden so stale state
-  // from a previous /chat visit doesn't cause the mobile-replacement logic
-  // to misfire on the next activation (#106403: repeated last character).
-  useEffect(() => {
-    if (!isActive) {
-      ptyInputLineRef.current = "";
-      mobileReplacementInputUntilRef.current = 0;
-    }
-  }, [isActive]);
   // Raw state for the mobile side-sheet + a derived value that force-
   // closes whenever the chat tab isn't active.  The *derived* value is
   // what side-effects (body-scroll lock, keydown listener, portal render)
@@ -522,6 +514,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // Captured once so the effect cleanup doesn't re-read the ref (which
     // may point elsewhere by then — react-hooks/exhaustive-deps).
     const termWrap = termWrapRef.current;
+    let browserInput: ReturnType<typeof installPtyBrowserInput> | undefined;
 
     const token = window.__HERMES_SESSION_TOKEN__;
     const gated = !!window.__HERMES_AUTH_REQUIRED__;
@@ -779,7 +772,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           }
           try {
             const text = await navigator.clipboard.readText();
-            if (text) browserInput.paste(text);
+            if (text) browserInput?.paste(text);
           } catch (err) {
             const message =
               err instanceof Error ? err.message : String(err);
@@ -832,7 +825,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let touchOriginY: number | null = null;
     let touchPanning = false;
     let suppressClickAfterPan = false;
-    host.style.touchAction = "none";
+    const touchRoot = termWrap ?? host;
+    touchRoot.style.touchAction = "none";
     const activeTouch = (list: TouchList) => {
       for (let i = 0; i < list.length; i += 1) {
         if (list[i].identifier === touchId) return list[i];
@@ -856,25 +850,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (ev.touches.length !== 1 || touchId === null || touchY === null || touchOriginY === null) return;
       const touch = activeTouch(ev.touches);
       if (!touch) return;
+      ev.preventDefault();
+      ev.stopPropagation();
       if (!touchPanning && !isTouchPan(touchOriginY, touch.clientY)) {
-        ev.preventDefault();
-        ev.stopPropagation();
         return;
       }
       touchPanning = true;
-      const rowHeight = Math.max(1, host.clientHeight / Math.max(1, term.rows));
+      browserInput?.setCaretSuspended(true);
+      const rowHeight = Math.min(36, Math.max(1, host.clientHeight / Math.max(1, term.rows)));
       const lines = touchScrollLines(touchY, touch.clientY, rowHeight);
       if (lines) {
         touchY = advanceTouchAnchor(touchY, lines, touchLineTravel(rowHeight));
-        term.scrollLines(lines);
+        const seq = ptyWheelSequence(lines);
+        if (seq) term.input(seq, true);
         lastTouchScrollAt = Date.now();
       }
-      ev.preventDefault();
-      ev.stopPropagation();
     };
     const onTouchEnd = (ev: TouchEvent) => {
       if (!activeTouch(ev.touches)) {
         if (touchPanning) suppressClickAfterPan = true;
+        browserInput?.setCaretSuspended(false);
         touchId = null;
         touchY = null;
         touchOriginY = null;
@@ -887,10 +882,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ev.preventDefault();
       ev.stopPropagation();
     };
-    host.addEventListener("touchstart", onTouchStart, { passive: true });
-    host.addEventListener("touchmove", onTouchMove, { passive: false });
-    host.addEventListener("touchend", onTouchEnd, { passive: true });
-    host.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    touchRoot.addEventListener("touchstart", onTouchStart, { passive: true, capture: true });
+    touchRoot.addEventListener("touchmove", onTouchMove, { passive: false, capture: true });
+    touchRoot.addEventListener("touchend", onTouchEnd, { passive: true, capture: true });
+    touchRoot.addEventListener("touchcancel", onTouchEnd, { passive: true, capture: true });
     host.addEventListener("mousedown", onSuppressedClick, true);
     host.addEventListener("click", onSuppressedClick, true);
 
@@ -901,12 +896,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     term.open(host);
-    const browserInput = installPtyBrowserInput(term, () =>
-      wsRef.current?.readyState === WebSocket.OPEN &&
-      !shouldBlockPtyInput(ptyStateRef.current),
+    browserInput = installPtyBrowserInput(
+      term,
+      () =>
+        wsRef.current?.readyState === WebSocket.OPEN &&
+        !shouldBlockPtyInput(ptyStateRef.current),
+      (data) => sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, data),
     );
     const textarea = term.textarea;
     if (textarea) preparePtyTextareaForDictation(textarea);
+    const stopWatchingTextarea = textarea
+      ? watchPtyTextareaLayout(textarea, () => {
+          const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+          return composerTextareaBox(term.rows, screen?.clientHeight ?? host.clientHeight);
+        })
+      : () => {};
+    const accessory = mountPtyMobileAccessory(termWrap ?? host, {
+      paste: () => {
+        void navigator.clipboard.readText().then((text) => {
+          if (text) browserInput?.paste(text);
+        }).catch(() => { /* Safari may deny clipboard without a gesture */ });
+      },
+      interrupt: () => {
+        term.input(PTY_ETX);
+      },
+      caretLeft: () => {
+        browserInput?.nudge("ArrowLeft");
+      },
+      caretRight: () => {
+        browserInput?.nudge("ArrowRight");
+      },
+    });
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -1025,11 +1045,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       );
       const chatTop = wrap.getBoundingClientRect().top;
       const inIframe = window.self !== window.top;
-      if (inset !== appliedKeyboardInset) {
-        appliedKeyboardInset = inset;
-        wrap.style.paddingBottom = inset > 0 ? `${inset}px` : "";
+      const phoneChrome = coarsePointer || navigator.maxTouchPoints > 0;
+      const focused = term.textarea === document.activeElement;
+      const showBar = shouldShowMobileAccessory(inset, phoneChrome, focused);
+      const barPx = showBar ? ACCESSORY_BAR_HEIGHT_PX : 0;
+      const reserve = terminalBottomReservePx(inset, showBar);
+      if (reserve !== appliedKeyboardInset) {
+        appliedKeyboardInset = reserve;
+        wrap.style.paddingBottom = reserve > 0 ? `${reserve}px` : "";
         scheduleHostSync();
       }
+      accessory.setInset(inset, phoneChrome, focused);
       if (shouldScrollChatIntoView(inset, chatTop, inIframe)) {
         wrap.scrollIntoView({ block: "end", inline: "nearest" });
       }
@@ -1043,7 +1069,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         const delta = keyboardRevealScrollDelta(host.getBoundingClientRect().bottom, {
           height: vv.height,
           offsetTop: vv.offsetTop,
-        });
+        }, barPx);
         if (delta) window.scrollBy(0, delta);
       };
       if (inset > 0) {
@@ -1076,7 +1102,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       window.clearTimeout(keyboardRevealTimer);
       keyboardRevealTimer = window.setTimeout(onViewportChange, 350);
     };
+    const onTerminalBlur = () => {
+      window.setTimeout(onViewportChange, 0);
+    };
     term.textarea?.addEventListener("focus", onTerminalFocus);
+    term.textarea?.addEventListener("blur", onTerminalBlur);
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -1523,20 +1553,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
       onScrollDisposable?.dispose();
-      browserInput.dispose();
+      browserInput?.dispose();
+      stopWatchingTextarea();
+      accessory.dispose();
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
-      host.removeEventListener("touchstart", onTouchStart);
-      host.removeEventListener("touchmove", onTouchMove);
-      host.removeEventListener("touchend", onTouchEnd);
-      host.removeEventListener("touchcancel", onTouchEnd);
+      touchRoot.removeEventListener("touchstart", onTouchStart, true);
+      touchRoot.removeEventListener("touchmove", onTouchMove, true);
+      touchRoot.removeEventListener("touchend", onTouchEnd, true);
+      touchRoot.removeEventListener("touchcancel", onTouchEnd, true);
       host.removeEventListener("mousedown", onSuppressedClick, true);
       host.removeEventListener("click", onSuppressedClick, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       window.clearTimeout(keyboardRevealTimer);
       term.textarea?.removeEventListener("focus", onTerminalFocus);
+      term.textarea?.removeEventListener("blur", onTerminalBlur);
       keyboardInsetSyncRef.current = null;
       keyboardInsetResetRef.current = null;
       const wrap = termWrap;

@@ -300,7 +300,7 @@ describe("ChatPage", () => {
     const textarea = FakeTerminal.instances[0].textarea;
     expect(textarea.getAttribute("inputmode")).toBe("text");
     expect(textarea.getAttribute("autocapitalize")).toBe("sentences");
-    expect(textarea.style.fontSize).toBe("16px");
+    expect(Number.parseFloat(textarea.style.fontSize)).toBeGreaterThanOrEqual(16);
     expect(Number.parseFloat(textarea.style.opacity)).toBeGreaterThan(0);
   });
 

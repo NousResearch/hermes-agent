@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  caretColumnFromOffset,
   caretOffsetInSuffix,
+  composerPaintRow,
   gridCellFromPointer,
   moveNativeCaret,
 } from "./pty-native-caret";
@@ -33,5 +35,17 @@ describe("native PTY caret from pointer", () => {
     expect(moveNativeCaret("hello", 2, 2, "Home")).toEqual({ start: 0, end: 0 });
     expect(moveNativeCaret("hello", 2, 2, "End")).toEqual({ start: 5, end: 5 });
     expect(moveNativeCaret("hello", 2, 2, "a")).toBeNull();
+  });
+
+  it("falls back to the PTY cursor when the buffer suffix is not yet matched", () => {
+    expect(caretColumnFromOffset(10, 5, 5)).toBe(10);
+    expect(caretColumnFromOffset(10, 5, 2)).toBe(7);
+    expect(caretColumnFromOffset(2, 5, 0)).toBe(0);
+  });
+
+  it("paints the overlay on the composer row even if the PTY cursor left it", () => {
+    expect(composerPaintRow(20, 0)).toBe(19);
+    expect(composerPaintRow(20, 19)).toBe(19);
+    expect(composerPaintRow(20, 3)).toBe(19);
   });
 });

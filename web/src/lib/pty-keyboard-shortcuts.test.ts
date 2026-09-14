@@ -60,6 +60,13 @@ describe('sendPtyShortcutSequence', () => {
     expect(ws.send).toHaveBeenCalledWith('\x17')
   })
 
+  it('sends CSI arrows as a single websocket frame', () => {
+    const ws = socket()
+
+    expect(sendPtyShortcutSequence(ws, 'open', '\x1b[D')).toBe(true)
+    expect(ws.send).toHaveBeenCalledWith('\x1b[D')
+  })
+
   it.each<PtyConnectionState>(['connecting', 'reconnecting', 'closed', 'ended'])(
     'blocks shortcut bytes while the PTY state is %s',
     (state) => {

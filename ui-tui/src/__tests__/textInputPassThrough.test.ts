@@ -49,5 +49,7 @@ describe('shouldPassThroughToGlobalHandler', () => {
     expect(shouldPassThroughToGlobalHandler('', key({ tab: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageUp: true }))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('', key({ pageDown: true }))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('', key({ wheelUp: true }))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('', key({ wheelDown: true }))).toBe(true)
   })
 })

@@ -124,4 +124,10 @@ describe("keyboardRevealScrollDelta", () => {
       keyboardRevealScrollDelta(480, { height: 480, offsetTop: 0 }),
     ).toBe(0);
   });
+
+  it("lands the composer above the accessory bar, not under it", () => {
+    expect(
+      keyboardRevealScrollDelta(800, { height: 480, offsetTop: 0 }, 56),
+    ).toBe(376);
+  });
 });

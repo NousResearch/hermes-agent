@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { installPtyBrowserInput } from "./pty-browser-input";
 
-function fakeTerm() {
+function fakeTerm(sendBytes?: (data: string) => boolean, syncInkCaret = true) {
   const host = document.createElement("div");
   const screen = document.createElement("div");
   screen.className = "xterm-screen";
@@ -12,6 +12,7 @@ function fakeTerm() {
   document.body.append(host);
   const inputs: string[] = [];
   const pastes: string[] = [];
+  const dataListeners: Array<(data: string) => void> = [];
   const term = {
     textarea,
     element: host,
@@ -29,14 +30,18 @@ function fakeTerm() {
     },
     input(data: string) { inputs.push(data); },
     paste(data: string) { pastes.push(data); },
-    onData() { return { dispose() {} }; },
+    onData(cb?: (data: string) => void) {
+      if (cb) dataListeners.push(cb);
+      return { dispose() {} };
+    },
+    emitData(data: string) { dataListeners.forEach((cb) => cb(data)); },
     onSelectionChange() { return { dispose() {} }; },
     onRender() { return { dispose() {} }; },
     onResize() { return { dispose() {} }; },
     onScroll() { return { dispose() {} }; },
     hasSelection() { return false; },
   };
-  const adapter = installPtyBrowserInput(term as never);
+  const adapter = installPtyBrowserInput(term as never, () => true, sendBytes, syncInkCaret);
   return { term, textarea, host, inputs, pastes, adapter };
 }
 
@@ -69,13 +74,139 @@ describe("pty browser input", () => {
     host.remove();
   });
 
-  it("keeps a native caret overlay for the unsent suffix", () => {
+  it("does not paint a second caret under the terminal cursor", () => {
     const { host, adapter } = fakeTerm();
-    const caret = host.querySelector(".pty-native-caret");
+    const caret = document.querySelector(".pty-native-caret") as HTMLElement;
     expect(caret).toBeInstanceOf(HTMLElement);
-    expect(caret?.getAttribute("aria-hidden")).toBe("true");
+    expect(caret.style.display).toBe("none");
     adapter.dispose();
     host.remove();
-    expect(host.querySelector(".pty-native-caret")).toBeNull();
+    expect(document.querySelector(".pty-native-caret")).toBeNull();
+  });
+
+  it("does not wipe the composer on blur so the caret can be recaptured", () => {
+    const { textarea, host, adapter } = fakeTerm();
+    textarea.value = "Hallo";
+    textarea.setSelectionRange(5, 5);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: "Hallo",
+    }));
+    textarea.dispatchEvent(new Event("blur", { bubbles: true }));
+    expect(textarea.value).toBe("Hallo");
+    adapter.nudge("ArrowLeft");
+    expect(textarea.selectionStart).toBe(4);
+    adapter.dispose();
+    host.remove();
+  });
+
+  it("does not drop the composer when xterm reports unrelated onData", () => {
+    const { textarea, host, adapter, term } = fakeTerm();
+    textarea.value = "Hi";
+    textarea.setSelectionRange(2, 2);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: "Hi",
+    }));
+    term.emitData("x");
+    expect(textarea.value).toBe("Hi");
+    adapter.nudge("ArrowLeft");
+    expect(textarea.selectionStart).toBe(1);
+    adapter.dispose();
+    host.remove();
+  });
+
+  it("sends Ink arrow sequences so the visible TUI cursor moves", () => {
+    const { textarea, host, adapter, inputs } = fakeTerm();
+    textarea.value = "Hi";
+    textarea.setSelectionRange(2, 2);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: "Hi",
+    }));
+    adapter.nudge("ArrowLeft");
+    expect(inputs.join("")).toContain("\x1b[D");
+    adapter.nudge("ArrowRight");
+    expect(inputs.join("")).toContain("\x1b[C");
+    adapter.dispose();
+    host.remove();
+  });
+
+  it("sends visible-cursor CSI through the PTY socket path, not only term.input", () => {
+    const sent: string[] = [];
+    const { textarea, host, adapter, inputs } = fakeTerm((data) => {
+      sent.push(data);
+      return true;
+    });
+    textarea.value = "Hi";
+    textarea.setSelectionRange(2, 2);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: "Hi",
+    }));
+    adapter.nudge("ArrowLeft");
+    expect(sent.join("")).toContain("\x1b[D");
+    expect(inputs.join("")).not.toContain("\x1b[D");
+    adapter.dispose();
+    host.remove();
+  });
+
+  it("moves the native caret without CSI when Ink cursor sync is off", () => {
+    const { textarea, host, adapter, inputs } = fakeTerm(undefined, false);
+    textarea.value = "Hi";
+    textarea.setSelectionRange(2, 2);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: "Hi",
+    }));
+    adapter.nudge("ArrowLeft");
+    expect(textarea.selectionStart).toBe(1);
+    expect(inputs.join("")).toBe("Hi");
+    adapter.dispose();
+    host.remove();
+  });
+
+  it("sends clamped CSI when the native caret is dragged so the visible cursor follows", () => {
+    const { textarea, host, adapter, inputs } = fakeTerm();
+    textarea.value = "Hi";
+    textarea.setSelectionRange(2, 2);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: "Hi",
+    }));
+    textarea.focus();
+    textarea.setSelectionRange(0, 0);
+    document.dispatchEvent(new Event("selectionchange"));
+    expect(inputs.join("")).toBe("Hi\x1b[D\x1b[D");
+    adapter.dispose();
+    host.remove();
+  });
+
+  it("keeps ArrowUp/ArrowDown inside the composer and does not send them to the PTY", () => {
+    const { textarea, host, adapter, inputs } = fakeTerm();
+    textarea.value = "Hi";
+    textarea.setSelectionRange(2, 2);
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: "Hi",
+    }));
+    const up = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true });
+    textarea.dispatchEvent(up);
+    expect(up.defaultPrevented).toBe(true);
+    expect(inputs.join("")).toBe("Hi");
+    adapter.nudge("ArrowLeft");
+    adapter.nudge("ArrowLeft");
+    adapter.nudge("ArrowLeft");
+    expect(textarea.selectionStart).toBe(0);
+    expect(inputs.join("").split("\x1b[D").length - 1).toBe(2);
+    adapter.dispose();
+    host.remove();
   });
 });

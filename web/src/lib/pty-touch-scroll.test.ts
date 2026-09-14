@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   advanceTouchAnchor,
   isTouchPan,
+  ptyWheelSequence,
   touchLineTravel,
   touchScrollLines,
   wheelScrollLines,
@@ -15,14 +16,14 @@ describe("touchScrollLines", () => {
   });
 
   it("needs a clear finger travel before the first line", () => {
-    expect(touchLineTravel(20)).toBe(40);
+    expect(touchLineTravel(20)).toBe(25);
     expect(touchScrollLines(240, 220, 20)).toBe(0);
     expect(touchScrollLines(240, 240 - touchLineTravel(20), 20)).toBe(1);
   });
 
-  it("scrolls a bit faster than three row-heights per line", () => {
-    expect(touchLineTravel(20)).toBeLessThan(60);
-    expect(touchLineTravel(18)).toBe(36);
+  it("caps line travel so a tall terminal still scrolls on a short swipe", () => {
+    expect(touchLineTravel(80)).toBe(36);
+    expect(touchLineTravel(20)).toBe(25);
   });
 
   it("ignores finger jitter smaller than one terminal row", () => {
@@ -50,6 +51,14 @@ describe("isTouchPan", () => {
 
   it("treats a longer drag as a pan so the transcript can scroll", () => {
     expect(isTouchPan(100, 120)).toBe(true);
+  });
+});
+
+describe("ptyWheelSequence", () => {
+  it("sends Ink PageUp when the finger moves up so older transcript comes into view", () => {
+    expect(ptyWheelSequence(1)).toBe("\x1b[5~");
+    expect(ptyWheelSequence(-1)).toBe("\x1b[6~");
+    expect(ptyWheelSequence(0)).toBeNull();
   });
 });
 

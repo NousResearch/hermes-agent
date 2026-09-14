@@ -9,8 +9,8 @@
 export const TOUCH_PAN_PX = 14;
 
 export function touchLineTravel(rowHeight: number): number {
-  if (!Number.isFinite(rowHeight) || rowHeight <= 0) return 36;
-  return Math.max(36, rowHeight * 2);
+  if (!Number.isFinite(rowHeight) || rowHeight <= 0) return 28;
+  return Math.min(36, Math.max(24, rowHeight * 1.25));
 }
 
 export function isTouchPan(originY: number, currentY: number): boolean {
@@ -43,4 +43,13 @@ export function wheelScrollLines(deltaY: number): number {
     return 0;
   }
   return deltaY > 0 ? 1 : -1;
+}
+
+/** PageUp/PageDown — TextInput swallows SGR wheel while the composer is focused. */
+export const PTY_PAGE_UP = "\x1b[5~";
+export const PTY_PAGE_DOWN = "\x1b[6~";
+
+export function ptyWheelSequence(lines: number): string | null {
+  if (!Number.isFinite(lines) || lines === 0) return null;
+  return lines > 0 ? PTY_PAGE_UP : PTY_PAGE_DOWN;
 }

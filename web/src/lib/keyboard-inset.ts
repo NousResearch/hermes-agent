@@ -97,9 +97,11 @@ export function shouldScrollChatIntoView(
 export function keyboardRevealScrollDelta(
   composerBottomPx: number,
   visual: ViewportGeometry,
+  accessoryPx = 0,
 ): number {
   if (!Number.isFinite(composerBottomPx) || !Number.isFinite(visual.height) || !Number.isFinite(visual.offsetTop)) {
     return 0;
   }
-  return Math.round(composerBottomPx - (visual.offsetTop + visual.height));
+  const chrome = Number.isFinite(accessoryPx) && accessoryPx > 0 ? accessoryPx : 0;
+  return Math.round(composerBottomPx - (visual.offsetTop + visual.height - chrome));
 }

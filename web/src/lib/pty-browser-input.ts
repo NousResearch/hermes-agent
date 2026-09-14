@@ -1,5 +1,5 @@
 import type { Terminal } from '@xterm/xterm';
-import { installPtyNativeCaret, moveNativeCaret } from './pty-native-caret';
+import { installPtyNativeCaret, moveNativeCaret, caretDeltaSequence } from './pty-native-caret';
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const modifiers = new Set(['Shift', 'Control', 'Alt', 'Meta', 'AltGraph']);
@@ -56,7 +56,12 @@ function intendedValue(edit: EditTransaction): string | undefined {
  * Ancestor capture is essential: open() installs xterm's textarea capture
  * listeners first. Blocking them also prevents its legacy 229 diff timer.
  */
-export function installPtyBrowserInput(term: Terminal, canInput: () => boolean = () => true) {
+export function installPtyBrowserInput(
+  term: Terminal,
+  canInput: () => boolean = () => true,
+  sendBytes?: (data: string) => boolean,
+  syncInkCaret = true,
+) {
   const textarea = term.textarea!;
   const host = term.element!;
   const preedit = host.querySelector<HTMLElement>('.composition-view');
@@ -64,12 +69,16 @@ export function installPtyBrowserInput(term: Terminal, canInput: () => boolean =
     if (!preedit) return;
     preedit.textContent = data;
     preedit.classList.toggle('active', Boolean(data));
+    preedit.style.color = term.options.theme?.foreground ?? '#ffffff';
+    preedit.style.webkitTextFillColor = 'transparent';
+    preedit.style.background = 'transparent';
     preedit.style.left = textarea.style.left;
     preedit.style.top = textarea.style.top;
     preedit.style.fontFamily = term.options.fontFamily!;
     preedit.style.fontSize = `${term.options.fontSize}px`;
   };
   let acknowledged = '';
+  let ptyOffset = 0;
   let helperOwned = false;
   let sending = false;
   let transaction: EditTransaction | undefined;
@@ -84,20 +93,34 @@ export function installPtyBrowserInput(term: Terminal, canInput: () => boolean =
     editable: canInput() && !helperOwned && !composition && !transaction,
   }));
 
+  let caretSuspended = false;
   const send = (data: string) => {
     if (!data) return;
+    if (sendBytes?.(data)) return;
     sending = true;
     try { term.input(data, true); } finally { sending = false; }
   };
+  const syncVisibleCaret = () => {
+    if (!syncInkCaret || caretSuspended || helperOwned || composition || transaction || !canInput()) return;
+    const value = acknowledged || textarea.value;
+    if (!value) return;
+    const to = Math.max(0, Math.min(value.length, textarea.selectionStart));
+    send(caretDeltaSequence(ptyOffset, to));
+    ptyOffset = to;
+  };
   const mirror = (value: string) => {
     textarea.value = value;
-    textarea.setSelectionRange(value.length, value.length);
+    const off = Math.max(0, Math.min(value.length, ptyOffset));
+    textarea.setSelectionRange(off, off);
     nativeCaret.refresh();
   };
   const commit = (value: string) => {
     value = plainText(value);
+    const toEnd = acknowledged.length - ptyOffset;
+    if (toEnd > 0) send('\x1b[C'.repeat(toEnd));
     send(rewriteTail(acknowledged, value));
     acknowledged = value;
+    ptyOffset = value.length;
   };
   const rebaseHelper = () => {
     if (!helperOwned) return;
@@ -107,6 +130,7 @@ export function installPtyBrowserInput(term: Terminal, canInput: () => boolean =
   };
   const reset = () => {
     acknowledged = '';
+    ptyOffset = 0;
     helperOwned = false;
     composition = undefined;
     showPreedit('');
@@ -193,6 +217,13 @@ export function installPtyBrowserInput(term: Terminal, canInput: () => boolean =
     host.addEventListener(type, handler, true);
     listeners.push(() => host.removeEventListener(type, handler, true));
   };
+  const doc = textarea.ownerDocument;
+  const onSelectionChange = () => {
+    if (doc.activeElement !== textarea) return;
+    syncVisibleCaret();
+  };
+  doc.addEventListener("selectionchange", onSelectionChange);
+  listeners.push(() => doc.removeEventListener("selectionchange", onSelectionChange));
   const nativeKey = (event: KeyboardEvent) => !event.metaKey && ((!event.ctrlKey && !event.altKey) || event.getModifierState('AltGraph')) &&
     (Array.from(event.key).length === 1 || (!event.altKey && ['Backspace', 'Delete'].includes(event.key)));
 
@@ -202,11 +233,27 @@ export function installPtyBrowserInput(term: Terminal, canInput: () => boolean =
       event.stopImmediatePropagation(); // Preserve selection and browser copy default.
       return;
     }
-    if (!key.altKey && !key.ctrlKey && !key.metaKey && !helperOwned && acknowledged) {
-      const next = moveNativeCaret(acknowledged, textarea.selectionStart, textarea.selectionEnd, key.key);
-      if (next) {
-        event.preventDefault();
+    if (!key.altKey && !key.ctrlKey && !key.metaKey && !helperOwned) {
+      const nav = key.key === "ArrowUp" || key.key === "ArrowDown" || key.key === "ArrowLeft" || key.key === "ArrowRight" || key.key === "Home" || key.key === "End";
+      if (nav) {
         event.stopImmediatePropagation();
+        if (!syncInkCaret) {
+          if (key.key === "ArrowUp" || key.key === "ArrowDown") event.preventDefault();
+          return;
+        }
+        event.preventDefault();
+        if (key.key === "ArrowUp" || key.key === "ArrowDown") return;
+        const value = acknowledged || textarea.value;
+        const next = moveNativeCaret(value, textarea.selectionStart, textarea.selectionEnd, key.key);
+        if (!next) return;
+        if (!acknowledged && textarea.value) {
+          acknowledged = plainText(textarea.value);
+          ptyOffset = textarea.selectionStart;
+        }
+        const delta = next.start - ptyOffset;
+        if (delta < 0) send("\x1b[D".repeat(-delta));
+        if (delta > 0) send("\x1b[C".repeat(delta));
+        ptyOffset = next.start;
         textarea.setSelectionRange(next.start, next.end);
         nativeCaret.refresh();
         return;
@@ -349,7 +396,14 @@ export function installPtyBrowserInput(term: Terminal, canInput: () => boolean =
     commit(textarea.value);
     flushKeys();
   });
-  listen('blur', () => { overtaken = undefined; finalizedComposition = undefined; reset(); });
+  listen('blur', () => {
+    overtaken = undefined;
+    finalizedComposition = undefined;
+    composition = undefined;
+    transaction = undefined;
+    keys.length = 0;
+    showPreedit('');
+  });
   listen('copy', event => {
     if (nativeSelection()) event.stopImmediatePropagation(); // Keep the browser's native copy default.
   });
@@ -360,9 +414,32 @@ export function installPtyBrowserInput(term: Terminal, canInput: () => boolean =
     event.stopImmediatePropagation();
     pasteText(paste.clipboardData.getData('text/plain'));
   });
-  const dataListener = term.onData(() => { if (!sending) boundary(); });
+  const dataListener = term.onData((data: string) => {
+    if (sending) return;
+    if (data === "\r" || data === "\n" || data === "\x03") boundary();
+  });
   return {
     paste: pasteText,
+    nudge(key: "ArrowLeft" | "ArrowRight" | "Home" | "End") {
+      const value = acknowledged || textarea.value;
+      const from = textarea.selectionStart;
+      const next = moveNativeCaret(value, from, textarea.selectionEnd, key);
+      if (!next) return;
+      if (!acknowledged && textarea.value) {
+        acknowledged = plainText(textarea.value);
+        ptyOffset = from;
+      }
+      if (syncInkCaret) send(caretDeltaSequence(ptyOffset, next.start));
+      ptyOffset = next.start;
+      if (textarea.ownerDocument.activeElement !== textarea) {
+        textarea.focus();
+      }
+      textarea.setSelectionRange(next.start, next.end);
+      nativeCaret.refresh();
+    },
+    setCaretSuspended(value: boolean) {
+      caretSuspended = value;
+    },
     reset() { overtaken = undefined; finalizedComposition = undefined; reset(); },
     dispose() { nativeCaret.dispose(); listeners.forEach(dispose => dispose()); dataListener.dispose(); selectionListener.dispose(); reset(); },
   };

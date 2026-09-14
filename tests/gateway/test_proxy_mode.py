@@ -44,12 +44,14 @@ class _FakeSSEResponse:
         self._sse_chunks = sse_chunks or []
         self._error_text = error_text
         self.content = self
+        self.chunks_requested = 0
 
     async def text(self):
         return self._error_text
 
     async def iter_any(self):
         for chunk in self._sse_chunks:
+            self.chunks_requested += 1
             if isinstance(chunk, str):
                 chunk = chunk.encode("utf-8")
             yield chunk
@@ -329,6 +331,10 @@ class TestStreamingResilience:
 
         assert result["final_response"] == "Hello"
 
+        # Fetching the next chunk already waits on the peer; dropping it after
+        # arrival is too late when the peer leaves the completed stream open.
+        assert resp.chunks_requested == 2
+
     @pytest.mark.asyncio
     async def test_residual_buffer_flushed_after_eof(self, monkeypatch):
         """A final SSE frame without a trailing newline must not be dropped.
@@ -485,4 +491,3 @@ class TestEnvVarRegistration:
         info = OPTIONAL_ENV_VARS["GATEWAY_PROXY_URL"]
         assert info["category"] == "messaging"
         assert info["password"] is False
-

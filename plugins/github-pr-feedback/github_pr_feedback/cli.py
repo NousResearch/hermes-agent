@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import json
 import os
@@ -17,6 +16,15 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on Windows
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - exercised on POSIX
+    msvcrt = None
 
 from .controller import KanbanTask, LocalGitRepository, PooledLocalGitRepository, ScanController
 from .ci_coordinator import CIAuditJob, GroupedCICoordinator
@@ -656,18 +664,31 @@ def _exclusive_scan_lock(control_home: Path | None = None) -> Iterator[bool]:
 
     lock_root = (control_home or get_default_hermes_root()) / "github-pr-feedback"
     lock_root.mkdir(parents=True, exist_ok=True)
-    handle = (lock_root / "scan.lock").open("a+")
+    lock_path = lock_root / "scan.lock"
+    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+        lock_path.write_text(" ", encoding="utf-8")
+    handle = lock_path.open("r+" if msvcrt else "a+")
     acquired = False
     try:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if fcntl:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif msvcrt:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:  # pragma: no cover
+                acquired = True
             acquired = True
-        except BlockingIOError:
+        except (BlockingIOError, OSError):
             pass
         yield acquired
     finally:
         if acquired:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if fcntl:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            elif msvcrt:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         handle.close()
 
 

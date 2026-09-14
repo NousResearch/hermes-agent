@@ -1037,15 +1037,14 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         # otherwise a multi-profile fleet triggers the wrong task.
         if sys.platform == "win32":
             try:
-                from hermes_cli.profiles import _argv_profile_selectors, get_profile_dir
-                _selected = list(_argv_profile_selectors(list(cmd)))
-                # No selector in run_argv means the DEFAULT profile -- never the watcher's own
-                # inherited HERMES_HOME (an updater run under ``-p beta`` would otherwise fire
-                # beta's task for the default relaunch). ``default`` maps to the root home; an
-                # invalid name raises here, which skips the task route (the bare name would hash
-                # into a bogus task).
-                _task_home = str(get_profile_dir(_selected[-1] if _selected else "default").resolve())
                 from hermes_cli import gateway_windows as _gw  # type: ignore
+                # ONE home resolution for both routes: the spec builder derived HERMES_HOME from
+                # run_argv's selectors (no selector = the DEFAULT profile's root, never the watcher's
+                # own inherited home -- an updater run under ``-p beta`` would otherwise fire beta's
+                # task for the default relaunch) and put it in the overlay the direct Popen below
+                # inherits. Re-derive only when the spec could not; an invalid name raises here, which
+                # skips the task route (the bare name would hash into a bogus task).
+                _task_home = _respawn_env_overlay.get("HERMES_HOME") or str(_gw.restart_target_home(list(cmd)))
                 # Snapshot -> /Run -> poll for a NEW pid in that profile's home; None when the
                 # profile has no registered task or /Run itself failed (fall through to the direct
                 # spawn below).

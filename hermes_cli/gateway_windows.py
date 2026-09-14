@@ -593,6 +593,20 @@ def _build_gateway_argv(home: Path | None = None) -> tuple[list[str], str, dict[
     return _gateway_run_argv(python_exe, profile_arg), working_dir, env_overlay
 
 
+def restart_target_home(run_argv: list[str]) -> Path:
+    """HERMES_HOME the relaunched gateway must serve, derived from ``run_argv``'s ``-p``/``--profile``
+    selectors — never from the updater's own home. No selector means the DEFAULT profile, i.e. the
+    root: an updater run under ``-p beta`` would otherwise relaunch the default gateway against
+    beta's home. A bare custom ``HERMES_HOME`` (no ``profiles/`` segment) IS the root, so a replayed
+    selector-less argv captured from such a deployment keeps serving that home. The watcher's
+    Scheduled-Task route and its direct-Popen fallback both consume this one resolution (via the env
+    overlay) so they can never disagree about which profile they relaunch."""
+    from hermes_cli.profiles import _argv_profile_selectors, get_profile_dir
+
+    selected = list(_argv_profile_selectors(list(run_argv)))
+    return get_profile_dir(selected[-1] if selected else "default").resolve()
+
+
 def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str, dict[str, str]]:
     """(argv, cwd, env overlay) for a hidden-console gateway respawn; arguments after the interpreter
     are preserved verbatim. Non-Windows or a non-python argv[0] → argv unchanged, empty overlay.
@@ -615,8 +629,10 @@ def windowless_gateway_restart_spec(run_argv: list[str]) -> tuple[list[str], str
         return run_argv, "", {}
 
     try:
-        hermes_home = str(_hermes_home().resolve())
+        hermes_home = str(restart_target_home(run_argv))
     except Exception:
+        # Invalid selector or unresolvable home: leave HERMES_HOME to the watcher's environment rather
+        # than pin a bogus path; the watcher's task route re-derives (and rejects) the same selector.
         hermes_home = ""
     env_overlay: dict[str, str] = {"PYTHONIOENCODING": "utf-8", "HERMES_GATEWAY_DETACHED": "1", "VIRTUAL_ENV": str(venv_dir)}
     if hermes_home:

@@ -950,6 +950,25 @@ class TestWindowlessGatewayRestartSpec:
         assert cwd == ""
         assert env == {}
 
+    def test_default_run_argv_under_beta_home_overlays_root_home(self, tmp_path, monkeypatch):
+        """``hermes -p beta update`` relaunching the DEFAULT gateway: the direct-Popen
+        fallback's overlay must pin the root home, not the updater's inherited beta home
+        (the task route already resolved default -> root; both routes share one answer)."""
+        import hermes_cli.gateway  # noqa: F401  # pre-import: the spec's lazy import must not run under the fake platform
+        import hermes_cli.gateway_windows as gw
+
+        root = tmp_path / "hermes-root"
+        (root / "profiles" / "beta").mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "beta"))
+        monkeypatch.setattr(gw.sys, "platform", "win32")
+        monkeypatch.setattr(gw, "_resolve_detached_python", lambda exe: (exe, Path("C:/venv"), []))
+        monkeypatch.setattr(gw, "_stable_gateway_working_dir", lambda root: "C:/hermes")
+        argv = ["C:/venv/Scripts/python.exe", "-m", "hermes_cli.main", "gateway", "run", "--replace"]
+
+        _, _, env = gw.windowless_gateway_restart_spec(list(argv))
+
+        assert env["HERMES_HOME"] == str(root.resolve())
+
     @pytest.mark.windows_only
     def test_windows_keeps_console_python_and_preserves_tail(self):
         """On Windows the console interpreter is kept (hidden-console launch,

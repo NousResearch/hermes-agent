@@ -856,3 +856,61 @@ class TestLiteralDotKeyEscaping:
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Unrelated flush-left YAML lists must keep their original block (#107511)
+# ---------------------------------------------------------------------------
+
+class TestPreserveUnrelatedYamlListBlocks:
+    """``hermes config set`` of an unrelated scalar must not reindent other lists."""
+
+    def test_config_set_preserves_flush_left_unrelated_list(self, _isolated_hermes_home):
+        import yaml
+
+        list_block = "fallback_providers:\n- openai\n- anthropic\n"
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "model:\n  default: old\n" + list_block, encoding="utf-8"
+        )
+        set_config_value("model.default", "new")
+        text = (_isolated_hermes_home / "config.yaml").read_text(encoding="utf-8")
+        assert "default: new" in text
+        assert list_block in text  # MUST fail on current main (IndentDumper reindents)
+        assert yaml.safe_load(text)["fallback_providers"] == ["openai", "anthropic"]
+
+    def test_config_set_of_the_list_itself_may_use_canonical_indent(self, _isolated_hermes_home):
+        import yaml
+
+        list_block = "fallback_providers:\n- openai\n- anthropic\n"
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "model:\n  default: old\n" + list_block, encoding="utf-8"
+        )
+        set_config_value("fallback_providers", "[openai, gemini]")
+        text = (_isolated_hermes_home / "config.yaml").read_text(encoding="utf-8")
+        assert yaml.safe_load(text)["fallback_providers"] == ["openai", "gemini"]
+        # Fail-open: mutating the list itself may rewrite it in canonical 2-indent (#31999).
+        assert "gemini" in text
+
+    def test_config_set_preserves_already_indented_unrelated_list(self, _isolated_hermes_home):
+        import yaml
+
+        indented_block = "fallback_providers:\n  - openai\n  - anthropic\n"
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "model:\n  default: old\n" + indented_block, encoding="utf-8"
+        )
+        set_config_value("model.default", "new")
+        text = (_isolated_hermes_home / "config.yaml").read_text(encoding="utf-8")
+        assert "default: new" in text
+        assert yaml.safe_load(text)["fallback_providers"] == ["openai", "anthropic"]
+        assert "  - openai" in text
+        assert "  - anthropic" in text
+
+    def test_config_set_new_file_uses_canonical_list_indent(self, _isolated_hermes_home):
+        import yaml
+
+        set_config_value("fallback_providers", "[openai, anthropic]")
+        text = (_isolated_hermes_home / "config.yaml").read_text(encoding="utf-8")
+        loaded = yaml.safe_load(text)
+        assert loaded["fallback_providers"] == ["openai", "anthropic"]
+        assert "  - openai" in text
+        assert "  - anthropic" in text

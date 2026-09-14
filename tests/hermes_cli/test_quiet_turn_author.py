@@ -108,10 +108,10 @@ def test_quiet_one_shot_resumes_nested_notify_on_this_session_not_parent(monkeyp
 
 
 def test_quiet_notify_loop_shares_one_linger_budget(monkeypatch):
-    """One stuck notify_on_complete child is waited on once, not once per round plus finalize.
+    """Round 2 waits only the REMAINING budget, not a fresh one per round.
 
-    The loop shares a single deadline across rounds and stops after draining once a
-    wait times out; the finalize pass is skipped entirely because the loop ran.
+    A fresh per-round deadline (the pre-fix bug) would pass round 1 as 600 and
+    round 2 as 600 again; the shared deadline yields 600 then the remainder.
     """
     from hermes_cli import quiet_single_query as qsq
     from tools import process_registry as pr
@@ -120,21 +120,72 @@ def test_quiet_notify_loop_shares_one_linger_budget(monkeypatch):
 
     def fake_wait(task_id=None, *, timeout=None, poll_interval=1.0):
         waits.append(timeout)
-        # First wait: one stuck process times out; second wait (same run): nothing pending.
-        return {"waited": ["proc-stuck"] if len(waits) == 1 else [], "completed": [], "timed_out": ["proc-stuck"] if len(waits) == 1 else []}
+        return {"waited": [], "completed": [], "timed_out": []}
+
+    # Round 1 drains one text so a round 2 happens; the clock advances 300s across
+    # the follow-up turn, so round 2 must wait only the remaining 300s.
+    rounds = [[({"type": "completion", "session_key": "session-B"}, "[IMPORTANT: reply from C]")], []]
+
+    def fake_drain(*a, **k):
+        return rounds.pop(0) if rounds else []
+
+    clock = iter([100.0, 100.0, 400.0, 400.0])
+    monkeypatch.setattr(qsq.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions", fake_wait)
+    monkeypatch.setattr(pr.process_registry, "drain_notifications", fake_drain)
+
+    calls = []
+    result = qsq.continue_quiet_notify_completions(
+        "session-B", lambda text: calls.append(text) or {"final_response": text}, linger_budget=600.0,
+    )
+    assert waits == [600.0, 300.0], "round 2 must wait the remaining budget, not a fresh one"
+    assert len(calls) == 1
+    assert result == {"final_response": calls[0]}
+
+
+def test_quiet_notify_loop_stops_after_timeout_with_drained_texts(monkeypatch):
+    """A timed-out process is waited on no further: drained texts still run, then the loop stops."""
+    from hermes_cli import quiet_single_query as qsq
+    from tools import process_registry as pr
+
+    waits = []
+
+    def fake_wait(task_id=None, *, timeout=None, poll_interval=1.0):
+        waits.append(timeout)
+        return {"waited": ["proc-stuck"], "completed": [], "timed_out": ["proc-stuck"]}
 
     monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions", fake_wait)
-    monkeypatch.setattr(pr.process_registry, "drain_notifications", lambda *a, **k: [])
+    monkeypatch.setattr(
+        pr.process_registry, "drain_notifications",
+        lambda *a, **k: [({"type": "completion", "session_key": "session-B"}, "[IMPORTANT: reply from C]")],
+    )
     monkeypatch.setattr(qsq.time, "monotonic", lambda: 100.0)
 
     calls = []
     result = qsq.continue_quiet_notify_completions(
         "session-B", lambda text: calls.append(text) or {"final_response": text}, linger_budget=600.0,
     )
-    # Round 1: full budget; timed out -> drained (empty) -> break. Exactly one wait call.
+    # One wait only: timed out -> drained text ran -> break (no second 600s wait).
     assert waits == [600.0]
-    assert calls == []
-    assert result is None
+    assert calls == ["[IMPORTANT: reply from C]"]
+    assert result == {"final_response": "[IMPORTANT: reply from C]"}
+
+
+def test_finalize_linger_skipped_after_quiet_notify_loop(monkeypatch):
+    """_wait_for_oneshot_background_completions must not re-wait once the notify loop consumed the budget."""
+    from tools import process_registry as pr
+
+    waited = []
+    monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions",
+                        lambda *a, **k: waited.append(1) or {"waited": [], "completed": [], "timed_out": []})
+
+    cli = SimpleNamespace(_quiet_notify_linger_done=True)
+    cli._wait_for_oneshot_background_completions(cli) if hasattr(cli, "_wait_for_oneshot_background_completions") else None
+    # The real entrypoint is the module function; call it through the CLI module.
+    import cli as cli_mod
+
+    cli_mod._wait_for_oneshot_background_completions(cli)
+    assert waited == [], "finalize must skip the re-wait when the quiet notify loop already ran"
 
 
 def test_quiet_notify_loop_injects_owned_async_delegation_events(monkeypatch):

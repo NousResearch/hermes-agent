@@ -31,8 +31,8 @@ from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
-    _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
-    _user_deny_block_result,
+    _command_matches_permanent_allowlist, _delegated_child_kanban_cli_block_result, _hardline_block_result,
+    _match_user_deny_rule, _sudo_stdin_block_result, _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
 from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
@@ -955,11 +955,28 @@ def _user_deny_block(command: str) -> dict | None:
     return _user_deny_block_result(deny_pattern)
 
 
+def _is_delegated_child_kanban_cli_mutation(command: str) -> bool:
+    """True only inside a delegate_task child AND the command shells out to a mutating
+    ``hermes kanban`` verb. Checked against the ContextVar (``is_delegated_child_context``), not the
+    ``HERMES_DELEGATED_CHILD_CONTEXT`` env var the CLI itself checks — the env var lives in THIS
+    process's environment and a child's shell text can `unset` it before the subprocess is ever spawned,
+    but it cannot reach into this process and clear the ContextVar. See tools/kanban_cli_mutation_guard.py."""
+    try:
+        from agent.delegation_context import is_delegated_child_context
+        if not is_delegated_child_context():
+            return False
+    except Exception:
+        return False
+    from tools.kanban_cli_mutation_guard import contains_denied_kanban_mutation
+    return contains_denied_kanban_mutation(command)
+
+
 def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
     """Unconditional floors, BEFORE yolo / mode=off / cron approve-mode so no
     session-level setting can bypass them: hardline catastrophic commands,
     password-piping to ``sudo -S`` with no SUDO_PASSWORD configured (full guard
-    only), and the user's own approvals.deny rules ("never, even under yolo")."""
+    only), the delegate_task child Kanban-CLI-mutation block, and the user's own
+    approvals.deny rules ("never, even under yolo")."""
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
@@ -969,6 +986,9 @@ def _floor_block(command: str, *, sudo_guard: bool = False) -> dict | None:
         if is_sudo_guess:
             logger.warning("Sudo stdin guard block: %s (command: %s)", sudo_guess_desc, command[:200])
             return _sudo_stdin_block_result(sudo_guess_desc)
+    if _is_delegated_child_kanban_cli_mutation(command):
+        logger.warning("Delegated-child Kanban CLI mutation block: %s", command[:200])
+        return _delegated_child_kanban_cli_block_result()
     return _user_deny_block(command)
 
 

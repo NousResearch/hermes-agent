@@ -131,6 +131,21 @@ def _sudo_stdin_block_result(description: str) -> dict:
         "agent needs passwordless sudo, or run the sudo command manually in your own terminal.")}
 
 
+def _delegated_child_kanban_cli_block_result() -> dict:
+    """Build the block result for a delegate_task child shelling out to a mutating `hermes kanban` verb.
+
+    See ``tools.kanban_cli_mutation_guard`` for why this check has to run against the delegated-child
+    ContextVar rather than the CLI's own env-var check: a child can `unset HERMES_DELEGATED_CHILD_CONTEXT`
+    before the subprocess ever spawns."""
+    return {"approved": False, "message": (
+        "BLOCKED: delegate_task child contexts cannot mutate Kanban tasks via the CLI. "
+        "This is not your task to complete/block/comment on — that belongs to the parent agent that "
+        "spawned you. Finish your assigned goal and return your findings in your final response; the "
+        "parent will handle the Kanban task lifecycle. Do NOT retry with `unset "
+        "HERMES_DELEGATED_CHILD_CONTEXT` or any other environment manipulation — this block is not gated "
+        "on that env var and cannot be bypassed by clearing it.")}
+
+
 # Shell control characters that make a command compound when they appear OUTSIDE quotes. Inside quotes they are
 # literal to the outer shell — but they become executable again if an option like `-c`/`-e`/`--eval` (or a git `-c
 # alias.x=!...`) hands the quoted argument to another interpreter, so quoted control chars only disqualify a command

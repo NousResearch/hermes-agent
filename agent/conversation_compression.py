@@ -14,11 +14,13 @@ import concurrent.futures
 import contextlib
 import copy
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
 import math
 import os
+import re
 import tempfile
 import time
 import uuid
@@ -85,6 +87,126 @@ def _sanitation_rough_tokens(messages: list) -> int:
     return estimate_messages_tokens_rough(_strip_marker_for_comparison(messages))
 
 
+_SANITATION_PLACEHOLDER_RE = re.compile(
+    r"\[LCM sensitive redaction: name=([A-Za-z_][A-Za-z0-9_.-]{0,63}); "
+    r"chars=([0-9]{1,9}); bytes=([0-9]{1,9})"
+    r"(?:; sha256=([0-9a-f]{16}))?\]"
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class _SanitationChanges:
+    changed_fields: int = 0
+    placeholders: int = 0
+    declared_growth_chars: int = 0
+
+    def plus(self, other: "_SanitationChanges") -> "_SanitationChanges":
+        return _SanitationChanges(
+            self.changed_fields + other.changed_fields,
+            self.placeholders + other.placeholders,
+            self.declared_growth_chars + other.declared_growth_chars,
+        )
+
+
+def _validate_sanitized_string(original: str, candidate: str) -> Optional[_SanitationChanges]:
+    if candidate == original:
+        return _SanitationChanges()
+    placeholders = list(_SANITATION_PLACEHOLDER_RE.finditer(candidate))
+    if not placeholders:
+        return None
+    pattern_parts: list[str] = []
+    cursor = 0
+    for index, match in enumerate(placeholders):
+        chars = int(match.group(2))
+        if chars < 1 or chars > len(original):
+            return None
+        pattern_parts.append(re.escape(candidate[cursor:match.start()]))
+        pattern_parts.append(fr"(?P<s{index}>[\s\S]{{{chars}}})")
+        cursor = match.end()
+    pattern_parts.append(re.escape(candidate[cursor:]))
+    original_match = re.fullmatch("".join(pattern_parts), original)
+    if original_match is None:
+        return None
+    for index, placeholder in enumerate(placeholders):
+        secret = original_match.group(f"s{index}")
+        if len(secret.encode()) != int(placeholder.group(3)):
+            return None
+        digest = placeholder.group(4)
+        if digest and hashlib.sha256(secret.encode()).hexdigest()[:16] != digest:
+            return None
+    return _SanitationChanges(
+        changed_fields=1,
+        placeholders=len(placeholders),
+        declared_growth_chars=len(candidate) - len(original),
+    )
+
+
+def _validate_sanitized_value(original: Any, candidate: Any) -> Optional[_SanitationChanges]:
+    if isinstance(original, str) and isinstance(candidate, str):
+        return _validate_sanitized_string(original, candidate)
+    if isinstance(original, list) and isinstance(candidate, list):
+        if len(original) != len(candidate):
+            return None
+        changes = _SanitationChanges()
+        for original_item, candidate_item in zip(original, candidate):
+            item_changes = _validate_sanitized_value(original_item, candidate_item)
+            if item_changes is None:
+                return None
+            changes = changes.plus(item_changes)
+        return changes
+    if isinstance(original, dict) and isinstance(candidate, dict):
+        if len(original) != len(candidate):
+            return None
+        changes = _SanitationChanges()
+        unmatched_original = [key for key in original if key not in candidate]
+        unmatched_candidate = [key for key in candidate if key not in original]
+        for key in original.keys() & candidate.keys():
+            value_changes = _validate_sanitized_value(original[key], candidate[key])
+            if value_changes is None:
+                return None
+            changes = changes.plus(value_changes)
+        if len(unmatched_original) != len(unmatched_candidate):
+            return None
+
+        available = list(unmatched_candidate)
+        for original_key in unmatched_original:
+            if not isinstance(original_key, str):
+                return None
+            matches: list[
+                tuple[int, _SanitationChanges, _SanitationChanges]
+            ] = []
+            for candidate_index, candidate_key in enumerate(available):
+                if not isinstance(candidate_key, str):
+                    continue
+                key_changes = _validate_sanitized_string(original_key, candidate_key)
+                if key_changes is None:
+                    continue
+                value_changes = _validate_sanitized_value(
+                    original[original_key], candidate[candidate_key]
+                )
+                if value_changes is None:
+                    continue
+                matches.append(
+                    (candidate_index, key_changes, value_changes)
+                )
+            if len(matches) != 1:
+                return None
+            candidate_index, key_changes, value_changes = matches[0]
+            changes = changes.plus(key_changes).plus(value_changes)
+            available.pop(candidate_index)
+        return changes
+    return _SanitationChanges() if original == candidate else None
+
+
+def _validate_sanitation_candidate(
+    messages: list, candidate: list
+) -> Optional[_SanitationChanges]:
+    return _validate_sanitized_value(
+        _strip_marker_for_comparison(messages),
+        _strip_marker_for_comparison(candidate),
+    )
+
+
 def _emit_compaction_done(agent: Any) -> None:
     """Emit the structured terminal edge for a started compaction."""
     status_callback = getattr(agent, "status_callback", None)
@@ -114,11 +236,6 @@ COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE = "🗜️ Compressed ~{before:,} → ~
 COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE = (
     "🗜️ Context reduced to {new_ctx:,} tokens (was {old_ctx:,}), retrying..."
 )
-
-# Seven rounds of shortest accepted LCM values across scalar/JSON/structured
-# tool shapes and dict keys grow by 952 rough tokens. This is the smallest
-# binary envelope above that production-shaped fixture.
-SANITATION_GROWTH_MAX_ROUGH_TOKENS = 1024
 
 # FAILURE-class notice: compression blocked, so the session grows until the provider limit kills it. Must stay visible
 # on gateways: never add it to ROUTINE_COMPRESSION_STATUS_SAMPLES or _TELEGRAM_NOISY_STATUS_RE.
@@ -2683,10 +2800,17 @@ def _pure_automatic_sanitation(agent: Any, *, force: bool, bypass_cooldown: bool
     )
 
 
-def _defer_external_engine_memory_hook(agent: Any, *, force: bool, bypass_cooldown: bool) -> bool:
+def _defer_external_engine_memory_hook(
+    agent: Any, *, force: bool, bypass_cooldown: bool, checkpoint_required: bool
+) -> bool:
     """Delay memory work until an output-only external operation is known."""
     compressor = agent.context_compressor
-    if force or bypass_cooldown or not isinstance(getattr(compressor, "last_compression_status", None), str):
+    if (
+        force
+        or bypass_cooldown
+        or checkpoint_required
+        or not hasattr(compressor, "last_compression_status")
+    ):
         return False
     probe_kwargs = _supported_compression_kwargs(
         compressor.compress, current_tokens=None, focus_topic=None, force=False,
@@ -2898,21 +3022,21 @@ def _salvage_or_refuse_grown_transcript(
     _rough_out = estimate(compressed)
     _growth = _rough_out - _rough_in
     if pure_sanitation:
-        if _growth <= SANITATION_GROWTH_MAX_ROUGH_TOKENS:
+        changes = _validate_sanitation_candidate(messages, compressed)
+        if changes is not None and changes.placeholders:
             return compressed, None
         logger.warning(
             "Sanitation commit refused: operation=sanitize reason=external_engine_status "
             "measurement=rough_message_tokens input_tokens=%d output_tokens=%d growth_delta=%d "
-            "growth_bound=%d salvage=false terminal_result=refused_growth_bound session=%s",
-            _rough_in, _rough_out, _growth, SANITATION_GROWTH_MAX_ROUGH_TOKENS,
-            agent.session_id or "none",
+            "growth_bound=structural salvage=false terminal_result=refused_invalid_structure session=%s",
+            _rough_in, _rough_out, _growth, agent.session_id or "none",
         )
         with contextlib.suppress(Exception):
             agent._emit_warning(
-                "⚠️ Sanitation refused: the external context engine returned a rewrite beyond the "
-                f"{SANITATION_GROWTH_MAX_ROUGH_TOKENS:,}-token safety bound. No messages were changed."
+                "⚠️ Sanitation refused: the external context engine returned changes other than "
+                "valid declared redaction placeholders. No messages were changed."
             )
-        _emit_aborted_attempt_telemetry(agent, attempt_started_at, "sanitation_growth_bound")
+        _emit_aborted_attempt_telemetry(agent, attempt_started_at, "sanitation_invalid_structure")
         _restore_prune_rearm_tokens(agent.context_compressor, attempt_snapshot)
         return None, _existing_system_prompt(agent, system_message)
     if _rough_out > _rough_in:
@@ -3214,6 +3338,24 @@ def _finish_compaction_boundary(
     return _compressed_est
 
 
+def _finish_sanitation_commit(
+    agent: Any,
+    compressed: list,
+    *,
+    system_prompt: str,
+    compacted_in_place: bool,
+) -> int:
+    """Publish only the state required after an in-place sanitation rewrite."""
+    agent._last_compression_attempt_in_place = compacted_in_place
+    agent._last_compaction_in_place = compacted_in_place
+    set_usage_anchor(agent, None)
+    return estimate_request_tokens_rough(
+        compressed,
+        system_prompt=system_prompt or "",
+        tools=agent.tools or None,
+    )
+
+
 def _candidate_rejected(
     agent: Any, compressed: Any, messages: list, messages_before_compression: list, *,
     attempt_generation: Any, attempt_started_at: float,
@@ -3320,13 +3462,18 @@ def _commit_compaction(
     old_session_id: Optional[str] = None  # bound only once rotation begins
     sanitation_in = _sanitation_rough_tokens(messages) if pure_sanitation else 0
     sanitation_out = _sanitation_rough_tokens(compressed) if pure_sanitation else 0
+    sanitation_changes = (
+        _validate_sanitation_candidate(messages, compressed)
+        if pure_sanitation
+        else None
+    )
     if pure_sanitation and agent._session_db and not lease.watermark_capture_succeeded:
         logger.warning(
             "Sanitation commit refused: operation=sanitize reason=missing_watermark "
             "measurement=rough_message_tokens input_tokens=%d output_tokens=%d growth_delta=%d "
-            "growth_bound=%d salvage=false terminal_result=refused_missing_watermark session=%s",
+            "growth_bound=structural salvage=false terminal_result=refused_missing_watermark session=%s",
             sanitation_in, sanitation_out, sanitation_out - sanitation_in,
-            SANITATION_GROWTH_MAX_ROUGH_TOKENS, agent.session_id or "none",
+            agent.session_id or "none",
         )
         with contextlib.suppress(Exception):
             agent._emit_warning(
@@ -3381,7 +3528,12 @@ def _commit_compaction(
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
                 agent._session_db.archive_and_compact(
-                    agent.session_id, compressed, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
+                    agent.session_id, compressed,
+                    model_config_patch=(
+                        None
+                        if pure_sanitation
+                        else {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None}
+                    ),
                     watermark=lease.watermark, lock_holder=lease.holder,
                     tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
                 )
@@ -3395,7 +3547,8 @@ def _commit_compaction(
                 # re-baseline transcript handling.
                 compacted_in_place = True
                 # In-place still updates the current row's prompt; rotation published it atomically above.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                if not pure_sanitation:
+                    agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
                 agent._last_flushed_db_idx = 0
             else:
                 # Bind old_session_id first: it is the rollback key in the handler below.
@@ -3458,7 +3611,14 @@ def _commit_compaction(
             split_status = "aborted" if old_session_id is None and not in_place else "failed_not_indexed"
             # If rotation rolled back to the parent, agent.session_id is the indexed parent
             # and old_session_id was cleared: recovery, not an un-indexed orphan.
-            if old_session_id is None and not in_place:
+            if pure_sanitation:
+                logger.warning(
+                    "Sanitation commit transaction failed and rolled back "
+                    "(session=%s): %s",
+                    agent.session_id or "?",
+                    e,
+                )
+            elif old_session_id is None and not in_place:
                 logger.warning(
                     "Compression rotation aborted and rolled back to the parent session (%s): %s",
                     agent.session_id or "?", e,
@@ -3467,20 +3627,25 @@ def _commit_compaction(
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
             # Arm the failure cooldown so the next turn can't rerun the doomed compression;
             # try/except so a stub compressor can't mask the original error in this handler.
-            with _swallow('could not record split-failure cooldown', exc_info=True):
-                # See #97948.
-                agent.context_compressor._record_compression_failure_cooldown(
-                    _SPLIT_FAILURE_COOLDOWN_SECONDS, f"session_split_failed: {e}"
-                )
+            if not pure_sanitation:
+                with _swallow('could not record split-failure cooldown', exc_info=True):
+                    # See #97948.
+                    agent.context_compressor._record_compression_failure_cooldown(
+                        _SPLIT_FAILURE_COOLDOWN_SECONDS, f"session_split_failed: {e}"
+                    )
     if pure_sanitation:
         terminal = "committed" if session_commit_succeeded or not agent._session_db else "commit_failed"
         logger.log(
             logging.INFO if terminal == "committed" else logging.WARNING,
             "Sanitation commit finished: operation=sanitize reason=external_engine_status "
             "measurement=rough_message_tokens input_tokens=%d output_tokens=%d growth_delta=%d "
-            "growth_bound=%d salvage=false terminal_result=%s session=%s",
+            "growth_bound=structural changed_fields=%d declared_placeholders=%d "
+            "declared_growth_chars=%d salvage=false terminal_result=%s session=%s",
             sanitation_in, sanitation_out, sanitation_out - sanitation_in,
-            SANITATION_GROWTH_MAX_ROUGH_TOKENS, terminal, agent.session_id or "none",
+            sanitation_changes.changed_fields if sanitation_changes else 0,
+            sanitation_changes.placeholders if sanitation_changes else 0,
+            sanitation_changes.declared_growth_chars if sanitation_changes else 0,
+            terminal, agent.session_id or "none",
         )
     return _CommitOutcome(
         compressed=compressed, commit_started_at=commit_started_at, old_session_id=old_session_id,
@@ -3534,7 +3699,10 @@ def _run_summary_phase(
                 # compression flush skips it; run_agent marker sync realigns _session_messages.
                 agent._persist_user_message_idx = len(messages)
         defer_memory_hook = _defer_external_engine_memory_hook(
-            agent, force=force, bypass_cooldown=bypass_cooldown
+            agent,
+            force=force,
+            bypass_cooldown=bypass_cooldown,
+            checkpoint_required=checkpoint_required,
         )
         memory_context = (
             "" if defer_memory_hook else _pre_compress_memory_context(agent, messages, checkpoint_required)
@@ -3825,15 +3993,17 @@ def compress_context(
                     STALL_INTERRUPTED_FAILURE_CLASS if _stall_backoff else "commit_fence_cancelled",
                 )
                 return messages, _existing_sp
-        _warn_summary_or_aux_fallback(agent)
         if pure_sanitation:
             compressed_user_turn_outcome = "already_present"
+            new_system_prompt = _existing_system_prompt(agent, system_message)
         else:
+            _warn_summary_or_aux_fallback(agent)
             _fold_todo_snapshot(agent, compressed)
             compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
-        new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
+            new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(
-            agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
+            agent, messages, compressed, in_place=in_place or pure_sanitation, lease=lease,
+            new_system_prompt=new_system_prompt,
             system_message=system_message, compressed_user_turn_outcome=compressed_user_turn_outcome,
             messages_before_compression=messages_before_compression, made_progress=_compression_made_progress,
             attempt=attempt, pure_sanitation=pure_sanitation,
@@ -3842,18 +4012,27 @@ def compress_context(
             return messages, commit.refused_prompt
         compressed = commit.compressed
         split_status = commit.split_status
-        _compressed_est = _finish_compaction_boundary(
-            agent, compressed, new_system_prompt=new_system_prompt, old_session_id=commit.old_session_id,
-            in_place=in_place, compacted_in_place=commit.compacted_in_place,
-            session_commit_succeeded=commit.session_commit_succeeded,
-            defer_context_engine_notification=defer_context_engine_notification,
-            compression_made_progress=commit.made_progress, compression_used_fallback=_compression_used_fallback,
-            compression_feasibility_skip=_compression_feasibility_skip, task_id=task_id,
-        )
-        logger.info(
-            "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
-            agent.session_id or "none", _pre_msg_count, len(compressed), f"{_compressed_est:,}",
-        )
+        if pure_sanitation:
+            _compressed_est = _finish_sanitation_commit(
+                agent,
+                compressed,
+                system_prompt=new_system_prompt,
+                compacted_in_place=commit.compacted_in_place,
+            )
+        else:
+            _compressed_est = _finish_compaction_boundary(
+                agent, compressed, new_system_prompt=new_system_prompt, old_session_id=commit.old_session_id,
+                in_place=in_place, compacted_in_place=commit.compacted_in_place,
+                session_commit_succeeded=commit.session_commit_succeeded,
+                defer_context_engine_notification=defer_context_engine_notification,
+                compression_made_progress=commit.made_progress, compression_used_fallback=_compression_used_fallback,
+                compression_feasibility_skip=_compression_feasibility_skip, task_id=task_id,
+            )
+        if not pure_sanitation:
+            logger.info(
+                "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
+                agent.session_id or "none", _pre_msg_count, len(compressed), f"{_compressed_est:,}",
+            )
         lifecycle.commit_status = (
             "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"
         )

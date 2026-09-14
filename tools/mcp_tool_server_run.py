@@ -110,8 +110,8 @@ class MCPServerRunMixin:
         return "reconnect"
 
     async def _wait_for_reconnect_or_shutdown(self, timeout: Optional[float] = None) -> str:
-        """Parked wait: ``"shutdown"`` or ``"reconnect"`` (explicit, or the ``timeout`` self-probe;
-        event cleared first). Shutdown wins a tie."""
+        """Parked wait: ``"shutdown"``, ``"reconnect"`` (explicit request; event cleared first) or
+        ``"self-probe"`` (``timeout`` elapsed with neither). Shutdown wins a tie."""
         shutdown_task, reconnect_task = self._event_waiters()
         try:
             await asyncio.wait({shutdown_task, reconnect_task}, return_when=asyncio.FIRST_COMPLETED, timeout=timeout)
@@ -119,6 +119,8 @@ class MCPServerRunMixin:
             await self._cancel_waiters(shutdown_task, reconnect_task)
         if self._shutdown_event.is_set():
             return "shutdown"
+        if not self._reconnect_event.is_set():
+            return "self-probe"
         self._reconnect_event.clear()
         return "reconnect"
 
@@ -138,10 +140,19 @@ class MCPServerRunMixin:
         self._was_parked = True
         self._deregister_tools()
         self._reconnect_event.clear()
-        if await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL) == "shutdown":
+        outcome = await self._wait_for_reconnect_or_shutdown(timeout=_core._PARKED_RETRY_INTERVAL)
+        if outcome == "shutdown":
             return True
-        logger.debug("MCP server '%s': attempting revival %s (self-probe or explicit reconnect request); "
-                     "rebuilding transport.", self.name, revival_reason)
+        # Nobody asked for this revival: a self-probe must never open a browser OAuth flow. The
+        # OAuth provider runs inside THIS task (the SDK's auth flow sits in the transport), so a
+        # task-local ContextVar reaches it; it stays set for the task's life — every later
+        # revival of a once-parked server is unattended too. Left interactive, an expired
+        # refresh token opened a new authorize tab every _PARKED_RETRY_INTERVAL, all night.
+        if outcome == "self-probe":
+            from tools.mcp_oauth import _oauth_interactive_enabled
+            _oauth_interactive_enabled.set(False)
+        logger.debug("MCP server '%s': attempting revival %s (%s); rebuilding transport.",
+                     self.name, revival_reason, outcome)
         return False
 
     async def _prepare_run(self, config: dict) -> bool:
@@ -161,7 +172,8 @@ class MCPServerRunMixin:
         # elicitation/create lets a server ask for structured input mid-call; the handler
         # routes it through Hermes' approval system.
         elicitation_config = config.get("elicitation", {})
-        self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config, owner=self)
+        self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
+                                                       call_context=lambda: self._pending_call_context)
                              if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES else None)
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
@@ -412,8 +424,6 @@ class MCPServerRunMixin:
     def _deregister_tools(self) -> None:
         """Drop this server's tools from the registry (idempotent); on shutdown AND budget
         exhaustion, so a dead server never leaves phantom tools in the prompt."""
-        from tools.registry import registry
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
-            registry.deregister(tool_name, scope=_core._server_registry_scope(self.name))
-            _registration._forget_mcp_tool_server(tool_name)
+            _registration._deregister_mcp_tool_all_scopes(self, tool_name)
         self._registered_tool_names = []

@@ -265,6 +265,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
                     return
                 logger.warning("Vercel: sandbox entered state %s for task %s; recreating", status, self._task_id)
             self._close_sandbox_client(sandbox)
+            self._mark_recreated()
         self._attach_fresh_sandbox(requested_cwd)
 
     def _run_checked(self, script: str, label: str) -> None:

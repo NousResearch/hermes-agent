@@ -79,6 +79,10 @@ def _truncate_snapshot(snapshot_text: str, max_chars: Optional[int] = None) -> s
         return snapshot_text
 
     stored_path = _store_full_snapshot(snapshot_text)
+    if stored_path:
+        # Agent-visible path: read_file runs inside the active backend (#72389).
+        from tools.credential_files import to_agent_visible_cache_path
+        stored_path = to_agent_visible_cache_path(stored_path)
 
     lines = snapshot_text.split('\n')
     result: list[str] = []
@@ -117,5 +121,5 @@ def _redact_browser_output(value: Any) -> Any:
     if isinstance(value, tuple):
         return tuple(_redact_browser_output(item) for item in value)
     if isinstance(value, dict):
-        return {key: _redact_browser_output(item) for key, item in value.items()}
+        return {_redact_browser_output(key): _redact_browser_output(item) for key, item in value.items()}
     return value

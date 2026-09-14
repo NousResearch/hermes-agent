@@ -66,6 +66,7 @@ def _compute_host_turn_frame(
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
         "source": _session_source(session), "attached_images": attached_images,
+        "auth_user_id": _session_auth_user_id(session),
         "queued_prompt_generation": queued_prompt_generation}
 
 
@@ -89,19 +90,32 @@ def _compute_host_adopt_frame_meta(session: dict, frame: dict) -> None:
 
 
 def _relay_compute_host_rpc(message: dict) -> bool:
-    """Relay host events while retaining the clarify snapshot needed on resume."""
+    """Relay host frames to the client while mirroring the server→client request the host has open, so a
+    reconnecting client gets it back through ``open_requests``."""
     params = message.get("params") if isinstance(message, dict) else None
-    kind = params.get("type") if isinstance(params, dict) else None
-    if kind in {"clarify.request", "clarify.expire"}:
+    if isinstance(message, dict) and message.get("method") == "compute_host.activity":
+        if isinstance(params, dict):
+            session = _sessions.get(str(params.get("session_id") or ""))
+            if session is not None:
+                with _history_lock(session):
+                    if (session.get("running") and params.get("turn_id")
+                            and session.get("_compute_host_turn_id") == params["turn_id"]):
+                        session["_compute_host_activity_ns"] = params.get("activity_ns")
+        return True  # Internal observation, not a client event or replay entry.
+    if isinstance(message, dict) and isinstance(message.get("id"), str) and message.get("method") not in (None, "event"):
+        # A server request minted by the child: remember it against its session until it is answered/withdrawn.
+        session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
+        if session is not None:
+            with _history_lock(session):
+                session["_compute_host_open_request"] = {
+                    "id": message["id"], "method": message["method"], "params": dict(params)}
+    elif isinstance(params, dict) and params.get("type") == "request.cancel":
         session = _sessions.get(str(params.get("session_id") or ""))
         payload = params.get("payload")
-        request_id = payload.get("request_id") if isinstance(payload, dict) else None
-        if session is not None and request_id:
+        if session is not None and isinstance(payload, dict):
             with _history_lock(session):
-                if kind == "clarify.request":
-                    session["_compute_host_pending_clarify"] = dict(payload)
-                elif _pending_clarify_matches(session, request_id):
-                    session.pop("_compute_host_pending_clarify", None)
+                if _open_request_matches(session, payload.get("id")):
+                    session.pop("_compute_host_open_request", None)
     return write_json(message)
 
 
@@ -109,62 +123,65 @@ def _history_lock(session: dict):
     return session.get("history_lock", threading.Lock())
 
 
-def _pending_clarify_matches(session: dict, request_id) -> bool:
-    """Whether ``session``'s mirrored pending clarify is ``request_id``. Caller holds
-    history_lock."""
-    pending = session.get("_compute_host_pending_clarify")
-    return isinstance(pending, dict) and pending.get("request_id") == request_id
+def _open_request_matches(session: dict, request_id) -> bool:
+    """Whether ``session``'s mirrored open request is ``request_id``. Caller holds history_lock."""
+    mirrored = session.get("_compute_host_open_request")
+    return isinstance(mirrored, dict) and mirrored.get("id") == request_id
 
 
-def _compute_host_clarify_session(request_id: str) -> tuple[str, dict] | None:
-    """Find the parent mirror for one host-owned clarify request."""
+def _compute_host_request_session(request_id: str) -> tuple[str, dict] | None:
+    """Find the parent mirror for one host-owned server request."""
     for sid, session in list(_sessions.items()) if request_id else ():
         with _history_lock(session):
-            if _pending_clarify_matches(session, request_id):
+            if _open_request_matches(session, request_id):
                 return sid, session
     return None
 
 
-def _update_compute_host_clarify_snapshot(sid: str, session: dict, params: dict, result: dict) -> None:
-    """Keep reconnect snapshots accurate while a batch clarify is answered."""
-    request_id = str(params.get("request_id") or "")
-    question_id = str(params.get("question_id") or "")
+def _relay_compute_host_response(frame: dict) -> bool:
+    """Forward a client's response frame to the compute-host child that owns the request. False when no
+    child owns that id."""
+    located = _compute_host_request_session(str(frame.get("id") or ""))
+    if located is None or not _session_uses_compute_host(located[1]):
+        return False
+    sid, session = located
     with _history_lock(session):
-        if not _pending_clarify_matches(session, request_id):
-            return
-        pending = session["_compute_host_pending_clarify"]
-        if result.get("status") == "expired" or not result.get("remaining") and not question_id:
-            session.pop("_compute_host_pending_clarify", None)
-        elif question_id and isinstance(result.get("remaining"), list):
-            pending["answers"] = {**(pending.get("answers") or {}),
-                                  question_id: str(params.get("answer") or "")}
-            if not result["remaining"]:
-                session.pop("_compute_host_pending_clarify", None)
+        session.pop("_compute_host_open_request", None)
+    try:
+        _get_compute_host_supervisor().respond(sid, {"frame": dict(frame)})
+    except Exception:
+        logger.debug("compute-host response relay failed sid=%s", sid, exc_info=True)
+    return True
 
 
-def _respond_compute_host_clarify(rid: str, params: dict) -> dict | None:
-    """Proxy a clarify answer into the process that owns its pending Event."""
-    located = _compute_host_clarify_session(str(params.get("request_id") or ""))
+def _lock_compute_host_clarify(rid: str, request_id: str, question_id: str, answer: str) -> dict | None:
+    """Proxy a batch-clarify lock into the child that owns the request; keeps the parent mirror's locked
+    answers current for reconnect snapshots. None when the request is not host-owned."""
+    located = _compute_host_request_session(request_id)
     if located is None or not _session_uses_compute_host(located[1]):
         return None
     sid, session = located
     try:
-        ack = _get_compute_host_supervisor().respond(sid, params)
+        ack = _get_compute_host_supervisor().respond(
+            sid, {"lock": {"request_id": request_id, "question_id": question_id, "answer": answer}})
     except Exception as exc:
-        return _err(rid, 5019, f"compute-host clarify response failed: {exc}")
+        return _err(rid, 5019, f"compute-host clarify lock failed: {exc}")
     if ack.get("type") == "respond.error":
-        return _err(rid, 5019, str(ack.get("message") or "compute-host clarify response failed"))
+        return _err(rid, 5019, str(ack.get("message") or "compute-host clarify lock failed"))
     response = ack.get("response")
     if not isinstance(response, dict):
-        return _err(rid, 5019, "compute-host clarify response returned an invalid response")
+        return _err(rid, 5019, "compute-host clarify lock returned an invalid response")
     if "error" in response:
         error = response["error"] if isinstance(response["error"], dict) else {}
-        return _err(rid, int(error.get("code") or 5000),
-                    str(error.get("message") or "clarify response failed"))
-    result = response.get("result")
-    if not isinstance(result, dict):
-        return _err(rid, 5019, "compute-host clarify response returned an invalid result")
-    _update_compute_host_clarify_snapshot(sid, session, params, result)
+        return _err(rid, int(error.get("code") or 5000), str(error.get("message") or "clarify lock failed"))
+    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    with _history_lock(session):
+        if _open_request_matches(session, request_id):
+            mirrored = session["_compute_host_open_request"]
+            if result.get("status") == "expired" or result.get("remaining") == []:
+                session.pop("_compute_host_open_request", None)
+            else:
+                mirrored["params"]["answers"] = {**(mirrored["params"].get("answers") or {}), question_id: answer}
     return _ok(rid, result)
 
 
@@ -190,7 +207,7 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session["running"] = False
         session["last_active"] = time.time()
         _clear_inflight_turn(session)
-        session.pop("_compute_host_pending_clarify", None)
+        session.pop("_compute_host_open_request", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
         _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
@@ -208,15 +225,30 @@ def _submit_prompt_to_compute_host(
     frame = _compute_host_turn_frame(rid, sid, session, text, image_paths=image_paths,
                                      queued_prompt_generation=queued_prompt_generation,
                                      display_kind=display_kind)
+    # Caller JSON-RPC ids may repeat across sockets and turns. Use an opaque
+    # dispatch lifetime token, installed before a fast child can send activity.
+    turn_id = frame["turn_id"] = frame["request_id"] = uuid.uuid4().hex
+    with session["history_lock"]:
+        session["_compute_host_turn_id"] = turn_id
+        session.pop("_compute_host_activity_ns", None)
 
     def _complete(done: dict) -> None:
         # submit_turn reports a synchronous pipe failure via the callback before re-raising;
         # leave the session untouched so prompt.submit can fail open to the in-process path.
         if done.get("reason") != "send_failed":
+            with session["history_lock"]:
+                if session.get("_compute_host_turn_id") != turn_id:
+                    return
+                session.pop("_compute_host_turn_id", None)
+                session.pop("_compute_host_activity_ns", None)
             _on_compute_host_turn_done(rid, sid, session, done)
     try:
         _get_compute_host_supervisor(cfg).submit_turn(frame, on_complete=_complete)
     except Exception as exc:
+        with session["history_lock"]:
+            if session.get("_compute_host_turn_id") == turn_id:
+                session.pop("_compute_host_turn_id", None)
+                session.pop("_compute_host_activity_ns", None)
         return _err(rid, 5019, f"compute-host dispatch failed: {exc}")
     with session["history_lock"]:
         session["_compute_host_active"] = True

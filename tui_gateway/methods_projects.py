@@ -286,7 +286,10 @@ def _discover_repos_payload(
         agg = _agg(root)
         agg["sessions"] += int(row.get("sessions") or 0)
         agg["last_active"] = max(agg["last_active"], float(row.get("last_active") or 0))
-    if backfill:
+    # A read-only handle (foreign-profile RPC) must not attempt the persistence write: it would
+    # raise and be swallowed here, silently dropping the backfill. That profile's own gateway
+    # backfills on its own refreshes.
+    if backfill and not getattr(db, "read_only", False):
         try:
             db.backfill_repo_roots(cwd_to_root)
         except Exception:

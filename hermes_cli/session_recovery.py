@@ -414,6 +414,22 @@ def _salvage_rowid_bounds(source: sqlite3.Connection, table: str) -> dict[str, A
         result["empty" if not result["errors"] else "unavailable"] = True
         return result
 
+    # An ordered LIMIT 1 walks the table b-tree and dies on a damaged edge leaf, while the
+    # aggregate lets the planner answer from any covering index (every Hermes table has at
+    # least a PRIMARY KEY autoindex). Ask it before falling back to the synthetic domain:
+    # bisecting from INT64_MIN burned the whole query budget on a 4-row table (#98050).
+    missing = [edge for edge in ("low", "high") if rows[edge] is None]
+    if missing:
+        try:
+            aggregate = source.execute(f'SELECT min(rowid), max(rowid) FROM "{table}"').fetchone()
+        except sqlite3.DatabaseError as exc:
+            result["errors"].append(f"aggregate rowid bounds: {exc}")
+        else:
+            for edge, value in zip(("low", "high"), aggregate):
+                if rows[edge] is None and value is not None:
+                    rows[edge] = int(value)
+                    result.setdefault("aggregate_edges", []).append(edge)
+
     # A damaged edge can stop one ordered probe. Keep the readable edge and bound the other side by the
     # SQLite rowid domain, so bisection never assumes user databases hold only positive ids.
     if rows["low"] is None:
@@ -511,8 +527,15 @@ class _RowidRangeSalvage:
         if not self._keep([value]):
             result["excluded_rows"] += 1
             return True
-        with _immediate_transaction(self.destination):
-            self.destination.execute(self.insert_sql, value)
+        try:
+            with _immediate_transaction(self.destination):
+                self.destination.execute(self.insert_sql, value)
+        except sqlite3.IntegrityError as exc:
+            # A phantom row from a damaged page (NULL in a NOT NULL column, FK to nothing) is rejected
+            # by the destination schema; report it as a skipped singleton instead of aborting the table.
+            result["destination_rejected_rows"] += 1
+            self._skip(rowid, rowid, f"destination constraint rejected row: {exc}")
+            return True
         result["copied_rows"] += 1
         result["exact_lookup_recovered"] += 1
         return True
@@ -568,7 +591,8 @@ def _copy_table_salvage(
     """Best-effort rowid-range copy that continues past damaged source pages."""
     result: dict[str, Any] = {
         "mode": "rowid_range_salvage", "source_rows": source_rows, "copied_rows": 0, "excluded_rows": 0,
-        "columns": [], "range_queries": 0, "exact_lookup_recovered": 0, "skipped_rowid_ranges": [],
+        "columns": [], "range_queries": 0, "exact_lookup_recovered": 0, "destination_rejected_rows": 0,
+        "skipped_rowid_ranges": [],
     }
     columns = _compatible_columns(source, destination, table, result)
     if columns is None:
@@ -1016,6 +1040,12 @@ def _recover_via_lost_and_found(
         "BEST-EFFORT page-level salvage: the source table schemas were unreadable, so rows were rebuilt from raw "
         "pages and mapped heuristically. Review every count before trusting this output."
     )
+    if cli_report.get("header_zeroed"):
+        verification["warnings"].append(
+            "header salvage: SQLite refused the source outright (page-1 header damaged, 'file is not a "
+            "database'); the header of the private snapshot copy was zeroed so .recover could walk the "
+            "surviving pages. Rows written only to a -wal after the last checkpoint are not included."
+        )
     verification.update(loss_detected=True, complete=False)
     # Structural checks cannot see a positional mis-mapping: every row still inserts, so integrity/FK/FTS
     # stay green. A systematic timestamp violation is the semantic tell — never report such a salvage as verified.
@@ -1025,6 +1055,21 @@ def _recover_via_lost_and_found(
         plausibility_errors = _lost_and_found_plausibility_errors(plausibility_conn)
     finally:
         plausibility_conn.close()
+    # Records whose width matched no known physical layout were inserted
+    # positionally as a guess. Once the recognised rows map correctly the
+    # all-rows timestamp gate above no longer sees them, so they need their
+    # own tell: the guessed rows may be shifted while the report otherwise
+    # looks clean.
+    guessed = int(mapping.get("unrecognized_layout_rows") or 0)
+    if guessed:
+        widths = ", ".join(
+            f"{kind} rows with {'/'.join(map(str, sorted(ws)))} fields"
+            for kind, ws in sorted((mapping.get("unrecognized_layout_widths") or {}).items())
+        )
+        plausibility_errors.append(
+            f"{guessed} salvaged row(s) matched no known physical column layout and were mapped "
+            f"positionally ({widths}); their fields may be shifted. Inspect those sessions before trusting them."
+        )
     if plausibility_errors:
         verification["errors"].extend(plausibility_errors)
         verification["healthy"] = False

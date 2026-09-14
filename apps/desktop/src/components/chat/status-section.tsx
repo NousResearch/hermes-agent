@@ -10,6 +10,8 @@ interface StatusSectionProps {
   /** Optional inline status next to the label (running spinner, etc). */
   collapsedIndicator?: ReactNode
   defaultCollapsed?: boolean
+  /** Compact live content stays visible while the full roster is collapsed. */
+  preview?: ReactNode
   /** Optional glyph between the caret and the label (e.g. a `Codicon`). */
   icon?: ReactNode
   label: ReactNode
@@ -27,7 +29,8 @@ export function StatusSection({
   collapsedIndicator,
   defaultCollapsed = true,
   icon,
-  label
+  label,
+  preview
 }: StatusSectionProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
 
@@ -35,6 +38,7 @@ export function StatusSection({
     <div>
       <div className="flex items-center gap-1 pr-1">
         <button
+          aria-expanded={!collapsed}
           className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs font-normal text-muted-foreground/92 transition-colors hover:text-foreground/90"
           onClick={() => setCollapsed(open => !open)}
           type="button"
@@ -46,7 +50,7 @@ export function StatusSection({
         </button>
         {accessory && <div className="flex shrink-0 items-center gap-1">{accessory}</div>}
       </div>
-      {!collapsed && <div className="px-1 pb-0.5">{children}</div>}
+      {(!collapsed || preview) && <div className="px-1 pb-0.5">{collapsed ? preview : children}</div>}
     </div>
   )
 }

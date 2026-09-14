@@ -19,6 +19,7 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _RECEIPT_KEEP = 20  # keep the last N receipts per profile home
+COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
 
 # ``hermes update`` is a single-threaded CLI command; a module singleton lets the 7k-line updater
 # record steps from any depth without threading a handle through every helper.

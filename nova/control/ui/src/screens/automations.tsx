@@ -1,6 +1,6 @@
 import * as React from "react";
 import {
-  AlertTriangle, CalendarClock, Pause, Play, Plus, ShieldCheck, Trash2, X,
+  AlertTriangle, CalendarClock, Pause, Pencil, Play, Plus, ShieldCheck, Trash2, X,
 } from "lucide-react";
 import { Chip, EmptyState, GlassCard, GlassPanel, SectionHeader, StatusPill } from "@/components/glass";
 import { PanelBody } from "@/components/panel";
@@ -192,15 +192,21 @@ function CreateAutomation({
 }
 
 function AutomationCard({
-  automation, governance, onDecide, busy,
+  automation, governance, onDecide, onUpdate, onOpenAgent, busy,
 }: {
   automation: Automation;
   governance?: AutomationGovernance;
   onDecide: (action: "pause" | "resume" | "delete") => void;
+  onUpdate: (updates: { name?: string; schedule?: string }) => Promise<void>;
+  onOpenAgent?: (agentId: string) => void;
   busy: boolean;
 }) {
   const paused = !automation.enabled;
   const [confirming, setConfirming] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  const [draftName, setDraftName] = React.useState(automation.name);
+  const [draftWhen, setDraftWhen] = React.useState(automation.schedule_display);
+  const dirty = draftName !== automation.name || draftWhen !== automation.schedule_display;
   // Declared and verified are different facts. A schedule the runtime holds is a
   // declaration; an execution row is the only evidence anything ran.
   const everRan = Boolean(automation.last_run_at) || automation.runs.length > 0;
@@ -209,9 +215,21 @@ function AutomationCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <h3 className="text-ink truncate text-[13.5px] font-semibold">{automation.name}</h3>
-          <p className="text-ink-faint mt-0.5 text-[11.5px]">
-            {automation.agent_display_name || automation.agent_id}
-          </p>
+          {onOpenAgent ? (
+            <button
+              type="button" onClick={() => onOpenAgent(automation.agent_id)}
+              // Labelled by id, not by the display name shown: a screen reader (and a test)
+              // needs something stable, and the visible text is the tenant's branding.
+              aria-label={`Open agent ${automation.agent_id}`}
+              className="text-ink-faint hover:text-ink mt-0.5 text-[11.5px] underline-offset-2 transition-colors hover:underline"
+            >
+              {automation.agent_display_name || automation.agent_id}
+            </button>
+          ) : (
+            <p className="text-ink-faint mt-0.5 text-[11.5px]">
+              {automation.agent_display_name || automation.agent_id}
+            </p>
+          )}
         </div>
         <StatusPill state={paused ? "waiting" : "running"}>
           {paused ? "Paused" : "Scheduled"}
@@ -369,6 +387,15 @@ function AutomationCard({
           <button
             type="button"
             disabled={busy}
+            onClick={() => { setEditing((e) => !e); setDraftName(automation.name); setDraftWhen(automation.schedule_display); }}
+            aria-label={`Edit ${automation.name}`}
+            className="interactive text-ink-faint hover:text-ink rounded-lg p-1.5 transition-colors disabled:opacity-50"
+          >
+            <Pencil className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            disabled={busy}
             onClick={() => onDecide(paused ? "resume" : "pause")}
             className="interactive glass-solid text-ink hover:border-glass-border-lit inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[12px] font-medium transition-colors disabled:opacity-50"
           >
@@ -377,6 +404,48 @@ function AutomationCard({
           </button>
         </div>
       )}
+
+      {editing ? (
+        <div className="border-glass-border mt-3 space-y-3 rounded-lg border p-3">
+          <p className="text-ink-faint text-[11.5px] leading-relaxed">
+            Name and timing only. What this automation <i>does</i> passed the compiler when it
+            was declared; changing that means declaring a new one, so it goes through those
+            checks again rather than around them.
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block">
+              <span className="text-ink mb-1 block text-[12px] font-medium">Name</span>
+              <input
+                type="text" value={draftName} onChange={(e) => setDraftName(e.target.value)}
+                className="border-glass-border bg-glass text-ink focus-visible:ring-info/50 w-full rounded-lg border px-3 py-2 text-[12.5px] outline-none focus-visible:ring-2"
+              />
+            </label>
+            <label className="block">
+              <span className="text-ink mb-1 block text-[12px] font-medium">When</span>
+              <input
+                type="text" value={draftWhen} onChange={(e) => setDraftWhen(e.target.value)}
+                className="border-glass-border bg-glass text-ink focus-visible:ring-info/50 w-full rounded-lg border px-3 py-2 font-mono text-[12.5px] outline-none focus-visible:ring-2"
+              />
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button" disabled={!dirty || busy}
+              onClick={async () => {
+                await onUpdate({ name: draftName, schedule: draftWhen });
+                setEditing(false);
+              }}
+              className="glass-solid text-ink rounded-lg px-3 py-1.5 text-[12px] font-medium disabled:opacity-40"
+            >
+              {busy ? "Updating…" : "Update schedule"}
+            </button>
+            {dirty ? <span className="text-waiting text-[11.5px]">Unsaved changes</span> : null}
+            <span className="text-ink-faint text-[11.5px]">
+              The runtime's own parser validates the timing before anything is written.
+            </span>
+          </div>
+        </div>
+      ) : null}
     </GlassCard>
   );
 }
@@ -387,10 +456,12 @@ function AutomationCard({
  *  instruction NOVA never compiled and no policy reviewed — a governance decision, not a
  *  missing button. */
 export function AutomationsScreen({
-  automations, onChanged,
+  automations, onChanged, onOpenAgent,
 }: {
   automations: Loaded<AutomationsPayload>;
   onChanged: () => void;
+  /** Open an agent's profile. Makes the agent ↔ schedule relationship work both ways. */
+  onOpenAgent?: (agentId: string) => void;
 }) {
   const [busy, setBusy] = React.useState<string | null>(null);
   const [failure, setFailure] = React.useState("");
@@ -405,6 +476,19 @@ export function AutomationsScreen({
     } catch (err) {
       // Whatever the control plane said, verbatim — including "this endpoint requires
       // the admin role". A button is not an enforcement mechanism; the server is.
+      setFailure(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function update(id: string, updates: { name?: string; schedule?: string }) {
+    setBusy(id);
+    setFailure("");
+    try {
+      await post(`/automations/${encodeURIComponent(id)}/decide`, { action: "update", updates });
+      onChanged();
+    } catch (err) {
       setFailure(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(null);
@@ -476,6 +560,8 @@ export function AutomationsScreen({
                   governance={data.governance?.[a.automation_id]}
                   busy={busy === a.automation_id}
                   onDecide={(action) => decide(a.automation_id, action)}
+                  onUpdate={(updates) => update(a.automation_id, updates)}
+                  onOpenAgent={onOpenAgent}
                 />
               ))}
             </div>

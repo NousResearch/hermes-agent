@@ -173,3 +173,37 @@ for: create → appears in list → open profile → edit description → save �
 persisted; the existing Soul flow unchanged; duplicate → independent; archive → restore;
 schedule create → edit → refresh → disable. Plus one failure case per operation — invalid
 configuration, unknown agent, invalid schedule, permission denied.
+
+
+---
+
+## 9. Result
+
+Added after implementation, so this document is not a plan nobody checked against its
+outcome.
+
+**Complete and verified in a browser** (35 checks, `tests/browser/control_centre_e2e.py`):
+create an agent through the stepped form; edit identity, model, tools, permissions and
+knowledge; edit the Soul; duplicate, archive, restore and delete with typed confirmation;
+list, edit, pause and delete schedules; navigate agent → schedules and schedule → agent.
+Every check asserts against the files the runtime ended up with, not against the UI's own
+claims. 798 platform tests and the protected-identifier check pass.
+
+**Not done, and why:**
+
+- **Runtime activity / logs.** `/decisions` and the task board are already surfaced, and the
+  Schedules tab shows real execution rows where the runtime recorded any. What does not
+  exist is a route that tails an agent's `agent.log` / `errors.log`. Building the UI shell
+  for it without the route would have meant a panel with nothing behind it, which §17 of the
+  brief forbids and which this project treats as the worst failure available. The
+  per-profile log files exist and the right shape is a bounded, authenticated tail — it is
+  one route, and it is the obvious next piece of work.
+- **Channel association from the agent form.** A grant is declared on the connection
+  (`channels.yaml`), which Phase 9 made the single place it lives. The Channels step shows
+  what would reach the agent and where to change it; offering a second place to set it would
+  guarantee the two disagree.
+- **Credential entry.** Unchanged and deliberate: `.env` is on `materialize.NEVER_WRITE`, so
+  NOVA cannot hold a customer secret, and the brief's §13 asks for exactly that restraint.
+- **Live "Running" status.** There is no per-agent process heartbeat. Disabled, Not yet
+  applied, Awaiting a human, Working and Idle are all backed by real data; a sixth state
+  claiming a process is alive would not be.

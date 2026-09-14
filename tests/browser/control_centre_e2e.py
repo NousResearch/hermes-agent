@@ -229,6 +229,17 @@ with sync_playwright() as p:
     check("the agent's own .env survived",
           (HOME/"profiles"/"night-ops"/".env").read_text() == "SECRET=kept\n")
 
+    # ---- SCHEDULES SCREEN: edit + the link back to the agent ---------------
+    print("\n# Schedules screen")
+    goto("/automations")
+    page.wait_for_selector("text=Nightly sweep (edited)", timeout=15000)
+    page.get_by_role("button", name="Edit Nightly sweep (edited)").click()
+    page.wait_for_selector("text=Update schedule")
+    check("schedule edit panel opens on the schedules screen", True)
+    page.get_by_role("button", name="Open agent operations").first.click()
+    page.wait_for_timeout(600)
+    check("a schedule links back to its agent", "/agents/operations" in page.url)
+
     page.screenshot(path=str(HOME.parent/"p2-final.png"))
     expected = ("failed to load resource",)   # the browser logging our deliberate 4xx probes
     real = [

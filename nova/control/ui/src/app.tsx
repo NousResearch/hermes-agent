@@ -305,6 +305,7 @@ export default function App() {
               <AutomationsScreen
                 automations={automations}
                 onChanged={() => setAutomationNonce((n) => n + 1)}
+                onOpenAgent={(id) => go(`agents/${id}`)}
               />
             )
             : route === "activity" ? <ActivityScreen decisions={decisions} />

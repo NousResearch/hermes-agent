@@ -43,6 +43,8 @@ from agent.auxiliary_client import (
     _auxiliary_egress_binding,
     _dispatch_auxiliary_request,
     _RELAY_AUX_CALL_CONTEXT,
+    _LadderRoute,
+    _ladder_provider_fallback,
 )
 
 
@@ -283,6 +285,45 @@ def test_auxiliary_binding_uses_sdk_url_objects_for_egress_identity():
     assert route.base_url == "https://aux.example/v1"
 
 
+def test_auxiliary_binding_preserves_copilot_acp_marker_url(monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    client = SimpleNamespace(base_url="acp://copilot")
+
+    agent, route = _auxiliary_egress_binding(
+        client, provider="copilot-acp", model="copilot-model", api_mode="chat_completions"
+    )
+
+    assert agent.base_url == "acp://copilot"
+    assert route.base_url == "acp://copilot"
+
+
+def test_external_process_registry_metadata_preserves_out_of_tree_acp_marker(monkeypatch):
+    import providers
+    from providers.base import ProviderProfile
+    from agent.llm_egress_firewall import DestinationClass, classify_destination
+
+    monkeypatch.setattr(providers, "_REGISTRY", dict(providers._REGISTRY))
+    monkeypatch.setattr(providers, "_ALIASES", dict(providers._ALIASES))
+    monkeypatch.setattr(providers, "_PROVIDER_LIST_CACHE", None)
+    providers.register_provider(
+        ProviderProfile(
+            name="seam-acp",
+            base_url="acp://seam-acp",
+            auth_type="external_process",
+        )
+    )
+    monkeypatch.setenv("HERMES_KANBAN_PROTECTED_REMOTE", "1")
+    client = SimpleNamespace(base_url="acp://seam-acp")
+
+    agent, route = _auxiliary_egress_binding(
+        client, provider="seam-acp", model="seam-model", api_mode="chat_completions"
+    )
+
+    assert agent.base_url == "acp://seam-acp"
+    assert route.base_url == "acp://seam-acp"
+    assert classify_destination("seam-acp", route.base_url, route.api_mode) is DestinationClass.UNKNOWN
+
+
 def test_only_compression_auxiliary_binding_gets_larger_exact_grant_caps():
     client = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex")
     compression_token = _RELAY_AUX_CALL_CONTEXT.set({"task": "compression"})
@@ -398,13 +439,15 @@ def test_compression_aggregate_capacity_does_not_bypass_scans(tmp_path, unsafe, 
     assert reason in exc_info.value.decision.reason_codes
 
 
-def test_blocked_remote_aux_call_is_terminal_without_fallback(monkeypatch, tmp_path):
+@pytest.mark.parametrize("stream", [False, True])
+def test_blocked_remote_aux_call_uses_local_fallback_without_retry(monkeypatch, tmp_path, stream):
     primary = MagicMock()
     primary.base_url = "https://chatgpt.com/backend-api/codex"
     primary.chat.completions.create.side_effect = _blocked_egress_error()
     fallback = MagicMock()
     fallback.base_url = "http://127.0.0.1:11434/v1"
-    fallback.chat.completions.create.return_value = _aux_egress_response("fallback")
+    expected = iter(["chunk"]) if stream else _aux_egress_response("fallback")
+    fallback.chat.completions.create.return_value = expected
     monkeypatch.setattr("agent.auxiliary_client.get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(
         "agent.auxiliary_client._resolve_task_provider_model",
@@ -427,21 +470,58 @@ def test_blocked_remote_aux_call_is_terminal_without_fallback(monkeypatch, tmp_p
         lambda: (_ for _ in ()).throw(AssertionError("blocked request must not retry")),
     )
 
-    with pytest.raises(EgressBlocked):
-        call_llm(
-            task="compression",
-            provider="openai-codex",
-            model="gpt-5.4",
-            main_runtime={"session_id": "session-fallback"},
-            messages=[{"role": "user", "content": "ordinary request"}],
-        )
+    response = call_llm(
+        task="compression", stream=stream,
+        provider="openai-codex",
+        model="gpt-5.4",
+        main_runtime={"session_id": "session-fallback"},
+        messages=[{"role": "user", "content": "token=super-secret-value"}],
+    )
 
-    primary.chat.completions.create.assert_called_once()
-    fallback.chat.completions.create.assert_not_called()
+    assert response is expected
+    if stream:
+        assert list(response) == ["chunk"]
+        assert fallback.chat.completions.create.call_args.kwargs["stream"] is True
+    primary.chat.completions.create.assert_not_called()
+    fallback.chat.completions.create.assert_called_once()
+
+
+def test_egress_blocked_fallback_continues_to_later_local_candidate(monkeypatch):
+    import agent.auxiliary_client as auxiliary
+
+    remote = SimpleNamespace(base_url="https://remote.example/v1")
+    local = SimpleNamespace(base_url="http://127.0.0.1:11434/v1")
+    configured_calls = []
+
+    def configured(*args, **kwargs):
+        configured_calls.append(kwargs.get("failed_base_url"))
+        return remote, "remote-model", "remote"
+
+    monkeypatch.setattr(auxiliary, "_try_configured_fallback_chain", configured)
+    monkeypatch.setattr(
+        auxiliary,
+        "_try_main_agent_model_fallback",
+        lambda *args, **kwargs: (local, "local-model", "local"),
+    )
+    route = _LadderRoute(
+        object(), "compression", "", False, "https://primary.example/v1", "custom",
+        None, "https://primary.example/v1", None, "chat_completions", "primary-model", None, {},
+    )
+    ladder = _ladder_provider_fallback(ConnectionError("primary unavailable"), route)
+
+    first_step = next(ladder)
+    assert first_step.args[0] is remote
+    local_step = ladder.throw(_blocked_egress_error())
+    assert local_step.args[0] is local
+    with pytest.raises(StopIteration) as completed:
+        ladder.send("local response")
+
+    assert completed.value.value == "local response"
+    assert configured_calls[0] == "https://primary.example/v1"
 
 
 @pytest.mark.asyncio
-async def test_blocked_remote_async_aux_call_is_terminal_without_fallback(
+async def test_blocked_remote_async_aux_call_uses_local_fallback_without_retry(
     monkeypatch, tmp_path
 ):
     primary = MagicMock()
@@ -476,19 +556,20 @@ async def test_blocked_remote_async_aux_call_is_terminal_without_fallback(
         lambda: (_ for _ in ()).throw(AssertionError("blocked request must not retry")),
     )
 
-    with pytest.raises(EgressBlocked):
-        await async_call_llm(
-            task="compression",
-            provider="openai-codex",
-            model="gpt-5.4",
-            main_runtime={"session_id": "session-async-fallback"},
-            messages=[{"role": "user", "content": "ordinary request"}],
-        )
+    response = await async_call_llm(
+        task="compression",
+        provider="openai-codex",
+        model="gpt-5.4",
+        main_runtime={"session_id": "session-async-fallback"},
+        messages=[{"role": "user", "content": "token=super-secret-value"}],
+    )
 
-    primary.chat.completions.create.assert_awaited_once()
-    fallback.chat.completions.create.assert_not_awaited()
-    configured.assert_not_called()
-    main_fallback.assert_not_called()
+    assert response.choices[0].message.content == "fallback"
+    primary.chat.completions.create.assert_not_awaited()
+    fallback.chat.completions.create.assert_awaited_once()
+    configured.assert_called_once()
+    main_fallback.assert_called_once()
+    assert main_fallback.call_args.kwargs["async_mode"] is True
 
 
 def _jwt_with_claims(claims: dict) -> str:
@@ -801,13 +882,26 @@ class TestMoaAggregatorSharedResolution:
             mock_client = MagicMock()
             mock_resolve.return_value = (mock_client, "anthropic/claude-opus-4.8")
 
-            client, model, label = _try_main_agent_model_fallback("anthropic", task="compression")
+            client, model, label = _try_main_agent_model_fallback(
+                "anthropic",
+                task="compression",
+                main_runtime={
+                    "provider": "moa",
+                    "model": "opus-gpt",
+                    "base_url": "moa://local",
+                    "api_key": "moa-virtual-provider",
+                    "api_mode": "chat_completions",
+                },
+            )
 
         assert client is mock_client
         assert model == "anthropic/claude-opus-4.8"
         assert label == "main-agent(openrouter)"
         assert mock_resolve.call_args.kwargs["provider"] == "openrouter"
         assert mock_resolve.call_args.kwargs["model"] == "anthropic/claude-opus-4.8"
+        assert mock_resolve.call_args.kwargs["explicit_base_url"] is None
+        assert mock_resolve.call_args.kwargs["explicit_api_key"] == ""
+        assert mock_resolve.call_args.kwargs["api_mode"] == ""
 
 
 class TestBuildCallKwargsMaxTokens:
@@ -5465,3 +5559,99 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
+@pytest.mark.parametrize("refresh", [False, True])
+def test_streaming_local_fallback_refreshes_or_skips_stale_candidate(monkeypatch, refresh):
+    import agent.auxiliary_client as auxiliary
+
+    primary = MagicMock(base_url="https://chatgpt.com/backend-api/codex")
+    stale = MagicMock(base_url="http://127.0.0.1:11434/v1")
+    stale.chat.completions.create.side_effect = _AuxAuth401("expired")
+    healthy = MagicMock(base_url="http://127.0.0.1:11435/v1")
+    expected = iter(["local chunk"])
+    healthy.chat.completions.create.return_value = expected
+    monkeypatch.setattr(auxiliary, "_get_cached_client",
+                        lambda provider, *a, **kw: (healthy if provider == "custom" else primary, "model"))
+    candidates = iter([(stale, "model", "custom"), (healthy, "model", "custom")])
+    monkeypatch.setattr(auxiliary, "_try_configured_fallback_chain", lambda *a, **kw: next(candidates))
+    monkeypatch.setattr(auxiliary, "_refresh_provider_credentials", lambda *a, **kw: refresh)
+    quarantined = MagicMock()
+    monkeypatch.setattr(auxiliary, "_mark_provider_unhealthy", quarantined)
+    result = call_llm(
+        task="compression", provider="openai-codex", model="gpt-5.4", stream=True,
+        messages=[{"role": "user", "content": "token=super-secret-value"}],
+    )
+    assert result is expected
+    assert list(result) == ["local chunk"]
+    primary.chat.completions.create.assert_not_called()
+    assert stale.chat.completions.create.call_count == 1
+    assert healthy.chat.completions.create.call_count == 1
+    assert quarantined.call_count == (0 if refresh else 1)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_local_recovery_skips_unavailable_candidate(monkeypatch, stream):
+    import agent.auxiliary_client as auxiliary
+
+    primary = MagicMock(base_url="https://chatgpt.com/backend-api/codex")
+    offline = MagicMock(base_url="http://127.0.0.1:11434/v1")
+    offline.chat.completions.create.side_effect = ConnectionError("connection refused")
+    healthy = MagicMock(base_url="http://127.0.0.1:11435/v1")
+    expected = iter(["chunk"]) if stream else _aux_egress_response("healthy")
+    healthy.chat.completions.create.return_value = expected
+    monkeypatch.setattr(auxiliary, "_get_cached_client", lambda *a, **kw: (primary, "model"))
+    candidates = iter([(offline, "model", "custom"), (healthy, "model", "custom")])
+    monkeypatch.setattr(auxiliary, "_try_configured_fallback_chain", lambda *a, **kw: next(candidates))
+    result = call_llm(task="compression", provider="openai-codex", model="gpt-5.4", stream=stream,
+                      messages=[{"role": "user", "content": "token=super-secret-value"}])
+    assert result is expected
+    primary.chat.completions.create.assert_not_called()
+    healthy.chat.completions.create.assert_called_once()
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+def test_vision_auto_parameter_retry_keeps_concrete_provider(monkeypatch, async_mode):
+    import asyncio
+    import agent.auxiliary_client as auxiliary
+
+    client = MagicMock(base_url="https://chatgpt.com/backend-api/codex")
+    monkeypatch.setattr(auxiliary, "_resolve_call_client", lambda *a, **kw: (client, "model", "auto", "openai-codex"))
+    providers = []
+    expected = _aux_egress_response("done")
+
+    def completion(client, kwargs, *, provider, **extra):
+        providers.append(provider)
+        if len(providers) == 1:
+            raise ValueError("unsupported parameter temperature")
+        return expected
+
+    async def async_completion(*args, **kwargs):
+        return completion(*args, **kwargs)
+
+    monkeypatch.setattr(auxiliary, "_relay_sync_completion", completion)
+    monkeypatch.setattr(auxiliary, "_relay_async_completion", async_completion)
+    kwargs = dict(task="vision", provider="auto", messages=[{"role": "user", "content": "inspect"}], temperature=0.5)
+    result = asyncio.run(auxiliary.async_call_llm(**kwargs)) if async_mode else auxiliary.call_llm(**kwargs)
+    assert result is expected
+    assert providers == ["openai-codex", "openai-codex"]
+
+
+def test_local_recovery_rejects_declared_loopback_with_remote_client(monkeypatch):
+    import agent.auxiliary_client as auxiliary
+
+    primary = MagicMock(base_url="https://chatgpt.com/backend-api/codex")
+    remote = MagicMock(base_url="https://openrouter.ai/api/v1")
+    remote._hermes_fallback_destination = auxiliary._FallbackDestination(
+        "openrouter", "http://127.0.0.1:11434/v1", "chat_completions", "model")
+    healthy = MagicMock(base_url="http://127.0.0.1:11435/v1")
+    expected = _aux_egress_response("healthy")
+    healthy.chat.completions.create.return_value = expected
+    monkeypatch.setattr(auxiliary, "_get_cached_client", lambda *a, **kw: (primary, "model"))
+    candidates = iter([(remote, "model", "openrouter"), (healthy, "model", "custom")])
+    monkeypatch.setattr(auxiliary, "_try_configured_fallback_chain", lambda *a, **kw: next(candidates))
+    result = auxiliary.call_llm(task="compression", provider="openai-codex", model="gpt-5.4",
+                               messages=[{"role": "user", "content": "token=super-secret-value"}])
+    assert result is expected
+    remote.chat.completions.create.assert_not_called()
+    primary.chat.completions.create.assert_not_called()

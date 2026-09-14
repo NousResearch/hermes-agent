@@ -1221,6 +1221,36 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Append-only candidate requests and promotion receipts for specialist
+-- discovery. Capability declarations and revocations are owned by
+-- ``gateway.capability_registry``; these tables only store the inert request
+-- and its bounded local evidence.
+CREATE TABLE IF NOT EXISTS candidate_profile_requests (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id               TEXT NOT NULL UNIQUE,
+    request_hash             TEXT NOT NULL,
+    signature_hash           TEXT NOT NULL,
+    permissions_hash         TEXT NOT NULL,
+    source_key_hash          TEXT NOT NULL,
+    policy_digest             TEXT NOT NULL,
+    evidence_ref_hashes_json TEXT NOT NULL,
+    generation_id             TEXT,
+    requested_profile_id      TEXT,
+    lifecycle_status         TEXT NOT NULL,
+    reason_code              TEXT NOT NULL,
+    cooldown_until           INTEGER,
+    created_at               INTEGER NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_update
+BEFORE UPDATE ON candidate_profile_requests BEGIN
+    SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS candidate_profile_requests_no_delete
+BEFORE DELETE ON candidate_profile_requests BEGIN
+    SELECT RAISE(ABORT, 'candidate_profile_requests is append-only');
+END;
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1231,6 +1261,8 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_candidate_profile_requests_hash_state
+    ON candidate_profile_requests(request_hash, lifecycle_status, created_at);
 """
 
 

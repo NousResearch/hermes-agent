@@ -336,3 +336,41 @@ def test_reimport_after_intervening_turns_does_not_duplicate_later_divert():
         ]
     finally:
         db.close()
+
+
+def test_import_keeps_new_turn_that_reuses_historical_content():
+    """A later divert with the same role/content but a new timestamp must still persist."""
+    home = get_hermes_home()
+    session_id = "sess-diverted-new-status"
+    db = SessionDB()
+    try:
+        db.create_session(session_id, "cli")
+        db.append_message(session_id, "user", "status", timestamp=100)
+        db.append_message(session_id, "assistant", "working", timestamp=101)
+        db.append_message(session_id, "user", "finish", timestamp=102)
+        db.append_message(session_id, "assistant", "done", timestamp=103)
+    finally:
+        db.close()
+
+    jsonl = _write_diverted(
+        home / "sessions" / f"{session_id}.jsonl",
+        [
+            {"role": "user", "content": "status", "timestamp": 200},
+            {"role": "assistant", "content": "done", "timestamp": 201},
+        ],
+    )
+    assert _apply_diverted(jsonl, session_id) == session_id
+    db = SessionDB()
+    try:
+        rows = db.get_messages(session_id)
+        pairs = [(m.get("role"), m.get("content"), m.get("timestamp")) for m in rows]
+        assert pairs == [
+            ("user", "status", 100),
+            ("assistant", "working", 101),
+            ("user", "finish", 102),
+            ("assistant", "done", 103),
+            ("user", "status", 200),
+            ("assistant", "done", 201),
+        ]
+    finally:
+        db.close()

@@ -323,10 +323,12 @@ def _diverted_jsonl_record(obj: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for key in ("tool_name", "tool_call_id"):
         if obj.get(key):
             record[key] = obj[key]
+    if obj.get("timestamp") is not None:
+        record["timestamp"] = obj["timestamp"]
     return record
 
 
-def _diverted_record_identity(record: Dict[str, Any]) -> Tuple[Any, ...]:
+def _diverted_content_identity(record: Dict[str, Any]) -> Tuple[Any, ...]:
     calls = record.get("tool_calls")
     calls_key = json.dumps(calls, sort_keys=True, default=str) if isinstance(calls, list) else None
     return (
@@ -338,27 +340,44 @@ def _diverted_record_identity(record: Dict[str, Any]) -> Tuple[Any, ...]:
     )
 
 
-def _is_ordered_subsequence(haystack: List[Tuple[Any, ...]], needle: List[Tuple[Any, ...]]) -> bool:
-    """True when *needle* appears in order in *haystack* (gaps from ordinary turns allowed)."""
-    if not needle:
+def _diverted_timestamp(record: Dict[str, Any]) -> Optional[float]:
+    value = record.get("timestamp")
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return 0.0 if result == 0.0 else result
+
+
+def _same_diverted_row(dest: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
+    """Content match; when the source row carries a timestamp it must match the dest row."""
+    if _diverted_content_identity(dest) != _diverted_content_identity(incoming):
+        return False
+    incoming_ts = _diverted_timestamp(incoming)
+    if incoming_ts is None:
         return True
-    i = 0
-    for item in haystack:
-        if item == needle[i]:
-            i += 1
-            if i == len(needle):
-                return True
-    return False
+    return _diverted_timestamp(dest) == incoming_ts
 
 
-def _longest_prefix_subsequence(haystack: List[Tuple[Any, ...]], needle: List[Tuple[Any, ...]]) -> int:
-    """How much of *needle*'s prefix already appears in order in the destination transcript."""
-    if not needle:
-        return 0
-    for k in range(len(needle), 0, -1):
-        if _is_ordered_subsequence(haystack, needle[:k]):
-            return k
-    return 0
+def _longest_already_persisted(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any]]) -> int:
+    """How many leading source rows already exist in destination order (gaps allowed)."""
+    used = [False] * len(existing)
+    skip = 0
+    for rec in incoming:
+        found = None
+        for i, dest in enumerate(existing):
+            if used[i]:
+                continue
+            if _same_diverted_row(dest, rec):
+                found = i
+                break
+        if found is None:
+            break
+        used[found] = True
+        skip += 1
+    return skip
 
 
 def _append_diverted_record(db, session_id: str, record: Dict[str, Any]) -> None:
@@ -369,6 +388,7 @@ def _append_diverted_record(db, session_id: str, record: Dict[str, Any]) -> None
         tool_name=record.get("tool_name"),
         tool_calls=record.get("tool_calls"),
         tool_call_id=record.get("tool_call_id"),
+        timestamp=record.get("timestamp"),
     )
 
 
@@ -387,11 +407,11 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
 
     Does not replace ``state.db``. Opens SessionDB only when applying. Inspect-only
     prints the path and non-empty line count. Skip is bound to the destination
-    transcript: a source prefix already present in order (ordinary turns may
-    sit between recovered runs) is not appended again. A rebuilt database or
-    another session can still restore the file, and a retry after a partial
-    apply only writes the missing tail. Native tool_calls / tool_call_id rows
-    are preserved. Empty unusable lines are skipped.
+    transcript: a source prefix already persisted (same role/content/tool
+    graph, and the same timestamp when the source row has one) is not appended
+    again. Ordinary turns may sit between recovered runs. A rebuilt database
+    or another session can still restore the file. Native tool_calls /
+    tool_call_id / timestamp rows are preserved. Empty unusable lines are skipped.
     """
     sid = (session_id or "").strip()
     jsonl = Path(path).expanduser()
@@ -419,9 +439,7 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
         if db.get_session(sid) is None:
             db.create_session(sid, "cli")
         incoming = [rec for obj in _read_json_lines(jsonl) if (rec := _diverted_jsonl_record(obj))]
-        existing_ids = [_diverted_record_identity(m) for m in db.get_messages(sid)]
-        incoming_ids = [_diverted_record_identity(r) for r in incoming]
-        skip = _longest_prefix_subsequence(existing_ids, incoming_ids)
+        skip = _longest_already_persisted(db.get_messages(sid), incoming)
         for record in incoming[skip:]:
             _append_diverted_record(db, sid, record)
         print(f"✓ Replayed diverted transcript into {sid}")

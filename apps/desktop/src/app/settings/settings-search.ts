@@ -12,6 +12,8 @@ export type CredentialSettingsView = 'settings' | 'tools'
 
 export const APPEARANCE_SETTING_IDS = {
   appActions: 'appearance.app-actions',
+  autoSend: 'appearance.auto-send',
+  autoSendDelay: 'appearance.auto-send-delay',
   backdrop: 'appearance.backdrop',
   embeds: 'appearance.embeds',
   introSplash: 'appearance.intro-splash',

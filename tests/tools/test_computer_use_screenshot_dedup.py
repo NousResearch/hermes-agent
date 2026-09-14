@@ -73,6 +73,8 @@ class TestScreenshotDedup:
         data = json.loads(resp)
         assert data["screen_unchanged"] is True
         assert "screen unchanged" in data["summary"]
+        # Text metadata is still complete: the model can keep acting by element index.
+        assert data["app"] == "kate" and "elements" in data
 
     def test_changed_pixels_deliver_image_again(self):
         cu_tool._capture_response(_cap(seed=1), session_id="s1")
@@ -123,3 +125,23 @@ class TestScreenshotDedup:
         resp = cu_tool._capture_response(cap, session_id="s1")
         assert not _is_multimodal(resp)
         assert "screen_unchanged" not in json.loads(resp)
+
+    def test_explicit_capture_action_after_input_is_subject_to_dedup(self):
+        """The dispatch path (explicit `capture` and `capture_after`) carries the session key; an unchanged
+        frame is reported as unchanged rather than re-sent, and the streak cap still forces re-delivery."""
+        backend = cu_tool._NoopBackend()
+        frame = _cap(seed=1)
+        backend.capture = lambda **kw: frame
+        first = cu_tool._dispatch(backend, "capture", {"mode": "som"}, session_id="s1")
+        assert _is_multimodal(first)
+        after_click = cu_tool._dispatch(backend, "click", {"element": 1, "capture_after": True}, session_id="s1")
+        assert not _is_multimodal(after_click) and json.loads(after_click)["screen_unchanged"] is True
+        assert json.loads(after_click)["ok"] is True  # action payload merged into the text capture
+        explicit = cu_tool._dispatch(backend, "capture", {"mode": "som"}, session_id="s1")
+        assert not _is_multimodal(explicit)
+        assert _is_multimodal(cu_tool._dispatch(backend, "capture", {"mode": "som"}, session_id="s1"))
+
+    def test_release_session_forgets_dedup_state(self):
+        cu_tool._capture_response(_cap(seed=1), session_id="s1")
+        cu_tool.release_computer_use_session("s1")
+        assert _is_multimodal(cu_tool._capture_response(_cap(seed=1), session_id="s1"))

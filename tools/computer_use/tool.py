@@ -221,6 +221,7 @@ def release_computer_use_session(session_id: str) -> bool:
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
     grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
     sid = _scoped_sid(session_id)
+    _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
     with _backend_lock:
         backend, call_lock = _detach_locked(sid)
     if backend is None:
@@ -593,12 +594,12 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
     if v.has_image and session_id and _screenshot_dedup_check(
-            session_id, _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or ""))):
+            _scoped_sid(session_id), _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or ""))):
         # Unchanged frame: same pixels for the same target in this session — no image (and no aux-vision call);
-        # the text metadata is fresh and the note says which screenshot still applies.
-        lines.append("  (screen unchanged since the previous screenshot — image omitted to save context; the prior "
-                     "screenshot still shows the current state. Element indices below are fresh and remain the "
-                     "preferred way to act.)")
+        # the text metadata is fresh and the note says which earlier result still applies.
+        lines.append("  (screen unchanged since the previous capture — image omitted to save context; the previous "
+                     "capture's screenshot/analysis still shows the current state. Element indices below are fresh "
+                     "and remain the preferred way to act.)")
         extra = {"screen_unchanged": True}
     elif v.has_image:
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images

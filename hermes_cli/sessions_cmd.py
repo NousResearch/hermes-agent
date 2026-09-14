@@ -953,6 +953,7 @@ def _cmd_stats(db, args):
 # -- dispatch -----------------------------------------------------------------
 
 _PRE_DB_HANDLERS = {"repair": _cmd_repair, "recover": _cmd_recover, "import": _cmd_import}
+_OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
     "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
@@ -963,17 +964,45 @@ _DB_HANDLERS = {
 }
 
 
+class _EmptyObservationalStore:
+    """list/stats/pinned on a profile that has never created state.db."""
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+
+    def list_sessions_rich(self, **_kwargs):
+        return []
+
+    def session_count(self, source=None):
+        return 0
+
+    def message_count(self):
+        return 0
+
+    def close(self):
+        return None
+
+
+def _is_missing_session_store(exc: BaseException) -> bool:
+    return "unable to open database file" in str(exc).lower()
+
+
 def cmd_sessions(args, sessions_parser=None):
     action = args.sessions_action
     pre = _PRE_DB_HANDLERS.get(action)
     if pre is not None:
         return pre(args)
+    observational = action in _OBSERVATIONAL_DB_ACTIONS
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=observational)
     except Exception as e:
-        print(f"Error: Could not open session database: {e}")
-        return 1
+        if observational and _is_missing_session_store(e):
+            from hermes_state import _default_db_path
+            db = _EmptyObservationalStore(_default_db_path())
+        else:
+            print(f"Error: Could not open session database: {e}")
+            return 1
     try:
         handler = _DB_HANDLERS.get(action)
         if handler is None:

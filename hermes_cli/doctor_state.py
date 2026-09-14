@@ -149,14 +149,39 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 
 
 def _session_count(state_db_path: Path):
-    import sqlite3
-    # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
-    # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
-    conn = sqlite3.connect(Path(state_db_path).resolve().as_uri() + "?mode=ro", uri=True)
+    """COUNT(*) through a read-only SessionDB — never a writer, so schema auto-repair cannot run."""
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=state_db_path, read_only=True)
     try:
-        return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        return db.session_count()
     finally:
-        conn.close()
+        db.close()
+
+
+def _write_health_reason(state_db_path: Path, *, isolate: bool):
+    """FTS/write-health probe. Isolated copies never join the live store WAL lifecycle."""
+    from hermes_state_repair import _db_opens_cleanly
+    if not isolate:
+        return _db_opens_cleanly(state_db_path)
+    import sqlite3
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot = Path(tmp) / "state.db"
+        try:
+            src = sqlite3.connect(f"file:{state_db_path}?mode=ro", uri=True, timeout=1.0)
+        except sqlite3.Error as exc:
+            return str(exc)
+        try:
+            dest = sqlite3.connect(str(snapshot))
+            try:
+                src.backup(dest)
+            finally:
+                dest.close()
+        except sqlite3.Error as exc:
+            return str(exc)
+        finally:
+            src.close()
+        return _db_opens_cleanly(snapshot)
 
 
 # Corruption class -> (ok label, not-fixed label, failed issue, fix hint). ``{count}`` = recovered sessions.
@@ -205,31 +230,39 @@ def _repair_state_db(f: Finding, should_fix: bool, state_db_path: Path, kind: st
     f.fixed += 1
 
 
+def _classify_unreadable_state_db(f: Finding, should_fix: bool, state_db_path: Path, _DHH: str, exc: Exception) -> None:
+    """Structural damage first; only then schema repair. Avoids SessionDB auto-repair side effects."""
+    from hermes_state import is_malformed_db_error
+    from hermes_state_repair import state_db_has_structural_damage
+    if state_db_has_structural_damage(state_db_path):
+        check_warn(f"{_DHH}/state.db has structural corruption (canonical tables/indexes damaged, "
+                   "not the FTS index)", f"({exc})")
+        return _repair_state_db(f, should_fix, state_db_path, "structural")
+    if not is_malformed_db_error(exc):
+        return check_warn(f"{_DHH}/state.db exists but has issues: {exc}")
+    # sqlite_master itself is malformed (e.g. duplicate messages_fts): every statement fails before it runs,
+    # so this is NOT a plain FTS rebuild — repair sqlite_master in place (backup first).
+    check_warn(f"{_DHH}/state.db schema is malformed (sessions hidden until repaired)", f"({exc})")
+    _repair_state_db(f, should_fix, state_db_path, "schema")
+
+
 def _state_db_health(f: Finding, should_fix: bool, state_db_path: Path, _DHH: str) -> None:
     """Session count + FTS write-health probe; malformed-schema path when even COUNT(*) fails."""
+    from hermes_state_repair import state_db_has_structural_damage
     try:
         check_ok(f"{_DHH}/state.db exists ({_session_count(state_db_path)} sessions)")
-        # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers;
-        # _db_opens_cleanly drives a rolled-back write to surface that.
-        from hermes_state_repair import _db_opens_cleanly, state_db_has_structural_damage
-        # `_db_opens_cleanly` now drives a rolled-back write so this otherwise-silent corruption class is
-        # surfaced (and repaired in place with --fix). See #50502.
-        _write_reason = _db_opens_cleanly(state_db_path)
-        if _write_reason is not None:
-            if state_db_has_structural_damage(state_db_path):
-                check_warn(f"{_DHH}/state.db has structural corruption (canonical tables/indexes damaged, "
-                           "not the FTS index)", f"({_write_reason})")
-                return _repair_state_db(f, should_fix, state_db_path, "structural")
-            check_warn(f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)", f"({_write_reason})")
-            _repair_state_db(f, should_fix, state_db_path, "fts")
     except Exception as e:
-        from hermes_state import is_malformed_db_error
-        if not is_malformed_db_error(e):
-            return check_warn(f"{_DHH}/state.db exists but has issues: {e}")
-        # sqlite_master itself is malformed (e.g. duplicate messages_fts): every statement fails before it runs,
-        # so this is NOT a plain FTS rebuild — repair sqlite_master in place (backup first).
-        check_warn(f"{_DHH}/state.db schema is malformed (sessions hidden until repaired)", f"({e})")
-        _repair_state_db(f, should_fix, state_db_path, "schema")
+        return _classify_unreadable_state_db(f, should_fix, state_db_path, _DHH, e)
+    # COUNT(*) succeeds even when the FTS index is corrupt and every write fails through the triggers.
+    # Non-fixing doctor snapshots first so the write probe cannot join the live WAL lifecycle (#50502).
+    _write_reason = _write_health_reason(state_db_path, isolate=not should_fix)
+    if _write_reason is not None:
+        if state_db_has_structural_damage(state_db_path):
+            check_warn(f"{_DHH}/state.db has structural corruption (canonical tables/indexes damaged, "
+                       "not the FTS index)", f"({_write_reason})")
+            return _repair_state_db(f, should_fix, state_db_path, "structural")
+        check_warn(f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)", f"({_write_reason})")
+        _repair_state_db(f, should_fix, state_db_path, "fts")
 
 
 def _state_db_stats(issues: list, state_db_path: Path) -> None:

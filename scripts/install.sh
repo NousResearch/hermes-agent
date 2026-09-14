@@ -1130,14 +1130,17 @@ install_node_line() {
     # libatomic.so.1, which minimal Debian/Ubuntu images do not ship —
     # the freshly downloaded binary then fails to start. Install the
     # library up front, best-effort; the version probe below reports
-    # clearly if the binary still cannot run (#87460).
+    # clearly if the binary still cannot run (#87460). Only attempt the
+    # install when the package is actually missing AND we can do it
+    # non-interactively (root or passwordless sudo) — a sudo that needs a
+    # password would otherwise block the installer on a prompt.
     if [ "$OS" = "linux" ] && { [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; }; then
-        if command -v apt-get >/dev/null 2>&1; then
-            local sudo_cmd=""
-            if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
-                command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
+        if command -v apt-get >/dev/null 2>&1 && ! dpkg -s libatomic1 >/dev/null 2>&1; then
+            if [ "$(id -u)" -eq 0 ]; then
+                env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libatomic1 >/dev/null 2>&1 || true
+            elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+                sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libatomic1 >/dev/null 2>&1 || true
             fi
-            $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq libatomic1 >/dev/null 2>&1 || true
         fi
     fi
 
@@ -1876,7 +1879,7 @@ install_deps() {
     # Check and offer to install them if missing.
     if [ "$DISTRO" = "ubuntu" ] || [ "$DISTRO" = "debian" ]; then
         local need_build_tools=false
-        for pkg in gcc python3-dev libffi-dev; do
+        for pkg in build-essential python3-dev libffi-dev; do
             if ! dpkg -s "$pkg" &>/dev/null; then
                 need_build_tools=true
                 break
@@ -2748,6 +2751,8 @@ install_node_deps() {
                         }
                     else
                         log_warn "No sudo available — skipping system-library install (--with-deps)."
+                        log_info "Checking which system packages are missing (no sudo required):"
+                        cd "$INSTALL_DIR" && npx playwright install-deps --dry-run chromium || true
                         log_info "Ask an administrator to run, one time, as root:"
                         log_info "  sudo npx playwright install-deps chromium"
                         log_info "  (from $INSTALL_DIR, after Node.js deps are installed)"

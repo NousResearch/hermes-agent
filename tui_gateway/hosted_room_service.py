@@ -126,7 +126,7 @@ class HostedRoomService:
                 target_profile=stored.target_profile, capability_digest=catalog.catalog_digest,
                 execution_policy_digest=catalog.execution_policy.policy_digest,
                 cancellation_scope_id=stored.cancellation_scope_id, trace_id=stored.trace_id,
-                grant=stored.grant)
+                grant=stored.grant, attachments=catalog.attachments)
             self.peer_clients[key] = PeerRunsHTTPClient(
                 base_url=stored.target_url, api_key="", target_profile=stored.target_profile, receipt_db_path=self.db_path)
             self._peer_route_status[key] = stored.status
@@ -914,6 +914,7 @@ class HostedRoomService:
                 cancellation_scope_id=stored.cancellation_scope_id,
                 trace_id=stored.trace_id,
                 grant=stored.grant,
+                attachments=stored.catalog.attachments,
             )
             self.peer_routes[key] = route
             self.peer_clients[key] = client

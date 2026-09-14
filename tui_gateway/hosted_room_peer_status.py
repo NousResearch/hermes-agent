@@ -112,6 +112,7 @@ class _RouteStatusPeerClient:
                     name
                     in {
                         "dispatch",
+                        "stage_attachments",
                         "probe",
                         "recover_dispatch",
                     }

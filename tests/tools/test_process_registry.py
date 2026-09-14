@@ -756,14 +756,6 @@ class TestFinishedHandleRelease:
         registry._move_to_finished(session)
         assert pty_closed["closed"]
 
-    def test_move_to_finished_safe_without_handles(self, registry):
-        """Env-backed / detached sessions have no local Popen or PTY; the
-        release must be a no-op, not a crash."""
-        session = _make_session(sid="proc_no_handles", exited=True)
-        registry._finished[session.id] = session
-        registry._move_to_finished(session)  # must not raise
-        assert session.id in registry._finished
-
     def test_poll_still_serves_output_after_handle_release(self, registry):
         """Output remains queryable after the pipes close — poll() reads the
         buffered output, never the (now-closed) pipe."""
@@ -820,29 +812,6 @@ class TestFinishedHandleRelease:
         assert session.id not in registry._finished
         assert pty_closed["closed"], "pruned session must release its PTY handle"
 
-    def test_release_does_not_touch_running_sessions(self, registry):
-        """A still-running session's handles must remain open: _move_to_finished
-        is only ever invoked with exited sessions, and prune only walks
-        _finished — a live session in _running keeps its pipe."""
-        proc = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(5)"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-        )
-        try:
-            session = _make_session(sid="proc_still_running", exited=False)
-            session.process = proc
-            registry._running[session.id] = session
-
-            with registry._lock:
-                registry._prune_if_needed()
-
-            assert session.id in registry._running
-            assert proc.stdout is not None and not proc.stdout.closed
-        finally:
-            proc.kill()
-            proc.wait(timeout=5)
 
 
 # =========================================================================

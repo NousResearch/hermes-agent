@@ -16,7 +16,7 @@ from tools.skills_guard import TRUSTED_REPOS
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _dedupe_by_trust,
     _hermes_tags, _matches_query, _parse_frontmatter, _referenced_support_paths,
-    _validate_bundle_rel_path,
+    _validate_bundle_rel_path, hub,
 )
 
 logger = logging.getLogger("tools.skills_hub")
@@ -414,7 +414,13 @@ class GitHubSource(SkillSource):
             last_attempt = attempt >= max_retries - 1
             wait = backoff
             try:
-                resp = httpx.get(url, params=params, headers=hdrs, timeout=timeout, follow_redirects=True)
+                resp = hub()._guarded_http_get(url, params=params, headers=hdrs, timeout=timeout)
+                if resp is None:
+                    if last_attempt:
+                        return None
+                    time.sleep(wait)
+                    backoff = min(backoff * 2, 30.0)
+                    continue
             except httpx.HTTPError as e:
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s", url, attempt + 1, max_retries, e)
                 if last_attempt:

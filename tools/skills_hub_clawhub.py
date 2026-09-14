@@ -13,7 +13,7 @@ from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_hub import _guarded_http_stream
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,
-    _validate_bundle_rel_path,
+    _validate_bundle_rel_path, hub,
 )
 
 logger = logging.getLogger("tools.skills_hub")
@@ -367,17 +367,19 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         for attempt in range(max_attempts):
             delay = 2.0 * (2 ** attempt)
             try:
-                resp = httpx.get(url, timeout=20)
+                resp = hub()._guarded_http_get(url, timeout=20)
             except (httpx.HTTPError, OSError):
                 reason = "transport error"
             else:
-                if resp.status_code == 200:
+                if resp is None:
+                    reason = "blocked or failed request"
+                elif resp.status_code == 200:
                     try:
                         raw = resp.json()
                     except (json.JSONDecodeError, ValueError):
                         return None
                     return self._owner_from_payload(self._coerce_skill_payload(raw))
-                if resp.status_code == 429:
+                elif resp.status_code == 429:
                     retry_after = parse_retry_after_seconds(resp.headers)
                     if retry_after is not None:
                         delay = retry_after

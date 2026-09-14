@@ -18,7 +18,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
-from urllib.parse import urljoin
+from urllib.parse import urlsplit, urljoin
 
 import httpx
 
@@ -84,19 +84,56 @@ _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
 
 
-def _ssrf_safe_http_get(url: str, *, timeout: int = 20) -> httpx.Response:
+_SENSITIVE_REDIRECT_HEADERS = frozenset({"authorization", "proxy-authorization", "cookie", "cookie2"})
+
+
+def _headers_for_redirect_hop(
+    headers: Optional[Dict[str, str]],
+    *,
+    origin_url: str,
+    hop_url: str,
+    first_hop: bool,
+) -> Optional[Dict[str, str]]:
+    """Return request headers for this hop.
+
+    Caller-supplied headers (including Authorization) apply on the first hop.
+    On later hops, same-origin keeps them; cross-origin strips credential
+    headers so a safe CDN Location cannot receive a GitHub token.
+    """
+    if not headers:
+        return None
+    if first_hop:
+        return headers
+    origin = urlsplit(origin_url)
+    hop = urlsplit(hop_url)
+    same_origin = (
+        origin.scheme.lower() == hop.scheme.lower()
+        and origin.netloc.lower() == hop.netloc.lower()
+    )
+    if same_origin:
+        return headers
+    stripped = {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in _SENSITIVE_REDIRECT_HEADERS
+    }
+    return stripped or None
+
+
+def _ssrf_safe_http_get(url: str, *, timeout: float = 20, headers=None, params=None) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
     from tools.url_safety import create_ssrf_safe_client
 
     with create_ssrf_safe_client(timeout=timeout, follow_redirects=False) as client:
-        return client.get(url)
+        return client.get(url, headers=headers, params=params)
 
 
-def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
+def _guarded_http_get(url: str, *, timeout: float = 20, headers=None, params=None) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation (each hop re-checked)."""
     from tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
+    first_hop = True
 
     for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
         if not is_safe_url(current_url):
@@ -113,11 +150,16 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             return None
 
         try:
-            resp = _ssrf_safe_http_get(current_url, timeout=timeout)
+            hop_headers = _headers_for_redirect_hop(headers, origin_url=url, hop_url=current_url, first_hop=first_hop)
+            resp = _ssrf_safe_http_get(current_url, timeout=timeout, headers=hop_headers,
+                                       params=params if first_hop else None)
+        except httpx.DecodingError:
+            raise
         except (SSRFConnectionBlocked, httpx.HTTPError) as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
 
+        first_hop = False
         if resp.status_code in _REDIRECT_STATUS_CODES:
             location = getattr(resp, "headers", {}).get("location")
             if not location:

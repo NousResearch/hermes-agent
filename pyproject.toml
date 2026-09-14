@@ -17,19 +17,14 @@ authors = [{ name = "Nous Research" }]
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
-  # Core — every direct dep is exact-pinned to ==X.Y.Z (no ranges).
-  # Rationale: ranges allow PyPI to ship a fresh version of a transitive
-  # at any time without a code review on our side. Exact pins mean the
-  # only way a new package version reaches a user is via an intentional
-  # update on our end (bump the pin in this file, regenerate uv.lock).
-  # This was tightened on 2026-05-12 in response to the Mini Shai-Hulud
-  # worm hitting mistralai 2.4.6 on PyPI; if that release had been
-  # captured by `mistralai>=2.3.0,<3` rather than an exact pin, every
-  # install in the hours before the quarantine would have pulled it.
+  # Core dependency contribution policy lives in CONTRIBUTING.md: new
+  # PyPI dependencies use a reviewed floor and upper bound. uv.lock is the
+  # exact, hash-verified install graph used by the preferred `uv sync --locked`
+  # path; declared ranges apply when regenerating it and on pip fallback paths.
   #
-  # When updating: bump the version below AND regenerate uv.lock with
-  # `uv lock` so the transitive resolution stays consistent. Don't
-  # introduce ranges back without a written justification.
+  # This documentation-only alignment leaves existing requirement forms
+  # unchanged. When adding or updating a requirement, follow CONTRIBUTING.md
+  # and regenerate uv.lock so the constraint and lock stay consistent.
   #
   # Scope rule: only packages used by EVERY hermes session belong here.
   # Anything that's provider-specific (`anthropic`, `firecrawl-py`,

@@ -295,9 +295,9 @@ const StatusbarItemView = memo(function StatusbarItemView({
                   >
                     {menuItem.href ? (
                       <ExternalLinkAnchor
+                        bare
                         className="inline-flex w-full items-center gap-2"
-                        href={menuItem.href}
-                        native
+                        href={menuItem.href} native
                       >
                         {menuItem.icon}
                         <span className="truncate">{menuItem.label}</span>
@@ -333,9 +333,9 @@ const StatusbarItemView = memo(function StatusbarItemView({
   if (item.href || item.variant === 'link') {
     const body = item.href ? (
       <ExternalLinkAnchor
+        bare
         className={cn(STATUSBAR_ACTION_CLASS, item.className)}
-        href={item.href}
-        native
+        href={item.href} native
       >
         {content}
       </ExternalLinkAnchor>

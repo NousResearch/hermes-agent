@@ -117,9 +117,9 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
             <DeviceCode code={state.code} copied={state.codeCopied} onCopy={() => void copyFreeTierCode()} />
             <div className="flex min-w-0 items-center justify-between gap-3">
               <ExternalLinkAnchor
+                bare
                 className="min-w-0 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline underline-offset-2 hover:text-foreground"
-                href={state.url}
-                native
+                href={state.url} native
               >
                 {state.url}
               </ExternalLinkAnchor>

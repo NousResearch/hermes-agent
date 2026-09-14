@@ -782,7 +782,7 @@ function PlatformDetail({
         {platform.docs_url && (
           <div className="mt-3">
             <Button asChild size="sm" variant="textStrong">
-              <ExternalLinkAnchor href={platform.docs_url} native>
+              <ExternalLinkAnchor bare href={platform.docs_url} native>
                 {m.openSetupGuide}
                 <ExternalLink className="size-3.5" />
               </ExternalLinkAnchor>
@@ -972,7 +972,7 @@ function MessagingField({
           {field.url && (
             <Tip label={m.openDocs}>
               <Button asChild className="size-8 shrink-0" variant="ghost">
-                <ExternalLinkAnchor href={field.url} native>
+                <ExternalLinkAnchor bare href={field.url} native>
                   <ExternalLink className="size-3.5" />
                 </ExternalLinkAnchor>
               </Button>

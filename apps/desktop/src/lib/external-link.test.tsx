@@ -218,6 +218,24 @@ describe('external link helpers', () => {
     expect(link.querySelector('svg')).toBeTruthy()
   })
 
+  it('skips the prose ref styling in bare chrome contexts but still opens natively', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+
+    render(
+      <ExternalLink bare href="https://example.com/path/to/resource" native>
+        Example link
+      </ExternalLink>
+    )
+
+    const link = screen.getByRole('link', { name: 'Example link' })
+    expect(link.classList.contains('ref')).toBe(false)
+
+    fireEvent.click(link)
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+  })
+
   it('renders pretty links with fetched titles and no host suffix', async () => {
     const bridge = vi.fn().mockResolvedValue('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })

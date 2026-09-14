@@ -354,9 +354,9 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
         <Button asChild className={className} size="icon-titlebar" variant="ghost">
           <ExternalLinkAnchor
             aria-label={tool.label}
+            bare
             data-tour={tool.tour}
-            href={tool.href}
-            native
+            href={tool.href} native
             onPointerDown={event => event.stopPropagation()}
           >
             {withCountBadge(tool.icon, tool.badge)}

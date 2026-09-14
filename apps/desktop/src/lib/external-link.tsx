@@ -279,6 +279,10 @@ interface ExternalLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'>
   /** Skip the in-app pane. For links whose whole point is the session you are
    *  signed into over there — a cloud console, an account page. */
   native?: boolean
+  /** Chrome (non-prose) context: keep the audited open behavior but skip the
+   *  prose `.ref` styling (accent color, glyph sizing) so the link keeps the
+   *  surrounding chrome's own colors and metrics. */
+  bare?: boolean
   showExternalIcon?: boolean
 }
 
@@ -303,6 +307,7 @@ export function LinkBrandIcon({ className, href }: { className?: string; href: s
 }
 
 export function ExternalLink({
+  bare = false,
   children,
   className,
   href,
@@ -318,7 +323,7 @@ export function ExternalLink({
   // external / copy URL / copy resolved URL).
   return (
     <a
-      className={cn('ref', className)}
+      className={cn(!bare && 'ref', className)}
       href={target}
       // Middle-click never fires `click`; it's the other half of the
       // open-elsewhere convention, so it has to be caught on its own.

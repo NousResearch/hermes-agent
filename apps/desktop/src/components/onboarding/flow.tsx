@@ -334,7 +334,7 @@ function ConfirmingModelPanel({
 export function DocsLink({ children, href }: { children: React.ReactNode; href: string }) {
   return (
     <Button asChild size="xs" variant="text">
-      <ExternalLinkAnchor href={href} native>
+      <ExternalLinkAnchor bare href={href} native>
         <ExternalLink className="size-3" />
         {children}
       </ExternalLinkAnchor>

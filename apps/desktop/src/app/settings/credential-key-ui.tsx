@@ -147,9 +147,9 @@ export function CredentialDocsLink({ href }: { href: string }) {
 
   return (
     <ExternalLinkAnchor
+      bare
       className="inline-flex w-fit items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"
-      href={href}
-      native
+      href={href} native
     >
       {t.settings.credentials.getKey}
       <ExternalLink className="size-3" />

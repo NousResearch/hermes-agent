@@ -1,44 +1,45 @@
-"""Canonical target refusal does not remove legacy invitation availability."""
-import contextlib
-import contextvars
+"""Real target bindings distinguish unavailable gateways from standalone Serve."""
 import json
-from types import SimpleNamespace
 
 import pytest
 
 from gateway import hosted_rooms as rooms
 from gateway.hosted_room_peer import decode_room_grant
 from gateway.platforms import api_server_room_grants as grants
+from gateway.session_authorities import SessionAuthorities
+from tests.gateway.test_canonical_peer_target_setup import request, target  # noqa: F401
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('owner', ['canonical', 'missing', 'legacy'])
-async def test_target_catalog_and_new_invitation_refuse_canonical_owner(tmp_path, monkeypatch, owner):
-    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    monkeypatch.setattr(rooms, 'local_authority_gateway_id', lambda: 'target')
-    registry = SimpleNamespace(active=lambda: None)
-    runner = {'canonical': SimpleNamespace(session_authority=object()),
-        'missing': SimpleNamespace(session_authorities=registry), 'legacy': SimpleNamespace()}[owner]
+@pytest.mark.parametrize('binding', ['detached', 'missing', 'standalone', 'bound'])
+async def test_target_invitation_respects_real_owner_binding(target, monkeypatch, binding):
+    adapter = target.adapter
+    if binding == 'detached':
+        target.runner.adapters.clear()
+    elif binding == 'missing':
+        target.runner.session_authorities = SessionAuthorities(target.home)
+        target.runner.session_authority = None
+    elif binding == 'standalone':
+        adapter.gateway_runner = None
     body = dict(room_id='room', home_install_id='home', authority_gateway_id='home', authority_epoch=1, member_id='remote')
-    async def read(_):
-        return body, None
     secret_reads = []
+    original_secret = adapter._room_grant_secret
     def secret():
         secret_reads.append(True)
-        return b'z' * 32
-    adapter = SimpleNamespace(gateway_runner=runner, _profile_scope=lambda p: contextlib.nullcontext(),
-        _check_auth=lambda req: None, _read_json_body=read, _room_grant_secret=secret)
-    error = lambda message, **kw: {'error': {'message': message, **kw}}
-    profile = contextvars.ContextVar('target_profile', default='default')
-    _, catalog = grants._local_room_catalog(adapter, 'default', 'target')
-    response = await grants._handle_room_member_invitation(adapter, object(), _openai_error=error, _api_request_profile=profile)
+        return original_secret()
+    monkeypatch.setattr(adapter, '_room_grant_secret', secret)
+    installation_id = rooms.local_authority_gateway_id()
+    _, catalog = grants._local_room_catalog(adapter, 'default', installation_id)
+    response = await adapter._handle_room_member_invitation(request(body))
     value = json.loads(response.text)
-    assert catalog['text'] is (owner == 'legacy')
+    available = binding in {'standalone', 'bound'}
+    assert catalog['text'] is available
     assert catalog['attachments'] is False
-    if owner == 'legacy':
+    if available:
         assert response.status == 201, value
-        claims = decode_room_grant(b'z' * 32, value['grant'], permission='dispatch')
-        assert claims['target_install_id'] == 'target'
+        assert secret_reads
+        claims = decode_room_grant(original_secret(), value['grant'], permission='dispatch')
+        assert claims['target_install_id'] == installation_id
         assert claims['room_id'] == body['room_id']
     else:
         assert response.status == 409, value

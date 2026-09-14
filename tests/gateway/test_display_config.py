@@ -168,6 +168,32 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "slack", "long_running_notifications") is False
         assert resolve_display_setting({}, "slack", "busy_ack_detail") is False
 
+    def test_telnyx_sms_matches_builtin_sms_minimal_tier(self):
+        """Plugin-provided carrier SMS (telnyx_sms) must get the same batch/
+        non-interactive tier as the built-in "sms" (Twilio) platform key.
+
+        Regression: telnyx_sms previously had no _PLATFORM_DEFAULTS entry and
+        fell through to _GLOBAL_DEFAULTS (interim_assistant_messages=True,
+        streaming following the global config). That spun up a
+        GatewayStreamConsumer on every one-shot SMS turn that never actually
+        streamed anything, tripping the "Normal final-send NOT suppressed...
+        possible duplicate send" diagnostic on every single reply.
+        """
+        from gateway.display_config import resolve_display_setting
+
+        for key in (
+            "tool_progress",
+            "interim_assistant_messages",
+            "streaming",
+            "long_running_notifications",
+            "busy_ack_detail",
+        ):
+            assert resolve_display_setting({}, "telnyx_sms", key) == resolve_display_setting(
+                {}, "sms", key
+            ), key
+        assert resolve_display_setting({}, "telnyx_sms", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "telnyx_sms", "streaming") is False
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms

@@ -49,14 +49,15 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         result = _write_to_sandbox("hello world", "/tmp/hermes-results/abc.txt", env)
         assert result is True
-        env.execute.assert_called_once()
-        cmd = env.execute.call_args[0][0]
+        assert env.execute.call_count == 2
+        assert env.execute.call_args[0][0].startswith("test -r ")
+        cmd = next(call.args[0] for call in env.execute.call_args_list if "stdin_data" in call.kwargs)
         assert "mkdir -p" in cmd
         # Content travels through stdin, NOT inside the command string —
         # otherwise large content would hit Linux's 128 KB MAX_ARG_STRLEN
         # ceiling on `bash -c <cmd>` (#22906).
         assert "hello world" not in cmd
-        assert env.execute.call_args[1]["stdin_data"] == "hello world"
+        assert next(call.kwargs["stdin_data"] for call in env.execute.call_args_list if "stdin_data" in call.kwargs) == "hello world"
 
 
     def test_large_content_via_stdin(self):
@@ -66,9 +67,9 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         big = "x" * 200_000
         _write_to_sandbox(big, "/tmp/hermes-results/big.txt", env)
-        cmd = env.execute.call_args[0][0]
+        cmd = next(call.args[0] for call in env.execute.call_args_list if "stdin_data" in call.kwargs)
         assert len(cmd) < 1_000  # cmd is just `mkdir -p X && cat > Y`
-        assert env.execute.call_args[1]["stdin_data"] == big
+        assert next(call.kwargs["stdin_data"] for call in env.execute.call_args_list if "stdin_data" in call.kwargs) == big
 
 
     def test_path_with_spaces_is_quoted(self):
@@ -76,7 +77,7 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         remote_path = "/tmp/hermes results/abc file.txt"
         _write_to_sandbox("content", remote_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = next(call.args[0] for call in env.execute.call_args_list if "stdin_data" in call.kwargs)
         assert "'/tmp/hermes results'" in cmd
         assert "'/tmp/hermes results/abc file.txt'" in cmd
 
@@ -86,7 +87,7 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         malicious_path = "/tmp/hermes-results/$(whoami).txt"
         _write_to_sandbox("content", malicious_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = next(call.args[0] for call in env.execute.call_args_list if "stdin_data" in call.kwargs)
         # The $() must not appear unquoted — shlex.quote wraps it
         assert "'/tmp/hermes-results/$(whoami).txt'" in cmd
 
@@ -95,7 +96,7 @@ class TestWriteToSandbox:
         env.execute.return_value = {"output": "", "returncode": 0}
         malicious_path = "/tmp/x; rm -rf /; echo .txt"
         _write_to_sandbox("content", malicious_path, env)
-        cmd = env.execute.call_args[0][0]
+        cmd = next(call.args[0] for call in env.execute.call_args_list if "stdin_data" in call.kwargs)
         # The semicolons must be inside quotes, not acting as command separators
         assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
 
@@ -189,6 +190,7 @@ class TestMaybePersistToolResult:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},
             {"output": "", "returncode": 0},
+            {"output": "", "returncode": 0},  # copied file is readable
         ]
         env.get_temp_dir.return_value = ""
         raw = "line1\nline2\n" * 5_000
@@ -203,7 +205,7 @@ class TestMaybePersistToolResult:
         assert PERSISTED_OUTPUT_TAG in result
         # Content is delivered through stdin (no longer embedded in the
         # command string — see test_large_content_via_stdin for why).
-        assert env.execute.call_args[1]["stdin_data"] == content
+        assert next(call.kwargs["stdin_data"] for call in env.execute.call_args_list if "stdin_data" in call.kwargs) == content
 
 
     def test_tool_use_id_cannot_escape_storage_dir(self):
@@ -212,6 +214,7 @@ class TestMaybePersistToolResult:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},
             {"output": "", "returncode": 0},
+            {"output": "", "returncode": 0},  # copied file is readable
         ]
         env.get_temp_dir.return_value = ""
         content = "x" * 60_000
@@ -222,7 +225,7 @@ class TestMaybePersistToolResult:
             env=env,
             threshold=30_000,
         )
-        cmd = env.execute.call_args[0][0]
+        cmd = next(call.args[0] for call in env.execute.call_args_list if "stdin_data" in call.kwargs)
         target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
 
         assert "Full output saved to: /tmp/hermes-results/outside_whoami_x_" in result
@@ -339,7 +342,7 @@ class TestSpillover:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG in result
-        assert "could not be saved" not in result
+        assert "unavailable to the sandbox" not in result
         spill_file = get_spillover_dir() / "tc_mcp_1.txt"
         assert spill_file.exists()
         assert spill_file.read_text(encoding="utf-8") == content
@@ -390,6 +393,7 @@ class TestSpillover:
         env.execute.side_effect = [
             {"output": "", "returncode": 1},  # probe: not readable
             {"output": "", "returncode": 0},  # cat > sandbox path
+            {"output": "", "returncode": 0},  # copied file is readable
         ]
         env.get_temp_dir.return_value = "/tmp"
         content = "z" * 60_000
@@ -402,7 +406,7 @@ class TestSpillover:
         )
         assert PERSISTED_OUTPUT_TAG in result
         assert "/tmp/hermes-results/tc_remote_2.txt" in result
-        assert env.execute.call_count == 2
+        assert env.execute.call_count == 3
         # Host canonical copy exists regardless.
         assert (get_spillover_dir() / "tc_remote_2.txt").exists()
 
@@ -417,7 +421,7 @@ class TestSpillover:
             env=None,
             threshold=30_000,
         )
-        assert "could not be saved" in result
+        assert "unavailable to the sandbox" in result
         assert PERSISTED_OUTPUT_TAG not in result
 
     def test_cleanup_spillover_cache_removes_old_keeps_new(self):
@@ -478,8 +482,77 @@ class TestRecoveryHint:
         )
         assert "Recovery:" in msg
         assert "execute_code" in msg
-        assert "re-request" in msg
+        assert "narrower tool query" in msg
+        assert "exact referenced file" in msg
         # Structure preserved: tag, size, path, read_file guidance all intact.
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
         assert "read_file" in msg
+
+
+@pytest.mark.parametrize("backend,mounted,aggregate", [
+    ("docker", True, False), ("docker", False, False),
+    ("ssh", False, True), ("local", True, False),
+])
+def test_cold_spill_preserves_task_and_returns_readable_path(monkeypatch, backend, mounted, aggregate):
+    from tools import terminal_tool_lifecycle as lifecycle
+    from tools import tool_result_storage as storage
+    from pathlib import Path
+
+    monkeypatch.setenv("TERMINAL_ENV", backend)
+    sandbox = MagicMock()
+    sandbox.get_temp_dir.return_value = "/tmp"
+    sandbox.execute.side_effect = ([{"returncode": 0}] if mounted else
+                                   [{"returncode": 1}, {"returncode": 0}, {"returncode": 0}])
+    initialize = MagicMock(return_value=sandbox)
+    monkeypatch.setattr(lifecycle, "ensure_task_env", initialize)
+    payload = "synthetic record\n" * 1000
+    budget = BudgetConfig(turn_budget=2000)
+    # Ordinary results must not initialize a terminal or create spill files.
+    assert storage.maybe_persist_tool_result("small", "mcp_test", "small") == "small"
+    initialize.assert_not_called()
+    if aggregate:
+        messages = [{"content": payload, "tool_call_id": "cold"}]
+        from agent.tool_executor import _finalize_tool_batch
+        _finalize_tool_batch(MagicMock(), messages, "cold-task", 1, budget)
+        result = messages[0]["content"]
+    else:
+        result = storage.maybe_persist_tool_result(payload, "mcp_test", "cold", threshold=100, task_id="cold-task")
+    path = storage.extract_persisted_path(result)
+    assert path is not None
+    assert (storage.get_spillover_dir() / "cold.txt").read_text() == payload
+    if backend == "local":
+        initialize.assert_not_called()
+        assert Path(path).read_text() == payload
+    else:
+        initialize.assert_called_once_with("cold-task")
+        assert sandbox.execute.call_args.args[0].startswith("test -r ")
+        assert path != str(storage.get_spillover_dir() / "cold.txt")
+        if not mounted:
+            writes = [call for call in sandbox.execute.call_args_list if "stdin_data" in call.kwargs]
+            assert len(writes) == 1 and writes[0].kwargs["stdin_data"] == payload
+
+
+@pytest.mark.parametrize("failure", ["missing_task", "config", "initialization", "unavailable", "copy", "readability"])
+def test_unavailable_cold_spill_never_advertises_host_path(monkeypatch, failure):
+    from tools import terminal_tool
+    from tools import terminal_tool_lifecycle as lifecycle
+    from tools import tool_result_storage as storage
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    sandbox = MagicMock()
+    sandbox.get_temp_dir.return_value = "/tmp"
+    sandbox.execute.side_effect = ([{"returncode": 1}, {"returncode": 1}] if failure == "copy" else
+                                   [{"returncode": 1}, {"returncode": 0}, {"returncode": 1}])
+    initialize = MagicMock(return_value=None if failure == "unavailable" else sandbox)
+    if failure == "initialization":
+        initialize.side_effect = RuntimeError("synthetic init failure")
+    if failure == "config":
+        monkeypatch.setattr(terminal_tool, "_get_env_config", MagicMock(side_effect=ValueError("synthetic config failure")))
+    monkeypatch.setattr(lifecycle, "ensure_task_env", initialize)
+    kwargs = {} if failure == "missing_task" else {"task_id": "cold-task"}
+    result = storage.maybe_persist_tool_result("synthetic\n" * 1000, "mcp_test", "unavailable", threshold=100, **kwargs)
+    assert storage.extract_persisted_path(result) is None
+    assert "narrower tool query" in result
+    if failure in {"missing_task", "config"}:
+        initialize.assert_not_called()

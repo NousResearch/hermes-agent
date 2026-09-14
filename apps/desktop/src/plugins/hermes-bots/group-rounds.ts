@@ -108,6 +108,156 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
  *  @-mentioned in messages since the last user entry (or @everyone appears),
  *  otherwise only the mentioned members. Recomputed every round so a member
  *  pulled in mid-conversation joins the next round. */
+/** Domain vocabulary per member, matched against the words of a round.
+ *
+ *  Routing exists because of what a miss costs on each side. A specialist that
+ *  answers outside its domain still pays a full model call to say "(pass)" —
+ *  the SOUL-level domain gate is correct but fires *after* the API bill. A
+ *  question routed nowhere, on the other hand, goes unanswered, which is far
+ *  worse than a wasted turn. So the table is deliberately narrow: it names
+ *  only unmistakable domain terms, and anything it fails to recognise falls
+ *  back to waking the whole room.
+ *
+ *  Keys are matched against the member name's leading segment, so
+ *  `notion-expert` and a future `notion-writer` share one entry. */
+const GROUP_DOMAIN_TERMS: Record<string, readonly string[]> = {
+  notion: [
+    'notion',
+    'database',
+    'page',
+    'pagina',
+    'páginas',
+    'paginas',
+    'view',
+    'block',
+    'bloco',
+    'relation',
+    'property',
+    'propriedade',
+    'snapshot',
+    'months'
+  ],
+  finance: [
+    'finance',
+    'financ',
+    'investment',
+    'investimento',
+    'rendimento',
+    'fgts',
+    'cdi',
+    'selic',
+    'ação',
+    'acoes',
+    'ações',
+    'carteira',
+    'patrimonio',
+    'patrimônio',
+    'cotacao',
+    'cotação',
+    'dolar',
+    'dólar',
+    'imposto',
+    'juros'
+  ],
+  health: [
+    'health',
+    'saude',
+    'saúde',
+    'treino',
+    'training',
+    'workout',
+    'nutrition',
+    'nutricao',
+    'nutrição',
+    'dieta',
+    'sono',
+    'sleep',
+    'recovery',
+    'recuperacao',
+    // Stems, not whole words: matching is substring-based, and people write
+    // "estou pesando 73.5kg" far more often than the noun. 'kg' is left out on
+    // purpose — it would claim "5kg de açúcar na lista" for the health bot.
+    'peso',
+    'pesa',
+    'pesei',
+    'pesando',
+    'weight',
+    'corrida',
+    'cardio'
+  ],
+  workspace: [
+    'workspace',
+    'gmail',
+    'email',
+    'e-mail',
+    'calendar',
+    'calendario',
+    'calendário',
+    'agenda',
+    'drive',
+    'planilha',
+    'sheet',
+    'doc',
+    'documento',
+    'reuniao',
+    'reunião'
+  ]
+}
+
+/** The member that keeps a routing miss recoverable.
+ *
+ *  Relevance is a guess over words. The coordinator is what makes a wrong guess
+ *  cost a round instead of an answer: it can hand the task to whoever actually
+ *  owns it. It therefore joins every routed round.
+ *
+ *  Matched against the whole name, not the domain segment: `lifeos-coordinator`
+ *  routes, while `finance-coordinator` is a specialist that happens to share
+ *  the suffix and must still be selected on its own domain terms. */
+const GROUP_ROUTING_FALLBACK = 'lifeos-coordinator'
+
+function isGroupRoutingFallback(member: GroupMember): boolean {
+  return String(member.name || '').toLowerCase() === GROUP_ROUTING_FALLBACK
+}
+
+function groupMemberDomain(member: GroupMember): string {
+  return String(member.name || '')
+    .toLowerCase()
+    .split(/[-_.]/)[0]
+}
+
+/** Members whose domain vocabulary appears in this round's text.
+ *
+ *  Returns an empty set when nothing matches, which the caller reads as "no
+ *  opinion" and answers by waking everyone. */
+function resolveRelevantMembers(text: string, members: GroupMember[]): Set<string> {
+  const haystack = text.toLowerCase()
+  const relevant = new Set<string>()
+
+  for (const member of members) {
+    const terms = GROUP_DOMAIN_TERMS[groupMemberDomain(member)]
+
+    if (!terms) {
+      continue
+    }
+
+    // Substring rather than word-boundary matching: the room is bilingual and
+    // inflected ("paginas", "página", "financeiro"), and a stem catches those
+    // without a table entry per form.
+    if (terms.some(term => haystack.includes(term))) {
+      relevant.add(groupMemberKey(member))
+    }
+  }
+
+  return relevant
+}
+
+/** Members that should take a turn this round: the @-mentioned ones when a
+ *  mention is present (or everyone for @everyone), otherwise the members whose
+ *  domain the round is about, plus the coordinator that can redirect a miss.
+ *  A round that matches no domain wakes everyone, because an unrouted question
+ *  is worse than an extra turn. Recomputed every round so a member pulled in
+ *  mid-conversation joins the next one. */
+
 export function resolveGroupResponders(log: GroupMessage[], members: GroupMember[]) {
   let sinceLastUser: GroupMessage[] = []
 
@@ -134,8 +284,22 @@ export function resolveGroupResponders(log: GroupMessage[], members: GroupMember
     }
   }
 
-  if (everyone || mentioned.size === 0) {
+  if (everyone) {
     return members
+  }
+
+  if (mentioned.size === 0) {
+    // No @mention: wake only the members whose domain the text is about, so a
+    // six-bot room does not pay six model calls for a question aimed at one.
+    const relevant = resolveRelevantMembers(
+      sinceLastUser.map(entry => String(entry.text || '')).join(' '), members)
+
+    if (relevant.size === 0) {
+      return members // no opinion - the whole room answers
+    }
+
+    return members.filter(
+      member => relevant.has(groupMemberKey(member)) || isGroupRoutingFallback(member))
   }
 
   return members.filter(member => mentioned.has(groupMemberKey(member)))

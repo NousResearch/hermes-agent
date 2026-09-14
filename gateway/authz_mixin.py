@@ -1062,7 +1062,7 @@ class GatewayAuthorizationMixin:
             # this wrapper's pre-extraction inline body instead of silently
             # falling back to is_authorized's plain-``os.getenv`` default.
             env_get=_auth_env,
-            platform_gate_env=_platform_gate_env,
+            platform_gate_env=_auth_env,
         )
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform], *, profile: Optional[str] = None) -> str:

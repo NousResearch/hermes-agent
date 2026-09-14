@@ -88,6 +88,11 @@ def _receipt_looks_unfinished(receipt: dict) -> bool:
     """
     exit_code = receipt.get("exit_code")
     outcome = receipt.get("outcome")
+    # Refusals happen before the update mutates the checkout, so they cannot
+    # create a new pull→restart obligation. Any older obligation remains
+    # represented by the dedicated marker.
+    if outcome == "refused":
+        return False
     if exit_code not in (0, None) or outcome in ("failed", "partial", "running"):
         return True
     gateway_restart = receipt.get("gateway_restart")
@@ -183,18 +188,44 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _live_fleet_is_current(expected_sha: str | None) -> bool:
+    """Return whether every runtime that is *currently running* uses disk HEAD.
+
+    Dormant lazy-start profiles do not hold mixed modules and will import the
+    current checkout when next started. A clean manual restart therefore
+    discharges a stale warning once every discoverable live runtime reports
+    ``current`` at the exact checkout SHA.
+    """
+    if not expected_sha:
+        return False
+    from hermes_cli.update_receipt import collect_fleet_versions
+
+    try:
+        fleet = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Could not inspect live fleet for restart reconciliation: %s", exc)
+        return False
+    return bool(fleet) and all(
+        row.get("state") == "current" and row.get("code_sha") == expected_sha
+        for row in fleet
+    )
+
+
 def _pending_fleet_restart_needed() -> bool:
-    """Reconcile old restart obligations against current, identity-matched gateways."""
+    """Reconcile old restart obligations against all currently live runtimes."""
     from hermes_cli.update_cmd import _current_checkout_sha
 
-    # The marker has no runtime inventory and may belong to a newer, killed update
-    # than latest.json. An older receipt cannot discharge that unknown obligation.
+    expected_sha = _current_checkout_sha()
+    live_is_current = _live_fleet_is_current(expected_sha)
+    # A marker is fail-closed while live state is unknown or stale. Once every
+    # discoverable running process reports exact disk HEAD, the warning itself
+    # is obsolete even if historical update receipts/markers remain for audit.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
-            return True
-    if not _receipt_reports_stale_runtime():
+            return not live_is_current
+    if not _receipt_reports_stale_runtime(expected_sha):
         return False
-    return not _live_fleet_covers_receipt(_current_checkout_sha())
+    return not live_is_current
 
 
 def _warn_pending_fleet_restart(*, startup: bool = False) -> None:

@@ -182,6 +182,45 @@ def test_pending_needed_when_marker_exists():
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+def test_current_live_fleet_reconciles_stale_marker(monkeypatch):
+    disk_sha = "n" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="o" * 40)
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "company", "kind": "gateway", "code_sha": disk_sha, "state": "current"}],
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
+def test_stale_live_row_keeps_marker_pending(monkeypatch):
+    disk_sha = "n" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="o" * 40)
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "company", "kind": "gateway", "code_sha": "o" * 40, "state": "stale"}],
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+
+def test_current_live_fleet_reconciles_failed_receipt_with_dormant_profiles(monkeypatch):
+    disk_sha = "n" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_receipt_reports_stale_runtime", lambda expected_sha=None: True)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "company", "kind": "gateway", "code_sha": disk_sha, "state": "current"}],
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
 def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):
     disk_sha = "e" * 40
     old_sha = "7" * 40
@@ -305,9 +344,10 @@ def test_successful_command_boundary_receipt_without_fleet_does_not_retrigger(
         pytest.param({"outcome": "success", "exit_code": 0, "stop_reason": "sys.exit(0)"}, False, id="success-sys-exit-0"),
         pytest.param({"outcome": "success", "stop_reason": "KeyboardInterrupt: "}, False, id="success-no-exit-code"),
         pytest.param({"exit_code": 0, "stop_reason": "sys.exit(0)"}, False, id="exit-0-no-outcome"),
-        # update_contract writes {"outcome": "refused", "stop_reason": <code>} with no exit_code;
-        # the stop_reason clause is what keeps that receipt unfinished.
-        pytest.param({"outcome": "refused", "stop_reason": "not_updatable_in_place"}, True, id="refused-stop-reason-only"),
+        # A refusal happens before any pull/restart obligation is created. A
+        # pre-existing obligation remains represented by its marker, not by
+        # this terminal receipt.
+        pytest.param({"outcome": "refused", "stop_reason": "not_updatable_in_place"}, False, id="refused-stop-reason-only"),
         pytest.param({"outcome": "failed", "exit_code": 1, "stop_reason": "KeyboardInterrupt: "}, True, id="failed-interrupt"),
     ],
 )

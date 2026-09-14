@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { setRuntimeI18nLocale } from '@/i18n/runtime'
+
 import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
@@ -69,10 +71,12 @@ const REGISTRY_CATALOG = registryCatalog(
 
 describe('desktop slash command curation', () => {
   beforeEach(() => {
+    setRuntimeI18nLocale('en')
     rememberDesktopCommandsCatalog(REGISTRY_CATALOG)
   })
 
   afterEach(() => {
+    setRuntimeI18nLocale('en')
     rememberDesktopCommandsCatalog(undefined)
   })
 
@@ -358,6 +362,15 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashDescription('/skin', 'Show or change the display skin/theme')).toBe(
       'Switch desktop theme or cycle to the next one'
     )
+  })
+
+  it('localizes desktop slash descriptions with the active locale', () => {
+    setRuntimeI18nLocale('zh')
+
+    expect(desktopSlashDescription('/new', 'fallback')).toBe('开始新的桌面对话')
+    expect(desktopSlashDescription('/retry', 'fallback')).toBe('重试上一条用户消息')
+    expect(desktopSlashDescription('/worktree', 'fallback')).toBe('查看、列出、创建或清理隔离的 Git 工作树')
+    expect(desktopSlashDescription('/my-skill', 'custom skill')).toBe('custom skill')
   })
 
   it('builds /skin completions from desktop themes', () => {

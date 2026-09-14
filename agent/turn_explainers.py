@@ -120,19 +120,23 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "pending_messages/pending-*.json."
     ),
     "deleted_wal": (
-        "the turn was stopped because a live Hermes process held a retired "
-        "state.db-wal generation after its pathname was deleted or "
+        "Hermes paused saving this chat because another Hermes process replaced "
+        "its session database. Nothing is lost. Click Recover / run "
+        "`hermes {profile_arg}doctor --fix`.\n\n"
+        "Operator runbook: the turn was stopped because a live Hermes process held a "
+        "retired state.db-wal generation after its pathname was deleted or "
         "replaced. Stop the gateway, dashboard, and cron writers; "
         "do not overwrite the current state.db or delete its sidecars. "
         "Check the logs for whether Hermes captured the retired generation, "
         "then read the adjacent state.db.retired-wal-*/manifest.json. If "
         "manifest.main.mode is `copied`, inspect that artifact with `hermes "
-        "sessions recover --source <state.db.retired-wal-*/state.db> "
+        "{profile_arg}sessions recover --source <state.db.retired-wal-*/state.db> "
         "--inspect-only` before deciding whether its committed frames belong "
         "on the current database. A `header_only` artifact is forensic and "
         "does not contain a copied state.db to inspect. Unwritten messages "
         "were diverted to sessions/<session_id>.jsonl and, on the gateway, "
-        "pending_messages/pending-*.json."
+        "pending_messages/pending-*.json.\n"
+        "Recovery guide: https://hermes.nousresearch.com/docs/user-guide/session-storage-recovery"
     ),
     "corrupt": (
         "the turn was stopped because the state database "
@@ -328,7 +332,7 @@ class TurnExplainersMixin:
             body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
                 persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
             )
-            if persistence_cause in ("corrupt", "fts_index"):
+            if persistence_cause in ("corrupt", "fts_index", "deleted_wal"):
                 # Copy-pasteable, so name the store that actually failed and pin the profile:
                 # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT
                 # the process default, and a bare `hermes` follows active_profile (#105887).

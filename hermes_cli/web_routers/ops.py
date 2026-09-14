@@ -26,7 +26,7 @@ from hermes_cli.web_server_files import _path_is_under
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
-    BackupRequest, CredentialPoolAdd, HookCreate, HookDelete, ImportRequest, MemoryProviderSelect,
+    BackupRequest, CredentialPoolAdd, DoctorRequest, HookCreate, HookDelete, ImportRequest, MemoryProviderSelect,
     MemoryReset, PairingApprove, PairingRevoke, WebhookCreate, WebhookEnabledToggle,
 )
 from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, http_failure, spawn_profile_action
@@ -501,8 +501,11 @@ async def reset_memory(body: MemoryReset):
 
 
 @router.post("/api/ops/doctor")
-async def run_doctor():
-    return _spawn_action(["doctor"], "doctor", log_msg="Failed to spawn doctor", prefix="Failed to run doctor")
+async def run_doctor(body: Optional[DoctorRequest] = None):
+    args = ["doctor"]
+    if body and body.fix:
+        args.append("--fix")
+    return _spawn_action(args, "doctor", log_msg="Failed to spawn doctor", prefix="Failed to run doctor")
 
 
 @router.post("/api/ops/security-audit")

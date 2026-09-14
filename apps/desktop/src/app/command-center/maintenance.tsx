@@ -207,6 +207,12 @@ export function MaintenancePanel() {
           onRun={() => void launch(mm.doctor, runDoctor)}
         />
         <OpRow
+          description="Health-check and auto-fix session storage conflicts, retired WAL holders, and repairable issues"
+          disabled={actionStatus?.running === true}
+          label="Run doctor --fix"
+          onRun={() => void launch('Doctor (--fix)', () => runDoctor(true))}
+        />
+        <OpRow
           description={mm.securityAuditDesc}
           disabled={actionStatus?.running === true}
           label={mm.securityAudit}

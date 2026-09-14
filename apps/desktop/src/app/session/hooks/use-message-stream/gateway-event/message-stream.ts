@@ -1,5 +1,6 @@
 import type { BillingBlock } from '@hermes/shared'
 
+import { runDoctor } from '@/api/system'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
@@ -365,6 +366,35 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     // History-commit note (e.g. a mid-turn desync) the gateway chose to surface.
     if (typeof payload?.warning === 'string' && payload.warning.trim()) {
       notify({ kind: 'warning', message: payload.warning })
+    }
+
+    // In-product recovery action for deleted-WAL persistence failure (#110054)
+    if (typeof payload?.failure_reason === 'string' && payload.failure_reason.includes('deleted_wal')) {
+      notify({
+        kind: 'error',
+        title: translateNow('common.error'),
+        message: 'Hermes paused saving this chat because another process replaced its session database.',
+        action: {
+          label: 'Recover',
+          onClick: () => {
+            void runDoctor(true)
+              .then(() => {
+                notify({
+                  kind: 'success',
+                  title: 'Recovery started',
+                  message: 'Hermes doctor is repairing database access in the background.'
+                })
+              })
+              .catch((err: unknown) => {
+                notify({
+                  kind: 'error',
+                  title: 'Recovery failed to start',
+                  message: err instanceof Error ? err.message : String(err)
+                })
+              })
+          }
+        }
+      })
     }
 
     if (isActiveEvent) {

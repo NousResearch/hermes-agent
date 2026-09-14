@@ -184,24 +184,41 @@ def _iter_proc_fd_targets():
                 yield int(pid_str), os.readlink(fd_path), fd_path
 
 
-def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
-    """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.  Linux-only; ``[]``
-    elsewhere (Windows cannot unlink a held sidecar, macOS has no `` (deleted)`` suffix).
-    Includes this process: on the open/write refuse path the in-process writer holding the orphan
-    inode must not mint a replacement WAL (``_foreign_state_db_holders`` skips this PID)."""
+def iter_deleted_sqlite_sidecar_holder_descriptors(db_path) -> List[Dict[str, Any]]:
+    """Return detailed descriptor records for processes holding an unlinked ``state.db-wal`` / ``-shm``.
+    Linux-only; ``[]`` elsewhere.
+    Each dict contains: ``{"pid": int, "target": str, "fd_path": str, "identity": Tuple[int, int], "suffix": str}``."""
     if not sys.platform.startswith("linux"):
         return []
-    holders: List[Tuple[int, str]] = []
+    records: List[Dict[str, Any]] = []
     watched = _watched_sqlite_sidecar_paths(db_path)
     try:
         for pid, target, fd_path in _iter_proc_fd_targets():
             canonical = _canonical_sqlite_path(target)
             if (" (deleted)" in target and canonical in watched
                     and _fd_is_truly_unlinked(fd_path, watched[canonical])):
-                holders.append((pid, target))
+                ident = None
+                with contextlib.suppress(OSError):
+                    st = os.stat(fd_path)
+                    ident = (st.st_dev, st.st_ino)
+                records.append({
+                    "pid": pid,
+                    "target": target,
+                    "fd_path": fd_path,
+                    "identity": ident,
+                    "suffix": "-wal" if canonical.endswith("-wal") else "-shm",
+                })
     except Exception as exc:
-        logger.debug("deleted-WAL holder scan failed for %s: %s", db_path, exc)
-    return holders
+        logger.debug("deleted-WAL holder descriptor scan failed for %s: %s", db_path, exc)
+    return records
+
+
+def iter_deleted_sqlite_sidecar_holders(db_path) -> List[Tuple[int, str]]:
+    """Return processes holding an unlinked ``state.db-wal`` / ``-shm``.  Linux-only; ``[]``
+    elsewhere (Windows cannot unlink a held sidecar, macOS has no `` (deleted)`` suffix).
+    Includes this process: on the open/write refuse path the in-process writer holding the orphan
+    inode must not mint a replacement WAL (``_foreign_state_db_holders`` skips this PID)."""
+    return [(r["pid"], r["target"]) for r in iter_deleted_sqlite_sidecar_holder_descriptors(db_path)]
 
 
 def refuse_deleted_wal_generation(db_path) -> None:
@@ -420,6 +437,82 @@ def capture_retired_wal_generation(
         raise RetiredGenerationCaptureError(
             f"could not write the retired WAL generation of {db_path} under {staging}: {exc}") from exc
     return final
+
+
+def capture_external_retired_wal_generation(
+    db_path, *, pid: int, fd_path: str, wal_identity: tuple, trigger: str = "doctor_recovery"
+) -> Path:
+    """Durably capture an unlinked WAL generation held open by another process (from /proc/<pid>/fd/<fd>)."""
+    db_path = Path(db_path)
+    if not wal_identity:
+        raise RetiredGenerationCaptureError(f"no recorded WAL generation identity for {db_path}")
+    try:
+        wal_fd = os.open(fd_path, os.O_RDONLY)
+    except OSError as exc:
+        raise RetiredGenerationCaptureError(f"cannot open descriptor at {fd_path}: {exc}") from exc
+    try:
+        st = os.fstat(wal_fd)
+        if (st.st_dev, st.st_ino) != tuple(wal_identity):
+            raise RetiredGenerationCaptureError(
+                f"descriptor at {fd_path} identity {(st.st_dev, st.st_ino)} does not match expected {wal_identity}"
+            )
+        wal_size = st.st_size
+
+        stem = f"{db_path.name}{RETIRED_GENERATION_DIR_SUFFIX}{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{pid}"
+        final = db_path.with_name(stem)
+        n = 0
+        while final.exists() or final.with_name(final.name + ".partial").exists():
+            n += 1
+            final = db_path.with_name(f"{stem}-{n}")
+        staging = final.with_name(final.name + ".partial")
+        try:
+            staging.mkdir(parents=True, exist_ok=False)
+            manifest: Dict[str, Any] = {
+                "version": RETIRED_GENERATION_MANIFEST_VERSION,
+                "database": str(db_path),
+                "trigger": trigger,
+                "pid": pid,
+                "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "python": sys.version.split()[0],
+                "sqlite": sqlite3.sqlite_version,
+                "wal": {"identity": list(wal_identity),
+                        **_copy_descriptor(wal_fd, staging / (db_path.name + "-wal"), size=wal_size)},
+                "shm": None,
+                "path_generation_at_capture": {
+                    suffix: list(ident) for suffix, ident in _stat_sqlite_sidecar_identity(db_path).items()},
+                "note": ("Frames in the captured WAL were committed by the retired generation. Whether they "
+                         "belong on top of the main file now at the path is an operator decision; inspect "
+                         "the copied image with `hermes sessions recover --inspect-only` first."),
+            }
+            if db_path.exists():
+                header = _pread_db_range(db_path, 0, _SQLITE_HEADER_BYTES)
+                if header is not None:
+                    main_size = os.stat(db_path).st_size
+                    main: Dict[str, Any] = {"identity": list(_stat_db_file_identity(db_path) or ()) or None,
+                                            "size": main_size, "header": _parse_sqlite_header(header)}
+                    if main_size <= RETIRED_GENERATION_MAIN_IMAGE_MAX_BYTES:
+                        main.update(mode="copied", **_copy_main_image(db_path, staging / db_path.name, size=main_size))
+                    else:
+                        header_file = staging / (db_path.name + ".header")
+                        header_file.write_bytes(header)
+                        _fsync_path(header_file)
+                        main.update(mode="header_only", file=header_file.name, bytes=len(header))
+                    manifest["main"] = main
+                else:
+                    manifest["main"] = {"mode": "missing", "size": 0, "identity": None}
+            else:
+                manifest["main"] = {"mode": "missing", "size": 0, "identity": None}
+            from utils import atomic_json_write
+            atomic_json_write(staging / RETIRED_GENERATION_MANIFEST, manifest, sort_keys=True)
+            _fsync_path(staging)
+            os.replace(staging, final)
+            _fsync_path(final.parent)
+            return final
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+    finally:
+        os.close(wal_fd)
 
 
 def _connect_tracked_db(path, tracking_path=None, **kwargs):

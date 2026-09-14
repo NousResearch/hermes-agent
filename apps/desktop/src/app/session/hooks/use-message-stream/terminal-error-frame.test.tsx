@@ -112,4 +112,20 @@ describe('terminal error message.complete frames', () => {
     expect(bubble?.error).toBe('kaput')
     expect(bubble?.errorSurface).toBeUndefined()
   })
+
+  it('handles terminal error with deleted_wal failure_reason and preserves failure state', async () => {
+    mountStream()
+    await start()
+    await delta('…')
+
+    await completeWithError({
+      text: 'Hermes paused saving this chat',
+      error: 'session storage could not be written',
+      failure_reason: 'session_persistence_failed:deleted_wal'
+    })
+
+    const bubble = lastAssistant()
+    expect(bubble?.error).toBe('session storage could not be written')
+    expect(getState().busy).toBe(false)
+  })
 })

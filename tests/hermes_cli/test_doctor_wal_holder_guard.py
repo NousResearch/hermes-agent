@@ -49,3 +49,39 @@ def test_wal_checkpoint_skipped_while_live_writer_holds_db(tmp_path):
 
     assert finding.fixed == 0
     assert any("gateway" in issue for issue in finding.issues)
+
+
+def test_wal_warning_qualifies_live_writer_in_dry_run(tmp_path):
+    """When a live writer holds the DB and should_fix=False, the warning clarifies that large
+    WAL is normal while running, and does not emit the bare 'run hermes doctor --fix' recommendation."""
+    db = tmp_path / "state.db"
+    setup = sqlite3.connect(str(db))
+    try:
+        setup.execute("CREATE TABLE t(x)")
+        setup.execute("PRAGMA journal_mode=WAL")
+        setup.execute("INSERT INTO t VALUES (1)")
+        setup.commit()
+    finally:
+        setup.close()
+    holder = sqlite3.connect(str(db))
+    holder.execute("SELECT count(*) FROM t").fetchone()
+    try:
+        wal = Path(f"{db}-wal")
+        assert wal.exists()
+        with open(wal, "ab") as handle:
+            handle.truncate(51 * 1024 * 1024)
+        finding = Finding()
+        _state_db_wal(finding, False, db)
+    finally:
+        try:
+            holder.close()
+        except Exception:
+            pass
+
+    assert finding.fixed == 0
+    assert len(finding.issues) == 1
+    issue = finding.issues[0]
+    assert "normal while Desktop/gateway are running" in issue
+    assert "stop them first before checkpointing" in issue
+    # Must NOT emit the bare nudge without stopping instructions
+    assert issue != "Large WAL file — run 'hermes doctor --fix' to checkpoint"

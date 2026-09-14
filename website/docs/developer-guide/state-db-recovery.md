@@ -105,3 +105,12 @@ The marker query should return no row, the expected FTS triggers should be
 present, and canonical row counts must not decrease. If repair fails, preserve
 both the live database and the reported backup; never delete canonical rows to
 make a derived-index error disappear.
+
+## Deleted-WAL and generation guard recovery
+
+When a database replacement occurs underneath a running process, SQLite triggers `DeletedWalGenerationError`. Hermes halts further writes on the obsolete descriptor, preserves uncommitted turns in `sessions/<id>.jsonl`, captures retired WAL files into `state.db.retired-wal-*/`, and surfaces in-product recovery options.
+
+`hermes doctor --fix` automatically identifies and stops processes holding deleted sidecars before re-opening `state.db`.
+
+For user-facing and desktop recovery workflows, see [Session Storage Recovery](../user-guide/session-storage-recovery.md).
+

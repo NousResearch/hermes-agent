@@ -984,3 +984,13 @@ hermes sessions prune --older-than 30 --yes
 :::tip
 Auto-prune is **on by default**: ended sessions that have been inactive for `sessions.retention_days` (default 90) are removed at startup, and active sessions are never touched (see [Automatic Cleanup](#automatic-cleanup) above). Session history powers `session_search` recall across past conversations, so if you want to keep every ended session forever, set `sessions.auto_prune: false` in `config.yaml`, or raise `retention_days`. With auto-prune off, `hermes sessions prune` remains available for one-off cleanup (observed failure mode without any pruning: a 384 MB `state.db` with ~1000 sessions slowing down FTS5 inserts and `/resume` listing).
 :::
+
+### Storage Health and Recovery
+
+If Hermes detects database replacement, orphaned locks, or SQLite generation errors while saving a conversation, active writes pause to prevent corruption and messages are spooled safely to disk without data loss.
+
+- In the Desktop app, a notification banner appears with a one-click **Recover** button to repair the database connection immediately.
+- In CLI or headless environments, run `hermes doctor --fix` to safely stop orphaned holders and restore database access.
+
+For full recovery instructions, artifact inspection, and troubleshooting, see [Session Storage Recovery](./session-storage-recovery.md).
+

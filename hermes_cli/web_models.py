@@ -8,6 +8,10 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, SecretStr, StrictBool, field_validator
 
 
+class DoctorRequest(BaseModel):
+    fix: bool = False
+
+
 class ConfigUpdate(BaseModel):
     config: dict
     profile: Optional[str] = None

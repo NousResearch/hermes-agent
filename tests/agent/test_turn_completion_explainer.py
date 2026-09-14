@@ -211,12 +211,18 @@ def test_deleted_wal_cause_is_enumerated_and_points_to_retired_capture():
         "session_persistence_failed", "deleted_wal"
     ).lower()
     assert "deleted_wal" in PERSISTENCE_ERROR_CAUSES
+    # First line (human-facing)
+    assert "hermes paused saving this chat because another hermes process replaced its session database" in out
+    assert "click recover / run" in out
+    assert "doctor --fix" in out
+    # Operator runbook and artifacts
     assert "retired-wal-*/manifest.json" in out
     assert "manifest.main.mode" in out
     assert "sessions recover" in out and "--inspect-only" in out
     assert "header_only" in out and "does not contain a copied state.db" in out
     assert "check the logs for whether" in out
     assert "restore the intended state.db" not in out
+    assert "session-storage-recovery" in out
 
 
 def test_explanation_persistence_unknown_cause_is_neutral():

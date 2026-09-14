@@ -241,8 +241,8 @@ export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; 
 // getActionStatus().
 // ---------------------------------------------------------------------------
 
-export function runDoctor(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({ path: '/api/ops/doctor', method: 'POST', body: {} })
+export function runDoctor(fix = false): Promise<ActionResponse> {
+  return hermesApi<ActionResponse>({ path: '/api/ops/doctor', method: 'POST', body: { fix } })
 }
 
 export function runSecurityAudit(): Promise<ActionResponse> {

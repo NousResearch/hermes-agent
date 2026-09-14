@@ -39,6 +39,7 @@ Hermes prints the exact port it bound to on the `Waiting for callback on ...` li
 | `anthropic` (Claude Pro/Max) | n/a | No — paste-the-code flow |
 | `openai-codex` (ChatGPT Plus/Pro) | n/a | No — device code flow |
 | `minimax`, `nous-portal` | n/a | No — device code flow |
+| `openrouter` (`hermes auth add openrouter --type oauth`) | OS-assigned, local only | No — over SSH Hermes switches to OpenRouter's headless flow and asks you to paste the code shown in the browser |
 
 If your provider isn't in the table, you don't need a tunnel.
 

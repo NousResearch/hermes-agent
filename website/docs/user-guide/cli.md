@@ -68,11 +68,20 @@ explicitly:
 
 ```bash
 hermes worktree list              # audit: age, size, verdict, reason per tree
+hermes worktree list --json       # machine-readable audit (trees, external trees, branches)
 hermes worktree prune             # remove safe trees + delete merged branches
 hermes worktree prune --dry-run   # show the plan without changing anything
+hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
 ```
+
+Worktrees registered **outside** `.worktrees/` (created by hand or by another
+tool) are reported read-only in `list` output and are never removed. The one
+exception is metadata: registrations whose directory no longer exists are
+dropped via `git worktree prune` (no files are touched). `--older-than DAYS`
+only ever narrows what gets reaped — a tree carrying real work is kept at any
+age regardless of the flag.
 
 Inside a session, `/worktree prune [--dry-run]` does the same (and never
 touches the tree the session is running in).
@@ -137,7 +146,7 @@ The welcome banner shows your model, terminal backend, working directory, availa
 A persistent status bar sits above the input area, updating in real time:
 
 ```
- ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+ ☤ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
 ```
 
 | Element | Description |
@@ -186,6 +195,8 @@ When resuming a previous session (`hermes -c` or `hermes --resume <id>`), a "Pre
 | `Ctrl+X Ctrl+E` | Emacs-style alternate binding for the external editor (same behavior as `Ctrl+G`). |
 | `Ctrl+S` | **Stash the prompt.** Parks the current draft and clears the composer so you can send something else first. Press `Ctrl+S` again on an empty composer to bring the draft back (cursor at the end, attached images restored). Repeated presses build a stack rather than overwriting, so an earlier draft is never silently lost — with two or more stashed, `Ctrl+S` opens a browse panel (`↑`/`↓` to navigate, `Enter` to restore, `D` to discard, `Esc` or `Ctrl+S` to close). A `📌 N` badge in the status bar shows how many drafts are parked. Multi-line drafts round-trip exactly, including blank lines. The stash lives in memory for the session only — nothing is written to disk, since drafts often contain secrets. |
 | `Ctrl+C` | Interrupt agent (double-press within 2s to force exit) |
+| `Ctrl+T` / `F6` | Open the full-screen live subagent monitor without losing the composer draft. The live dock appears automatically above the status bar; arrows select a worker, `Enter` shows its recent log, `s` steers, and `x` requests stop with confirmation. See [Monitoring subagents](/user-guide/features/delegation#monitoring-running-subagents-agents). |
+| `F7` | Toggle the live subagent dock between its multi-row preview and a single summary line without moving composer focus. |
 | `Ctrl+D` | Exit |
 | `Ctrl+Z` | Suspend Hermes to background (Unix only). Run `fg` in the shell to resume. |
 | `Tab` | Accept auto-suggestion (ghost text) or autocomplete slash commands |
@@ -200,7 +211,7 @@ Start a line with `!` to run it as a shell command instead of sending it to the 
 ```
 > !git status
 > !ls -la
-> !pytest -x tests/cli
+> !pytest -x tests/hermes_cli
 ```
 
 - **Zero cost.** The model is never invoked — no API call, no tokens, no latency.
@@ -527,7 +538,7 @@ Each `/bg` prompt spawns a **completely separate agent session** in a daemon thr
 When a background task finishes, the result appears as a panel in your terminal:
 
 ```
-╭─ ⚕ Hermes (background #1) ──────────────────────────────────╮
+╭─ ☤ Hermes (background #1) ──────────────────────────────────╮
 │ Found 3 errors in syslog from today:                         │
 │ 1. OOM killer invoked at 03:22 — killed process nginx        │
 │ 2. Disk I/O error on /dev/sda1 at 07:15                      │

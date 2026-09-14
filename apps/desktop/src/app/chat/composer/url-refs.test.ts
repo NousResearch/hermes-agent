@@ -1,8 +1,8 @@
 import type { KeyboardEvent } from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { composerPlainText, RICH_INPUT_SLOT } from './rich-editor'
-import { chipTypedUrlOnSpace, linkifyUrls } from './url-refs'
+import { composerPlainText, refChipElement, RICH_INPUT_SLOT } from './rich-editor'
+import { chipTypedUrlOnSpace, linkifyUrls, markdownLinkFor, resolveExactLinkPaste, selectionLinkLabel } from './url-refs'
 
 /** An editor holding `text` with a collapsed caret at `caret`, plus the space
  *  keydown the composer would hand `chipTypedUrlOnSpace`. */
@@ -48,6 +48,95 @@ describe('linkifyUrls', () => {
 
   it('leaves text without a scheme alone', () => {
     expect(linkifyUrls('example.dev/a and src/foo.ts')).toBe('example.dev/a and src/foo.ts')
+  })
+})
+
+describe('resolveExactLinkPaste', () => {
+  it('accepts a lone bare link', () => {
+    expect(resolveExactLinkPaste('https://example.dev/a/b')).toBe('https://example.dev/a/b')
+  })
+
+  it('accepts a wrapped <link> and surrounding whitespace', () => {
+    expect(resolveExactLinkPaste('  <https://example.dev/a>  ')).toBe('https://example.dev/a')
+  })
+
+  it('rejects prose around the link', () => {
+    expect(resolveExactLinkPaste('see https://example.dev')).toBeNull()
+    expect(resolveExactLinkPaste('https://example.dev is nice')).toBeNull()
+  })
+
+  it('rejects multiple links', () => {
+    expect(resolveExactLinkPaste('https://a.dev https://b.dev')).toBeNull()
+  })
+
+  it('rejects trailing sentence punctuation and hostless schemes', () => {
+    expect(resolveExactLinkPaste('https://example.dev.')).toBeNull()
+    expect(resolveExactLinkPaste('https://')).toBeNull()
+  })
+})
+
+describe('selectionLinkLabel', () => {
+  const selectAll = (build: (editor: HTMLElement) => void) => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    build(editor)
+    document.body.append(editor)
+
+    const selection = window.getSelection()!
+    const range = document.createRange()
+
+    range.selectNodeContents(editor)
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    return editor
+  }
+
+  it('returns the selected text', () => {
+    const editor = selectAll(node => {
+      node.textContent = 'the docs'
+    })
+
+    expect(selectionLinkLabel(editor)).toBe('the docs')
+    editor.remove()
+  })
+
+  it('rejects a collapsed selection', () => {
+    const editor = document.createElement('div')
+    editor.textContent = 'text'
+    document.body.append(editor)
+    window.getSelection()?.removeAllRanges()
+
+    expect(selectionLinkLabel(editor)).toBeNull()
+    editor.remove()
+  })
+
+  it('rejects a selection containing a chip', () => {
+    const editor = selectAll(node => {
+      node.append(document.createTextNode('see '), refChipElement('url', '`https://a.dev`'))
+    })
+
+    expect(selectionLinkLabel(editor)).toBeNull()
+    editor.remove()
+  })
+
+  it('rejects a multi-line selection', () => {
+    const editor = selectAll(node => {
+      node.append(document.createTextNode('one'), document.createElement('br'), document.createTextNode('two'))
+    })
+
+    expect(selectionLinkLabel(editor)).toBeNull()
+    editor.remove()
+  })
+})
+
+describe('markdownLinkFor', () => {
+  it('builds a markdown link', () => {
+    expect(markdownLinkFor('the docs', 'https://example.dev')).toBe('[the docs](https://example.dev)')
+  })
+
+  it('escapes square brackets in the label', () => {
+    expect(markdownLinkFor('a [b] c', 'https://example.dev')).toBe('[a \\[b\\] c](https://example.dev)')
   })
 })
 

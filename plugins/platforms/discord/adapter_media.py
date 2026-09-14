@@ -11,8 +11,60 @@ from gateway.platforms.base import SendResult
 
 logger = logging.getLogger("plugins.platforms.discord.adapter")
 
+# Default Discord attachment cap for DMs / channels without a guild boost
+# context. 20 MiB since the Sep 3 2026 API change (10 MiB before); guild
+# channels expose a boost-raised limit via ``guild.filesize_limit``, but
+# discord.py's fallback constant can lag the platform default, so the
+# effective limit is never taken below this floor. See issue #50846 and
+# https://docs.discord.com/developers/change-log (Sep 3, 2026).
+_DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES = 20 * 1024 * 1024
+
 
 class DiscordMediaMixin:
+    @staticmethod
+    def _discord_upload_limit_bytes(channel: Any) -> int:
+        """Return the effective Discord attachment size limit for *channel*.
+
+        Prefer the guild's boost-aware ``filesize_limit`` when present; fall
+        back to the platform default for DMs / group DMs without a guild.
+        The guild value is floored at the platform default: discord.py's
+        unboosted-tier constant can lag a platform-wide raise (10 MiB in
+        2.7.1 vs the 20 MiB default since Sep 3 2026), and under-reporting
+        makes the preflight reject files Discord would accept.
+        """
+        guild = getattr(channel, "guild", None)
+        if guild is not None:
+            limit = getattr(guild, "filesize_limit", None)
+            if isinstance(limit, int) and limit > 0:
+                return max(limit, _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES)
+        return _DISCORD_DEFAULT_UPLOAD_LIMIT_BYTES
+
+    async def _reject_oversized_upload(self, channel: Any, file_path: str, filename: str) -> Optional[SendResult]:
+        """Preflight ``file_path`` against the channel's upload cap (#50846): a doomed
+        ``413`` round-trip is skipped and the user gets a notice naming the size and the
+        limit. Returns the failed result, or ``None`` when the file may be uploaded."""
+        try:
+            file_size = os.path.getsize(file_path)
+        except OSError as exc:
+            return SendResult(success=False, error=f"Cannot stat file {filename}: {exc}")
+        limit = self._discord_upload_limit_bytes(channel)
+        if file_size <= limit:
+            return None
+        size_mb = file_size / (1024 * 1024)
+        limit_mb = limit / (1024 * 1024)
+        error = f"File too large for Discord upload: {filename} is {size_mb:.1f} MB (limit {limit_mb:.0f} MB)"
+        logger.warning("[%s] %s", self.name, error)
+        notice = (
+            f"⚠️ Could not attach `{filename}` — {size_mb:.1f} MB exceeds Discord's "
+            f"{limit_mb:.0f} MB upload limit for this channel. Compress the file or share a link instead."
+        )
+        try:
+            if not self._is_forum_parent(channel):
+                await channel.send(content=notice)
+        except Exception:
+            logger.debug("[%s] Failed to send oversized-file notice for %s", self.name, filename, exc_info=True)
+        return SendResult(success=False, error=error)
+
     async def _send_file_attachment(
         self, chat_id: str, file_path: str, caption: Optional[str] = None,
         file_name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
@@ -33,6 +85,9 @@ class DiscordMediaMixin:
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
         filename = file_name or os.path.basename(file_path)
+        rejected = await self._reject_oversized_upload(channel, file_path, filename)
+        if rejected is not None:
+            return rejected
         logger.info(
             "[%s] Sending file attachment %s (%s) to %s", self.name, filename,
             os.path.splitext(filename)[1].lower() or "no-ext", chat_id,
@@ -65,38 +120,38 @@ class DiscordMediaMixin:
     async def send_multiple_images(
         self, chat_id: str, images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None, human_delay: float = 0.0,
-    ) -> None:
+    ) -> SendResult:
         """Send images as one Discord message (<=10 attachments): URLs are downloaded and uploaded
         inline (bare links don't render); on chunk failure the remainder uses the per-image loop."""
         from plugins.platforms.discord.adapter import _prompt_target_id, _image_ext_from_content_type, _read_url_image_with_redirect_guard, is_safe_url
 
         if not self._client:
-            return
+            return SendResult(success=False, error="Not connected")
         if not images:
-            return
+            return SendResult(success=False, error="no images to send")
         try:
             import discord as _discord_mod
             import io as _io
             from urllib.parse import unquote as _unquote
         except Exception:  # pragma: no cover
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         try:
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             if not channel:
                 logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
-                return
+                return SendResult(success=False, error=f"Channel {chat_id} not found")
         except Exception as e:
             logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         CHUNK = 10
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+        delivered = False
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
             files: List[Any] = []
             captions: List[str] = []
+            skip_notices: List[str] = []
             aiohttp_session = None
             try:
                 for image_url, alt_text in chunk:
@@ -106,6 +161,30 @@ class DiscordMediaMixin:
                         local_path = _unquote(image_url[7:])
                         if not os.path.exists(local_path):
                             logger.warning("[%s] Skipping missing image: %s", self.name, local_path)
+                            continue
+                        # Same preflight as _send_file_attachment (#50846): an oversized
+                        # local image would 413 the whole chunk and drop its siblings
+                        # into the fallback path.
+                        try:
+                            _img_size = os.path.getsize(local_path)
+                        except OSError as stat_err:
+                            logger.warning(
+                                "[%s] Skipping unreadable image %s: %s",
+                                self.name, local_path, stat_err,
+                            )
+                            continue
+                        _img_limit = self._discord_upload_limit_bytes(channel)
+                        if _img_size > _img_limit:
+                            logger.warning(
+                                "[%s] Skipping oversized image in batch: %s is %.1f MB (limit %.0f MB)",
+                                self.name, os.path.basename(local_path),
+                                _img_size / (1024 * 1024), _img_limit / (1024 * 1024),
+                            )
+                            skip_notices.append(
+                                f"⚠️ Skipped `{os.path.basename(local_path)}` — "
+                                f"{_img_size / (1024 * 1024):.1f} MB exceeds Discord's "
+                                f"{_img_limit / (1024 * 1024):.0f} MB upload limit."
+                            )
                             continue
                         files.append(_discord_mod.File(local_path, filename=os.path.basename(local_path)))
                     else:
@@ -136,9 +215,21 @@ class DiscordMediaMixin:
                             logger.warning("[%s] Download failed for %s: %s", self.name, image_url[:80], dl_err)
                             continue
                 if not files:
+                    # Everything in this chunk was skipped. Still surface any
+                    # oversized-file notices so the drop is not silent.
+                    if skip_notices and not self._is_forum_parent(channel):
+                        try:
+                            await channel.send(content="\n".join(skip_notices))
+                        except Exception:
+                            logger.debug(
+                                "[%s] Failed to send oversized-image notices",
+                                self.name, exc_info=True,
+                            )
                     continue
                 # Use the first caption if any (Discord only has one message body for the group)
                 content = captions[0] if captions else None
+                if skip_notices:
+                    content = "\n".join(([content] if content else []) + skip_notices)
                 logger.info(
                     "[%s] Sending %d image(s) as single Discord message (chunk %d/%d)",
                     self.name, len(files), chunk_idx + 1, len(chunks),
@@ -149,18 +240,21 @@ class DiscordMediaMixin:
                     )
                 else:
                     await channel.send(content=content, files=files)
+                delivered = True
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
                     self.name, chunk_idx + 1, len(chunks), e, exc_info=True,
                 )
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback = await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                delivered = delivered or fallback.success
             finally:
                 if aiohttp_session is not None:
                     try:
                         await aiohttp_session.close()
                     except Exception:
                         pass
+        return SendResult(success=delivered, error=None if delivered else "all images failed to send")
 
 
     async def send_voice(
@@ -178,6 +272,9 @@ class DiscordMediaMixin:
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=f"Audio file not found: {audio_path}")
             filename = os.path.basename(audio_path)
+            rejected = await self._reject_oversized_upload(channel, audio_path, filename)
+            if rejected is not None:
+                return rejected
             reference = self._reply_reference_for_send(reply_to, channel)
             with open(audio_path, "rb") as f:
                 file_data = f.read()

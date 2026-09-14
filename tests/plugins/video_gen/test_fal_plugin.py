@@ -29,6 +29,55 @@ def test_fal_provider_registers():
     assert DEFAULT_MODEL in {"pixverse-v6", "ltx-2.3"}
 
 
+def test_kling_v3_standard_and_pro_payload_shape():
+    """Kling 3.0 (v3 standard/pro): start_image_url on i2v, aspect_ratio
+    dropped on i2v (schema derives it from the image), no seed/resolution
+    keys, string duration 3-15, generate_audio + negative_prompt real."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    for fid in ("kling-v3", "kling-v3-pro"):
+        meta = FAL_FAMILIES[fid]
+        assert meta.get("image_param_key") == "start_image_url"
+
+        # text-to-video route
+        p = _build_payload(
+            meta,
+            prompt="a mecha lands",
+            image_url=None,
+            duration=7,
+            aspect_ratio="16:9",
+            resolution="1080p",
+            negative_prompt="blurry",
+            audio=True,
+            seed=3,
+        )
+        assert p == {
+            "prompt": "a mecha lands",
+            "aspect_ratio": "16:9",
+            "duration": "7",
+            "generate_audio": True,
+            "negative_prompt": "blurry",
+        }, fid
+
+        # image-to-video route: start_image_url in, aspect_ratio dropped
+        p = _build_payload(
+            meta,
+            prompt="animate it",
+            image_url="https://example.com/i.png",
+            duration=20,  # clamps to 15
+            aspect_ratio="16:9",
+            resolution="720p",
+            negative_prompt=None,
+            audio=False,
+            seed=None,
+        )
+        assert p.get("start_image_url") == "https://example.com/i.png", fid
+        assert "image_url" not in p, fid
+        assert "aspect_ratio" not in p, fid
+        assert p["duration"] == "15", fid
+        assert p["generate_audio"] is False, fid
+
+
 def test_kling_4k_uses_start_image_url():
     """Kling v3 4K's image-to-video endpoint expects start_image_url,
     not image_url. The family must declare image_param_key='start_image_url'."""
@@ -79,6 +128,30 @@ def test_minimax_h3_int_duration_and_resolution_alias():
         resolution="1080p", negative_prompt=None, audio=None, seed=None,
     )
     assert hi["resolution"] == "2K"
+
+
+def test_h3_max_turbo_static_key_and_1080p_alias():
+    """H3 Max Turbo requires prompt_expansion_mode on both endpoints, adds a real
+    1080P tier (unlike Max, which caps at 768P), and its i2v drops aspect_ratio."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    meta = FAL_FAMILIES["minimax-h3-max-turbo"]
+    t2v = _build_payload(
+        meta, prompt="x", image_url=None, duration=7, aspect_ratio="16:9",
+        resolution="1080p", negative_prompt=None, audio=None, seed=11,
+    )
+    assert t2v["prompt_expansion_mode"] == "balanced"
+    assert t2v["resolution"] == "1080P"
+    assert t2v["duration"] == 7 and isinstance(t2v["duration"], int)
+    assert t2v["seed"] == 11
+
+    i2v = _build_payload(
+        meta, prompt="x", image_url="https://example.com/i.png", duration=5,
+        aspect_ratio="16:9", resolution="480p", negative_prompt=None, audio=None, seed=None,
+    )
+    assert i2v["prompt_expansion_mode"] == "balanced"
+    assert "aspect_ratio" not in i2v
+    assert i2v["image_url"] == "https://example.com/i.png"
 
 
 def test_image_drop_keys_strips_aspect_ratio_on_i2v():

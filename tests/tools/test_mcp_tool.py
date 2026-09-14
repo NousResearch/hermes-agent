@@ -553,6 +553,33 @@ class TestSchemaConversion:
         assert schema["name"] == "mcp__my_server__get_sum"
         assert "-" not in schema["name"]
 
+    def test_long_names_are_clamped_to_64_chars(self):
+        """Portable Agent Plugin names can push mcp__<server>__<tool> past the
+        64-char limit OpenAI-compatible providers enforce on function names
+        (issue #81331). The registry name must be clamped with a stable hash
+        suffix, distinct long names must not collide, and the same inputs
+        must always produce the same shortened name.
+        """
+        from tools.mcp_tool_schema import _convert_mcp_schema, mcp_prefixed_tool_name
+
+        server_name = "agent_plugin_my_server_997167c9__my_server"
+        mcp_tool = _make_mcp_tool(name="reply_communication_todo")
+        schema = _convert_mcp_schema(server_name, mcp_tool)
+
+        assert len(schema["name"]) <= 64
+        assert schema["name"] == mcp_prefixed_tool_name(server_name, "reply_communication_todo")
+
+        other_tool = _make_mcp_tool(name="reply_communication_task")
+        other_schema = _convert_mcp_schema(server_name, other_tool)
+        assert other_schema["name"] != schema["name"]
+        assert len(other_schema["name"]) <= 64
+
+        # Deterministic across repeated calls with the same inputs.
+        assert (
+            mcp_prefixed_tool_name(server_name, "reply_communication_todo")
+            == schema["name"]
+        )
+
 
 # ---------------------------------------------------------------------------
 # Check function
@@ -1391,6 +1418,29 @@ class TestBuildSafeEnv:
         assert result["ALPACA_API_KEY"] == "from-bws-key"
         assert result["NOTION_TOKEN"] == "from-op"
         assert "UNTRACKED_SECRET_KEY" not in result
+
+    def test_secret_source_vars_resolve_through_active_profile_scope(self, monkeypatch):
+        """Under multiplex the stdio child gets the ROUTED profile's value for a source-tagged name,
+        never the launch profile's os.environ copy; a name the profile lacks is omitted."""
+        from agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
+        from hermes_cli import env_loader
+        from tools.mcp_tool_config import _build_safe_env
+
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "GITHUB_TOKEN", "bitwarden")
+        monkeypatch.setitem(env_loader._SECRET_SOURCES, "NOTION_TOKEN", "onepassword")
+        fake_env = {"PATH": "/usr/bin", "GITHUB_TOKEN": "default-profile", "NOTION_TOKEN": "default-notion"}
+        set_multiplex_active(True)
+        token = set_secret_scope({"GITHUB_TOKEN": "profile-b"})
+        try:
+            with patch.dict("os.environ", fake_env, clear=True):
+                result = _build_safe_env(None)
+        finally:
+            reset_secret_scope(token)
+            set_multiplex_active(False)
+
+        assert result["PATH"] == "/usr/bin"
+        assert result["GITHUB_TOKEN"] == "profile-b"
+        assert "NOTION_TOKEN" not in result
 
     def test_windows_location_vars_passed_without_secrets(self):
         """Windows launcher tools need location vars, but secrets stay filtered."""

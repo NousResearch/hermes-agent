@@ -761,10 +761,13 @@ function Get-UsableUvVersion($UvPath) {
     } finally {
         $ErrorActionPreference = $prevEAP
     }
-    if ($exitCode -eq 0 -and $versionOutput.Count -gt 0) {
-        $version = ($versionOutput -join " ").Trim()
-        if ($version -match '^uv\s+\d+\.\d+') { return $version }
-    }
+    if ($exitCode -ne 0) { return $null }
+    # stderr is merged into the stream, so a warning (e.g. from a wrapper
+    # script) can land before the version line. Anchoring on the joined
+    # stream would misclassify a healthy uv and purge it; match per line.
+    $version = $versionOutput | ForEach-Object { "$_".Trim() } |
+        Where-Object { $_ -match '^uv\s+\d+\.\d+' } | Select-Object -First 1
+    if ($version) { return $version }
     return $null
 }
 
@@ -861,7 +864,7 @@ function Install-Uv {
         if ($managedUvVersion) {
             Write-Info "uv installer succeeded via astral.sh"
         } else {
-            Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
+            Write-Info "astral.sh uv installer did not produce a usable $managedUv; trying GitHub releases mirror ..."
             $ghOut = @()
             & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
             $installerOutput += "--- uv installer source: GitHub releases ---"
@@ -1228,7 +1231,7 @@ function Resolve-UvCmd {
     # (or a truncated download) would otherwise be accepted here and fail
     # later inside the venv stage with an unrelated-looking error.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
-    if (Get-UsableManagedUv $managedUv "Existing managed uv at $managedUv is not usable; removing it. Rerun install.ps1 -Stage uv to reinstall.") {
+    if (Get-UsableManagedUv $managedUv "Existing managed uv at $managedUv is not usable; removing it.") {
         $script:UvCmd = $managedUv
         return
     }
@@ -4905,9 +4908,10 @@ $InstallStages += @(
 # Stages that depend on uv (anything after Stage-Uv) call Resolve-UvCmd
 # first so they work in cross-process driver mode where $script:UvCmd
 # set by Stage-Uv in a sibling powershell process is not visible here.
-# Resolve-UvCmd is a fast no-op when $script:UvCmd is already populated
-# (the default-invocation case where Main runs everything in one
-# process), and throws cleanly if uv truly isn't installed yet.
+# Resolve-UvCmd re-probes even when $script:UvCmd is already populated
+# (a cached path can be replaced by a broken shim mid-session), falls back
+# to the managed location and PATH, and throws cleanly if uv truly isn't
+# installed yet.
 function Stage-Uv               { if (-not (Install-Uv))     { throw "uv installation failed" } }
 function Stage-Python           { Resolve-UvCmd; if (-not (Test-Python))    { throw "Python $PythonVersion not available" } }
 function Stage-Git              {

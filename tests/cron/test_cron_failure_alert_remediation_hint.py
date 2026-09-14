@@ -45,3 +45,26 @@ def test_rate_limit_empty_chain_also_carries_the_hint(monkeypatch):
     msg = _summarize_cron_failure_for_delivery(job, "HTTP 429: rate limit exceeded")
     assert "No fallback chain configured" in msg
     assert "hermes fallback add" in msg
+
+
+def test_inactivity_timeout_preserves_stalled_wording_and_activity():
+    msg = _summarize_cron_failure_for_delivery(
+        {"name": "daily-review"},
+        "TimeoutError: Cron job 'daily-review' idle for 601s (limit 600s) "
+        "— last activity: executing tool: terminal",
+    )
+
+    assert "the job itself stalled" in msg
+    assert "Last activity: executing tool: terminal" in msg
+    assert "Not a provider or fallback-chain issue" in msg
+
+
+def test_unclassified_timeout_is_not_reported_as_provider_failure():
+    msg = _summarize_cron_failure_for_delivery(
+        {"name": "daily-review"},
+        "TimeoutError: local subprocess exceeded its deadline",
+    )
+
+    assert "local subprocess exceeded its deadline" in msg
+    assert "provider timeout" not in msg
+    assert "Fallback chain" not in msg

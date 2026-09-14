@@ -229,6 +229,22 @@ class JitContextEngine(ContextEngine):
                 )
                 capsule = str(res)
                 update_latest_capsule(session_id, capsule, active_scope)
+
+                # Persist human-readable local Markdown state under ~/.hermes/state/context/{session_id}.md
+                try:
+                    state_dir = Path.home() / ".hermes" / "state" / "context"
+                    state_dir.mkdir(parents=True, exist_ok=True)
+                    state_file = state_dir / f"{session_id}.md"
+                    state_file.write_text(
+                        f"# Session Context State: {session_id}\n"
+                        f"**Scope:** {active_scope}\n"
+                        f"**Updated:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n\n"
+                        f"```xml\n{capsule}\n```\n",
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+
                 return capsule
             finally:
                 conn.close()

@@ -499,7 +499,7 @@ describe('the drain loop wires drain → deliver → reply', () => {
 
     expect(calls.find(call => call.method === 'bot_relay.deliver')).toMatchObject({
       connectionId: 'b',
-      params: { message: 'status?', profile: 'ops' }
+      params: { id: 'env-1', message: 'status?', profile: 'ops' }
     })
     expect(calls.find(call => call.method === 'bot_relay.reply')).toMatchObject({
       connectionId: 'a',
@@ -586,6 +586,42 @@ describe('the drain loop wires drain → deliver → reply', () => {
       reason: 'provider_auth_or_access'
     })
     expect(noteBotAttentionMock).toHaveBeenCalledWith('b::ops', 'provider_auth_or_access')
+
+    stopBotRelay()
+  })
+
+  it('retains a canonical envelope after an ambiguous target failure', async () => {
+    let deliverAttempts = 0
+    let replyAttempts = 0
+
+    const calls = respondWith(call => {
+      if (call.method === 'bot_relay.outbox.drain') {
+        return {
+          envelopes: call.connectionId === 'a' ? [{ ...envelope, canonical_delivery_v1: true }] : []
+        }
+      }
+
+      if (call.method === 'bot_relay.deliver') {
+        deliverAttempts += 1
+        throw new Error('Hermes gateway connection closed')
+      }
+
+      if (call.method === 'bot_relay.reply') {
+        replyAttempts += 1
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await pushAndSettle()
+    await pushAndSettle()
+
+    expect(deliverAttempts).toBe(2)
+    expect(replyAttempts).toBe(0)
+    expect(calls.filter(call => call.method === 'bot_relay.outbox.drain')).toHaveLength(4)
 
     stopBotRelay()
   })

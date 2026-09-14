@@ -58,6 +58,7 @@ def test_outbox_drain_returns_each_envelope_once(home):
     )
     first = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
     assert [e["id"] for e in first["envelopes"]] == [env["id"]]
+    bot_relay.write_reply(home, env["id"], reply="done")
     second = _result(srv._methods["bot_relay.outbox.drain"](2, {}))
     assert second["envelopes"] == []
 
@@ -101,6 +102,32 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     err = srv._methods["bot_relay.deliver"](3, {"profile": "ghost", "message": "x"})
     assert "error" in err and "ghost" in err["error"]["message"]
     assert not calls
+
+
+def test_deliver_replays_terminal_receipt_without_running_turn(home, monkeypatch):
+    """A late retry after the target RPC response is lost must not run the turn twice."""
+    monkeypatch.setattr(srv, "_sessions", {})
+    calls = []
+
+    class _Proc:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def _run(profile, tmp, env):
+        calls.append((profile, tmp, env))
+        return _Proc(f"reply-{len(calls)}")
+
+    envelope_id = "a" * 32
+    params = {"id": envelope_id, "profile": "ops", "message": "ping"}
+    first = _result(srv._methods["bot_relay.deliver"](1, params, _run=_run))
+    second = _result(srv._methods["bot_relay.deliver"](2, params, _run=_run))
+
+    assert first == second
+    assert first["reply"] == "reply-1"
+    assert len(calls) == 1
 
 
 def test_deliver_requires_params(home):

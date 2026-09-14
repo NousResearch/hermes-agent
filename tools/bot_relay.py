@@ -6,14 +6,16 @@ no network; the Desktop owns every socket: ``roster.json`` (union roster of
 agents on OTHER connections, pushed via ``bot_relay.roster.sync``), ``outbox/``
 (envelopes queued by ``message_agent``, drained via ``bot_relay.outbox.drain``),
 ``replies/`` (one JSON per envelope via ``bot_relay.reply``; a waiter spawned at
-send time watches it so the reply wakes the sender like a local DM).
-Public helpers never raise, except ``enqueue_envelope`` → ``EnvelopeRefusedError``
-when the target is definitively offline (fail fast instead of queueing a DM nobody will drain).
+send time watches it so the reply wakes the sender like a local DM), and
+``delivery_receipts/`` (immutable target-side results for replayed deliveries).
+Mailbox reads remain best-effort; envelope and receipt writers validate their
+identifiers and may raise on malformed or conflicting state.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +38,7 @@ ROSTER_FILE = "roster.json"
 OUTBOX_DIR = "outbox"
 CLAIMED_DIR = "claimed"
 REPLIES_DIR = "replies"
+DELIVERY_RECEIPTS_DIR = "delivery_receipts"
 LOCKS_DIR = "locks"
 
 # Config fallbacks (real knobs: ``bot_mode.turn_wait_seconds`` / ``bot_mode.envelope_ttl_seconds``).
@@ -85,7 +88,7 @@ def relay_root(root: Path | str) -> Path:
 
 def _ensure_dirs(root: Path | str) -> Path:
     base = relay_root(root)
-    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR):
+    for sub in (OUTBOX_DIR, CLAIMED_DIR, REPLIES_DIR, DELIVERY_RECEIPTS_DIR, LOCKS_DIR):
         (base / sub).mkdir(parents=True, exist_ok=True)
     return base
 
@@ -214,7 +217,7 @@ def enqueue_envelope(root: Path | str, *, target: dict, message: str, sender_pro
                                    "Try again once that machine reconnects to the Desktop.")
     base = _ensure_dirs(root)
     envelope = {
-        "id": uuid.uuid4().hex, "created_at": int(time.time()),
+        "id": uuid.uuid4().hex, "created_at": int(time.time()), "canonical_delivery_v1": True,
         "from_profile": sender_profile, "from_handle": sender_handle,
         "target_connection": target["connection_id"], "target_profile": target["profile"],
         "target_handle": target["handle"], "message": message,
@@ -241,7 +244,116 @@ def _expire_if_stale(root: Path | str, path: Path, ttl: float, now: float) -> bo
     return True
 
 
+def _validate_envelope_id(envelope_id: Any) -> str:
+    safe = str(envelope_id or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{32}", safe):
+        raise ValueError(f"invalid envelope id: {envelope_id!r}")
+    return safe
+
+
+def _lock_stem(value: Any) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", str(value or ""))[:64] or "_"
+
+
+@contextlib.contextmanager
+def _relay_file_lock(
+    root: Path | str, envelope_id: str, prefix: str, *, lock_key: Any = None
+) -> Iterator[str]:
+    """Lock a relay artifact across gateway worker threads/processes."""
+    safe = _validate_envelope_id(envelope_id)
+    from hermes_cli.active_sessions import _FileLock
+
+    base = _ensure_dirs(root)
+    with _FileLock(base / LOCKS_DIR / f"{prefix}-{_lock_stem(lock_key or safe)}.lock"):
+        yield safe
+
+
+@contextlib.contextmanager
+def delivery_receipt_lock(
+    root: Path | str, envelope_id: str, *, lock_key: Any = None
+) -> Iterator[str]:
+    """Serialize target deliveries per profile while preserving each id's receipt."""
+    with _relay_file_lock(root, envelope_id, "delivery", lock_key=lock_key) as safe:
+        yield safe
+
+
+def _delivery_receipt_path(root: Path | str, envelope_id: str) -> Path:
+    safe = _validate_envelope_id(envelope_id)
+    return relay_root(root) / DELIVERY_RECEIPTS_DIR / f"{safe}.json"
+
+
+def read_delivery_receipt(root: Path | str, envelope_id: str) -> dict | None:
+    """Read a target-side terminal receipt, or ``None`` before execution starts."""
+    path = _delivery_receipt_path(root, envelope_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if not isinstance(data, dict) or data.get("id") != _validate_envelope_id(envelope_id):
+        raise ValueError(f"invalid delivery receipt: {path}")
+    return data
+
+
+def _write_delivery_receipt_locked(
+    root: Path | str,
+    envelope_id: str,
+    *,
+    request_digest: str,
+    status: str,
+    reply: str = "",
+    error: str = "",
+    reason: str = "",
+    code: int | None = None,
+) -> Path:
+    if status not in {"settled", "failed"}:
+        raise ValueError(f"invalid delivery receipt status: {status}")
+    safe = _validate_envelope_id(envelope_id)
+    outcome = {
+        "request_digest": str(request_digest), "status": status,
+        "reply": str(reply or ""), "error": str(error or ""),
+        "reason": str(reason or ""), "code": code,
+    }
+    path = _delivery_receipt_path(root, safe)
+    existing = read_delivery_receipt(root, safe)
+    if existing is not None:
+        if existing.get("request_digest") != outcome["request_digest"]:
+            raise ValueError("delivery id already belongs to a different payload")
+        if any(existing.get(key) != value for key, value in outcome.items()):
+            raise ValueError("delivery already has a different terminal receipt")
+        return path
+    _atomic_write_json(path, {"id": safe, "at": int(time.time()), **outcome}, sort_keys=True)
+    return path
+
+
+def delivery_request_digest(
+    profile: str,
+    message: str,
+    *,
+    from_profile: Any = "",
+    from_handle: Any = "",
+    from_connection: Any = "",
+) -> str:
+    """Bind a receipt to its routed payload without duplicating the DM text."""
+    payload = {
+        "profile": str(profile), "message": str(message),
+        "from_profile": str(from_profile or ""),
+        "from_handle": str(from_handle or ""),
+        "from_connection": str(from_connection or ""),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def claim_pending_envelopes(root: Path | str) -> list[dict]:
+    """Claim new envelopes and replay identified claims until a reply exists."""
+    base = _ensure_dirs(root)
+    from hermes_cli.active_sessions import _FileLock
+
+    with _FileLock(base / LOCKS_DIR / "claim.lock"):
+        return _claim_pending_envelopes_locked(root, base)
+
+
+def _claim_pending_envelopes_locked(root: Path | str, base: Path) -> list[dict]:
     """Drain the outbox (rename → claimed/ so a second drain can't double-deliver).
     TTL-expired envelopes get a 'queued_expired' reply and are removed instead.
 
@@ -249,7 +361,6 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
     (reason ``'queued_expired'``) so the sender's waiter resolves, and its outbox file is removed (#93091
     item 2).
     """
-    base = _ensure_dirs(root)
     _sweep_stale(base)
     ttl = _envelope_ttl_seconds()
     now = time.time()
@@ -263,6 +374,16 @@ def claim_pending_envelopes(root: Path | str) -> list[dict]:
         with contextlib.suppress(OSError, ValueError):
             os.replace(path, claimed)  # atomic claim
             out.append(json.loads(claimed.read_text(encoding="utf-8")))
+    seen = {str(envelope.get("id") or "") for envelope in out}
+    for path in sorted((base / CLAIMED_DIR).glob("*.json")):
+        with contextlib.suppress(OSError, ValueError):
+            envelope = json.loads(path.read_text(encoding="utf-8"))
+            if envelope.get("canonical_delivery_v1") is not True:
+                continue
+            safe = _validate_envelope_id(envelope.get("id"))
+            if safe in seen or (base / REPLIES_DIR / f"{safe}.json").exists():
+                continue
+            out.append(envelope)
     return out
 
 
@@ -270,16 +391,25 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
     """Persist the relayed reply (or delivery error) for the waiter. ``reason`` (typed
     code, ``tools.bot_failure_reasons``) is classified from ``error`` when omitted."""
     base = _ensure_dirs(root)
-    safe = str(envelope_id or "").strip()
-    if not re.match(r"^[0-9a-f]{32}$", safe):
-        raise ValueError(f"invalid envelope id: {envelope_id!r}")
+    safe = _validate_envelope_id(envelope_id)
     err, code = str(error or ""), str(reason or "")
     if not code and err:
         from tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
     path = base / REPLIES_DIR / f"{safe}.json"
-    _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code})
+    outcome = {"reply": str(reply or ""), "error": err, "reason": code}
+    from hermes_cli.active_sessions import _FileLock
+
+    with _FileLock(base / LOCKS_DIR / "reply.lock"):
+        existing = None
+        with contextlib.suppress(FileNotFoundError):
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        if existing is not None:
+            if any(existing.get(key) != value for key, value in outcome.items()):
+                raise ValueError("delivery already has a different reply")
+            return path
+        _atomic_write_json(path, {"id": safe, "at": int(time.time()), **outcome})
     return path
 
 
@@ -297,7 +427,8 @@ def unlink_files_older_than(directory: Path, pattern: str, cutoff: float) -> int
 
 def _sweep_stale(base: Path, *, now: float | None = None) -> int:
     cutoff = (time.time() if now is None else now) - STALE_AFTER_SECONDS
-    return sum(unlink_files_older_than(base / sub, "*.json", cutoff) for sub in (CLAIMED_DIR, REPLIES_DIR, OUTBOX_DIR))
+    return sum(unlink_files_older_than(base / sub, "*.json", cutoff)
+               for sub in (CLAIMED_DIR, REPLIES_DIR, DELIVERY_RECEIPTS_DIR, OUTBOX_DIR))
 
 
 def cleanup_bot_relay_artifacts(max_age_hours: float | None = None) -> int:

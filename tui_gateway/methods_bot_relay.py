@@ -6,6 +6,7 @@ Chat delivery on the TARGET gateway, returns the reply), ``reply`` (write the re
 the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers are rebound onto
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 
+import contextlib
 import os
 import subprocess
 from pathlib import Path
@@ -58,101 +59,184 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
 
 @method("bot_relay.deliver")
 def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
-    """Deliver a relayed DM (``profile``, attribution-prefixed ``message``) into a Bot Chat ON THIS
-    GATEWAY via the one-turn ``hermes -p <profile> chat -c "Bot Chat"`` transport local DMs use →
-    ``{reply}``. Blocking by design (Desktop relay worker; the RPC pool keeps it off the reader)."""
+    """Deliver a relayed DM into this gateway's Bot Chat.
+
+    Identified deliveries keep an immutable target-side receipt while the turn
+    runs. A caller that timed out can therefore retry the same id and recover
+    the original reply without executing the Bot Chat twice.
+    """
     import tempfile
+    from tools.bot_relay import (
+        DeliveryAuthor, _validate_envelope_id, _write_delivery_receipt_locked,
+        acquire_turn_lock, delivery_env, delivery_request_digest,
+        delivery_receipt_lock, delivery_turn_author, read_delivery_receipt,
+    )
+
     profile = str(params.get("profile") or "").strip()
     message = str(params.get("message") or "").strip()
     if not profile or not message:
         return _err(rid, 4090, "profile and message required")
-    try:
-        from tools.bot_mode_dm import MESSAGE_MAX_CHARS
-        from tools.bot_relay import acquire_turn_lock
-        if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
-            return _err(rid, 4091, "message too long")
-        root = _root()
-        known = {"default"}
-        if (root / "profiles").is_dir():
-            known.update(c.name for c in (root / "profiles").iterdir() if c.is_dir())
-        resolved = "default" if profile.lower() == "hermes" else profile
-        if resolved not in known:
-            return _err(rid, 4092, f"no profile '{profile}' on this gateway")
+    from tools.bot_mode_dm import MESSAGE_MAX_CHARS
+    if len(message) > MESSAGE_MAX_CHARS + 200:  # + attribution headroom
+        return _err(rid, 4091, "message too long")
 
-        # When THIS gateway already hosts the target's Bot Chat live, the subprocess transport is
-        # fenced out by the single-owner lease and the payload dropped. Land the DM in the live
-        # session via prompt.submit — the composer's choke point, so role alternation, persistence
-        # and streaming behave as a typed message would.
-        # (Nested per method_ctx rebinding.) See #100523.
-        from tools.bot_mode_probe import BOT_CHAT_TITLE
-        live_home = _profile_home(resolved)
-        want_home = str(live_home) if live_home is not None else None
-        live_sid = next((
-            live_sid for live_sid, record in list(_sessions.items())
-            if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
-            and _session_live_title(
-                record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
-        # The sender fields are whatever the relaying client says. The author labels memory only and grants nothing.
-        from tools.bot_relay import DeliveryAuthor, delivery_env, delivery_turn_author
-        from tui_gateway.methods_browser_control import _is_authenticated_identity
-        sender_fields = ("from_profile", "from_handle", "from_connection")
-        # A logged-in browser never relays for another connection; only the Desktop and server-internal callers do.
-        if (any(params.get(k) for k in sender_fields)
-                and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
-            return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
-        author = delivery_turn_author(*(params.get(k) for k in sender_fields))
-        if live_sid:
-            # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
-            # turn in flight (the default busy mode does); arrivals queue in order.
-            submit_params: dict = {"session_id": live_sid, "text": message, "queued": True}
-            if author:
-                submit_params["_turn_author"] = DeliveryAuthor(author)
-            submitted = _methods["prompt.submit"](rid, submit_params)
-            if "error" in submitted:
-                return submitted
-            reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
-            return _ok(rid, {"reply": reply})
+    root = _root()
+    known = {"default"}
+    if (root / "profiles").is_dir():
+        known.update(c.name for c in (root / "profiles").iterdir() if c.is_dir())
+    resolved = "default" if profile.lower() == "hermes" else profile
+    if resolved not in known:
+        return _err(rid, 4092, f"no profile '{profile}' on this gateway")
 
-        def _detail(p) -> str:
-            return (p.stderr or p.stdout or "").strip()[-500:]
+    # The sender fields are whatever the relaying client says. The author labels memory only and grants nothing.
+    from tui_gateway.methods_browser_control import _is_authenticated_identity
+    sender_fields = ("from_profile", "from_handle", "from_connection")
+    # A logged-in browser never relays for another connection; only the Desktop and server-internal callers do.
+    if (any(params.get(k) for k in sender_fields)
+            and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
+        return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
 
-        turn_env = delivery_env(author)
-
-        fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
+    envelope_id = None
+    if params.get("id") not in (None, ""):
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(message)
-            # Per-profile turn lock serializes with any other delivery turn into this profile and
-            # covers only the turn window. Worst-case hold is lock wait (bot_mode.turn_wait_seconds,
-            # default 120s) + the 600s turn timeout, doubled on one retry — callers tolerate ~1320s.
-            # Worst-case handler hold is lock wait (bot_mode.turn_wait_seconds, default 120s) + the 600s
-            # turn timeout below — doubled when the retry policy grants one bounded re-run — so clients
-            # calling bot_relay.deliver must tolerate ~1320s before assuming failure. See #93091.
-            with acquire_turn_lock(root, resolved):
-                proc = _run(resolved, tmp, turn_env)
-                if proc.returncode != 0:
-                    # Retry policy: transient classes re-run the SAME session once; context_overflow
-                    # too — the retried turn's pre-API compaction pass compacts the over-threshold
-                    # transcript first (no fresh session is minted). Auth/quota/config never retry.
-                    # See #93091.
-                    from tools.bot_failure_reasons import (
-                        RETRY_NONE, classify_agent_error, retry_action)
-                    if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
-                        proc = _run(resolved, tmp, turn_env)
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-        if proc.returncode != 0:
-            from tools.bot_failure_reasons import classify_agent_error
-            detail = _detail(proc)
-            return _err(rid, 5092, f"delivery turn failed: {detail or proc.returncode}",
-                        data={"reason": classify_agent_error(detail)})
-        return _ok(rid, {"reply": (proc.stdout or "").strip()})
-    except subprocess.TimeoutExpired:
-        return _err(rid, 5093, "delivery turn timed out")
-    except Exception as e:
-        # 'target_busy' extends the structured refusal enum.
-        return _err(rid, 5096 if getattr(e, "reason", "") == "target_busy" else 5094, str(e))
+            envelope_id = _validate_envelope_id(params.get("id"))
+        except ValueError as exc:
+            return _err(rid, 4096, str(exc), data={"reason": "invalid_params"})
+
+    request_digest = (
+        delivery_request_digest(
+            resolved, message,
+            from_profile=params.get("from_profile"),
+            from_handle=params.get("from_handle"),
+            from_connection=params.get("from_connection"),
+        )
+        if envelope_id
+        else ""
+    )
+
+    def _receipt_response(receipt: dict) -> dict:
+        if receipt.get("status") == "failed":
+            reason = str(receipt.get("reason") or "").strip()
+            data = {"reason": reason} if reason else None
+            return _err(
+                rid,
+                int(receipt.get("code") or 5092),
+                str(receipt.get("error") or "delivery failed"),
+                data=data,
+            )
+        return _ok(rid, {"reply": str(receipt.get("reply") or "")})
+
+    def _deliver_once() -> dict:
+        try:
+            # When THIS gateway already hosts the target's Bot Chat live, the subprocess transport is
+            # fenced out by the single-owner lease and the payload dropped. Land the DM in the live
+            # session via prompt.submit — the composer's choke point, so role alternation, persistence
+            # and streaming behave as a typed message would. See #100523.
+            from tools.bot_mode_probe import BOT_CHAT_TITLE
+            live_home = _profile_home(resolved)
+            want_home = str(live_home) if live_home is not None else None
+            live_sid = next((
+                live_sid for live_sid, record in list(_sessions.items())
+                if isinstance(record, dict) and (record.get("profile_home") or None) == want_home
+                and _session_live_title(
+                    record, _session_lookup_key(record, fallback=live_sid)) == BOT_CHAT_TITLE), "")
+            author = delivery_turn_author(*(params.get(k) for k in sender_fields))
+            if live_sid:
+                # queued=True: a teammate's DM runs as the NEXT turn and never interrupts or steers a
+                # turn in flight (the default busy mode does); arrivals queue in order.
+                submit_params: dict = {"session_id": live_sid, "text": message, "queued": True}
+                if author:
+                    submit_params["_turn_author"] = DeliveryAuthor(author)
+                submitted = _methods["prompt.submit"](rid, submit_params)
+                if "error" in submitted:
+                    return submitted
+                reply = f"Delivered into @{resolved}'s open Bot Chat; the reply will appear there."
+                return _ok(rid, {"reply": reply})
+
+            def _detail(p) -> str:
+                return (p.stderr or p.stdout or "").strip()[-500:]
+
+            turn_env = delivery_env(author)
+            fd, tmp = tempfile.mkstemp(prefix="hermes-relay-dm-", suffix=".txt", text=True)
+            stream = None
+            try:
+                stream = os.fdopen(fd, "w", encoding="utf-8")
+                with stream as f:
+                    f.write(message)
+                # The profile lock serializes delivery turns. Worst-case hold is the configured wait plus
+                # the bounded attempt window, doubled only by the existing retry policy. See #93091.
+                with acquire_turn_lock(root, resolved):
+                    proc = _run(resolved, tmp, turn_env)
+                    if proc.returncode != 0:
+                        from tools.bot_failure_reasons import (
+                            RETRY_NONE, classify_agent_error, retry_action)
+                        if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
+                            proc = _run(resolved, tmp, turn_env)
+            finally:
+                # os.fdopen normally owns and closes fd. Keep the explicit close as a
+                # fallback for a wrapper that fails before taking ownership (and for
+                # the gateway's injected writer doubles), before unlinking on Windows.
+                if stream is not None:
+                    with contextlib.suppress(AttributeError, OSError):
+                        stream.close()
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+            if proc.returncode != 0:
+                from tools.bot_failure_reasons import classify_agent_error
+                detail = _detail(proc)
+                return _err(rid, 5092, f"delivery turn failed: {detail or proc.returncode}",
+                            data={"reason": classify_agent_error(detail)})
+            return _ok(rid, {"reply": (proc.stdout or "").strip()})
+        except subprocess.TimeoutExpired:
+            return _err(rid, 5093, "delivery turn timed out", data={"reason": "delivery_timeout"})
+        except Exception as exc:
+            # 'target_busy' extends the structured refusal enum. It is not a terminal receipt: the
+            # Desktop keeps the envelope claimed and retries it after the competing turn settles.
+            reason = str(getattr(exc, "reason", "") or "").strip()
+            return _err(
+                rid,
+                5096 if reason == "target_busy" else 5094,
+                str(exc),
+                data={"reason": reason} if reason else None,
+            )
+
+    if envelope_id is None:
+        return _deliver_once()
+
+    with delivery_receipt_lock(root, envelope_id, lock_key=resolved) as safe_id:
+        receipt = read_delivery_receipt(root, safe_id)
+        if receipt is not None:
+            if receipt.get("request_digest") != request_digest:
+                return _err(rid, 4097, "delivery id already belongs to a different payload",
+                            data={"reason": "invalid_params"})
+            return _receipt_response(receipt)
+
+        response = _deliver_once()
+        if "error" in response:
+            error = response["error"] if isinstance(response.get("error"), dict) else {}
+            reason = str((error.get("data") or {}).get("reason") or "").strip()
+            if reason != "target_busy":
+                _write_delivery_receipt_locked(
+                    root,
+                    safe_id,
+                    request_digest=request_digest,
+                    status="failed",
+                    error=str(error.get("message") or "delivery failed"),
+                    reason=reason,
+                    code=int(error.get("code") or 5092),
+                )
+        else:
+            result = response.get("result") if isinstance(response.get("result"), dict) else {}
+            _write_delivery_receipt_locked(
+                root,
+                safe_id,
+                request_digest=request_digest,
+                status="settled",
+                reply=str(result.get("reply") or ""),
+            )
+        return response
 
 
 @method("bot_relay.reply")

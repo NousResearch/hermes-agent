@@ -108,7 +108,7 @@ def test_resolve_ambiguous_handle_across_connections(root):
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 
-def test_enqueue_claim_is_atomic_and_single_shot(root):
+def test_enqueue_claim_replays_until_sender_reply_exists(root):
     bot_relay.write_remote_roster(root, _rows())
     roster = bot_relay.read_remote_roster(root)
     target = bot_relay.resolve_remote_target("researcher", roster)
@@ -120,7 +120,13 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert [e["id"] for e in claimed] == [env["id"]]
     assert claimed[0]["target_connection"] == "ssh-vps"
     assert claimed[0]["message"] == "hi"
-    # second drain: nothing (no double delivery)
+    # A reconnect must replay the same envelope while the sender-side reply
+    # write is still missing; it must never mint a new delivery id.
+    replayed = bot_relay.claim_pending_envelopes(root)
+    assert [e["id"] for e in replayed] == [env["id"]]
+    assert replayed[0] == claimed[0]
+
+    bot_relay.write_reply(root, env["id"], reply="done")
     assert bot_relay.claim_pending_envelopes(root) == []
 
 
@@ -130,6 +136,17 @@ def test_write_reply_validates_envelope_id(root):
     path = bot_relay.write_reply(root, "a" * 32, reply="pong")
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     assert data["reply"] == "pong" and not data["error"]
+
+
+def test_write_reply_is_idempotent_for_replayed_delivery(root):
+    envelope_id = "f" * 32
+    path = bot_relay.write_reply(root, envelope_id, reply="first")
+
+    assert bot_relay.write_reply(root, envelope_id, reply="first") == path
+    with pytest.raises(ValueError, match="different"):
+        bot_relay.write_reply(root, envelope_id, reply="second")
+
+    assert json.loads(Path(path).read_text(encoding="utf-8"))["reply"] == "first"
 
 
 def test_write_reply_reason_passthrough_and_classification(root):

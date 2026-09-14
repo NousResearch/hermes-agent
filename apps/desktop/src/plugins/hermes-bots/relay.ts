@@ -123,6 +123,7 @@ interface RelayAgentRow {
 
 /** A queued cross-connection message drained from a gateway's outbox. */
 interface RelayEnvelope {
+  canonical_delivery_v1?: boolean
   id?: string
   message?: string
   from_profile?: string
@@ -367,6 +368,7 @@ async function drainRelayOutboxes() {
 
         const envelopeId = String(envelope?.id || '')
         const target = byId.get(String(envelope?.target_connection || ''))
+        const canonicalDelivery = envelope?.canonical_delivery_v1 === true
 
         const postReply = async (payload: { error?: string; reason?: string; reply?: string }) => {
           try {
@@ -384,6 +386,15 @@ async function drainRelayOutboxes() {
         }
 
         if (!target) {
+          if (canonicalDelivery) {
+            noteBotAttention(
+              `${String(envelope?.target_connection || '')}::${String(envelope?.target_profile || '')}`,
+              'target unavailable; retained for retry'
+            )
+
+            continue
+          }
+
           await postReply({
             error: `connection '${envelope?.target_connection}' is not connected to this Desktop right now`
           })
@@ -400,6 +411,7 @@ async function drainRelayOutboxes() {
             target.route,
             'bot_relay.deliver',
             {
+              id: envelopeId,
               profile: String(envelope?.target_profile || ''),
               message: String(envelope?.message || ''),
               from_profile: String(envelope?.from_profile || ''),
@@ -421,6 +433,14 @@ async function drainRelayOutboxes() {
           // classified codes beat free-text re-parsing.
           const reason = String(error?.data?.reason || '').trim()
           noteBotAttention(attentionKey, reason || error?.message || error)
+          // A canonical target may have completed after this socket timed out,
+          // or may still hold its per-delivery lock. Keep the claimed envelope
+          // for the next drain; the target-side receipt makes the retry safe.
+
+          if (canonicalDelivery && (!reason || reason === 'target_busy')) {
+            continue
+          }
+
           await postReply({
             error: String(error?.message || error || 'delivery failed'),
             ...(reason

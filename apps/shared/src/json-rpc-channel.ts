@@ -76,7 +76,8 @@ interface DecodedServerRequest<M extends keyof ServerRequestMap> {
 const isServerRequestFrame = (frame: JsonRpcFrame): frame is JsonRpcFrame & { id: string; method: string } =>
   typeof frame.id === 'string' && typeof frame.method === 'string' && frame.method !== 'event'
 
-const isJsonObject = (value: JsonValue): value is Record<string, JsonValue> => value !== null && typeof value === 'object' && !Array.isArray(value)
+const isJsonObject = (value: JsonValue): value is Record<string, JsonValue> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
 
 const isServerRequestMethod = (method: string): method is keyof ServerRequestMap =>
   SERVER_REQUEST_METHODS.some(serverRequestMethod => serverRequestMethod === method)
@@ -89,11 +90,10 @@ const decodeServerRequest = <M extends keyof ServerRequestMap>(
 ): DecodedServerRequest<M> => {
   const params = isJsonObject(rawParams) ? rawParams : {}
 
-  // SAFETY: SERVER_REQUEST_METHODS establishes M; the backend validates its params before sending.
   return {
     id,
     method,
-    params: params as ServerRequestMap[M]['params'],
+    params: decodeWire<ServerRequestMap[M]['params']>(params),
     rawParams: params,
     replayed,
     sessionId: typeof params.session_id === 'string' ? params.session_id : null
@@ -103,11 +103,9 @@ const decodeServerRequest = <M extends keyof ServerRequestMap>(
 const isGatewayEvent = (value: JsonValue): value is { type: string; [key: string]: JsonValue } =>
   isJsonObject(value) && typeof value.type === 'string'
 
-const asResponseResult = <M extends keyof RpcMethods>(value: JsonValue): RpcMethods[M]['result'] =>
-  // SAFETY: response data was produced by the backend method selected at request registration.
-  value as RpcMethods[M]['result']
-
-const asUntypedResponseResult = (value: JsonValue): JsonValue => value
+// SAFETY: the backend validated every frame against the same generated contract before sending it;
+// this is the one place wire JSON becomes a generated type.
+const decodeWire = <T>(value: JsonValue): T => value as T
 
 const jsonFrame = (text: string): JsonRpcFrame | null => {
   try {
@@ -203,16 +201,12 @@ interface PendingCall {
   timer?: ReturnType<typeof setTimeout>
 }
 
-type PendingResponseKind = 'typed' | 'untyped'
-
 interface PendingRequest {
   call: PendingCall
-  responseKind: PendingResponseKind
 }
 
 interface RequestOptions {
   notConnectedError: () => Error
-  responseKind: PendingResponseKind
   signal?: AbortSignal
   timeoutMs: number
 }
@@ -231,20 +225,28 @@ interface UntypedWireRequest extends WireRequest {
   params: Record<string, JsonValue>
 }
 
-const typedWireRequest = <M extends keyof RpcMethods>(method: M, params: RpcMethods[M]['params']): TypedWireRequest<M> => ({
+const typedWireRequest = <M extends keyof RpcMethods>(
+  method: M,
+  params: RpcMethods[M]['params']
+): TypedWireRequest<M> => ({
   method,
   params
 })
 
-const untypedWireRequest = (method: string, params: Record<string, JsonValue>): UntypedWireRequest => ({ method, params })
+const untypedWireRequest = (method: string, params: Record<string, JsonValue>): UntypedWireRequest => ({
+  method,
+  params
+})
 
 const requestOptions = (
   timeoutMs: number,
   signal: AbortSignal | undefined,
-  notConnectedError: () => Error,
-  responseKind: PendingResponseKind
-): RequestOptions => ({ notConnectedError, responseKind, signal, timeoutMs })
-
+  notConnectedError: () => Error
+): RequestOptions => ({
+  notConnectedError,
+  signal,
+  timeoutMs
+})
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 120_000
 // Keepalive + dead-connection detection. A silent drop (macOS sleep, proxy
@@ -351,10 +353,10 @@ export class JsonRpcRequestChannel {
     signal?: AbortSignal,
     notConnectedError: () => Error = () => new Error('gateway not connected')
   ): Promise<RpcMethods[M]['result']> {
-    // SAFETY: `typedWireRequest` retains the generated method/result pairing through the request boundary.
-    return this.requestInternal(typedWireRequest(method, params), requestOptions(timeoutMs, signal, notConnectedError, 'typed')) as Promise<
-      RpcMethods[M]['result']
-    >
+    return this.requestInternal(
+      typedWireRequest(method, params),
+      requestOptions(timeoutMs, signal, notConnectedError)
+    ).then(value => decodeWire<RpcMethods[M]['result']>(value))
   }
 
   // SAFETY: plugins are third-party code; the method name is not known at compile time.
@@ -365,10 +367,10 @@ export class JsonRpcRequestChannel {
     signal?: AbortSignal,
     notConnectedError: () => Error = () => new Error('gateway not connected')
   ): Promise<JsonValue> {
-    // SAFETY: `untypedWireRequest` is the single plugin boundary that accepts an arbitrary method.
-    return this.requestInternal(untypedWireRequest(method, params), requestOptions(timeoutMs, signal, notConnectedError, 'untyped')) as Promise<
-      JsonValue
-    >
+    return this.requestInternal(
+      untypedWireRequest(method, params),
+      requestOptions(timeoutMs, signal, notConnectedError)
+    )
   }
 
   private requestInternal(request: WireRequest, options: RequestOptions): Promise<JsonValue> {
@@ -433,7 +435,7 @@ export class JsonRpcRequestChannel {
         options.signal.addEventListener('abort', onAbort, { once: true })
       }
 
-      this.pending.set(id, { call, responseKind: options.responseKind })
+      this.pending.set(id, { call })
 
       try {
         transport.send(JSON.stringify({ jsonrpc: '2.0', id, ...request }))
@@ -466,7 +468,9 @@ export class JsonRpcRequestChannel {
   /** Deliver a live or replayed server request through the typed method table. */
   deliverRequest(id: string, method: string, rawParams: JsonValue, replayed = false): boolean {
     if (!isServerRequestMethod(method)) {
-      this.sendServerRequestResponse(id, { error: { code: JSON_RPC_METHOD_NOT_FOUND, message: `no handler for server request: ${method}` } })
+      this.sendServerRequestResponse(id, {
+        error: { code: JSON_RPC_METHOD_NOT_FOUND, message: `no handler for server request: ${method}` }
+      })
       this.options.onUnhandledRequest?.({ id, method, params: isJsonObject(rawParams) ? rawParams : {} })
 
       return false
@@ -600,12 +604,7 @@ export class JsonRpcRequestChannel {
           const result = responseResult(frame)
           this.deliverOpenRequests(result)
 
-          if (call.responseKind === 'typed') {
-            // SAFETY: the typed branch preserves the method/result pairing at request registration.
-            call.call.resolve(asResponseResult(result) as JsonValue)
-          } else {
-            call.call.resolve(asUntypedResponseResult(result))
-          }
+          call.call.resolve(result)
         }
       }
 

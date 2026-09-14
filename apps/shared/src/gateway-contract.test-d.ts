@@ -22,9 +22,9 @@ request('session.status', { session_id: 's' }).then(r => {
 
   return n
 })
-onServerRequest('clarify.request', req => {
+onServerRequest('clarify', req => {
   // @ts-expect-error un-narrowed access (questions only on the batch arm)
   void req.params.questions
   // @ts-expect-error wrong reply key
-  req.respond({ answer: 'x' })
+  req.respond({ value: 'x' })
 })

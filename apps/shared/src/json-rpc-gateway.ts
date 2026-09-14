@@ -54,7 +54,9 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000
 
 /** True for a `ws://` / `wss://` URL string — the only thing `JsonRpcGatewayClient.connect()` will dial. */
 export function isGatewayWebSocketUrl(value: unknown): value is string {
-  if (typeof value !== 'string') {return false}
+  if (typeof value !== 'string') {
+    return false
+  }
 
   try {
     const protocol = new URL(value).protocol
@@ -389,7 +391,13 @@ export class JsonRpcGatewayClient {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
-    return this.channel.request(method, params, timeoutMs, signal, () => new Error(this.options.notConnectedErrorMessage))
+    return this.channel.request(
+      method,
+      params,
+      timeoutMs,
+      signal,
+      () => new Error(this.options.notConnectedErrorMessage)
+    )
   }
 
   // SAFETY: plugins are third-party code; the method name is not known at compile time.
@@ -403,7 +411,13 @@ export class JsonRpcGatewayClient {
       return Promise.reject(new Error(this.options.notConnectedErrorMessage))
     }
 
-    return this.channel.requestUntyped(method, params, timeoutMs, signal, () => new Error(this.options.notConnectedErrorMessage))
+    return this.channel.requestUntyped(
+      method,
+      params,
+      timeoutMs,
+      signal,
+      () => new Error(this.options.notConnectedErrorMessage)
+    )
   }
 
   private handleEvent(event: GatewayEvent): void {
@@ -515,7 +529,6 @@ export class JsonRpcGatewayClient {
 
         for (const event of result.value.events) {
           // SAFETY: session.events.since returns backend-validated event envelopes.
-          // @ts-expect-error gateway-contract.generated.ts is regenerated with typed event envelopes in Wave C.
           this.dispatchIfNewer(event as GatewayEvent)
         }
       }

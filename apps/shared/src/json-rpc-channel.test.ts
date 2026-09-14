@@ -31,7 +31,9 @@ describe('JsonRpcRequestChannel', () => {
         jsonrpc: '2.0'
       })
     )
-    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', payload: {} } }))
+    channel.handleFrame(
+      JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'session.info', payload: {} } })
+    )
     // Non-JSON and unknown ids are ignored, never thrown.
     expect(channel.handleFrame('not json')).toBeNull()
     channel.handleFrame(JSON.stringify({ id: 'never-sent', jsonrpc: '2.0', result: 1 }))
@@ -67,7 +69,9 @@ describe('JsonRpcRequestChannel', () => {
 
       channel.attach(transport)
 
-      const slow = expect(channel.requestUntyped('a.slow', {}, 1_000)).rejects.toThrow('request timed out after 1s: a.slow')
+      const slow = expect(channel.requestUntyped('a.slow', {}, 1_000)).rejects.toThrow(
+        'request timed out after 1s: a.slow'
+      )
       const untilDetach = channel.requestUntyped('b.wait', {})
 
       await vi.advanceTimersByTimeAsync(1_000)
@@ -139,7 +143,10 @@ describe('JsonRpcRequestChannel', () => {
       channel.startHeartbeat()
 
       const pingIds = () =>
-        sent.map(f => JSON.parse(f) as { id: string; method: string }).filter(f => f.method === 'gateway.ping').map(f => f.id)
+        sent
+          .map(f => JSON.parse(f) as { id: string; method: string })
+          .filter(f => f.method === 'gateway.ping')
+          .map(f => f.id)
 
       // Pongs arrive: alive well past the deadline.
       for (let i = 0; i < 6; i++) {
@@ -162,7 +169,9 @@ describe('JsonRpcRequestChannel', () => {
       // Deltas keep streaming but no ping is answered → dead.
       for (let i = 0; i < 4; i++) {
         await vi.advanceTimersByTimeAsync(100)
-        channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', payload: {} } }))
+        channel.handleFrame(
+          JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'message.delta', payload: {} } })
+        )
       }
 
       expect(failures).toEqual(['WebSocket heartbeat acknowledgement timed out'])
@@ -198,21 +207,23 @@ describe('JsonRpcRequestChannel', () => {
     const { sent, transport } = spyTransport()
 
     channel.attach(transport)
-    channel.onServerRequest('clarify.request', req => req.respond({ value: 'yes' }))
+    channel.onServerRequest('clarify', req => req.respond({ answer: 'yes' }))
 
     channel.handleFrame(
       JSON.stringify({
         id: 'srq-1',
         jsonrpc: '2.0',
-        method: 'clarify.request',
+        method: 'clarify',
         params: { choices: [], kind: 'single', multi_select: false, question: 'Continue?', session_id: 's1' }
       })
     )
-    channel.handleFrame(JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'not.declared', params: { session_id: 's1' } }))
+    channel.handleFrame(
+      JSON.stringify({ id: 'srq-2', jsonrpc: '2.0', method: 'not.declared', params: { session_id: 's1' } })
+    )
 
     const frames = sent.map(f => JSON.parse(f) as { id: string; result?: unknown; error?: { code: number } })
 
-    expect(frames[0]).toEqual({ id: 'srq-1', jsonrpc: '2.0', result: { value: 'yes' } })
+    expect(frames[0]).toEqual({ id: 'srq-1', jsonrpc: '2.0', result: { answer: 'yes' } })
     expect(frames[1].id).toBe('srq-2')
     expect(frames[1].error?.code).toBe(-32601)
     expect(unhandled).toEqual(['not.declared'])
@@ -224,7 +235,10 @@ describe('JsonRpcRequestChannel', () => {
     const { sent, transport } = spyTransport()
 
     channel.attach(transport)
-    channel.onServerRequest('sudo.request', req => void delivered.push({ id: req.id, replayed: req.replayed, sessionId: req.sessionId }))
+    channel.onServerRequest(
+      'sudo',
+      req => void delivered.push({ id: req.id, replayed: req.replayed, sessionId: req.sessionId })
+    )
 
     const resume = channel.request('session.resume', { session_id: 's1' })
     const rid = (JSON.parse(sent.at(-1)!) as { id: string }).id
@@ -234,7 +248,7 @@ describe('JsonRpcRequestChannel', () => {
         id: rid,
         jsonrpc: '2.0',
         result: {
-          open_requests: [{ id: 'srq-9', method: 'sudo.request', params: { session_id: 's1' } }],
+          open_requests: [{ id: 'srq-9', method: 'sudo', params: { session_id: 's1' } }],
           session_id: 's1'
         }
       })

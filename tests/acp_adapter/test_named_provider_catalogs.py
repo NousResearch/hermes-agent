@@ -183,6 +183,68 @@ class TestNamedCustomProviderCatalogs:
             ]
 
 
+class TestOneIdPerEndpoint:
+    """A named ``providers:`` endpoint is offered once — under the id that round-trips.
+
+    The inventory lists such an endpoint under its raw config key, and
+    ``parse_model_input`` cannot split that prefix, so the raw-key row used to select a
+    model no provider can serve (the endpoint's models are then sent upstream verbatim
+    as ``<key>:<model>``). The named-catalog row owns the endpoint instead.
+    """
+
+    def test_endpoint_is_listed_once_under_the_round_tripping_id(self):
+        from acp_adapter.model_catalog import _ModelCatalog
+        from hermes_cli.models import normalize_provider, parse_model_input
+
+        owned = {"custom:relay"}
+        cat = _ModelCatalog(
+            normalize_provider=normalize_provider, current_model="model-a",
+            current_choice_provider="custom", current_base_url="https://relay.example/v1",
+            owned_slugs=owned,
+        )
+        cat.add_inventory_rows(
+            [{"slug": "relay", "name": "Relay", "api_url": "https://relay.example/v1",
+              "models": ["model-a", "model-b"]}],
+            lambda slug: slug,
+        )
+        cat.add_named_catalogs(
+            [("custom:relay", "Relay", [("model-a", ""), ("model-b", "")])],
+            normalize_provider("custom"),
+        )
+
+        ids = [m.model_id for m in cat.models]
+        assert ids == ["custom:relay:model-a", "custom:relay:model-b"]
+        cfg = {"providers": {"relay": {"name": "Relay", "base_url": "https://relay.example/v1"}}}
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            assert parse_model_input(ids[0], "custom") == ("custom:relay", "model-a")
+
+    def test_current_provider_reported_as_raw_key_maps_to_the_named_slug(self):
+        from acp_adapter.model_catalog import _ModelCatalog
+        from hermes_cli.models import normalize_provider
+
+        cat = _ModelCatalog(
+            normalize_provider=normalize_provider, current_model="model-a",
+            current_choice_provider="relay", current_base_url="https://relay.example/v1",
+            owned_slugs={"custom:relay"},
+        )
+        assert cat.current_choice_provider == "custom:relay"
+
+    def test_unowned_inventory_rows_are_kept(self):
+        from acp_adapter.model_catalog import _ModelCatalog
+        from hermes_cli.models import normalize_provider
+
+        cat = _ModelCatalog(
+            normalize_provider=normalize_provider, current_model="", current_choice_provider="custom",
+            current_base_url="", owned_slugs={"custom:relay"},
+        )
+        cat.add_inventory_rows(
+            [{"slug": "openai", "name": "OpenAI", "api_url": "https://api.openai.com/v1",
+              "models": ["gpt-5.4"]}],
+            lambda slug: slug,
+        )
+        assert [m.model_id for m in cat.models] == ["openai:gpt-5.4"]
+
+
 class TestModelStateIncludesNamedProviders:
     @pytest.mark.asyncio
     async def test_authoritative_empty_named_catalog_does_not_resurrect_current_model(self):

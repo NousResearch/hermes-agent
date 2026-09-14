@@ -152,13 +152,30 @@ def encode_model_choice(provider: str | None, model: str | None) -> str:
     return f"{raw_provider}:{raw_model}" if raw_provider else raw_model
 
 
+def _named_slug(provider_id: str) -> str:
+    """``providers:`` entry key / raw slug -> its ``custom:<key>`` identity (``""`` when empty)."""
+    raw = str(provider_id or "").strip().lower()
+    if not raw:
+        return ""
+    if raw.startswith("custom:"):
+        return raw
+    try:
+        from hermes_cli.providers import custom_provider_slug
+
+        return custom_provider_slug(raw, raw)
+    except Exception:
+        return f"custom:{raw}"
+
+
 @dataclass
 class _ModelCatalog:
     """Deduplicated ACP model rows from the inventory + named endpoints.
 
     Dedupes on the encoded choice id AND a semantic ``provider:model`` id (``ollama`` ==
     ``custom:ollama``). A bare/``custom`` current provider whose base_url matches an ollama
-    inventory row is resolved to ``custom:ollama``."""
+    inventory row is resolved to ``custom:ollama``. Endpoints owned by a named catalog
+    (``owned_slugs``) are emitted from that path alone: its ``custom:<key>`` ids round-trip
+    through ``parse_model_input``, while the inventory row's raw-key id does not."""
 
     normalize_provider: Callable[[str], str]
     current_model: str
@@ -168,10 +185,15 @@ class _ModelCatalog:
     seen_ids: set[str] = field(default_factory=set)
     seen_semantic_ids: set[str] = field(default_factory=set)
     empty_authoritative: set[str] = field(default_factory=set)
+    owned_slugs: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if self.current_choice_provider == "ollama":
             self.current_choice_provider = "custom:ollama"
+        if self.owned_slugs:
+            alias = _named_slug(self.current_choice_provider)
+            if alias in self.owned_slugs:
+                self.current_choice_provider = alias
         self._identity_resolved = self.current_choice_provider not in {"", "custom"}
 
     def semantic(self, provider_id: str) -> str:
@@ -198,6 +220,8 @@ class _ModelCatalog:
             ):
                 self.current_choice_provider = "custom:ollama"
                 self._identity_resolved = True
+            if raw_row_provider and _named_slug(raw_row_provider) in self.owned_slugs:
+                continue  # named catalog owns this endpoint's rows (round-tripping `custom:<key>` ids)
             row_models = row.get("models")
             if not row_provider or not isinstance(row_models, (list, tuple)):
                 continue
@@ -251,13 +275,16 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
         probe_custom_providers=False, probe_current_custom_provider=False, max_models=ACP_MAX_MODELS_PER_PROVIDER,
     )
 
+    named_catalogs = _named_custom_provider_catalogs()
+    owned_slugs = {slug for slug, _label, catalog in named_catalogs if catalog}
     cat = _ModelCatalog(
         normalize_provider=normalize_provider, current_model=model,
         current_choice_provider=str(provider or "").strip().lower(),
         current_base_url=base_url.strip().rstrip("/").lower(),
+        owned_slugs=owned_slugs,
     )
     cat.add_inventory_rows(payload.get("providers") or [], provider_label)
-    cat.add_named_catalogs(_named_custom_provider_catalogs(), normalized_provider)
+    cat.add_named_catalogs(named_catalogs, normalized_provider)
     available_models = cat.models
 
     def empty_applies(provider_id: str) -> bool:

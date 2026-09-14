@@ -1,6 +1,7 @@
 """Tests for hermes_cli.gateway_windows."""
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -364,9 +365,138 @@ def test_gateway_vbs_script_is_console_less(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_cli_runs_under_gateway_is_true_for_ancestor(monkeypatch):
+    """The descendant guard fires when the live gateway PID is in our ancestry."""
+    import hermes_cli.gateway as gateway
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: {os.getpid(), 4321, 1})
+    assert gateway_windows._cli_runs_under_gateway(4321) is True
 
 
 
 
+def test_cli_runs_under_gateway_is_false_for_clean_shell(monkeypatch):
+    """A restart from an ordinary shell has no gateway ancestor — unaffected."""
+    import hermes_cli.gateway as gateway
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: {os.getpid(), 1})
+    assert gateway_windows._cli_runs_under_gateway(4321) is False
 
 
+
+
+def test_arm_gateway_restart_watch_replays_run_argv_not_restart_argv(monkeypatch):
+    """The watcher must replay the gateway's ``gateway run`` argv, never this
+    CLI's own ``gateway restart`` argv — replaying the latter would respawn the
+    restart command recursively instead of the gateway."""
+    import psutil
+    captured = []
+
+    monkeypatch.setattr(
+        psutil, "Process",
+        lambda pid: SimpleNamespace(cmdline=lambda: ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"]),
+    )
+    monkeypatch.setattr(
+        gateway, "launch_detached_gateway_restart_by_cmdline",
+        lambda pid, argv: captured.append((pid, list(argv))) or True,
+    )
+
+    assert gateway_windows._arm_gateway_restart_watch([4321]) is True
+    assert captured == [
+        (4321, ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"])
+    ]
+
+
+
+
+def test_arm_gateway_restart_watch_skips_non_gateway_argv(monkeypatch):
+    """A PID whose cmdline is unreadable or not a gateway is skipped, so we
+    never respawn garbage. Armed stays False and nothing is spawned."""
+    import psutil
+    captured = []
+
+    monkeypatch.setattr(
+        psutil, "Process", lambda pid: SimpleNamespace(cmdline=lambda: [])
+    )
+    monkeypatch.setattr(
+        gateway, "launch_detached_gateway_restart_by_cmdline",
+        lambda pid, argv: captured.append(pid) or True,
+    )
+
+    assert gateway_windows._arm_gateway_restart_watch([4321]) is False
+    assert captured == []
+
+
+
+
+def test_restart_arms_detached_watcher_before_stop_when_under_gateway(monkeypatch):
+    """End-to-end ordering for the agent path: arm the watcher *before* the
+    stop (the child gets killed mid-stop), then verify — never call start()."""
+    import gateway.status as gw_status
+
+    order = []
+    monkeypatch.setattr(
+        gw_status, "get_running_pid",
+        lambda *a, **k: 4321, raising=False,
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_cli_runs_under_gateway", lambda pid: True
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_arm_gateway_restart_watch",
+        lambda pids: order.append("arm") or True,
+    )
+    monkeypatch.setattr(
+        gateway_windows, "stop", lambda *a, **k: order.append("stop")
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: True
+    )
+    monkeypatch.setattr(
+        gateway_windows, "start",
+        lambda *a, **k: order.append("start"),
+    )
+
+    gateway_windows.restart()
+
+    assert order == ["arm", "stop"], order
+    assert "start" not in order, (
+        "the agent path must not call the synchronous start(); the detached "
+        "watcher owns the relaunch"
+    )
+
+
+
+
+def test_restart_falls_back_to_synchronous_when_watch_not_armed(monkeypatch):
+    """If the watcher could not be armed, the descendant path degrades to the
+    synchronous stop→start flow rather than silently doing nothing."""
+    import gateway.status as gw_status
+
+    order = []
+    monkeypatch.setattr(
+        gw_status, "get_running_pid",
+        lambda *a, **k: 4321, raising=False,
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_cli_runs_under_gateway", lambda pid: True
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_arm_gateway_restart_watch", lambda pids: False
+    )
+    monkeypatch.setattr(
+        gateway_windows, "stop", lambda *a, **k: order.append("stop")
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_wait_for_gateway_absent", lambda *a, **k: True
+    )
+    monkeypatch.setattr(gateway_windows.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(
+        gateway_windows, "start", lambda *a, **k: order.append("start")
+    )
+    monkeypatch.setattr(
+        gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: True
+    )
+
+    gateway_windows.restart()
+
+    assert order[:1] == ["stop"], order
+    assert "start" in order, order

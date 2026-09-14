@@ -29,6 +29,7 @@ from agent.vault_login_classifier import (  # noqa: E402
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    classify_otp_controls,
     classify_login_control,
     select_password_fill,
 )
@@ -171,6 +172,23 @@ class TestClassifier:
         for token in ("username", "email", "tel", "current-password"):
             res = classify_login_control(_ctrl(autocomplete=token))
             assert res is not None and res.score == 100 and res.token == token
+
+    def test_td_synnex_spanish_verification_control_is_otp(self):
+        controls = [LoginControl.from_dict({
+            "index": 0, "name": "code", "type": "text", "maxLength": 6,
+            "nearbyText": "Código de verificación",
+            "pageText": "TD SYNNEX | Verificación de identidad",
+        })]
+        result = classify_otp_controls(controls)
+        assert len(result) == 1
+        assert result[0].control.name == "code" and result[0].score == 65
+
+    def test_unique_bare_code_requires_an_mfa_page_and_plausible_length(self):
+        challenge = _ctrl(name="code", page_text="Identity verification", max_length=6)
+        assert len(classify_otp_controls([challenge])) == 1
+        assert classify_otp_controls([_ctrl(name="code", page_text="Redeem discount", max_length=6)]) == []
+        assert classify_otp_controls([_ctrl(name="code", page_text="Identity verification", max_length=40)]) == []
+        assert classify_otp_controls([challenge, _ctrl(index=1, name="code", page_text="Identity verification")]) == []
 
     def test_new_password_autocomplete_excluded(self):
         assert classify_login_control(
@@ -776,11 +794,12 @@ class TestTwoFactor:
         # the real widget
         assert [f["value"] for f in build_otp_fills([ctl(i + 4, maxlen=1) for i in range(6)], "246810")] == list("246810")
 
-    def test_no_code_field_points_at_passkey_or_device_approval(self):
+    def test_unclassified_text_field_does_not_infer_passkey_or_device_approval(self):
         from tools import browser_vault_tool
 
         fake_eval = lambda t, e: {"success": True, "result": json.dumps([{"index": 0, "type": "text", "name": "q", "label": "Search", "autocomplete": ""}]) if "querySelectorAll" in e else "https://acme.test/approve"}
         with patch.object(browser_vault_tool, "_focus_bound_origin", lambda *a, **k: None), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval):
             out = json.loads(browser_vault_tool.browser_vault_enter_code(task_id="t"))
-        assert out["error_type"] == "no_code_field" and "device" in out["error"]
+        assert out["error_type"] == "no_code_field"
+        assert "visible text control" in out["error"] and "passkey" not in out["error"]

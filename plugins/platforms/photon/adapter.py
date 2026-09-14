@@ -675,7 +675,9 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
-            logger.debug("[photon] skipping non-JSON inbound line")
+            # Visible without -vv: a line that survives the sidecar but fails
+            # to parse means a user message was dropped, not routine noise.
+            logger.warning("[photon] skipping non-JSON inbound line: %r", line[:120])
             return
         msg_id = event.get("messageId")
         if msg_id and self._dedup.is_duplicate(msg_id):

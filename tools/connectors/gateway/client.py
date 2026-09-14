@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 import uuid
 from typing import Any, Callable, Optional, Protocol, Sequence
+from urllib.parse import urlencode
 
 import requests
 from pydantic import ValidationError
@@ -113,9 +114,10 @@ class ConnectorClient:
         items: list[dict[str, Any]] = []
         cursor: Optional[str] = None
         for _ in range(20):
-            path = f"{wire.CONNECTORS_PATH}?limit=50"
+            query: dict[str, Any] = {"limit": 50}
             if cursor:
-                path += f"&cursor={cursor}"
+                query["cursor"] = cursor
+            path = f"{wire.CONNECTORS_PATH}?{urlencode(query)}"
             payload = self._request("GET", path, None)
             if not isinstance(payload, dict) or "error" in payload:
                 raise ToolGatewayError("invalid connector list page", code="INVALID_RESPONSE")

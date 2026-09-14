@@ -85,6 +85,31 @@ def planned(calls=PLAN_CALLS):
 
 
 # ---------------------------------------------------------------------------
+# connector catalog: opaque pagination cursors
+# ---------------------------------------------------------------------------
+
+
+def test_list_connectors_percent_encodes_the_opaque_cursor():
+    transport = FakeTransport(
+        FakeResponse(
+            200,
+            {
+                "items": [{"connector": "gmail"}],
+                "nextCursor": "page+2/&=",
+            },
+        ),
+        FakeResponse(200, {"items": [{"connector": "notion"}]}),
+    )
+
+    items = make_client(transport).list_connectors()
+
+    assert [item["connector"] for item in items] == ["gmail", "notion"]
+    assert transport.requests[1]["url"].endswith(
+        "/v1/connectors?limit=50&cursor=page%2B2%2F%26%3D"
+    )
+
+
+# ---------------------------------------------------------------------------
 # execute: request shape + idempotency
 # ---------------------------------------------------------------------------
 

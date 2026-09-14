@@ -1250,8 +1250,7 @@ class CredentialPool(CredentialPoolAdminMixin):
             return entry
         display = spec[0]
         is_codex = self.provider == "openai-codex"
-        sources = ("device_code", "manual:device_code") if is_codex else ("device_code",)
-        if entry.source not in sources:
+        if entry.source != "device_code":
             return entry
         try:
             with _auth_store_lock():
@@ -1694,10 +1693,21 @@ class CredentialPool(CredentialPoolAdminMixin):
             # dead. Clear it from auth.json so the next session does not
             # re-seed the revoked credentials, and drop singleton-seeded
             # entries from the pool (mirrors the Nous quarantine path).
-            if entry.source == "device_code" and getattr(auth_mod, terminal_fn_name)(exc):
-                logger.debug("%s OAuth refresh token is terminally invalid; clearing local token state", display)
-                self._clear_terminal_tokens_state(entry, exc)
-                self._quarantine_sources(entry, {"device_code"})
+            if getattr(auth_mod, terminal_fn_name)(exc):
+                if entry.source == "device_code":
+                    logger.debug("%s OAuth refresh token is terminally invalid; clearing local token state", display)
+                    self._clear_terminal_tokens_state(entry, exc)
+                    self._quarantine_sources(entry, {"device_code"})
+                else:
+                    error_code = str(getattr(exc, "code", "") or "").strip().lower()
+                    self._mark_exhausted(
+                        entry,
+                        401,
+                        {
+                            "reason": error_code if error_code in _TERMINAL_AUTH_REASONS else "invalid_token",
+                            "message": str(exc),
+                        },
+                    )
                 return None
         elif self.provider == "nous":
             synced = self._sync_nous_entry_from_auth_store(entry)

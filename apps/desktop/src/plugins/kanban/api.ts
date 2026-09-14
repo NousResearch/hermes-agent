@@ -1,7 +1,8 @@
 /**
  * Kanban data layer. Everything goes through `ctx.rest` — the plugin's own
- * `/api/plugins/kanban/*` FastAPI router (`plugins/kanban/dashboard/plugin_api.py`),
- * reused as-is via the desktop's namespace-scoped REST door. No new backend.
+ * operator router (`plugins/kanban/dashboard/plugin_api.py`), mounted at
+ * `/api/plugins/kanban/dashboard/*`, reused as-is via the desktop's
+ * namespace-scoped REST door. No new backend.
  *
  * Fetching, caching, polling, dedupe, and invalidation are React Query's job
  * (the app's standard, via the SDK). This module owns the query keys, the REST
@@ -37,6 +38,10 @@ import type {
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
+
+// The namespace root (`/api/plugins/kanban`) is the sanitized external REST API
+// (`hermes_cli/kanban_api.py`); the operator routes this board uses live below it.
+const DASHBOARD = '/dashboard'
 
 let rest: null | Rest = null
 let os: null | PluginOs = null
@@ -101,9 +106,11 @@ export function bindApi(
   socket: Socket,
   notifyDoors?: { os?: PluginOs; t?: PluginTranslate }
 ): () => void {
-  rest = r
+  const scoped: Rest = <T>(path: string, opts?: PluginRestOptions) => r<T>(`${DASHBOARD}${path}`, opts)
+
+  rest = scoped
   os = notifyDoors?.os ?? null
-  bindCompletionNotify(r, notifyDoors?.t, notifyDoors?.os)
+  bindCompletionNotify(scoped, notifyDoors?.t, notifyDoors?.os)
   const unsubs: Array<() => void> = []
 
   // Hydrate an atom from storage and keep storage in sync with it.
@@ -121,7 +128,9 @@ export function bindApi(
 
   const open = (slug: string) => {
     close?.()
-    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
+    close = socket(`${DASHBOARD}/events${slug ? `?board=${encodeURIComponent(slug)}` : ''}`, data =>
+      onEventsFrame(slug, data)
+    )
   }
 
   open($boardSlug.get())

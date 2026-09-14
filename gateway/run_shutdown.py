@@ -144,6 +144,19 @@ def _notice_target_key(platform_value: str, chat_id, thread_id) -> tuple:
     return (platform_value, str(chat_id), str(thread_id) if thread_id else None)
 
 
+def _shutdown_notice(restarting: bool, platform: Platform, thread_id=None) -> str:
+    if not restarting:
+        return (
+            "⚠️ Hermes is shutting down — your current task will be interrupted. "
+            "When it is back online, send any message and I'll try to pick up where we left off."
+        )
+    place = "this topic" if platform == Platform.TELEGRAM and thread_id else "this chat"
+    return (
+        "⚠️ Hermes is restarting — your current task will be interrupted. "
+        f"Send a message in {place} after restart and I'll try to resume where you left off."
+    )
+
+
 class GatewayShutdownMixin:
     """Stop/drain/restart, scale-to-zero and active-work accounting methods for GatewayRunner."""
 
@@ -976,15 +989,6 @@ class GatewayShutdownMixin:
         Called at the start of stop() while adapters are connected; send failures never block shutdown.
         """
         restart_source = self._restart_command_source if self._restart_requested else None
-        msg = (
-            "⚠️ Hermes is shutting down — your current task will be interrupted. "
-            "When it is back online, send any message and I'll try to pick up where we left off."
-        )
-        if self._restart_requested:
-            msg = (
-                "⚠️ Hermes is restarting — your current task will be interrupted. "
-                "Send any message after the restart and I'll try to resume where you left off."
-            )
         restart_key = None
         if restart_source is not None:
             with suppress(Exception):
@@ -1022,6 +1026,7 @@ class GatewayShutdownMixin:
             except Exception as e:
                 logger.debug("Failed to send shutdown notification to %s:%s: %s", platform_str, chat_id, e)
                 continue
+            msg = _shutdown_notice(self._restart_requested, platform, thread_id)
             # Automatic interrupt diagnostic, resolved under the session's own profile scope (same
             # shape as the stall watcher). The requester's own chat on an in-chat /restart is the
             # requested outcome of that command and is never suppressed.
@@ -1067,6 +1072,7 @@ class GatewayShutdownMixin:
                     "Failed to send shutdown notification to home channel %s:%s: %s", platform.value, home.chat_id, e,
                 )
                 continue
+            msg = _shutdown_notice(self._restart_requested, platform, home.thread_id)
             # Home channels omit ``metadata=`` when empty (adapter doubles may not accept the kwarg).
             async def _send_home(adapter=adapter, home=home, platform=platform, metadata=metadata):
                 if await self._send_shutdown_notice(

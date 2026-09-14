@@ -376,6 +376,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
+    # Sakana Fugu — fugu-ultra (#56617), fugu-ultra-v2 and fugu-max all report 1,000,000 on
+    # OpenRouter and the Nous Portal. The prefix deliberately excludes sakana/sakana-namazu.
+    "fugu": 1_000_000,
     # Upstage Solar — /v1/models returns no context_length; dated variants resolve via prefix.
     "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
@@ -1360,6 +1363,7 @@ _PRE_CATALOG_STALE_KEYS = frozenset({
     "grok-4.3", "grok-4.6",  # 1M / 500K; "grok-4" catch-all persisted 256,000
     "grok-4-fast", "grok-4.20",  # 2M; fell through to the 256K fallback
     "qwen3.6-plus",  # 1M; "qwen" catch-all persisted 131,072
+    "fugu",  # 1M; pre-entry builds fell through to the 256K fallback
     # V4 / V4.1 Flash: 1M. Pre-entry builds matched the family catch-all and persisted 128K.
     "deepseek-flash", "deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro",
     "deepseek-chat", "deepseek-reasoner",

@@ -61,7 +61,7 @@ class EvaluatorShadowAdapter:
                 "turn_id": request_id,
                 "agent_configuration_id": self.agent_configuration_id,
                 "evaluator_configuration_id": self.evaluator_configuration_id,
-                "trigger_origin": "hermes",
+                "trigger_origin": "agent",
             },
             "policy": {
                 "required_patterns": self.required_patterns,
@@ -87,8 +87,26 @@ class EvaluatorShadowAdapter:
             payload = json.loads(completed.stdout)
             if not isinstance(payload, dict):
                 raise ValueError("adapter response must be an object")
+            decision = payload.get("status")
+            if decision not in {"passed", "blocked", "inconclusive"}:
+                return {
+                    "decision": "inconclusive",
+                    "side_effect_status": "not_attempted",
+                    "evidence_persisted": payload.get("evidence_persisted"),
+                    "evidence_error_code": "evaluator_malformed_result",
+                    "evidence_ref": payload.get("evidence_ref"),
+                }
+            expected_returncode = 0 if decision == "passed" else 1
+            if completed.returncode != expected_returncode:
+                return {
+                    "decision": "inconclusive",
+                    "side_effect_status": "not_attempted",
+                    "evidence_persisted": payload.get("evidence_persisted"),
+                    "evidence_error_code": "evaluator_returncode_mismatch",
+                    "evidence_ref": payload.get("evidence_ref"),
+                }
             return {
-                "decision": payload.get("status", "inconclusive"),
+                "decision": decision,
                 "side_effect_status": "not_attempted",
                 "evidence_persisted": payload.get("evidence_persisted"),
                 "evidence_error_code": payload.get("evidence_error_code"),

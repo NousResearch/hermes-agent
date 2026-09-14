@@ -11,7 +11,9 @@ from typing import Iterable
 
 from .state_answer_dependency import answer_depends_on_candidate
 from .state_candidate_evaluator import StateCandidateResult
-from .state_response_policy import ResponseDecision, ResponsePolicy, route_candidate_result
+from .state_response_policy import (
+    PersistencePolicy, ResponseDecision, ResponsePolicy, route_candidate_result,
+)
 
 
 @dataclass(frozen=True)
@@ -28,9 +30,31 @@ def evaluate_answer_gate(
     answer_scope: str,
 ) -> StateAnswerGateResult:
     """Compute the pre-model decision from explicit answer metadata."""
+    keys = ()
+    malformed = (
+        not isinstance(answer_scope, str) or not answer_scope.strip()
+        or isinstance(requested_state_keys, (str, bytes))
+    )
+    if not malformed:
+        try:
+            keys = list(requested_state_keys)
+            malformed = not all(isinstance(key, str) and key.strip() for key in keys)
+        except (TypeError, ValueError):
+            malformed = True
+    if candidate is not None and (
+        not isinstance(candidate.state_key, str) or not candidate.state_key.strip()
+        or not isinstance(candidate.scope, str) or not candidate.scope.strip()
+    ):
+        malformed = True
+    if malformed:
+        return StateAnswerGateResult(
+            decision=ResponseDecision(ResponsePolicy.HOLD, PersistencePolicy.NO_WRITE, "malformed answer metadata"),
+            depends_on_candidate=True,
+            model_call_allowed=False,
+        )
     depends = answer_depends_on_candidate(
         candidate,
-        requested_state_keys=requested_state_keys,
+        requested_state_keys=keys,
         answer_scope=answer_scope,
     )
     decision = route_candidate_result(candidate, answer_depends_on_candidate=depends)

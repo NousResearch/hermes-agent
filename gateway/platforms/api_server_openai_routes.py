@@ -13,6 +13,7 @@ import re
 import time
 import uuid
 from contextlib import suppress
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 try:
@@ -22,6 +23,7 @@ except ImportError:  # pragma: no cover - mirrors api_server's optional import
 
 # Logger parity with the origin module (moved log records keep their name).
 logger = logging.getLogger("gateway.platforms.api_server")
+_EXPLICIT_RUNNER_UNSET = object()
 
 async def _iter_stream_items(stream_q, agent_task, response):
     """Yield agent stream items until EOS, writing SSE keepalives while idle.
@@ -303,7 +305,7 @@ class _ResponsesStream:
                 self._batch_buf = []
                 await self.emit_text_delta(combined)
 
-    async def collect_result(self, agent_task) -> None:
+    async def collect_result(self, agent_task, *, emit_fallback: bool = True) -> None:
         """Await the agent; when it produced a final_response but streamed no deltas
         (some providers only emit the full text at the end), emit one fallback delta."""
         try:
@@ -311,7 +313,7 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
-            if agent_final and not self.final_text_parts:
+            if emit_fallback and agent_final and not self.final_text_parts:
                 await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
                 self.final_response_text = agent_final
@@ -405,6 +407,96 @@ class OpenAICompatRoutesMixin:
             stream_delta_callback=_on_delta, agent_ref=agent_ref, **run_kwargs))
         agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
         return agent_task, agent_ref
+
+    def _api_pre_delivery_gate(self, request, session_id, *, explicit_runner=_EXPLICIT_RUNNER_UNSET):
+        """Return the owning gateway's optional gate and a request-scoped context.
+
+        API-server SSE bypasses ``GatewayRunner._run_agent_inner`` and therefore
+        must call the same configured seam explicitly.  No gate means legacy
+        behavior; the caller only buffers when this returns a gate.  Background
+        tasks may pass the runner captured at admission so later adapter mutation
+        cannot change the policy for an already admitted run.
+        """
+        runner = explicit_runner
+        if runner is _EXPLICIT_RUNNER_UNSET:
+            runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            with suppress(Exception):
+                candidate = request.app.get("gateway_runner")
+                if candidate is not None and candidate.__class__.__module__ != "unittest.mock":
+                    runner = candidate
+        gate = getattr(runner, "pre_delivery_gate", None)
+        if gate is None:
+            return None, None
+        try:
+            from gateway.config import Platform
+            platform = Platform.API_SERVER
+        except Exception:
+            platform = "api_server"
+        ctx = SimpleNamespace(
+            source=SimpleNamespace(platform=platform, chat_id=session_id or ""),
+            session_key=session_id,
+            session_id=session_id,
+            inbound_message_id=None,
+            event_message_id=None,
+            pre_delivery_gate=gate,
+        )
+        return runner, ctx
+
+    async def _apply_api_pre_delivery_gate(self, request, session_id, result, *, explicit_runner=_EXPLICIT_RUNNER_UNSET):
+        runner, ctx = self._api_pre_delivery_gate(
+            request, session_id, explicit_runner=explicit_runner)
+        if runner is None:
+            return result
+        apply_gate = getattr(runner, "_run_agent_apply_pre_delivery_gate", None)
+        if callable(apply_gate):
+            return await apply_gate(ctx, result)
+        try:
+            outcome = runner.pre_delivery_gate(result, ctx)
+            if asyncio.iscoroutine(outcome) or isinstance(outcome, asyncio.Future):
+                outcome = await outcome
+            if isinstance(result, dict) and outcome is not None:
+                result["pre_delivery_gate_result"] = outcome
+        except Exception:
+            if isinstance(result, dict):
+                result["pre_delivery_gate_result"] = {
+                    "decision": "inconclusive", "error_code": "pre_delivery_gate_error"}
+        return result
+
+    @staticmethod
+    def _api_sse_release_allowed(result: Any) -> bool:
+        """Allow buffered SSE only for a completed, non-inconclusive turn.
+
+        Shadow ``blocked`` remains observational and therefore preserves the
+        existing response. Agent failures and unavailable/failed evaluators
+        must not become external side effects.
+        """
+        if not isinstance(result, dict):
+            return False
+        if result.get("failed") or result.get("interrupted") or result.get("completed") is not True:
+            return False
+        if result.get("partial"):
+            return False
+        if result.get("persistence_confirmed") is not True:
+            return False
+        gate_result = result.get("pre_delivery_gate_result")
+        return not (isinstance(gate_result, dict) and gate_result.get("decision") == "inconclusive")
+
+    async def _apply_api_gate_to_result(self, request, session_id, result, *, explicit_runner=_EXPLICIT_RUNNER_UNSET):
+        """Apply the configured gate before any non-streaming API body is built."""
+        runner, _ctx = self._api_pre_delivery_gate(
+            request, session_id, explicit_runner=explicit_runner)
+        if runner is None:
+            return result
+        result = await self._apply_api_pre_delivery_gate(
+            request, session_id, result, explicit_runner=explicit_runner)
+        if not self._api_sse_release_allowed(result):
+            if isinstance(result, dict):
+                result["failed"] = True
+                result["completed"] = False
+                result["final_response"] = ""
+                result["messages"] = []
+        return result
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -538,6 +630,7 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
+        result = await self._apply_api_gate_to_result(request, session_id, result)
         final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
@@ -619,21 +712,32 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             _abandon_agent_task, _chat_usage_payload, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        gate_runner, _gate_ctx = self._api_pre_delivery_gate(request, session_id)
+        gated = gate_runner is not None
+        buffered_frames: List[bytes] = []
 
         def _chunk(delta: Dict[str, Any], finish_reason=None, **extra) -> Dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
                     "model": model,
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
         try:
-            await response.write(_sse_frame(_chunk({"role": "assistant"})))
+            role_frame = _sse_frame(_chunk({"role": "assistant"}))
+            if gated:
+                buffered_frames.append(role_frame)
+            else:
+                await response.write(role_frame)
             async for delta in _iter_stream_items(stream_q, agent_task, response):
                 if delta is None:
                     break
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
-                    await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
+                    frame = _sse_frame(delta[1], event="hermes.tool.progress")
                 else:
-                    await response.write(_sse_frame(_chunk({"content": delta})))
+                    frame = _sse_frame(_chunk({"content": delta}))
+                if gated:
+                    buffered_frames.append(frame)
+                else:
+                    await response.write(frame)
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -644,6 +748,14 @@ class OpenAICompatRoutesMixin:
             except Exception as exc:
                 agent_error = exc
                 logger.error("Agent task %s failed during SSE streaming: %s", completion_id, exc)
+            if gated and agent_error is None:
+                result = await self._apply_api_pre_delivery_gate(request, session_id, result)
+            if gated and (agent_error is not None or not self._api_sse_release_allowed(result)):
+                # Failed or inconclusive turns never release pre-gate model deltas.
+                buffered_frames = []
+            if gated:
+                for frame in buffered_frames:
+                    await response.write(frame)
             completed, is_partial, is_failed, err_msg = _result_flags(result)
             if agent_error is not None:
                 is_failed = True
@@ -688,6 +800,9 @@ class OpenAICompatRoutesMixin:
         """
         from gateway.platforms.api_server import _abandon_agent_task, _redact_api_error_text
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        gate_runner, _gate_ctx = self._api_pre_delivery_gate(request, session_id)
+        gated = gate_runner is not None
+        buffered_items: List[Any] = []
         st = _ResponsesStream(
             self, response, response_id=response_id, model=model, created_at=created_at,
             conversation_history=conversation_history, user_message=user_message,
@@ -697,11 +812,34 @@ class OpenAICompatRoutesMixin:
             async for item in _iter_stream_items(stream_q, agent_task, response):
                 if item is None:  # EOS sentinel
                     st.cancel_batch_timer()
-                    await st.flush_batch()
+                    if not gated:
+                        await st.flush_batch()
                     break
-                await st.dispatch(item)
-            await st.flush_batch()
-            await st.collect_result(agent_task)
+                if gated:
+                    buffered_items.append(item)
+                else:
+                    await st.dispatch(item)
+            if not gated:
+                await st.flush_batch()
+            await st.collect_result(agent_task, emit_fallback=not gated)
+            if gated and st.result is not None:
+                st.result = await self._apply_api_pre_delivery_gate(request, session_id, st.result)
+                if self._api_sse_release_allowed(st.result):
+                    gated_text = st.result.get("final_response", "")
+                    if gated_text and not buffered_items:
+                        buffered_items.append(gated_text)
+                else:
+                    buffered_items = []
+                    st.final_text_parts = []
+                    st.final_response_text = ""
+                    st.emitted_items = []
+                    if st.agent_error is None:
+                        st.agent_error = "pre-delivery gate did not approve a complete response"
+            if gated:
+                if st.agent_error is None and self._api_sse_release_allowed(st.result):
+                    for item in buffered_items:
+                        await st.dispatch(item)
+                    await st.flush_batch()
             await st.close_message_item()
             if st.agent_error:
                 await st.emit_failed()
@@ -865,6 +1003,7 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
+        result = await self._apply_api_gate_to_result(request, session_id, result)
         final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
@@ -882,7 +1021,8 @@ class OpenAICompatRoutesMixin:
         output_start_index = self._response_messages_turn_start_index(
             conversation_history, user_message, result)
         response_data = {
-            "id": response_id, "object": "response", "status": "completed",
+            "id": response_id, "object": "response",
+            "status": "failed" if result.get("failed") else "completed",
             "created_at": created_at, "model": body.get("model", self._model_name),
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}

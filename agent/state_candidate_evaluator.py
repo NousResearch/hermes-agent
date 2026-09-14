@@ -91,8 +91,45 @@ def evaluate_state_candidate(
     The function is intentionally side-effect-free. A ``pending`` result is a
     candidate only; it does not authorize persistence or replacement of state.
     """
+    if (
+        not isinstance(evidence, Evidence)
+        or not all(isinstance(value, str) for value in (
+            evidence.value, evidence.source_type, evidence.source_ref, evidence.scope
+        ))
+        or not evidence.value.strip()
+        or not evidence.source_type.strip()
+        or not evidence.source_ref.strip()
+        or not evidence.scope.strip()
+        or not isinstance(active_context, str)
+        or not active_context.strip()
+    ):
+        return _result(
+            delta_type=DeltaType.CONFLICT,
+            status=CandidateStatus.REJECTED,
+            reason="malformed evidence",
+        )
+    try:
+        prior = list(existing_candidates)
+    except (TypeError, ValueError):
+        return _result(
+            delta_type=DeltaType.CONFLICT,
+            status=CandidateStatus.REJECTED,
+            reason="malformed existing candidates",
+        )
+    if any(not isinstance(item, StateCandidateResult) for item in prior):
+        return _result(
+            delta_type=DeltaType.CONFLICT,
+            status=CandidateStatus.REJECTED,
+            reason="malformed existing candidate",
+        )
+
     required = ("key", "value", "scope", "source_ref")
-    if not isinstance(current_state, dict) or any(key not in current_state for key in required):
+    if (
+        not isinstance(current_state, dict)
+        or any(key not in current_state for key in required)
+        or not all(isinstance(current_state[key], str) for key in required)
+        or not all(current_state[key].strip() for key in required)
+    ):
         return _result(
             delta_type=DeltaType.CONFLICT,
             status=CandidateStatus.REJECTED,
@@ -109,10 +146,22 @@ def evaluate_state_candidate(
         )
 
     state_key = str(current_state["key"])
+    current_scope = str(current_state["scope"])
     old_value = str(current_state["value"])
     new_value = str(evidence.value)
     candidate_id = _candidate_id(state_key, evidence.scope, new_value, evidence.source_ref)
-    prior = list(existing_candidates)
+
+    if current_scope != active_context or current_scope != evidence.scope:
+        return _result(
+            state_key=state_key,
+            old_value=old_value,
+            new_value=new_value,
+            scope=evidence.scope,
+            evidence_ref=evidence.source_ref,
+            delta_type=DeltaType.SCOPE_CHANGE,
+            status=CandidateStatus.UNVERIFIED,
+            reason="current state, active context, and evidence scope disagree",
+        )
 
     if any(item.candidate_id == candidate_id for item in prior):
         return _result(

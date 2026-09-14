@@ -46,3 +46,36 @@ def test_no_candidate_allows_model():
     )
     assert result.model_call_allowed is True
     assert result.decision.persistence_policy is PersistencePolicy.NO_WRITE
+
+
+def test_one_shot_requested_keys_are_not_exhausted():
+    result = evaluate_answer_gate(
+        candidate(CandidateStatus.PENDING),
+        requested_state_keys=(key for key in ["budget"]), answer_scope="project-a",
+    )
+    assert result.depends_on_candidate is True
+    assert result.model_call_allowed is False
+    assert result.decision.response_policy is ResponsePolicy.ASK_CONFIRMATION
+
+
+def test_malformed_answer_metadata_holds_model_call():
+    for keys, scope in (("budget", "project-a"), (None, "project-a"), (["budget"], " ")):
+        result = evaluate_answer_gate(
+            candidate(CandidateStatus.PENDING),
+            requested_state_keys=keys,  # type: ignore[arg-type]
+            answer_scope=scope,
+        )
+        assert result.model_call_allowed is False
+        assert result.decision.response_policy is ResponsePolicy.HOLD
+
+
+def test_malformed_candidate_scope_holds_dependent_answer():
+    malformed = StateCandidateResult(
+        candidate_id="id", delta_type=DeltaType.REPLACE,
+        status=CandidateStatus.PENDING, state_key="budget", scope=" ",
+    )
+    result = evaluate_answer_gate(
+        malformed, requested_state_keys=["budget"], answer_scope="project-a",
+    )
+    assert result.model_call_allowed is False
+    assert result.depends_on_candidate is True

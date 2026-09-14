@@ -73,4 +73,3 @@ def test_conflict_unrelated_dependency_does_not_stop_answer():
     decision = route_candidate_result(result, answer_depends_on_candidate=depends)
     assert depends is False
     assert decision.response_policy is ResponsePolicy.CONTINUE
-

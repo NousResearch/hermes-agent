@@ -287,6 +287,143 @@ class TestSSEAgentCancelOnDisconnect:
         asyncio.run(run())
 
 
+class TestSSEPreDeliveryBuffer:
+    def test_chat_sse_buffers_content_until_gate_returns(self):
+        adapter = _make_adapter()
+        events = []
+
+        class _Runner:
+            pre_delivery_gate = None
+
+            async def _run_agent_apply_pre_delivery_gate(self, ctx, result):
+                events.append(("gate", result["final_response"]))
+                return result
+
+        async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello")
+            stream_q.put_nowait(None)
+
+            async def agent():
+                return ({"final_response": "hello", "completed": True, "persistence_confirmed": True}, {})
+
+            agent_task = asyncio.ensure_future(agent())
+            response, chunks = _capturing_response()
+            adapter.gateway_runner = _Runner()
+            adapter.gateway_runner.pre_delivery_gate = object()
+            original_write = response.write
+
+            async def observed_write(data):
+                text = data.decode() if isinstance(data, bytes) else str(data)
+                if "hello" in text:
+                    events.append(("write", text))
+                await original_write(data)
+
+            response.write = AsyncMock(side_effect=observed_write)
+            with patch("gateway.platforms.api_server.web.StreamResponse", return_value=response):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-gated", "gpt-4", 1234567890,
+                    stream_q, agent_task, session_id="session",
+                )
+            assert events[0] == ("gate", "hello")
+            assert any(event[0] == "write" for event in events[1:])
+            assert "hello" in "".join(chunks)
+
+        asyncio.run(run())
+
+    def test_chat_sse_does_not_release_buffer_when_agent_fails(self):
+        adapter = _make_adapter()
+
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, ctx, result):
+                raise AssertionError("gate must not run without a result")
+
+        async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("secret partial")
+            stream_q.put_nowait(None)
+
+            async def agent():
+                raise RuntimeError("agent failed")
+
+            agent_task = asyncio.ensure_future(agent())
+            response, chunks = _capturing_response()
+            adapter.gateway_runner = _Runner()
+            with patch("gateway.platforms.api_server.web.StreamResponse", return_value=response):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-failed-gated", "gpt-4", 1234567890,
+                    stream_q, agent_task, session_id="session",
+                )
+            assert "secret partial" not in "".join(chunks)
+
+        asyncio.run(run())
+    def test_chat_sse_does_not_release_on_failed_result_or_inconclusive_gate(self):
+        adapter = _make_adapter()
+
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, ctx, result):
+                result["pre_delivery_gate_result"] = {"decision": "inconclusive", "error_code": "evaluator_timeout"}
+                return result
+
+        async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("unsafe partial")
+            stream_q.put_nowait(None)
+
+            async def agent():
+                return ({"final_response": "unsafe partial", "failed": True, "completed": False}, {})
+
+            response, chunks = _capturing_response()
+            adapter.gateway_runner = _Runner()
+            with patch("gateway.platforms.api_server.web.StreamResponse", return_value=response):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-failed-result", "gpt-4", 1234567890,
+                    stream_q, asyncio.ensure_future(agent()), session_id="session",
+                )
+            assert "unsafe partial" not in "".join(chunks)
+
+        asyncio.run(run())
+
+    def test_responses_sse_does_not_release_buffer_on_agent_failure(self):
+        adapter = _make_adapter()
+
+        class _Runner:
+            pre_delivery_gate = object()
+
+            async def _run_agent_apply_pre_delivery_gate(self, ctx, result):
+                return result
+
+        async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("unsafe response")
+            stream_q.put_nowait(None)
+
+            async def agent():
+                raise RuntimeError("agent failed")
+
+            response, chunks = _capturing_response()
+            adapter.gateway_runner = _Runner()
+            with patch("gateway.platforms.api_server.web.StreamResponse", return_value=response):
+                await adapter._write_sse_responses(
+                    request=_make_request(), response_id="resp-gated-failure",
+                    model="gpt-4", created_at=1234567890, stream_q=stream_q,
+                    agent_task=asyncio.ensure_future(agent()), agent_ref=[None],
+                    conversation_history=[], user_message="question", instructions=None,
+                    conversation=None, store=False, session_id="session",
+                )
+            assert "unsafe response" not in "".join(chunks)
+
+        asyncio.run(run())
+
+
 def _capturing_response():
     """Mock StreamResponse that records all written SSE bytes as text."""
     from aiohttp import web

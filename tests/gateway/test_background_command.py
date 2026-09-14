@@ -91,7 +91,7 @@ class TestRunBackgroundTask:
     async def test_no_credentials_sends_error(self):
         """When provider credentials are missing, an error is sent."""
         runner = _make_runner()
-        mock_adapter = AsyncMock()
+        mock_adapter = MagicMock()
         mock_adapter.send = AsyncMock()
         runner.adapters[Platform.TELEGRAM] = mock_adapter
 
@@ -114,7 +114,7 @@ class TestRunBackgroundTask:
     async def test_successful_task_sends_result(self):
         """When the agent completes successfully, the result is sent."""
         runner = _make_runner()
-        mock_adapter = AsyncMock()
+        mock_adapter = MagicMock()
         mock_adapter.send = AsyncMock()
         mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
         mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
@@ -127,7 +127,14 @@ class TestRunBackgroundTask:
             user_name="testuser",
         )
 
-        mock_result = {"final_response": "Hello from background!", "messages": []}
+        mock_result = {
+            "final_response": "Hello from background!",
+            "messages": [],
+            "persistence_confirmed": True,
+            "completed": True,
+            "failed": False,
+            "interrupted": False,
+        }
 
         checkpoint_config = {
             "checkpoints": {

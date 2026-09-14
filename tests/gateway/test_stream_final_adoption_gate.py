@@ -83,7 +83,7 @@ class TestGateWiring:
         import gateway.run_turn as run_mod
 
         src = inspect.getsource(run_mod)
-        anchor = src.index("final_for_stream = None")
+        anchor = src.index("def _run_agent_release_stream_consumer")
         window = src[anchor : anchor + 1200]
         assert 'not result.get("interrupted")' in window
         assert 'result.get("completed") is not False' in window

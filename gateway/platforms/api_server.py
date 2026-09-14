@@ -3088,6 +3088,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)
         result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
+        result = await self._apply_api_gate_to_result(request, session_id, result)
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id
         final_response = _resolve_media_to_data_urls(
@@ -3116,6 +3117,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         run_id = f"run_{uuid.uuid4().hex}"
         events = _SessionEventQueue(session_id, run_id)
         queue, _event_payload = events.queue, events.payload
+        gate_runner, _gate_ctx = self._api_pre_delivery_gate(request, session_id)
+        gated = gate_runner is not None
+        buffered_events = []
         # Claim ownership inside the request's profile scope before any run-keyed state
         # exists, so /v1/runs/{id}* control is confined to the starting profile.
         # See #93689.
@@ -3125,15 +3129,31 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         def _delta(delta: str) -> None:
             if delta:
-                events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
+                payload = {"message_id": message_id, "delta": delta}
+                if gated:
+                    buffered_events.append(("assistant.delta", payload))
+                else:
+                    events.enqueue("assistant.delta", payload)
 
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
-                events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
+                payload = {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""}
+                if gated:
+                    buffered_events.append(("tool.progress", payload))
+                else:
+                    events.enqueue("tool.progress", payload)
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
-                events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+                payload = {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args}
+                if gated:
+                    buffered_events.append((event_type, payload))
+                else:
+                    events.enqueue(event_type, payload)
+
+        cancelled_after_gate = False
+        gate_rejected = False
 
         async def _run_and_signal() -> None:
+            nonlocal cancelled_after_gate, gate_rejected
             try:
                 await queue.put(_event_payload("run.started", {
                     "user_message": {"role": "user", "content": user_message},
@@ -3144,21 +3164,59 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, active_run_id=run_id, **ctx["run_kwargs"])
+                if gated:
+                    result = await self._apply_api_gate_to_result(request, session_id, result)
+                    if run_id in getattr(self, "_stopping_run_ids", set()):
+                        buffered_events.clear()
+                        cancelled_after_gate = True
+                    elif self._api_sse_release_allowed(result):
+                        for event_name, event_payload in buffered_events:
+                            await queue.put(_event_payload(event_name, event_payload))
+                    else:
+                        buffered_events.clear()
+                        gate_rejected = True
                 is_dict = isinstance(result, dict)
+                if cancelled_after_gate:
+                    effective_session_id = result.get("session_id", session_id) if is_dict else session_id
+                    effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
+                    await queue.put(_event_payload("assistant.completed", {
+                        "session_id": effective_session_id, "message_id": message_id,
+                        "content": "", "completed": False, "partial": False,
+                        "interrupted": True, "runtime": effective_runtime}))
+                    await queue.put(_event_payload("run.cancelled", {"session_id": effective_session_id}))
+                    self._set_run_status(
+                        run_id, "cancelled", session_id=effective_session_id, last_event="run.cancelled")
+                    return
+                if gate_rejected:
+                    effective_session_id = result.get("session_id", session_id) if is_dict else session_id
+                    effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
+                    await queue.put(_event_payload("assistant.completed", {
+                        "session_id": effective_session_id, "message_id": message_id,
+                        "content": "", "completed": False, "partial": False,
+                        "interrupted": False, "failed": True, "runtime": effective_runtime}))
+                    await queue.put(_event_payload("run.failed", {
+                        "session_id": effective_session_id,
+                        "error": "pre-delivery gate did not approve a complete response"}))
+                    self._set_run_status(
+                        run_id, "failed", session_id=effective_session_id,
+                        error="pre-delivery gate did not approve a complete response", last_event="run.failed")
+                    return
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, "completed": True,
+                    "content": final_response, "completed": bool(result.get("completed")) if is_dict else False,
                     "partial": bool(result.get("partial")) if is_dict else False,
                     "interrupted": False, "runtime": effective_runtime}))
                 # A steer accepted after the final reply lands in result["pending_steer"]; surface
                 # it so clients can replay it rather than lose it.
                 pending_steer = result.get("pending_steer") if is_dict else None
                 completed_payload = {
-                    "session_id": effective_session_id, "message_id": message_id, "completed": True,
+                    "session_id": effective_session_id, "message_id": message_id,
+                    "completed": bool(result.get("completed")) if is_dict else False,
+                    "persistence_confirmed": bool(result.get("persistence_confirmed")) if is_dict else False,
                     "messages": turn_messages, "usage": usage, "runtime": effective_runtime}
                 if pending_steer:
                     completed_payload["pending_steer"] = pending_steer

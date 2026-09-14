@@ -8,6 +8,7 @@ import os
 import time
 import uuid
 from contextlib import suppress
+from types import SimpleNamespace
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -322,6 +323,7 @@ class _RunLaunch:
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    gateway_runner: Any = None
 
     @property
     def approval_session_key(self) -> str:
@@ -441,6 +443,12 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 self._run_statuses, self._run_owners)
             return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
         self._run_idempotency_ids.add(run_id)
+    effective_gateway_runner = getattr(self, "gateway_runner", None)
+    if effective_gateway_runner is None:
+        with suppress(Exception):
+            candidate = request.app.get("gateway_runner")
+            if candidate is not None and candidate.__class__.__module__ != "unittest.mock":
+                effective_gateway_runner = candidate
     launch = _RunLaunch(
         self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
         conversation_history,
@@ -450,7 +458,8 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get())
+        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        gateway_runner=effective_gateway_runner)
     self._activate_admitted_request()
     task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
@@ -515,19 +524,35 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
         return r, {key: getattr(agent, attr, 0) or 0 for key, attr in _USAGE_FIELDS}
 
 
+_APPROVAL_SAFE_FIELDS = (
+    "command", "description", "pattern_key", "pattern_keys", "smart_denied", "allow_session",
+    "allow_permanent", "request_id")
+
+
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
-    """Approval-request bridge: redact, stamp the event envelope, park the run status, enqueue."""
+    """Bridge a redacted control-plane approval request to the live run.
+
+    This event is deliberately gate-exempt: buffering it until the final response
+    gate would deadlock an agent waiting for the user's approval. It carries only
+    approval-control metadata, never assistant output; flagged commands are
+    redacted before both status persistence and SSE delivery.
+    """
     run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
-        event = dict(approval_data or {})
-        # Clients must never receive the raw flagged command: redact before it hits the stream.
-        # Redact credentials from the command before it enters the SSE/API event stream — same egress bug as
-        # #48456, second transport: API/desktop clients would otherwise receive the raw command Tirith
-        # flagged. Reuse the gateway seam.
+        source = approval_data or {}
+        event = {key: source[key] for key in _APPROVAL_SAFE_FIELDS if key in source}
+        # Clients must never receive raw flagged text. Redact every displayed
+        # free-text field before it reaches either status persistence or SSE.
+        from gateway.run import _redact_approval_command
         if "command" in event:
-            from gateway.run import _redact_approval_command
             event["command"] = _redact_approval_command(event.get("command"))
+        if "description" in event:
+            # MCP descriptions are user/provider supplied free text. A credential
+            # regex is insufficient here; the approval UI needs only a safe marker.
+            event["description"] = "[redacted]"
+        if "pattern_keys" in event and isinstance(event["pattern_keys"], list):
+            event["pattern_keys"] = [str(value)[:128] for value in event["pattern_keys"]]
         event.update(_run_event(run_id, "approval.request", choices=_api_server._approval_event_choices(
             smart_denied=bool(event.get("smart_denied")),
             allow_session=event.get("allow_session") is not False,
@@ -543,12 +568,32 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
     run_id, loop = run.run_id, asyncio.get_running_loop()
+    # /v1/runs owns its background lifecycle, so construct the same request-scoped gate
+    # context used by the synchronous API routes.  The actual Request is gone by the time
+    # this task completes; the runner is captured explicitly and no request body is retained.
+    gate_request = SimpleNamespace(app={"gateway_runner": run.gateway_runner})
+    gate_runner, _gate_ctx = self._api_pre_delivery_gate(
+        gate_request, run.session_id, explicit_runner=run.gateway_runner)
+    gated = gate_runner is not None
+    buffered_events: List[Dict[str, Any]] = []
 
     def _text_cb(delta: Optional[str]) -> None:
         if delta is None or run_id not in self._run_streams:
             return
+        event = _run_event(run_id, "message.delta", delta=delta)
+        if gated:
+            buffered_events.append(event)
+            return
         with suppress(Exception):
-            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
+            loop.call_soon_threadsafe(run.put_event, event)
+
+    live_tool_callback = self._make_run_event_callback(run_id, loop)
+
+    def _tool_cb(event: Dict[str, Any]) -> None:
+        if gated:
+            buffered_events.append(event)
+            return
+        live_tool_callback(event)
 
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
@@ -564,7 +609,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             return
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
-                stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
+                stream_delta_callback=_text_cb, tool_progress_callback=_tool_cb,
                 **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
@@ -572,6 +617,21 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
+        if gated:
+            result = await self._apply_api_gate_to_result(
+                gate_request, run.session_id, result, explicit_runner=run.gateway_runner)
+            if run_id in self._stopping_run_ids:
+                buffered_events.clear()
+                _finish("cancelled")
+                return
+            if self._api_sse_release_allowed(result):
+                for event in buffered_events:
+                    run.put_event(event)
+                buffered_events.clear()
+            else:
+                buffered_events.clear()
+                _finish("failed", error="pre-delivery gate did not approve a complete response")
+                return
         if run_id in self._stopping_run_ids and result.get("interrupted") is True:
             _finish("cancelled")
         elif result.get("failed"):
@@ -590,6 +650,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         _finish("failed", error=f"⚠️ Provider authentication failed: {exc}")
     except Exception as exc:
         logger.exception("[api_server] run %s failed", run_id)
+        buffered_events.clear()
         _finish("failed", error=_redact_api_error_text(exc))
     finally:
         # On cancellation (/stop) the executor thread may still block on an approval

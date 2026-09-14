@@ -170,11 +170,101 @@ def test_missing_canonical_persistence_blocks_external_observers(monkeypatch):
     assert result["failed"] is False
     assert result["final_response"] == "Done."
     assert result["turn_exit_reason"] == "text_response(final)"
-    assert trajectory_calls[-1][2] is True
+    assert trajectory_calls == []
     assert sync_calls == []
     assert "post_llm_call" not in hook_names
     assert "on_session_end" not in hook_names
     assert context_calls == []
+
+
+def test_persistence_receipt_covers_transformed_delivery_payload(monkeypatch):
+    """The durable assistant row is written before post-persistence transformation."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setattr(
+        "agent.turn_finalizer._append_file_mutation_footer",
+        lambda _agent, response, _logger: response + " [footer]",
+    )
+    monkeypatch.setattr(
+        "agent.turn_finalizer._explain_abnormal_exit",
+        lambda _agent, response, *_args: response + " [explanation]",
+    )
+    monkeypatch.setattr(
+        "agent.turn_finalizer._apply_output_hooks",
+        lambda _agent, response, *_args, **_kwargs: (response + " [hook]", True, response),
+    )
+    observed = {}
+    monkeypatch.setattr(
+        "agent.turn_finalizer._emit_post_llm_call",
+        lambda _agent, response, _logger, **kwargs: observed.update(
+            response=response, messages=[dict(message) for message in kwargs["messages"]]
+        ),
+    )
+    agent = FakeAgent()
+    messages = [{"role": "user", "content": "do it"}]
+
+    result = finalize_turn(
+        agent,
+        final_response="answer",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    delivered = "answer [footer] [explanation] [hook]"
+    assert result["final_response"] == delivered
+    assert result["persistence_confirmed"] is True
+    assert agent.persisted_messages is not None
+    assert agent.persisted_messages[-1]["content"] == delivered
+    assert observed["response"] == delivered
+    assert observed["messages"][-1]["content"] == delivered
+
+
+def test_post_hook_is_exactly_once_and_only_after_persistence(monkeypatch):
+    """The real output-hook path emits post_llm_call after persistence only."""
+    agent = FakeAgent()
+    events = []
+
+    def dispatcher(name, _logger, **kwargs):
+        if name in {"transform_llm_output", "post_llm_call"}:
+            events.append((name, agent.persisted_messages is not None))
+        if name == "transform_llm_output":
+            return ["answer [transformed]"]
+        return []
+
+    monkeypatch.setattr("agent.turn_finalizer._invoke_hook_safely", dispatcher)
+    messages = [{"role": "user", "content": "do it"}]
+
+    result = finalize_turn(
+        agent,
+        final_response="answer",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(final)",
+    )
+
+    assert result["persistence_confirmed"] is True
+    assert events == [
+        ("transform_llm_output", True),
+        ("post_llm_call", True),
+    ]
+    assert agent.persisted_messages[-1]["content"] == "answer [transformed]"
+    assert result["final_response"] == "answer [transformed]"
 
 
 def test_fallback_timestamp_survives_delayed_sqlite_persistence(

@@ -116,11 +116,11 @@ export function trackInboundActivity(roster: RosterRow[]) {
  *  session — a group room or another tab owning the center must not be
  *  yanked away by background activity — and never mid-turn, when the
  *  activity is the turn itself, already streaming. */
-function refreshOpenBotChat(bot: RosterRow) {
+function refreshOpenBotChat(bot: RosterRow, { allowWhileBusy = false }: { allowWhileBusy?: boolean } = {}) {
   const canonicalIds = [bot.canonical_session?.id, bot.canonical_session?.resolved_id].filter(Boolean).map(String)
   const focused = String(host.state.focusedStoredSessionId?.get?.() || '')
 
-  if (!focused || !canonicalIds.includes(focused) || host.state.busy.get()) {
+  if (!focused || !canonicalIds.includes(focused) || (!allowWhileBusy && host.state.busy.get())) {
     return
   }
 
@@ -165,7 +165,9 @@ function focusExistingBotTab(bot: RosterRow): null | { registryId: string; store
   try {
     const focused = host.focusOpenWorkspaceSession(botWorkspaceOwnerKey(bot), isStaleTile, canonicalIds)
 
-    return typeof focused === 'string' && focused ? { registryId: String(canonical!.id), storedSessionId: focused } : null
+    return typeof focused === 'string' && focused
+      ? { registryId: String(canonical!.id), storedSessionId: focused }
+      : null
   } catch {
     return null
   }
@@ -243,6 +245,14 @@ export async function openRosterBot(bot: RosterRow): Promise<boolean> {
     // round-trip. Both identities are recorded so the reclaim listener and
     // the roster-activity refresh treat it exactly like a registry open.
     $openBotChat.set({ key, openedRegistryId: fronted.registryId, openedSessionId: fronted.storedSessionId })
+
+    // Fronting is presentation-only: the pane keeps whatever transcript it
+    // last painted, which can predate rows the bot wrote while the user was
+    // elsewhere (another bot's turn, a cron delivery, a teammate's
+    // message_agent). Force a registry open so forceResume re-pulls the
+    // latest transcript instead of leaving a stale snapshot until the next
+    // user turn (#99393 class; #95600 only covered the not-yet-open path).
+    refreshOpenBotChat(bot, { allowWhileBusy: true })
 
     return true
   }

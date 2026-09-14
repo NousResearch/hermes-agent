@@ -311,11 +311,11 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
 
     with (
         patch(
-            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            "agent.anthropic_credentials.read_hermes_oauth_credentials",
             return_value=None,
         ),
         patch(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             return_value=None,
         ),
         patch(
@@ -331,11 +331,11 @@ def test_anthropic_oauth_presence_accepts_pool_only_oauth_entry():
     # (they are handled by the explicit-config gate / env var paths).
     with (
         patch(
-            "agent.anthropic_adapter.read_hermes_oauth_credentials",
+            "agent.anthropic_credentials.read_hermes_oauth_credentials",
             return_value=None,
         ),
         patch(
-            "agent.anthropic_adapter.read_claude_code_credentials",
+            "agent.anthropic_credentials.read_claude_code_credentials",
             return_value=None,
         ),
         patch(

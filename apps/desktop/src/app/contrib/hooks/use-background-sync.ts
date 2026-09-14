@@ -151,15 +151,24 @@ export async function reconcileTileTranscripts({
     // read from that backend, not whichever profile is foreground. Tiles
     // without a route keep the legacy local read.
     const profileScope: ProfileScope = tile.ownerRoute
-      ? { connectionId: tile.ownerRoute.connectionId, profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile }
+      ? {
+          connectionId: tile.ownerRoute.connectionId,
+          profile: tile.ownerRoute.targetProfile ?? tile.ownerRoute.profile
+        }
       : undefined
 
     const signatureKey = tileTranscriptSignatureKey(tile)
 
     try {
-      const latest = await getLatestSessionMessages(storedSessionId, profileScope)
+      // Passive: a hidden tile's refresh must never cold-start its owner
+      // backend or hold a pool slot (#103375); no warm backend = retry next tick.
+      const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
 
-      if (requestId !== requestSequenceRef.current || tileRuntimeOwnsLiveState(runtimeSessionId) || !tileStillPresent()) {
+      if (
+        requestId !== requestSequenceRef.current ||
+        tileRuntimeOwnsLiveState(runtimeSessionId) ||
+        !tileStillPresent()
+      ) {
         // Tile closed or superseded mid-read — discard AND prune its
         // signature so the map doesn't grow one entry per ever-opened tile
         // for the app's lifetime (#94255 review point 3).
@@ -568,7 +577,6 @@ export function useBackgroundSync({
 }: BackgroundSyncParams): void {
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
-  const sessionsChangeTick = useStore($sessionsChangeTick)
   const activeTranscriptBusy = useStore($busy)
   const activeTranscriptRefreshPendingRef = useRef<string | null>(null)
   // Tile reconcile state (#93942 slice 1): shared sequence guard + per-tile
@@ -675,9 +683,16 @@ export function useBackgroundSync({
 
     let cancelled = false
     let inFlight = false
+    let refreshPending = false
 
     const refreshLiveStatuses = async () => {
+      if (cancelled) {
+        return
+      }
+
       if (inFlight) {
+        refreshPending = true
+
         return
       }
 
@@ -694,8 +709,15 @@ export function useBackgroundSync({
         // still work as before; leave the current sidebar state untouched.
       } finally {
         inFlight = false
+
+        if (refreshPending && !cancelled) {
+          refreshPending = false
+          void refreshLiveStatuses()
+        }
       }
     }
+
+    const unsubscribe = $sessionsChangeTick.listen(() => void refreshLiveStatuses())
 
     const dispose = visiblePoll(
       changeEventsAvailable ? LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS : LIVE_SESSION_STATUS_POLL_INTERVAL_MS,
@@ -706,11 +728,12 @@ export function useBackgroundSync({
 
     return () => {
       cancelled = true
+      unsubscribe()
       dispose()
     }
-    // sessionsChangeTick: each sessions.changed broadcast re-seeds immediately
-    // via the effect re-run (already coalesced to 2s server-side).
-  }, [activeGatewayProfile, changeEventsAvailable, gatewayState, requestGateway, sessionsChangeTick])
+    // Keep the in-flight guard alive across change ticks; a slow response must
+    // not create a new request (and invalidate the old result) on every tick.
+  }, [activeConnectionId, activeGatewayProfile, changeEventsAvailable, gatewayState, requestGateway])
 
   // sessions.changed also means the *stored* list may have new rows (a cron
   // run's session, an inbound messaging turn creating a thread). The full list

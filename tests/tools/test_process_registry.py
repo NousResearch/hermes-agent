@@ -2,6 +2,8 @@
 
 import json
 import os
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -10,13 +12,12 @@ import time
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.environments.local import _HERMES_PROVIDER_ENV_FORCE_PREFIX
+from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_FORCE_PREFIX
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
-    MAX_ACTIVE_PROCESS_AGE,
 )
 
 
@@ -781,7 +782,7 @@ class TestSpawnEnvSanitization:
             def __init__(self):
                 self.commands = []
                 self._responses = iter([
-                    {"output": "hello\n"},
+                    {"output": "6 0\nhello\n"},
                     {"output": "1\n"},
                     {"output": "0\n"},
                 ])
@@ -802,9 +803,178 @@ class TestSpawnEnvSanitization:
                 "/path with spaces/hermes_bg.exit",
             )
 
-        assert env.commands[0][0] == "cat '/path with spaces/hermes_bg.log' 2>/dev/null"
+        assert "'/path with spaces/hermes_bg.log'" in env.commands[0][0]
+        assert "cat '/path with spaces/hermes_bg.log'" not in env.commands[0][0]
         assert env.commands[1][0] == "kill -0 \"$(cat '/path with spaces/hermes_bg.pid' 2>/dev/null)\" 2>/dev/null; echo $?"
         assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
+
+
+class TestEnvPollerIncrementalRead:
+    """The sandbox log poller must read only new bytes, not the whole file.
+
+    Reading the whole file every poll made one poll cost grow with the total
+    output so far, so a long noisy job re-sent all of its output over the
+    docker or SSH channel every two seconds.
+    """
+
+    @staticmethod
+    def _run_poller(registry, session, responses):
+        """Drive one poll cycle and hand back the commands the env saw."""
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+                self._responses = iter(responses)
+
+            def execute(self, command, **kwargs):
+                self.commands.append(command)
+                return next(self._responses)
+
+        env = FakeEnv()
+        with patch("tools.process_registry.time.sleep", return_value=None), \
+            patch.object(registry, "_move_to_finished"):
+            registry._env_poller_loop(
+                session, env, "/tmp/bg.log", "/tmp/bg.pid", "/tmp/bg.exit"
+            )
+        return env.commands
+
+    def test_read_command_asks_only_for_new_bytes(self):
+        cmd = ProcessRegistry._log_delta_command("'/tmp/bg.log'", 4096)
+        # The offset is carried into the command, and the file is opened with
+        # tail rather than cat.
+        assert "O=4096" in cmd
+        assert "tail -c +$((O+1)) '/tmp/bg.log'" in cmd
+        assert "cat '/tmp/bg.log'" not in cmd
+
+    def test_read_command_starts_from_zero_on_first_poll(self):
+        cmd = ProcessRegistry._log_delta_command("'/tmp/bg.log'", 0)
+        assert "O=0" in cmd
+
+    @pytest.mark.skipif(not shutil.which("sh"), reason="needs a POSIX sh")
+    def test_read_command_holds_back_a_split_utf8_sequence(self, tmp_path):
+        """A multibyte character straddling two polls must not be split.
+
+        The backend decodes each execute() result on its own, so returning
+        the first byte of an 'é' in one poll and the rest in the next would
+        yield replacement characters in the transcript (and break watch
+        patterns at the seam). Every prefix of a mixed ASCII/2/3/4-byte
+        string must come back decodable, with at most 3 bytes held back and
+        nothing held back once the trailing character is complete.
+        """
+        full = "hé😀中a\n€bz🚀".encode()
+        log = tmp_path / "bg.log"
+        quoted = shlex.quote(str(log))
+        for n in range(1, len(full) + 1):
+            log.write_bytes(full[:n])
+            out = subprocess.run(
+                ["sh", "-c", ProcessRegistry._log_delta_command(quoted, 0)],
+                capture_output=True, timeout=30,
+            ).stdout
+            header, _, delta = out.partition(b"\n")
+            size, _offset = map(int, header.split())
+            delta.decode("utf-8")  # must not raise
+            assert delta == full[:size]
+            complete = full[:n].decode("utf-8", "ignore").encode() == full[:n]
+            assert (n - size) == 0 if complete else 0 < (n - size) <= 3
+
+    def test_first_poll_reads_from_the_start(self, registry):
+        session = _make_session(sid="proc_delta")
+        session.exited = False
+        commands = self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "11 0\nfirst chunk"},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert "O=0" in commands[0]
+        assert session.output_buffer == "first chunk"
+
+    def test_delta_is_appended_not_replaced(self, registry):
+        session = _make_session(sid="proc_append", output="already here ")
+        session.exited = False
+        self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "8 0\nand new"},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert session.output_buffer == "already here and new"
+
+    def test_second_poll_asks_from_where_the_first_one_stopped(self, registry):
+        session = _make_session(sid="proc_two_polls")
+        session.exited = False
+        commands = self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "11 0\nfirst chunk"},
+                {"output": "0\n"},          # still running, poll again
+                {"output": "17 11\n and more"},
+                {"output": "1\n"},          # gone now
+                {"output": "0\n"},
+            ],
+        )
+        assert "O=0" in commands[0]
+        # The second read starts at byte 11, so the first chunk is not sent
+        # a second time.
+        assert "O=11" in commands[2]
+        assert session.output_buffer == "first chunk and more"
+
+    def test_truncated_log_drops_the_stale_buffer(self, registry):
+        session = _make_session(sid="proc_rotate")
+        session.exited = False
+        # The second read reports offset 0 even though the first one left off
+        # at byte 11. The file no longer reaches that byte, so it was rotated
+        # or truncated and the buffer we hold no longer matches it.
+        self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "11 0\nfirst chunk"},
+                {"output": "0\n"},          # still running, poll again
+                {"output": "5 0\nfresh"},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert session.output_buffer == "fresh"
+
+    def test_unreadable_header_leaves_the_buffer_alone(self, registry):
+        session = _make_session(sid="proc_bad", output="keep me")
+        session.exited = False
+        # No header at all, for example when the shell is missing one of the
+        # tools the command needs.
+        self._run_poller(
+            registry,
+            session,
+            [
+                {"output": ""},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert session.output_buffer == "keep me"
+
+    def test_buffer_stays_within_the_cap(self, registry):
+        session = _make_session(sid="proc_cap")
+        session.exited = False
+        session.max_output_chars = 10
+        self._run_poller(
+            registry,
+            session,
+            [
+                {"output": "20 0\n" + "x" * 20},
+                {"output": "1\n"},
+                {"output": "0\n"},
+            ],
+        )
+        assert session.output_buffer == "x" * 10
 
 
 # =========================================================================
@@ -1114,7 +1284,7 @@ class TestProcessToolHandler:
 # format_process_notification + drain_notifications (shared helpers)
 # =========================================================================
 
-from tools.process_registry import format_process_notification
+from tools.process_registry_notifications import format_process_notification
 
 
 def test_drain_notifications_completion_callback_exception_fails_closed(registry):
@@ -1741,6 +1911,7 @@ class TestSystemdCgroupIsolation:
 
         return fake_popen, captured
 
+    @pytest.mark.linux_only
     def test_wraps_in_systemd_scope_when_supervisor_and_available(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -1786,7 +1957,10 @@ class TestSystemdCgroupIsolation:
             if value == "--property"
         ]
         assert "MemoryAccounting=yes" in properties
-        assert "OOMPolicy=kill" in properties
+        # systemd rejects OOMPolicy= on transient --scope units across the versions
+        # users run (239/245/249, #102486); emitting it fails the probe and every
+        # cron worker dispatch. MemoryMax + MemoryAccounting carry the isolation.
+        assert not any(p.startswith("OOMPolicy=") for p in properties), properties
         memory_max = next(
             value for value in properties if value.startswith("MemoryMax=")
         )
@@ -1958,6 +2132,7 @@ class TestSystemdCgroupIsolation:
 
         assert session.systemd_unit == ""
 
+    @pytest.mark.linux_only
     def test_systemd_post_spawn_failure_never_kills_gateway_process_group(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -1992,6 +2167,7 @@ class TestSystemdCgroupIsolation:
         assert stop_unit.call_args.args[0].endswith(".scope")
         killpg.assert_not_called()
 
+    @pytest.mark.linux_only
     def test_pty_spawn_is_wrapped_in_systemd_scope(self, registry, monkeypatch, _gateway_identity):
         """Interactive executors receive the same sibling-cgroup isolation."""
         from ptyprocess import PtyProcess
@@ -2023,6 +2199,7 @@ class TestSystemdCgroupIsolation:
         assert argv[-3:] == ["/bin/bash", "-lic", "set +m; codex"]
         assert session.systemd_unit == f"hermes-worker-{session.id}.scope"
 
+    @pytest.mark.linux_only
     def test_pty_spawn_failure_reaps_scope_before_distinct_pipe_fallback(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2078,6 +2255,7 @@ class TestSystemdCgroupIsolation:
             f"hermes-worker-{session.id}-pipe-fallback.scope"
         )
 
+    @pytest.mark.linux_only
     def test_pty_spawn_failure_does_not_fallback_when_scope_reap_fails(
         self, registry, monkeypatch, _gateway_identity
     ):
@@ -2172,6 +2350,7 @@ class TestSystemdCgroupIsolation:
         assert session.id in registry._finished
         assert session.id not in registry._running
 
+    @pytest.mark.linux_only
     def test_systemd_run_user_scope_available_caches_after_probe(
         self, registry, monkeypatch
     ):
@@ -2195,7 +2374,87 @@ class TestSystemdCgroupIsolation:
         assert first is True
         assert second is True
         assert len(probe_calls) == 1, "probe must run only once (cached)"
+        # The probe must not carry OOMPolicy= either: that is the argv systemd
+        # rejected on scope units and cached as "unavailable" (#102486).
+        probe_argv = probe_calls[0][0]
+        assert not any(
+            value.startswith("OOMPolicy=") for value in probe_argv if isinstance(value, str)
+        ), probe_argv
 
+    @pytest.mark.linux_only
+    def test_systemd_probe_derives_owned_user_bus_env_for_system_gateway(
+        self, registry, monkeypatch, request
+    ):
+        """A system service running as an unprivileged user has no login env,
+        but may still have a valid lingering user manager and D-Bus socket."""
+        import socket
+        import tempfile
+
+        import tools.process_registry as pr
+
+        # Short path: AF_UNIX socket paths are capped at ~104 bytes, longer than most tmp_path values.
+        runtime_dir = pr.Path(tempfile.mkdtemp(prefix="hbus-", dir="/tmp"))
+        runtime_dir.chmod(0o700)
+        bus_path = runtime_dir / "bus"
+        bus_socket = socket.socket(socket.AF_UNIX)
+        bus_socket.bind(str(bus_path))
+
+        def _cleanup():
+            bus_socket.close()
+            bus_path.unlink(missing_ok=True)
+            runtime_dir.rmdir()
+
+        request.addfinalizer(_cleanup)
+
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_default_user_runtime_dir", lambda: runtime_dir)
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        derived = pr.systemd_user_bus_env(
+            {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/tmp/untrusted-bus"}
+        )
+        assert derived["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+        probe_kwargs = []
+
+        def fake_run(*args, **kwargs):
+            probe_kwargs.append(kwargs)
+            return subprocess.CompletedProcess(args=args[0], returncode=0)
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+
+        assert pr._systemd_run_user_scope_available() is True
+        env = probe_kwargs[0]["env"]
+        assert env["XDG_RUNTIME_DIR"] == str(runtime_dir)
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={bus_path}"
+        assert "XDG_RUNTIME_DIR" not in os.environ
+        assert "DBUS_SESSION_BUS_ADDRESS" not in os.environ
+
+    @pytest.mark.linux_only
+    def test_probe_succeeds_without_bin_true(self, monkeypatch):
+        """An absent ``/bin/true`` must not make a usable scope fail its probe."""
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
+        monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+        real_run = subprocess.run
+        executed = []
+
+        def systemd_run_on_nixos_shaped_root(argv, **kwargs):
+            # Simulate NixOS's missing executable, but run the selected replacement.
+            payload = argv[argv.index("--") + 1 :]
+            if payload[0] == "/bin/true":
+                return subprocess.CompletedProcess(payload, 127, stderr=b"No such file or directory")
+            executed.append(payload)
+            return real_run(payload, **kwargs)
+
+        monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
+        monkeypatch.setattr("subprocess.run", systemd_run_on_nixos_shaped_root)
+
+        assert pr._systemd_run_user_scope_available() is True
+        assert len(executed) == 1, "payload must really run (exit 0) on the host, not just be spelled right"
+
+    @pytest.mark.linux_only
     def test_systemd_scope_first_probe_is_serialized(self, monkeypatch):
         """Concurrent first-use callers must wait for one definitive probe.
 
@@ -2243,6 +2502,7 @@ class TestSystemdCgroupIsolation:
         assert results == [True, True]
         assert len(probe_calls) == 1
 
+    @pytest.mark.linux_only
     def test_failed_systemd_probe_retries_after_cache_ttl(self, monkeypatch):
         import tools.process_registry as pr
 
@@ -2508,16 +2768,16 @@ def _make_delegation_batch_evt(results):
 def _patch_delegation_config(
     monkeypatch, model="upstage/solar-pro-4", provider="openrouter", **over
 ):
-    import tools.process_registry as _pr
+    import tools.process_registry_notifications as _prn
 
     cfg = {"model": model, "provider": provider}
     cfg.update(over)
-    monkeypatch.setattr(_pr, "_delegation_config", lambda: cfg)
+    monkeypatch.setattr(_prn, "_delegation_config", lambda: cfg)
     return cfg
 
 
 def _format_async(evt) -> str:
-    from tools.process_registry import format_process_notification
+    from tools.process_registry_notifications import format_process_notification
 
     text = format_process_notification(evt)
     assert text is not None, "format_process_notification returned None"

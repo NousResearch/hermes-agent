@@ -391,6 +391,7 @@
     },
     "execution_surface": {
       "enum": [
+        "acp",
         "api",
         "batch",
         "cli",

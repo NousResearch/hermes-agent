@@ -3,7 +3,35 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $gatewayState, $sessions, setSessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 
-import { sessionTileResumeFailure, startUnrestoredTileTitleBackfill } from './session-tile'
+import { sessionTileResumeFailure, shouldResumeSessionTile, startUnrestoredTileTitleBackfill } from './session-tile'
+
+describe('shouldResumeSessionTile', () => {
+  const live = {
+    gatewayOpen: true,
+    removalPending: false,
+    resuming: false,
+    runtimeId: null,
+    tileError: undefined
+  }
+
+  it('resumes an unbound tile once the gateway is open', () => {
+    expect(shouldResumeSessionTile(live)).toBe(true)
+  })
+
+  it('does not resume a session the user is deleting', () => {
+    // A 4001 racing the delete unbinds the tile runtime, re-arming the resume
+    // effect against an id that is already gone: the resume 404s and latches an
+    // error card for a chat that is on its way out.
+    expect(shouldResumeSessionTile({ ...live, removalPending: true })).toBe(false)
+  })
+
+  it('waits for the gateway, a free slot, and an unbound, unlatched tile', () => {
+    expect(shouldResumeSessionTile({ ...live, gatewayOpen: false })).toBe(false)
+    expect(shouldResumeSessionTile({ ...live, runtimeId: 'rt-1' })).toBe(false)
+    expect(shouldResumeSessionTile({ ...live, tileError: 'boom' })).toBe(false)
+    expect(shouldResumeSessionTile({ ...live, resuming: true })).toBe(false)
+  })
+})
 
 describe('sessionTileResumeFailure', () => {
   it('keeps a confirmed durable session retryable instead of repeating a stale 404', () => {

@@ -191,9 +191,8 @@ class TestAppendAtomicity:
 
         log_path = tmp_path / "logs" / "approvals.jsonl"
         records = _read_records(log_path)
-        # O_APPEND writes below PIPE_BUF are atomic on local filesystems —
-        # every record must be a complete, independently-parseable line,
-        # never interleaved/corrupted.
+        # Exercise concurrent appends on the test filesystem. This is not a
+        # portability guarantee for arbitrary record sizes or network filesystems.
         assert len(records) == 20
         assert {r["pattern_key"] for r in records} == {f"pk{i}" for i in range(20)}
 

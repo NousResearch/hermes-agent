@@ -1,3 +1,4 @@
+import type { ProfileScope } from '@/api/client'
 import { getApiRequestProfile, setModelAssignment } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { requestCronReview } from '@/store/cron'
@@ -147,7 +148,7 @@ function publishImpact(impact: CronModelImpact, profile: string, connection: str
 
 export async function setMainModelAssignment(
   request: Omit<ModelAssignmentRequest, 'scope'>,
-  scopeProfile?: null | string,
+  scopeProfile?: ProfileScope,
   options?: { skipConfirmPrompt?: boolean }
 ): Promise<ModelAssignmentResponse> {
   const { connection, generation } = beginCronModelImpactAssignment()

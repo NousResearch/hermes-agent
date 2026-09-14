@@ -4121,13 +4121,18 @@ def _run_quiet_single_query(cli, effective_query):
             # One shared linger budget for the whole run: the loop below and the later
             # _wait_for_oneshot_background_completions pass must not each wait the full
             # oneshot_completion_wait_seconds on the same stuck notify_on_complete child.
-            cli._quiet_notify_linger_done = True
-            continued = continue_quiet_notify_completions(
-                getattr(cli, "session_id", "") or "",
-                _follow_up,
-                owns_event=getattr(cli, "_owns_process_notification", None),
-                linger_budget=quiet_notify_linger_seconds(),
-            )
+            # Flagged after the loop (finally-equivalent): the wait is the loop's first
+            # statement, so anything raising past that point has consumed budget the
+            # finalize pass must not re-wait.
+            try:
+                continued = continue_quiet_notify_completions(
+                    getattr(cli, "session_id", "") or "",
+                    _follow_up,
+                    owns_event=getattr(cli, "_owns_process_notification", None),
+                    linger_budget=quiet_notify_linger_seconds(),
+                )
+            finally:
+                cli._quiet_notify_linger_done = True
             if isinstance(continued, dict):
                 result = continued
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)

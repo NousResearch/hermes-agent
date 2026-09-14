@@ -325,17 +325,21 @@ class _EditAdapter:
     draft_stream_is_message = False
 
     def __init__(self):
-        self.sends: list = []
-        self.edits: list = []
+        self.sends = []
+        self.edits = []
+        self.events = []  # ("send"|"edit", message_id, content) in order — for replay checks
         self._n = 0
 
     async def send(self, chat_id, content, **kw):
         self._n += 1
+        mid = f"m{self._n}"
         self.sends.append(content)
-        return SimpleNamespace(success=True, message_id=f"m{self._n}")
+        self.events.append(("send", mid, content))
+        return SimpleNamespace(success=True, message_id=mid)
 
     async def edit_message(self, chat_id, message_id, content, **kw):
         self.edits.append(content)
+        self.events.append(("edit", message_id, content))
         return SimpleNamespace(success=True)
 
     async def delete_message(self, chat_id, message_id, **kw):
@@ -524,3 +528,53 @@ class TestSingleMessageDraftLane:
         # …and exactly one persistent message carries the clean final.
         assert len(adapter.sends) == 1, adapter.sends
         assert adapter.sends[-1].strip() == "Full answer"
+
+
+def _replay_chat(adapter) -> str:
+    """Final visible text per message, replayed from the adapter's event log."""
+    msgs = {}
+    for kind, mid, content in adapter.events:
+        msgs[mid] = content
+    return "\n".join(str(v) for v in msgs.values())
+
+
+class TestSingleMessageOverflowPolicy:
+    """4096-split policy: deferred (default) vs eager seals (#110564)."""
+
+    @staticmethod
+    def _big_text():
+        return "A" * 2500 + "\n" + "B" * 2500 + "\n" + "C" * 500
+
+    async def _run_big(self, consumer):
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.on_delta("A" * 2500)
+        await asyncio.sleep(0.25)
+        consumer.on_delta("\n" + "B" * 2500)
+        await asyncio.sleep(0.25)
+        consumer.on_delta("\n" + "C" * 500)
+        consumer.finish(self._big_text())
+        await asyncio.sleep(0.25)
+        await task
+
+    @pytest.mark.asyncio
+    async def test_deferred_pagination_is_default(self):
+        consumer, adapter = _make_single_consumer()
+        await self._run_big(consumer)
+
+        # One live message for the whole turn: no mid-stream seals…
+        assert len(adapter.sends) == 1, adapter.sends
+        # …and the over-limit final edit carries the WHOLE text (the adapter pages it).
+        counts = {ch: _replay_chat(adapter).count(ch) for ch in "ABC"}
+        assert counts == {"A": 2500, "B": 2500, "C": 500}, counts
+        assert len(adapter.edits[-1]) > 4096
+
+    @pytest.mark.asyncio
+    async def test_eager_split_seals_head_messages(self):
+        consumer, adapter = _make_single_consumer(single_message_4096_split=True)
+        await self._run_big(consumer)
+
+        # Eager policy: the filled head is sealed into its own message mid-stream.
+        assert len(adapter.sends) >= 2, adapter.sends
+        counts = {ch: _replay_chat(adapter).count(ch) for ch in "ABC"}
+        assert counts == {"A": 2500, "B": 2500, "C": 500}, counts

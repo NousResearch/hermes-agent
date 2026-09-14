@@ -433,6 +433,48 @@ class TestSegmentBreakOnToolBoundary:
         assert config.single_message_activity is False
         assert config.single_message_thinking is False
 
+    def test_single_message_4096_split_switch(self, monkeypatch):
+        """4096-split policy: default off (deferred pagination), opt-in for eager seals."""
+        from gateway.config import Platform
+        from gateway.run_turn import GatewayTurnMixin
+
+        streaming = SimpleNamespace(
+            cursor=" ▉", edit_interval=0.5, buffer_threshold=20,
+            fresh_final_after_seconds=0, transport="edit",
+        )
+        source = SimpleNamespace(platform=Platform.TELEGRAM, chat_id="chat_123", chat_type="dm")
+
+        def _cfg(**over):
+            plat = {"streaming_single_message": True, "tool_progress": "off"}
+            plat.update(over)
+            return {"display": {"platforms": {"telegram": plat}}}
+
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: _cfg())
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_4096_split is False
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: _cfg(streaming_single_message_4096_split=True),
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_4096_split is True
+
+        # Master gate closed → collapses even when flipped on.
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: _cfg(tool_progress="all", streaming_single_message_4096_split=True),
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_per_turn is False
+        assert config.single_message_4096_split is False
+
     @pytest.mark.asyncio
     async def test_single_message_mode_keeps_one_preview_across_tool_boundaries(self):
         """One opt-in preview survives two tool boundaries; the final authoritative

@@ -231,9 +231,21 @@ async def _extract_safe_urls(
 
 # ─── Fallback chain (web.extract_backends) ────────────────────────────────────
 
+def _contentless(result: Any) -> bool:
+    """True when a result row carries no usable page text — neither ``content`` nor ``raw_content`` has
+    any non-whitespace. Backends answer an unhydrated SPA, a soft bot wall, or a payload with neither
+    markdown nor HTML with HTTP 200 and an empty body and NO ``error`` (firecrawl's ``_scrape_one`` is
+    one such shape); for the fallback chain that row is as retryable as an explicit failure."""
+    if not isinstance(result, dict):
+        return True
+    return not any(
+        isinstance(result.get(key), str) and result[key].strip() for key in ("content", "raw_content")
+    )
+
+
 def _failed_row(result: Any) -> bool:
-    """A failure-shaped result row: not a dict, or carries an ``error``."""
-    return not isinstance(result, dict) or bool(result.get("error"))
+    """A failure-shaped result row: not a dict, carries an ``error``, or is contentless."""
+    return not isinstance(result, dict) or bool(result.get("error")) or _contentless(result)
 
 
 def _batch_failed(results: List[dict]) -> bool:
@@ -289,9 +301,9 @@ async def _extract_with_fallback(
 
     Each entry is resolved and dispatched through :func:`_extract_safe_urls` (policy, cache, timeout).
     A retryable outcome hands the batch to the next entry with a logged warning: the entry does not
-    resolve, ``extract()`` raises, or the batch is empty or every row carries an ``error``. A
-    ``blocked_by_policy`` row is a terminal decision: the batch is returned as-is and the blocked URL
-    is never re-dispatched. The
+    resolve, ``extract()`` raises, or the batch is empty or every row is failure-shaped — an ``error``,
+    OR a contentless body (HTTP 200 + empty content, no error). A ``blocked_by_policy`` row is a
+    terminal decision: the batch is returned as-is and the blocked URL is never re-dispatched. The
     one-shot keyless rescue is withheld from every entry but the last, so a failing entry falls through
     to the configured chain rather than the free ring.
 
@@ -331,8 +343,8 @@ async def _extract_with_fallback(
             return attempt, None
         first = next((r.get("error") for r in attempt if isinstance(r, dict) and r.get("error")), None)
         logger.warning(
-            "web_extract via %s failed for all %d URL(s) (%s); trying the next configured backend",
-            provider.name, len(safe_urls), first or "empty response",
+            "web_extract via %s returned no usable content for %d URL(s) (%s); trying the next configured backend",
+            provider.name, len(safe_urls), first or ("empty response" if not attempt else "contentless rows"),
         )
     if results:
         return results, None

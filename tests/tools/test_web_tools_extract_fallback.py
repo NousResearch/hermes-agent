@@ -15,9 +15,9 @@ driven from ``tools.web_tools.web_extract_tool``):
   3. Duplicate entries in the configured chain (e.g. ``[a, b, a]``) must not
      short-circuit the "is this the last attempt" check — every distinct
      backend in the chain is still attempted.
-  4. All-error / empty-response / exception outcomes from a backend fall
-     through to the next chain entry; the final entry's outcome is surfaced
-     exactly as a single backend's would be.
+  4. All-error / empty-response / exception / CONTENTLESS outcomes from a
+     backend fall through to the next chain entry; the final entry's outcome
+     is surfaced exactly as a single backend's would be.
   5. A ``blocked_by_policy`` result is a terminal decision, NOT a retryable
      all-error outcome — the next backend must not be asked for the same
      blocked URL, and the marker must survive into the tool output.
@@ -112,6 +112,21 @@ def _error_results(name):
         return [
             {"url": u, "title": "", "content": "", "raw_content": "",
              "error": f"{name} failed"}
+            for u in urls
+        ]
+    return _respond
+
+
+def _contentless_results(name, content=""):
+    """Build a ``respond`` callable shaped like an HTTP-200-but-empty page.
+
+    Matches what a backend emits for an unhydrated SPA shell or a scrape payload
+    with neither markdown nor HTML: a title, blank content, and NO ``error``.
+    """
+    def _respond(urls):
+        return [
+            {"url": u, "title": f"{name} shell", "content": content,
+             "raw_content": content, "metadata": {}, "error": None}
             for u in urls
         ]
     return _respond
@@ -451,6 +466,120 @@ class TestAllErrorEmptyExceptionOutcomes:
         assert "results" not in result
         assert "second boom" in result["error"]
         assert "first boom" not in result["error"]
+
+
+# ─── Contentless rows (HTTP 200, empty body, no error) are retryable ────────
+
+
+class TestContentlessRowsAreRetryable:
+    """A provider may answer an unhydrated SPA (or a soft bot wall) with HTTP 200
+    and an empty body — a row with blank ``content``/``raw_content`` and NO
+    ``error``. Judging failure by ``error`` alone treats that as success and
+    returns an empty page without consulting the next configured backend."""
+
+    @pytest.mark.asyncio
+    async def test_contentless_rows_fall_through_to_next_backend(
+        self, clean_registry, safe_urls, no_discovery, monkeypatch
+    ):
+        chain_a = _FakeExtractProvider("chain-a", respond=_contentless_results("chain-a"))
+        chain_b = _FakeExtractProvider("chain-b")
+        _register(chain_a, chain_b)
+        _chain(monkeypatch, "chain-a", "chain-b")
+
+        result = json.loads(await web_tools.web_extract_tool(["https://spa.example.com"]))
+
+        assert chain_a.calls == 1
+        assert chain_b.calls == 1, "a contentless, errorless batch must not be treated as success"
+        assert result["results"][0]["content"] == "ok-from-chain-b"
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_content_is_contentless(
+        self, clean_registry, safe_urls, no_discovery, monkeypatch
+    ):
+        chain_a = _FakeExtractProvider(
+            "chain-a", respond=_contentless_results("chain-a", content="  \n\t "),
+        )
+        chain_b = _FakeExtractProvider("chain-b")
+        _register(chain_a, chain_b)
+        _chain(monkeypatch, "chain-a", "chain-b")
+
+        result = json.loads(await web_tools.web_extract_tool(["https://spa.example.com"]))
+
+        assert chain_b.calls == 1
+        assert result["results"][0]["content"] == "ok-from-chain-b"
+
+    @pytest.mark.asyncio
+    async def test_raw_content_alone_counts_as_usable(
+        self, clean_registry, safe_urls, no_discovery, monkeypatch
+    ):
+        """Only ``raw_content`` populated (a provider that fills one field) is
+        still a usable page — no fall-through."""
+        def _raw_only(urls):
+            return [{"url": u, "title": "", "content": "", "raw_content": "<p>raw</p>"} for u in urls]
+
+        chain_a = _FakeExtractProvider("chain-a", respond=_raw_only)
+        must_not_run = _FakeExtractProvider("chain-b")
+        _register(chain_a, must_not_run)
+        _chain(monkeypatch, "chain-a", "chain-b")
+
+        await web_tools.web_extract_tool(["https://example.com"])
+
+        assert chain_a.calls == 1
+        assert must_not_run.calls == 0
+
+    @pytest.mark.asyncio
+    async def test_mixed_contentless_and_usable_rows_are_partial_success(
+        self, clean_registry, safe_urls, no_discovery, monkeypatch
+    ):
+        def _mixed(urls):
+            return [
+                {"url": urls[0], "title": "shell", "content": "", "raw_content": ""},
+                {"url": urls[1], "title": "", "content": "real page", "raw_content": "real page"},
+            ]
+
+        chain_a = _FakeExtractProvider("chain-a", respond=_mixed)
+        must_not_run = _FakeExtractProvider("chain-b")
+        _register(chain_a, must_not_run)
+        _chain(monkeypatch, "chain-a", "chain-b")
+
+        result = json.loads(await web_tools.web_extract_tool(
+            ["https://spa.example.com", "https://example.com"]
+        ))
+
+        assert must_not_run.calls == 0
+        assert result["results"][1]["content"] == "real page"
+
+    @pytest.mark.asyncio
+    async def test_contentless_rows_from_the_final_entry_are_returned_as_is(
+        self, clean_registry, safe_urls, no_discovery, monkeypatch
+    ):
+        """When every entry is contentless the final one's rows ride through
+        unchanged — the same answer a single contentless backend gives."""
+        chain_a = _FakeExtractProvider("chain-a", respond=_contentless_results("chain-a"))
+        chain_b = _FakeExtractProvider("chain-b", respond=_contentless_results("chain-b"))
+        _register(chain_a, chain_b)
+        _chain(monkeypatch, "chain-a", "chain-b")
+
+        result = json.loads(await web_tools.web_extract_tool(["https://spa.example.com"]))
+
+        assert chain_a.calls == 1
+        assert chain_b.calls == 1
+        assert result["results"][0]["title"] == "chain-b shell"
+        assert result["results"][0]["content"] == ""
+        assert not result["results"][0]["error"]
+
+    def test_row_classification_helpers(self):
+        assert wte._contentless({"content": "", "raw_content": ""})
+        assert wte._contentless({"content": "   ", "raw_content": None})
+        assert wte._contentless({"title": "only a title"})
+        assert wte._contentless("not a dict")
+        assert not wte._contentless({"content": "text"})
+        assert not wte._contentless({"content": "", "raw_content": "<p>x</p>"})
+
+        assert wte._batch_failed([])
+        assert wte._batch_failed([{"error": "x"}, {"content": ""}])
+        assert not wte._batch_failed([{"content": "ok"}, {"content": ""}])
+        assert not wte._batch_failed([{"content": "ok"}, {"error": "x"}])
 
 
 # ─── A website-policy block is terminal, not a retryable backend failure ────

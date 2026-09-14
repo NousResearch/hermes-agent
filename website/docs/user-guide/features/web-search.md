@@ -421,7 +421,7 @@ web:
     - exa
 ```
 
-Each URL batch goes to the first entry. If that backend raises, times out, returns nothing, or returns a per-URL error for every URL, Hermes logs a warning and hands the same batch to the next entry. Partial success (at least one usable page) is a final answer and is not shopped around. The last entry's outcome is what a single backend would have returned, including its per-URL errors.
+Each URL batch goes to the first entry. If that backend raises, times out, returns nothing, or returns only failed rows — an explicit per-URL error **or** a contentless page (HTTP 200 with an empty body, as an unhydrated SPA or a soft bot wall produces) — Hermes logs a warning and hands the same batch to the next entry. Partial success (at least one usable page) is a final answer and is not shopped around. The last entry's outcome is what a single backend would have returned, including its per-URL errors.
 
 Notes:
 - The chain wins over `web.extract_backend` / `web.backend` whenever it is non-empty; `web_search` is unaffected.

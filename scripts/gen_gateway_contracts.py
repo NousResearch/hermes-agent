@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -20,10 +21,13 @@ from typing import Any
 from pydantic import TypeAdapter
 from pydantic.json_schema import GenerateJsonSchema
 
-from tui_gateway import contracts  # noqa: F401  (imports every topic module → fills the tables)
-from tui_gateway.contracts.registry import EVENTS, METHODS, SERVER_REQUESTS
-
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tui_gateway import contracts  # noqa: E402,F401  (imports every topic module → fills the tables)
+from tui_gateway.contracts.registry import EVENTS, METHODS, SERVER_REQUESTS  # noqa: E402
+
 TS_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.generated.ts"
 OPENRPC_OUT = ROOT / "apps" / "shared" / "src" / "gateway-contract.openrpc.json"
 
@@ -73,8 +77,9 @@ class Renderer:
         if "enum" in schema:
             return " | ".join(json.dumps(v) for v in schema["enum"])
         if "anyOf" in schema or "oneOf" in schema:
-            variants = schema.get("anyOf") or schema.get("oneOf")
-            return " | ".join(self.type_of(v, inline_depth=inline_depth) for v in variants)
+            variants = schema.get("anyOf") or schema.get("oneOf") or []
+            rendered = list(dict.fromkeys(self.type_of(v, inline_depth=inline_depth) for v in variants))
+            return " | ".join(rendered)
         t = schema.get("type")
         if isinstance(t, list):
             return " | ".join(self.type_of({**schema, "type": x}, inline_depth=inline_depth) for x in t)
@@ -127,7 +132,7 @@ class Renderer:
         doc = _doc(schema.get("description"))
         if "enum" in schema:
             body = f"export type {name} = {self.type_of({'enum': schema['enum']})}\n"
-        elif "properties" in schema or schema.get("type") == "object":
+        elif schema.get("properties"):
             body = f"export interface {name} {self.object_literal(schema, 0)}\n"
         else:
             body = f"export type {name} = {self.type_of(schema)}\n"
@@ -289,8 +294,6 @@ def render_all() -> dict[Path, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    import sys
-
     args = argv if argv is not None else sys.argv[1:]
     check = "--check" in args
     stale = []

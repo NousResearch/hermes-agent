@@ -7,6 +7,7 @@ import json
 import math
 import os
 import subprocess
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -52,8 +53,23 @@ def _resolve_clean_source(path: Path) -> tuple[Path, str]:
     return source_root, source_sha
 
 
+def _command_runtime_fingerprint(command: list[str]) -> str:
+    executable = command[0]
+    resolved = shutil.which(executable) if not Path(executable).is_absolute() else executable
+    if resolved is None and Path(executable).is_file():
+        first = Path(executable).read_text(encoding="utf-8", errors="replace").splitlines()[:1]
+        resolved = first[0][2:].strip() if first and first[0].startswith("#!") else executable
+    if resolved:
+        try:
+            version = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=5, check=False)
+            return json.dumps([resolved, version.stdout, version.stderr], sort_keys=True)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return json.dumps([executable, sys.version], sort_keys=True)
+
+
 def _evaluator_digest(harness: Path, command: list[str]) -> str:
-    digest = hashlib.sha256(json.dumps([command, sys.version], sort_keys=True).encode())
+    digest = hashlib.sha256(_command_runtime_fingerprint(command).encode())
     for path in sorted(harness.rglob("*")):
         relative = path.relative_to(harness)
         if any(part in {".git", ".venv", "__pycache__", ".pytest_cache"} for part in relative.parts):
@@ -96,6 +112,8 @@ def main() -> int:
     battery_digest = hashlib.sha256(battery_bytes).hexdigest()
     evaluator_digest = _evaluator_digest(harness, command)
     args.output = output
+    if output == args.battery_definition.resolve():
+        raise SystemExit("--output must not overwrite --battery-definition")
     args.output.unlink(missing_ok=True)
     report_path = harness / "results" / "latest" / "report.json"
     if report_path.exists():

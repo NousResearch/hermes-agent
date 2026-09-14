@@ -28,6 +28,7 @@ _CREDENTIAL_KEY = re.compile(
     r"secret|password|authorization|credential|token)(?:$|[_-])"
 )
 _PROVENANCE_KEYS = {"compression_model", "evaluator_model", "provider", "model_config"}
+_BARE_CREDENTIAL = re.compile(r"(?i)^(?:sk-[a-z0-9_-]{12,}|gh[pousr]_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{12,}|AIza[0-9A-Za-z_-]{20,})$")
 
 
 def _credential_errors(value: object, path: str = "report") -> list[str]:
@@ -51,6 +52,8 @@ def _credential_errors(value: object, path: str = "report") -> list[str]:
             return _credential_errors(decoded, path)
         if _CREDENTIAL_ASSIGNMENT.search(value):
             return ["forbidden_credential_assignment"]
+        if _BARE_CREDENTIAL.fullmatch(value.strip()):
+            return ["forbidden_bare_credential"]
     return []
 
 
@@ -90,6 +93,8 @@ def validate_report(report: Mapping[str, object]) -> list[str]:
     if isinstance(report.get("baseline_tokens"), int) and not isinstance(report.get("baseline_tokens"), bool):
         if report["baseline_tokens"] <= 0:
             errors.append("baseline_tokens_must_be_positive")
+    if report.get("status") == "pass" and all(isinstance(report.get(key), int) and not isinstance(report.get(key), bool) for key in ("compressed_tokens", "baseline_tokens")) and report["compressed_tokens"] >= report["baseline_tokens"]:
+        errors.append("compressed_tokens_must_be_less_than_baseline_tokens_for_pass")
     if not isinstance(report.get("probe_scores"), Mapping):
         errors.append("probe_scores_must_be_mapping")
     else:

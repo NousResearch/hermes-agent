@@ -172,8 +172,10 @@ def _endpoint_environment_digest() -> str:
 import hashlib, json, os, re
 from pathlib import Path
 from dotenv import dotenv_values
+from hermes_cli.env_loader import _apply_external_secret_sources
 from hermes_cli.auth import PROVIDER_REGISTRY
 values = dotenv_values(os.path.join(os.environ["HERMES_HOME"], ".env"))
+_apply_external_secret_sources(Path(os.environ["HERMES_HOME"]))
 keys = {p.base_url_env_var for p in PROVIDER_REGISTRY.values() if p.base_url_env_var}
 keys.update(k for p in PROVIDER_REGISTRY.values() for k in p.api_key_env_vars)
 keys.update(k for k in set(os.environ) | set(values) if re.search(r"(?i)(api[_-]?key|token|secret|password|credential)", k))
@@ -214,6 +216,8 @@ def _model_provenance(model: str) -> dict[str, str]:
                            "custom_providers": config.get("custom_providers", [])}
     elif isinstance(config, Mapping):
         provider_config = {"custom_providers": config.get("custom_providers", [])}
+    if isinstance(config, Mapping) and isinstance(config.get("secrets"), Mapping):
+        provider_config["secret_sources"] = _safe_config(config["secrets"])
     payload = _safe_config(
         {"model": model, "provider": provider, "model_config": model_config,
          "provider_config": provider_config, "endpoint_environment_digest": _endpoint_environment_digest()}
@@ -367,6 +371,9 @@ mode = "overwrite"
                         "kind": "evaluation", "category": "run", "scope_category": "end",
                         "run_id": run_id,
                     }) + "\n")
+            if score_run(atof) is None:
+                print(f"[{arm}/{model}] {run_id} incomplete trace — not recorded, will retry on resume", flush=True)
+                continue
             rec = {"run_id": run_id, "task": name, "rep": rep, "arm": arm,
                    "model": model, "wall_s": round(dt, 1), "exit": rc,
                    "source_sha": source_sha,

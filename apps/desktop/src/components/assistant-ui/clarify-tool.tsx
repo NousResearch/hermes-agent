@@ -115,6 +115,14 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
   }
 }
 
+function hasDisplayableClarifyArgs(fromArgs: ClarifyArgs): boolean {
+  if (typeof fromArgs.question === 'string' && fromArgs.question.length > 0) {
+    return true
+  }
+
+  return Boolean(fromArgs.questions?.length)
+}
+
 interface ClarifyBatchResponse {
   id?: string
   question?: string
@@ -381,19 +389,30 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // settled card. Latch submit so that gap doesn't demote; Stop also clears
   // the request and must still collapse an unanswered card.
   const [answered, setAnswered] = useState(false)
+  // A live request that is later cleared (Stop) must still demote, even when
+  // tool args remain displayable. Args-only paint is only for the race before
+  // `clarify.request` arrives — not a dead panel after the request is gone.
+  const hadRequest = useRef(false)
+
+  if (request) {
+    hadRequest.current = true
+  }
+
+  const displayableArgs = hasDisplayableClarifyArgs(fromArgs)
 
   // Stopped mid-prompt with no result — don't leave a dead interactive panel.
   // `session.info` reports running=false while clarify is blocking, so the
   // running flag alone would remount the question as a tool row. Keep the
-  // card while a request is open or this instance already submitted.
-  if (!messageRunning && !request && !answered) {
+  // card while a request is open, this instance already submitted, or tool
+  // args already have question text and no request has ever arrived.
+  if (!messageRunning && !request && !answered && (!displayableArgs || hadRequest.current)) {
     return <ToolFallback {...props} />
   }
 
-  // Batch: the gateway request carries qid-keyed questions. Args alone can't
-  // drive the form (no qids to respond with), so batch waits for the request.
+  // Batch: the gateway request carries qid-keyed questions. Args can paint
+  // the card while those ids race in, but they are never used to respond.
   if (request?.questions?.length || fromArgs.questions) {
-    return <ClarifyToolBatchPending onAnswered={() => setAnswered(true)} request={request} />
+    return <ClarifyToolBatchPending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
   }
 
   return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
@@ -951,7 +970,15 @@ const emptyStage = { choices: [] as string[], draft: '' }
  * back-to-back and completes the batch. Staged answers stay editable up to
  * that moment. The per-question wire protocol is unchanged (the TUI/CLI
  * still lock incrementally); this card just batches its locks at the end. */
-function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => void; request: ClarifyRequest | null }) {
+function ClarifyToolBatchPending({
+  fromArgs,
+  onAnswered,
+  request
+}: {
+  fromArgs: ClarifyArgs
+  onAnswered: () => void
+  request: ClarifyRequest | null
+}) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
@@ -960,6 +987,18 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   // fallback for display, never answerable (no ids to respond with).
   const questions = request?.questions ?? []
   const ready = Boolean(request?.requestId) && questions.length > 0
+  const visibleQuestions = useMemo((): ClarifyQuestion[] => {
+    if (request?.questions?.length) {
+      return request.questions
+    }
+
+    return (fromArgs.questions ?? []).map((entry, index) => ({
+      choices: entry.choices ?? null,
+      multiSelect: Boolean(entry.multiSelect),
+      qid: `pending-${index}`,
+      question: entry.question
+    }))
+  }, [fromArgs.questions, request?.questions])
 
   const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
   const [submitting, setSubmitting] = useState(false)
@@ -1026,12 +1065,12 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     [staged]
   )
 
-  const answeredCount = questions.filter(q => stagedAnswer(q) !== null).length
-  const allStaged = answeredCount === questions.length
+  const answeredCount = ready ? questions.filter(q => stagedAnswer(q) !== null).length : 0
+  const allStaged = ready && answeredCount === questions.length
 
   const confirmAll = useCallback(async () => {
-    if (!request || !gateway) {
-      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
+    if (!ready || !request || !gateway) {
+      notifyError(new Error(request && ready ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed)
 
       return
     }
@@ -1070,7 +1109,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
-  }, [copy, gateway, onAnswered, questions, request, stagedAnswer])
+  }, [copy, gateway, onAnswered, questions, ready, request, stagedAnswer])
 
   const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
     setStaged(current => {
@@ -1091,7 +1130,7 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   }, [])
 
   const cancelAll = useCallback(async () => {
-    if (!request) {
+    if (!ready || !request) {
       return
     }
 
@@ -1112,20 +1151,20 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
     } catch {
       // The tool times out on its own; a failed skip must never block the UI.
     }
-  }, [gateway, onAnswered, request])
+  }, [gateway, onAnswered, ready, request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault()
 
-      if (allStaged) {
+      if (ready && allStaged) {
         void confirmAll()
       }
     },
-    [allStaged, confirmAll]
+    [allStaged, confirmAll, ready]
   )
 
-  if (!ready) {
+  if (!ready && visibleQuestions.length === 0) {
     return (
       <ClarifyShell aria-label={copy.loadingQuestion} className="my-1.5 grid min-h-12 place-items-center" role="status">
         <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary)" />
@@ -1136,21 +1175,21 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
   return (
     <form
       className="my-1.5 grid gap-4"
-      data-clarify-batch={questions.length}
+      data-clarify-batch={visibleQuestions.length}
       onKeyDownCapture={handleClarifySubmitShortcut}
       onSubmit={handleSubmit}
     >
       <ClarifyShell className="grid gap-3">
         <div className="flex items-start gap-2">
           <span className="flex-1 text-[0.6875rem] leading-4 text-(--ui-text-tertiary)">
-            {copy.questionProgress(answeredCount, questions.length)}
+            {copy.questionProgress(answeredCount, visibleQuestions.length)}
           </span>
           <MessageQuestion aria-hidden className={CLARIFY_ICON_CLASS} />
         </div>
-        {questions.map(question => (
+        {visibleQuestions.map((question, index) => (
           <BatchQuestionBlock
-            disabled={submitting}
-            key={question.qid}
+            disabled={submitting || !ready}
+            key={ready ? question.qid : `pending-${index}`}
             locked={false}
             onDraft={value => draftFor(question, value)}
             onToggle={choice => toggleChoice(question, choice)}
@@ -1161,10 +1200,10 @@ function ClarifyToolBatchPending({ onAnswered, request }: { onAnswered: () => vo
       </ClarifyShell>
 
       <div className="flex items-center justify-end gap-1">
-        <Button disabled={submitting} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
+        <Button disabled={submitting || !ready} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
           {copy.skip}
         </Button>
-        <Button disabled={submitting || !allStaged} size="xs" type="submit">
+        <Button disabled={submitting || !ready || !allStaged} size="xs" type="submit">
           {submitting ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (

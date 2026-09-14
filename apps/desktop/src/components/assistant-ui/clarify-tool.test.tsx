@@ -128,7 +128,11 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     messageRunning = false
     $activeSessionId.set('session-1')
     $gateway.set({ request: vi.fn() } as never)
-    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+    // Stopped mid-prompt with nothing displayable: empty/missing question and
+    // no questions[]. Args that already carry question text keep the pending
+    // card (see args-only pending tests below).
+    const args = {}
+    renderClarify(<ClarifyTool {...liveClarifyProps()} args={args} argsText="{}" />)
 
     expect(document.querySelector('[data-clarify-choices]')).toBeNull()
     expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
@@ -172,6 +176,133 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     expect(screen.getByText('Which deployment target?')).toBeTruthy()
     expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
     expect(screen.getByRole('button', { name: /Continue/ }).hasAttribute('disabled')).toBe(true)
+  })
+})
+
+describe('ClarifyTool args-only pending card', () => {
+  it('keeps a disabled single-question card when the turn reports not-running and request_id has not arrived', () => {
+    messageRunning = false
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /staging/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /production/ })).toBeTruthy()
+    expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Continue/ }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('paints a disabled batch card from args while request_id is racing and the turn reports not-running', () => {
+    messageRunning = false
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Confirm and continue/ }).hasAttribute('disabled')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Skip' }).hasAttribute('disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('enables the same single-question card once the matching request arrives', async () => {
+    messageRunning = false
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+    expect(screen.getByText('Which deployment target?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Continue/ }).hasAttribute('disabled')).toBe(true)
+
+    act(() => {
+      setClarifyRequest({
+        choices: ['staging', 'production'],
+        multiSelect: false,
+        question: 'Which deployment target?',
+        requestId: 'request-1',
+        sessionId: 'session-1'
+      })
+    })
+
+    expect(screen.getAllByText('Which deployment target?')).toHaveLength(1)
+    expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /staging/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledWith('clarify.respond', {
+        answer: 'staging',
+        request_id: 'request-1'
+      })
+    })
+  })
+
+  it('enables the same batch card once matching request ids arrive', async () => {
+    messageRunning = false
+    const request = vi.fn().mockResolvedValue({ ok: true })
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request } as never)
+    renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+    expect(screen.getByText('Color?')).toBeTruthy()
+    expect(screen.getByText('Name?')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Confirm and continue/ }).hasAttribute('disabled')).toBe(true)
+
+    act(() => {
+      setClarifyRequest({
+        choices: null,
+        multiSelect: false,
+        question: '',
+        questions: [
+          { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+          { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+        ],
+        requestId: 'request-batch',
+        sessionId: 'session-1'
+      })
+    })
+
+    expect(screen.getAllByText('Color?')).toHaveLength(1)
+    expect(screen.getAllByText('Name?')).toHaveLength(1)
+    expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.click(screen.getByRole('button', { name: /Confirm and continue/ }))
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.respond', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.respond', {
+      answer: 'packet',
+      question_id: 'q1',
+      request_id: 'request-batch'
+    })
   })
 })
 

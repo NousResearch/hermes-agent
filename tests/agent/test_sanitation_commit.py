@@ -153,11 +153,48 @@ class _ExternalEngine:
         self.updates_status = updates_status
         self.calls = 0
         self.call_options: list[dict[str, bool]] = []
+        self.prepare_calls: list[dict[str, Any]] = []
+        self.operation_claims: list[Any] = []
+        self.result_claim: Any = _DEFAULT_OPERATION
+        self.prepare_exception: BaseException | None = None
+        self.expected_session_id: str | None = None
+        self.expected_messages: list[dict] | None = None
         self.after_compress = None
         self.failure_cooldown_calls = 0
 
     def pending_compression_operation(self, _messages):
         return self.current_operation
+
+    def prepare_compression_operation(
+        self,
+        messages,
+        *,
+        session_id=None,
+        attempt_generation=None,
+    ):
+        if self.prepare_exception is not None:
+            raise self.prepare_exception
+        self.prepare_calls.append(
+            {
+                "messages": copy.deepcopy(messages),
+                "session_id": session_id,
+                "attempt_generation": attempt_generation,
+            }
+        )
+        if (
+            self.current_operation != "sanitize"
+            or (
+                self.expected_session_id is not None
+                and session_id != self.expected_session_id
+            )
+            or (
+                self.expected_messages is not None
+                and messages != self.expected_messages
+            )
+        ):
+            return None
+        claim = object()
+        return "sanitize", claim
 
     def compress(
         self,
@@ -166,8 +203,10 @@ class _ExternalEngine:
         focus_topic=None,
         force=False,
         bypass_cooldown=False,
+        operation_claim=None,
     ):
         self.calls += 1
+        self.operation_claims.append(operation_claim)
         self.call_options.append(
             {"force": force, "bypass_cooldown": bypass_cooldown}
         )
@@ -175,7 +214,15 @@ class _ExternalEngine:
             self.last_compression_status = self._result_status
         if self.after_compress is not None:
             self.after_compress()
-        return copy.deepcopy(self.candidate)
+        candidate = copy.deepcopy(self.candidate)
+        if operation_claim is None:
+            return candidate
+        result_claim = (
+            operation_claim
+            if self.result_claim is _DEFAULT_OPERATION
+            else self.result_claim
+        )
+        return candidate, result_claim
 
     def _record_compression_failure_cooldown(self, *_args, **_kwargs):
         self.failure_cooldown_calls += 1
@@ -363,6 +410,144 @@ def test_statusless_external_engine_can_report_pure_sanitation_without_memory_ho
     )
 
     assert harness.memory.pre_compress_calls == 0
+
+
+def test_sanitation_claim_is_passed_and_current_result_proves_exact_claim(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+
+    returned, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert len(harness.agent.context_compressor.prepare_calls) == 1
+    prepare_call = harness.agent.context_compressor.prepare_calls[0]
+    assert prepare_call["messages"] == harness.messages
+    assert prepare_call["session_id"] == harness.agent.session_id
+    assert isinstance(prepare_call["attempt_generation"], int)
+    assert harness.agent.context_compressor.operation_claims[0] is not None
+    assert _without_persistence_markers(returned) == _without_persistence_markers(
+        harness.candidate
+    )
+    assert harness.memory.pre_compress_calls == 0
+
+
+def test_replayed_result_claim_cannot_classify_later_invocation_as_sanitation(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    first, _ = compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+    stale_claim = harness.agent.context_compressor.operation_claims[0]
+    harness.agent.context_compressor.candidate = copy.deepcopy(first)
+    harness.agent.context_compressor.result_claim = stale_claim
+
+    replay_input = copy.deepcopy(first)
+    replayed, _ = compression.compress_context(
+        harness.agent,
+        replay_input,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert harness.agent.context_compressor.operation_claims[1] is not stale_claim
+    assert replayed is replay_input
+
+
+def test_intervening_preflight_invalidates_stale_sanitation_claim(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    engine.should_compress_preflight = lambda _messages: setattr(
+        engine, "current_operation", None
+    )
+    engine.should_compress_preflight(harness.messages)
+    engine.candidate = [{"role": "user", "content": "generic compression"}]
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.prepare_calls
+    assert engine.operation_claims == [None]
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_session_change_invalidates_stale_sanitation_claim(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    engine.expected_session_id = harness.agent.session_id
+    harness.agent.session_id = f"{harness.agent.session_id}-next"
+    harness.agent._ensure_db_session()
+    engine.candidate = [{"role": "user", "content": "generic compression"}]
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.operation_claims == [None]
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_message_mismatch_invalidates_stale_sanitation_claim(tmp_path):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    engine.expected_messages = copy.deepcopy(harness.messages)
+    mismatched = copy.deepcopy(harness.messages)
+    mismatched[0]["content"] += " changed"
+    engine.candidate = [{"role": "user", "content": "generic compression"}]
+
+    compression.compress_context(
+        harness.agent,
+        mismatched,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.operation_claims == [None]
+    assert harness.memory.pre_compress_calls == 1
+
+
+def test_prepare_claim_exception_invalidates_sanitation_and_falls_back_generic(
+    tmp_path,
+):
+    import agent.conversation_compression as compression
+
+    harness = _make_harness(tmp_path, rounds=1, initial_status=None)
+    engine = harness.agent.context_compressor
+    engine.prepare_exception = RuntimeError("claim failed")
+    engine.candidate = [{"role": "user", "content": "generic compression"}]
+
+    compression.compress_context(
+        harness.agent,
+        harness.messages,
+        "system",
+        approx_tokens=100_000,
+    )
+
+    assert engine.operation_claims == [None]
+    assert harness.memory.pre_compress_calls == 1
 
 
 def test_stale_sanitized_status_cannot_classify_current_placeholder_result(

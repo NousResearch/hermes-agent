@@ -159,13 +159,24 @@ class ContextEngine(ABC):
     def pending_compression_operation(
         self, messages: List[Dict[str, Any]]
     ) -> str | None:
-        """Describe a preflight-bound next ``compress(messages)`` operation.
+        """Legacy operation hint; Hermes does not use it for commit classification."""
+        return None
 
-        Return ``"sanitize"`` only when the immediately following automatic call
-        is guaranteed to perform pure sanitation for this exact message set.
-        Implementations must invalidate the claim on another preflight or session
-        and consume it on the next compression attempt. The host treats absent,
-        stale, exceptional, and all other values as generic compression.
+    def prepare_compression_operation(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        session_id: str | None = None,
+        attempt_generation: int | None = None,
+    ) -> tuple[str, Any] | None:
+        """Atomically claim a preflight-bound next ``compress(messages)`` operation.
+
+        Return ``("sanitize", claim)`` only for the exact message snapshot,
+        session and attempt supplied. ``claim`` is an opaque, non-``None`` identity
+        token. The engine must consume it exactly once when the host passes that
+        same object to ``compress(..., operation_claim=claim)`` and return
+        ``(messages, claim)`` only when that invocation performed pure sanitation.
+        The default keeps existing engines on generic compression semantics.
         """
         return None
 

@@ -1615,7 +1615,7 @@ def _compression_lock_holder(agent: Any) -> str:
 
 def _supported_compression_kwargs(
     compress_fn: Any, *, current_tokens: Optional[int], focus_topic: Optional[str], force: bool,
-    memory_context: str, bypass_cooldown: bool = False,
+    memory_context: str, bypass_cooldown: bool = False, operation_claim: Any = None,
 ) -> dict:
     """Return only compression kwargs accepted by an engine callable.
     Inspecting first keeps older plugin signatures compatible without catching ``TypeError`` and running a
@@ -1625,6 +1625,8 @@ def _supported_compression_kwargs(
         candidates["bypass_cooldown"] = True
     if memory_context:
         candidates["memory_context"] = memory_context
+    if operation_claim is not None:
+        candidates["operation_claim"] = operation_claim
     try:
         parameters = inspect.signature(compress_fn).parameters
     except (TypeError, ValueError):
@@ -2778,43 +2780,107 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
 
 def _resolve_compress_call(
     agent: Any, *, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, memory_context: str,
-    bypass_cooldown: bool,
+    bypass_cooldown: bool, operation_claim: Any = None,
 ) -> Tuple[Callable[..., Any], dict[str, Any]]:
     """Bind ``compress()`` and only the kwargs its signature accepts."""
     compress_fn = agent.context_compressor.compress
     compress_kwargs = _supported_compression_kwargs(
         compress_fn, current_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-        bypass_cooldown=bypass_cooldown,
+        bypass_cooldown=bypass_cooldown, operation_claim=operation_claim,
     )
     if memory_context.strip() and "memory_context" not in compress_kwargs:
         _warn_memory_context_unsupported(agent, memory_context)
     return compress_fn, compress_kwargs
 
 
-def _pure_automatic_sanitation(
+@dataclasses.dataclass(frozen=True)
+class _PreparedCompressionOperation:
+    operation: str
+    claim: Any
+    session_id: str | None
+    attempt_generation: int
+
+
+def _supports_operation_claim(compress_fn: Callable[..., Any]) -> bool:
+    try:
+        parameters = inspect.signature(compress_fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return (
+        "operation_claim" in parameters
+        or any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+    )
+
+
+def _prepare_automatic_compression_operation(
     agent: Any,
     messages: list,
     *,
+    attempt_generation: int,
     force: bool,
     bypass_cooldown: bool,
-) -> bool:
-    """Whether preflight proves this exact invocation is pure sanitation."""
+) -> Optional[_PreparedCompressionOperation]:
+    """Claim pure sanitation for exactly one supported engine invocation."""
     if force or bypass_cooldown:
-        return False
-    operation = getattr(
-        agent.context_compressor, "pending_compression_operation", None
+        return None
+    compressor = agent.context_compressor
+    prepare = getattr(
+        compressor, "prepare_compression_operation", None
     )
-    if not callable(operation):
-        return False
+    if not callable(prepare) or not _supports_operation_claim(compressor.compress):
+        return None
+    kwargs = {
+        "session_id": agent.session_id,
+        "attempt_generation": attempt_generation,
+    }
     try:
-        return operation(messages) == "sanitize"
+        parameters = inspect.signature(prepare).parameters
+        if not any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ):
+            kwargs = {name: value for name, value in kwargs.items() if name in parameters}
+        prepared = prepare(messages, **kwargs)
     except Exception as exc:
         logger.debug(
-            "pending_compression_operation raised %s; treating the invocation "
+            "prepare_compression_operation raised %s; treating the invocation "
             "as generic compression",
             type(exc).__name__,
         )
-        return False
+        return None
+    if (
+        not isinstance(prepared, tuple)
+        or len(prepared) != 2
+        or prepared[0] != "sanitize"
+        or prepared[1] is None
+    ):
+        return None
+    return _PreparedCompressionOperation(
+        operation="sanitize",
+        claim=prepared[1],
+        session_id=agent.session_id,
+        attempt_generation=attempt_generation,
+    )
+
+
+def _accept_prepared_sanitation_result(
+    agent: Any,
+    prepared: _PreparedCompressionOperation,
+    result: Any,
+) -> Optional[list]:
+    """Unwrap only a result carrying the exact one-shot invocation claim."""
+    if (
+        not isinstance(result, tuple)
+        or len(result) != 2
+        or not isinstance(result[0], list)
+        or result[1] is not prepared.claim
+        or agent.session_id != prepared.session_id
+    ):
+        return None
+    return result[0]
 
 
 def _warn_memory_context_unsupported(agent: Any, memory_context: str) -> None:
@@ -3696,12 +3762,14 @@ def _run_summary_phase(
                 # Adopted list is fully durable: re-anchor persist idx at the end so the post-
                 # compression flush skips it; run_agent marker sync realigns _session_messages.
                 agent._persist_user_message_idx = len(messages)
-        pure_sanitation = _pure_automatic_sanitation(
+        prepared_operation = _prepare_automatic_compression_operation(
             agent,
             messages,
+            attempt_generation=attempt.generation,
             force=force,
             bypass_cooldown=bypass_cooldown,
         )
+        pure_sanitation = prepared_operation is not None
         memory_context = (
             ""
             if pure_sanitation and not checkpoint_required
@@ -3712,6 +3780,9 @@ def _run_summary_phase(
         compress_fn, compress_kwargs = _resolve_compress_call(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
             bypass_cooldown=bypass_cooldown,
+            operation_claim=(
+                prepared_operation.claim if prepared_operation is not None else None
+            ),
         )
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
@@ -3721,6 +3792,27 @@ def _run_summary_phase(
             agent, messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
         )
+        if prepared_operation is not None:
+            claimed_result = _accept_prepared_sanitation_result(
+                agent, prepared_operation, compressed
+            )
+            if claimed_result is None:
+                _restore_messages_snapshot(messages, messages_before_compression)
+                logger.warning(
+                    "Sanitation commit refused: operation=sanitize "
+                    "reason=invalid_operation_claim salvage=false "
+                    "terminal_result=refused_invalid_claim session=%s",
+                    agent.session_id or "none",
+                )
+                lease.release()
+                _emit_aborted_attempt_telemetry(
+                    agent, attempt.started_at, "sanitation_invalid_claim"
+                )
+                return _SummaryPhase(
+                    messages=messages,
+                    abort_prompt=_existing_system_prompt(agent, system_message),
+                )
+            compressed = claimed_result
     except AuxiliaryExplicitCancellation:
         try:
             attempt.restore_compressor(agent.context_compressor)

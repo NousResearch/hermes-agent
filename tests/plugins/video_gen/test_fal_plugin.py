@@ -190,6 +190,18 @@ def test_seedance_25_string_duration_up_to_30():
     assert payload["generate_audio"] is True
 
 
+def test_wan_30_audio_toggle_uses_family_key_and_start_image_url():
+    """Wan 3.0's schema names the audio toggle `audio` (not `generate_audio`), takes
+    `start_image_url` on i2v and an integer duration; veo3.1 keeps `generate_audio`."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    kw = dict(prompt="x", duration=7, aspect_ratio="16:9", resolution="720p", negative_prompt=None, audio=True, seed=None)
+    p = _build_payload(FAL_FAMILIES["wan-3.0"], image_url="https://i.png", **kw)
+    assert p["audio"] is True and "generate_audio" not in p
+    assert p["start_image_url"] == "https://i.png" and p["duration"] == 7
+    assert _build_payload(FAL_FAMILIES["veo3.1"], image_url=None, **kw)["generate_audio"] is True
+
+
 def test_gemini_omni_flash_is_image_only():
     """Gemini Omni Flash has no t2v endpoint on FAL — text jobs must
     error cleanly instead of submitting to a None endpoint."""

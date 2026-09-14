@@ -1125,7 +1125,8 @@ def _run_review_fork(
                         # Allowance first: with extra_tools configured, lead with the grant.
                         # Trailing the exception after the blanket deny made fast models
                         # anchor on the deny and never exercise the whitelisted tools.
-                        "You can call skill management tools plus: " + extra_list
+                        "You can call " + memory_phrase_prompt + "management tools plus: "
+                        + extra_list
                         + ". All other tools will be denied at runtime — do not attempt them."
                     ) if configured_extra_tools else (
                         prompt + "\n\nYou can only call " + memory_phrase_prompt +

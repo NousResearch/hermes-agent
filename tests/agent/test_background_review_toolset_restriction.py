@@ -376,3 +376,56 @@ def test_background_review_no_extra_tools_keeps_deny_sentence(tmp_path, monkeypa
     assert "You can call skill management tools plus:" not in msg
 
 
+def test_background_review_extra_tools_allowance_keeps_memory_phrase(tmp_path, monkeypatch):
+    """Combined review (memory+skills) with extra_tools: the allowance must still
+    mention memory — routing it through the same memory_phrase as the deny-only
+    branch is what prevents 'memory-less review is told memory exists' in either
+    direction (a memory review must not lose its mention either)."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "auxiliary:\n"
+        "  background_review:\n"
+        "    extra_tools:\n"
+        "      - insight_save\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import run_agent
+    from hermes_cli import config as config_module
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message, **kwargs):
+        captured["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", lambda self, *a, **k: None), \
+         patch.object(
+             run_agent.AIAgent,
+             "run_conversation",
+             _capture_run_conversation,
+         ), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=True,
+            review_skills=True,
+        )
+
+    msg = captured["review_prompt"]
+    allow_pos = msg.find("You can call ")
+    deny_pos = msg.find("denied at runtime")
+    assert allow_pos != -1 and deny_pos != -1 and allow_pos < deny_pos
+    # The allowance branch names memory when the review is memory-scoped.
+    assert "memory and skill " in msg[allow_pos:deny_pos]
+
+

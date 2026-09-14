@@ -16,6 +16,7 @@ No live gateway, no network. Git and restart are mocked.
 
 from __future__ import annotations
 
+import datetime
 import json
 from types import SimpleNamespace
 
@@ -609,3 +610,74 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+# ---------------------------------------------------------------------------
+# serve/dashboard obligations are witnessed from the spawn ledger, never from the
+# gateway matrix: the matrix only speaks for gateways, so one recorded ``serve`` runtime
+# used to make the obligation permanently undischargeable (#100479 follow-up - a surviving
+# pre-update serve must still warn, a restarted one must be able to discharge it).
+# ---------------------------------------------------------------------------
+_SHA = "a" * 40
+_OLD_SHA = "b" * 40
+_FINISHED = "2026-09-11T14:21:13.067391+00:00"
+
+
+def _finished_epoch() -> float:
+    return datetime.datetime.fromisoformat(_FINISHED).timestamp()
+
+
+def _serve_like_receipt(kind="serve", *, outcome="restarted", recorded_create=None):
+    runtime = {"kind": kind, "profile": "default", "pid": 5555, "supervisor": "manual-serve"}
+    if recorded_create is not None:
+        runtime["detail"] = {"create_time": recorded_create}
+    return {
+        "outcome": "success",
+        "finished_at": _FINISHED,
+        "plan": {"runtimes": [runtime]},
+        # The recorded pre-update snapshot is stale against the checkout, exactly like a receipt
+        # left behind after a later pull — that is what routes the decision through the coverage check.
+        "fleet": [{"profile": "default", "pid": 9, "code_sha": _OLD_SHA, "state": "stale"}],
+        "runtime_outcomes": [
+            {
+                "kind": kind,
+                "profile": "default",
+                "pid": 5555,
+                "mechanism": "respawn-argv",
+                "outcome": outcome,
+            }
+        ],
+    }
+
+
+def _patch_witness_env(monkeypatch, tmp_path, receipt, ledger, *, fleet_rows=None):
+    """Point the reconciliation at a throwaway receipt + a fake ledger, never the real HERMES_HOME."""
+    import hermes_cli.process_identity as pi
+    import hermes_cli.update_receipt as ur
+
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: _SHA)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: _SHA)
+    monkeypatch.setattr(ur, "_receipt_dir", lambda: tmp_path)
+    (tmp_path / "latest.json").write_text(json.dumps(receipt), encoding="utf-8")
+    if fleet_rows is None:
+        fleet_rows = [{"profile": "default", "pid": 4242, "code_sha": _SHA, "state": "current"}]
+    monkeypatch.setattr(ur, "collect_fleet_versions", lambda **k: fleet_rows)
+    monkeypatch.setattr(pi, "ledger_entries", lambda **_k: ledger)
+
+
+def test_restarted_serve_with_a_newer_live_incarnation_discharges(monkeypatch, tmp_path):
+    """The estate case: gateways current and serve restarted after the receipt -> nothing owed."""
+    ledger = [{"pid": 159571, "purpose": "serve", "profile": "", "create_time": _finished_epoch() + 90_000}]
+    _patch_witness_env(monkeypatch, tmp_path, _serve_like_receipt(), ledger)
+
+    assert update_cmd_fleet._live_fleet_covers_receipt(_SHA) is True
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
+def test_recorded_incarnation_is_never_counted_as_a_restart(monkeypatch, tmp_path):
+    """Clock skew can make a surviving process look newer; the plan's recorded create_time vetoes it."""
+    created = _finished_epoch() + 1
+    ledger = [{"pid": 5555, "purpose": "serve", "profile": "default", "create_time": created}]
+    _patch_witness_env(monkeypatch, tmp_path, _serve_like_receipt(recorded_create=created), ledger)
+
+    assert update_cmd_fleet._live_fleet_covers_receipt(_SHA) is False
+    assert update_cmd._pending_fleet_restart_needed() is True

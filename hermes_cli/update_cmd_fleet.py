@@ -5,6 +5,7 @@ Split out of ``hermes_cli/update_cmd.py``; every name is re-imported there so
 imported lazily inside each function (no import cycle; test patches stay effective).
 """
 
+import datetime
 import logging
 from contextlib import suppress
 import os
@@ -142,11 +143,97 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     )
 
 
+# Runtimes that carry no gateway socket (twin of update_inventory's serve kinds): the identity+sha
+# reconciliation cannot see them in the fleet matrix, so they are vouched for from the spawn ledger.
+_SERVE_LIKE_KINDS = ("serve", "dashboard")
+
+
+def _receipt_epoch(value: object) -> float | None:
+    """Parse an ISO-8601 receipt timestamp into an epoch; ``None`` when unusable."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        stamp = datetime.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return stamp.timestamp()
+
+
+def _recorded_runtime_create_time(receipt: dict, kind: str, profile: str) -> float | None:
+    """The pre-update process incarnation the plan inventoried, when it recorded one."""
+    plan = receipt.get("plan") or {}
+    for entry in plan.get("runtimes") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("kind") != kind or str(entry.get("profile") or "default") != profile:
+            continue
+        detail = entry.get("detail") or {}
+        if isinstance(detail, dict) and isinstance(detail.get("create_time"), (int, float)):
+            return float(detail["create_time"])
+    return None
+
+
+def _non_gateway_runtime_restarted_since_receipt(receipt: dict, kind: str, profile: str) -> bool:
+    """Can this receipt's serve/dashboard obligation be discharged? Two measured halves.
+
+    The gateway matrix only speaks for gateways, so a recorded serve/dashboard runtime used to make an
+    obligation permanently undischargeable: the pending-restart notice then printed on EVERY CLI
+    invocation even though nothing was stale (estate-measured 2026-09-14 — every gateway socket
+    ``current`` at the checkout sha and ``hermes serve`` restarted after the newest install file, yet
+    the notice persisted, and no restart or marker clear could ever satisfy it). Vouch from evidence:
+
+      1. this receipt recorded that runtime as ``restarted`` for this (kind, profile) — the restart
+         phase's own bookkeeping, and
+      2. a live ledger entry for this install whose incarnation ``(pid, create_time)`` started after
+         the receipt finished, i.e. a NEW process and not the pre-update one that survived (#100479).
+
+    Fail closed: no ledger row, no ``create_time``, an unusable ``finished_at``, an outcome that is not
+    ``restarted``, or the same incarnation the plan inventoried all leave the obligation standing, so a
+    genuinely surviving pre-update serve still warns (and still demotes the update to partial).
+    """
+    try:
+        outcomes = receipt.get("runtime_outcomes") or []
+        if not any(
+            isinstance(entry, dict)
+            and entry.get("kind") == kind
+            and str(entry.get("profile") or "default") == profile
+            and str(entry.get("outcome") or "") == "restarted"
+            for entry in outcomes
+        ):
+            return False
+        finished = _receipt_epoch(receipt.get("finished_at"))
+        if finished is None:
+            return False
+        recorded_create = _recorded_runtime_create_time(receipt, kind, profile)
+        from hermes_cli.process_identity import ledger_entries
+
+        for entry in ledger_entries():
+            if str(entry.get("purpose") or "") != kind:
+                continue
+            if str(entry.get("profile") or "default") != profile:
+                continue
+            created = entry.get("create_time")
+            if not isinstance(created, (int, float)) or float(created) < finished:
+                continue
+            if recorded_create is not None and float(created) == recorded_create:
+                continue
+            return True
+        return False
+    except Exception as exc:
+        logger.debug("Could not vouch for the recorded %s/%s runtime: %s", kind, profile, exc)
+        return False
+
+
 def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
     """Require current successors for every recorded runtime, not just any live row.
 
     A PID changes on restart; the stable identity is (runtime kind, profile).
-    The gateway matrix cannot vouch for serve/dashboard or unidentified runtimes.
+    The gateway matrix vouches for gateways; serve/dashboard runtimes are vouched for from the spawn
+    ledger by incarnation, and an unidentified runtime still fails closed.
     Keep the historical receipt intact: a manual restart is not a successful update.
     """
     if not expected_sha:
@@ -159,6 +246,7 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         runtimes = plan.get("runtimes") or []
         recorded_fleet = receipt.get("fleet") or []
         owed = set()
+        owed_non_gateway: set[tuple[str, str]] = set()
         entries: list[tuple[object, str | None]] = [(entry, None) for entry in runtimes]
         entries.extend((entry, "gateway") for entry in recorded_fleet)
         for entry, default_kind in entries:
@@ -166,18 +254,30 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
                 return False
             kind = entry.get("kind", default_kind)
             profile = entry.get("profile")
-            if kind != "gateway" or not profile or profile == "unknown":
+            if not profile or profile == "unknown":
                 return False
-            owed.add((kind, profile))
-        if not owed:
+            if kind == "gateway":
+                owed.add((kind, profile))
+            elif kind in _SERVE_LIKE_KINDS:
+                # No gateway socket exists to read a sha from; the ledger witnesses these instead.
+                owed_non_gateway.add((kind, str(profile)))
+            else:
+                return False
+        if not owed and not owed_non_gateway:
             return False
-        fleet = collect_fleet_versions()
-        if not fleet or any(
-            row.get("state") != "current" or row.get("code_sha") != expected_sha
-            for row in fleet
-        ):
-            return False
-        return owed <= {("gateway", row.get("profile")) for row in fleet}
+        if owed:
+            fleet = collect_fleet_versions()
+            if not fleet or any(
+                row.get("state") != "current" or row.get("code_sha") != expected_sha
+                for row in fleet
+            ):
+                return False
+            if not owed <= {("gateway", row.get("profile")) for row in fleet}:
+                return False
+        return all(
+            _non_gateway_runtime_restarted_since_receipt(receipt, kind, profile)
+            for kind, profile in owed_non_gateway
+        )
     except Exception as exc:
         logger.debug("Could not reconcile pending fleet identities: %s", exc)
         return False

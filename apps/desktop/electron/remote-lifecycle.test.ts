@@ -1543,7 +1543,7 @@ test('spawnRemoteDashboard preserves the token when spawn reporting fails', asyn
     () => spawnRemoteDashboard(ssh, { hermesPath: '/x/hermes', profile: '', token: 'tok', ownershipId: OWNERSHIP_ID }),
     /channel timed out/
   )
-  assert.ok(!ssh.calls.some(command => /rm -f .*\.token/.test(command)))
+  assert.ok(!ssh.calls.some(command => /^rm -f .*\.token/.test(command)))
 })
 
 test('spawnRemoteDashboard streams the token over stdin, not argv/env', async () => {

@@ -3961,7 +3961,13 @@ class GatewayRunner(
             cached_sources = OrderedDict()
             self._session_sources = cached_sources
         try:
-            cached_sources[session_key] = dataclasses.replace(source)
+            copied_source = dataclasses.replace(source)
+            # Keep the live transport owner; multiplex routes may run under a
+            # profile that does not own the platform adapter/token.
+            transport_ref = getattr(source, "_transport_adapter_ref", None)
+            if transport_ref is not None:
+                setattr(copied_source, "_transport_adapter_ref", transport_ref)
+            cached_sources[session_key] = copied_source
         except Exception:
             logger.debug("Failed to cache live session source for %s", session_key, exc_info=True)
             return

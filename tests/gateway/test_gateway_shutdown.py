@@ -1,5 +1,6 @@
 import asyncio
 import subprocess
+import weakref
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,7 +10,7 @@ from gateway.config import HomeChannel, Platform
 from gateway.platforms.event import MessageEvent
 from gateway.restart import DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT, GATEWAY_SERVICE_RESTART_EXIT_CODE
 from gateway.session import build_session_key
-from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
+from tests.gateway.restart_test_helpers import RestartTestAdapter, make_restart_runner, make_restart_source
 from tools import browser_tool_lifecycle as bt_lifecycle
 
 
@@ -245,6 +246,33 @@ async def test_in_chat_restart_skips_home_shutdown_even_with_active_session():
     assert chat_id == source.chat_id
     assert "Gateway restarting" in message
     assert metadata["telegram_reply_to_message_id"] == "restart-command"
+
+
+def test_cache_session_source_preserves_transport_adapter_ref():
+    """A shared bot token can route several profiles through the same Telegram
+    adapter map slot; only the transport ref (not source.profile) tells reply
+    delivery which profile's live adapter actually received the message.
+    _cache_session_source copies the source via dataclasses.replace() for its
+    OrderedDict cache, which drops any runtime-set attribute not declared as a
+    dataclass field -- _transport_adapter_ref must survive that copy, mirroring
+    gateway/run_topics.py's carry-forward of the same attribute."""
+    runner, _default_adapter = make_restart_runner()
+    secondary_adapter = RestartTestAdapter()
+    runner._profile_adapters = {"secondary": {Platform.TELEGRAM: secondary_adapter}}
+
+    source = make_restart_source()
+    source._transport_adapter_ref = weakref.ref(secondary_adapter)
+    session_key = build_session_key(source)
+
+    runner._cache_session_source(session_key, source)
+    cached = runner._get_cached_session_source(session_key)
+
+    assert cached is not source
+    owner = runner._transport_owner(cached)
+    assert owner is not None
+    adapter, profile = owner
+    assert adapter is secondary_adapter
+    assert profile == "secondary"
 
 
 @pytest.mark.asyncio

@@ -29,7 +29,11 @@ const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 // handshake or IPC (the #93454 class) must surface as a failed click — not a
 // spinner that also swallows every later click on the same source, and never
 // a barrier left up or a wipe left unpainted.
-const SWITCH_DIAL_TIMEOUT_MS = 20_000
+// Phase one may spawn a cold backend. Match the inner foreground activation's
+// absolute full-open deadline; a reconnect-sized outer guard would reject a
+// healthy child before it announces readiness. Phase two below only commits
+// the already-open socket and retains its shorter bound.
+const SWITCH_DIAL_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
 const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
 // Matches the primary spawn budget: a healthy cold boot publishes well within
@@ -332,13 +336,16 @@ export async function selectConnection(connectionId: string, options: SelectConn
   // barrier and, if the commit then fails, owes the still-active source a
   // repaint. Null while queued, or if it stepped aside before its turn.
   let token = null as GatewaySwitchToken | null
+  // The same caller identity follows preparation and commit. A later,
+  // independent selection must not inherit this switch's abandoned deadline.
+  const activationController = new AbortController()
 
   try {
     // Phase 1 — open the target's socket; the active route is untouched.
     // Always use the explicit registry route. `local` must mean This device,
     // and a registry primary can differ from a legacy per-profile override.
     await withTimeout(
-      openGatewayAgent(connectionId, targetProfile),
+      openGatewayAgent(connectionId, targetProfile, { signal: activationController.signal }),
       SWITCH_DIAL_TIMEOUT_MS,
       `Timed out connecting to "${targetConnection.label}".`
     )
@@ -355,7 +362,6 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // backend's bindings, then publish, with nothing in between. A click that
     // superseded this switch while it was queued makes the hook decline —
     // neither wipe nor activation — so the user never flips through it.
-    const activationController = new AbortController()
     let markActivationStarted: () => void = () => undefined
 
     const activationStarted = new Promise<void>(resolve => {
@@ -451,6 +457,8 @@ export async function selectConnection(connectionId: string, options: SelectConn
       throw error
     }
   } finally {
+    activationController.abort()
+
     if (revision === switchRevision) {
       pendingTarget = null
       $pendingConnectionId.set(null)

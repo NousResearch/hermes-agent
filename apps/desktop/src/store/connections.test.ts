@@ -31,7 +31,10 @@ const ensureGatewayAgent = vi.fn(
   async (_connectionId: null | string, _profile: string, _options?: ActivationOptions): Promise<void> => undefined
 )
 
-const openGatewayAgent = vi.fn(async (_connectionId: string, _profile: string): Promise<void> => undefined)
+const openGatewayAgent = vi.fn(
+  async (_connectionId: string, _profile: string, _options?: { signal?: AbortSignal }): Promise<void> => undefined
+)
+
 const refreshActiveProfile = vi.fn(async () => undefined)
 const requestFreshSession = vi.fn()
 const beforeConnectionSwitch = vi.fn()
@@ -218,13 +221,25 @@ describe('connection registry cache', () => {
 })
 
 describe('selectConnection', () => {
+  it('correlates source preparation and commit with one caller-owned signal', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    await selectConnection('homelab')
+
+    const signal = openGatewayAgent.mock.calls[0]?.[2]?.signal
+    expect(signal).toBeDefined()
+    expect(ensureGatewayAgent.mock.calls[0]?.[2]?.signal).toBe(signal)
+    expect(signal?.aborted).toBe(true)
+  })
+
   it('dials a secondary source and starts a fresh source-scoped draft', async () => {
     setConnectionsRegistry(registry)
     $connection.set({ connectionId: 'local', mode: 'local' })
 
     await selectConnection('homelab')
 
-    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default', { signal: expect.anything() })
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     expect(requestFreshSession).toHaveBeenCalledTimes(1)
@@ -273,13 +288,18 @@ describe('selectConnection', () => {
     releaseDials()
     await Promise.all([openHomelab, stayLocal])
 
-    expect(openGatewayAgent.mock.calls).toEqual([
+    expect(openGatewayAgent.mock.calls.map(call => [call[0], call[1]])).toEqual([
       ['homelab', 'default'],
       ['local', 'default']
     ])
     // The superseded dial never activates: the user doesn't flip through
     // homelab on the way back to local, and only the winner commits.
     expect(ensureGatewayAgent.mock.calls.map(call => [call[0], call[1]])).toEqual([['local', 'default']])
+    const abandonedSignal = openGatewayAgent.mock.calls[0][2]?.signal
+    const winningSignal = openGatewayAgent.mock.calls[1][2]?.signal
+    expect(abandonedSignal?.aborted).toBe(true)
+    expect(winningSignal).not.toBe(abandonedSignal)
+    expect(ensureGatewayAgent.mock.calls[0][2]?.signal).toBe(winningSignal)
     expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
     expect(wipeSessionListsForGatewaySwitch).toHaveBeenCalledTimes(1)
     // Only the latest intent repaints the profile list.
@@ -420,7 +440,7 @@ describe('selectConnection', () => {
     expect(published).toEqual([{ activeSessionId: null, connectionId: 'homelab', switching: true }])
     // dial → commit (barrier + reset + wipe, inside the activation's commit
     // hook) → publish, in that order.
-    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default')
+    expect(openGatewayAgent).toHaveBeenCalledWith('homelab', 'default', { signal: expect.anything() })
     expect(openGatewayAgent.mock.invocationCallOrder[0]).toBeLessThan(ensureGatewayAgent.mock.invocationCallOrder[0])
     expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
@@ -524,6 +544,52 @@ describe('selectConnection', () => {
     }
   })
 
+  it('allows a cold foreground source to open beyond the reconnect budget without severing the current source', async () => {
+    vi.useFakeTimers()
+    const dial = deferred()
+
+    try {
+      setConnectionsRegistry(registry)
+      $connection.set({ connectionId: 'local', mode: 'local' })
+      $activeSessionId.set('a93bb39d')
+      openGatewayAgent.mockImplementationOnce(() => dial.promise)
+      let settled = false
+
+      const outcome = selectConnection('homelab').then(
+        () => {
+          settled = true
+
+          return 'resolved'
+        },
+        (error: Error) => {
+          settled = true
+
+          return error.message
+        }
+      )
+
+      await vi.advanceTimersByTimeAsync(40_000)
+
+      expect(settled).toBe(false)
+      expect($pendingConnectionId.get()).toBe('homelab')
+      expect($connection.get()?.connectionId).toBe('local')
+      expect($activeSessionId.get()).toBe('a93bb39d')
+      expect(beginGatewaySwitch).not.toHaveBeenCalled()
+      expect(ensureGatewayAgent).not.toHaveBeenCalled()
+
+      dial.resolve()
+
+      expect(await outcome).toBe('resolved')
+      expect(beginGatewaySwitch).toHaveBeenCalledTimes(1)
+      expect($connection.get()?.connectionId).toBe('homelab')
+      expect($pendingConnectionId.get()).toBeNull()
+      expect($gatewaySwitching.get()).toBe(false)
+    } finally {
+      dial.resolve()
+      vi.useRealTimers()
+    }
+  })
+
   it('a dial that never answers times out: nothing severed, the click fails visibly, and the source can be retried', async () => {
     vi.useFakeTimers()
 
@@ -538,7 +604,11 @@ describe('selectConnection', () => {
         (error: Error) => error.message
       )
 
-      await vi.advanceTimersByTimeAsync(20_000)
+      await vi.advanceTimersByTimeAsync(BACKEND_BOOT_WAIT_TIMEOUT_MS - 1)
+
+      expect($pendingConnectionId.get()).toBe('homelab')
+      expect(beginGatewaySwitch).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
 
       expect(await outcome).toMatch(/Timed out connecting to "Homelab"/)
       expect(ensureGatewayAgent).not.toHaveBeenCalled()

@@ -142,6 +142,48 @@ describe('selectProfile startup preference (#79886)', () => {
     expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly')
   })
 
+  it('remembers a named local-source pick even when the registry labels local as active', async () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+
+    selectProfile('tilly')
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly')
+  })
+
+  it('remembers Default after selecting it on the explicit local source', async () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+    $activeGatewayProfile.set('full')
+
+    const getConnectionConfig = vi.fn(async () => ({ mode: 'remote' }))
+
+    ;(globalThis as { window?: unknown }).window = {
+      hermesDesktop: {
+        getConnectionConfig,
+        profile: { remember: rememberProfile }
+      }
+    }
+
+    selectProfile('default')
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('default'))
+    expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'default')
+    expect(getConnectionConfig).not.toHaveBeenCalled()
+  })
+
+  it('does not remember local Default when the registry activation does not land', async () => {
+    activeGatewayConnectionId.mockReturnValue('local')
+    $activeGatewayProfile.set('Full')
+    ensureGatewayForAgent.mockResolvedValueOnce(false)
+
+    selectProfile('default')
+
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('local', 'default'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(rememberProfile).not.toHaveBeenCalled()
+  })
+
   it('waits for gateway activation before replacing the startup preference', async () => {
     let resolveGateway!: () => void
 
@@ -162,12 +204,12 @@ describe('selectProfile startup preference (#79886)', () => {
     await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
   })
 
-  it('does not replace the startup preference for a registry-source pick', async () => {
+  it.each(['researcher', 'default'])('does not replace the startup preference for a remote registry pick: %s', async profile => {
     activeGatewayConnectionId.mockReturnValue('mini')
 
-    selectProfile('researcher')
+    selectProfile(profile)
 
-    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('mini', 'researcher'))
+    await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalledWith('mini', profile))
     expect(rememberProfile).not.toHaveBeenCalled()
   })
 

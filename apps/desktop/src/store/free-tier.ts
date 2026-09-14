@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
 import { onboardingSurfaceActive } from '@/store/onboarding-presence'
-import type { FreeTierErrorCode, FreeTierStatus } from '@/types/hermes'
+import type { FreeTierStatus } from '@/types/hermes'
 
 /** The model the free-tier route runs on. Used to recognise a session that is
  *  still homed on the free tier after a sign-in. */
@@ -62,7 +62,8 @@ export async function refreshFreeTierStatus(requestGateway: FreeTierRequester): 
  * codes get "try again / another provider" only.
  */
 export interface FreeTierSetupFailure {
-  code: FreeTierErrorCode | string
+  /** One of the backend's `anon_*` codes (`hermes_cli/anon_auth.py`), or a newer one this build does not know. */
+  code: string
   door: 'retry' | 'sign_in'
   message: string
   retryAfter: number

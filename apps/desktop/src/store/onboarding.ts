@@ -671,7 +671,13 @@ export function setOnboardingMode(mode: OnboardingMode) {
   patch({ mode })
 }
 
-export async function refreshOnboarding(ctx: OnboardingContext) {
+/**
+ * `stillWanted`, when given, is re-asked after the readiness round: a background
+ * caller (the `setup.ready` listener) passes it so a user action that started
+ * during the round — opening the API-key form, picking a provider — is never
+ * dismissed by a late "ready".
+ */
+export async function refreshOnboarding(ctx: OnboardingContext, stillWanted?: () => boolean) {
   // Manual mode (user opened the selector from a working app): never
   // auto-dismiss on runtime-ready — the whole point is to let them add /
   // switch a provider while already configured. Just ensure the provider
@@ -683,6 +689,10 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   }
 
   const runtime = await checkRuntime(ctx)
+
+  if (stillWanted && !stillWanted()) {
+    return false
+  }
 
   if (runtime.ready) {
     completeDesktopOnboarding()

@@ -164,17 +164,6 @@ export interface FreeTierStatus {
   retry_after?: number
 }
 
-/** The backend's free-tier failure codes (`hermes_cli/anon_auth.py::ANON_*`). */
-export type FreeTierErrorCode =
-  | 'anon_account_locked'
-  | 'anon_credential_dead'
-  | 'anon_gate_closed'
-  | 'anon_gate_paused'
-  | 'anon_pow_required'
-  | 'anon_rate_limited'
-  | 'anon_server_error'
-  | 'anon_unreachable'
-
 export interface MemoryProviderOAuthStatus {
   auth: 'apikey' | 'oauth' | null
   connected: boolean

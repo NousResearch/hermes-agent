@@ -1,18 +1,7 @@
-/**
- * Directional bot-to-bot handoff to the primary profile.
- *
- * The primary member's internal name is `default`; the user-facing alias is
- * `@hermes`. Live roster union rows and durable room descriptors often stamp
- * `handle: "default"` (same as the profile id). Using that handle as the
- * mention form shadows `botHandle()` and drops `@hermes`, so
- * code-farmer → @hermes never selects the primary bot while the reverse
- * direction still works (it matches `code-farmer` by name).
- */
-
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 
 import { $groupChats } from './group-chat'
-import { durableGroupChatMembers } from './group-membership'
+import { durableGroupChatMembers, groupMemberKey } from './group-membership'
 import { parseGroupChatMentions, resolveGroupResponders, unaddressedGroupMentions } from './group-rounds'
 import type { GroupMember, GroupMessage } from './types'
 
@@ -21,107 +10,64 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
   return {
     atom,
-    host: {
-      request: vi.fn(),
-      state: { connectionId: { get: () => 'local' }, profile: { get: () => 'default' } }
-    },
+    host: { request: vi.fn(), state: { connectionId: { get: () => 'local' }, profile: { get: () => 'default' } } },
     queryClient: { invalidateQueries: vi.fn() },
     useQuery: vi.fn(),
     useValue: vi.fn()
   }
 })
-
 vi.mock('./shared', () => ({ getPluginCtx: () => null, ID: 'hermes-bots' }))
 
-const handleless: GroupMember[] = [
-  { name: 'default', title: '' },
-  { name: 'code-farmer', title: 'Code Farmer' }
-]
+beforeEach(() => $groupChats.set({}))
 
-const persisted: GroupMember[] = [
-  { handle: 'default', name: 'default', title: '主要助理／任務協調者' },
-  { handle: 'code-farmer', name: 'code-farmer', title: 'Code Farmer' }
-]
+it('keeps primary handoffs callable in both directions across persisted descriptor shapes', () => {
+  for (const handle of [undefined, 'default', 'hermes']) {
+    const original: GroupMember[] = [{ name: 'default', handle }, { name: 'code-farmer' }]
 
-const fromUser = (text: string): GroupMessage =>
-  ({ at: 1, from: { kind: 'user', name: 'You' }, id: 'u1', text, thread: 't1' }) as GroupMessage
+    const durable = durableGroupChatMembers(original)
+    expect(durable.map(member => member.handle)).toEqual(['hermes', 'code-farmer'])
 
-const fromMember = (name: string, text: string, id: string): GroupMessage =>
-  ({ at: 2, from: { kind: 'member', name }, id, text, thread: 't1' }) as GroupMessage
+    for (const members of [original, durable]) {
+      for (const [sender, target, senderTag, targetTag] of [
+        ['code-farmer', 'default', 'code-farmer', 'hermes'],
+        ['default', 'code-farmer', 'hermes', 'code-farmer']
+      ]) {
+        const targetKey = groupMemberKey(members.find(member => member.name === target)!)
 
-beforeEach(() => {
-  $groupChats.set({})
+        const log: GroupMessage[] = [
+          { at: 1, from: { kind: 'user', name: 'You' }, id: 'u', text: `@${senderTag} begin`, thread: 't' },
+          { at: 2, from: { kind: 'member', name: sender }, id: 'm', text: `@${targetTag} continue`, thread: 't' }
+        ]
+
+        $groupChats.set({ g: { log, members, roomId: 'room', watermarks: {} } })
+        expect([...parseGroupChatMentions(log[1].text, members).mentioned]).toEqual([targetKey])
+        expect(resolveGroupResponders(log, members).map(member => member.name)).toContain(target)
+        expect(unaddressedGroupMentions('g', members, 't')).toEqual([targetKey])
+      }
+    }
+  }
 })
 
-describe('primary @hermes alias in group mention parse', () => {
-  it('resolves @hermes when the member has no precomputed handle', () => {
-    const parsed = parseGroupChatMentions('@hermes Please reply with the letter B.', handleless)
+it('keeps qualified remote defaults distinct from the primary alias regardless of roster order', () => {
+  const local: GroupMember = { name: 'default', handle: 'hermes', connectionId: 'local', sourceScoped: true }
 
-    expect(parsed.mentioned.has('default')).toBe(true)
-    expect(parsed.mentioned.size).toBe(1)
-  })
+  const remotes: GroupMember[] = ['vera', 'spark'].map(device => ({
+    name: 'default',
+    handle: `default-${device}`,
+    connectionId: device,
+    remoteSource: true,
+    sourceScoped: true
+  }))
 
-  it('resolves @hermes when persist/union stamped handle: "default"', () => {
-    const parsed = parseGroupChatMentions('@hermes Please reply with the letter B.', persisted)
-
-    expect(parsed.mentioned.has('default')).toBe(true)
-    expect(parsed.mentioned.size).toBe(1)
-  })
-
-  it('resolves @hermes after durableGroupChatMembers writes the room descriptor', () => {
-    const durable = durableGroupChatMembers([
-      { name: 'default', title: '主要助理／任務協調者' } as never,
-      { name: 'code-farmer', title: 'Code Farmer' } as never
-    ])
-
-    expect(durable[0].handle).toBe('hermes')
-
-    const parsed = parseGroupChatMentions('@hermes Please reply with the letter B.', durable)
-    const keys = [...parsed.mentioned]
-
-    expect(keys.some(key => String(key).includes('default'))).toBe(true)
-  })
-
-  it('still resolves a device-qualified handle and keeps @hermes as an alias', () => {
-    const members: GroupMember[] = [
-      { handle: 'default-vera', name: 'default' },
-      { handle: 'code-farmer', name: 'code-farmer' }
-    ]
-
-    const byAlias = parseGroupChatMentions('@hermes take this', members)
-    const byDevice = parseGroupChatMentions('@default-vera take this', members)
-
-    expect(byAlias.mentioned.has('default')).toBe(true)
-    expect(byDevice.mentioned.has('default')).toBe(true)
-  })
-})
-
-describe('directional bot-to-bot continuation', () => {
-  it('selects the primary bot when code-farmer hands off with @hermes', () => {
-    const log = [
-      fromUser('@code-farmer Please reply with one line only: mention Hermes and ask Hermes to reply with the letter B.'),
-      fromMember('code-farmer', '@hermes Please reply with the letter B.', 'm1')
-    ]
-    const responders = resolveGroupResponders(log, persisted).map(member => member.name)
-
-    $groupChats.set({ g: { log, members: persisted, roomId: 'room-1' } as never })
-
-    expect(responders).toContain('default')
-    expect(unaddressedGroupMentions('g', persisted, 't1')).toContain('default')
-  })
-
-  it('still selects code-farmer when the primary bot hands off the other way', () => {
-    const log = [
-      fromUser(
-        '@hermes Please reply with one line only: mention Code Farmer and ask Code Farmer to reply with the letter D.'
-      ),
-      fromMember('default', '@code-farmer Please reply with the letter D.', 'm2')
-    ]
-    const responders = resolveGroupResponders(log, persisted).map(member => member.name)
-
-    $groupChats.set({ g: { log, members: persisted, roomId: 'room-1' } as never })
-
-    expect(responders).toContain('code-farmer')
-    expect(unaddressedGroupMentions('g', persisted, 't1')).toContain('code-farmer')
-  })
+  for (const members of [[local, ...remotes], [...remotes].reverse().concat(local)]) {
+    for (const descriptors of [members, durableGroupChatMembers(members)]) {
+      for (const [tag, key] of [
+        ['hermes', 'local::default'],
+        ['default-vera', 'vera::default'],
+        ['default-spark', 'spark::default']
+      ]) {
+        expect([...parseGroupChatMentions(`@${tag} continue`, descriptors).mentioned]).toEqual([key])
+      }
+    }
+  }
 })

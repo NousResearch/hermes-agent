@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
@@ -20,7 +23,11 @@ interface RoomLogEntry {
 }
 
 async function openBots(page: Page): Promise<void> {
-  const tab = page.getByRole('button', { name: 'Bots', exact: true }).or(page.getByRole('tab', { name: 'Bots', exact: true })).first()
+  const tab = page
+    .getByRole('button', { name: 'Bots', exact: true })
+    .or(page.getByRole('tab', { name: 'Bots', exact: true }))
+    .first()
+
   await tab.click()
   await expect(page.getByRole('button', { name: 'New bot or group chat' })).toBeVisible()
 }
@@ -50,6 +57,37 @@ async function roomLog(page: Page, group: string): Promise<RoomLogEntry[]> {
 test.beforeAll(async () => {
   fixture = await setupMockBackend()
   await waitForAppReady(fixture, 120_000)
+})
+
+// Playwright requires an object-destructured fixture argument.
+// eslint-disable-next-line no-empty-pattern
+test.afterEach(async ({}, info) => {
+  if (!fixture) {
+    return
+  }
+
+  await info.attach('room-log', {
+    body: JSON.stringify(await roomLog(fixture.page, 'Hermes, Code Farmer'), null, 2),
+    contentType: 'application/json'
+  })
+  await info.attach('native-window', { body: await fixture.page.screenshot(), contentType: 'image/png' })
+  await info.attach('runtime-source', {
+    body: JSON.stringify(
+      await fixture.app.evaluate(() => ({
+        cwd: process.cwd(),
+        argv: process.argv,
+        root: process.env.HERMES_DESKTOP_HERMES_ROOT,
+        home: process.env.HERMES_HOME
+      })),
+      null,
+      2
+    ),
+    contentType: 'application/json'
+  })
+  await info.attach('desktop-log', {
+    body: readFileSync(join(fixture.sandbox.hermesHome, 'logs/desktop.log')),
+    contentType: 'text/plain'
+  })
 })
 
 test.afterAll(async () => {
@@ -92,18 +130,35 @@ test('a teammate handing off with @hermes drives the primary profile', async () 
   // Code Farmer's handoff line lands first (the reverse direction is not in
   // question); then the room must NOT settle without Hermes' turn.
   await expect
-    .poll(async () => (await roomLog(page, group)).some(e => e.from?.name === 'code-farmer' && /@hermes/.test(e.text || '')), {
-      timeout: 180_000
-    })
+    .poll(
+      async () =>
+        (await roomLog(page, group)).some(e => e.from?.name === 'code-farmer' && /@hermes/.test(e.text || '')),
+      {
+        timeout: 180_000
+      }
+    )
     .toBe(true)
 
   await expect
-    .poll(async () => (await roomLog(page, group)).some(e => e.from?.name === 'default' && (e.text || '').trim() === 'B'), {
-      timeout: 180_000,
-      message: 'the primary profile (default / @hermes) never took its turn after being @mentioned by a teammate'
-    })
+    .poll(
+      async () => (await roomLog(page, group)).some(e => e.from?.name === 'default' && (e.text || '').trim() === 'B'),
+      {
+        timeout: 180_000,
+        message: 'the primary profile (default / @hermes) never took its turn after being @mentioned by a teammate'
+      }
+    )
     .toBe(true)
 
   // And the transcript shows the handoff answered.
   await expect(page.getByText('B', { exact: true }).filter({ visible: true }).first()).toBeVisible()
+
+  await composer.fill(
+    '@hermes Begin the reverse handoff. E2E_SAY(hermes)[{at}code-farmer Reply with D.] E2E_SAY(code-farmer)[D]'
+  )
+  await composer.press('Enter')
+  await expect
+    .poll(async () => (await roomLog(page, group)).some(e => e.from?.name === 'code-farmer' && e.text?.trim() === 'D'), {
+      timeout: 180_000
+    })
+    .toBe(true)
 })

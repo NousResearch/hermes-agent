@@ -8117,9 +8117,10 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
         {"session_key": "k1", "profile_home": str(profile_home)}
     )
 
-    assert created and created[0]["key"] == "k1"
-    assert created[0]["profile_name"] == "mlperf"
-    assert created[0]["db_path"] == profile_home / "state.db"
+    writer = next(item for item in created if "key" in item)
+    assert writer["key"] == "k1"
+    assert writer["profile_name"] == "mlperf"
+    assert writer["db_path"] == profile_home / "state.db"
 
 
 def test_ensure_session_db_row_stamps_launch_profile_name(monkeypatch):

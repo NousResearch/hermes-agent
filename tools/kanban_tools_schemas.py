@@ -132,10 +132,6 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Required when the task uses completion_contract='evidence'."
             ),
         },
-        "accept_unproven": _prop("boolean", (
-            "Explicit override for an evidence-contract task when no proof is available. "
-            "The completion is recorded as card_closed_without_proof."
-        )),
         "created_cards": {
             "type": "array",
             "items": {"type": "string"},

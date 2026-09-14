@@ -2560,8 +2560,10 @@ def complete_task(
     task = get_task(conn, task_id)
     if task is None:
         return False
-    from hermes_cli.kanban_completion_evidence import validate_completion_evidence
-    normalized_proof, unproven_override = validate_completion_evidence(
+    from hermes_cli.kanban_completion_evidence import (
+        prepare_completion_evidence, settle_completion_evidence,
+    )
+    prepared_proof = prepare_completion_evidence(
         conn, task, proof, accept_unproven=accept_unproven,
     )
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2583,6 +2585,12 @@ def complete_task(
             return False
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
+        task = get_task(conn, task_id)
+        if task is None:
+            return False
+        normalized_proof, unproven_override = settle_completion_evidence(
+            conn, task, prepared_proof,
+        )
         prior_status = _task_status(conn, task_id)
         sql = """
                 UPDATE tasks

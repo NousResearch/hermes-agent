@@ -96,15 +96,21 @@ hermes kanban complete t_abcd --summary "report generated" \
 
 Supported types are `path`, `url`, `task`, and `attachment`. Relative paths resolve
 against the card's persisted `workspace_path`; absolute paths continue to work.
-Task references must exist, and attachment IDs must belong to the card being closed.
+Path receipts must identify files; they include a size and SHA-256 digest so the durable
+record identifies the observed content rather than only a pathname. Task references must
+identify a different, completed card directly linked to the card being closed, and
+attachment IDs must belong to the card being closed. URL receipts containing reusable
+credentials are rejected rather than persisted to board state.
 Validated receipts are normalized into the task's `completion_proof` field and a
 `completion_evidence_recorded` event, so `show`, tools, and the dashboard do not need
 to re-derive evidence from prose or closing-run metadata.
 
 An evidence-contract card without a valid receipt remains in flight. When a human
-intentionally accepts that risk, `--accept-unproven` completes it and records the
+intentionally accepts that risk, CLI `--accept-unproven` (or the dashboard equivalent)
+completes it and records the
 auditable `card_closed_without_proof` event. The override cannot be combined with a
-receipt. Existing cards and `local-only` contracts remain permissive for backwards
+receipt and is not available to dispatcher workers through `kanban_complete`. Existing
+cards and `local-only` contracts remain permissive for backwards
 compatibility; proof is an opt-in task policy rather than a heuristic applied by a
 monitoring agent after completion.
 

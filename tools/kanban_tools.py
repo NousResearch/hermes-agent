@@ -573,7 +573,8 @@ def _handle_complete(args: dict, **kw) -> str:
         args.get("created_cards"), "created_cards", "task ids", strip=True)
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
     proof = _coerce_str_list(args.get("proof"), "proof", "typed evidence values", strip=True)
-    accept_unproven = _parse_bool_arg(args, "accept_unproven")
+    _check("accept_unproven" not in args,
+           "accept_unproven is restricted to human CLI/dashboard completion")
     if artifacts:
         metadata = _merge_artifacts(metadata, artifacts)
     _check(summary or result, "provide at least one of: summary (preferred), result")
@@ -589,7 +590,7 @@ def _handle_complete(args: dict, **kw) -> str:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
                 created_cards=created_cards, expected_run_id=_worker_run_id(tid),
-                proof=proof, accept_unproven=accept_unproven)
+                proof=proof)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the

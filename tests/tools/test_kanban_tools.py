@@ -8,6 +8,7 @@ Verifies:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -105,7 +106,30 @@ def test_show_returns_persisted_completion_proof(worker_env, tmp_path):
         "type": "path",
         "value": "report.txt",
         "resolved": str(artifact.resolve()),
+        "size": len(b"verified"),
+        "sha256": hashlib.sha256(b"verified").hexdigest(),
     }]
+
+
+def test_worker_cannot_self_authorize_unproven_completion(worker_env):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    with kbc.connect_closing() as conn:
+        conn.execute(
+            "UPDATE tasks SET completion_contract = 'evidence' WHERE id = ?",
+            (worker_env,),
+        )
+
+    result = json.loads(kt._handle_complete({
+        "summary": "claimed done",
+        "accept_unproven": True,
+    }))
+    assert result["ok"] is False
+    assert "restricted to human CLI/dashboard" in result["error"]
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, worker_env).status != "done"
 
 
 def test_list_filters_tasks(monkeypatch, worker_env):

@@ -158,11 +158,32 @@ describe('actOnActivePreview (drive_preview tool)', () => {
     // paragraph under the cursor whenever the target turns out not to be a
     // field, and the agent was leaving pages with their body text highlighted.
     expect(events.filter(event => event.type === 'mouseDown').map(event => event.clickCount)).toEqual([1])
-    expect(events.filter(event => event.type === 'keyDown' && event.keyCode === 'a')[0]).toMatchObject({
-      modifiers: ['control', 'meta']
-    })
+    const selectAll = events.filter(event => event.type === 'keyDown' && event.keyCode === 'a')[0]
+    expect(selectAll.modifiers).toHaveLength(1)
+    expect(['control', 'meta']).toContain(selectAll.modifiers[0])
     // The chord must not send a `char` phase, or select-all types a literal 'a'.
     expect(chars).toEqual(['h', 'i', 'Enter'])
+  })
+
+  it('sends Command+A on macOS and Control+A elsewhere for select-all', async () => {
+    const pin = (platform: string, userAgent: string) => {
+      Object.defineProperty(window.navigator, 'platform', { configurable: true, value: platform })
+      Object.defineProperty(window.navigator, 'userAgent', { configurable: true, value: userAgent })
+    }
+
+    pin('MacIntel', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)')
+    const mac = withDrivenPane()
+    await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'x' })
+    expect(
+      mac.mock.calls.map(([event]) => event).find(event => event.type === 'keyDown' && event.keyCode === 'a')
+    ).toMatchObject({ modifiers: ['meta'] })
+
+    pin('Win32', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+    const win = withDrivenPane()
+    await actOnActivePreview({ kind: 'type', ref: '@e1', text: 'x' })
+    expect(
+      win.mock.calls.map(([event]) => event).find(event => event.type === 'keyDown' && event.keyCode === 'a')
+    ).toMatchObject({ modifiers: ['control'] })
   })
 
   it('hovers by walking the pointer over and leaving it there', async () => {

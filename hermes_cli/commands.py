@@ -280,6 +280,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[reset [--force]]"),
     CommandDef("subscription", "View your Nous plan and change it in the browser", "Info",
                cli_only=True, aliases=("upgrade",)),
+    CommandDef("fallback", "Select the first fallback for this session", "Session",
+               gateway_only=True, busy_policy="reject", args_hint="[on|off|status]"),
     CommandDef("login", "Sign in with a Nous account (keeps your connectors)", "Info",
                busy_policy="dispatch", desktop="settings"),
     CommandDef("topup", "Show your Nous balance and manage billing on the portal", "Info"),

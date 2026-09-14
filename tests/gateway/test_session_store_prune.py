@@ -25,26 +25,27 @@ from gateway.session import SessionEntry, SessionStore
 
 
 def test_session_store_default_db_uses_runtime_hermes_home(tmp_path, monkeypatch):
-    """SessionStore must honor runtime HERMES_HOME when opening the default DB.
-
-    Regression for the import-time DEFAULT_DB_PATH freeze: importing
-    hermes_state before a fixture redirected HERMES_HOME used to pin every
-    default SessionDB() at the developer's real ~/.hermes/state.db.
-    """
+    """Dynamic SessionStore DB follows runtime home while no profile override is active."""
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    import hermes_state
+    # conftest deliberately patches DEFAULT_DB_PATH; native _default_db_path gives
+    # an explicit constant override priority over the dynamic home under test.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
     config = GatewayConfig()
     fake_home = tmp_path / "alt_hermes_home"
     fake_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(fake_home))
-
-    with patch("gateway.session.SessionStore._ensure_loaded"):
-        store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
-
+    token = set_hermes_home_override(None)
+    store = None
     try:
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
         assert store._db is not None
         assert store._db.db_path == fake_home / "state.db"
     finally:
-        if store._db is not None:
-            store._db.close()
+        if store is not None:
+            store.close_all_db_handles()
+        reset_hermes_home_override(token)
 
 
 def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
@@ -258,3 +259,22 @@ class TestReadmeSentinel:
         # The note points users at the real store and command.
         assert "state.db" in raw["_README"]
         assert "hermes sessions list" in raw["_README"]
+
+def test_strict_manual_delete_checks_identity_clock_and_mirror(tmp_path, monkeypatch):
+    from gateway.session import SessionSource
+    store = SessionStore(tmp_path / "routing", GatewayConfig())
+    try:
+        entry = store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="manual"))
+        stamp = entry.updated_at
+        assert store.set_session_metadata(entry.session_key, "manual_fallback_index", 0,
+                                          require_primary=True, expected_session_id=entry.session_id)
+        delete = getattr(store, "delete_session_metadata", None)
+        assert callable(delete)
+        assert not delete(entry.session_key, "manual_fallback_index", expected_session_id="stale")
+        assert not delete("missing", "manual_fallback_index", expected_session_id=entry.session_id)
+        with patch.object(store, "_save_sessions_json", side_effect=OSError("mirror")):
+            assert delete(entry.session_key, "manual_fallback_index", expected_session_id=entry.session_id)
+        assert delete(entry.session_key, "manual_fallback_index", expected_session_id=entry.session_id)
+        assert entry.updated_at == stamp and "manual_fallback_index" not in entry.metadata
+    finally:
+        store.close_all_db_handles()

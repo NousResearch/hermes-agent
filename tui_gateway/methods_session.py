@@ -67,19 +67,12 @@ def _new_runtime_ids(params: dict) -> tuple[str, str]:
     return uuid.uuid4().hex[:8], _resolve_session_source(_str_param(params, "source") or None)
 
 
-@contextlib.contextmanager
 def _profile_build_scope(profile_home):
-    """Bind HERMES_HOME + secret scope for an agent build (home alone leaves get_secret() on the LAUNCH .env)."""
-    if not profile_home:
-        yield
-        return
-    home_token = set_hermes_home_override(str(profile_home))
-    secret_token = set_secret_scope(build_profile_secret_scope(Path(str(profile_home))))
-    try:
-        yield
-    finally:
-        reset_hermes_home_override(home_token)
-        reset_secret_scope(secret_token)
+    """Bind HERMES_HOME + secret + terminal scope for an agent build: the same composition a turn
+    binds (``_session_profile_runtime_scope``). Home alone leaves ``get_secret()`` on the LAUNCH
+    ``.env``; home + secrets alone leaves ``_make_agent``'s terminal probing on the launch process's
+    ambient ``TERMINAL_*`` (a ``terminal.backend: docker`` secondary built a ``local`` agent)."""
+    return _session_profile_runtime_scope({"profile_home": str(profile_home) if profile_home else None})
 
 
 def _make_agent_in_context(sid: str, key: str, **kwargs):
@@ -396,6 +389,24 @@ def _(rid, params: dict) -> dict:
                  "profile_name": _response_profile_name(profile)}})
 
 
+def _unarchive_recoverable(db, session_id: str) -> bool:
+    """``unarchive_recoverable_session`` that works on a read-only listing handle (foreign profile):
+    the rare write escalates to a short-lived registry writer instead of writing on the reader."""
+    if not getattr(db, "read_only", False):
+        return db.unarchive_recoverable_session(session_id)
+    from hermes_state_registry import acquire
+    try:
+        wdb = acquire(db.db_path)
+    except Exception:
+        logger.warning("Bot Chat unarchive skipped: writer unavailable for %s", db.db_path, exc_info=True)
+        return False
+    try:
+        return wdb.unarchive_recoverable_session(session_id)
+    finally:
+        with contextlib.suppress(Exception):
+            wdb.close()
+
+
 def _session_list_by_title(rid, db, title_lookup: str) -> dict:
     """EXACT-title lookup (title as identity), window-free on purpose (a busy profile's windowed listing can
     push the row out). Hidden rows resolve (canonical chats are born hidden); archived / deny-listed do not;
@@ -405,7 +416,7 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         # A Bot Chat archived by the ws-orphan reaper / agent_close is an accident (the desktop would mint
         # replacements forever): resurrect recoverable reasons only. Re-fetch by ID — title is not UNIQUE.
-        if title_lookup == BOT_CHAT_TITLE and db.unarchive_recoverable_session(row["id"]):
+        if title_lookup == BOT_CHAT_TITLE and _unarchive_recoverable(db, row["id"]):
             # The canonical Bot Chat is identity-scoped: an archive stamped by the ws-orphan reaper or older
             # agent cleanup (ws_orphan_reap / agent_close) is an accident, not user intent, and hiding the
             # row here makes the desktop mint transient replacements forever (#92687). Resurrect it — same
@@ -891,7 +902,7 @@ def _(rid, params: dict) -> dict:
         live_sid, live = next(
             ((sid, sess) for sid, sess in list(_sessions.items()) if sess.get("session_key") == target), ("", None))
     branch, root = git_probe.branch(resolved), git_probe.common_repo_root(resolved)
-    with _profile_db(params) as db:
+    with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         # A draft has no row yet; the live re-home still applies (row inherits cwd on write).
@@ -952,7 +963,7 @@ def _(rid, params: dict) -> dict:
     if any(s.get("session_key") == target for _sid, s in snapshot):
         return _err(rid, 4023, "cannot delete an active session")
     profile_home = _profile_home((params.get("profile") or "").strip() or None)
-    with _profile_db(params) as db:
+    with _profile_db(params, writer=True) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5036)
         try:
@@ -1020,7 +1031,7 @@ def _(rid, params: dict) -> dict:
     LIVE runtime id first (unpersisted drafts via ``pending_hidden``), then a stored id/key in the profile db."""
     hidden = is_truthy_value(params.get("hidden", True))
     session, err = _sess_nowait(params, rid)
-    with (_profile_db(params) if session is None else _session_db(session)) as db:
+    with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         try:
@@ -1669,9 +1680,15 @@ def _(rid, params: dict, session: dict) -> dict:
     from hermes_cli.status_report import build_status_fields, status_lines
     key = session.get("session_key") or params.get("session_id") or ""
     mirror = _metadata_mirror(session)
+    # Under turn isolation the compute host owns the live route: a stale in-process agent object
+    # must not outrank the host's mirrored model/provider. Before the first host frame fills the
+    # mirror, the in-process agent is still the only route we know (same order as _session_info).
+    live_agent = session.get("agent")
+    agent = None if session.get("_compute_host_active") else live_agent
     fields = build_status_fields(
-        key, session.get("agent"), _status_row(session, params, key),
-        model=mirror.get("model"), provider=mirror.get("provider"),
+        key, agent, _status_row(session, params, key),
+        model=mirror.get("model") or getattr(live_agent, "model", None),
+        provider=mirror.get("provider") or getattr(live_agent, "provider", None),
         tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
     )
     project = _project_info_for_cwd(_display_session_cwd(session))
@@ -2178,8 +2195,10 @@ def _(rid, params: dict) -> dict:
     from tui_gateway import event_replay as er
     frames = er.events_since(sid, last_seen)
     # ``epoch``: in-process seq — clients reset watermarks when this differs from gateway.ready's.
+    # ``open_requests``: server→client requests still unanswered — the ring cannot carry "a question still
+    # waiting", so the reconnecting client re-delivers these to its request handlers.
     return _ok(rid, {"events": frames, "latest_seq": er.latest_seq(sid), "truncated": er.is_truncated(sid, last_seen),
-                     "count": len(frames), "epoch": er.replay_epoch()})
+                     "count": len(frames), "epoch": er.replay_epoch(), "open_requests": _open_requests(sid)})
 
 
 @method("session.events.stats")

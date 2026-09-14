@@ -471,9 +471,9 @@ def _render_inline_elements(elements: list) -> str:
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:
-    """Render ``rich_text`` blocks to readable lines, preserving quotes, lists and code.
-    Quoted/forwarded content lives in nested ``rich_text_quote`` elements that the event's plain
-    ``text`` field omits."""
+    """Render ``rich_text`` blocks to readable lines (quotes, lists, code) and ``table`` blocks as
+    pipe rows. Quoted/forwarded content lives in nested ``rich_text_quote`` elements and pasted
+    tables in ``table`` blocks; the event's plain ``text`` field omits both."""
     if not blocks:
         return ""
     parts: list[str] = []
@@ -511,9 +511,76 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
                 _append_line(_render_inline_elements([elem]), quote_depth, bullet)
 
     for block in blocks:
-        if (block or {}).get("type") == "rich_text":
+        block_type = (block or {}).get("type")
+        if block_type == "rich_text":
             _walk_elements(block.get("elements", []))
+        elif block_type == "table":
+            table_text = _render_slack_table_block(block)
+            if table_text:
+                parts.append(table_text)
+
     return "\n".join(parts)
+
+
+#: Cap on a single rendered pasted-table projection. Slack lets a user paste
+#: arbitrarily large spreadsheets; the projection must not grow unboundedly
+#: with whatever was pasted. 20k chars comfortably covers real tables while
+#: staying well under Slack's own 40k message ceiling.
+_SLACK_TABLE_MAX_CHARS = 20_000
+
+
+def _collect_slack_table_cell_text(value: Any) -> str:
+    """Collect the text leaves in a Slack table cell's raw/rich-text subtree.
+
+    Cells arrive as ``raw_text`` objects or nested rich-text trees depending
+    on formatting; walking every ``text`` leaf keeps formatted cells intact
+    without enumerating Slack's cell schema.
+    """
+    parts: list[str] = []
+
+    def _visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _visit(item)
+            return
+        if not isinstance(node, dict):
+            return
+        text = node.get("text")
+        if isinstance(text, str):
+            parts.append(text)
+        for child in node.values():
+            _visit(child)
+
+    _visit(value)
+    return " ".join(p for p in parts if p).strip()
+
+
+def _render_slack_table_block(
+    block: dict, max_chars: int = _SLACK_TABLE_MAX_CHARS
+) -> str:
+    """Render a Slack ``table`` block as ``cell | cell | cell`` lines.
+
+    Slack represents a **pasted table** as ``blocks[]`` entries of type ``table`` (usually nested
+    inside ``attachments[].blocks[]``). It appears in neither the message ``text`` nor the file
+    list, so without this projection the agent receives the sentence before the table and
+    nothing else.
+    """
+    rows = block.get("rows") if isinstance(block, dict) else None
+    if not isinstance(rows, list):
+        return ""
+    lines: list[str] = []
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        rendered = " | ".join(_collect_slack_table_cell_text(cell) for cell in row)
+        if rendered.strip(" |"):
+            lines.append(rendered)
+    text = "\n".join(lines)
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        text = text[: max_chars - 20].rstrip() + "\n[table truncated]"
+    return text
 
 
 def _extract_text_from_slack_attachments(attachments: list) -> str:
@@ -608,7 +675,15 @@ def _extract_additional_text_from_slack_blocks(
         for match in _SLACK_FENCED_CODE_RE.finditer(primary_text or "")}
     parts: list[str] = []
     for block in blocks or []:
-        if (block or {}).get("type") != "rich_text":
+        block_type = (block or {}).get("type")
+        if block_type == "table":
+            # A top-level ``table`` block never appears in the plain text and the JSON serializer
+            # drops ``rows``, so this is the only path that surfaces a pasted table.
+            table_text = _render_slack_table_block(block)
+            if table_text:
+                parts.append(table_text)
+            continue
+        if block_type != "rich_text":
             continue
         for element in block.get("elements", []):
             element_type = element.get("type", "")
@@ -638,8 +713,10 @@ _BLOCK_RECURSIVE_KEYS = frozenset(
 def _serialize_slack_blocks_for_agent(blocks: list, max_chars: int = 6000) -> str:
     """Compact, redacted JSON view of non-``rich_text`` Block Kit blocks.
     ``rich_text`` is already rendered into the message text; dumping it here would repeat the
-    author's words with every ``url`` stripped by the allowlist."""
-    inspectable = [block for block in (blocks or []) if (block or {}).get("type") != "rich_text"]
+    author's words with every ``url`` stripped by the allowlist. ``table`` is rendered by
+    :func:`_render_slack_table_block`; the allowlist drops ``rows`` so it would dump as a husk."""
+    inspectable = [
+        block for block in (blocks or []) if (block or {}).get("type") not in ("rich_text", "table")]
     if not inspectable:
         return ""
     def _sanitize(value):
@@ -1932,6 +2009,13 @@ class SlackAdapter(BasePlatformAdapter):
         return self._workspace_thread_key(
             self._metadata_team_id(metadata), chat_id, str(thread_ts))
 
+    def native_task_card_destination_supported(
+        self, chat_id: str, *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Placement eligibility independent of connection/stream availability."""
+        return self._native_task_card_key(chat_id, reply_to, metadata) is not None
+
     async def send_native_task_card_progress(
         self, chat_id: str, tasks: List[Dict[str, str]], *, title: str = "Hermes is working",
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
@@ -2567,9 +2651,8 @@ class SlackAdapter(BasePlatformAdapter):
             pass
 
     def _slack_allow_bots(self) -> str:
-        """Return normalized Slack bot-message policy."""
-        # Scoped read: under multiplex os.environ is the DEFAULT profile's bot-admission policy.
-        raw = self.config.extra.get("allow_bots", "") or _get_scoped_secret("SLACK_ALLOW_BOTS", "none")
+        """Return normalized Slack bot-message policy (scoped ``SLACK_ALLOW_BOTS`` → YAML → none)."""
+        raw = _extra_or_secret(self.config.extra, "allow_bots", "SLACK_ALLOW_BOTS", "none")
         value = str(raw).lower().strip()
         if value not in {"none", "mentions", "all"}:
             logger.warning("[Slack] Unknown allow_bots=%r; treating as 'none'", raw)
@@ -2974,10 +3057,8 @@ class SlackAdapter(BasePlatformAdapter):
         return await self._react(channel, timestamp, emoji, team_id, remove=True)
 
     def _reactions_enabled(self) -> bool:
-        """Whether message reactions are enabled (``extra.reactions`` / ``SLACK_REACTIONS``)."""
-        configured = self.config.extra.get("reactions")
-        if configured is None:
-            configured = _get_scoped_secret("SLACK_REACTIONS", "true")
+        """Whether message reactions are enabled (scoped ``SLACK_REACTIONS`` → ``extra.reactions`` → on)."""
+        configured = _extra_or_secret(self.config.extra, "reactions", "SLACK_REACTIONS", "true")
         return str(configured).lower() not in {"false", "0", "no"}
 
     def _reacting_target(self, event: MessageEvent) -> Optional[Tuple[str, str, Any]]:
@@ -3986,6 +4067,11 @@ class SlackAdapter(BasePlatformAdapter):
             body = (att_text or att_fallback or "").strip()
             if len(body) > 500:
                 body = body[:497] + "..."
+            # Pasted tables arrive as ``table`` blocks in ``attachments[].blocks[]``, absent from
+            # ``text``/``fallback``/files; without this the agent sees only the sentence before them.
+            nested_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
+            if nested_text and nested_text not in body:
+                body = f"{body}\n{nested_text}".strip() if body else nested_text
             if header:
                 section = f"{header}\n   {body}" if body else header
             elif body:

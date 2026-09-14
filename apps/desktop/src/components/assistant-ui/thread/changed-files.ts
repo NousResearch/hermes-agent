@@ -9,6 +9,7 @@ import {
   isFileEditTool,
   parseMaybeObject
 } from '@/components/assistant-ui/tool/fallback-model'
+import { type ToolResultMetadata, toolResultRecord } from '@/lib/tool-result-metadata'
 
 export interface ChangedFile {
   added: number
@@ -20,6 +21,7 @@ export interface ChangedFile {
 }
 
 interface ChangedFilePart {
+  toolResultMetadata?: ToolResultMetadata
   args?: unknown
   result?: unknown
   toolName?: unknown
@@ -41,7 +43,7 @@ export function deriveChangedFiles(parts: readonly unknown[]): ChangedFile[] {
       continue
     }
 
-    const result = parseMaybeObject(part.result)
+    const result = toolResultRecord(part)
     const diff = inlineDiffFromResult(result)
 
     if (!diff) {

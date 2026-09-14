@@ -540,6 +540,18 @@ class TestVisionRequirements:
 
         assert check_vision_requirements() is True
 
+    def test_resolver_crash_propagates_instead_of_reading_as_unconfigured(self, monkeypatch):
+        """The gate must not swallow resolver exceptions into False: the registry owns the
+        verdict and logs the traceback, so users can tell "misconfigured" from "crashed" (#87950)."""
+        import agent.auxiliary_client as aux
+
+        def _boom(**kw):
+            raise RuntimeError("named custom provider lookup failed")
+
+        monkeypatch.setattr(aux, "resolve_vision_provider_client", _boom)
+        with pytest.raises(RuntimeError, match="lookup failed"):
+            check_vision_requirements()
+
 
 # ---------------------------------------------------------------------------
 # Local path forms: tilde expansion and file:// URIs

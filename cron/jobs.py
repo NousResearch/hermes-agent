@@ -25,7 +25,7 @@ try:
     import msvcrt
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.env_settings import cron_env_setting
@@ -34,6 +34,7 @@ from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Colle
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from hermes_time import get_timezone
 from utils import atomic_replace, atomic_write_text
 
 # croniter is imported lazily (slow import, only needed for cron exprs). HAS_CRONITER stays a
@@ -790,7 +791,9 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError:
             raise ValueError(
                 f"Invalid duration '{duration_str}' after 'in '. Use e.g. 'in 30m', 'in 2h'.")
-        run_at = _hermes_now() + timedelta(minutes=minutes)
+        now = _hermes_now()
+        # Durations measure elapsed time, not wall-clock hours across a DST transition.
+        run_at = (now.astimezone(timezone.utc) + timedelta(minutes=minutes)).astimezone(now.tzinfo)
         return {"kind": "once", "run_at": run_at.isoformat(), "display": f"once in {duration_str}"}
     with contextlib.suppress(ValueError):
         return _interval_schedule(parse_duration(schedule))
@@ -1108,7 +1111,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
         minutes = schedule.get("minutes")
         if minutes is None:
             return None
-        return (base_time + timedelta(minutes=minutes)).isoformat()
+        # Add in UTC so an interval keeps its duration when the profile's UTC offset changes.
+        next_run = base_time.astimezone(timezone.utc) + timedelta(minutes=minutes)
+        return next_run.astimezone(base_time.tzinfo).isoformat()
     if kind == "cron":
         expr = schedule.get("expr")
         if not expr:
@@ -1120,7 +1125,36 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 "reinstall hermes-agent or run 'pip install croniter' in your runtime env.",
                 expr)
             return None
-        return croniter(expr, base_time).get_next(datetime).isoformat()
+        # Anchor cron matching to the CONFIGURED IANA timezone's WALL CLOCK,
+        # not to the UTC offset carried by ``base_time``. croniter ignores
+        # the tzinfo on its start time and uses the start's UTC offset as its
+        # working offset, so a ``last_run_at`` stored in UTC (+00:00) would
+        # push the next fire to 09:00 UTC instead of 09:00 local, and DST
+        # transition days (spring-forward / fall-back) would land one hour off
+        # (08:00 or 10:00). Render the base as the configured zone's naive
+        # wall clock for croniter, then re-attach the zone to the result, so
+        # the wall-clock hour stays correct every calendar day, including DST
+        # boundaries (morning-routine 09:00 America/Toronto).
+        # Fall back to the base's own zone only when nothing is configured.
+        zone = get_timezone() or base_time.tzinfo
+        base_wall = base_time.astimezone(zone).replace(tzinfo=None)
+        it = croniter(expr, base_wall)
+        # Strictly-after guard for the DST fall-back hour (qwen-code#11723 class):
+        # attaching the zone to a naive wall clock resolves the repeated autumn hour
+        # to its EARLIER occurrence (fold=0), so a base inside the second occurrence
+        # got a "next run" up to an hour in the PAST — the fire path would re-fire
+        # immediately and re-anchor, looping. Try both folds of each candidate wall
+        # clock and return the earliest instant strictly after the base; a repeated
+        # hour has two instants, so two candidates always suffice.
+        base_ts = base_time.timestamp()
+        next_wall = it.get_next(datetime)
+        for _ in range(2):
+            for fold in (0, 1):
+                candidate = next_wall.replace(tzinfo=zone, fold=fold)
+                if candidate.timestamp() > base_ts:
+                    return candidate.isoformat()
+            next_wall = it.get_next(datetime)
+        return next_wall.replace(tzinfo=zone).isoformat()
     return None
 
 

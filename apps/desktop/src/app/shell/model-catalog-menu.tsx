@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared'
+import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
@@ -23,6 +23,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
@@ -148,7 +149,7 @@ export function ModelCatalogMenu({
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResponse> => requestModelOptions({ gateway, profile, request, sessionId })
+    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId })
   })
 
   const loading = modelOptions.isPending && !modelOptions.data
@@ -414,7 +415,7 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             stepKb(event.key === 'ArrowDown' ? 1 : -1)
-          } else if (event.key === 'Enter') {
+          } else if (isSubmitEnter(event)) {
             event.preventDefault()
             event.stopPropagation()
             commitKbRow()
@@ -572,7 +573,7 @@ export function ModelCatalogMenu({
                           ) : null}
                         </DropdownMenuSubTrigger>
                         <ModelEditSubmenu
-                          canDisableReasoning={caps?.can_disable_reasoning}
+                          canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
                           defaultEffort={defaultEffort}
                           effort={effEffort}
                           fastControl={fastControl}

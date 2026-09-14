@@ -258,6 +258,7 @@ function Harness({
   useGatewayBoot({
     beforeConnectionSwitch,
     handleGatewayEvent: () => undefined,
+    handleServerRequest: () => false,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig,

@@ -33,9 +33,11 @@ test.skipIf(process.platform === 'win32')('Python ticket bridge pins profile, ow
   await fs.writeFile(path.join(cwd, 'hermes_cli', 'gateway_client.py'), 'def _session_ticket(*args, **kwargs):\n    return "untrusted-project-ticket"\n')
 
   try {
-    for (const purpose of ['interactive', 'native-http'] as const) {
-      await expect(mintGatewayTicketWithPython(backend, cwd, endpoint, purpose)).resolves.toBe('private-grant')
-      expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose })
+    for (const routed of [endpoint, { ...endpoint, control_home: null }, { ...endpoint, control_home: home }]) {
+      for (const purpose of ['interactive', 'native-http'] as const) {
+        await expect(mintGatewayTicketWithPython(backend, cwd, routed, purpose)).resolves.toBe('private-grant')
+        expect(requests.at(-1).params).toEqual({ profile_id: home, instance_id: 'owner', purpose })
+      }
     }
 
     for (const invalid of [{ instance_id: 'other' }, { profile_id: '/other' }, { runtime_protocol: 2 }, { ticket: '' }]) {

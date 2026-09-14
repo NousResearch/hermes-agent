@@ -2,6 +2,7 @@ import { runBackendStartStep } from './backend-start-cancellation'
 import type { FirstRunSetupDecision } from './first-run-setup-gate'
 
 export interface PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection> {
+  assertCurrentAttempt: () => void
   signal?: AbortSignal
   connectRemote: (remote: Remote) => Promise<Connection>
   ensureLocalRuntime: (backend: Backend) => Promise<RuntimeBackend>
@@ -71,12 +72,13 @@ export class FirstRunSetupResetError extends Error {
   }
 }
 
-// Owns the production startHermes path up to the local process spawn. Keeping
+// Owns the production startHermes path up to canonical local gateway ensure. Keeping
 // the full ordering here makes the first-run remote boundary executable in a
 // test: an already-saved remote wins immediately; otherwise update exclusion
 // and local backend resolution happen before the setup gate, and a remote Apply
 // re-resolves persisted config without ever entering ensureRuntime/bootstrap.
 export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, Connection>({
+  assertCurrentAttempt,
   connectRemote,
   ensureLocalRuntime,
   prepareLocalBackend,
@@ -87,31 +89,48 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
 }: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
   PrimaryBackendStartupResult<RuntimeBackend, Connection>
 > {
+  // Fence in this continuation, not another async wrapper, so no await separates
+  // the ownership check from the next startup action.
   const step = <T>(run: () => T | Promise<T>) => runBackendStartStep(signal, run)
+  assertCurrentAttempt()
   const savedRemote = await step(resolveRemote)
+  assertCurrentAttempt()
 
   if (savedRemote) {
-    return { kind: 'remote', connection: await step(() => connectRemote(savedRemote)) }
+    const connection = await step(() => connectRemote(savedRemote))
+    assertCurrentAttempt()
+
+    return { kind: 'remote', connection }
   }
 
   await step(waitForLocalStart)
+  assertCurrentAttempt()
 
   const backend = await step(prepareLocalBackend)
+  assertCurrentAttempt()
   const decision = await step(() => waitForDecision(backend))
+  assertCurrentAttempt()
 
   if (decision === 'remote-applied') {
     const appliedRemote = await step(resolveRemote)
+    assertCurrentAttempt()
 
     if (!appliedRemote) {
       throw new Error('First-run remote setup completed without a saved remote backend.')
     }
 
-    return { kind: 'remote', connection: await step(() => connectRemote(appliedRemote)) }
+    const connection = await step(() => connectRemote(appliedRemote))
+    assertCurrentAttempt()
+
+    return { kind: 'remote', connection }
   }
 
   if (decision === 'reset') {
     throw new FirstRunSetupResetError()
   }
 
-  return { kind: 'local', backend: await step(() => ensureLocalRuntime(backend)) }
+  const runtimeBackend = await step(() => ensureLocalRuntime(backend))
+  assertCurrentAttempt()
+
+  return { kind: 'local', backend: runtimeBackend }
 }

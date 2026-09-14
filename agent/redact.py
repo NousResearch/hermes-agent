@@ -618,6 +618,11 @@ def _redact_python_repr_fields(text: str) -> str:
         # programmatic env lookups just like the ENV/JSON/YAML passes do.
         if _ENV_LOOKUP_VALUE_RE.match(value):
             return match.group(0)
+        # An upstream pass (MCP probe header scrub, _mask_token) already masked this
+        # value; re-masking would erase the scheme word it deliberately kept
+        # (``'Authorization': 'Digest ***'`` → ``'***'``).
+        if "***" in value or value.startswith("«redacted:"):
+            return match.group(0)
         # Do not retain head/tail characters here: escaped repr atoms can cross
         # a slicing boundary and leave an unescaped quote behind. A full mask is
         # parseable for both str and bytes values and leaks no opaque bytes.

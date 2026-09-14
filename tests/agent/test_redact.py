@@ -378,6 +378,12 @@ class TestPythonReprFields:
         text = "{'model': 'gpt-5', 'token_count': '123'}"
         assert redact_sensitive_text(text, force=True) == text
 
+    def test_already_masked_repr_value_keeps_its_scheme_word(self):
+        # An upstream scrub (MCP probe headers) leaves ``Digest ***``; the repr
+        # pass must not collapse that to a bare ``***`` and lose the scheme.
+        text = "headers={'Authorization': 'Digest ***'}"
+        assert redact_sensitive_text(text, force=True) == text
+
     def test_code_file_preserves_secret_shaped_fixture(self):
         text = "CONFIG = {'BRAVE_API_KEY': 'fixture-value-1234567890'}"
         assert redact_sensitive_text(text, force=True, code_file=True) == text

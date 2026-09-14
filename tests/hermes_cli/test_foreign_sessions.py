@@ -5,6 +5,7 @@ against a temp path so nothing touches the real HERMES_HOME store.
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -189,6 +190,32 @@ def test_list_sessions_missing_roots(tmp_path):
     assert _list_sessions("codex", tmp_path / "nope") == []
 
 
+def test_env_overrides_relocate_default_roots(tmp_path, monkeypatch):
+    """CLAUDE_CONFIG_DIR / CODEX_HOME relocate discovery (ported from cline/cline#13827)."""
+    claude_cfg = tmp_path / "relocated-claude"
+    codex_home = tmp_path / "relocated-codex"
+    _write_claude_fixture(tmp_path)  # writes under tmp_path/.claude — becomes the store root below
+    (tmp_path / ".claude").rename(claude_cfg)
+    _write_codex_fixture(tmp_path)
+    (tmp_path / ".codex").rename(codex_home)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)  # default roots are empty
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_cfg))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    both = gather_foreign_sessions()
+    assert {s.source for s in both} == {"claude", "codex"}
+
+
+def test_blank_env_overrides_fall_back_to_home(tmp_path, monkeypatch):
+    """A blank/whitespace override is unset, not a CWD-relative path (cline/cline#13827)."""
+    _write_claude_fixture(tmp_path)
+    _write_codex_fixture(tmp_path)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
+    monkeypatch.setenv("CODEX_HOME", "   ")
+    both = gather_foreign_sessions()
+    assert {s.source for s in both} == {"claude", "codex"}
+
+
 # ── import into SessionDB ────────────────────────────────────────────────
 
 
@@ -258,3 +285,20 @@ def test_leading_assistant_gets_single_stub(tmp_path):
     _assert_alternating(parsed["turns"])
     assert len(parsed["turns"]) == 2
     assert parsed["turns"][0]["role"] == "user"
+
+
+def test_whitespace_only_user_turn_does_not_break_discovery(tmp_path):
+    """A blank user message (image-only / tool-only turn) must not crash listing; the title
+    comes from the first non-blank user line and the blank turn is dropped."""
+    project = tmp_path / ".claude" / "projects" / "p"
+    project.mkdir(parents=True)
+    f = project / "blank.jsonl"
+    lines = [
+        {"type": "user", "sessionId": "w", "message": {"role": "user", "content": "   \n  "}},
+        {"type": "assistant", "sessionId": "w", "message": {"role": "assistant", "content": "hi"}},
+        {"type": "user", "sessionId": "w", "message": {"role": "user", "content": "real question"}},
+    ]
+    f.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+    listed = _list_sessions("claude", project.parent)
+    assert [s.title_guess for s in listed] == ["real question"]
+    assert listed[0].turn_count == 3  # leading assistant reply gets the user stub

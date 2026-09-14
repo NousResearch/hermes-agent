@@ -3,33 +3,38 @@
 Applies on top of `apps/desktop/AGENTS.md` (the judgment guide) and the root `AGENTS.md`.
 Root TypeScript style rules apply.
 
-## The desktop is its own chat surface on a `hermes serve` backend
+## Desktop local execution belongs to the canonical gateway
 
-Electron + React + nanostores (`@assistant-ui/react`) talking to a `tui_gateway` backend over
-JSON-RPC (`requestGateway(method, params)`); transport lives in the framework-agnostic `apps/shared`
-(`@hermes/shared`: `JsonRpcGatewayClient` + WS URL helpers), which the web dashboard also consumes.
-The desktop has **no build/runtime dependency on the dashboard frontend**: it spawns a headless
-`hermes serve` (`headless_backend=True` → `cmd_dashboard` skips `_build_web_ui` and exports
-`HERMES_SERVE_HEADLESS=1` so `mount_spa()` disables the SPA even if a stray `web_dist/` exists).
-`dashboard` and `serve` share `cmd_dashboard`/`start_server` but neither launches the other. It does
-NOT embed `hermes --tui` — own composer, transcript, slash pipeline.
+Electron + React + nanostores (`@assistant-ui/react`) talks JSON-RPC over the existing
+`@hermes/shared` client. Normal local primary and pooled launches invoke
+`hermes gateway ensure --json`, consume its credential-free endpoint, and authenticate
+WebSockets with fresh private control tickets. The app never acquires the gateway PID as
+an owned child. Closing, switching or evicting a Desktop connection disconnects the viewer;
+only explicit gateway lifecycle commands stop the owner.
 
-**One backward-compat fallback:** `serve` is newer, so the spawn (`electron/backend-command.ts` +
-`backendSupportsServe()` in `electron/main.ts`) checks whether the resolved runtime registers `serve`
-and ONLY when it does not (older managed install / PATH `hermes` not yet updated) rewrites argv to
-legacy `dashboard --no-open`. Without it a new app against an un-upgraded runtime crashes on an
-unknown subcommand and bricks every mid-upgrade user. Keep it narrow and tested.
+Native tickets cross the private preload IPC transiently, are removed from the URL before
+WebSocket construction, and are offered as subprotocols. Electron removes Origin only for
+an unexpired one-use dial bound to the requesting window. No public dashboard token is
+scraped or added to the public connection descriptor. SSH/URL intent retains its existing
+remote resolution and exposure lifecycle; a remote failure must never start a local owner.
 
-Lifecycle: `serve` dies with the app by design; the messaging gateway survives it (spawned detached
-via `/api/gateway/*`). Never re-parent the gateway under the backend — `gateway/AGENTS.md`.
+This migration requires the runtime's canonical GUI creation policy and a private HTTP
+API credential path. Do not bypass missing runtime capabilities by relabeling GUI sessions
+as CLI, dropping launch options, or falling back to an independent local serve owner.
 
 ## Slash commands: curated client-side, dispatched to the backend
 
 - The backend already provides everything: `commands.catalog` and `complete.slash` include built-ins,
   user `quick_commands`, AND skill-derived commands. No new RPC is needed to see skills.
 - `src/lib/desktop-slash-commands.ts` is the load-bearing file: `DESKTOP_COMMAND_SPECS` (built-ins
-  and their desktop surfaces) + `NO_DESKTOP_SURFACE` block-lists (terminal-only / messaging-only /
-  picker-owned / settings-owned / advanced). `isDesktopSlashCommand(name)` gates **execution** (true
+  and their desktop surfaces) + the block-list. A command's desktop disposition (terminal-only /
+  messaging-only / settings-owned / advanced / hidden) is authored ONCE, as `desktop=` on its
+  `CommandDef` in `hermes_cli/commands.py`; the live `commands.catalog` carries it, and
+  `src/lib/desktop-slash-registry.json` (regenerate with `scripts/dump_desktop_slash_registry.py`;
+  `tests/hermes_cli/test_desktop_slash_registry.py` + the vitest file fail on drift) is the offline
+  fallback. Only names the Python registry has never heard of (`/density`, `/details`, `/logs`,
+  `/mouse` — Ink-local; `/pets`) live in `TS_ONLY_NO_DESKTOP_SURFACE`. `isDesktopSlashCommand(name)`
+  gates **execution** (true
   for built-ins AND any non-built-in so typed skill/quick commands run);
   `isDesktopSlashSuggestion(name)` gates **discovery** — used by BOTH completion paths in
   `app/chat/composer/hooks/use-slash-completions.ts` and by `filterDesktopCommandsCatalog`;
@@ -81,3 +86,12 @@ in `src/plugins/hermes-bots/`: `canonical-chat-registry.test.ts` (tripwire: the 
 reads/writes a stored pointer), `canonical-chat-creation.test.ts`, `canonical-chat-adopt-on-conflict.test.ts`,
 `bot-row-opens-canonical-chat.test.ts`, `hide-bot-chats.test.ts`; plus repo-root
 `tests/tui_gateway/test_profiles_list_canonical_session.py`.
+
+## Free tier surfaces (`src/store/free-tier*.ts`, Billing, statusbar chip, onboarding ready screen)
+
+`$freeTierStatus` mirrors `free_tier.status` (pull; refreshed with the status snapshot and after a
+sign-in). `deriveBillingView` branches on `billing.free_tier` BEFORE `logged_in` (status
+`free_tier`: notice + one Sign in, Plan/Model/Connectors summary, no payment or usage rows). The
+sign-in dialog is a single claimed owner (first mount wins, like the real-profile consent prompt);
+its states map 1:1 to the poll route's `status` + `reason`. Copy is the ruled free-tier copy: never
+"guest", "anonymous", "claim" or "Nous Portal" in user-facing text.

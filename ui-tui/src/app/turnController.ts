@@ -1,3 +1,5 @@
+import type { MessageCompletePayload, SubagentEventPayload } from '@hermes/shared/gateway-events'
+
 import {
   REASONING_PULSE_MS,
   STREAM_BATCH_MS,
@@ -5,9 +7,10 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import type { SessionInterruptResponse } from '../gatewayTypes.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
@@ -22,6 +25,7 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
+import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -98,7 +102,7 @@ const finalTail = (finalText: string, segments: Msg[]) => {
 
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
-  gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
+  gw: { isCanonical?: boolean; request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
   sid: string
   sys: (text: string) => void
 }
@@ -136,7 +140,6 @@ class TurnController {
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
-  private toolProgressTimer: Timer = null
 
   // ── Credits notice machinery (Strategy B) ───────────────────────────
   //
@@ -306,9 +309,45 @@ class TurnController {
   // while `interrupted`) instead of racing the still-unwinding turn — the race
   // duplicated the user bubble, leaked a "queued: …" note, and surfaced the
   // cancelled turn's "[interrupted]" reply.
-  interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
+  async interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps, opts: { keepBusy?: boolean } = {}) {
+    if (gw.isCanonical) {
+      const destination = captureDestination()
+      const info = getUiState().info
+
+      const isActiveTurn = () => {
+        const current = getUiState()
+
+        return current.sid === sid && isCurrentDestination(destination) && current.busy && !this.interrupted &&
+          current.info?.execution_epoch === info?.execution_epoch &&
+          current.info?.execution_generation === info?.execution_generation
+      }
+
+      try {
+        const response = await gw.request<SessionInterruptResponse>('session.interrupt', {
+          session_id: sid, execution_generation: info?.execution_generation
+        })
+
+        // An already-settled handle is a successful no-op, not a cancelled turn.
+        if (response.execution_state !== 'running' || response.execution_generation !== info?.execution_generation) {
+          return
+        }
+      } catch (error) {
+        if (isActiveTurn()) {
+          sys(`interrupt failed: ${rpcErrorMessage(error)}`)
+        }
+
+        return
+      }
+
+      // Completion or navigation may win the RPC race; never cancel its successor.
+      if (!isActiveTurn()) {
+        return
+      }
+    } else {
+      gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
+    }
+
     this.interrupted = true
-    gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
 
     this.closeReasoningSegment()
 
@@ -568,12 +607,7 @@ class TurnController {
     this.flushPendingNotice()
   }
 
-  recordMessageComplete(payload: {
-    rendered?: string
-    reasoning?: string
-    response_previewed?: boolean
-    text?: string
-  }) {
+  recordMessageComplete(payload: MessageCompletePayload) {
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
@@ -800,7 +834,6 @@ class TurnController {
   recordToolComplete(
     toolId: string,
     fallbackName?: string,
-    error?: string,
     summary?: string,
     duration?: number,
     todos?: unknown,
@@ -811,7 +844,7 @@ class TurnController {
     }
 
     this.recordTodos(todos)
-    const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
+    const line = this.completeTool(toolId, fallbackName, summary, duration, resultText)
 
     this.pendingSegmentTools = [...this.pendingSegmentTools, line]
     this.flushPendingToolsIntoLastSegment()
@@ -822,7 +855,6 @@ class TurnController {
     diffText: string,
     toolId: string,
     fallbackName?: string,
-    error?: string,
     duration?: number,
     resultText?: string
   ) {
@@ -831,14 +863,15 @@ class TurnController {
     }
 
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
+    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, '', duration, resultText)])
     this.publishToolState()
   }
 
+  // `tool.complete` carries no error flag on the wire (tui_gateway/tool_progress.py::_on_tool_complete);
+  // a failed tool surfaces through its result text, so every trail line renders as non-error.
   private completeTool(
     toolId: string,
     fallbackName?: string,
-    error?: string,
     summary?: string,
     duration?: number,
     resultText?: string
@@ -853,18 +886,12 @@ class TurnController {
         ? buildVerboseToolTrailLine(
             name,
             done?.context || '',
-            Boolean(error),
+            false,
             duration ?? fallbackDuration,
             done?.verboseArgs,
-            error || resultText || summary || ''
+            resultText || summary || ''
           )
-        : buildToolTrailLine(
-            name,
-            done?.context || '',
-            Boolean(error),
-            error || summary || '',
-            duration ?? fallbackDuration
-          )
+        : buildToolTrailLine(name, done?.context || '', false, summary || '', duration ?? fallbackDuration)
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -885,29 +912,6 @@ class TurnController {
       tools: this.activeTools,
       turnTrail: this.turnTools
     })
-  }
-
-  recordToolProgress(toolName: string, preview: string) {
-    if (this.interrupted) {
-      return
-    }
-
-    const index = this.activeTools.findIndex(tool => tool.name === toolName)
-
-    if (index < 0) {
-      return
-    }
-
-    this.activeTools = this.activeTools.map((tool, i) => (i === index ? { ...tool, context: preview } : tool))
-
-    if (this.toolProgressTimer) {
-      return
-    }
-
-    this.toolProgressTimer = setTimeout(() => {
-      this.toolProgressTimer = null
-      patchTurnState({ tools: [...this.activeTools] })
-    }, STREAM_BATCH_MS)
   }
 
   recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
@@ -1071,14 +1075,12 @@ class TurnController {
       const next: SubagentProgress = {
         ...base,
         apiCalls: p.api_calls ?? base.apiCalls,
-        costUsd: p.cost_usd ?? base.costUsd,
         delegationId: p.delegation_id ?? base.delegationId,
         depth: p.depth ?? base.depth,
         filesRead: p.files_read ?? base.filesRead,
         filesWritten: p.files_written ?? base.filesWritten,
         goal: p.goal || base.goal,
         inputTokens: p.input_tokens ?? base.inputTokens,
-        iteration: p.iteration ?? base.iteration,
         model: p.model ?? base.model,
         outputTail,
         outputTokens: p.output_tokens ?? base.outputTokens,

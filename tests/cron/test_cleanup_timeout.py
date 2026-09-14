@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cron.scheduler import run_job, _teardown_cron_agent
+from cron.scheduler import _teardown_cron_agent, run_job
+from cron.scheduler_detached_worker import defer_teardown_to_running_worker
 
 
 _RUNTIME = {
@@ -19,6 +23,17 @@ _RUNTIME = {
     "provider": "openrouter",
     "api_mode": "chat_completions",
 }
+
+
+@contextmanager
+def _owner_execution(db, job, execution_id=None):
+    from gateway import session_cron
+    owner = SimpleNamespace(db=db)
+    token = session_cron._execution.set((owner, "cleanup-session", job["id"], execution_id))
+    try:
+        yield
+    finally:
+        session_cron._execution.reset(token)
 
 
 class HangingSessionDB:
@@ -51,10 +66,12 @@ class HangingAgent:
 def test_run_job_bounds_sessiondb_finalization(tmp_path):
     release = threading.Event()
     fake_db = HangingSessionDB(release)
+    fake_db.db_path = tmp_path / "state.db"
     job = {"id": "cleanup-sessiondb-hang", "name": "test", "prompt": "hello"}
 
     try:
-        with patch("cron.scheduler._hermes_home", tmp_path), \
+        with _owner_execution(fake_db, job), \
+             patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
@@ -94,12 +111,34 @@ def test_agent_teardown_is_bounded():
         release.set()
 
 
+def test_detached_worker_teardown_waits_for_future():
+    """A timed-out worker keeps its agent and SessionDB until its Future completes."""
+    future = Future()
+    fake_db = MagicMock()
+    agent = MagicMock()
+
+    with patch("cron.scheduler._finalize_cron_session") as finalize, \
+         patch("cron.scheduler._teardown_cron_agent") as teardown_agent:
+        assert defer_teardown_to_running_worker(
+            future, fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker") is True
+        finalize.assert_not_called()
+        teardown_agent.assert_not_called()
+
+        future.set_result({"final_response": "late"})
+
+        finalize.assert_called_once_with(fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker")
+        teardown_agent.assert_called_once_with(agent, "detached-worker")
+    assert defer_teardown_to_running_worker(
+        future, fake_db, agent, "detached-worker", "detached worker", "cron_detached-worker") is False
+
+
 def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
     """A second scheduler tick can fire the same job after cleanup times out."""
     import cron.scheduler as sched
 
     release = threading.Event()
     fake_db = HangingSessionDB(release)
+    fake_db.db_path = tmp_path / "state.db"
     job = {
         "id": "cleanup-guard-hang",
         "name": "cleanup-guard-hang",
@@ -109,12 +148,21 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
         "next_run_at": "2020-01-01T00:00:00",
         "deliver": "local",
     }
+    from cron import jobs
+
+    def admitted(fired, **kwargs):
+        with _owner_execution(fake_db, fired, kwargs.get("execution_id")):
+            return run_job(fired, **kwargs)
+
     sched._parallel_pool = None
     sched._parallel_pool_max_workers = None
     sched._running_job_ids.clear()
 
     try:
-        with patch("cron.scheduler._hermes_home", tmp_path), \
+        with jobs.use_cron_store(tmp_path), \
+             patch("cron.scheduler_authority.run_canonical_job", side_effect=admitted), \
+             patch("cron.scheduler_authority.reconcile_pending"), \
+             patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
              patch("hermes_cli.env_loader.load_hermes_dotenv"), \
              patch("hermes_cli.env_loader.reset_secret_source_cache"), \
@@ -123,7 +171,7 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
              patch("run_agent.AIAgent") as mock_agent_cls, \
              patch("cron.scheduler._cron_cleanup_timeout_seconds", return_value=0.02), \
              patch.object(sched, "get_due_jobs", return_value=[job]), \
-             patch.object(sched, "advance_next_runs"), \
+             patch.object(sched, "claim_job_for_fire", return_value=True), \
              patch.object(sched, "save_job_output", return_value="/tmp/out"), \
              patch.object(sched, "mark_job_run"), \
              patch.object(sched, "_deliver_result", return_value=None):
@@ -132,8 +180,11 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
             mock_agent_cls.return_value = mock_agent
 
             assert sched.tick(verbose=False) == 1
+            assert fake_db.entered.is_set()
+            assert mock_agent.run_conversation.call_count == 1
             assert "cleanup-guard-hang" not in sched.get_running_job_ids()
             assert sched.tick(verbose=False) == 1
+            assert mock_agent.run_conversation.call_count == 2
     finally:
         release.set()
         sched._running_job_ids.discard("cleanup-guard-hang")

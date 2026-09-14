@@ -33,6 +33,18 @@ describe('createSlashHandler', () => {
     envState.dashboardTuiMode = false
   })
 
+  it('does not execute a stale fallback command after switching destinations', async () => {
+    patchUiState({ sid: 'owner' })
+    const ctx = buildCtx()
+    let reject!: (error: unknown) => void
+    ctx.gateway.gw.request.mockReturnValueOnce(new Promise((_, fail) => { reject = fail }))
+    createSlashHandler(ctx)('/unknown-command')
+    patchUiState({ sid: 'other' })
+    reject(new Error('worker failed'))
+    await new Promise(resolve => setImmediate(resolve))
+    expect(ctx.gateway.gw.request).toHaveBeenCalledTimes(1)
+  })
+
   it('opens the unified sessions overlay for /resume', () => {
     const ctx = buildCtx()
 
@@ -534,7 +546,7 @@ describe('createSlashHandler', () => {
     expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', undefined)
   })
 
-  it('keeps visible scrollback when branching a TUI session', async () => {
+  it('hydrates a branch through session resume without prematurely replacing source state', async () => {
     patchUiState({ sid: 'sid-parent' })
     const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', title: 'branch title' }))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
@@ -543,10 +555,64 @@ describe('createSlashHandler', () => {
 
     expect(rpc).toHaveBeenCalledWith('session.branch', { name: 'branch title', session_id: 'sid-parent' })
     await vi.waitFor(() => {
-      expect(getUiState().sid).toBe('sid-branch')
+      expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-branch')
       expect(ctx.transcript.sys).toHaveBeenCalledWith('branched → branch title')
     })
+    expect(getUiState().sid).toBe('sid-parent')
+    expect(ctx.session.closeSession).not.toHaveBeenCalled()
     expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+  })
+
+  it('only applies compression snapshots while execution authority is fresh', async () => {
+    const source = {
+      model: 'test', tools: {}, skills: {}, execution_epoch: 'owner', execution_generation: 2,
+      execution_state: 'idle', running: false, stored_session_id: 'stored-source'
+    }
+
+    const flush = () => new Promise(resolve => setImmediate(resolve))
+
+    for (const change of [
+      { execution_generation: 3, execution_state: 'running', running: true },
+      { execution_epoch: 'replacement', execution_generation: 0 },
+      { execution_state: 'complete' },
+      { stored_session_id: 'other' }
+    ]) {
+      patchUiState({ sid: 'source', info: source, busy: false })
+      let resolve!: (value: any) => void
+      const rpc = vi.fn(() => new Promise<any>(done => { resolve = done }))
+      const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+      createSlashHandler(ctx)('/compress')
+      const current = { ...source, ...change }
+      patchUiState({ info: current, busy: current.running, usage: { calls: 8, input: 8, output: 8, total: 16 } })
+      resolve({ info: source, messages: [{ role: 'assistant', text: 'old summary' }], usage: { total: 1 } })
+      await flush()
+      expect(getUiState().info).toEqual(current)
+      expect(getUiState().usage.total).toBe(16)
+      expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+    }
+
+    // Stale/missing snapshot versions cannot erase established authority either.
+    for (const info of [undefined, { ...source, execution_generation: 1 }, { ...source, execution_epoch: 'old' }]) {
+      patchUiState({ sid: 'source', info: source, busy: false })
+      const ctx = buildCtx({ gateway: { ...buildGateway(), rpc: vi.fn(async () => ({ info, messages: [] })) } })
+      createSlashHandler(ctx)('/compress')
+      await flush()
+      expect(getUiState().info).toEqual(source)
+      expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+    }
+
+    // Ordinary metadata refresh is not a new execution; fresh partial info merges.
+    patchUiState({ sid: 'source', info: source, busy: false })
+    let resolve!: (value: any) => void
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc: vi.fn(() => new Promise<any>(done => { resolve = done })) } })
+    createSlashHandler(ctx)('/compress')
+    patchUiState({ info: { ...source, model: 'refreshed' } })
+    resolve({ info: { execution_epoch: 'owner', execution_generation: 2 }, messages: [{ role: 'assistant', text: 'fresh summary' }] })
+    await flush()
+    expect(getUiState().info).toMatchObject({ ...source, model: 'refreshed' })
+    expect(ctx.transcript.setHistoryItems).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ role: 'assistant', text: 'fresh summary' })
+    ]))
   })
 
   it('reloads skills in the live gateway and refreshes the catalog', async () => {

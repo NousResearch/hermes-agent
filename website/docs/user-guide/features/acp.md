@@ -35,6 +35,26 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
 
+## Editor-provided MCP servers
+
+On gateways advertising `acp-session-mcp-v1`, editor `mcpServers` belong to the
+canonical session, not the ACP viewer process. The gateway uses separate registry
+namespaces even when two editors supply the same server name. Closing an editor
+does not cancel another session's MCP execution.
+
+Discovery is eager and bounded before the first model turn. The selected tool
+schemas remain frozen for the conversation; server tool-list changes require a
+new session. MCP transports are released after each execution, without stopping
+sibling sessions or the shared MCP loop.
+
+The gateway keeps the editor transport specification (including command arguments,
+environment values and HTTP headers) only in memory. Durable session policy holds
+a fingerprint and the selected schemas, not a copy of those credentials. After a
+gateway restart, the editor must supply the same `mcpServers` on load/resume.
+Missing credentials refuse execution; a changed specification or secret refuses
+reattachment rather than silently changing the session. Start a new session when
+changing the server configuration. Commands and paths run on the gateway host.
+
 ## Installation
 
 Install Hermes normally, then add the ACP extra from the install checkout:
@@ -323,7 +343,16 @@ Each session stores:
 - current conversation history
 - cancel event
 
-The underlying `AIAgent` still uses Hermes' normal persistence/logging paths, but ACP `list/load/resume/fork` are scoped to the currently running ACP server process.
+Conversations are persisted to Hermes' session database and can be listed, loaded,
+resumed, or forked after the ACP server restarts. Opening a new session without a
+prompt keeps it in memory only: model-discovery probes do not create empty history
+rows. A nonempty fork is persisted immediately, and existing session metadata can
+still be updated even when its current history is empty.
+
+Existing empty rows from older versions are not automatically deleted. An open ACP
+row does not prove its client has disconnected. After closing the relevant editor
+sessions, inspect unwanted rows with `hermes sessions show <id>` and remove only
+confirmed unwanted sessions with `hermes sessions delete <id>`.
 
 ## Working directory behavior
 

@@ -53,6 +53,21 @@ def test_create_job_no_agent_requires_script(hermes_env):
         create_job(prompt=None, schedule="every 5m", no_agent=True)
 
 
+def test_script_must_be_a_file_under_scripts_dir_not_a_shell_command(hermes_env):
+    """``script`` names a file under HERMES_HOME/scripts/. A command line (``echo hi``) is
+    refused at creation instead of firing every tick as "Script not found" delivered as the
+    payload; a real file whose name contains a space is still a path."""
+    from cron.jobs import create_job, update_job
+
+    with pytest.raises(ValueError, match="scripts"):
+        create_job(prompt=None, schedule="every 5m", script="echo CRON_PAYLOAD", no_agent=True, deliver="local")
+
+    (hermes_env / "scripts" / "my watchdog.sh").write_text("echo hi\n", encoding="utf-8")
+    job = create_job(prompt=None, schedule="every 5m", script="my watchdog.sh", no_agent=True, deliver="local")
+    with pytest.raises(ValueError, match="scripts"):
+        update_job(job["id"], {"script": "echo CRON_PAYLOAD"})
+
+
 def test_update_job_roundtrips_no_agent_flag(hermes_env):
     from cron.jobs import create_job, update_job, get_job
 
@@ -227,9 +242,10 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
         ),
     )
     monkeypatch.setattr(
-        scheduler,
-        "_deliver_result",
-        lambda _job, content, **_kwargs: delivered.append(content),
+        "cron.delivery_queue.enqueue",
+        lambda execution_id, _job, content, **_kwargs: (
+            delivered.append(content) or {"status": "pending"}
+        ),
     )
 
     assert scheduler.run_one_job(job) is True

@@ -2,8 +2,8 @@
 // main process. Extracted from main.ts so the streaming, data-URL decoding, and
 // filename derivation are unit-testable without spinning up Electron.
 //
-// The transport wrappers (token / OAuth) live in main.ts because they need
-// main-process singletons (https/http, electronNet, the OAuth session). They
+// The native/token transport lives in gateway-download-transport.ts; OAuth
+// remains in main.ts for the Electron session partition. Both transports
 // delegate the byte-moving to `pumpStreamToFile` here, which streams the
 // response into a sibling temp file with backpressure and renames it onto the
 // user-selected destination only once the body has landed in full — so a large
@@ -100,13 +100,15 @@ export interface GatewayFileRequestPaths {
 
 export function gatewayFileRequestPaths(
   filePath: string,
-  scopePath: (requestPath: string) => string
+  scopePath: (requestPath: string) => string,
+  sessionId?: string
 ): GatewayFileRequestPaths {
   const encodedPath = encodeURIComponent(filePath)
+  const session = sessionId === undefined ? '' : `&session_id=${encodeURIComponent(sessionId)}`
 
   return {
-    dataUrl: scopePath(`/api/fs/read-data-url?path=${encodedPath}`),
-    download: scopePath(`/api/fs/download?path=${encodedPath}`)
+    dataUrl: scopePath(`/api/fs/read-data-url?path=${encodedPath}${session}`),
+    download: scopePath(`/api/fs/download?path=${encodedPath}${session}`)
   }
 }
 
@@ -329,23 +331,9 @@ export function filenameFromContentDisposition(value: unknown): string {
   }
 }
 
-// Normalize a gateway file path that may arrive as a bare path or a file:// URL.
+// Preserve file URIs: only the gateway knows its native drive/UNC semantics.
 export function gatewayFilePath(rawPath: unknown): string {
-  const value = String(rawPath || '').trim()
-
-  if (!value) {
-    return ''
-  }
-
-  if (!/^file:/i.test(value)) {
-    return value
-  }
-
-  try {
-    return decodeURIComponent(new URL(value).pathname)
-  } catch {
-    return value.replace(/^file:\/\//i, '')
-  }
+  return String(rawPath || '').trim()
 }
 
 // True when an error thrown by a transport wrapper represents an HTTP 404, used

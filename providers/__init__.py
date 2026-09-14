@@ -72,14 +72,27 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
 
     Returns None if the provider has no profile (falls back to generic).
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return None
     if not _discovered:
         _discover_providers()
     canonical = _ALIASES.get(name, name)
-    return _REGISTRY.get(canonical)
+    profile = _REGISTRY.get(canonical)
+    # Named custom routes share the generic wire policy unless a plugin
+    # explicitly registered that route. Other names retain exact lookup.
+    if profile is None and isinstance(name, str) and name.lower().startswith("custom:"):
+        profile = _REGISTRY.get("custom")
+    return profile
 
 
 def list_providers() -> list[ProviderProfile]:
     """Return all registered provider profiles (one per canonical name)."""
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return []
     global _PROVIDER_LIST_CACHE
     if not _discovered:
         _discover_providers()
@@ -332,6 +345,10 @@ def _discover_providers() -> None:
     Each step imports its plugins, which call ``register_provider()`` at
     module-level. Later steps win on name collision.
     """
+    from agent.safe_worker_policy import safe_worker_enabled
+
+    if safe_worker_enabled():
+        return
     global _discovered
     if _discovered:
         return

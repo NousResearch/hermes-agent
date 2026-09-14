@@ -312,6 +312,7 @@ describe('connection-aware plugin host APIs', () => {
 
     vi.mocked(hermesApi)
       .mockResolvedValueOnce({ sessions: [{ id: 'bot-chat', profile: 'backend-worker', title: 'Bot Chat' }] })
+      .mockResolvedValueOnce({ exists: true, runtime_revision: 31, runtime_generation: 5 })
       .mockResolvedValueOnce({ ok: true, hidden: true })
 
     await expect(host.listPersistedSessions(route, { profile: 'backend-worker', limit: 200 })).resolves.toMatchObject({
@@ -329,10 +330,14 @@ describe('connection-aware plugin host APIs', () => {
       })
     )
     expect(hermesApi).toHaveBeenNthCalledWith(2, {
+      connectionId: 'source-a', path: '/api/sessions/bot-chat/mutation-snapshot?profile=backend-worker'
+    })
+    expect(hermesApi).toHaveBeenNthCalledWith(3, {
       connectionId: 'source-a',
       path: '/api/sessions/bot-chat',
       method: 'PATCH',
-      body: { hidden: true, profile: 'backend-worker' }
+      body: { hidden: true, profile: 'backend-worker', expected_revision: 31,
+        expected_generation: 5, request_id: expect.any(String) }
     })
     expect(vi.mocked(hermesApi).mock.calls.every(([request]) => !('profile' in request))).toBe(true)
     expect(requestGatewayForAgent).not.toHaveBeenCalled()

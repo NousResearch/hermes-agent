@@ -1,6 +1,5 @@
 from argparse import Namespace
 import sys
-import types
 
 import pytest
 
@@ -59,10 +58,11 @@ def main_mod(monkeypatch):
 def fake_cli(monkeypatch):
     captured = {}
 
-    def fake_cli_main(**kwargs):
-        captured.update(kwargs)
+    def launch(args):
+        captured.update(vars(args))
+        return 0
 
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(main=fake_cli_main))
+    monkeypatch.setattr("hermes_cli.gateway_chat.launch_from_args", launch)
     return captured
 
 
@@ -129,9 +129,11 @@ def test_cmd_chat_allows_acknowledged_data_training_tier_noninteractively(
     monkeypatch.setattr(sys, "stdin", _NonInteractiveStdin())
     _set_startup_config(monkeypatch, ack=True)
 
-    main_mod.cmd_chat(
-        _chat_args(model="muse-spark-1.2-contributor", provider="custom")
-    )
+    with pytest.raises(SystemExit) as result:
+        main_mod.cmd_chat(
+            _chat_args(model="muse-spark-1.2-contributor", provider="custom")
+        )
+    assert result.value.code == 0
 
     assert fake_cli["model"] == "muse-spark-1.2-contributor"
     err = capsys.readouterr().err
@@ -215,7 +217,9 @@ def test_cmd_chat_allows_interactive_gpt55_pro_when_confirmed(
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: "yes")
 
-    main_mod.cmd_chat(_chat_args(model="openai/gpt-5.5-pro"))
+    with pytest.raises(SystemExit) as result:
+        main_mod.cmd_chat(_chat_args(model="openai/gpt-5.5-pro"))
+    assert result.value.code == 0
 
     assert fake_cli["model"] == "openai/gpt-5.5-pro"
 
@@ -278,7 +282,9 @@ def test_cmd_chat_allows_noninteractive_safe_codex_startup_override(
         lambda: {"model": {"provider": "openai-codex", "default": "gpt-5.5"}},
     )
 
-    main_mod.cmd_chat(_chat_args(model="gpt-5.5", provider="openai-codex"))
+    with pytest.raises(SystemExit) as result:
+        main_mod.cmd_chat(_chat_args(model="gpt-5.5", provider="openai-codex"))
+    assert result.value.code == 0
 
     assert fake_cli["model"] == "gpt-5.5"
     assert fake_cli["provider"] == "openai-codex"

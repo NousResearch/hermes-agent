@@ -459,7 +459,7 @@ class CLIInfoMixin:
         Dispatched from the input loop BEFORE slash routing and before anything is queued for the
         agent, so a bang command never becomes a turn: nothing touches ``conversation_history``,
         zero tokens, role alternation / prompt caching untouched by construction
-        (tests/cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
+        (tests/hermes_cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
         bang mode is disabled for this context (gateway/cron), so the caller routes normally.
         """
         from cli import _rich_text_from_ansi
@@ -524,12 +524,7 @@ class CLIInfoMixin:
                     print(f"    ○ {name:<12} Not configured ({env_var})")
 
             print()
-            print("  Session Reset Policy:")
-            print("  " + "-" * 55)
-            policy = config.default_reset_policy
-            print(f"    Mode: {policy.mode}")
-            print(f"    Daily reset at: {policy.at_hour}:00")
-            print(f"    Idle timeout: {policy.idle_minutes} minutes")
+            print("  Conversations persist until /new or /reset.")
             print()
             print("  To start the gateway:")
             print("    python cli.py --gateway")
@@ -718,7 +713,9 @@ class CLIInfoMixin:
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(compressor) != "provider_usage" else ""
+        print(f"  Current context:  {mark}{last_prompt:,} / {ctx_len:,} ({mark}{pct:.0f}%)")
         print(f"  Messages:         {len(self.conversation_history)}")
         print(f"  Compressions:     {compressor.compression_count}")
 
@@ -774,17 +771,10 @@ class CLIInfoMixin:
                     days = int(parts[i])
                 i += 1
 
-        try:
-            from hermes_state import SessionDB
-            from agent.insights import InsightsEngine
-            db = SessionDB()
-            try:
-                engine = InsightsEngine(db)
-                print(engine.format_terminal(engine.generate(days=days, source=source)))
-            finally:
-                db.close()
-        except Exception as e:
-            print(f"  Error generating insights: {e}")
+        from types import SimpleNamespace
+        from hermes_cli.main_agent_cmds import cmd_insights
+
+        cmd_insights(SimpleNamespace(days=days, source=source))
 
     def _check_config_mcp_changes(self) -> None:
         """Detect mcp_servers changes in config.yaml (polled from process_loop every

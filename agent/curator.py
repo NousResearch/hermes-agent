@@ -26,7 +26,7 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_HOURS, DEFAULT_MIN_IDLE_HOURS = 24 * 7, 2  # 7 days
-DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 30, 90
+DEFAULT_STALE_AFTER_DAYS, DEFAULT_ARCHIVE_AFTER_DAYS = 14, 30
 # The LLM consolidation fork is opt-in; the deterministic inactivity prune
 # (apply_automatic_transitions) always runs when the curator is enabled.
 DEFAULT_CONSOLIDATE = False
@@ -1023,7 +1023,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     result_meta["model"], result_meta["provider"] = model_name, provider or ""
     review_agent = None
     try:
-        agent_kwargs: Dict[str, Any] = {"max_tokens": rp["max_output_tokens"]} if isinstance(rp.get("max_output_tokens"), int) else {}
+        agent_kwargs: Dict[str, Any] = {}
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))

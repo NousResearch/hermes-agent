@@ -67,6 +67,97 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('displays generic errors without settling versioned execution', () => {
+    const ctx = buildCtx([])
+    const onEvent = createGatewayEventHandler(ctx)
+    patchUiState({ sid: 'owner', busy: true, status: 'running…', info: { model: 'test', tools: {}, skills: {}, execution_epoch: 'owner-epoch', execution_generation: 2 } })
+    onEvent({ type: 'error', session_id: 'owner', payload: { message: 'build failed' } } as any)
+    expect(ctx.system.sys).toHaveBeenCalledWith('error: build failed')
+    expect(getUiState()).toMatchObject({ busy: true, status: 'running…' })
+    onEvent({ type: 'error', session_id: 'owner', payload: { message: 'turn failed', execution_epoch: 'owner-epoch', execution_generation: 2 } } as any)
+    expect(ctx.system.sys).toHaveBeenCalledWith('error: turn failed')
+    expect(getUiState().busy).toBe(false)
+  })
+
+  it('fences restarted owner lifecycle events until resume establishes the new epoch', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    const info = { model: 'test', skills: {}, tools: {}, running: true,
+      execution_epoch: 'old-owner', execution_generation: 9 }
+
+    patchUiState({ sid: 'focused', info, busy: true })
+    const emit = (type: string, payload: any) => onEvent({ type, payload, session_id: 'focused' } as any)
+    emit('session.info', { execution_epoch: 'new-owner', execution_generation: 1, running: false })
+    expect(getUiState().busy).toBe(true)
+    // session.resume replaces info with the authoritative attachment snapshot.
+    patchUiState({ info: { ...info, execution_epoch: 'new-owner', execution_generation: 1 } })
+
+    for (const payload of [{}, { execution_epoch: 'old-owner', execution_generation: 99 },
+      { execution_epoch: 'new-owner', execution_generation: 0 }]) {
+      emit('message.complete', { ...payload, text: 'stale' })
+      emit('error', { ...payload, message: 'stale' })
+      emit('session.info', { ...payload, running: false })
+      expect(getUiState().busy).toBe(true)
+    }
+
+    expect(appended).toEqual([])
+    emit('message.complete', { execution_epoch: 'new-owner', execution_generation: 1, text: 'fresh' })
+    expect(getUiState().busy).toBe(false)
+    expect(appended.some(m => m.text === 'fresh')).toBe(true)
+    emit('message.start', { execution_epoch: 'new-owner', execution_generation: 2 })
+    emit('message.complete', { execution_epoch: 'new-owner', execution_generation: 1, text: 'late' })
+    expect(getUiState().busy).toBe(true)
+    expect(getUiState().info?.execution_generation).toBe(2)
+    emit('message.complete', { execution_epoch: 'new-owner', execution_generation: 4, text: 'missed start' })
+    emit('message.start', { execution_epoch: 'new-owner', execution_generation: 3 })
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().info?.execution_generation).toBe(4)
+  })
+
+  it('heals missed completion and blocking prompts only from the focused authoritative idle snapshot', () => {
+    patchUiState({ sid: 'focused' })
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+    onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
+    onEvent({
+      session_id: 'focused',
+      payload: { request_id: 'approval', command: 'test' },
+      type: 'approval.request'
+    } as any)
+    const busyOverlay = getOverlayState().approval
+    expect(getUiState().busy).toBe(true)
+    expect(busyOverlay).not.toBeNull()
+    const snapshot = { model: 'test', skills: {}, tools: {} }
+    onEvent({ session_id: 'other', payload: { ...snapshot, running: false }, type: 'session.info' } as any)
+    onEvent({ session_id: 'focused', payload: snapshot, type: 'session.info' } as any)
+    onEvent({ session_id: 'focused', payload: { ...snapshot, running: true }, type: 'session.info' } as any)
+    expect(getUiState().busy).toBe(true)
+    expect(getOverlayState().approval).toEqual(busyOverlay)
+    onEvent({ session_id: 'focused', payload: { ...snapshot, running: false }, type: 'session.info' } as any)
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().status).toBe('ready')
+    expect(getOverlayState().approval).toBeNull()
+    expect(getTurnState().tools).toEqual([])
+    onEvent({
+      session_id: 'focused',
+      payload: { ...snapshot, running: true, execution_generation: 2 },
+      type: 'session.info'
+    } as any)
+    onEvent({
+      session_id: 'focused',
+      payload: { running: false, execution_generation: 1 },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().busy).toBe(true)
+    onEvent({
+      session_id: 'focused',
+      payload: { running: false, execution_generation: 2 },
+      type: 'session.info'
+    } as any)
+    expect(getUiState().busy).toBe(false)
+    expect(getUiState().info?.model).toBe('test')
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 
@@ -320,10 +411,6 @@ describe('createGatewayEventHandler', () => {
       type: 'tool.start'
     } as any)
     onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
-    onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
     } as any)
@@ -335,7 +422,7 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(2)
     expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '', thinking: 'mapped the page' })
     expect(appended[0]?.tools).toHaveLength(1)
-    expect(appended[0]?.tools?.[0]).toContain('hero cards')
+    expect(appended[0]?.tools?.[0]).toContain('home page')
     expect(appended[0]?.toolTokens).toBeGreaterThan(0)
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
@@ -377,10 +464,6 @@ describe('createGatewayEventHandler', () => {
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({
-      payload: { name: 'search', preview: 'hero cards' },
-      type: 'tool.progress'
-    } as any)
     onEvent({
       payload: { summary: 'done', tool_id: 'tool-1' },
       type: 'tool.complete'
@@ -1431,6 +1514,147 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().activity.filter(a => a.text.includes('/agents'))).toHaveLength(0)
   })
 
+  it('keeps a canonical turn live when interrupt is pending or rejected, without retrying', async () => {
+    vi.useFakeTimers()
+
+    try {
+      for (const error of [new Error('stale_generation'), new Error('transport disconnected')]) {
+        turnController.fullReset()
+        const appended: Msg[] = []
+        const ctx = buildCtx(appended)
+        let reject!: (error: Error) => void
+        ctx.gateway.gw.isCanonical = true
+        ctx.gateway.gw.request = vi.fn(() => new Promise((_, fail) => { reject = fail }))
+        const onEvent = createGatewayEventHandler(ctx)
+        const info = { model: 'test', tools: {}, skills: {}, execution_epoch: 'owner', execution_generation: 2 }
+        patchUiState({ sid: 'sess-1', info })
+
+        const emit = (type: string, payload = {}) =>
+          onEvent({ type, session_id: 'sess-1', payload: { ...info, ...payload } } as any)
+
+        emit('message.start')
+        emit('reasoning.delta', { text: 'working' })
+        emit('tool.start', { name: 'search', tool_id: 't-1' })
+        emit('message.delta', { text: 'partial' })
+        emit('approval.request', { request_id: 'approval', command: 'test' })
+        const live = getTurnState()
+        const overlay = getOverlayState().approval
+
+        const pending = turnController.interruptTurn({
+          appendMessage: ctx.transcript.appendMessage, gw: ctx.gateway.gw, sid: 'sess-1', sys: ctx.system.sys
+        }, { keepBusy: true })
+
+        expect(turnController.interrupted).toBe(false)
+        expect(getUiState().busy).toBe(true)
+        expect(getTurnState()).toEqual(live)
+        expect(getOverlayState().approval).toBe(overlay)
+        expect(appended).toEqual([])
+        reject(error)
+        await pending
+
+        expect(ctx.gateway.gw.request).toHaveBeenCalledExactlyOnceWith('session.interrupt', {
+          session_id: 'sess-1', execution_generation: info.execution_generation
+        })
+        expect(ctx.system.sys).toHaveBeenCalledExactlyOnceWith(`interrupt failed: ${error.message}`)
+        expect(turnController.interrupted).toBe(false)
+        expect(getUiState()).toMatchObject({ sid: 'sess-1', busy: true, info })
+        expect(getTurnState()).toEqual(live)
+        expect(getOverlayState().approval).toBe(overlay)
+        emit('message.delta', { text: ' continues' })
+        expect(turnController.bufRef).toBe('partial continues')
+        emit('message.complete', { text: 'legitimate completion' })
+        expect(getUiState().busy).toBe(false)
+        expect(appended.some(msg => msg.text === 'legitimate completion')).toBe(true)
+        expect(appended.some(msg => msg.text.includes('[interrupted]'))).toBe(false)
+      }
+    } finally {
+      turnController.fullReset()
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('applies canonical interrupt acknowledgement only to the still-active turn, letting completion win', async () => {
+    vi.useFakeTimers()
+
+    try {
+      for (const race of ['none', 'completion', 'idle snapshot', 'settled acknowledgement', 'session', 'generation', 'epoch']) {
+        for (const keepBusy of [false, true]) {
+          turnController.fullReset()
+          const appended: Msg[] = []
+          const ctx = buildCtx(appended)
+          let resolve!: (result: unknown) => void
+          ctx.gateway.gw.isCanonical = true
+          ctx.gateway.gw.request = vi.fn(() => new Promise(done => { resolve = done }))
+          const onEvent = createGatewayEventHandler(ctx)
+          const info = { model: 'test', tools: {}, skills: {}, execution_epoch: 'owner', execution_generation: 2 }
+          patchUiState({ sid: 'sess-1', info })
+
+          const emit = (type: string, payload = {}) =>
+            onEvent({ type, session_id: 'sess-1', payload: { ...info, ...payload } } as any)
+
+          emit('message.start')
+          emit('message.delta', { text: 'partial' })
+
+          const pending = turnController.interruptTurn({
+            appendMessage: ctx.transcript.appendMessage, gw: ctx.gateway.gw, sid: 'sess-1', sys: ctx.system.sys
+          }, { keepBusy })
+
+          expect(turnController.interrupted).toBe(false)
+          expect(getUiState().busy).toBe(true)
+          expect(appended).toEqual([])
+
+          if (race === 'completion') {
+            emit('message.complete', { text: 'completed before acknowledgement' })
+            expect(appended).toContainEqual({ role: 'assistant', text: 'completed before acknowledgement' })
+          } else if (race === 'idle snapshot') {
+            emit('session.info', { running: false })
+          } else if (race !== 'none' && race !== 'settled acknowledgement') {
+            patchUiState({
+              sid: race === 'session' ? 'sess-2' : 'sess-1',
+              info: { ...info, execution_epoch: race === 'epoch' ? 'replacement' : info.execution_epoch,
+                execution_generation: race === 'generation' ? 3 : info.execution_generation }
+            })
+            turnController.startMessage()
+            turnController.hydrateStreamingText('new active turn')
+          }
+
+          const beforeAck = { ui: getUiState(), turn: getTurnState(), messages: [...appended] }
+          // Canonical success is a SessionHandle, not the legacy {ok: true}.
+          resolve({ ref: { profile_id: 'default', session_id: 'sess-1' }, instance_id: 'instance',
+            authority_epoch: 1, revision: 3, execution_generation: 2,
+            execution_state: race === 'settled acknowledgement' ? 'idle' : 'running' })
+          await pending
+
+          expect(ctx.gateway.gw.request).toHaveBeenCalledTimes(1)
+          expect(ctx.system.sys).not.toHaveBeenCalled()
+
+          if (race === 'none') {
+            expect(turnController.interrupted).toBe(true)
+            expect(getUiState()).toMatchObject({ busy: keepBusy, status: keepBusy ? 'interrupting…' : 'interrupted' })
+            expect(appended).toEqual([{ role: 'assistant', text: 'partial\n\n*[interrupted]*' }])
+            emit('message.complete', { text: 'cancelled turn response' })
+            expect(getUiState().busy).toBe(false)
+            expect(appended).toHaveLength(1)
+          } else {
+            expect(turnController.interrupted).toBe(false)
+            expect({ ui: getUiState(), turn: getTurnState(), messages: appended }).toEqual(beforeAck)
+          }
+
+          if (race === 'settled acknowledgement') {
+            emit('message.complete', { text: 'completed before the interrupt reached the server' })
+            expect(appended).toEqual([{ role: 'assistant', text: 'completed before the interrupt reached the server' }])
+            expect(getUiState().busy).toBe(false)
+          }
+        }
+      }
+    } finally {
+      turnController.fullReset()
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
   it('drops stale reasoning/tool/todos events after ctrl-c until the next message starts', () => {
     // Repro for the discord report: ctrl-c interrupts, but late reasoning/tool
     // events from the still-winding-down agent loop kept populating the UI for
@@ -1485,7 +1709,6 @@ describe('createGatewayEventHandler', () => {
       const trailBefore = getTurnState().turnTrail.length
       onEvent({ payload: { name: 'browser' }, type: 'tool.generating' } as any)
       expect(getTurnState().turnTrail.length).toBe(trailBefore)
-      onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
       onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
       onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
 

@@ -343,6 +343,7 @@ gateway:
     last_activity:         "**آخر نشاط:** {timestamp}"
     model:                 "**النموذج:** `{model}`"
     model_provider:        "**النموذج:** `{model}` ({provider})"
+    free_tier:             "Nous · الخطة المجانية · nous/welcome · /login لتسجيل الدخول"
     context:               "**السياق:** {used} / {total} ({pct}%)"
     context_used:          "**السياق:** ~{used} رمزًا"
     tokens:                "**رموز API التراكمية (تُعاد كل استدعاء):** {tokens}"
@@ -388,7 +389,7 @@ gateway:
     not_git_repo:            "✗ ليس مستودع git — لا يمكن التحديث."
     hermes_cmd_not_found:    "✗ تعذّر تحديد موقع أمر `hermes`. Hermes يعمل، لكن أمر التحديث لم يجد الملف التنفيذي على PATH أو عبر مُفسّر Python الحالي. جرّب تشغيل `hermes update` يدويًا في طرفيتك."
     start_failed:            "✗ فشل بدء التحديث: {error}"
-    starting:                "⚕ جارٍ بدء تحديث Hermes… سأبثّ التقدّم هنا."
+    starting:                "☤ جارٍ بدء تحديث Hermes… سأبثّ التقدّم هنا."
 
   usage:
     rate_limits:              "⏱️ **حدود المعدّل:** {state}"

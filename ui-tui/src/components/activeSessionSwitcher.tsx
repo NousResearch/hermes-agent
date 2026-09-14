@@ -1,4 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import type { SessionListItem, SessionListResponse } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
@@ -7,9 +8,7 @@ import type {
   SessionActiveItem,
   SessionActiveListResponse,
   SessionCloseResponse,
-  SessionDeleteResponse,
-  SessionListItem,
-  SessionListResponse
+  SessionDeleteResponse
 } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
@@ -350,11 +349,27 @@ export function ActiveSessionSwitcher({
         // Fetch independently (allSettled) so a failing session.list can't
         // wipe the live-session list: live sessions still render and the
         // resumable history degrades on its own.
+        const canonicalList = gw.isCanonical
+          ? gw.request<{ scope?: string; sessions?: (SessionListItem & { running?: boolean })[] }>('session.list', {
+              limit: 200
+            })
+          : null
+
         const [liveRes, histRes] = await Promise.allSettled([
-          gw.request<SessionActiveListResponse>('session.active_list', {
-            current_session_id: currentSessionId
-          }),
-          includeHistory ? gw.request<SessionListResponse>('session.list', { limit: 200 }) : Promise.resolve(null)
+          canonicalList
+            ? canonicalList.then(value => ({
+                sessions: value.sessions?.map(row => ({
+                  ...row,
+                  current: row.id === currentSessionId,
+                  status: row.running ? ('working' as const) : ('idle' as const)
+                }))
+              }))
+            : gw.request<SessionActiveListResponse>('session.active_list', { current_session_id: currentSessionId }),
+          canonicalList
+            ? Promise.resolve({ sessions: [] })
+            : includeHistory
+              ? gw.request<SessionListResponse>('session.list', { limit: 200 })
+              : Promise.resolve(null)
         ])
 
         const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null

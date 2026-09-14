@@ -11,17 +11,6 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 
 
-def _persist_model_switch(result) -> None:
-    # Targeted key writes: a full `model:` block rewrite via save_config() would destroy
-    # sibling keys the user set there (`model_slots`, `model_fallback`, ...).
-    from cli import save_config_value
-    save_config_value("model.default", result.new_model)
-    save_config_value("model.provider", result.target_provider)
-    # A provider without a base_url must clear the stale one (custom endpoint -> native)
-    # or the new model routes at the old host; reads coalesce null to absent.
-    save_config_value("model.base_url", result.base_url or None)
-
-
 _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 
 
@@ -240,7 +229,8 @@ def _apply_model_switch(
             "model": result.new_model, "provider": result.target_provider,
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
     if persist_global:
-        _persist_model_switch(result)
+        from hermes_cli.model_switch import persist_model_selection
+        persist_model_selection(result)
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,
@@ -275,12 +265,11 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
     try:
         tokens = _set_session_context(sid, cwd=_session_cwd(session))
         try:
-            new_agent = _make_agent(sid, session["session_key"], session_id=session["session_key"],
-                                    platform_override=_session_source(session))
+            new_agent = _rebuild_session_agent(sid, session, session_id=session["session_key"],
+                                               platform_override=_session_source(session))
         finally:
             _clear_session_context(tokens)
         new_agent._session_title_hint = "Bot Chat"
-        session.update(agent=new_agent, config_model_seen=_config_model_target())
         _emit("notice", sid, {"message": "Capabilities updated — this bot's tools and prompt were refreshed."})
     except Exception as e:
         logger.warning("Bot capability sync failed for %s: %s", sid, e)

@@ -806,6 +806,15 @@ While that mode is active, a transient **activity overlay** can ride inside the 
 
 Over-limit handling follows `streaming_single_message_4096_split`: `true` cuts the preview into several ≤4096-character messages as it fills; the default `false` leaves the live message uncut and pages only at completion, when the text genuinely overflows — nothing is lost, pagination just arrives at the end (rich-eligible content first rides the platform's 32,768-character rich cap).
 
+### Telegram platform extras (opt-in, Bot API 10.3)
+
+Under `gateway.platforms.telegram.extra`, four switches connect native Telegram features. Each is off by default and degrades to the ordinary path when unsupported:
+
+- **`stop_button: true`** — during DM draft streaming, Telegram shows a **Stop** button; pressing it sends a `stopped_message_generation` update, which Hermes feeds into the same interrupt path as `/stop`. `keep_on_stop` sets what stays in the chat after the stop (`"frame"` keeps the partial preview as a message; `"none"` discards it).
+- **`checklist_emoji: "✅"`** — turns `- [ ]` / `- [x]` task lists into Telegram-native checklists (business accounts only; other chats keep the MarkdownV2 fallback rendering, or use `rich_messages` for the rich-block variant).
+- **`message_effects: true`** — replies that finish after `message_effect_min_seconds` (default 60) arrive with an animated effect. Emojis map to validated Bot API effect ids (👍 👎 🔥 🎉 🎊); a numeric string in `message_effect` is passed through as an explicit effect id. Private chats only — groups and channels skip the parameter.
+- **`ephemeral_messages: true`** — in **groups**, messages carrying `ephemeral_for: <user_id>` metadata are visible only to that user; the busy-session acknowledgment uses this to whisper acks to the sender instead of pinging the whole group (with `busy_ack_enabled` on). Send failures do not fall back to a group-wide send.
+
 ### Progress bubble cleanup (opt-in)
 
 Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:

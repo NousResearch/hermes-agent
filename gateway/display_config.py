@@ -28,6 +28,12 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "streaming_single_message_activity": True,
     "streaming_single_message_thinking": False,
     "streaming_single_message_4096_split": False,
+    # Completion message effect (Telegram DMs only): an animated effect on the final
+    # message of turns lasting at least message_effect_min_seconds. Emoji name keys the
+    # adapter's id table; false/off = disabled.
+    "message_effects": False,
+    "message_effect": "🎉",
+    "message_effect_min_seconds": 60,
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "long_running_notifications": True,
@@ -164,6 +170,8 @@ _NORMALISERS: dict[str, Any] = {
     "streaming_single_message_activity": _norm_bool,
     "streaming_single_message_thinking": _norm_bool,
     "streaming_single_message_4096_split": _norm_bool,
+    "message_effects": _norm_bool,
+    "message_effect_min_seconds": _norm_int,
     "interim_assistant_messages": _norm_bool,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,

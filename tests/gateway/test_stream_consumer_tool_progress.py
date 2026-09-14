@@ -525,6 +525,8 @@ class TestSingleMessageDraftLane:
 
         # Overlay rode the ephemeral draft preview…
         assert any("🔧" in (d or "") for d in adapter.drafts), adapter.drafts
+        # …styled as an expandable quote (Style A).
+        assert any("**>" in (d or "") and "||" in (d or "") for d in adapter.drafts), adapter.drafts
         # …and exactly one persistent message carries the clean final.
         assert len(adapter.sends) == 1, adapter.sends
         assert adapter.sends[-1].strip() == "Full answer"
@@ -578,3 +580,41 @@ class TestSingleMessageOverflowPolicy:
         assert len(adapter.sends) >= 2, adapter.sends
         counts = {ch: _replay_chat(adapter).count(ch) for ch in "ABC"}
         assert counts == {"A": 2500, "B": 2500, "C": 500}, counts
+
+
+class TestOverlayStyleAndEffects:
+    """Style A overlay framing (draft lane) + completion-effect metadata."""
+
+    def test_overlay_styled_as_expandable_quote_in_draft_lane(self):
+        consumer, _ = _make_single_consumer()
+        consumer._use_draft_streaming = True
+        out = consumer._style_overlay_lines(["🔧 a", "💭 b", "📄 c"])
+        assert out == ["**> 🔧 a", "> 💭 b", "> 📄 c||"]
+
+    def test_overlay_single_line_styled(self):
+        consumer, _ = _make_single_consumer()
+        consumer._use_draft_streaming = True
+        assert consumer._style_overlay_lines(["🔧 a"]) == ["**> 🔧 a||"]
+
+    def test_overlay_plain_in_edit_lane(self):
+        consumer, _ = _make_single_consumer()  # draft lane off → raw frames
+        assert consumer._style_overlay_lines(["🔧 a", "💭 b"]) == ["🔧 a", "💭 b"]
+
+    def test_overlay_plain_when_mode_off(self):
+        consumer, _ = _make_single_consumer(single_message_per_turn=False)
+        consumer._use_draft_streaming = True
+        assert consumer._style_overlay_lines(["🔧 a"]) == ["🔧 a"]
+
+    def test_completion_effect_attaches_on_final(self):
+        consumer, _ = _make_single_consumer()
+        consumer.cfg.message_effect = "🎉"
+        consumer.cfg.message_effect_min_seconds = 0.0
+        meta = consumer._metadata_for_send(final=True)
+        assert meta and meta.get("message_effect") == "🎉"
+        assert "message_effect" not in (consumer._metadata_for_send(final=False) or {})
+
+    def test_completion_effect_gated_by_min_seconds(self):
+        consumer, _ = _make_single_consumer()
+        consumer.cfg.message_effect = "🎉"
+        consumer.cfg.message_effect_min_seconds = 3600.0
+        assert "message_effect" not in (consumer._metadata_for_send(final=True) or {})

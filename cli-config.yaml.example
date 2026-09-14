@@ -1757,6 +1757,16 @@ display:
   # Per-platform override: display.platforms.telegram.streaming_single_message_4096_split
   streaming_single_message_4096_split: false
 
+  # Telegram Bot API 10.3 native features (gateway.platforms.telegram.extra.*). Each is
+  # opt-in and falls back to the ordinary path when unsupported:
+  #   stop_button: true          Stop button on DM draft streaming; a press interrupts
+  #                              the turn like /stop (keep_on_stop chooses what remains)
+  #   checklist_emoji: "✅"      Task lists → native checklists (business accounts only;
+  #                              MarkdownV2 fallback elsewhere)
+  #   message_effects: true      Animated effect on the final reply of long turns
+  #                              (message_effect_min_seconds, default 60; private chats)
+  #   ephemeral_messages: true   Group busy-acks whispered to the sender only
+
   # Natural mid-turn assistant updates.
   # On gateway platforms, when true, completed assistant status messages are
   # sent as separate chat messages. On the Desktop app, when true, mid-turn

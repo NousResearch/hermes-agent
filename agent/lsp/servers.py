@@ -82,9 +82,9 @@ class ServerDef:
 
 @dataclass
 class ServerContext:
-    """User policy passed into :meth:`ServerDef.build_spawn` (install strategy, overrides)."""
+    """User policy for :meth:`ServerDef.build_spawn`; never install unless opted in."""
     workspace_root: str
-    install_strategy: str = "auto"  # "auto" | "manual" | "off"
+    install_strategy: str = "manual"  # "auto" | "manual" | "off"
     binary_overrides: Dict[str, List[str]] = field(default_factory=dict)
     env_overrides: Dict[str, Dict[str, str]] = field(default_factory=dict)
     init_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)

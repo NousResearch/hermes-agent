@@ -702,6 +702,65 @@ class TestResetBundledSkill:
         # User copy is still on disk (we changed nothing).
         assert (dest / "SKILL.md").exists()
 
+    def test_reset_restore_clears_curator_suppression(self, tmp_path):
+        """#103115: a curator-pruned bundled skill is listed in .curator_suppressed, which makes
+        sync_skills() skip the re-seed — so `reset --restore` reported success while the runtime
+        copy never came back. Restore must clear the entry before syncing."""
+        from tools.skill_usage import read_suppressed_names
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+        manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
+
+        # Curator-pruned state: suppression entry present, no local copy left on disk.
+        hermes_home = tmp_path / "home"
+        suppressed = hermes_home / "skills" / ".curator_suppressed"
+        suppressed.parent.mkdir(parents=True)
+        suppressed.write_text("google-workspace\n")
+
+        with self._patches(bundled, skills_dir, manifest_file), patch(
+            "tools.skill_usage.get_hermes_home", return_value=hermes_home
+        ):
+            result = reset_bundled_skill("google-workspace", restore=True)
+
+            assert result["ok"] is True
+            assert result["action"] == "restored"
+            # The skill was actually re-seeded, not silently skipped as suppressed.
+            assert "google-workspace" in result["synced"]["copied"]
+            assert result["synced"]["suppressed"] == []
+            assert "GW v2" in (skills_dir / "productivity" / "google-workspace" / "SKILL.md").read_text()
+            # The suppression entry is gone: future `hermes update` runs keep seeding it.
+            assert "google-workspace" not in read_suppressed_names()
+            assert "suppression entry" in result["message"]
+
+    def test_plain_reset_keeps_curator_suppression(self, tmp_path):
+        """Plain reset (no --restore) only re-baselines manifest tracking; it must not silently
+        reverse the curator's prune decision."""
+        from tools.skill_usage import read_suppressed_names
+
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        skills_dir.mkdir(parents=True)
+        manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
+
+        hermes_home = tmp_path / "home"
+        suppressed = hermes_home / "skills" / ".curator_suppressed"
+        suppressed.parent.mkdir(parents=True)
+        suppressed.write_text("google-workspace\n")
+
+        with self._patches(bundled, skills_dir, manifest_file), patch(
+            "tools.skill_usage.get_hermes_home", return_value=hermes_home
+        ):
+            result = reset_bundled_skill("google-workspace", restore=False)
+
+            assert result["ok"] is True
+            assert result["action"] == "manifest_cleared"
+            # Curator's prune decision survives a plain reset.
+            assert "google-workspace" in read_suppressed_names()
+
 
 class TestNoBundledSkillsOptOut:
     """The .no-bundled-skills marker makes sync_skills() a no-op.

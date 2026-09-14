@@ -191,3 +191,27 @@ async def test_speaker_reaction_retries_tts_six_times_before_one_failure_notice(
     )
 
 
+@pytest.mark.asyncio
+async def test_speaker_reaction_during_processing_voices_the_complete_unsplit_response(adapter, monkeypatch):
+    """Reacting to the source message before ✅ arms one TTS job for the full final response."""
+    raw_message = SimpleNamespace(
+        author=SimpleNamespace(id=42), add_reaction=AsyncMock(), remove_reaction=AsyncMock(),
+    )
+    event = _make_event("1", raw_message)
+    monkeypatch.setattr(adapter, "_record_discord_processing_start", lambda *args, **kwargs: None)
+    monkeypatch.setattr(adapter, "_record_discord_processing_complete", lambda *args, **kwargs: None)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="status"))
+    speak = AsyncMock()
+    monkeypatch.setattr(adapter, "_send_tts_reaction_audio", speak)
+
+    await adapter.on_processing_start(event)
+    payload = SimpleNamespace(message_id=1, channel_id=123, user_id=42, emoji="🔈")
+    assert await adapter._on_tts_reaction(payload) is True
+    adapter._remember_tts_reaction_response(reply_to="1", content="full response across all Discord chunks")
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    speak.assert_awaited_once_with(
+        chat_id="123", text="full response across all Discord chunks", reply_to="1",
+    )
+
+

@@ -109,7 +109,11 @@ class LiveSessionSnapshot(Result):
 
 class SeedMessage(Params):
     """One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the
-    legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire."""
+    legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. Clients
+    forward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does
+    not use, so the row stays open."""
+
+    model_config = Params.model_config | {"extra": "allow"}
 
     role: str
     content: str | None = None

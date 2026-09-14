@@ -2415,12 +2415,13 @@ export interface SessionCreateParams {
   room_plumbing?: boolean
   follow_profile_config?: boolean
 }
-/** One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. */
+/** One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. Clients forward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does not use, so the row stays open. */
 export interface SeedMessage {
   role: string
   content?: string | null
   text?: string | null
   display_kind?: string | null
+  [key: string]: unknown
 }
 export interface SessionCreateResult {
   session_id: string
@@ -3866,7 +3867,7 @@ export interface ToolStartPayload {
 export interface ToolCompletePayload {
   tool_id: string
   name: string
-  args: Record<string, unknown>
+  args?: Record<string, unknown> | null
   duration_s?: number | null
   result?: unknown
   summary?: string | null

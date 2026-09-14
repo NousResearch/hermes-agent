@@ -23016,8 +23016,8 @@
         "type": "object"
       },
       "SeedMessage": {
-        "additionalProperties": false,
-        "description": "One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the\nlegacy alias of ``content``; only ``display_kind: \"hidden\"`` is accepted from the wire.",
+        "additionalProperties": true,
+        "description": "One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the\nlegacy alias of ``content``; only ``display_kind: \"hidden\"`` is accepted from the wire. Clients\nforward stored rows verbatim (``_row_id``, ``timestamp``, \u2026) and the coercer drops what it does\nnot use, so the row stays open.",
         "properties": {
           "role": {
             "title": "Role",
@@ -29610,9 +29610,17 @@
             "type": "string"
           },
           "args": {
-            "additionalProperties": true,
-            "title": "Args",
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Args"
           },
           "duration_s": {
             "anyOf": [
@@ -29694,8 +29702,7 @@
         },
         "required": [
           "tool_id",
-          "name",
-          "args"
+          "name"
         ],
         "title": "ToolCompletePayload",
         "type": "object"

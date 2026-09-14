@@ -98,15 +98,29 @@ def _report(kind: str, name: str, exc: ValidationError) -> None:
 
 
 def validate_params(contract: MethodContract | ServerRequestContract, params: dict) -> tuple[dict | None, str | None]:
-    """``(params, None)`` when valid — the ORIGINAL dict, so handlers keep reading what the client
-    sent; ``(None, message)`` for the ``4000`` error."""
+    """Reject UNKNOWN keys (``4000`` with the key path) — the one check no handler performs, and the
+    one that catches a renamed or misspelled field on either side. Required / type errors are left to
+    the handler, which owns its documented domain codes (``4006`` missing session_id, ``4015`` bad
+    url, …) and which clients already branch on; ``check_params_accepted`` closes the loop by
+    flagging a handler that SUCCEEDS on params the contract calls invalid."""
     try:
         contract.params.model_validate(params)
     except ValidationError as exc:
-        first = exc.errors()[0]
-        loc = ".".join(str(p) for p in first.get("loc", ())) or "params"
-        return None, f"invalid params for {contract.name}: {loc}: {first.get('msg')}"
+        for err in exc.errors():
+            if err.get("type") == "extra_forbidden":
+                loc = ".".join(str(p) for p in err.get("loc", ())) or "params"
+                return None, f"invalid params for {contract.name}: {loc}: {err.get('msg')}"
     return params, None
+
+
+def check_params_accepted(contract: MethodContract | ServerRequestContract, params: dict) -> None:
+    """The handler answered with a result: the params it accepted must be valid under the
+    contract, else the contract is narrower than the wire (a required field that is optional in
+    practice, a type the handler coerces). Same strict/log policy as results."""
+    try:
+        contract.params.model_validate(params)
+    except ValidationError as exc:
+        _report("params accepted by", contract.name, exc)
 
 
 def check_result(contract: MethodContract | ServerRequestContract, result: dict) -> None:

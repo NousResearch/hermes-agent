@@ -816,6 +816,7 @@ def handle_request(req: dict) -> dict | None:
     finally:
         _current_rpc_method.reset(token)
     if contract is not None and isinstance(response, dict) and isinstance(response.get("result"), dict):
+        _contracts.check_params_accepted(contract, params)
         _contracts.check_result(contract, response["result"])
     return response
 

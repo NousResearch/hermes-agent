@@ -253,7 +253,7 @@ class ToolCompletePayload(Payload):
 
     tool_id: str
     name: str
-    args: dict[str, JsonValue]
+    args: dict[str, JsonValue] | None = None  # mirrored child rows / room relays omit it
     duration_s: float | None = None
     result: JsonValue = None
     summary: str | None = None

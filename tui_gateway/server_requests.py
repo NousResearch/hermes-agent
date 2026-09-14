@@ -92,7 +92,7 @@ def _register(req: ServerRequest) -> None:
         raise RuntimeError(f"server request {req.method!r} has no contract in tui_gateway/contracts")
     _, problem = contracts.validate_params(contract, {"session_id": req.sid, **req.params})
     if problem is not None:
-        raise ValueError(problem)
+        raise ValueError(problem)  # a key the renderer's typed handler would never read: our bug
     with _lock:
         _open[req.id] = req
     _write(req.frame())

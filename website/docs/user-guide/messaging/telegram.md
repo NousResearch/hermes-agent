@@ -900,6 +900,31 @@ sqlite3 ~/.hermes/state.db \
 
 If you downgrade to a Hermes version that predates `/topic`, the feature simply stops working — the `telegram_dm_topic_mode` and `telegram_dm_topic_bindings` tables remain in `state.db` but are ignored by older code. DMs revert to the native per-thread isolation (each `message_thread_id` still gets its own session via `build_session_key`), so your existing Telegram topics keep working as parallel sessions. The root DM is no longer a lobby — messages there go into the agent like they used to. Re-upgrading reactivates multi-session mode exactly where it was.
 
+## Open a topic on @mention (opt-in)
+
+On Discord, mentioning the bot opens a **thread**. On Telegram, the same mention in a group with Topics still replies in **General**, so every job lands in one place.
+
+Set `telegram.extra.auto_topic_on_mention: true` to match Discord for **forum groups**:
+
+1. Someone mentions the bot in General
+2. Hermes creates a topic named from their message (`deploy staging`)
+3. Copies that message into the topic and replies there
+
+Follow-ups stay in the topic. Mentions already inside a topic do not open another one. Slash commands in General (`/status`, `/model`) do not create a topic.
+
+**Off by default.** The bot must be a forum admin with **Manage Topics**. If create fails, Hermes stays in General.
+
+This only works in a group that already has Topics enabled. It does nothing in a normal group, a broadcast channel, or a DM (`/topic` already covers DMs).
+
+```yaml
+telegram:
+  extra:
+    auto_topic_on_mention: true   # default false
+    auto_topic_copy_source: true  # copy the General message into the new topic
+```
+
+Equivalent env: `TELEGRAM_AUTO_TOPIC_ON_MENTION=true`.
+
 ## Group Forum Topic Skill Binding
 
 Supergroups with **Topics mode** enabled (also called "forum topics") already get session isolation per topic — each `thread_id` maps to its own conversation. But you may want to **auto-load a skill** when messages arrive in a specific group topic, just like DM topic skill binding works.

@@ -333,6 +333,8 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `TELEGRAM_BOTS_REQUIRE_MENTION` | When enabled, a message sent by another bot must explicitly `@thisbot` to trigger a response — a quote-reply alone is ignored, which stops two bots from replying to each other forever. Human replies are unaffected. Default: `false`. Equivalent to `telegram.bots_require_mention`. |
 | `TELEGRAM_REPLY_TO_MODE` | Reply-reference behavior: `off`, `first` (default), or `all`. Matches the Discord pattern. |
 | `TELEGRAM_IGNORED_THREADS` | Comma-separated Telegram forum topic/thread IDs where the bot never responds |
+| `TELEGRAM_AUTO_TOPIC_ON_MENTION` | Opt-in: when `true`, an `@mention` in a forum **General** topic opens a named forum topic and routes the reply there (Discord `auto_thread` parity). Default `false`. Equivalent to `telegram.extra.auto_topic_on_mention`. |
+| `TELEGRAM_AUTO_TOPIC_COPY_SOURCE` | Copy the triggering General message into the new auto-topic. Default `true`. Equivalent to `telegram.extra.auto_topic_copy_source`. |
 | `TELEGRAM_PROXY` | Proxy URL for Telegram connections — overrides `HTTPS_PROXY`. Supports `http://`, `https://`, `socks5://` |
 | `DISCORD_BOT_TOKEN` | Discord bot token |
 | `DISCORD_ALLOWED_USERS` | Comma-separated Discord user IDs allowed to use the bot |

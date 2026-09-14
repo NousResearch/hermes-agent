@@ -72,7 +72,7 @@ import {
   parseResumeControlMessage,
   shouldFollowPtyOutput,
 } from "@/lib/pty-scroll";
-import { advanceTouchAnchor, isTouchPan, ptyWheelSequence, touchLineTravel, touchScrollLines, wheelScrollLines } from "@/lib/pty-touch-scroll";
+import { advanceTouchAnchor, isTouchPan, touchLineTravel, touchScrollLines, wheelScrollLines } from "@/lib/pty-touch-scroll";
 import { ptyAboOauthChannelKey, ptyAboOauthParams } from "@/lib/pty-abo-oauth";
 import {
   imageFilesFromTransfer,
@@ -861,8 +861,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const lines = touchScrollLines(touchY, touch.clientY, rowHeight);
       if (lines) {
         touchY = advanceTouchAnchor(touchY, lines, touchLineTravel(rowHeight));
-        const seq = ptyWheelSequence(lines);
-        if (seq) term.input(seq, true);
+        term.scrollLines(lines);
         lastTouchScrollAt = Date.now();
       }
     };

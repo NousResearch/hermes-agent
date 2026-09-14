@@ -341,6 +341,14 @@ def _transcribe_local(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
+    # CPU-compat preflight (#109771): SIGILL from NumPy/CTranslate2 kills hermes serve.
+    try:
+        from tools.transcription_local import _check_local_stt_cpu_compat
+        _cpu_msg = _check_local_stt_cpu_compat()
+        if _cpu_msg:
+            return _error_result(_cpu_msg)
+    except Exception:
+        pass
     if not _HAS_FASTER_WHISPER and not _try_lazy_install_stt():
         return _error_result("faster-whisper not installed")
     try:

@@ -55,8 +55,76 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
     return model_name
 
 
+def _linux_x86_cpu_flags() -> Optional[set[str]]:
+    """Parse /proc/cpuinfo flags on Linux x86_64; None on other platforms or on read failure.
+
+    Cached after the first read so the STT hot path does not re-parse the file.
+    """
+    if getattr(_linux_x86_cpu_flags, "_cached", False):  # type: ignore[attr-defined]
+        return _linux_x86_cpu_flags._result  # type: ignore[attr-defined]
+    result: Optional[set[str]] = None
+    try:
+        if platform.system() == "Linux" and platform.machine().lower() in {"x86_64", "amd64", "x64"}:
+            text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")
+            flags: set[str] = set()
+            for line in text.splitlines():
+                if line.startswith("flags"):
+                    _, _, after = line.partition(":")
+                    for tok in after.strip().split():
+                        flags.add(tok.lower())
+                    break
+            result = flags if flags else set()
+        else:
+            result = None
+    except Exception:
+        result = None
+    _linux_x86_cpu_flags._cached = True  # type: ignore[attr-defined]
+    _linux_x86_cpu_flags._result = result  # type: ignore[attr-defined]
+    return result
+_linux_x86_cpu_flags._cached = False  # type: ignore[attr-defined]
+_linux_x86_cpu_flags._result = None  # type: ignore[attr-defined]
+
+
+def _check_local_stt_cpu_compat() -> Optional[str]:
+    """Return an error string when this x86_64 Linux CPU cannot run local STT, else None.
+
+    NumPy 2.4.3 wheels and CTranslate2 4.8.2 (used by faster-whisper) are built
+    for the x86-64-v2 baseline and require SSE4.1/SSE4.2/AVX. On older CPUs the
+    native code raises SIGILL, which kills the entire hermes serve process and
+    cannot be caught as a Python exception — so we must refuse *before* importing
+    the native libraries and return a clear, actionable message instead (#109771,
+    #82913).
+    """
+    flags = _linux_x86_cpu_flags()
+    if flags is None:
+        return None
+    # flags == set() means we are on x86_64 Linux but could not parse flags → be conservative: report inability
+    if not flags:
+        return None  # cannot determine — let the import attempt; a SIGILL would still be fatal but we avoid false positives
+    missing: list[str] = []
+    if "sse4_1" not in flags:
+        missing.append("SSE4.1")
+    if "sse4_2" not in flags:
+        missing.append("SSE4.2")
+    if "avx" not in flags:
+        missing.append("AVX")
+    if not missing:
+        return None
+    return (
+        f"Local STT (faster-whisper/CTranslate2) requires CPU features {', '.join(missing)} "
+        f"which this CPU does not provide — local transcription would crash with SIGILL. "
+        f"Set stt.provider to a cloud provider (e.g. groq, openai, mistral, xai) in config.yaml "
+        f"or run on a newer x86-64 CPU. This host reports flags without {', '.join(missing)}; "
+        f"see issue #109771."
+    )
+
+
 def _try_lazy_install_stt() -> bool:
     """Lazy-install faster-whisper and re-check dynamically so it's usable without a restart."""
+    cpu_msg = _check_local_stt_cpu_compat()
+    if cpu_msg:
+        logger.warning("%s Lazy install skipped.", cpu_msg)
+        return False
     try:
         from tools.lazy_deps import ensure
         # prompt=False: a bare input() deadlocks under the interactive CLI where prompt_toolkit
@@ -129,6 +197,9 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
     ``device`` / ``compute_type`` default to ``"auto"`` so the historical behaviour is unchanged; pass
     explicit values from ``stt.local.device`` / ``stt.local.compute_type`` to pin a configuration (#9088).
     """
+    cpu_msg = _check_local_stt_cpu_compat()
+    if cpu_msg:
+        raise RuntimeError(cpu_msg)
     force_cpu = _should_force_faster_whisper_cpu()
     if force_cpu:
         # Importing ctranslate2 can itself abort on Apple Silicon/Rosetta when

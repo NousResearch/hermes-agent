@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v3"
+SCANNER_VERSION = "skills-guard-v4"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -101,6 +101,15 @@ def _content_contract_re(file_alt: str) -> str:
     """"<file> should contain/include ..." prose. Authoring guides and attacks share this shape and are not
     separable statically, so the tier is scored high (caution → confirmation), never critical."""
     return rf'{file_alt}\b[^\n]{{0,40}}?\b(?:should|must|needs?\s+to)\s+(?:contain|say|include|have|list)\b'
+
+
+# ── context_exfil helpers ──
+# Negation guard: never/not/doesn't ... right after the verb marks descriptive prose (subagent
+# isolation notes, release notes) — the opposite of a transfer directive.
+_NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|doesn\'?t|didn\'?t|won\'?t|isn\'?t|aren\'?t|can\'?t|cannot|mustn\'?t|shouldn\'?t)\b)')
+# Real directives are short; unbounded filler let prose (output never enters your own context)
+# and feature descriptions match.
+_SHORT_FILLER = r'(?:\w+\s+){0,3}?'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -187,7 +196,10 @@ THREAT_PATTERNS = [
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection", "hidden HTML div (invisible instructions)"),
     # ── Destructive operations ──
-    (r'rm\s+-rf\s+/', "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
+    # Cleanup under the standard temp roots (/tmp, /var/tmp, /dev/shm, /run) is routine in
+    # test/smoke scripts and CI; anything else rooted at "/" stays critical.
+    (r'rm\s+-rf\s+/(?!tmp(?:\b|/)|var/tmp(?:\b|/)|dev/shm(?:\b|/)|run(?:\b|/))',
+     "destructive_root_rm", "critical", "destructive", "recursive delete from root"),
     (r'rm\s+(-[^\s]*)?r.*\$HOME|\brmdir\s+.*\$HOME',
      "destructive_home_rm", "critical", "destructive", "recursive delete targeting home directory"),
     (r'chmod\s+777', "insecure_perms", "medium", "destructive", "sets world-writable permissions"),
@@ -198,7 +210,14 @@ THREAT_PATTERNS = [
     (r'truncate\s+-s\s*0\s+/', "truncate_system", "critical", "destructive", "truncates system file to zero bytes"),
     # ── Persistence ──
     (r'\bcrontab\b', "persistence_cron", "medium", "persistence", "modifies cron jobs"),
-    (r'\.(bashrc|zshrc|profile|bash_profile|bash_login|zprofile|zlogin)\b',
+    # ``profile`` is split out and anchored: ``.zshrc`` after a dot is always the file, but
+    # ``.profile`` is also how every language spells attribute access (``self.profile``,
+    # ``data?.profile``, ``func().profile``), which flooded scans of ordinary code. Requiring
+    # a non-identifier, non-call/index/optional-chain character before the dot keeps real paths
+    # (``~/.profile``, ``"$HOME/.profile"``, ``./.profile``) and drops attribute reads.
+    (r'\.(bashrc|zshrc|bash_profile|bash_login|zprofile|zlogin)\b',
+     "shell_rc_mod", "medium", "persistence", "references shell startup file"),
+    (r'(?<![\w)\]?])\.profile\b',
      "shell_rc_mod", "medium", "persistence", "references shell startup file"),
     (r'authorized_keys', "ssh_backdoor", "critical", "persistence", "modifies SSH authorized keys"),
     (r'ssh-keygen', "ssh_keygen", "medium", "persistence", "generates SSH keys"),
@@ -285,7 +304,11 @@ THREAT_PATTERNS = [
     # `allowed-tools:` is REQUIRED frontmatter per the agent-skill spec — informational (low) only.
     (r'^allowed-tools\s*:',
      "allowed_tools_field", "low", "privilege_escalation", "skill declares allowed-tools (standard frontmatter; informational)"),
-    (r'\bsudo\b', "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
+    # `sudo.request` / `sudo.respond` are gateway wire events (the masked sudo-password prompt), not an
+    # invocation: any client plugin that relays Hermes' secure prompts has to name them, and a bare
+    # `\bsudo\b` made every such plugin `caution`. A dotted event name is never a shell `sudo`.
+    (r'\bsudo\b(?!\.(?:request|respond)\b)',
+     "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
     (r'setuid|setgid|cap_setuid',
      "setuid_setgid", "critical", "privilege_escalation", "setuid/setgid (privilege escalation mechanism)"),
     (r'NOPASSWD',
@@ -348,13 +371,72 @@ THREAT_PATTERNS = [
     (r'new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions',
      "fake_policy", "medium", "injection", "claims new policy/guidelines (may be social engineering)"),
     # ── Context window exfiltration ──
-    (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
+    # Instruction shapes only. Descriptive prose about context handling ("The output never enters
+    # your own context", "**Include context:** cwd, env vars", "save tokens (no need to include code
+    # in context)") describes the OPPOSITE of exfiltration and must not match: the verb→target gap is
+    # bounded, a negation right after the verb voids the match, and a bare ``context`` target counts
+    # only under transfer verbs (print/send/share) — "include context" is window/information talk.
+    (rf'\b(?:include|output|print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}(?:conversation|chat\s+history|previous\s+messages)\b'
+     rf'|\b(?:print|send|share)\s+{_NO_TRANSFER}{_SHORT_FILLER}context\b',
      "context_exfil", "high", "exfiltration", "instructs agent to output/share conversation history"),
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration", "instructs agent to send data to a URL"),
 ]
 
 _COMPILED_THREAT_PATTERNS = [(re.compile(pattern, re.IGNORECASE), *rest) for pattern, *rest in THREAT_PATTERNS]
+
+# ── Inert path references (#92478) ──
+# The bare path-token patterns (`authorized_keys`, `~/.aws`, ...) fire on the token alone, so a skill that spells
+# a path in order to REFUSE it scores like one that appends to it, and one critical is an unoverridable dangerous
+# verdict on a community source. Two contexts DEMOTE the finding (it stays in the report with file and line, like
+# `allowed_tools_field`): a whole-line comment in a language that has comments drops to low — Markdown is
+# deliberately absent, `#` opens a heading there and the prose is the injection surface; a line owned by a
+# denylist-named assignment, with no verb on the line that could touch the path, drops to high, so the verdict
+# is a confirmable caution rather than a hard block. The name is attacker-chosen, hence the verb guard.
+_PATH_REFERENCE_PATTERN_IDS = frozenset({"ssh_dir_access", "aws_dir_access", "gpg_dir_access", "kube_dir_access",
+                                         "docker_dir_access", "ssh_backdoor", "system_passwd_access"})
+_COMMENT_PREFIX = {'.py': '#', '.sh': '#', '.bash': '#', '.rb': '#', '.pl': '#', '.r': '#', '.jl': '#', '.yaml': '#',
+                   '.yml': '#', '.toml': '#', '.conf': '#', '.cfg': ('#', ';'), '.ini': ('#', ';'), '.js': '//',
+                   '.ts': '//', '.php': ('//', '#')}
+# `NAME = ...`, `NAME: Type = ...`, `const NAME = ...` or a mapping key `name:` whose name says "not these".
+_DENYLIST_OWNER_RE = re.compile(
+    r'^\s*(?:(?:const|let|var|export)\s+)?[\w.\-]*(?:deny|black|block|skip|exclu|ignor|forbid|refus|reject|never'
+    r'|unsafe|sensitive|secret_?file|redact)[\w.\-]*\s*(?::[^=]*?)?(?:=|:\s*(?:$|[\[({]))', re.IGNORECASE)
+# Anything on the line that could act on the path: shell verb, file API, spawn, append redirection. Bare `|` and
+# `>` are excluded on purpose — both are regex metacharacters and the reported fragment is `r"|authorized_keys"`.
+_ACTION_ON_LINE_RE = re.compile(
+    r'\b(?:cat|less|more|head|tail|cp|mv|rm|scp|rsync|curl|wget|tee|chmod|chown|ssh|sudo|install|source|eval|exec'
+    r'|system|popen|run|check_output|copyfile|copy2|sendfile)\b|\.(?:read|write|open|unlink|copy|append)\w*\s*\('
+    r'|\bopen\s*\(|readFileSync|writeFileSync|appendFileSync|>>', re.IGNORECASE)
+_QUOTED_SPAN_RE = re.compile(r"""'[^'\n]*'|"[^"\n]*\"""")
+
+
+def _statement_owners(lines: list) -> list:
+    """0-indexed line that opened each line's statement (an unclosed bracket or trailing backslash continues it),
+    so a match on a continuation line of a multi-line regex can be traced to the assignment target above it.
+    Quoted spans are blanked before counting brackets; a miscount costs a missed demotion, never a missed finding."""
+    owners, depth, owner, continued = [], 0, 0, False
+    for i, line in enumerate(lines):
+        if depth <= 0 and not continued:
+            owner = i
+        owners.append(owner)
+        bare = _QUOTED_SPAN_RE.sub("", line)
+        depth = max(0, depth + sum(bare.count(c) for c in "([{") - sum(bare.count(c) for c in ")]}"))
+        continued = line.rstrip().endswith("\\")
+    return owners
+
+
+def _demote_inert_path_reference(pid: str, severity: str, description: str, line: str, owner_line: str,
+                                 suffix: str) -> Tuple[str, str]:
+    """``(severity, description)`` for a path-token match, lowered when the line cannot act where it sits."""
+    if pid not in _PATH_REFERENCE_PATTERN_IDS:
+        return severity, description
+    if line.lstrip().startswith(_COMMENT_PREFIX.get(suffix, ())):
+        return "low", f"{description} (in a comment; informational)"
+    if _DENYLIST_OWNER_RE.match(owner_line) and not _ACTION_ON_LINE_RE.search(line):
+        return "high", f"{description} (in a denylist literal; confirm before installing)"
+    return severity, description
+
 
 # Structural limits: file count; total KB (5MB, informational only — large skills don't block); single-file KB.
 MAX_FILE_COUNT, MAX_TOTAL_SIZE_KB, MAX_SINGLE_FILE_KB = 50, 5120, 256
@@ -408,12 +490,15 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         return []
     findings = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
+    suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if i not in docstring_lines and pattern.search(line):
                 text = line.strip()
-                findings.append(Finding(pid, severity, category, rel_path, i,
-                                        text if len(text) <= 120 else text[:117] + "...", description))
+                line_severity, line_description = _demote_inert_path_reference(
+                    pid, severity, description, line, lines[owners[i - 1]], suffix)
+                findings.append(Finding(pid, line_severity, category, rel_path, i,
+                                        text if len(text) <= 120 else text[:117] + "...", line_description))
     for i, line in enumerate(lines, start=1):
         if (char := next((c for c in INVISIBLE_CHARS if c in line), None)) is not None:
             name = _unicode_char_name(char)

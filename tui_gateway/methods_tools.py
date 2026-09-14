@@ -514,18 +514,28 @@ def _run_plugin_command(handler, arg: str) -> str:
     return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
 
 
-def _is_profile_skill_command(session: dict, base: str) -> bool:
-    """True when ``/base`` is a skill command of the session's profile (HERMES_HOME bound to it so
-    get_skill_commands() sees its skills.external_dirs; nothing upstream binds it). False on failure."""
+@contextlib.contextmanager
+def _session_home_scope(session):
+    """Bind HERMES_HOME to the session's profile for the block (no-op for the launch profile).
+
+    Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
+    ``quick_commands`` all live in the profile's config/home); nothing upstream of these RPC handlers
+    binds it, so an unscoped call resolves against the launch profile (#110695)."""
+    hc = _tools_mod("hermes_constants")
+    profile_home = session.get("profile_home") if session else None
+    token = hc.set_hermes_home_override(profile_home) if profile_home else None
     try:
-        hc = _tools_mod("hermes_constants")
-        profile_home = session.get("profile_home")
-        token = hc.set_hermes_home_override(profile_home) if profile_home else None
-        try:
+        yield
+    finally:
+        if token is not None:
+            hc.reset_hermes_home_override(token)
+
+
+def _is_profile_skill_command(session: dict, base: str) -> bool:
+    """True when ``/base`` is a skill command of the session's profile. False on failure."""
+    try:
+        with _session_home_scope(session):
             return f"/{base}" in _tools_mod("agent.skill_commands").get_skill_commands()
-        finally:
-            if token is not None:
-                hc.reset_hermes_home_override(token)
     except Exception:
         return False
 
@@ -571,7 +581,7 @@ def _dispatch_bundle(rid, params, session, name, arg):
 def _dispatch_skill(rid, params, session, name, arg):
     with contextlib.suppress(Exception):
         sc = _tools_mod("agent.skill_commands")
-        cmds, key = sc.scan_skill_commands(), f"/{name}"
+        cmds, key = sc.get_skill_commands(), f"/{name}"
         if key in cmds:
             msg = sc.build_skill_invocation_message(key, arg, task_id=session.get("session_key", "") if session else "")
             if msg:  # UIs render `display`, never `message`.
@@ -825,14 +835,18 @@ def _(rid, params: dict) -> dict:
     name, arg = _resolve_name(params.get("name", "").lstrip("/")), params.get("arg", "")
     session = _sessions.get(params.get("session_id", ""))
 
-    # Stage order is load-bearing: quick > plugin > bundle > skill > built-in.
+    # Stage order is load-bearing: quick > plugin > bundle > skill > built-in. One home binding
+    # around the whole loop: the routing guard (``_is_profile_skill_command``) and the stages
+    # must resolve against the SAME profile or a secondary-only skill is routed here and then
+    # not found (#110695).
     stages = (_dispatch_quick, _dispatch_plugin, _dispatch_bundle, _dispatch_skill, _SLASH_BUILTINS.get(name))
-    for stage in filter(None, stages):
-        res = stage(rid, params, session, name, arg)
-        if res is not None:
-            if name in _SESSION_CONTROL_SLASHES and "error" not in res:
-                _publish_session_control_snapshot(params.get("session_id", ""), session)
-            return res
+    with _session_home_scope(session):
+        for stage in filter(None, stages):
+            res = stage(rid, params, session, name, arg)
+            if res is not None:
+                if name in _SESSION_CONTROL_SLASHES and "error" not in res:
+                    _publish_session_control_snapshot(params.get("session_id", ""), session)
+                return res
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
 
@@ -857,7 +871,8 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore")
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
     # error-then-retry fallback); bundles go the same way under their resolved key.
-    target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
+    with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
+        target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
     if target is not None:
         return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     if _is_profile_skill_command(session, base):

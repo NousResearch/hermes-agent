@@ -193,3 +193,22 @@ def test_removed_profile_never_wakes_under_the_primary_runtime(tmp_path, monkeyp
     asyncio.run(deliver(runner, rows))
     assert secondary.handled == []
     assert unseen(task)
+
+
+def test_anchorless_thread_subscription_warns_once_instead_of_silent_skip(tmp_path, monkeypatch, caplog):
+    """A CLI-created Discord thread sub with no ``parent_chat_id`` cannot match a channel-level
+    route and is skipped fail-closed — that skip must be visible ONCE at WARNING, not buried at
+    DEBUG on every tick forever (#110919)."""
+    import logging
+    from gateway import kanban_watchers_notifier as notifier
+
+    runner = setup_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(notifier, "_ANCHORLESS_WARNED", set())
+    task = completion(metadata={"chat_type": "thread"})
+    with caplog.at_level(logging.WARNING, logger=notifier.logger.name):
+        assert not collect(runner)
+        assert not collect(runner)
+    warnings = [r for r in caplog.records if "parent_chat_id" in r.getMessage() and task in r.getMessage()]
+    assert len(warnings) == 1 and warnings[0].levelno == logging.WARNING
+    assert "--parent-chat-id" in warnings[0].getMessage()
+    assert unseen(task)

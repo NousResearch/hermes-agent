@@ -1123,6 +1123,19 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+**Discord threads under `profile_routes`:** when the gateway multiplexes profiles and routes a *channel*
+to a profile, a subscription created from the CLI for a *thread* in that channel needs the thread's route
+anchors, or the notifier cannot match it to any route and skips it (logged once at WARNING). Pass them
+explicitly — `--parent-chat-id <channel id>` and, for Discord, `--guild-id <guild id>`:
+
+```bash
+hermes kanban notify-subscribe t_abcd \
+    --platform discord --chat-id <thread id> --thread-id <thread id> --chat-type thread \
+    --parent-chat-id <channel id> --guild-id <guild id> --delivery-mode notify+wake
+```
+
+Subscriptions created from inside the chat (`/kanban create`, `kanban_create`) record these anchors automatically.
+
 ### Delivery modes
 
 `--delivery-mode` controls **how** the notifier reacts to a terminal event. Every subscription is in one of three modes (`notify` is the default and the original behavior):

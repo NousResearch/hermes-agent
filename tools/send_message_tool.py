@@ -584,7 +584,7 @@ _TEXT_SENDERS = {
     "qqbot": lambda pc, cid, chunk, tid: _send_qqbot(pc, cid, chunk),
     "yuanbao": lambda pc, cid, chunk, tid: _send_yuanbao(cid, chunk)}
 
-_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack"
+_MEDIA_PLATFORMS_NOTE = "telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp, ntfy and slack"
 
 
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, args=None):
@@ -613,9 +613,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await _send_chunks(chunks, lambda chunk, is_last: sender(
             platform, pconfig, chat_id, chunk, media_files if is_last else empty_media, thread_id, force_document))
 
-    # Generic path: text only. Buzz delivers media natively via _send_via_adapter, so no warning.
+    # Generic path: text only. Buzz and ntfy deliver media natively via _send_via_adapter
+    # (ntfy: attachment publish, issue #46447), so no warning.
     warning = None
-    if media_files and platform_name != "buzz":
+    if media_files and platform_name not in ("buzz", "ntfy"):
         if not message.strip():
             return {"error": (f"send_message MEDIA delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}; "
                               f"target {platform_name} had only media attachments")}

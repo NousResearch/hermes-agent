@@ -923,3 +923,36 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+def test_cleanup_sweeps_stale_live_intents_and_keeps_fresh_ones(tmp_path, monkeypatch):
+    """``<dm file>.live.json`` holds the DM plaintext and outlives its runner for retries; the
+    housekeeping sweep must reap the orphans like it reaps the dm files themselves."""
+    import os
+
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    stale = tmp_path / "dm-old.txt.live.json"
+    stale.write_text("{}", encoding="utf-8")
+    os.utime(stale, (1, 1))
+    fresh = tmp_path / "dm-new.txt.live.json"
+    fresh.write_text("{}", encoding="utf-8")
+
+    assert bot_mode_dm.cleanup_bot_dm_cache() >= 1
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_settled_live_wait_unlinks_the_intent_but_a_pending_one_keeps_it(tmp_path, monkeypatch, capsys):
+    from tools import bot_live_delivery as live
+
+    intent = tmp_path / "dm-x.txt.live.json"
+    intent.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bot_mode_dm, "_LIVE_WAIT_SECONDS", 0)
+
+    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "queued"})
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", intent_path=intent) == 0
+    assert intent.exists(), "a pending delivery may still be retried from the same intent"
+
+    monkeypatch.setattr(live, "read_delivery_result", lambda home, did: {"status": "settled", "reply": "ok"})
+    assert bot_mode_dm._wait_live_dm(str(tmp_path), "d1", intent_path=intent) == 0
+    assert not intent.exists()

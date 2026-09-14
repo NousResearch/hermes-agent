@@ -55,6 +55,12 @@ _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
 _runtime_status_write_lock = threading.RLock()
+# Bounded so a stalled status write cannot permanently hold the lock and
+# poison every later serial-daemon status transition (serial capacity is
+# finite: workers blocked on this lock each hold a slot until their own
+# deadline).  Status persistence is diagnostic; abandoning a write behind a
+# stalled writer is safe — the next write re-merges authoritative state.
+_RUNTIME_STATUS_WRITE_LOCK_TIMEOUT_SECONDS = 10.0
 _latest_serial_status_sequence = 0
 
 logger = logging.getLogger(__name__)
@@ -1069,13 +1075,44 @@ def write_pid_file() -> None:
 
 
 def _serialize_runtime_status_write(func):
-    """Serialize process-local status read/merge/write transactions."""
+    """Serialize process-local status read/merge/write transactions.
+
+    A stalled filesystem write inside the lock must not poison every later
+    serial-daemon status transition (each blocked worker holds one of the
+    bounded serial-job slots until its 5s deadline, so a permanently held
+    lock would exhaust serial capacity).  Two protections:
+
+    - Superseded sequences are rejected BEFORE acquiring the write lock, so
+      queued stale writers never queue behind (or block on) a stuck writer.
+    - The lock itself is acquired with a bounded timeout; on timeout the
+      write is abandoned (TimeoutError) rather than blocking indefinitely.
+      Status persistence is diagnostic, never correctness-critical, and a
+      later write re-merges the authoritative state anyway.
+    """
 
     @functools.wraps(func)
     def _locked(*args, **kwargs):
         global _latest_serial_status_sequence
         serial_sequence = current_serial_daemon_sequence()
-        with _runtime_status_write_lock:
+        if (
+            serial_sequence is not None
+            and serial_sequence <= _latest_serial_status_sequence
+        ):
+            logger.warning(
+                "Skipping superseded runtime-status write (sequence %s <= %s)",
+                serial_sequence,
+                _latest_serial_status_sequence,
+            )
+            return None
+        if not _runtime_status_write_lock.acquire(
+            timeout=_RUNTIME_STATUS_WRITE_LOCK_TIMEOUT_SECONDS
+        ):
+            raise TimeoutError(
+                "runtime-status write lock unavailable after "
+                f"{_RUNTIME_STATUS_WRITE_LOCK_TIMEOUT_SECONDS:.3f}s "
+                "(a previous status write appears stalled)"
+            )
+        try:
             if (
                 serial_sequence is not None
                 and serial_sequence <= _latest_serial_status_sequence
@@ -1100,6 +1137,8 @@ def _serialize_runtime_status_write(func):
                 applied_sequence,
             )
             return result
+        finally:
+            _runtime_status_write_lock.release()
 
     return _locked
 

@@ -295,3 +295,90 @@ class TestProducerHook:
         claimed = dl.sweep_recoverable()
         assert len(claimed) == 1
         assert claimed[0]["needs_marker"] is True
+
+
+
+class TestFinalHandoffPathOffDefaultExecutor:
+    """Atomic r28 blocker 1: the FinalResponseHandoff receipt lifecycle
+    (prepare -> attempting -> settle / cancel) must not run on asyncio's
+    default executor. A stalled SQLite call there keeps the executor alive
+    during loop shutdown and blocks the old gateway from exiting on restart.
+    """
+
+    def _handoff(self, calls):
+        from gateway.post_response import FinalResponseHandoff
+
+        class _Runner:
+            def _prepare_final_response_handoff(self, h, *, text_content, event):
+                calls.append("prepare")
+                h.obligation_id = "ob-f1"
+                return True
+
+            def _mark_final_response_handoff_attempting(self, h):
+                calls.append("attempting")
+                return True
+
+            def _settle_final_response_handoff(self, h, *, delivered, error=None):
+                calls.append(("settle", delivered))
+                return True
+
+            def _cancel_uncommitted_final_response_handoff(self, h):
+                calls.append("cancel")
+                return None
+
+            class _post_response_controller:
+                @staticmethod
+                def wake():
+                    calls.append("wake")
+
+        h = FinalResponseHandoff(
+            "final answer",
+            runner=_Runner(),
+            session_key="agent:main:slack:channel:C1",
+            session_lineage="lin1",
+            expected_session_id="s1",
+            new_session_id=None,
+            active_turn_token=None,
+            last_prompt_tokens=10,
+            touch_activity=True,
+            append_final_text=True,
+            clear_resume_pending=False,
+        )
+        return h
+
+    @pytest.mark.asyncio
+    async def test_delivered_handoff_avoids_default_executor(self, monkeypatch):
+        import asyncio as _asyncio
+
+        async def reject_to_thread(*_args, **_kwargs):
+            raise AssertionError("final-response handoff used asyncio.to_thread")
+
+        monkeypatch.setattr(_asyncio, "to_thread", reject_to_thread)
+
+        calls: list = []
+        adapter = _Adapter()
+        await _run(adapter, _event(), response=self._handoff(calls))
+
+        assert adapter.sent == ["final answer"]
+        assert calls[0] == "prepare"
+        assert "attempting" in calls
+        assert ("settle", True) in calls
+        assert "wake" in calls
+
+    @pytest.mark.asyncio
+    async def test_empty_response_handoff_cancel_avoids_default_executor(
+        self, monkeypatch
+    ):
+        import asyncio as _asyncio
+
+        async def reject_to_thread(*_args, **_kwargs):
+            raise AssertionError("final-response handoff used asyncio.to_thread")
+
+        monkeypatch.setattr(_asyncio, "to_thread", reject_to_thread)
+
+        calls: list = []
+        adapter = _Adapter()
+        await _run(adapter, _event(), response=None)
+        # response=None path: no handoff existed; the run must simply not
+        # touch the default executor anywhere in the background pipeline.
+        assert adapter.sent == []

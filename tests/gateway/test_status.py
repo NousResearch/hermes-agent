@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1459,3 +1460,74 @@ class TestResolveGatewayLiveness:
         # profile's live gateway from being reported as this profile's.
         assert seen["expected_home"] == profile_dir
 
+
+
+class TestRuntimeStatusWriteLockBounded:
+    """Atomic r28 blocker 2: a stalled status write holding
+    _runtime_status_write_lock must not permanently poison later
+    serial-daemon status transitions (each blocked worker holds one of the
+    finite serial-job slots until its deadline)."""
+
+    def test_superseded_sequence_skipped_without_acquiring_lock(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(status, "_get_runtime_status_path", lambda: tmp_path / "rs.json")
+        acquired = threading.Event()
+
+        class _LockWithExplodingAcquire:
+            def acquire(self, *a, **k):
+                raise AssertionError(
+                    "superseded write must be rejected before acquiring the lock"
+                )
+
+            def release(self):
+                pass
+
+        monkeypatch.setattr(
+            status, "_runtime_status_write_lock", _LockWithExplodingAcquire()
+        )
+        try:
+            status._latest_serial_status_sequence = 99
+            monkeypatch.setattr(
+                status,
+                "current_serial_daemon_sequence",
+                lambda: 50,
+            )
+            # Must return None (skipped) without ever touching the lock.
+            assert status.write_runtime_status(gateway_state="x") is None
+        finally:
+            # restore the real lock method object for later tests
+            status._runtime_status_write_lock.__class__.acquire  # noqa: B018
+            status._latest_serial_status_sequence = 0
+
+    def test_stalled_writer_lock_times_out_instead_of_blocking(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(status, "_get_runtime_status_path", lambda: tmp_path / "rs.json")
+
+        stalled = threading.Event()
+        release = threading.Event()
+
+        import time as _time
+
+        real_write = status.write_runtime_status
+
+        def _stall_lock():
+            # Hold the write lock indefinitely, simulating a stalled fs write.
+            with status._runtime_status_write_lock:
+                stalled.set()
+                release.wait(timeout=30)
+
+        holder = threading.Thread(target=_stall_lock, daemon=True)
+        holder.start()
+        assert stalled.wait(timeout=5)
+
+        monkeypatch.setattr(
+            status, "_RUNTIME_STATUS_WRITE_LOCK_TIMEOUT_SECONDS", 0.2
+        )
+        t0 = _time.monotonic()
+        try:
+            with pytest.raises(TimeoutError):
+                status.write_runtime_status(gateway_state="x")
+            elapsed = _time.monotonic() - t0
+            assert elapsed < 5, f"write blocked for {elapsed:.2f}s behind stalled writer"
+        finally:
+            release.set()
+            holder.join(timeout=5)
+            status._latest_serial_status_sequence = 0

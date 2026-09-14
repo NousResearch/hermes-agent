@@ -297,7 +297,8 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
       // Only a runtime this panel created for THIS exact route can be reused
       // straight from the binding: its creation lease outlives a close/reopen
       // until the first durable row. Every other binding starts empty and
-      // resumes through the shared session store (whose warm path reuses a live
+      // resumes through the shared session store, whose warm path reuses a
+      // live runtime without an RPC.
       const canReuseCreatedRuntime = Boolean(
         candidate && pendingNativeSessionLeases.get(storedSessionId)?.bindingKey === bindingKey
       )

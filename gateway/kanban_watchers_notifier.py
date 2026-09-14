@@ -8,6 +8,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 from functools import partial
 from pathlib import Path
@@ -172,30 +173,43 @@ class _Collector:
         if not self.active_platforms:
             logger.debug("kanban notifier: no connected adapters; skipping tick")
             return self.deliveries
-        # Poll each resolved DB path once: several slugs can map to one DB when
-        # HERMES_KANBAN_DB pins the board path.
         kb = self.kb
+        pinned = (os.environ.get("HERMES_KANBAN_DB") or "").strip()
+        if pinned:
+            # This process is pinned to ONE store (HERMES_KANBAN_DB is what the
+            # dispatcher injects into workers). Iterating boards here would
+            # re-resolve each slug to its own canonical DB and never look at the
+            # pin, so poll the pinned store itself, exactly once.
+            self.collect_board(kb.DEFAULT_BOARD, db_path=Path(pinned).expanduser())
+            return self.deliveries
+        # Poll each board's own DB once: several slugs can still share one DB file.
         seen_db_paths: set[str] = set()
         for board_meta in _list_boards(kb):
             slug = board_meta.get("slug") or kb.DEFAULT_BOARD
             db_path = board_meta.get("db_path")
             try:
-                resolved_db_path = str(Path(db_path).expanduser().resolve()) if db_path else str(kb.kanban_db_path(slug).resolve())
+                open_path: Optional[Path] = Path(db_path).expanduser().resolve() if db_path else kb.kanban_db_path(slug).resolve()
             except Exception:
-                resolved_db_path = f"slug:{slug}"
-            if resolved_db_path in seen_db_paths:
-                logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, resolved_db_path)
+                open_path = None
+            dedup_key = str(open_path) if open_path is not None else f"slug:{slug}"
+            if dedup_key in seen_db_paths:
+                logger.debug("kanban notifier: skipping duplicate board slug %s for DB %s", slug, dedup_key)
                 continue
-            seen_db_paths.add(resolved_db_path)
-            self.collect_board(slug)
+            seen_db_paths.add(dedup_key)
+            self.collect_board(slug, db_path=open_path)
         return self.deliveries
 
-    def _board_has_subs(self, slug: str) -> bool:
+    def _board_has_subs(self, slug: str, db_path: Optional[Path] = None) -> bool:
         """Cheap read-only probe before the writable connect() (schema init, WAL
-        sidecars, checkpoints); a probe failure falls back to the writable open."""
+        sidecars, checkpoints); a probe failure falls back to the writable open.
+
+        Probe the same ``db_path`` :meth:`collect_board` will open — re-resolving
+        the slug here could probe a different store than the one polled.
+        """
         try:
             count = _kbn().count_notify_subs(
-                board=slug, notifier_profiles=self.notifier_profiles, include_unowned=self.include_unowned)
+                db_path=db_path, board=slug,
+                notifier_profiles=self.notifier_profiles, include_unowned=self.include_unowned)
         except Exception as exc:
             logger.debug("kanban notifier: read-only subscription probe failed "
                          "for board %s (%s); falling back to writable open", slug, exc)
@@ -237,13 +251,17 @@ class _Collector:
                      len(events), sub["task_id"], slug, old_cursor, cursor)
         return {"sub": sub, "old_cursor": old_cursor, "cursor": cursor, "events": events, "task": task, "board": slug}
 
-    def collect_board(self, slug: str) -> None:
-        """Claim events on one board, appending delivery dicts to ``deliveries``."""
-        if not self._board_has_subs(slug):
+    def collect_board(self, slug: str, db_path: Optional[Path] = None) -> None:
+        """Claim events on one board, appending delivery dicts to ``deliveries``.
+
+        ``db_path`` is the store :meth:`collect` already selected this slug for;
+        passing it through keeps the subscription probe, the writable connect and
+        the dedup decision on the same file.
+        """
+        if not self._board_has_subs(slug, db_path=db_path):
             return
-        kb = self.kb
         try:
-            conn = _kbc().connect(board=slug)
+            conn = _kbc().connect(db_path=db_path, board=slug)
         except Exception as exc:
             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
             return

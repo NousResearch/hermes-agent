@@ -112,7 +112,12 @@ class GatewayKanbanWatchersMixin:
         """Sync helper (runs in to_thread): call ``kanban_db_notify.<op>`` for one subscription on its board."""
         from hermes_cli import kanban_db_connect as _kbc
         from hermes_cli import kanban_db_notify as _kbn
-        conn = _kbc.connect(board=board)
+        # A pinned process (HERMES_KANBAN_DB) is scoped to that one store, so
+        # rewind/unsub/record must land there too: resolving the slug instead
+        # would write to the board's canonical DB while the notifier read the
+        # pinned one.
+        pinned = (os.environ.get("HERMES_KANBAN_DB") or "").strip()
+        conn = _kbc.connect(db_path=Path(pinned).expanduser()) if pinned else _kbc.connect(board=board)
         try:
             getattr(_kbn, op)(
                 conn, task_id=sub["task_id"], platform=sub["platform"], chat_id=sub["chat_id"],

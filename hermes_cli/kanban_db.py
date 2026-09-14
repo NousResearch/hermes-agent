@@ -473,14 +473,15 @@ def _dir_holds_board(d: Path) -> bool:
 def _board_path(
     env_var: Optional[str], board: Optional[str], default_parts: tuple[str, ...], leaf: str,
 ) -> Path:
-    """Shared resolver: ``env_var`` override, else legacy ``<root>/<default_parts>``
-    for the ``default`` board, else ``board_dir(slug)/leaf``."""
-    if env_var:
-        override = os.environ.get(env_var, "").strip()
-        if override:
-            return Path(override).expanduser()
+    """Shared resolver: an explicit ``board`` slug is authoritative; for an
+    unqualified call ``env_var`` pins the path, else the legacy default-board
+    location, else ``board_dir(slug)/leaf``."""
     slug = _normalize_board_slug(board)
     if slug is None:
+        if env_var:
+            override = os.environ.get(env_var, "").strip()
+            if override:
+                return Path(override).expanduser()
         slug = get_current_board()
     if slug == DEFAULT_BOARD:
         return kanban_home().joinpath(*default_parts)
@@ -488,20 +489,24 @@ def _board_path(
 
 
 def kanban_db_path(board: Optional[str] = None) -> Path:
-    """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins it (injected into workers);
-    ``default`` -> ``<root>/kanban.db`` (back-compat), else the board dir."""
+    """``kanban.db`` path: ``HERMES_KANBAN_DB`` pins an UNQUALIFIED call (the pin
+    the dispatcher injects into workers); an explicit ``board`` slug is
+    authoritative. ``default`` -> ``<root>/kanban.db`` (back-compat), else the
+    board dir."""
     return _board_path("HERMES_KANBAN_DB", board, ("kanban.db",), "kanban.db")
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:
-    """Per-board scratch workspace root (``HERMES_KANBAN_WORKSPACES_ROOT`` wins);
-    ``default`` keeps the legacy ``<root>/kanban/workspaces/``."""
+    """Per-board scratch workspace root: ``HERMES_KANBAN_WORKSPACES_ROOT`` pins an
+    UNQUALIFIED call; an explicit ``board`` slug is authoritative. ``default``
+    keeps the legacy ``<root>/kanban/workspaces/``."""
     return _board_path("HERMES_KANBAN_WORKSPACES_ROOT", board, ("kanban", "workspaces"), "workspaces")
 
 
 def attachments_root(board: Optional[str] = None) -> Path:
-    """Per-board attachments root (``HERMES_KANBAN_ATTACHMENTS_ROOT`` wins). Workers
-    read attachments by absolute path, so remote terminal backends must mount it."""
+    """Per-board attachments root: ``HERMES_KANBAN_ATTACHMENTS_ROOT`` pins an
+    UNQUALIFIED call; an explicit ``board`` slug is authoritative. Workers read
+    attachments by absolute path, so remote terminal backends must mount it."""
     return _board_path("HERMES_KANBAN_ATTACHMENTS_ROOT", board, ("kanban", "attachments"), "attachments")
 
 

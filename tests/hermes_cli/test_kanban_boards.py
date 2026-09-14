@@ -100,12 +100,25 @@ class TestPathResolution:
         assert p == fresh_home / "kanban" / "boards" / "atm10-server" / "kanban.db"
 
 
-    def test_env_var_db_override_still_wins(self, fresh_home, tmp_path, monkeypatch):
-        """``HERMES_KANBAN_DB`` pins the file regardless of board= arg."""
+    def test_env_var_db_override_wins_only_for_an_unqualified_call(
+        self, fresh_home, tmp_path, monkeypatch,
+    ):
+        """``HERMES_KANBAN_DB`` pins an UNQUALIFIED call (the pin the dispatcher
+        injects into a worker); an explicit ``board`` slug is authoritative and
+        ignores the pin."""
         forced = tmp_path / "custom.db"
         monkeypatch.setenv("HERMES_KANBAN_DB", str(forced))
+
+        # Unqualified variants follow the pin.
         assert kb.kanban_db_path() == forced
-        assert kb.kanban_db_path(board="ignored") == forced
+        assert kb.kanban_db_path(board=None) == forced
+        assert kb.kanban_db_path(board="") == forced
+
+        # An explicit slug is authoritative — the pin must not short-circuit.
+        assert kb.kanban_db_path(board="other") == (
+            fresh_home / "kanban" / "boards" / "other" / "kanban.db"
+        )
+        assert kb.kanban_db_path(board="default") == fresh_home / "kanban.db"
 
 
 # ---------------------------------------------------------------------------

@@ -886,6 +886,35 @@ def test_board_param_none_falls_back_to_env(worker_env):
     assert kb.kanban_db_path() == kb.kanban_db_path(board="default")
 
 
+def test_board_param_reads_named_board_despite_worker_env_pins(
+    multi_board_env, monkeypatch,
+):
+    """A dispatched worker always carries HERMES_KANBAN_DB / ``*_ROOT`` pins for
+    its own board. An explicit ``board`` argument must still read the requested
+    board, while the same call without it keeps following the pin."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Become a dispatched worker: every kanban path pinned at the default board.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(multi_board_env["default_db"]))
+    monkeypatch.setenv(
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        str(kb.workspaces_root(board="default")),
+    )
+    monkeypatch.setenv(
+        "HERMES_KANBAN_ATTACHMENTS_ROOT",
+        str(kb.attachments_root(board="default")),
+    )
+
+    # No board argument -> the pinned default board (the worker's own).
+    d = json.loads(kt._handle_list({}))
+    assert [t["id"] for t in d["tasks"]] == [multi_board_env["default_seed"]]
+
+    # An explicit board argument -> that board's tasks, pin notwithstanding.
+    d = json.loads(kt._handle_list({"board": "alt"}))
+    assert [t["id"] for t in d["tasks"]] == [multi_board_env["alt_seed"]]
+
+
 # ---------------------------------------------------------------------------
 # kanban_create auto-subscribe behaviour
 #

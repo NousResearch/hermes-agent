@@ -938,6 +938,73 @@ def ensure_basic_auth_plugin_enabled_in_config(cfg: dict) -> bool:
     return True
 
 
+_WEB_BACKEND_CONFIG_KEYS = ("backend", "search_backend", "extract_backend")
+
+
+def _hyphen_underscore_variants(name: str) -> set:
+    variants = {name}
+    if "-" in name:
+        variants.add(name.replace("-", "_"))
+    if "_" in name:
+        variants.add(name.replace("_", "-"))
+    return variants
+
+
+def _configured_web_backend_disable_aliases(vendor: str) -> set:
+    """Canonical ``web/<vendor>`` plus leaf and hyphen/underscore aliases."""
+    aliases = set()
+    for name in _hyphen_underscore_variants(vendor):
+        aliases.update((name, f"web/{name}", f"web-{name}"))
+    return aliases
+
+
+def _selected_web_backend_vendors(cfg: dict) -> set:
+    web_cfg = cfg.get("web")
+    if not isinstance(web_cfg, dict):
+        return set()
+    selected = set()
+    for key in _WEB_BACKEND_CONFIG_KEYS:
+        raw = web_cfg.get(key)
+        if not isinstance(raw, str):
+            continue
+        name = raw.strip().lower()
+        if name:
+            selected.add(name)
+    return selected
+
+
+def ensure_configured_web_backend_plugin_enabled_in_config(cfg: dict) -> bool:
+    """Drop configured bundled web-backend plugins from ``plugins.disabled`` in *cfg*.
+
+    Bundled ``kind: backend`` plugins auto-load unless denied. A configured
+    ``web.backend`` / ``web.search_backend`` / ``web.extract_backend`` that also
+    sits in ``plugins.disabled`` leaves web_search/web_extract broken after
+    plugin opt-in. Returns True when ``plugins.disabled`` changed.
+    """
+    try:
+        if not isinstance(cfg, dict):
+            return False
+        vendors = _selected_web_backend_vendors(cfg)
+        if not vendors:
+            return False
+        plugins_cfg = cfg.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            return False
+        disabled = plugins_cfg.get("disabled")
+        if not isinstance(disabled, list):
+            return False
+        drop = set()
+        for vendor in vendors:
+            drop |= _configured_web_backend_disable_aliases(vendor)
+        new_disabled = [item for item in disabled if item not in drop]
+        if new_disabled == disabled:
+            return False
+        plugins_cfg["disabled"] = new_disabled
+        return True
+    except Exception:
+        return False
+
+
 def _discard_key_and_leaf(names: set, key: str) -> None:
     """Drop *key* and its bare leaf (``observability/langfuse`` -> ``langfuse``) from *names*, so a
     stale legacy bare-name entry can't keep vetoing the canonical key."""

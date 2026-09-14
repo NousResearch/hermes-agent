@@ -92,6 +92,8 @@ async def _normalize_room_dispatch(
         catalog = GatewayRoomCatalog.from_mapping(catalog_map)
         if not catalog.text:
             raise ValueError("canonical_room_peer_unsupported")
+        if dispatch.attachment_manifest_digest is not None and not catalog.attachments:
+            raise ValueError("room attachments are unsupported")
         policy = RoomExecutionPolicy.from_mapping(catalog.execution_policy.as_mapping())
         if not hmac.compare_digest(policy.policy_digest, dispatch.execution_policy_digest):
             raise ValueError("room execution policy changed")

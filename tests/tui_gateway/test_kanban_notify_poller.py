@@ -263,6 +263,14 @@ class TestFormatKanbanEventText:
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
+        # Emitted before the give-up decision: never promise a retry.
+        assert "retry" not in text
+
+    def test_crashed_states_the_fact_without_promising_retry(self):
+        ev = SimpleNamespace(kind="crashed", payload={"pid": 4242, "exit_kind": "signal"})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "worker crashed (pid gone)" in text
+        assert "retry" not in text
 
 
 class TestNotificationPollerLoopKanbanWiring:

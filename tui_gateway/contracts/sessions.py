@@ -5,11 +5,8 @@ listing/browsing stored rows, spawn-tree snapshots, event replay and the statele
 
 from __future__ import annotations
 
-from pydantic import Field
-
 from .base import JsonValue, Params, Result, WireEnum
-from .common import (OpenModel, PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage,
-                     Usage)
+from .common import (PendingApproval, ProfileParams, SessionLiveInfo, SessionParams, TranscriptMessage, Usage)
 from .connectors_operation import ConnectionRequestPayload
 from .registry import method
 
@@ -18,12 +15,26 @@ from .registry import method
 
 
 class OpenRequestEntry(Result):
-    """One unanswered server→client request (``server_requests.Request.snapshot``); the reconnecting
-    client re-delivers it to its request handlers."""
+    """One unanswered server→client request (``server_requests.py:63``); shared transport
+    re-delivers it at ``apps/shared/src/json-rpc-channel.ts:518``."""
 
     id: str
     method: str
+    # Another server-request contract owns this method-specific payload.
     params: dict[str, JsonValue]
+
+
+class InflightErrorSurface(Result):
+    """``agent/error_surface.py:76``; the Desktop parses it at
+    ``apps/desktop/src/app/session/hooks/use-session-actions/utils.ts:785``."""
+
+    layer: str
+    code: str
+    retryable: bool
+    provider: str | None
+    model: str | None
+    auth_kind: str | None
+    provider_label: str | None
 
 
 class InflightTurn(Result):
@@ -40,17 +51,34 @@ class InflightTurn(Result):
     error: str | None = None
     status: str | None = None
     recoverable: bool | None = None
-    error_surface: dict[str, JsonValue] | None = None
+    error_surface: InflightErrorSurface | None = None
 
 
 class QueuedPrompt(Result):
     user: str
 
 
+class TodoStatus(WireEnum):
+    pending = "pending"
+    in_progress = "in_progress"
+    completed = "completed"
+    cancelled = "cancelled"
+
+
+class TodoEntry(Result):
+    """``tools/todo_tool.py:136`` normalizes every snapshot item; the Desktop consumes the
+    same fields in ``apps/desktop/src/lib/todos.ts:3``."""
+
+    id: str
+    content: str
+    status: TodoStatus
+    parent: str | None = None
+
+
 class TodoState(Result):
     """``tool_progress._normalize_todo_state``: the authoritative todo snapshot."""
 
-    todos: list[dict[str, JsonValue]]
+    todos: list[TodoEntry]
     revision: int
 
 
@@ -102,12 +130,8 @@ class LiveSessionSnapshot(Result):
 
 
 class SeedMessage(Params):
-    """One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the
-    legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. Clients
-    forward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does
-    not use, so the row stays open."""
-
-    model_config = Params.model_config | {"extra": "allow"}
+    """One create-time transcript row (``session_history.py:246``); ``text`` is the legacy alias
+    of ``content`` and only ``display_kind: "hidden"`` is accepted."""
 
     role: str
     content: str | None = None
@@ -376,10 +400,10 @@ class SessionSaveParams(SessionParams):
 
 
 class SessionSaveResult(Result):
-    """Under turn isolation the compute host's result passes through verbatim."""
+    """``methods_session.py:1755`` forwards the compute-host's same-route result; TUI reads
+    ``file`` at ``ui-tui/src/app/slash/commands/core.ts:557``."""
 
     file: str | None = None
-    model_config = Result.model_config | {"extra": "allow"}
 
 
 method("session.save", params=SessionSaveParams, result=SessionSaveResult,
@@ -467,16 +491,17 @@ method("session.context_breakdown", params=SessionContextBreakdownParams, result
 # ── compression ───────────────────────────────────────────────────────────────────────────────
 
 
-class CompressionSummary(OpenModel):
-    """``agent.manual_compression_feedback.summarize_manual_compression``."""
+class CompressionSummary(Result):
+    """``agent/manual_compression_feedback.py:88``; the Desktop reads it at
+    ``apps/desktop/src/app/session/hooks/use-prompt-actions/slash.ts:711``."""
 
-    noop: bool = False
-    aborted: bool = False
-    refused_would_grow: bool | None = None
-    fallback_used: bool | None = None
-    headline: str = ""
-    token_line: str = ""
-    note: str | None = None
+    noop: bool
+    aborted: bool
+    refused_would_grow: bool
+    fallback_used: bool
+    headline: str
+    token_line: str
+    note: str | None
 
 
 class SessionCompressParams(SessionParams):
@@ -484,8 +509,8 @@ class SessionCompressParams(SessionParams):
 
 
 class SessionCompressResult(Result):
-    """In-process: the before/after summary + replacement transcript. Compute host: its result passes
-    through (hence open) with ``turn_isolation``; a lock held elsewhere answers ``compressed: false``."""
+    """In-process: before/after summary + transcript; compute-host result is the same route's
+    output plus its ``turn_isolation`` marker."""
 
     status: str | None = None  # compressed | aborted | pending
     removed: int | None = None
@@ -501,8 +526,8 @@ class SessionCompressResult(Result):
     lock_held: bool | None = None
     message: str | None = None
     turn_isolation: bool | None = None
-    host_ack: dict[str, JsonValue] | None = None
-    model_config = Result.model_config | {"extra": "allow"}
+    # Compute-host control metadata is not a gateway RPC contract; Desktop only reads ``output``.
+    host_ack: JsonValue | None = None
 
 
 method("session.compress", params=SessionCompressParams, result=SessionCompressResult,
@@ -578,15 +603,15 @@ class SpawnTreeListParams(ProfileParams):
     limit: int | None = None
 
 
-class SpawnTreeEntry(OpenModel):
-    """Index row (``server._append_spawn_tree_index``) or a legacy file scan."""
+class SpawnTreeEntry(Result):
+    """``methods_session.py:2126`` index row or ``:2140`` legacy scan; no TS consumer."""
 
     path: str
-    session_id: str | None = None
-    started_at: float | None = None
-    finished_at: float | None = None
-    label: str = ""
-    count: int = 0
+    session_id: str
+    started_at: float | None
+    finished_at: float
+    label: str
+    count: int
 
 
 class SpawnTreeListResult(Result):
@@ -602,14 +627,14 @@ class SpawnTreeLoadParams(ProfileParams):
 
 
 class SpawnTreeLoadResult(Result):
-    """The snapshot file as written by ``spawn_tree.save`` (open: the file is the contract)."""
+    """``methods_session.py:2120`` writes this persisted snapshot; no TS consumer."""
 
-    session_id: str | None = None
-    started_at: float | None = None
-    finished_at: float | None = None
-    label: str | None = None
-    subagents: list[dict[str, JsonValue]] = Field(default_factory=list)
-    model_config = Result.model_config | {"extra": "allow"}
+    session_id: str
+    started_at: float | None
+    finished_at: float
+    label: str
+    # Delegation snapshots are persisted producer-owned JSON, not a gateway record.
+    subagents: list[JsonValue]
 
 
 method("spawn_tree.load", params=SpawnTreeLoadParams, result=SpawnTreeLoadResult,
@@ -635,8 +660,18 @@ class SessionEventsSinceParams(SessionParams):
     last_seen: int | None = None
 
 
+class ReplayedEventFrame(Result):
+    """``event_replay.py:100`` returns event-frame params; shared replay dispatches at
+    ``apps/shared/src/json-rpc-gateway.ts:504``. ``payload`` stays open because 67 event contracts own it."""
+
+    type: str
+    session_id: str
+    seq: int
+    payload: JsonValue
+
+
 class SessionEventsSinceResult(Result):
-    events: list[dict[str, JsonValue]]  # recorded event frames' ``params`` objects
+    events: list[ReplayedEventFrame]
     latest_seq: int
     truncated: bool
     count: int

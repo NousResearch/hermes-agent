@@ -478,6 +478,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+        # Use BODY.PEEK[] for IMAP FETCH so polling does not mark messages as read on the
+        # server (RFC822 sets \Seen). Opt back into the legacy behaviour with
+        #   platforms:
+        #     email:
+        #       imap_peek: false
+        self._imap_peek = is_truthy_value(extra.get("imap_peek"), default=True)
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -674,7 +680,7 @@ class EmailAdapter(BasePlatformAdapter):
             logger.warning("[Email] Could not mark rejected UID %s seen", uid)
 
     def _fetch_new_messages(self, preauthorize: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
-        """Fetch unseen messages; bounded headers pass *preauthorize* before RFC822 is requested."""
+        """Fetch unseen messages; bounded headers pass *preauthorize* before the body fetch is requested."""
         results = []
         try:
             with self._inbox() as imap:
@@ -699,7 +705,10 @@ class EmailAdapter(BasePlatformAdapter):
                     if not accepted:
                         self._mark_uid_consumed(imap, uid)
                         continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    # BODY.PEEK[] leaves the message UNSEEN on the server; the legacy RFC822 fetch
+                    # sets \Seen. (The header preflight above already uses BODY.PEEK on headers.)
+                    body_fetch = "(BODY.PEEK[])" if self._imap_peek else "(RFC822)"
+                    status, msg_data = imap.uid("fetch", uid, body_fetch)
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —

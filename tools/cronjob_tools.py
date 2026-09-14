@@ -1060,12 +1060,12 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
             },
             "catch_up": {
                 "type": "boolean",
-                "description": "Optional per-job stale-run policy. True runs one coalesced catch-up after the grace window; false skips to the next future occurrence. Omit to inherit cron.catch_up_missed."
+                "description": "Optional recurring-job stale-run policy. True runs one coalesced catch-up after the grace window; false skips to the next future occurrence. Omit to inherit cron.catch_up_missed. One-shot schedules reject this field."
             },
             "misfire_grace_seconds": {
                 "type": "integer",
                 "minimum": 0,
-                "description": "Optional per-job lateness grace in seconds. Omit to use half the cadence, clamped to 120 seconds–2 hours."
+                "description": "Optional recurring-job lateness grace in seconds. Omit to use half the cadence, clamped to 120 seconds–2 hours. One-shot schedules reject this field and keep their fixed 120-second grace."
             },
             "inherit_catch_up": {
                 "type": "boolean",

@@ -39,13 +39,13 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     create_catch_up = cron_create.add_mutually_exclusive_group()
     create_catch_up.add_argument(
         "--catch-up", dest="catch_up", action="store_true", default=None,
-        help="Run one coalesced occurrence after this job misses its grace window")
+        help="Recurring jobs only: run one coalesced occurrence after this job misses its grace window")
     create_catch_up.add_argument(
         "--skip-missed", dest="catch_up", action="store_false",
-        help="Skip stale occurrences for this job instead of running them late")
+        help="Recurring jobs only: skip stale occurrences instead of running them late")
     cron_create.add_argument(
         "--misfire-grace-seconds", type=int,
-        help="Per-job lateness grace; default derives from the schedule cadence")
+        help="Recurring jobs only: per-job lateness grace; default derives from cadence")
     cron_create.add_argument("--skill", dest="skills", action="append",
         help="Attach a skill. Repeat to add multiple skills.")
     cron_create.add_argument("--script",
@@ -108,17 +108,17 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     edit_catch_up = cron_edit.add_mutually_exclusive_group()
     edit_catch_up.add_argument(
         "--catch-up", dest="catch_up", action="store_true", default=None,
-        help="Run one coalesced occurrence after this job misses its grace window")
+        help="Recurring jobs only: run one coalesced occurrence after this job misses its grace window")
     edit_catch_up.add_argument(
         "--skip-missed", dest="catch_up", action="store_false",
-        help="Skip stale occurrences for this job instead of running them late")
+        help="Recurring jobs only: skip stale occurrences instead of running them late")
     edit_catch_up.add_argument(
         "--inherit-catch-up", action="store_true",
         help="Clear the per-job override and inherit cron.catch_up_missed")
     edit_grace = cron_edit.add_mutually_exclusive_group()
     edit_grace.add_argument(
         "--misfire-grace-seconds", type=int,
-        help="Set the per-job lateness grace in seconds")
+        help="Recurring jobs only: set the per-job lateness grace in seconds")
     edit_grace.add_argument(
         "--inherit-misfire-grace", action="store_true",
         help="Clear the per-job grace and derive it from the schedule cadence")

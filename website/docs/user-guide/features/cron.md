@@ -974,6 +974,10 @@ grace, action, and whether the job or global config supplied the policy. The leg
 run once; it does not count skipped occurrences or every slot in the collapsed
 backlog.
 
+These per-job controls apply to recurring schedules only. One-shot jobs always keep
+their fixed 120-second grace and reject catch-up or grace overrides when created or
+edited.
+
 ### Misfire catch-up
 
 When an external scheduler provider is active (managed cron on hosted deployments), the gateway also runs a catch-up sweep: a job whose scheduled time passed with no fire delivered — and whose grace window has elapsed — is claimed and run locally, so an outage in the fire hand-off costs minutes instead of the whole day. The sweep is de-duplicated against late scheduler retries by the same store claim used for normal fires.

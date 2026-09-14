@@ -1,4 +1,5 @@
 """The local missed-run policy preserves grace and manual triggers."""
+import threading
 from datetime import timedelta
 
 import pytest
@@ -144,3 +145,92 @@ def test_failed_claim_is_not_audited_and_restored_slot_records_once(tmp_path, mo
         assert jobs.get_catch_up_occurrence_count() == 1
         lines = audit_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1
+
+
+def test_concurrent_claimed_catchups_increment_counter_atomically(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with jobs.use_cron_store(tmp_path / "cron"):
+        first_write_entered = threading.Event()
+        release_first_write = threading.Event()
+        real_atomic_write = jobs.atomic_write_text
+        calls = 0
+
+        def delayed_atomic_write(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_write_entered.set()
+                assert release_first_write.wait(timeout=2)
+            return real_atomic_write(*args, **kwargs)
+
+        def record_claimed_catch_up():
+            with jobs.use_cron_store(tmp_path / "cron"):
+                assert jobs.record_claimed_misfire({"_count_catch_up_occurrence": True})
+
+        monkeypatch.setattr(jobs, "atomic_write_text", delayed_atomic_write)
+        first = threading.Thread(target=record_claimed_catch_up)
+        second = threading.Thread(target=record_claimed_catch_up)
+
+        first.start()
+        assert first_write_entered.wait(timeout=2)
+        second.start()
+        release_first_write.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert jobs.get_catch_up_occurrence_count() == 2
+
+
+def test_oneshot_rejects_misfire_overrides_and_reports_fixed_policy(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    run_at = (jobs._hermes_now() + timedelta(hours=1)).isoformat()
+    with jobs.use_cron_store(tmp_path / "cron"):
+        with pytest.raises(ValueError, match="only supported for recurring"):
+            jobs.create_job(prompt="once", schedule=run_at, catch_up=True)
+        with pytest.raises(ValueError, match="only supported for recurring"):
+            jobs.create_job(prompt="once", schedule=run_at, misfire_grace_seconds=3600)
+
+        legacy = jobs.create_job(prompt="legacy once", schedule=run_at)
+        legacy["catch_up"] = True
+        legacy["misfire_grace_seconds"] = 3600
+
+        assert jobs.resolve_job_misfire_policy(legacy) == {
+            "catch_up": False,
+            "catch_up_source": "one-shot",
+            "misfire_grace_seconds": jobs.ONESHOT_GRACE_SECONDS,
+            "misfire_grace_source": "one-shot",
+        }
+
+
+def test_schedule_edits_enforce_recurring_only_misfire_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    run_at = (jobs._hermes_now() + timedelta(hours=1)).isoformat()
+    with jobs.use_cron_store(tmp_path / "cron"):
+        recurring = jobs.create_job(
+            prompt="switch", schedule="every 1h", catch_up=False,
+            misfire_grace_seconds=60)
+
+        with pytest.raises(ValueError, match="only supported for recurring"):
+            jobs.update_job(recurring["id"], {"schedule": run_at})
+
+        switched = jobs.update_job(recurring["id"], {
+            "schedule": run_at,
+            "catch_up": None,
+            "misfire_grace_seconds": None,
+        })
+        assert switched["schedule"]["kind"] == "once"
+        assert "catch_up" not in switched
+        assert "misfire_grace_seconds" not in switched
+
+        with pytest.raises(ValueError, match="only supported for recurring"):
+            jobs.update_job(switched["id"], {"catch_up": True})
+
+        recurring_again = jobs.update_job(switched["id"], {
+            "schedule": "every 1h",
+            "catch_up": True,
+            "misfire_grace_seconds": 60,
+        })
+        assert recurring_again["catch_up"] is True
+        assert recurring_again["misfire_grace_seconds"] == 60

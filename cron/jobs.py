@@ -888,6 +888,13 @@ def _job_catches_up_missed(job: Dict[str, Any]) -> Tuple[bool, str]:
 
 def resolve_job_misfire_policy(job: Dict[str, Any]) -> Dict[str, Any]:
     """Return the effective per-job catch-up and grace values with their sources."""
+    if (job.get("schedule") or {}).get("kind") == "once":
+        return {
+            "catch_up": False,
+            "catch_up_source": "one-shot",
+            "misfire_grace_seconds": ONESHOT_GRACE_SECONDS,
+            "misfire_grace_source": "one-shot",
+        }
     catch_up, catch_up_source = _job_catches_up_missed(job)
     grace_override = job.get("misfire_grace_seconds")
     if isinstance(grace_override, int) and not isinstance(grace_override, bool) and grace_override >= 0:
@@ -1261,7 +1268,8 @@ def get_catch_up_occurrence_count() -> int:
 
 def record_catch_up_occurrence() -> None:
     """Increment the profile-local stale-schedule catch-up counter, best effort."""
-    _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")
+    with _jobs_lock():
+        _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")
 
 
 def record_ticker_error(message: str) -> None:
@@ -1653,6 +1661,17 @@ def _normalize_misfire_grace_seconds(value: Any) -> Optional[int]:
     return value
 
 
+def _validate_recurring_misfire_policy(
+    schedule: Dict[str, Any], catch_up: Optional[bool], misfire_grace_seconds: Optional[int],
+) -> None:
+    """Per-job catch-up controls apply only to schedules with future occurrences."""
+    if schedule.get("kind") != "once" or (catch_up is None and misfire_grace_seconds is None):
+        return
+    raise ValueError(
+        "catch_up and misfire_grace_seconds are only supported for recurring cron jobs; "
+        f"one-shot jobs always expire after {ONESHOT_GRACE_SECONDS}s.")
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
@@ -1821,6 +1840,8 @@ def create_job(
 
     raw = locals()
     f = {key: norm(raw[key]) for key, norm in _CREATE_FIELD_NORMALIZERS.items()}
+    _validate_recurring_misfire_policy(
+        parsed_schedule, f["catch_up"], f["misfire_grace_seconds"])
     normalized_skills = _normalize_skill_list(skill, skills)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
     normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
@@ -2064,6 +2085,10 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         for field in ("catch_up", "misfire_grace_seconds"):
             if field in updates and updates[field] is None:
                 updated.pop(field, None)
+        if {"schedule", "catch_up", "misfire_grace_seconds"}.intersection(updates):
+            _validate_recurring_misfire_policy(
+                updated.get("schedule") or {}, updated.get("catch_up"),
+                updated.get("misfire_grace_seconds"))
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):

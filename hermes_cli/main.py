@@ -2993,6 +2993,10 @@ def _run_oneshot_from_args(args) -> None:
     # oneshot exit path takes over, else the flags parse fine but silently do nothing
     # and the turn starts a fresh session (every wire request loses all history).
     _resolve_chat_session_args(args, use_tui=False)
+    if (os.environ.get("TERMINAL_ENV") or "local").strip().lower() == "local":
+        from hermes_cli.config import pin_local_cli_launch_cwd
+
+        pin_local_cli_launch_cwd(os.getcwd())
     _run_and_exit_oneshot(
         args.oneshot,
         model=getattr(args, "model", None),

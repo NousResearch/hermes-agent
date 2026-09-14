@@ -7,7 +7,9 @@ resolve "latest" through the same workspace-scoped MRU lookup as `-c`, with
 
 from __future__ import annotations
 
+import os
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
@@ -277,3 +279,84 @@ def test_in_dir_leaves_unset_terminal_cwd_unset(main_mod, monkeypatch, tmp_path)
     main_mod._apply_in_dir(_args(in_dir=str(target)))
 
     assert "TERMINAL_CWD" not in os.environ
+
+
+def _exercise_local_oneshot_cwd(main_mod, monkeypatch, tmp_path, *, configured_cwd, in_dir):
+    """Run the fast one-shot dispatch with real file/terminal tool cwd resolution."""
+    from hermes_cli import config as config_mod
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from tools import terminal_tool
+    from tools.file_tools_paths import _resolve_path_for_task
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        f"terminal:\n  backend: local\n  cwd: {configured_cwd}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_mod, "_LOCAL_CLI_LAUNCH_CWD", None)
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", False)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(configured_cwd))
+    monkeypatch.setattr(main_mod, "_confirm_startup_expensive_model_override", lambda _args: None)
+
+    captured = {}
+
+    def fake_run_and_exit(prompt, **_kwargs):
+        # Model/tool dispatch can load dotenv again inside the turn.
+        load_hermes_dotenv(hermes_home=home, load_external_secrets=False)
+        captured["terminal_cwd"] = terminal_tool._get_env_config()["cwd"]
+        captured["file_path"] = _resolve_path_for_task(
+            "cwd_contract.txt", task_id=f"cwd-{tmp_path.name}"
+        )
+
+    monkeypatch.setattr(main_mod, "_run_and_exit_oneshot", fake_run_and_exit)
+    args = Namespace(
+        continue_last=None,
+        in_dir=str(in_dir) if in_dir else None,
+        model=None,
+        no_restore_cwd=True,
+        oneshot="write the probe",
+        provider=None,
+        query=None,
+        reasoning=None,
+        resume=None,
+        skills=None,
+        toolsets="file,terminal",
+        usage_file=None,
+        worktree=False,
+    )
+    main_mod._run_oneshot_from_args(args)
+    return captured
+
+
+def test_local_oneshot_relative_write_uses_launch_cwd(main_mod, monkeypatch, tmp_path):
+    """terminal.cwd cannot displace a local one-shot launch directory."""
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+
+    captured = _exercise_local_oneshot_cwd(
+        main_mod, monkeypatch, tmp_path, configured_cwd=".", in_dir=None
+    )
+
+    assert captured["terminal_cwd"] == str(project)
+    assert captured["file_path"] == project / "cwd_contract.txt"
+
+
+def test_oneshot_in_dir_pins_file_and_terminal_tools(main_mod, monkeypatch, tmp_path):
+    """--in pins both tool surfaces to that directory."""
+    launch = tmp_path / "launch"
+    project = tmp_path / "project"
+    configured = tmp_path / "profile-cwd"
+    launch.mkdir()
+    project.mkdir()
+    configured.mkdir()
+    monkeypatch.chdir(launch)
+
+    captured = _exercise_local_oneshot_cwd(
+        main_mod, monkeypatch, tmp_path, configured_cwd=configured, in_dir=project
+    )
+
+    assert captured["terminal_cwd"] == str(project)
+    assert captured["file_path"] == project / "cwd_contract.txt"
+    assert captured["file_path"] != configured / "cwd_contract.txt"

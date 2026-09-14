@@ -2100,6 +2100,22 @@ TERMINAL_CONFIG_ENV_MAP = {
             "docker_persist_across_processes", "docker_shared_container_key",
             "docker_orphan_reaper", "sandbox_dir", "persistent_shell")}}
 
+# Local CLI/TUI startup deliberately chooses the process launch directory over
+# terminal.cwd. Keep that runtime decision separate from the configured value
+# so a later dotenv reload or terminal fallback bridge cannot revoke it.
+_LOCAL_CLI_LAUNCH_CWD: Optional[str] = None
+
+
+def pin_local_cli_launch_cwd(cwd: str) -> str:
+    """Make an existing local CLI/TUI launch directory authoritative for this process."""
+    resolved = os.path.abspath(os.path.expanduser(str(cwd)))
+    if not os.path.isdir(resolved):
+        raise ValueError(f"Local CLI launch directory does not exist: {cwd}")
+    global _LOCAL_CLI_LAUNCH_CWD
+    _LOCAL_CLI_LAUNCH_CWD = resolved
+    os.environ["TERMINAL_CWD"] = resolved
+    return resolved
+
 
 def _terminal_env_value(value: Any) -> str:
     return json.dumps(value) if isinstance(value, (list, dict)) else str(value)
@@ -2139,7 +2155,8 @@ def apply_terminal_config_to_env(
     ``tools.terminal_tool`` is environment-driven because it also runs in child processes (TUI,
     dashboard PTY, gateway workers); this gives those launch paths the same bridge as the CLI
     without importing ``cli.py``. Explicit keys in the user's raw ``terminal`` section override
-    matching env values; merged defaults only backfill missing env vars."""
+    matching env values; merged defaults only backfill missing env vars. A process-local CLI/TUI
+    launch pin remains authoritative when mutating this process's own environment."""
     target = os.environ if env is None else env
 
     raw_terminal_cfg = read_raw_config().get("terminal")
@@ -2172,6 +2189,8 @@ def apply_terminal_config_to_env(
                 value = os.path.expanduser(value)
         if (should_override and cfg_key in explicit_keys) or env_var not in target:
             target[env_var] = _terminal_env_value(value)
+    if env is None and _LOCAL_CLI_LAUNCH_CWD is not None:
+        target["TERMINAL_CWD"] = _LOCAL_CLI_LAUNCH_CWD
     return target
 
 

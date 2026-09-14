@@ -379,6 +379,14 @@ function SidebarSessionRowImpl({
         // Whichever one the release lands on is the one that commits.
         {...dragHandleProps}
         onPointerDown={event => {
+          // A modal dialog (e.g. Rename session) opens with a translucent
+          // backdrop, so the sortable session rows stay visually present behind
+          // it. A text-selection drag inside the dialog's input must never also
+          // start a row drag here — gate the row's drag activation while any
+          // dialog is open (mouse-side sibling of #83617's keyboard leak).
+          if (document.querySelector('[role="dialog"]')) {
+            return
+          }
           // The grabber already carries these same listeners, and the ⋯
           // cluster keeps its own gestures.
           if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {

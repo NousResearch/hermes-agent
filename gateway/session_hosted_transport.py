@@ -290,17 +290,16 @@ def _check_remote_hosted_admission(authority, ref, row):
         attested = _attest(binding, 'execute', params)
         if attested['owner'] != binding['owner']:
             raise ValueError('owner changed')
-        # Bytes are not re-transferred here: the durable row is compared against the
-        # payload the attested prompt, manifest and source-verified digests commit to.
-        from gateway.session_hosted_attachments import attested_submission_payload, verify_attested_documents
-        if row['payload'] != attested_submission_payload(
-                attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
+        from gateway.hosted_room_input_preparation import reconstruct_accepted_payload
+        rpc = SimpleNamespace(authority=authority, **binding['selector'])
+        if row['payload'] != reconstruct_accepted_payload(
+                rpc, attested['prompt'], attested['attachments'], row,
+                source_digests=attested.get('attachment_digests')):
             raise ValueError('input changed')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
     # Outside the permission_denied fold: a corrupted or missing retained document is a
     # storage fault of this destination, not a revoked source binding.
-    verify_attested_documents(attested['attachments'], attested.get('attachment_digests'))
     return True
 
 

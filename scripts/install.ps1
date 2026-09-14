@@ -884,39 +884,160 @@ function Ensure-NodeExeOnPath {
     return $true
 }
 
-# Put the Hermes-managed Node dir at the FRONT of the persisted User PATH.
+# Expose the Hermes-managed node/npm/npx to interactive shells WITHOUT
+# touching PATH.
 #
-# Appending is not enough: it leaves a pre-existing system Node ahead of the
-# bundled one in every new shell, so anything launched without a curated
-# environment (a standalone hermes-setup.exe run, a user typing `npm`) silently
-# resolves the wrong Node.  Bundled must win.
+# Shape parity with the POSIX installer: install.sh symlinks the managed
+# node/npm/npx into ~/.local/bin (a directory already on PATH for other
+# reasons); here the same three command names land as absolute-path .cmd
+# delegators in $HermesHome\bin -- the directory the hermes launcher already
+# lives in and that is already on the persisted User PATH.  One PATH entry,
+# shared by every Hermes-provided command, removable by deleting files --
+# the managed Node tree itself is never registered anywhere.
 #
-# Move-to-front rather than add-if-missing, because installs made by an older
-# install.ps1 already have this dir in User PATH -- at the tail.  An
-# add-if-missing check sees it present and leaves the broken ordering in place
-# forever, so the very users the ordering bug hurt would never be repaired.
+# Absolute paths (not %~dp0-relative): a shim in $HermesHome\bin must keep
+# working even if a future layout moves it, and npm.cmd's internal
+# self-location logic is bypassed entirely by calling the managed tree's
+# shims by full path.  `call` preserves npm/npx exit codes through the
+# batch delegation; plain invocation would not.
 #
-# Unrelated entries keep their relative order, including empty segments (a
-# trailing ';' is legal and common in a real User PATH; Install-Git's splitting
-# preserves them too, so this must not quietly rewrite them).  Duplicate
-# occurrences of the managed dir collapse into the single leading entry.
-# PowerShell's -ne is case-insensitive for strings, which is the right
-# comparison on Windows.  Persists only when the resulting string differs, so
-# an already-correct PATH costs one registry read and no write.
-function Set-ManagedNodeFirstOnUserPath {
+# .cmd rather than .ps1: batch files run regardless of execution policy
+# (see Install-NodeDeps for the same reasoning), and work identically from
+# cmd.exe and PowerShell.
+function Install-ManagedNodeShims {
+    param(
+        [string]$NodeDir,
+        [string]$Destination
+    )
+
+    if (-not $NodeDir) { return }
+
+    # -NoVenv installs keep the managed tree private.  The only PATH entry in
+    # that layout is the checkout root itself, and hosting shims there would
+    # (a) put untracked files inside the git working tree -- swept by `hermes
+    # update`'s autostash (git stash push --include-untracked), the exact bug
+    # class that moved the hermes launchers out of the checkout -- and (b)
+    # shadow the user's own node/npm/npx from a directory they never opted
+    # into.  Internals reach the tree by absolute path; Install-NodeDeps
+    # probes it directly (see its managed-tree fallback).
+    if ($NoVenv) { return }
+
+    if (-not $Destination) {
+        # Same destination rule as Set-PathVariable's $hermesBin.
+        $Destination = "$HermesHome\bin"
+    }
+
+    # HERMES_NODE_SKIP_LINKS=1: keep the Hermes-managed Node tree private.
+    # The user asked for a managed runtime usable by Hermes internals only --
+    # no node/npm/npx shims, no PATH changes -- so a toolchain of their own
+    # (nvm-windows, fnm, a normal Node install) keeps ownership of the
+    # `node`/`npm`/`npx` names in their shells. The tree remains reachable by
+    # absolute path for Hermes-internal use.  Also remove any shims a previous
+    # non-private install left behind, so the flag keeps working when it is
+    # set AFTER the fact -- the very users this escape hatch exists for.
+    if ($env:HERMES_NODE_SKIP_LINKS -eq "1") {
+        Remove-Item (Join-Path $Destination "node.cmd"), `
+                    (Join-Path $Destination "npm.cmd"), `
+                    (Join-Path $Destination "npx.cmd") -ErrorAction SilentlyContinue
+        return
+    }
+
+    # The shims must point at a real tree.  When the user already has a
+    # suitable node of their own, Test-Node never provisions a managed tree
+    # (and Set-PathVariable runs unconditionally) -- writing delegators to a
+    # nonexistent node.exe would shadow the user's toolchain with dead files
+    # in every new shell, which is exactly the class of interference this
+    # change exists to remove.
+    if (-not (Test-Path "$NodeDir\node.exe")) { return }
+
+    try {
+        New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    } catch {
+        Write-Warn "Could not create shim directory ${Destination}: $($_.Exception.Message)"
+        return
+    }
+
+    foreach ($pair in @(
+        @{ Name = "node.cmd"; Target = "$NodeDir\node.exe"; Call = $false },
+        @{ Name = "npm.cmd";  Target = "$NodeDir\npm.cmd";  Call = $true },
+        @{ Name = "npx.cmd";  Target = "$NodeDir\npx.cmd";  Call = $true }
+    )) {
+        $prefix = if ($pair.Call) { "call " } else { "" }
+        $body = "@echo off`r`n$prefix`"$($pair.Target)`" %*"
+        try {
+            Set-Content -Path (Join-Path $Destination $pair.Name) -Value $body -Encoding Ascii
+        } catch {
+            Write-Warn "Could not write $($pair.Name) shim: $($_.Exception.Message)"
+        }
+    }
+
+    # Make sure the shim directory is reachable in FRESH processes.  In the
+    # common case it already is: Set-PathVariable registered $HermesHome\bin
+    # (or a previous install did).  But Test-Node can also run BEFORE
+    # Set-PathVariable -- notably in cross-process stage-driver mode
+    # (Hermes-Setup.exe), where Stage-Node and Stage-Path are separate
+    # powershell.exe processes and a later stage re-reads User PATH from the
+    # registry to find npm (Install-NodeDeps' Get-Command probe).  Registering
+    # the shared bin dir here, if missing, keeps that contract intact without
+    # ever registering the Node tree itself.  Idempotent: no write when the
+    # directory is already present.
+    Add-DirToUserPathIfMissing -Dir $Destination
+}
+
+# Prepend one directory to the persisted User PATH unless already present
+# (case-insensitively, ignoring a trailing separator).  Single-entry helper
+# shared by the shim flow; unrelated entries are never reordered or rewritten,
+# and nothing is persisted when the directory is already there.
+function Add-DirToUserPathIfMissing {
+    param([string]$Dir)
+
+    if (-not $Dir) { return }
+
+    $persisted = [Environment]::GetEnvironmentVariable("Path", "User")
+    $present = @((($persisted -split ";") | Where-Object { $_ }) |
+        Where-Object { $_.TrimEnd('\') -ieq $Dir.TrimEnd('\') })
+    if ($present) { return }
+
+    # No trailing empty segment when the User PATH is empty/unset: "$Dir;"
+    # is legal but dirty, and the migration's split would leave a phantom
+    # entry for every future read.
+    $joined = if ($persisted) { "$Dir;$persisted" } else { "$Dir" }
+    [Environment]::SetEnvironmentVariable("Path", $joined, "User")
+}
+
+# Remove the managed Node dir from the persisted User PATH.
+#
+# Migration for installs made before the shims change: those registered
+# %LOCALAPPDATA%\hermes\node itself as a User PATH entry and moved it to the
+# front, silently overriding the user's own node/npm selection in every new
+# shell (and still losing to Machine-PATH system Nodes, so the override did
+# not even achieve its goal consistently).  With shims exposing the managed
+# toolchain, the raw directory entry is pure interference and comes off.
+#
+# Removal only -- unrelated entries keep their relative order, including
+# empty segments (a trailing ';' is legal and common; Install-Git's splitting
+# preserves them too).  PowerShell's -ne is case-insensitive for strings,
+# which is the right comparison on Windows.  Persists only when something was
+# actually removed, so an already-clean PATH costs one registry read and no
+# write.
+function Remove-ManagedNodeFromUserPath {
     param([string]$NodeDir)
 
     if (-not $NodeDir) { return }
 
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $items = if ($userPath) { @($userPath -split ";") } else { @() }
+    if (-not $userPath) { return }
 
-    $rest = @($items | Where-Object { $_ -ne $NodeDir })
-    $updated = (@($NodeDir) + $rest) -join ";"
+    $items = @($userPath -split ";")
+    # Trim a trailing separator before comparing (the legacy writer never
+    # wrote one, but users edit User PATH in the GUI and trailing backslashes
+    # are common there); -ne is already case-insensitive, which is the right
+    # comparison on Windows.  Non-matching entries are kept verbatim.
+    $nodeDirNorm = $NodeDir.TrimEnd('\')
+    $kept = @($items | Where-Object { $_.TrimEnd('\') -ne $nodeDirNorm })
+    if ($kept.Count -eq $items.Count) { return }
 
-    if ($updated -ne $userPath) {
-        [Environment]::SetEnvironmentVariable("Path", $updated, "User")
-    }
+    [Environment]::SetEnvironmentVariable("Path", ($kept -join ";"), "User")
 }
 
 # The npm range to install into the managed Node tree.  Prefers the checkout's
@@ -1744,7 +1865,7 @@ function Test-Node {
     if ((Test-Path $managedNode) -and (Test-NodeVersionOk (& $managedNode --version))) {
         $version = & $managedNode --version
         $env:Path = "$HermesHome\node;$env:Path"
-        Set-ManagedNodeFirstOnUserPath "$HermesHome\node"
+        Install-ManagedNodeShims -NodeDir "$HermesHome\node"
         Write-Success "Node.js $version found (Hermes-managed)"
         # A tree from an older install still has that Node major's bundled
         # npm, which is below the current engines.npm floor. No-ops when the
@@ -1858,12 +1979,12 @@ function Test-Node {
                 # Session PATH so the rest of this run sees node/npm.
                 $env:Path = "$HermesHome\node;$env:Path"
 
-                # Persist to User PATH so fresh shells (and future stages
-                # in cross-process driver mode) see it.  Matches the
-                # pattern Install-Git uses for PortableGit.  See
-                # Set-ManagedNodeFirstOnUserPath for why this is a
-                # move-to-front and not an add-if-missing.
-                Set-ManagedNodeFirstOnUserPath "$HermesHome\node"
+                # Expose node/npm/npx to fresh shells via shims in the
+                # already-registered $HermesHome\bin -- no new PATH entry,
+                # no registry write.  See Install-ManagedNodeShims for why
+                # this replaces the old move-the-directory-itself-to-front
+                # User PATH registration.
+                Install-ManagedNodeShims -NodeDir "$HermesHome\node"
 
                 $version = & "$HermesHome\node\node.exe" --version
                 Write-Success "Node.js $version installed to $HermesHome\node\ (portable, user-scoped)"
@@ -3242,6 +3363,30 @@ function Set-PathVariable {
     } else {
         Write-Info "PATH already configured"
     }
+
+    # The managed Node tree is exposed through shims in $hermesBin, not
+    # through its own PATH entry.  Migrate installs made by older installers,
+    # which registered %LOCALAPPDATA%\hermes\node itself in User PATH --
+    # removing it restores the user's own node/npm selection in new shells.
+    Remove-ManagedNodeFromUserPath "$HermesHome\node"
+
+    # Refresh/repair the shims every run (idempotent): a managed Node upgrade
+    # swaps the tree underneath them, so stale absolute paths must be
+    # rewritten.  Only when the managed tree actually exists -- when the user
+    # has a suitable node of their own, Test-Node never provisions one, and
+    # writing delegators to a nonexistent node.exe would shadow their
+    # toolchain with dead files in every new shell.  When the tree is gone
+    # (user switched to their own toolchain), drop any shims left behind.
+    if (-not $NoVenv) {
+        if (Test-Path "$HermesHome\node\node.exe") {
+            Install-ManagedNodeShims -NodeDir "$HermesHome\node" -Destination $hermesBin
+            Write-Success "node/npm/npx available via shims in $hermesBin"
+        } else {
+            Remove-Item (Join-Path $hermesBin "node.cmd"), `
+                        (Join-Path $hermesBin "npm.cmd"), `
+                        (Join-Path $hermesBin "npx.cmd") -ErrorAction SilentlyContinue
+        }
+    }
     
     # Set HERMES_HOME so the Python code finds config/data in the right place.
     # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
@@ -3438,13 +3583,24 @@ You are Hermes Agent, built by Nous Research. Be direct: match the length of you
 }
 
 function Install-NodeDeps {
+    # In cross-process driver mode (Hermes-Setup.exe runs each -Stage NAME in
+    # a fresh powershell.exe), a private-only provision (HERMES_NODE_SKIP_LINKS=1
+    # or -NoVenv) leaves the managed tree off the persisted User PATH, so a
+    # registry-refreshed process cannot find npm via Get-Command.  Probe the
+    # managed tree by absolute path as a fallback -- the same programmatic
+    # resolution the Python side uses (find_node_executable /
+    # iter_hermes_node_dirs).
+    $managedNpm = "$HermesHome\node\npm.cmd"
+    $hasManagedNpm = (Test-Path $managedNpm)
+
     if (-not $HasNode) {
         # Cross-process driver mode (Hermes-Setup.exe runs each -Stage NAME
         # in a fresh powershell.exe) means $script:HasNode set by Stage-Node
         # in the previous process isn't visible here. Re-probe rather than
         # trust the stale global -- Stage-Node already ran successfully or
-        # the bootstrap would've aborted, so npm is reachable.
-        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        # the bootstrap would've aborted, so npm is reachable (managed tree
+        # by absolute path, or the user's own npm on PATH).
+        if (-not ($hasManagedNpm -or (Get-Command npm -ErrorAction SilentlyContinue))) {
             Write-Info "Skipping Node.js dependencies (Node not installed)"
             return
         }
@@ -3467,21 +3623,30 @@ function Install-NodeDeps {
     # it exists in the same directory.  Fall back to whatever Get-Command
     # returned if we can't find a .cmd sibling.
     $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
-    if (-not $npmCmd) {
+    if ($npmCmd) {
+        $npmExe = $npmCmd.Source
+        if ($npmExe -like "*.ps1") {
+            $npmCmdSibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
+            if (Test-Path $npmCmdSibling) {
+                Write-Info "Using npm.cmd (PowerShell execution policy blocks npm.ps1)"
+                $npmExe = $npmCmdSibling
+            } else {
+                Write-Warn "Only npm.ps1 available -- install may fail if script execution is disabled."
+                Write-Info "  If it fails, either enable PS script execution or install Node via winget."
+            }
+        }
+    } elseif ($hasManagedNpm) {
+        # Private-only provision (skip-links / NoVenv) in cross-process mode:
+        # the managed tree is off the persisted PATH, so resolve it directly
+        # and put its dir on the session PATH for npm lifecycle scripts
+        # (#48130).  Only reached when PATH offered no npm at all -- the
+        # user's own toolchain is preferred whenever it is present.
+        $npmExe = $managedNpm
+        $env:Path = "$HermesHome\node;$env:Path"
+    } else {
         Write-Warn "npm not found on PATH -- skipping Node.js dependencies."
         Write-Info "Open a new PowerShell window and re-run 'hermes setup tools' later."
         return
-    }
-    $npmExe = $npmCmd.Source
-    if ($npmExe -like "*.ps1") {
-        $npmCmdSibling = Join-Path (Split-Path $npmExe -Parent) "npm.cmd"
-        if (Test-Path $npmCmdSibling) {
-            Write-Info "Using npm.cmd (PowerShell execution policy blocks npm.ps1)"
-            $npmExe = $npmCmdSibling
-        } else {
-            Write-Warn "Only npm.ps1 available -- install may fail if script execution is disabled."
-            Write-Info "  If it fails, either enable PS script execution or install Node via winget."
-        }
     }
 
     # Wall-clock ceiling for each npm / Playwright invocation in this stage.

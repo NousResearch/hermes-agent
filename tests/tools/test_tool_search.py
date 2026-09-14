@@ -988,3 +988,48 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+
+    @pytest.mark.parametrize("key", ["issue_class_neq", "issue_class~neq"])
+    def test_renamed_required_argument_dispatches(self, key):
+        import model_tools
+        from tools.tool_search_validation import validate_deferred_call_args
+
+        calls = []
+        name, toolset = "mcp_probe_renamed_required", "mcp-probe-renamed"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"issue_class~neq": {"type": "string"}, "limit": {"type": "integer"}},
+            "required": ["issue_class~neq", "limit"],
+        }, calls)
+        arguments = {key: "bug", "limit": "2"}
+        assert validate_deferred_call_args(name, arguments) is None
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call", function_args={"name": name, "arguments": arguments},
+            enabled_toolsets=[toolset]))
+        assert result["ok"] is True
+        assert calls == [{"issue_class~neq": "bug", "limit": 2}]
+
+    def test_renamed_required_errors_use_model_schema_without_dispatch(self):
+        import model_tools
+
+        calls = []
+        name, toolset = "mcp_probe_renamed_missing", "mcp-probe-renamed-missing"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {"issue_class~neq": {"type": "string", "enum": ["bug"]}},
+            "required": ["issue_class~neq"],
+        }, calls)
+        for arguments in ({}, {"issue_class_neq": "invalid"}):
+            result = json.loads(model_tools.handle_function_call(
+                function_name="tool_call", function_args={"name": name, "arguments": arguments},
+                enabled_toolsets=[toolset]))
+            assert "NOT invoked" in result["error"]
+            assert "issue_class_neq" in result["parameters"]["properties"]
+            assert result["parameters"]["required"] == ["issue_class_neq"]
+            if not arguments:
+                assert "issue_class_neq" in result["error"]
+            else:
+                assert result["path"] == "arguments.issue_class_neq"
+                assert "arguments.issue_class_neq" in result["error"]
+            assert not calls

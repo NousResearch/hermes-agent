@@ -68,6 +68,66 @@ export function collapseModelFamilies(models: readonly string[]): ModelFamily[] 
   return families
 }
 
+/** Upstream vendor prefix of a router-proxy model id, lowercased. Aggregator
+ *  providers (a user provider pointed at a router like 9router) expose every
+ *  model as `<upstream>/<model>` — `griph/deepseek-v4-flash`. The first path
+ *  segment is the upstream, which is what actually distinguishes two
+ *  identically-named models. Single-namespace providers return ''. */
+export function modelVendorPrefix(model: string): string {
+  const trimmed = model.trim()
+  const slash = trimmed.indexOf('/')
+
+  if (slash <= 0 || slash === trimmed.length - 1) {
+    return ''
+  }
+
+  return trimmed.slice(0, slash).toLowerCase()
+}
+
+/** Whether a provider's model list spans more than one upstream vendor prefix.
+ *  Only then do per-vendor sub-headers earn their space; a normal provider
+ *  keeps its flat list. */
+export function isMultiVendorProvider(models: readonly string[]): boolean {
+  const prefixes = new Set<string>()
+
+  for (const model of models) {
+    const prefix = modelVendorPrefix(model)
+
+    if (prefix) {
+      prefixes.add(prefix)
+    }
+
+    if (prefixes.size > 1) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/** Split an ordered family list into consecutive runs sharing an upstream
+ *  vendor prefix, so each vendor's models cluster under one header without
+ *  reordering the families the user already sees. Models with no prefix
+ *  (`''`) get their own unlabeled run. */
+export function splitFamiliesByPrefix(
+  families: readonly ModelFamily[]
+): Array<{ families: ModelFamily[]; prefix: string }> {
+  const groups: Array<{ families: ModelFamily[]; prefix: string }> = []
+
+  for (const family of families) {
+    const prefix = modelVendorPrefix(family.id)
+    const last = groups[groups.length - 1]
+
+    if (last && last.prefix === prefix) {
+      last.families.push(family)
+    } else {
+      groups.push({ families: [family], prefix })
+    }
+  }
+
+  return groups
+}
+
 function loadVisible(): Set<string> | null {
   const raw = storedString(STORAGE_KEY)
 

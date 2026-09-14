@@ -207,7 +207,12 @@ def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(atte
     assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # no marker yet
 
     marker.parent.mkdir(exist_ok=True)
-    for malformed in ('{"pids": null}', '{"pids": 555}', '["not", "a", "dict"]', "not json"):
+    # Exact positive ints only: ``True`` is an int subclass, 0/-1 are not PIDs, and a single
+    # malformed item taints the list (the writer never emits such values).
+    for malformed in (
+        '{"pids": null}', '{"pids": 555}', '["not", "a", "dict"]', "not json",
+        '{"pids": [true]}', '{"pids": [0]}', '{"pids": [-1]}', '{"pids": [555, "556"]}', '{"pids": [555, 0]}',
+    ):
         marker.write_text(malformed, encoding="utf-8")
         assert gateway_windows.attested_gateway_died(current_pids=[]) is False, malformed
 

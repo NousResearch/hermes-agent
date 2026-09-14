@@ -903,9 +903,11 @@ def _attested_pids_from(data: object) -> list[int]:
         return []
     pids = data.get("pids")
     # Fail closed: a null/malformed marker must never authorize a cold start (or raise on iteration).
-    if not isinstance(pids, list):
+    # Exact positive ints only — ``isinstance(True, int)`` holds, and 0 / negatives are not PIDs; one
+    # bad item taints the whole list because the writer never emits such values.
+    if not isinstance(pids, list) or not all(type(p) is int and p > 0 for p in pids):
         return []
-    return [p for p in pids if isinstance(p, int)]
+    return list(pids)
 
 
 def _attested_pid_exited_cleanly(pid: int) -> bool:

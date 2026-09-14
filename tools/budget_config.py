@@ -1,10 +1,13 @@
 """Configurable budget constants for tool result persistence.
 Per-tool resolution: pinned > config overrides > registry > default."""
 
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from typing import Dict
 
 from agent.model_metadata import CHARS_PER_TOKEN
+
+_INT_STR_PATTERN = re.compile(r"^[+-]?\d+$")
 
 # Never overridden; read_file=inf prevents infinite persist->read->persist loops.
 PINNED_THRESHOLDS: Dict[str, float] = {"read_file": float("inf")}
@@ -112,3 +115,48 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
         preview_size=DEFAULT_PREVIEW_SIZE_CHARS,
         mcp_result_size=mcp_result_size,
     )
+
+
+def normalize_persist_threshold(value) -> int | None:
+    """Validate an explicit ``tools.tool_result_persist_threshold_chars`` value, returning
+    a positive int or ``None`` for "unset". Single source of truth for ``agent_init``
+    (config parsing), ``budget_with_persist_threshold`` (factory) and ``_budget_for_agent``
+    (programmatic access) so accept/reject rules cannot drift between layers.
+
+    Only non-``bool`` ints and whole-number strings are accepted. ``bool`` is rejected even
+    when set programmatically because it is an int subclass, so ``int(True) == 1`` would
+    silently persist almost every tool result. Other numeric types are rejected because
+    ``int(1.5)``, ``int(Decimal("1.5"))`` and ``int(Fraction(3, 2))`` all truncate to 1 --
+    the same near-universal threshold. Non-positive values mean "unset", never a clamp to 1.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        n = value
+    elif isinstance(value, str):
+        if not _INT_STR_PATTERN.match(value.strip()):
+            return None
+        try:
+            n = int(value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    return n if n > 0 else None
+
+
+def budget_with_persist_threshold(threshold_chars, context_length: int | None = None) -> BudgetConfig:
+    """Return the context-scaled budget with its per-result threshold replaced by an explicit
+    user-configured value. Only ``default_result_size`` is overridden -- the small-window
+    turn budget still applies, so a 0/negative/invalid value must not reset it to the 200K default.
+
+    Values rejected by ``normalize_persist_threshold`` are treated as unset and return the
+    context-scaled budget unchanged. ``resolve_threshold`` still applies ``PINNED_THRESHOLDS``
+    (read_file stays exempt) and caps the registry and MCP values at ``default_result_size``, so a
+    smaller explicit value always wins while a larger one is bounded by what the tool registers.
+    """
+    base = budget_for_context_window(context_length)
+    normalized = normalize_persist_threshold(threshold_chars)
+    if normalized is None:
+        return base
+    return replace(base, default_result_size=normalized)

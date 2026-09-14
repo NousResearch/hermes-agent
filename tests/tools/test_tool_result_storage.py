@@ -483,3 +483,40 @@ class TestRecoveryHint:
         assert msg.startswith(PERSISTED_OUTPUT_TAG)
         assert msg.endswith(PERSISTED_OUTPUT_CLOSING_TAG)
         assert "read_file" in msg
+
+
+class TestMaybePersistToolResultConfigDriven:
+    """maybe_persist_tool_result honors BudgetConfig.default_result_size
+    (the tools.tool_result_persist_threshold_chars path) without needing an
+    explicit ``threshold`` argument."""
+
+    def test_config_threshold_triggers_persist(self):
+        from tools.budget_config import budget_with_persist_threshold
+
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        cfg = budget_with_persist_threshold(10_000)
+        content = "y" * 40_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_cfg_1",
+            env=env,
+            config=cfg,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        env.execute.assert_called_once()
+
+    def test_config_threshold_below_result_keeps_inline(self):
+        from tools.budget_config import budget_with_persist_threshold
+
+        cfg = budget_with_persist_threshold(100_000)
+        content = "small-ish " * 500  # ~5K chars < 100K
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_cfg_2",
+            env=None,
+            config=cfg,
+        )
+        assert result == content

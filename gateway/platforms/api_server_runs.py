@@ -641,7 +641,10 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         else:
             # Undelivered steer text rides on the terminal event/status for client replay.
             extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
-            _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
+            turn_messages = self._turn_transcript_messages(
+                run.conversation_history, run.user_message, result) if isinstance(result, dict) else []
+            _finish("completed", extra, output=result.get("final_response", ""),
+                    messages=turn_messages, usage=usage)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise

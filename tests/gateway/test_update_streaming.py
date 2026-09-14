@@ -9,6 +9,7 @@ Tests the new --gateway mode for hermes update, including:
 
 import json
 import os
+import sys
 import time
 import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -151,13 +152,20 @@ class TestUpdateCommandGatewayFlag:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Check the bash command string contains --gateway and PYTHONUNBUFFERED
+        # Windows spawns `python -c <helper> … update --gateway` (PYTHONUNBUFFERED
+        # lives in the helper); POSIX uses a bash -c string. Inspect the whole
+        # argv, not just the last token.
         call_args = mock_popen.call_args[0][0]
-        cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
-        assert "--gateway" in cmd_string
-        assert "PYTHONUNBUFFERED" in cmd_string
-        assert "rc=$?" in cmd_string
-        assert "status=$?" not in cmd_string
+        joined = (
+            " ".join(str(a) for a in call_args)
+            if isinstance(call_args, list)
+            else str(call_args)
+        )
+        assert "--gateway" in joined
+        assert "PYTHONUNBUFFERED" in joined
+        if sys.platform != "win32":
+            assert "rc=$?" in joined
+            assert "status=$?" not in joined
         assert "stream progress" in result
 
 
@@ -168,6 +176,17 @@ class TestUpdateCommandGatewayFlag:
 
 class TestWatchUpdateProgress:
     """Tests for _watch_update_progress() streaming output."""
+
+    def test_default_timeout_covers_a_full_windows_update(self):
+        """Watcher must outlast npm + Electron, matching the spawn helper."""
+        import inspect
+
+        from gateway.run import GatewayRunner
+
+        default = inspect.signature(
+            GatewayRunner._watch_update_progress
+        ).parameters["timeout"].default
+        assert default >= 3600
 
     @pytest.mark.asyncio
     async def test_streams_output_to_adapter(self, tmp_path):

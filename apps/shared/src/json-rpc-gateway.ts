@@ -513,6 +513,11 @@ export class JsonRpcGatewayClient {
           this.replayEpoch = epoch
         }
 
+        for (const event of result.value.events) {
+          // SAFETY: session.events.since returns backend-validated event envelopes.
+          // @ts-expect-error gateway-contract.generated.ts is regenerated with typed event envelopes in Wave C.
+          this.dispatchIfNewer(event as GatewayEvent)
+        }
       }
     } catch {
       // Replay is an optimization over lossy-reconnect; never surface errors.

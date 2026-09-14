@@ -26,6 +26,11 @@ from hermes_time import now as _hermes_now
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
+# Upper bound on how long a recorded, live handoff successor is exempted from recovery.
+# Liveness alone cannot be trusted indefinitely: the successor may be alive but hung
+# before ever reaching adopt_claimed_execution(), in which case the execution must
+# still eventually recover instead of staying claimed forever.
+HANDOFF_WORKER_ADOPTION_GRACE_SECONDS = 300.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
@@ -72,6 +77,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     add_column_if_missing(
         conn, "executions", "handoff_worker_started_at",
         "handoff_worker_started_at INTEGER",
+    )
+    add_column_if_missing(
+        conn, "executions", "handoff_worker_recorded_at",
+        "handoff_worker_recorded_at REAL",
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_executions_job_claimed "
@@ -207,9 +216,10 @@ def record_handoff_worker(
     with _transaction() as conn:
         cur = conn.execute(
             """UPDATE executions
-               SET handoff_worker_pid=?, handoff_worker_started_at=?
+               SET handoff_worker_pid=?, handoff_worker_started_at=?,
+                   handoff_worker_recorded_at=?
                WHERE id=? AND status='claimed' AND handoff_pending=1""",
-            (pid, process_started_at, execution_id),
+            (pid, process_started_at, time.time(), execution_id),
         )
         if cur.rowcount != 1:
             return None
@@ -296,7 +306,8 @@ def recover_interrupted_executions() -> int:
         rows = conn.execute(
             """SELECT id, status, process_id, pid, process_started_at,
                       handoff_pending, handoff_started_at,
-                      handoff_worker_pid, handoff_worker_started_at
+                      handoff_worker_pid, handoff_worker_started_at,
+                      handoff_worker_recorded_at
                FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
@@ -317,9 +328,16 @@ def recover_interrupted_executions() -> int:
             # restart-safe successor recorded its pid before it died: as long as
             # that successor is still starting up, terminalizing now would strand
             # its later adopt_claimed_execution() call with nothing left to adopt.
+            # That exemption is itself bounded — a successor that is alive but
+            # hung before ever reaching adopt_claimed_execution() must not stall
+            # recovery forever.
+            handoff_worker_recorded_at = row["handoff_worker_recorded_at"]
             if (
                 row["handoff_pending"]
                 and row["handoff_worker_pid"] is not None
+                and handoff_worker_recorded_at is not None
+                and time.time() - float(handoff_worker_recorded_at)
+                < HANDOFF_WORKER_ADOPTION_GRACE_SECONDS
                 and _owner_is_live(
                     int(row["handoff_worker_pid"]), row["handoff_worker_started_at"]
                 )
@@ -329,18 +347,21 @@ def recover_interrupted_executions() -> int:
                 """UPDATE executions
                    SET status='unknown', finished_at=?, error=?,
                        handoff_pending=0, handoff_started_at=NULL,
-                       handoff_worker_pid=NULL, handoff_worker_started_at=NULL
+                       handoff_worker_pid=NULL, handoff_worker_started_at=NULL,
+                       handoff_worker_recorded_at=NULL
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
                      AND handoff_started_at IS ?
                      AND handoff_worker_pid IS ?
-                     AND handoff_worker_started_at IS ?""",
+                     AND handoff_worker_started_at IS ?
+                     AND handoff_worker_recorded_at IS ?""",
                 (now,
                  "Scheduler restarted after this execution's owner exited before a durable "
                  "terminal state; whether side effects ran is unknown.",
                  row["id"], row["status"], row["process_id"], row["pid"],
                  row["handoff_pending"], row["handoff_started_at"],
-                 row["handoff_worker_pid"], row["handoff_worker_started_at"]),
+                 row["handoff_worker_pid"], row["handoff_worker_started_at"],
+                 handoff_worker_recorded_at),
             )
             changed += cur.rowcount
             if cur.rowcount:

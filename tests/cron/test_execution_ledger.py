@@ -115,6 +115,36 @@ def test_live_handoff_worker_survives_stale_owner_recovery(monkeypatch, tmp_path
     assert adopted["status"] == "running"
 
 
+def test_hung_handoff_worker_still_recovers_after_worker_grace_expires(monkeypatch, tmp_path):
+    """A recorded successor that stays alive but never calls adopt_claimed_execution() must
+    not exempt the execution from recovery forever: liveness alone is not proof it will ever
+    adopt, so the exemption is bounded by HANDOFF_WORKER_ADOPTION_GRACE_SECONDS."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("hung-handoff-job", source="builtin")
+    pending = executions.mark_execution_handoff_pending(record["id"])
+    assert pending is not None
+    recorded = executions.record_handoff_worker(record["id"], 4242, 9876)
+    assert recorded is not None
+
+    monkeypatch.setattr(executions, "_PROCESS_ID", "replacement-gateway")
+    monkeypatch.setattr(executions, "_owner_is_live", lambda pid, _started: pid == 4242)
+    monkeypatch.setattr(
+        executions.time,
+        "time",
+        lambda: recorded["handoff_worker_recorded_at"]
+        + executions.HANDOFF_WORKER_ADOPTION_GRACE_SECONDS
+        + 1,
+    )
+
+    assert executions.recover_interrupted_executions() == 1
+    recovered = executions.get_execution(record["id"])
+    assert recovered["status"] == "unknown"
+    assert recovered["handoff_pending"] == 0
+    assert recovered["handoff_worker_pid"] is None
+    assert recovered["handoff_worker_started_at"] is None
+    assert recovered["handoff_worker_recorded_at"] is None
+
+
 def test_recovery_does_not_overwrite_concurrent_worker_adoption(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("adoption-race", source="builtin")

@@ -177,6 +177,11 @@ _REGISTRATION_KINDS = {
 }
 
 
+# Directories excluded from capability scanning: test fixtures and maintenance
+# scripts register tools/hooks that the plugin itself never uses at runtime.
+_EXCLUDED_SCAN_DIRS = frozenset({".git", ".venv", "venv", "__pycache__", "test", "tests", "_test", "_tests"})
+
+
 def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
     """Inspect literal registration calls without running candidate code.
 
@@ -187,7 +192,7 @@ def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
     entry = plugin_dir / "__init__.py"
     has_register = False
     for path in sorted(plugin_dir.rglob("*.py")):
-        if any(part in {".git", ".venv", "venv", "__pycache__"} for part in path.relative_to(plugin_dir).parts):
+        if any(part in _EXCLUDED_SCAN_DIRS for part in path.relative_to(plugin_dir).parts):
             continue
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -195,10 +200,15 @@ def _scan_capabilities(plugin_dir: Path) -> Tuple[Optional[dict], str]:
             return None, f"cannot parse plugin Python: {exc}"
         if path == entry:
             for node in tree.body:
+                # Accept register() defined directly OR re-exported via
+                # `from .impl import register` (an ImportFrom whose only
+                # name is "register" aliases it into this module's namespace).
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "register":
                     has_register = True
                     if any(isinstance(statement, ast.Raise) for statement in node.body):
                         return None, "register() contains an unconditional raise"
+                if isinstance(node, ast.ImportFrom) and any(alias.name == "register" for alias in node.names):
+                    has_register = True
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in _REGISTRATION_KINDS:

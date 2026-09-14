@@ -772,7 +772,8 @@ class AIAgent(
     def _spawn_background_review_now(self, messages_snapshot: List[Dict], review_memory: bool = False,
                                      review_skills: bool = False, focus: Optional[str] = None,
                                      task_cfg: Optional[Dict[str, Any]] = None, _requeue_attempts: int = 0,
-                                     explicit: bool = False) -> None:
+                                     explicit: bool = False,
+                                     _review_snapshot_created_at: Optional[float] = None) -> None:
         """Spawn the background memory/skill review thread.
 
         ``threading.Thread`` is constructed here so tests patching ``run_agent.threading.Thread`` keep working.
@@ -786,6 +787,8 @@ class AIAgent(
         )
         from tools.thread_context import propagate_context_to_thread
 
+        if _review_snapshot_created_at is None:
+            _review_snapshot_created_at = time.monotonic()
         review_run = prepare_background_review_run(self)
         if review_run is None:
             return
@@ -800,7 +803,7 @@ class AIAgent(
                 self._maybe_requeue_preempted_review(review_run, dict(
                     messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
                     focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,
-                    explicit=explicit))
+                    explicit=explicit, _review_snapshot_created_at=_review_snapshot_created_at))
 
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile.

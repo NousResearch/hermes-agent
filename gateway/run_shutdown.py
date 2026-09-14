@@ -1338,7 +1338,10 @@ class GatewayShutdownMixin:
         )
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]
-        subprocess.Popen(
+        # Spawn off the event loop (ASYNC220): Popen is momentary but still blocks the
+        # loop on process-table contention; to_thread keeps the gateway responsive.
+        await asyncio.to_thread(
+            subprocess.Popen,
             argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=GatewayShutdownMixin._restart_watcher_env(), start_new_session=True,
         )

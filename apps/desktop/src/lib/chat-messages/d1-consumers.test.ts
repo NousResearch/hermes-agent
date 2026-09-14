@@ -23,6 +23,7 @@ describe('D1 settlement and presentation consumers', () => {
         parts: upsertToolPart([], { name: 'terminal', tool_id: 'missing' }, 'running', 1)
       }
     ]
+
     const sealed = sealOpenToolParts(messages)
     const part = sealed[0].parts[0]
     expect('result' in part ? part.result : undefined).toBeUndefined()
@@ -43,6 +44,7 @@ describe('D1 settlement and presentation consumers', () => {
       'complete',
       2
     )
+
     expect(deriveChangedFiles(normalize(parts))).toEqual([{ path: '/tmp/a.ts', name: 'a.ts', added: 1, removed: 1 }])
   })
   it('keeps envelope-only todo completion and explicit clearing after normalization', () => {

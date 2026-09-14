@@ -35,22 +35,13 @@ class HostedRoomServerRPC:
         self._ids = itertools.count(1)
 
     def _call(self, method: str, params, **trusted) -> dict[str, Any]:
-        invoker = getattr(self.server, "invoke", None)
-        if callable(invoker):
-            result = invoker(method, params, **trusted)
-        else:  # Test doubles preserve the legacy framed seam while production uses server.invoke.
-            legacy_params = params.model_dump(mode="json", exclude_none=True)
-            legacy_params.update(trusted)
-            result = self.server._methods[method](f"hosted-room-{next(self._ids)}", legacy_params)
+        result = self.server.invoke(method, params, **trusted)
         if isinstance(result, dict):
             error = result.get("error")
             if isinstance(error, dict):
                 raise HostedRoomSessionError(
                     method, int(error.get("code") or 5000),
                     str(error.get("message") or "gateway rejected the request"))
-            framed_result = result.get("result")
-            if isinstance(framed_result, dict):
-                return framed_result
             raise HostedRoomSessionError(method, 5000, "gateway returned an invalid error frame")
         return result.model_dump(mode="json")
 

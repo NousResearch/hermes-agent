@@ -50,6 +50,7 @@ const GROUP_CHAT_SYNC_META_KEY = 'hermes-bots-groups'
 const GROUP_CHAT_SYNC_MAX_BYTES = 48000
 const GROUP_CHAT_SYNC_MESSAGES = 16
 const GROUP_CHAT_SYNC_TEXT_CHARS = 1200
+const GROUP_CHAT_SYNC_TRUNCATION_MARK = '… [truncated]'
 const GROUP_CHAT_SYNC_IMAGE_CHARS = 24000
 let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -88,6 +89,25 @@ const groupChatSyncInFlightConnections = new Set<string>()
 const groupChatSyncRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const groupChatSyncRetryCounts = new Map<string, number>()
 export let groupChatSyncDisposed = false
+
+/** Cut one sync-projection line to the per-message budget and mark the cut.
+ *  Receivers used to see a silent mid-sentence slice with no signal that the
+ *  body continued. Keep the mark inside the same char budget so CJK/envelope
+ *  accounting does not grow. */
+export function compactGroupChatSyncText(text: string, limit = GROUP_CHAT_SYNC_TEXT_CHARS) {
+  const raw = String(text || '')
+
+  if (raw.length <= limit) {
+    return { text: raw }
+  }
+
+  const budget = Math.max(0, limit - GROUP_CHAT_SYNC_TRUNCATION_MARK.length)
+
+  return {
+    text: `${raw.slice(0, budget)}${GROUP_CHAT_SYNC_TRUNCATION_MARK}`,
+    truncated: true as const
+  }
+}
 
 /** Conservative byte count for the gateway's ensure_ascii JSON encoding.
  *  Python also inserts separator spaces, so reserve one extra byte per JS
@@ -214,29 +234,38 @@ export function groupChatSyncSnapshot(
   }
 
   for (const [name, room] of ranked) {
-    const log: GroupMessage[] = room.log.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => ({
-      ...(entry?.id
-        ? {
-            id: String(entry.id).slice(0, 160)
-          }
-        : {}),
-      from: {
-        kind: entry?.from?.kind === 'member' ? 'member' : 'user',
-        name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
-        ...(entry?.from?.source
+    const log: GroupMessage[] = room.log.slice(-GROUP_CHAT_SYNC_MESSAGES).map(entry => {
+      const compacted = compactGroupChatSyncText(String(entry?.text || ''))
+
+      return {
+        ...(entry?.id
           ? {
-              source: String(entry.from.source).slice(0, 128)
+              id: String(entry.id).slice(0, 160)
+            }
+          : {}),
+        from: {
+          kind: entry?.from?.kind === 'member' ? 'member' : 'user',
+          name: String(entry?.from?.name || (entry?.from?.kind === 'member' ? 'Bot' : 'You')).slice(0, 128),
+          ...(entry?.from?.source
+            ? {
+                source: String(entry.from.source).slice(0, 128)
+              }
+            : {})
+        },
+        text: compacted.text,
+        at: Number(entry?.at || 0),
+        ...(entry?.thread
+          ? {
+              thread: String(entry.thread).slice(0, 128)
+            }
+          : {}),
+        ...(compacted.truncated
+          ? {
+              truncated: true
             }
           : {})
-      },
-      text: String(entry?.text || '').slice(0, GROUP_CHAT_SYNC_TEXT_CHARS),
-      at: Number(entry?.at || 0),
-      ...(entry?.thread
-        ? {
-            thread: String(entry.thread).slice(0, 128)
-          }
-        : {})
-    }))
+      }
+    })
 
     const compact: GroupChatSyncRoom = {
       name: String(name).slice(0, 64),

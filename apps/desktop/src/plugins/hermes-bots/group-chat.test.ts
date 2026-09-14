@@ -417,6 +417,22 @@ describe('gateway mirror', () => {
     expect(log.length).toBeLessThanOrEqual(16)
     expect(log.at(-1)?.text).toMatch(/^99:/)
     expect(log.at(-1)?.text.length).toBeLessThanOrEqual(1200)
+    expect(log.at(-1)?.truncated).toBe(true)
+    expect(log.at(-1)?.text).toContain('[truncated]')
+    expect(log.at(-1)?.text).not.toContain(long)
+  })
+
+  it('marks truncated sync text instead of silently slicing it', async () => {
+    const { chat } = await loadRoom()
+    const long = `plan:${'x'.repeat(2000)}`
+    const compacted = chat.compactGroupChatSyncText(long)
+
+    expect(compacted.truncated).toBe(true)
+    expect(compacted.text).toContain('[truncated]')
+    expect(compacted.text.length).toBeLessThanOrEqual(1200)
+    expect(compacted.text.startsWith('plan:')).toBe(true)
+    expect(compacted.text).not.toBe(long)
+    expect(chat.compactGroupChatSyncText('short').truncated).toBeUndefined()
   })
 
   it('preserves threads and budgets escaped Unicode', async () => {

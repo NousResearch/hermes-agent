@@ -265,6 +265,25 @@ _HARDLINE_BLOCK = [
     # A wrapper and a path alias together — both bypass classes at once.
     "timeout 5 sed -i 's/a/b/' ~/.hermes/./config.yaml",
     "flock /tmp/lock sed -i 's/a/b/' ~/.hermes//.env",
+    # Regression guards found during the module-split re-port (2026-09):
+    # a redirect glued to the operand with no space split into one token
+    # that matched neither the protected path nor anything else.
+    "sed -i 's/a/b/' ~/.hermes/config.yaml>/tmp/out",
+    "sed -i 's/a/b/' ~/.hermes/config.yaml<foo",
+    # taskset's attached short form (`-c0,1`) never marked the mandatory
+    # mask positional as supplied (compared the option LETTER against a set
+    # of full option spellings), so the resolver ate the editor name as the
+    # bogus mask and returned a flag as the "command word".
+    "taskset -c0,1 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # chroot(1) is a wrapper too (NEWROOT is a mandatory positional before
+    # the command word), missing from the initial port of this guard even
+    # though the file's other, softer wrapper table already had it.
+    "chroot / sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "chroot --userspec 0:0 / sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # chrt's mandatory (no-policy-flag) priority positional was never
+    # digit-checked, only the policy-flag optional-priority form was; a bare
+    # `chrt sed -i …` ate the editor name as the "priority".
+    "chrt sed -i 's/a/b/' ~/.hermes/config.yaml",
 ]
 
 

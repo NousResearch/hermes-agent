@@ -83,7 +83,6 @@ def _data_policy_guard(
 
 # Context-token threshold above which a mid-session switch asks for confirmation: providers key
 # prompt caches per model, so the first call after a switch re-reads the whole context uncached.
-# Mirrors deepagents' `warnings.model_switch_token_threshold` (langchain-ai/deepagents#5829).
 DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD = 100_000
 
 

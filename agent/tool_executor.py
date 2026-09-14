@@ -52,7 +52,13 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
     extract_persisted_path,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.budget_config import (
+    BudgetConfig,
+    DEFAULT_BUDGET,
+    budget_for_context_window,
+    budget_with_persist_threshold,
+    normalize_persist_threshold,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +103,36 @@ def _budget_for_agent(agent) -> BudgetConfig:
     model switched into mid-session) get a budget proportional to their window so a single large tool result
     can't push the request past the model's limit (#23767). Falls back to the default budget when the
     context length isn't resolvable.
+
+    An explicit ``tools.tool_result_persist_threshold_chars`` (on the agent as
+    ``_tool_result_persist_threshold_chars``) overrides ONLY the per-result threshold; the
+    small-window turn budget still applies. Values set programmatically by plugins/tests are
+    validated the same way config values are, so a non-positive or non-int value is ignored
+    (warned once per agent) rather than clamped to 1. An unresolvable context length does not
+    discard it -- the explicit cap still applies on top of the unscaled budget.
     """
     try:
-        ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
-        return budget_for_context_window(int(ctx) if ctx else None)
+        ctx = None
+        try:
+            raw_ctx = getattr(getattr(agent, "context_compressor", None), "context_length", None)
+            ctx = int(raw_ctx) if raw_ctx else None
+        except Exception:
+            ctx = None  # unresolvable window: unscaled budget, explicit threshold still honored
+        raw_explicit = getattr(agent, "_tool_result_persist_threshold_chars", None)
+        explicit = normalize_persist_threshold(raw_explicit)
+        if raw_explicit is not None and explicit is None:
+            if not getattr(agent, "_tool_result_persist_threshold_warning_emitted", False):
+                logger.warning(
+                    "invalid programmatic tools.tool_result_persist_threshold_chars=%r; "
+                    "ignoring (keeping the context-scaled default)", raw_explicit,
+                )
+                try:
+                    agent._tool_result_persist_threshold_warning_emitted = True
+                except Exception:
+                    pass  # slot-only test doubles/plugins: the fallback is still safe, only once-per-agent suppression is lost
+        if explicit is not None:
+            return budget_with_persist_threshold(explicit, ctx)
+        return budget_for_context_window(ctx)
     except Exception:
         return DEFAULT_BUDGET
 

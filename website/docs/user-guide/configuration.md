@@ -878,6 +878,47 @@ The MCP threshold is always capped at the (possibly context-scaled) generic per-
 
 Hermes also flags **provider-side elision**: when an MCP or web tool result embeds its own truncation markers (`...N more items`, `"has_more": true`, "saved to sandbox" notes), a one-line notice is appended to the result warning that the visible data is incomplete and should be paged/fetched before treating any enumeration as complete.
 
+### Explicit Per-Result Spillover Threshold
+
+Set `tools.tool_result_persist_threshold_chars` to replace the context-scaled
+generic per-result threshold with an explicit cap:
+
+```yaml
+tools:
+  # Spill any single tool result larger than 20K chars (preview + path stays
+  # in context; the full result stays on disk for audit/replay).
+  tool_result_persist_threshold_chars: 20000
+```
+
+The value is read when an agent is initialized and stays fixed for that
+conversation; after changing it, start a new session (or restart the gateway)
+for the new threshold to take effect. Reading it once keeps the conversation's
+prompt prefix stable and cacheable.
+
+- `None` (default) — keep the context-scaled behavior unchanged.
+- `int > 0` — explicit per-result cap. A value *smaller* than the default
+  reclaims medium-sized results (30–50K char search/execute output) from
+  re-sent history early, which reduces input tokens on long tool loops;
+  the full original result is always spilled to disk and can be re-read
+  on demand.
+- The explicit cap overrides **only** the per-result size. The per-turn
+  aggregate budget and the preview size still come from context-window
+  scaling, so a small-window model keeps its small turn budget (an explicit
+  value must not silently reset it back to the 200K default).
+- It still sits under each tool's own registry cap (web, terminal and
+  x_search register a 100K max), so a larger value is bounded by the tool
+  rather than unbounded. `mcp_*` tools remain capped by it as well.
+- `read_file` is always exempt (`PINNED_THRESHOLDS`) to avoid infinite
+  spill→read→spill loops.
+- Non-positive values (`0`, negative), booleans (`true`/`false`), floats and
+  any other non-integer numeric type (`Decimal`, `Fraction`), `bytes`, or
+  non-whole-number strings (`"20.5"`, `"1e4"`) are rejected with a warning and
+  treated as unset — only non-boolean `int` and whole-number strings are
+  accepted. Rejection is enforced at every layer (config parsing, budget
+  factory, executor) through a single normalizer
+  (`tools/budget_config.normalize_persist_threshold`), so values set
+  programmatically by plugins are handled identically to YAML.
+
 ## Global Toolset Disable
 
 To suppress specific toolsets across the CLI and every gateway platform in one

@@ -1837,6 +1837,18 @@ DEFAULT_CONFIG = {
             # Range 200..60000.
             "listing_max_tokens": 4000,
         },
+        # Explicit per-tool-result persistence threshold in characters: results larger than this
+        # are persisted to the sandbox and replaced in-context by a preview + path
+        # (tools/tool_result_storage.py).
+        # None = keep the context-scaled behavior — large models keep the 100K-char cap, small
+        # models get a budget proportional to their window (tools/budget_config.py).
+        # A positive int overrides that default. It still sits under the per-tool registry cap
+        # (web/terminal/x_search register their own 100K max), so a smaller explicit value always
+        # wins while a larger one is capped by the registry; read_file is always exempt
+        # (PINNED_THRESHOLDS) to avoid persist->read->persist loops.
+        # Lowering it (e.g. 20_000) reclaims medium-sized 30-50K-char results from re-sent history
+        # early; the full originals stay on disk for audit/replay.
+        "tool_result_persist_threshold_chars": None,
         # Remote connector discovery/lifecycle through the Nous tool gateway.
         # The flag is the user's off switch; availability additionally requires
         # the portal sign-in every managed tool gates on.

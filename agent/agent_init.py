@@ -1327,6 +1327,21 @@ def _apply_agent_section(agent, _agent_cfg):
     # "auto" (codex_responses only), true (all api_modes), false, or model substrings.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
+    # Explicit tool-result persistence threshold (tools.tool_result_persist_threshold_chars).
+    # Results larger than this many chars are persisted to the sandbox and replaced in-context by
+    # a preview + path, overriding the context-scaled default (100K chars on large models). Invalid
+    # values (bool, float, non-positive) are ignored rather than clamped to 1, which would persist
+    # nearly every tool result. ``None`` keeps the context-scaled behavior.
+    from tools.budget_config import normalize_persist_threshold
+
+    _raw_persist_threshold = _cfg_dict(_agent_cfg, "tools").get("tool_result_persist_threshold_chars")
+    agent._tool_result_persist_threshold_chars = normalize_persist_threshold(_raw_persist_threshold)
+    if _raw_persist_threshold is not None and agent._tool_result_persist_threshold_chars is None:
+        _warn_invalid_config_int(
+            "tools.tool_result_persist_threshold_chars", _raw_persist_threshold,
+            "must be a positive integer", "the context-scaled default",
+        )
+
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.
     for _key in (

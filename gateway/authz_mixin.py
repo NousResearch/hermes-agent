@@ -650,18 +650,35 @@ class GatewayAuthorizationMixin:
         if config and hasattr(config, "unauthorized_dm_behavior") and config.unauthorized_dm_behavior != "pair":
             return config.unauthorized_dm_behavior
 
+        allowlist_configured = False
         allowlist_keys = ["GATEWAY_ALLOWED_USERS"]
         if platform:
-            dm_policy = self._adapter_policy(platform, "dm", profile)
-            if not dm_policy:
-                dm_policy = str(self._config_extra(platform).get("dm_policy") or "").strip().lower()
-            if dm_policy == "pairing":
-                return "pair"
-            if dm_policy in {"allowlist", "disabled"}:
-                return "ignore"
             # Historical: Yuanbao is absent from this allowlist-aware default.
             env_key = "" if platform == Platform.YUANBAO else _ALLOWED_USERS_ENV.get(platform, "")
             allowlist_keys = [env_key, _GROUP_USER_ENV.get(platform), _GROUP_CHAT_ENV.get(platform), *allowlist_keys]
+            extra = self._config_extra(platform)
+            if extra.get("allow_from") or extra.get("allowed_users") or extra.get("group_allow_from"):
+                allowlist_configured = True
+            adapter = self._authorization_adapter(platform, profile)
+            if adapter is not None and (getattr(adapter, "_allow_from", None) or getattr(adapter, "_allowed_users", None)):
+                allowlist_configured = True
+
         if any(key and _auth_env(key).strip() for key in allowlist_keys):
+            allowlist_configured = True
+
+        if platform:
+            extra = self._config_extra(platform)
+            explicit_dm_policy = str(extra.get("dm_policy") or "").strip().lower()
+            dm_policy = self._adapter_policy(platform, "dm", profile) or explicit_dm_policy
+            if dm_policy in {"allowlist", "disabled"}:
+                return "ignore"
+            if explicit_dm_policy == "pairing":
+                return "pair"
+            if allowlist_configured:
+                return "ignore"
+            if dm_policy == "pairing":
+                return "pair"
+        elif allowlist_configured:
             return "ignore"
+
         return "pair"

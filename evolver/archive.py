@@ -128,13 +128,33 @@ class PathologyRecord:
         )
 
 
-def _trajectory_from_result(result: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+def _trajectory_from_result(result: Mapping[str, Any], failure_class: str) -> list[Mapping[str, Any]]:
     trajectory = result.get("conversations") or result.get("trajectory")
+    if failure_class == "runner_error" and not trajectory:
+        error = _require_text(result.get("error"), "runner error")
+        return [{"role": "runner", "content": error}]
     if not isinstance(trajectory, list) or not trajectory:
         raise ValueError("fix result must contain a non-empty conversations or trajectory list")
     if not all(isinstance(turn, Mapping) for turn in trajectory):
         raise ValueError("trajectory turns must be JSON objects")
     return trajectory
+
+
+def _canonical_observed_at(value: object) -> str:
+    """Normalize producer timestamps while keeping canonical records timezone-aware.
+
+    Legacy mini/batch producers emit naive ISO timestamps. They do not retain the
+    host offset, so the adapter deterministically treats those legacy values as UTC.
+    """
+
+    observed = _require_text(value, "observed_at")
+    try:
+        parsed = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("observed_at must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.isoformat()
 
 
 def _failure_class(result: Mapping[str, Any], explicit: str | None) -> str | None:
@@ -167,15 +187,18 @@ def record_from_fix_result(
     failure = _failure_class(result, failure_class)
     if failure is None:
         return None
-    trajectory = _trajectory_from_result(result)
+    trajectory = _trajectory_from_result(result, failure)
     metadata = result.get("metadata") if isinstance(result.get("metadata"), Mapping) else {}
     prompt = result.get("prompt") or result.get("task")
     if not prompt:
         human = next((turn for turn in trajectory if turn.get("from") in {"human", "user"}), None)
         prompt = human.get("value") or human.get("content") if human else None
+    if not prompt and failure == "runner_error":
+        prompt = "[task unavailable: runner failed before trajectory capture]"
     prompt = _require_text(prompt, "task input")
-    resolved_task_id = str(task_id or result.get("task_id") or f"task-{result.get('prompt_index', _stable_hex(prompt, 12))}")
     resolved_harness = str(harness_version or metadata.get("harness_version") or metadata.get("model") or "unknown")
+    fallback_task_id = f"task-{_stable_hex({'harness_version': resolved_harness, 'input': prompt}, 12)}"
+    resolved_task_id = str(task_id or result.get("task_id") or fallback_task_id)
     trace_id = _stable_hex({"task_id": resolved_task_id, "trajectory": trajectory}, 32)
     spans: list[Span] = []
     parent: str | None = None
@@ -196,12 +219,14 @@ def record_from_fix_result(
             )
         )
         parent = span_id
-    observed = metadata.get("timestamp") or result.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    observed = _canonical_observed_at(
+        metadata.get("timestamp") or result.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    )
     return PathologyRecord(
         task=Task(resolved_task_id, resolved_harness, prompt, dict(metadata)),
         trace=Trace(trace_id, tuple(spans), {"hermes.source_format": "sharegpt"}),
         failure_class=failure,
-        observed_at=str(observed),
+        observed_at=observed,
         source=source,
     )
 

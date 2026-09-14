@@ -19,11 +19,8 @@ def test_fix_result_adapter_preserves_canonical_task_trace_failure_contract(tmp_
 
     record = record_from_fix_result(failed)
     assert record is not None
-    assert (record.task.task_id, record.task.input, record.failure_class) == (
-        "task-7",
-        "repair the parser",
-        "incomplete",
-    )
+    assert (record.task.input, record.failure_class) == ("repair the parser", "incomplete")
+    assert record_from_fix_result(failed, task_id="producer-task").task.task_id == "producer-task"
     assert record.trace.trace_id == record.trace.spans[0].trace_id
     assert record.trace.spans[1].parent_span_id == record.trace.spans[0].span_id
     assert record_from_fix_result(successful) is None
@@ -37,3 +34,47 @@ def test_fix_result_adapter_preserves_canonical_task_trace_failure_contract(tmp_
     assert len(loaded) == 1
     assert loaded[0].task.harness_version == "factory-v1"
     assert loaded[0].to_dict() == list(PathologyArchive(archive.path))[0].to_dict()
+
+
+def test_ingest_accepts_native_producer_rows_without_losing_error_or_task_identity(tmp_path):
+    mini_error = {
+        "conversations": [],
+        "completed": False,
+        "api_calls": 0,
+        "error": "sandbox setup failed",
+        "metadata": {"timestamp": "2026-09-14T01:02:03"},
+    }
+    mini_failure = {
+        "conversations": [{"from": "human", "value": "repair mini"}],
+        "completed": False,
+        "metadata": {"model": "mini-model", "timestamp": "2026-09-14T01:02:04"},
+    }
+    batch_failure = {
+        "prompt_index": 0,
+        "conversations": [{"from": "human", "value": "repair batch A"}],
+        "completed": False,
+        "metadata": {"batch_num": 3, "model": "batch-model", "timestamp": "2026-09-14T01:02:05"},
+    }
+    other_batch_failure = {
+        **batch_failure,
+        "conversations": [{"from": "human", "value": "repair batch B"}],
+    }
+
+    first_source = tmp_path / "run-a" / "batch_3.jsonl"
+    first_source.parent.mkdir()
+    first_source.write_text(
+        "\n".join(json.dumps(row) for row in (mini_error, mini_failure, batch_failure)) + "\n",
+        encoding="utf-8",
+    )
+    second_source = tmp_path / "run-b" / "batch_3.jsonl"
+    second_source.parent.mkdir()
+    second_source.write_text(json.dumps(other_batch_failure) + "\n", encoding="utf-8")
+
+    archive = PathologyArchive(tmp_path / "pathologies.jsonl")
+    assert archive.ingest_fix_results(tmp_path) == 4
+    records = list(archive)
+    assert records[0].failure_class == "runner_error"
+    assert records[0].trace.spans[0].attributes["hermes.content"] == "sandbox setup failed"
+    assert all(record.observed_at.endswith("+00:00") for record in records)
+    batch_records = [record for record in records if record.task.input.startswith("repair batch")]
+    assert len({record.task.task_id for record in batch_records}) == 2

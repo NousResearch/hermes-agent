@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from evolver.battery import BatteryScore
 from evolver.calibration import CalibrationCase, CalibrationPolicy, calibrate
-from evolver.gates import ActivationEvidence, CreditPolicy, PairedScore, ValidityEvidence
+from evolver.gates import ActivationEvidence, CreditPolicy, PairedScore, ValidityEvidence, evaluate_credit
 
 
 def _scores(candidate_passed: bool) -> tuple[PairedScore, ...]:
@@ -57,3 +57,24 @@ def test_calibration_separates_good_and_bad_patches_and_enforces_kill_criterion(
     )), policy)
     assert miscalibrated["kill_criterion_triggered"] is True
     assert miscalibrated["phase_1_allowed"] is False
+
+
+def test_credit_gate_charges_candidate_cost_for_newly_solved_tasks():
+    pairs = tuple(
+        PairedScore(
+            task_id=f"improved-{index}",
+            baseline=BatteryScore(False, 1.0),
+            candidate=BatteryScore(True, 1_000_000.0),
+        )
+        for index in range(8)
+    )
+
+    decision = evaluate_credit(
+        pairs,
+        CreditPolicy("2026-Q3", bootstrap_samples=500, seed=4, max_cost_ratio=1.0),
+    )
+
+    assert decision.metrics["ci_lower"] == 1.0
+    assert decision.metrics["cost_ratio_all_pairs"] == 1_000_000.0
+    assert decision.passed is False
+    assert decision.reason == "candidate exceeded the pre-registered cost bound"

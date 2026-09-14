@@ -113,9 +113,8 @@ def evaluate_credit(pairs: tuple[PairedScore, ...], policy: CreditPolicy) -> Gat
     alpha = (1.0 - policy.confidence) / 2.0
     lower = _percentile(draws, alpha)
     upper = _percentile(draws, 1.0 - alpha)
-    both_passed = [pair for pair in pairs if pair.baseline.passed and pair.candidate.passed]
-    baseline_cost = sum(pair.baseline.cost for pair in both_passed)
-    candidate_cost = sum(pair.candidate.cost for pair in both_passed)
+    baseline_cost = sum(pair.baseline.cost for pair in pairs)
+    candidate_cost = sum(pair.candidate.cost for pair in pairs)
     cost_ratio = candidate_cost / baseline_cost if baseline_cost else (0.0 if not candidate_cost else math.inf)
     effect_passed = lower > policy.min_pass_rate_delta
     cost_passed = cost_ratio <= policy.max_cost_ratio
@@ -132,7 +131,7 @@ def evaluate_credit(pairs: tuple[PairedScore, ...], policy: CreditPolicy) -> Gat
             "ci_lower": lower,
             "ci_upper": upper,
             "confidence": policy.confidence,
-            "cost_ratio_on_joint_passes": cost_ratio,
+            "cost_ratio_all_pairs": cost_ratio,
         },
     )
 

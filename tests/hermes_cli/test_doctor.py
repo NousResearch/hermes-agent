@@ -1146,51 +1146,21 @@ class TestGitHubTokenCheck:
         assert "GitHub authenticated via gh CLI" in out or "token configured" in out
 
 
-    def test_gh_auth_status_uses_exit_code_not_json_flag(self, monkeypatch, tmp_path):
-        """gh CLI 2.98+ removed the `authenticated` JSON field, so the doctor
-        must invoke plain `gh auth status` (exit-code based) rather than
-        `gh auth status --json authenticated`. Pins the command shape so a
-        future re-addition of `--json authenticated` fails this test."""
-        home = tmp_path / ".hermes"
-        home.mkdir(parents=True, exist_ok=True)
-        self._isolate_home(monkeypatch, home)
-        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-        monkeypatch.delenv("GH_TOKEN", raising=False)
+    def test_gh_authenticated_on_gh_without_authenticated_json_field(self, monkeypatch):
+        """gh 2.98+ dropped the `authenticated` field from `gh auth status --json`,
+        so that invocation exits 1 even for a logged-in user. A logged-in user on
+        such a gh must still be reported as authenticated."""
+        from hermes_cli import doctor_state
 
-        import shutil
-        real_which = shutil.which
-        monkeypatch.setattr(
-            shutil, "which",
-            lambda cmd: "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd),
-        )
+        def gh_2_98(cmd, **kwargs):
+            assert cmd[:3] == ["gh", "auth", "status"], cmd
+            if "--json" in cmd and "authenticated" in cmd:
+                return types.SimpleNamespace(returncode=1, stdout=b"", stderr=b"unknown JSON field")
+            return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"Logged in to github.com")
 
-        gh_calls = []
-
-        def mock_run(cmd, **kwargs):
-            if cmd and cmd[0] == "gh":
-                gh_calls.append(cmd)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-        monkeypatch.setattr(subprocess, "run", mock_run)
-
-        from hermes_cli.doctor import run_doctor
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            run_doctor(Namespace(fix=False))
-
-        auth_status_calls = [
-            c for c in gh_calls
-            if c[:3] == ["gh", "auth", "status"]
-        ]
-        assert auth_status_calls, f"gh auth status was not invoked: {gh_calls}"
-        for cmd in auth_status_calls:
-            assert "--json" not in cmd, (
-                f"gh auth status must not use --json (removed in gh 2.98): {cmd}"
-            )
-            assert "authenticated" not in cmd[3:], (
-                f"gh auth status must not request the removed 'authenticated' field: {cmd}"
-            )
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", gh_2_98)
+        assert doctor_state._gh_authenticated() is True
 
 
 def _run_doctor_with_healthy_oauth_fallback(

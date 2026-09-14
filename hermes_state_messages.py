@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import sqlite3
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,7 +16,7 @@ from agent.message_sanitization import _sanitize_surrogates
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
-    _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+    _legacy_reset_child_sql, _placeholders, _sql_json_extract, tolerant_decode_bytes)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -37,6 +38,10 @@ _TURN_LEASE_ROW_SQL = "SELECT holder, expires_at FROM session_turn_leases WHERE 
 _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id = ? AND holder = ?"
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
 _DISPLAY_META_ROW_SQL = "SELECT display_metadata FROM messages WHERE id = ? AND session_id = ?"
+# Read-modify-write seam (set_message_reaction) reads the raw BLOB: CAST defeats the connection's
+# tolerant text_factory so an undecodable cell fails AT THE SEAM instead of degrading to U+FFFD,
+# parsing away to {} and letting the write drop the row's unrelated metadata (#109465 review).
+_DISPLAY_META_ROW_BLOB_SQL = "SELECT CAST(display_metadata AS BLOB) FROM messages WHERE id = ? AND session_id = ?"
 _ACTIVE_IDS_SQL = "SELECT id FROM messages WHERE session_id = ? AND active = 1 ORDER BY id"
 _SET_COUNTERS_SQL = "UPDATE sessions SET message_count = ?, tool_call_count = ?"
 _RESET_COUNTERS_SQL = "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?"
@@ -130,7 +135,12 @@ class SessionMessagesMixin:
 
     @classmethod
     def _decode_content(cls, content: Any) -> Any:
-        """Reverse :meth:`_encode_content`; returns scalars unchanged."""
+        """Reverse :meth:`_encode_content`; returns scalars unchanged. A BLOB-stored value decodes
+        to ``str`` (U+FFFD on undecodable bytes) so public message dicts stay JSON-serializable
+        regardless of which storage class a corrupt cell landed in (#109465 review: BLOB bytes
+        made ``json.dumps(message)`` raise TypeError)."""
+        if isinstance(content, bytes):
+            return tolerant_decode_bytes(content)
         if isinstance(content, str) and content.startswith(cls._CONTENT_JSON_PREFIX):
             return _json_or(content[len(cls._CONTENT_JSON_PREFIX):], content,
                 "Failed to decode JSON-encoded message content; returning raw string")
@@ -169,6 +179,40 @@ class SessionMessagesMixin:
         if not isinstance(meta, dict):
             logger.warning("Ignoring non-object display metadata on message row")
             return None
+        return meta
+
+    @staticmethod
+    def _strict_display_metadata_cell(raw: Any, message_row_id: int) -> Optional[Dict[str, Any]]:
+        """Fail-closed decode+parse for the display_metadata read-modify-write seam
+        (#109465 review): a malformed cell — undecodable UTF-8, broken JSON, or a non-object
+        value — aborts the write with OperationalError instead of parsing away to ``{}`` and
+        letting the reaction update drop the row's unrelated metadata. Mirrors the model_config
+        seam (``_merge_model_config_json``); ``None`` (no metadata) stays a legal empty cell.
+        Same two-layer unwrap as :meth:`_decode_display_metadata` for pre-guard rows."""
+        if raw is None or raw == b"" or raw == "":
+            return None
+        meta: Any = raw
+        for _ in range(2):  # pre-guard rows carry a second string layer
+            if isinstance(meta, bytes):
+                try:
+                    meta = meta.decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise sqlite3.OperationalError(
+                        f"message row {message_row_id}: display_metadata is not valid UTF-8; aborting "
+                        f"the metadata write so the stored field is not rewritten (fail closed): {exc}"
+                    ) from exc
+            if isinstance(meta, str):
+                try:
+                    meta = json.loads(meta)
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise sqlite3.OperationalError(
+                        f"message row {message_row_id}: display_metadata is not valid JSON; aborting "
+                        f"the metadata write so the stored field is not rewritten (fail closed): {exc}"
+                    ) from exc
+        if not isinstance(meta, dict):
+            raise sqlite3.OperationalError(
+                f"message row {message_row_id}: display_metadata is not a JSON object; aborting the "
+                f"metadata write so the stored field is not rewritten (fail closed)")
         return meta
 
     @staticmethod
@@ -393,10 +437,11 @@ class SessionMessagesMixin:
         if not session_id or message_row_id is None:
             return None
         def _do(conn):
-            row = conn.execute(_DISPLAY_META_ROW_SQL, (message_row_id, session_id)).fetchone()
+            row = conn.execute(_DISPLAY_META_ROW_BLOB_SQL, (message_row_id, session_id)).fetchone()
             if row is None:
                 return None
-            meta = self._decode_display_metadata(row[0]) or {}
+            # Fail-closed seam: a malformed cell aborts here; only a legal empty cell starts from {}.
+            meta = self._strict_display_metadata_cell(row[0], message_row_id) or {}
             existing = self._reaction_list(meta)
             reactions = [r for r in existing if r.get("author") != author]
             previous = next((r for r in existing if r.get("author") == author), None)
@@ -424,10 +469,19 @@ class SessionMessagesMixin:
             return []
         def _do(conn):
             pending = []
-            for row in conn.execute("SELECT id, role, content, display_metadata FROM messages "
-                    "WHERE session_id = ? AND active = 1 AND display_metadata IS NOT NULL ORDER BY id",
+            # CAST defeats the tolerant text_factory (same seam contract as set_message_reaction):
+            # an undecodable cell aborts the take instead of being rewritten as U+FFFD soup that
+            # silently destroys the row's unrelated metadata (#109465 review, completeness gap 1).
+            for row in conn.execute("SELECT id, role, content, CAST(display_metadata AS BLOB) AS display_metadata "
+                    "FROM messages WHERE session_id = ? AND active = 1 AND display_metadata IS NOT NULL ORDER BY id",
                     (session_id,)).fetchall():
-                meta = self._decode_display_metadata(row["display_metadata"])
+                # A BLOB-stored role bypasses text_factory (sqlite3 contract) and would escape the
+                # take payload as bytes; same normalize-every-field contract as _row_to_message_dict
+                # (#109465 review, completeness gap 3).
+                role = row["role"]
+                if isinstance(role, bytes):
+                    role = tolerant_decode_bytes(role)
+                meta = self._strict_display_metadata_cell(row["display_metadata"], row["id"])
                 reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
                 if not isinstance(reactions, list):
                     continue
@@ -439,7 +493,7 @@ class SessionMessagesMixin:
                     changed = True
                     content = self._decode_content(row["content"])
                     pending.append({
-                        "row_id": row["id"], "role": row["role"], "emoji": reaction.get("emoji") or "",
+                        "row_id": row["id"], "role": role, "emoji": reaction.get("emoji") or "",
                         "text": content if isinstance(content, str) else ""})
                 if changed:
                     conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta), row["id"]))
@@ -465,14 +519,14 @@ class SessionMessagesMixin:
         row = self._read_one(
             "SELECT role FROM messages WHERE session_id = ? AND active = 1 "
             "AND role NOT IN ('session_meta', 'system') ORDER BY id DESC LIMIT 1", (session_id,))
-        return row[0] if row else None
+        return self._public_cell(row[0]) if row else None
 
     def get_message_role(self, session_id: str, row_id: int) -> Optional[str]:
         """Role of the active message at *row_id* in *session_id*, or ``None``."""
         if not session_id:
             return None
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
-        return row[0] if row else None
+        return self._public_cell(row[0]) if row else None
 
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
@@ -756,6 +810,13 @@ class SessionMessagesMixin:
         msg = dict(row)
         msg.pop("display_identity", None)
         msg.pop("display_order", None)
+        # display_identity (popped above) is the messages table's only legitimate BLOB column, so
+        # any surviving bytes is a corrupt cell that landed in BLOB storage and bypassed text_factory
+        # (sqlite3 contract). Normalize centrally: NO public read surface may hand out bytes, or
+        # json.dumps(message) raises TypeError on e.g. a BLOB-stored reasoning cell (#109465 review).
+        for key, value in msg.items():
+            if isinstance(value, bytes):
+                msg[key] = tolerant_decode_bytes(value)
         if summary_flag and msg.pop("_compressed_summary", 0):
             msg["_compressed_summary"] = True
         msg["content"] = self._decode_content(msg["content"])

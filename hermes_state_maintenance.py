@@ -214,7 +214,9 @@ class SessionMaintenanceMixin:
         """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
         = inactivity threshold: latest message, else ``started_at``)."""
         where, params = self._prune_where(older_than_days, source, filters)
-        return [dict(row) for row in self._read_all(
+        # Shared normalization boundary so a BLOB-stored cell never escapes the public
+        # projection as bytes (#109465 review).
+        return [self._session_row_dict(row) for row in self._read_all(
             f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
                            COALESCE(
                                (SELECT MAX(m.timestamp) FROM messages m

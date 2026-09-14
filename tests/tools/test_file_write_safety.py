@@ -174,6 +174,67 @@ class TestGetWriteDeniedError:
         assert get_write_denied_error(str(target)) is None
 
 
+class TestGetSafeTmpDir:
+    """get_safe_tmp_dir() -- a discoverable, writable temp location under a
+    configured HERMES_WRITE_SAFE_ROOT (#69962), so a denied conventional
+    `/tmp/helper.py` write has somewhere valid to retry instead of the model
+    silently claiming success on a path that was never written.
+    """
+
+    def test_returns_none_without_a_safe_root(self, monkeypatch):
+        from agent.file_safety import get_safe_tmp_dir
+
+        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+        assert get_safe_tmp_dir() is None
+
+    def test_scopes_to_hermes_home_when_nested_in_safe_root(self, tmp_path: Path, monkeypatch):
+        """The common durable-profile layout: HERMES_HOME already lives
+        under the safe root, so temp files should be scoped per-profile
+        (<hermes_home>/tmp) rather than shared across profiles."""
+        from agent.file_safety import get_safe_tmp_dir
+
+        safe_root = tmp_path / "data"
+        hermes_home = safe_root / "profiles" / "acct-1"
+        hermes_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setattr("agent.file_safety._hermes_home_path", lambda: hermes_home)
+
+        result = get_safe_tmp_dir()
+        assert result == str(hermes_home / "tmp")
+        assert Path(result).is_dir()
+
+    def test_falls_back_to_safe_root_when_home_not_nested(self, tmp_path: Path, monkeypatch):
+        from agent.file_safety import get_safe_tmp_dir
+
+        safe_root = tmp_path / "data"
+        safe_root.mkdir()
+        unrelated_home = tmp_path / "elsewhere" / ".hermes"
+        unrelated_home.mkdir(parents=True)
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setattr("agent.file_safety._hermes_home_path", lambda: unrelated_home)
+
+        result = get_safe_tmp_dir()
+        assert result == str(safe_root / "tmp")
+        assert Path(result).is_dir()
+
+    def test_denial_message_points_at_the_safe_tmp_dir(self, tmp_path: Path, monkeypatch):
+        from agent.file_safety import get_write_denied_error
+
+        safe_root = tmp_path / "data"
+        hermes_home = safe_root / "profiles" / "acct-1"
+        hermes_home.mkdir(parents=True)
+        outside = tmp_path / "tmp" / "helper.py"
+
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setattr("agent.file_safety._hermes_home_path", lambda: hermes_home)
+
+        err = get_write_denied_error(str(outside))
+        assert err is not None
+        assert f"Temporary files belong in '{hermes_home / 'tmp'}'" in err
+
+
 class TestSafeRootDenialMessageIntegration:
     """Regression tests verifying that file-tools surface the correct denial
     message when HERMES_WRITE_SAFE_ROOT blocks a path.
@@ -227,6 +288,67 @@ class TestSafeRootDenialMessageIntegration:
         res = ops.write_file(str(inside), "content")
         assert res.error is None
         assert inside.read_text(encoding="utf-8") == "content"
+
+    def test_write_file_denial_hint_path_is_writable_on_retry(
+        self, ops, tmp_path: Path, monkeypatch
+    ):
+        """The denial message's suggested temp path isn't just a string in an
+        error message -- writing there for real must actually succeed (#69962),
+        exercised through the real write_file() denial/retry path rather than
+        the get_write_denied_error() helper in isolation."""
+        from agent.file_safety import get_safe_tmp_dir
+
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        outside = tmp_path / "other" / "helper.py"
+        outside.parent.mkdir()
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+        monkeypatch.setattr("agent.file_safety._hermes_home_path", lambda: safe_root)
+
+        res = ops.write_file(str(outside), "content")
+        assert res.error is not None
+        safe_tmp = get_safe_tmp_dir()
+        assert safe_tmp is not None
+        assert f"Temporary files belong in '{safe_tmp}'" in res.error
+
+        retry_path = Path(safe_tmp) / "helper.py"
+        retry = ops.write_file(str(retry_path), "content")
+        assert retry.error is None
+        assert retry_path.read_text() == "content"
+
+    def test_delete_denial_has_no_temp_file_hint(
+        self, ops, tmp_path: Path, monkeypatch
+    ):
+        """A denied delete isn't about finding somewhere to write -- the
+        write-only 'Temporary files belong in ...' hint would be nonsensical
+        tacked onto a Delete-denied message."""
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        outside = tmp_path / "other" / "file.txt"
+        outside.parent.mkdir()
+        outside.write_text("content")
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        res = ops.delete_path(str(outside))
+        assert res.error is not None
+        assert res.error.startswith("Delete denied")
+        assert "Temporary files belong in" not in res.error
+
+    def test_move_denial_has_no_temp_file_hint(
+        self, ops, tmp_path: Path, monkeypatch
+    ):
+        safe_root = tmp_path / "workspace"
+        safe_root.mkdir()
+        outside = tmp_path / "other" / "file.txt"
+        outside.parent.mkdir()
+        outside.write_text("content")
+        dst = safe_root / "file.txt"
+        monkeypatch.setenv("HERMES_WRITE_SAFE_ROOT", str(safe_root))
+
+        res = ops.move_file(str(outside), str(dst))
+        assert res.error is not None
+        assert res.error.startswith("Move denied")
+        assert "Temporary files belong in" not in res.error
 
 
 class TestCheckSensitivePathMacOSBypass:

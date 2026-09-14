@@ -350,9 +350,8 @@ def _replay_reasoning_items(
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
     checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
-    another issuer or model (HTTP 400). Endpoint-stamped legacy items without model provenance drop
-    (fail closed) when the current model is known; fully unstamped items pass. ``id`` (store=False
-    lookups 404) and the Hermes provenance fields are stripped."""
+    another issuer or model (HTTP 400). Items without a model stamp (legacy or unstamped) replay on a
+    matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields are stripped."""
     global _CROSS_ISSUER_WARN_EMITTED
     replayed: List[Dict[str, Any]] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
@@ -364,9 +363,11 @@ def _replay_reasoning_items(
         item_issuer = ri.get("_issuer_kind")
         item_model = ri.get("_issuer_model")
         foreign_issuer = current_issuer_kind is not None and item_issuer is not None and item_issuer != current_issuer_kind
-        foreign_model = current_issuer_model is not None and (
-            (item_model is not None and item_model != current_issuer_model)
-            or (item_model is None and item_issuer is not None)
+        # No model stamp → trust the endpoint stamp. Native compaction checkpoints and reasoning persisted
+        # before model stamping exist carry none; dropping them would erase every existing session's
+        # context once. A wrong guess is caught by the invalid_encrypted_content 400 classifier.
+        foreign_model = (
+            current_issuer_model is not None and item_model is not None and item_model != current_issuer_model
         )
         if foreign_issuer or foreign_model:
             if not _CROSS_ISSUER_WARN_EMITTED:

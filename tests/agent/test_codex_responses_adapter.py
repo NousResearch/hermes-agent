@@ -593,16 +593,21 @@ def test_reasoning_replay_requires_matching_issuer_model_on_same_endpoint():
     assert not any(i.get("type") == "reasoning" for i in other)
 
 
-def test_reasoning_replay_drops_endpoint_stamped_legacy_item_without_model():
-    # Fail closed: an endpoint-only stamp cannot prove the minting model once the request model is known.
+def test_legacy_endpoint_stamped_item_without_model_replays_on_same_issuer():
+    # WHY: native compaction checkpoints and reasoning persisted before model stamping carry only the
+    # endpoint stamp; dropping them would erase every existing session's context once after upgrade.
     issuer = "other:https://responses.example.com/v1"
     legacy = {"type": "reasoning", "encrypted_content": "legacy-blob", "_issuer_kind": issuer}
     items = _chat_messages_to_responses_input(
         _reasoning_history(legacy), current_issuer_kind=issuer, current_issuer_model="gpt-5.6-sol"
     )
-    assert not any(i.get("type") == "reasoning" for i in items)
-    # Ordinary assistant text stays replayable; only the sealed blob is withheld.
-    assert any(i.get("role") == "assistant" for i in items)
+    replayed = [i for i in items if i.get("type") == "reasoning"]
+    assert [i["encrypted_content"] for i in replayed] == ["legacy-blob"]
+    # A different endpoint stamp still drops.
+    foreign = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind="codex_backend", current_issuer_model="gpt-5.6-sol"
+    )
+    assert not any(i.get("type") == "reasoning" for i in foreign)
 
 
 def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():

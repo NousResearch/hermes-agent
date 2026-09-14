@@ -219,13 +219,24 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=LoadState", "--property=TimeoutStopUSec"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
+        if result.returncode != 0:
+            continue
+        # A manager that does not know the unit still answers about it — with its OWN
+        # defaults — and exits 0: ``LoadState=not-found`` alongside
+        # ``TimeoutStopUSec=1min 30s`` (systemd's DefaultTimeoutStopSec). Accepting that
+        # number reports a phantom budget for a unit that lives in the other scope, so a
+        # system-scope gateway (TimeoutStopUSec=3min 30s) gets warned about being stale.
+        # Only a loaded unit describes itself; otherwise fall through to the next scope.
+        if any(line.strip() == "LoadState=not-found" for line in result.stdout.splitlines()):
+            continue
         # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
+        for line in result.stdout.splitlines():
             if line.startswith("TimeoutStopUSec="):
                 value = line.split("=", 1)[1].strip()
                 timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)

@@ -55,9 +55,9 @@ describe("isTouchPan", () => {
 });
 
 describe("ptyWheelSequence", () => {
-  it("sends Ink PageUp when the finger moves up so older transcript comes into view", () => {
-    expect(ptyWheelSequence(1)).toBe("\x1b[5~");
-    expect(ptyWheelSequence(-1)).toBe("\x1b[6~");
+  it("sends real SGR wheel events so Ink scrolls the transcript one step at a time", () => {
+    expect(ptyWheelSequence(1)).toBe("\x1b[<64;1;1M");
+    expect(ptyWheelSequence(-1)).toBe("\x1b[<65;1;1M");
     expect(ptyWheelSequence(0)).toBeNull();
   });
 });

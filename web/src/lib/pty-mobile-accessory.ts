@@ -26,6 +26,37 @@ export function accessoryDockBottomPx(_keyboardInsetPx: number): number {
   return 0;
 }
 
+/**
+ * Dispatch a real xterm arrow key without moving focus away from the helper
+ * textarea. The browser-input adapter normally owns Up/Down while its native
+ * caret mirror is active. A synthetic contextmenu event switches that adapter
+ * to helper-owned mode for this one key, allowing xterm to encode the arrow
+ * and forward it through the normal PTY onData path.
+ */
+export function dispatchPtyArrowKey(
+  host: HTMLElement,
+  key: "ArrowUp" | "ArrowDown",
+): boolean {
+  const terminal = host.classList.contains("xterm")
+    ? host
+    : host.querySelector<HTMLElement>(".xterm");
+  const textarea = terminal?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
+  if (!terminal || !textarea) return false;
+
+  terminal.dispatchEvent(new Event("contextmenu", { bubbles: true, cancelable: true }));
+  if (textarea.ownerDocument.activeElement !== textarea) textarea.focus();
+
+  const init: KeyboardEventInit = {
+    key,
+    code: key,
+    bubbles: true,
+    cancelable: true,
+  };
+  textarea.dispatchEvent(new KeyboardEvent("keydown", init));
+  textarea.dispatchEvent(new KeyboardEvent("keyup", init));
+  return true;
+}
+
 export function mountPtyMobileAccessory(
   _host: HTMLElement,
   actions: { paste: () => void; interrupt: () => void; caretLeft: () => void; caretRight: () => void },
@@ -37,29 +68,35 @@ export function mountPtyMobileAccessory(
   bar.setAttribute("aria-label", "Terminal keys");
   bar.style.display = "none";
   bar.style.position = "fixed";
-  bar.style.flexWrap = "wrap";
+  bar.style.flexWrap = "nowrap";
   bar.style.alignItems = "center";
   bar.style.left = "0";
   bar.style.right = "0";
   bar.style.bottom = "0";
   bar.style.zIndex = "2147483646";
-  bar.style.gap = "8px";
-  bar.style.padding = "8px 10px";
+  bar.style.gap = "6px";
+  bar.style.padding = "8px";
   bar.style.paddingBottom = "max(8px, env(safe-area-inset-bottom))";
   bar.style.background = "rgba(20,20,20,0.96)";
   bar.style.borderTop = "1px solid rgba(255,255,255,0.18)";
   bar.style.boxSizing = "border-box";
-  const mk = (label: string, onClick: () => void) => {
+  bar.style.overflowX = "auto";
+  bar.style.webkitOverflowScrolling = "touch";
+
+  const mk = (label: string, ariaLabel: string, onClick: () => void, compact = false) => {
     const btn = doc.createElement("button");
     btn.type = "button";
     btn.textContent = label;
+    btn.setAttribute("aria-label", ariaLabel);
     btn.style.minHeight = "40px";
-    btn.style.padding = "0 14px";
+    btn.style.minWidth = compact ? "42px" : "auto";
+    btn.style.padding = compact ? "0 10px" : "0 12px";
     btn.style.borderRadius = "8px";
     btn.style.border = "1px solid rgba(255,255,255,0.25)";
     btn.style.background = "#2a2a2a";
     btn.style.color = "#f5f5f5";
-    btn.style.font = "600 15px/1 system-ui,sans-serif";
+    btn.style.font = compact ? "700 19px/1 system-ui,sans-serif" : "600 14px/1 system-ui,sans-serif";
+    btn.style.flex = "0 0 auto";
     btn.addEventListener("pointerdown", (event) => {
       event.preventDefault();
     });
@@ -77,10 +114,13 @@ export function mountPtyMobileAccessory(
     bar.append(btn);
     return btn;
   };
-  mk("Left", actions.caretLeft);
-  mk("Right", actions.caretRight);
-  mk("Paste", actions.paste);
-  mk("Ctrl+C", actions.interrupt);
+
+  mk("↑", "Arrow up", () => dispatchPtyArrowKey(_host, "ArrowUp"), true);
+  mk("↓", "Arrow down", () => dispatchPtyArrowKey(_host, "ArrowDown"), true);
+  mk("←", "Arrow left", actions.caretLeft, true);
+  mk("→", "Arrow right", actions.caretRight, true);
+  mk("Paste", "Paste clipboard", actions.paste);
+  mk("Ctrl+C", "Interrupt with Control C", actions.interrupt);
   doc.body.append(bar);
 
   const setInset = (insetPx: number, coarsePointer: boolean, focused = false) => {

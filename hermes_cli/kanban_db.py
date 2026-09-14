@@ -3157,6 +3157,25 @@ def _nonblank_str(value: Any) -> Optional[str]:
     return value if isinstance(value, str) and value.strip() else None
 
 
+# Highest task_comments.id present when a review correction was recorded.
+REVIEWED_COMMENT_BOUND_KEY = "reviewed_comment_max_id"
+
+
+def _reviewed_comment_bound(conn: sqlite3.Connection, task_id: str) -> int:
+    row = conn.execute(
+        "SELECT MAX(id) AS max_id FROM task_comments WHERE task_id = ?", (task_id,),
+    ).fetchone()
+    return int(_row_get(row, "max_id") or 0)
+
+
+def reviewed_comment_bound(payload: Any) -> Optional[int]:
+    """Return a valid captured comment boundary; malformed/legacy is None."""
+    value = _json_dict(payload).get(REVIEWED_COMMENT_BOUND_KEY)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
 def request_changes(
     conn: sqlite3.Connection, task_id: str, *, reason: str, expected_run_id: Optional[int] = None,
 ) -> tuple[bool, Optional[str]]:
@@ -3221,6 +3240,7 @@ def request_changes(
                 "implementer": implementer,
                 "reviewer": reviewer,
                 "status": new_status,
+                REVIEWED_COMMENT_BOUND_KEY: _reviewed_comment_bound(conn, task_id),
             },
             run_id=run_id,
         )
@@ -3350,13 +3370,106 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
-def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def review_reauthorization_blocker(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[str]:
+    """Why ``task_id`` may NOT be re-authorized in place, or None when it is
+    exactly the legacy-recovery case (see ``reopen_review_task``).
+
+    Re-authorization is not a review verdict and not a completion claim: it
+    re-states an EXISTING correction whose boundary predates
+    :data:`REVIEWED_COMMENT_BOUND_KEY`, for a card that already sits in
+    ``ready`` because that correction ran. Every condition below is what makes
+    that re-statement a record of history rather than new permission.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return f"task {task_id} not found"
+    if row["status"] != "ready":
+        return (
+            f"task {task_id} is {row['status']!r}; in-place re-authorization applies "
+            "only to a 'ready' card left behind by an older correction"
+        )
+    if row["current_run_id"] is not None or row["claim_lock"] is not None or row["worker_pid"] is not None:
+        return f"task {task_id} has an active run/claim; reclaim or let it finish first"
+
+    correction = conn.execute(
+        "SELECT id, kind, payload FROM task_events WHERE task_id = ? "
+        "AND kind IN ('review_reopened', 'changes_requested') ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if correction is None:
+        return (
+            f"task {task_id} has no review correction to re-authorize; "
+            "re-authorization never grants a first-time exemption"
+        )
+    if reviewed_comment_bound(correction["payload"]) is not None:
+        return (
+            f"task {task_id} already carries a captured review boundary; "
+            "nothing to re-authorize"
+        )
+    answered = conn.execute(
+        "SELECT kind FROM task_events WHERE task_id = ? AND id > ? "
+        "AND kind IN ('completed', 'review_requested') ORDER BY id LIMIT 1",
+        (task_id, int(correction["id"])),
+    ).fetchone()
+    if answered is not None:
+        return (
+            f"task {task_id}'s correction was already answered by a "
+            f"{answered['kind']!r} event; it is spent, not legacy"
+        )
+    review_event = _latest_event(conn, task_id, "review_requested")
+    if _nonblank_str(_json_dict(_row_get(review_event, "payload")).get("implementer")) is None:
+        return f"task {task_id} has no valid review handoff provenance (implementer)"
+    return None
+
+
+def reopen_review_task(
+    conn: sqlite3.Connection, task_id: str, *, reauthorize_legacy: bool = False,
+) -> bool:
     """``review`` -> ``ready``/``todo`` so the implementer re-runs on the new
     comments; restores the implementer from the ``review_requested`` event.
     Preserves ``consecutive_failures`` and the block loop counter (review is
-    not a block; only :func:`complete_task` clears them)."""
+    not a block; only :func:`complete_task` clears them). The event carries
+    :data:`REVIEWED_COMMENT_BOUND_KEY` so the dispatcher can tell the PR this
+    correction is about from one opened afterwards.
+
+    ``reauthorize_legacy=True`` adds the in-place recovery arm for a card that
+    is ALREADY ``ready`` because a pre-boundary correction ran on it: the
+    status transition already happened, so this only captures the boundary that
+    correction could not record and appends a new ``review_reopened`` event
+    stating it. Historical rows are never rewritten, the goal/judge path is
+    never involved (nothing is declared complete or accepted), and
+    :func:`review_reauthorization_blocker` rejects every other ``ready`` card.
+    """
     now = int(time.time())
     with write_txn(conn):
+        if reauthorize_legacy and _task_status(conn, task_id) == "ready":
+            # Serialized with competing transitions by this IMMEDIATE txn: the
+            # blocker re-checks ownership and consumption here, not before it.
+            if review_reauthorization_blocker(conn, task_id) is not None:
+                return False
+            prior = conn.execute(
+                "SELECT id FROM task_events WHERE task_id = ? "
+                "AND kind IN ('review_reopened', 'changes_requested') "
+                "ORDER BY id DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            handoff = _json_dict(
+                _row_get(_latest_event(conn, task_id, "review_requested"), "payload"),
+            )
+            _append_event(
+                conn, task_id, "review_reopened",
+                {
+                    "status": "ready",
+                    REVIEWED_COMMENT_BOUND_KEY: _reviewed_comment_bound(conn, task_id),
+                    "implementer": _nonblank_str(handoff.get("implementer")),
+                    "reauthorizes_event_id": int(prior["id"]),
+                },
+            )
+            return True
         _reclaim_dangling_run(
             conn, task_id, statuses=("review",), now=now,
             note="invariant recovery on review reopen",
@@ -3377,7 +3490,10 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         if cur.rowcount != 1:
             return False
-        payload: dict[str, Any] = {"status": new_status}
+        payload: dict[str, Any] = {
+            "status": new_status,
+            REVIEWED_COMMENT_BOUND_KEY: _reviewed_comment_bound(conn, task_id),
+        }
         if implementer:
             payload["implementer"] = implementer
         _append_event(

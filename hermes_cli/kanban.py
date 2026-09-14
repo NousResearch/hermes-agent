@@ -997,16 +997,34 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
         reason = str(kb.redact_review_value(reason.strip())).strip() or None
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
+    reauthorize = bool(getattr(args, "reauthorize_legacy", False))
     with kbc.connect_closing() as conn:
+        # Recovered-in-place cards are reported as re-authorized, not reopened:
+        # they were already 'ready' and no status moved.
+        recovered: set[str] = set()
+
         def op(tid):
-            if not kb.reopen_review_task(conn, tid):
+            in_place = reauthorize and kb.review_reauthorization_blocker(conn, tid) is None
+            if not kb.reopen_review_task(conn, tid, reauthorize_legacy=reauthorize):
                 return False
+            if in_place:
+                recovered.add(tid)
             if reason:
                 kb.add_comment(conn, tid, author or "operator", f"CHANGES REQUESTED: {reason}")
             return True
 
-        return _bulk_apply(ids, op, lambda tid: f"Reopened {tid}{suffix}",
-                           lambda tid: f"cannot reopen {tid} (not in review?)")
+        def failure(tid):
+            if reauthorize:
+                blocker = kb.review_reauthorization_blocker(conn, tid)
+                if blocker:
+                    return f"cannot re-authorize {tid}: {blocker}"
+            return f"cannot reopen {tid} (not in review?)"
+
+        return _bulk_apply(
+            ids, op,
+            lambda tid: ("Re-authorized" if tid in recovered else "Reopened") + f" {tid}{suffix}",
+            failure,
+        )
 
 
 def _cmd_promote(args: argparse.Namespace) -> int:

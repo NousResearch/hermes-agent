@@ -72,6 +72,10 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
 )
 
 
+_REVIEW_CORRECTION_EVENT_KINDS = ("review_reopened", "changes_requested")
+_REVIEW_CORRECTION_CONSUMED_BY = ("completed", "review_requested")
+
+
 @dataclass
 class DispatchResult:
     """Outcome of a single ``dispatch`` pass.
@@ -1122,6 +1126,54 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
         )
 
 
+def _authorized_comment_bound(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[int]:
+    """Highest ``task_comments.id`` an outstanding review correction authorizes
+    a re-run over, or None when there is no such authority.
+
+    The boundary is not derived here: it is the value
+    :func:`~hermes_cli.kanban_db.reopen_review_task` /
+    :func:`~hermes_cli.kanban_db.request_changes` captured inside their own
+    IMMEDIATE write txn, so it names exactly the comments the correction acted
+    on. Comparisons stay within ``task_comments`` ids (the boundary) and
+    ``task_events`` ids (correction vs. what answered it); no clock is read and
+    no cross-table ids are compared.
+
+    None — withhold authority, the card keeps the ordinary PR guard — when:
+
+    * there is no correction event at all;
+    * the newest correction is a LEGACY event with no captured boundary (or a
+      malformed one). Reconstructing what the reviewer saw after the fact would
+      be inventing authority; the operator re-authorizes that card explicitly
+      with ``hermes kanban reopen-review <id> --reauthorize-legacy``, which
+      re-states the existing correction with today's boundary without claiming
+      the work is finished (see
+      :func:`~hermes_cli.kanban_db.review_reauthorization_blocker`);
+    * the correction was already ANSWERED — a ``completed`` or
+      ``review_requested`` event with a higher ``task_events.id``. A later
+      re-queue is then an ordinary re-run, not this correction's re-run.
+    """
+    placeholders = ", ".join("?" for _ in _REVIEW_CORRECTION_EVENT_KINDS)
+    row = conn.execute(
+        f"SELECT id, payload FROM task_events WHERE task_id = ? "
+        f"AND kind IN ({placeholders}) ORDER BY id DESC LIMIT 1",
+        (task_id, *_REVIEW_CORRECTION_EVENT_KINDS),
+    ).fetchone()
+    if row is None:
+        return None
+    bound = _kb.reviewed_comment_bound(row["payload"])
+    if bound is None:
+        return None
+    consumed_placeholders = ", ".join("?" for _ in _REVIEW_CORRECTION_CONSUMED_BY)
+    answered = conn.execute(
+        f"SELECT 1 FROM task_events WHERE task_id = ? AND id > ? "
+        f"AND kind IN ({consumed_placeholders}) LIMIT 1",
+        (task_id, int(row["id"]), *_REVIEW_CORRECTION_CONSUMED_BY),
+    ).fetchone()
+    return None if answered else bound
+
+
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
 ) -> Optional[str]:
@@ -1204,13 +1256,18 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # A captured correction authorizes only comments at or below its boundary.
+    authorized_bound = _authorized_comment_bound(conn, task_id)
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT id, body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if not (c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"])):
+            continue
+        if authorized_bound is not None and int(c["id"]) <= authorized_bound:
+            continue
+        return "active_pr"
 
     return None
 

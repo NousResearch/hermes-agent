@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import goals
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -476,6 +477,227 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         assert kbd.check_respawn_guard(
             conn, review_id, lane="review"
         ) == "rate_limit_cooldown"
+
+
+def _judge_must_not_run(*_args, **_kwargs):
+    raise AssertionError(
+        "re-authorizing a legacy correction must never consult the goal judge: "
+        "it claims nothing about the work being finished"
+    )
+
+
+def _make_correction_legacy(conn, task_id: str) -> None:
+    """Strip the captured boundary from the card's newest correction, leaving
+    exactly the event shape written before boundaries existed."""
+    row = conn.execute(
+        "SELECT id, payload FROM task_events WHERE task_id = ? "
+        "AND kind IN ('review_reopened', 'changes_requested') ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    payload = json.loads(row["payload"] or "{}")
+    payload.pop(kb.REVIEWED_COMMENT_BOUND_KEY, None)
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_events SET payload = ? WHERE id = ?",
+            (json.dumps(payload), row["id"]),
+        )
+
+
+def _legacy_ready_card(conn, title: str, pr: str, **create_kw) -> str:
+    """A card in the state the pilot hit: ``ready`` after a real review handoff
+    and correction, with a PR on the table and a pre-boundary correction row."""
+    tid = kb.create_task(conn, title=title, assignee="worker", **create_kw)
+    run = kb.claim_task(conn, tid)
+    assert run is not None
+    kb.add_comment(conn, tid, author="worker", body=pr)
+    assert kb.request_review(
+        conn, tid, summary="await review", expected_run_id=run.current_run_id,
+    )
+    assert kb.reopen_review_task(conn, tid) is True
+    _make_correction_legacy(conn, tid)
+    return tid
+
+
+def test_explicit_review_correction_makes_same_pr_card_dispatchable(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ownership-checked review correction is authority to re-run the
+    implementer on the PR that was already under review.
+
+    Both correction paths — the controller's ``reopen-review`` and the
+    reviewer's ``request_changes`` (only writable while holding the run
+    claimed from ``review``) — return the card to the implementer *because of*
+    the PR in the comments. Reading that same PR link as "a worker already
+    opened a PR, don't respawn" strands the correction: the card sits ``ready``
+    and never dispatches (native repro: create -> claim -> PR comment ->
+    request_review -> reopen_review_task left ``check_respawn_guard`` at
+    ``active_pr``).
+    """
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    pr = "Implemented https://github.com/example/repo/pull/1"
+
+    with kbc.connect() as conn:
+        # Controller path: reopen-review on a card whose PR is on the table.
+        reopened = kb.create_task(conn, title="correct the PR", assignee="worker")
+        run = kb.claim_task(conn, reopened)
+        assert run is not None
+        kb.add_comment(conn, reopened, author="worker", body=pr)
+        assert kb.request_review(
+            conn, reopened, summary="await review", expected_run_id=run.current_run_id,
+        )
+        assert kb.reopen_review_task(conn, reopened) is True
+        assert kb.get_task(conn, reopened).status == "ready"
+        assert kbd.check_respawn_guard(conn, reopened) is None
+
+        # Reviewer path: request_changes from the claimed review run.
+        changed = kb.create_task(conn, title="reviewer sends it back", assignee="worker")
+        impl = kb.claim_task(conn, changed)
+        assert impl is not None
+        kb.add_comment(conn, changed, author="worker", body=pr)
+        assert kb.request_review(
+            conn, changed, summary="await review", reviewer="reviewer",
+            expected_run_id=impl.current_run_id,
+        )
+        review_run = kb.claim_review_task(conn, changed)
+        assert review_run is not None
+        ok, implementer = kb.request_changes(conn, changed, reason="fix the migration")
+        assert (ok, implementer) == (True, "worker")
+        assert kb.get_task(conn, changed).status == "ready"
+        assert kbd.check_respawn_guard(conn, changed) is None
+
+        # Recovery path: a goal-mode card already ``ready`` from a correction
+        # written before boundaries existed. The operator re-authorizes it in
+        # place; nothing is completed, accepted, or shown to the goal judge —
+        # consulting the judge here fails the test.
+        monkeypatch.setattr(goals, "judge_goal", _judge_must_not_run)
+        stranded = _legacy_ready_card(conn, "goal card, old correction", pr, goal_mode=True)
+        assert kbd.check_respawn_guard(conn, stranded) == "active_pr"
+        assert kb.review_reauthorization_blocker(conn, stranded) is None
+        assert kb.reopen_review_task(conn, stranded, reauthorize_legacy=True) is True
+        # Status is untouched — the correction already moved it; only the
+        # boundary this card never recorded is now on the event log.
+        assert kb.get_task(conn, stranded).status == "ready"
+        assert kbd.check_respawn_guard(conn, stranded) is None
+
+        # ...and the dispatcher actually picks all three of them up.
+        res = kbd.dispatch_once(conn, dry_run=True)
+        assert {reopened, changed, stranded}.issubset({s[0] for s in res.spawned})
+        assert not res.respawn_guarded
+
+
+def test_active_pr_guard_holds_beyond_and_after_correction_authority(
+    kanban_home: Path,
+) -> None:
+    """A correction authorizes the comments it acted on — nothing later.
+
+    Three cards must stay ``active_pr``:
+
+    * an ordinary ready card carrying a fresh PR link (nobody authorized a
+      re-run — the duplicate-PR case the guard exists for);
+    * a corrected card whose implementer then opened a SECOND PR **in the same
+      wall-clock second** as the correction. Ordering here is the comment id
+      the correction captured in its own write txn, so a same-second write
+      cannot slip under the boundary;
+    * a card whose correction was already answered — by a completion, or by a
+      fresh ``review_requested`` handoff — and that is later re-queued by an
+      ordinary operator action. Spent authority is not reusable.
+    """
+    pr1 = "Opened https://github.com/example/repo/pull/7"
+    pr2 = "Superseded by https://github.com/example/repo/pull/8"
+
+    with kbc.connect() as conn:
+        # Ordinary duplicate-PR card: ready, PR link, no correction.
+        ordinary = kb.create_task(conn, title="already PRed", assignee="worker")
+        kb.add_comment(conn, ordinary, author="worker", body=pr1)
+        assert kbd.check_respawn_guard(conn, ordinary) == "active_pr"
+
+        # Corrected card that then received a newer PR link, same second.
+        handoff = kb.create_task(conn, title="newer PR handoff", assignee="worker")
+        run = kb.claim_task(conn, handoff)
+        assert run is not None
+        kb.add_comment(conn, handoff, author="worker", body=pr1)
+        assert kb.request_review(
+            conn, handoff, summary="await review", expected_run_id=run.current_run_id,
+        )
+        assert kb.reopen_review_task(conn, handoff) is True
+        assert kbd.check_respawn_guard(conn, handoff) is None
+        kb.add_comment(conn, handoff, author="worker", body=pr2)
+        assert kbd.check_respawn_guard(conn, handoff) == "active_pr"
+
+        # In-place re-authorization is refused for a ready card that carries no
+        # correction at all: recovery re-states history, it never grants a
+        # first-time exemption.
+        assert "no review correction" in (
+            kb.review_reauthorization_blocker(conn, ordinary) or ""
+        )
+        assert kb.reopen_review_task(conn, ordinary, reauthorize_legacy=True) is False
+        assert kbd.check_respawn_guard(conn, ordinary) == "active_pr"
+
+        # ...and for a legacy card whose implementer is running right now:
+        # re-authorizing under a live claim would race that writer.
+        claimed = _legacy_ready_card(conn, "legacy but claimed", pr1)
+        assert kb.claim_task(conn, claimed) is not None
+        assert "'running'" in (kb.review_reauthorization_blocker(conn, claimed) or "")
+        assert kb.reopen_review_task(conn, claimed, reauthorize_legacy=True) is False
+
+        # ...and for a ready row still holding a worker's claim lock, which the
+        # reclaim passes own: re-authorizing there would race that writer.
+        locked = _legacy_ready_card(conn, "legacy with a live lock", pr1)
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET claim_lock = 'worker-1' WHERE id = ?", (locked,))
+        assert "active run/claim" in (kb.review_reauthorization_blocker(conn, locked) or "")
+        assert kb.reopen_review_task(conn, locked, reauthorize_legacy=True) is False
+
+        # Spent authority: both cards are corrected, then answer the correction
+        # (one completes, one hands off for review again) before an ancestor
+        # reopen re-queues them.
+        ancestor = kb.create_task(conn, title="ancestor", assignee="worker")
+        finished = kb.create_task(conn, title="corrected then finished", assignee="worker")
+        rehanded = kb.create_task(conn, title="corrected then re-reviewed", assignee="worker")
+        for child in (finished, rehanded):
+            kb.link_tasks(conn, ancestor, child)
+        assert kb.complete_task(conn, ancestor, summary="parent done") is True
+        for child in (finished, rehanded):
+            child_run = kb.claim_task(conn, child)
+            assert child_run is not None
+            kb.add_comment(conn, child, author="worker", body=pr1)
+            assert kb.request_review(
+                conn, child, summary="await review",
+                expected_run_id=child_run.current_run_id,
+            )
+            assert kb.reopen_review_task(conn, child) is True
+            assert kbd.check_respawn_guard(conn, child) is None
+
+        answered = kb.claim_task(conn, finished)
+        assert answered is not None
+        assert kb.complete_task(
+            conn, finished, summary="shipped", expected_run_id=answered.current_run_id,
+        ) is True
+        rerun = kb.claim_task(conn, rehanded)
+        assert rerun is not None
+        assert kb.request_review(
+            conn, rehanded, summary="second pass", expected_run_id=rerun.current_run_id,
+        )
+
+        kb.invalidate_descendants_for_parent_reopen(conn, ancestor, author="operator")
+        kb.recompute_ready(conn)
+        # ``finished`` is back in the ready lane; ``rehanded`` resumed its review
+        # phase — neither may reuse the correction it already answered.
+        assert kb.get_task(conn, finished).status == "ready"
+        assert kbd.check_respawn_guard(conn, finished) == "active_pr"
+        assert kbd.check_respawn_guard(conn, rehanded) == "active_pr"
+        # Nor may re-authorization revive spent authority. Even reduced to the
+        # legacy event shape, ``finished``'s correction was answered by a
+        # completion; ``rehanded`` handed off for review again, so it is not a
+        # ready card at all and in-place recovery never applies to it.
+        for child in (finished, rehanded):
+            _make_correction_legacy(conn, child)
+        assert "'completed'" in (kb.review_reauthorization_blocker(conn, finished) or "")
+        assert "'review'" in (kb.review_reauthorization_blocker(conn, rehanded) or "")
+        assert kb.reopen_review_task(conn, finished, reauthorize_legacy=True) is False
+        assert kbd.check_respawn_guard(conn, finished) == "active_pr"
 
 
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(

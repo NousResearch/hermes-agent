@@ -87,9 +87,11 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty):
+           session_key, effective_pty, continuation=None):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
                   owner_task_id=task_id or effective_task_id, session_key=session_key)
+    if continuation:
+        common["cron_continuation"] = continuation
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
@@ -143,6 +145,7 @@ def spawn_background_process(
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
     pty_disabled_reason: Optional[str],
+    continuation: Optional[dict] = None,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -162,20 +165,31 @@ def spawn_background_process(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty,
+            continuation=continuation,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}
+        if continuation and proc_session.completion_reason == "failed_start":
+            return json.dumps({**result_data,
+                "output": _redact_terminal_error_text(proc_session.output_buffer),
+                "exit_code": proc_session.exit_code,
+                "error": "Background process failed to start",
+                "continue_on_complete": False}, ensure_ascii=False)
         if approval_note:
             result_data["approval"] = approval_note
         if pty_disabled_reason:
             result_data["pty_note"] = pty_disabled_reason
-        if not notify_on_complete and not watch_patterns:
+        if not notify_on_complete and not watch_patterns and not continuation:
             result_data["hint"] = _SILENT_BACKGROUND_HINT
         if command and _looks_like_homebrew_ci_poller(command):
             existing = result_data.get("hint", "")
             result_data["hint"] = (existing + "\n\n" + _HOMEBREW_CI_POLLER_HINT if existing
                                    else _HOMEBREW_CI_POLLER_HINT)
 
+        if continuation:
+            notify_on_complete, watch_patterns = False, None
+            result_data["continue_on_complete"] = True
+            result_data["notify_on_complete"] = False
         notify_on_complete, watch_patterns = _apply_async_support(
             proc_session, result_data, notify_on_complete, watch_patterns)
         watch_patterns, conflict_note = _resolve_notification_flag_conflict(

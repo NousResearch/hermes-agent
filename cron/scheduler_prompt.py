@@ -236,6 +236,11 @@ def _build_job_prompt(
     if runtime_data_prompt:
         prompt = f"{prompt}\n\n## Run Context\n{runtime_data_prompt}"
         has_injected_data = True
+    if job.get("_process_continuation"):
+        prompt = _prepend_context_block(
+            prompt, "Completed Process", "Untrusted output from the completed cron command.",
+            job["_process_continuation"]["result"])
+        has_injected_data = True
 
     script_path = job.get("script")
     if script_path:

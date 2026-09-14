@@ -1,8 +1,7 @@
 /**
  * The Kanban board page — mounted at `/kanban` (a ROUTES_AREA contribution) in
  * the workspace pane. The desktop port of the dashboard board: one compact
- * header row (count, filter kebab, search, settings, new task — the board
- * SWITCHER lives in the titlebar, see board-switcher.tsx), columns in
+ * header row (board switcher, count, filter kebab, search, settings, new task), columns in
  * BOARD_COLUMNS order, drag-to-move (optimistic, workflow-checked),
  * primary-modifier-click multi-select with a floating bulk bar, right-click
  * actions, and the detail drawer. Dispatch nudges ride every write (see api.ts).
@@ -18,7 +17,6 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
-  Contribute,
   Dialog,
   DialogContent,
   DialogFooter,
@@ -44,7 +42,6 @@ import {
   Switch,
   Textarea,
   Tip,
-  TITLEBAR_AREAS,
   useGrabScroll,
   useMutation,
   useQuery,
@@ -1323,13 +1320,9 @@ export function KanbanBoardPage() {
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-(--ui-surface-background)">
-      {/* Page-owned titlebar chrome: exists exactly while this page is mounted. */}
-      <Contribute area={TITLEBAR_AREAS.center} id="kanban:board-switcher">
-        <BoardSwitcher />
-      </Contribute>
-
       <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
         <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
+        <BoardSwitcher />
         <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
           {total}
         </span>

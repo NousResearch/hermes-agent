@@ -1074,11 +1074,28 @@ class TestSkillViewCollisionDetection:
         p1, p2 = self._patch_dirs(local_dir, [])
         with p1, p2:
             raw = skill_view("research")
+            internal_raw = skill_view("character/example/prompts/research")
 
         result = json.loads(raw)
         assert result["success"] is True
-        assert result["path"] == "research/SKILL.md"
+        assert Path(result["path"]).parts == ("research", "SKILL.md")
         assert "REAL RESEARCH SKILL" in result["content"]
+        assert json.loads(internal_raw)["success"] is False
+
+    def test_categorized_legacy_flat_markdown_remains_loadable(self, tmp_path):
+        category = tmp_path / "legacy"
+        category.mkdir()
+        (category / "research.md").write_text(
+            "---\nname: research\ndescription: Legacy research skill.\n---\n",
+            encoding="utf-8",
+        )
+
+        p1, p2 = self._patch_dirs(tmp_path, [])
+        with p1, p2:
+            result = json.loads(skill_view("legacy/research"))
+
+        assert result["success"] is True
+        assert Path(result["path"]).parts == ("legacy", "research.md")
 
 
     def test_two_externals_same_name_also_refuse(self, tmp_path):

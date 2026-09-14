@@ -776,8 +776,9 @@ export function useSessionActions({
         const requestedProfile = normalizeProfileKey(
           typeof options?.profile === 'string' && options.profile
             ? options.profile
-            : ($newChatProfile.get() || $activeGatewayProfile.get())
+            : $newChatProfile.get() || $activeGatewayProfile.get()
         )
+
         const legacyOwnerProfile =
           options?.route === undefined &&
           !capturedRoute &&

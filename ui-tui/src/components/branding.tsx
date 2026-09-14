@@ -1,9 +1,9 @@
 import { Box, Text, useStdout } from '@hermes/ink'
+import { mix } from '@hermes/shared/color'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
-import { mix } from '../lib/color.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -250,8 +250,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   }
 
   // ── Collapsible skills section ──
-  const skillEntries = Object.entries(info.skills).sort()
-  const skillsTotal = flat(info.skills).length
+  const skills = info.skills ?? {}
+  const skillEntries = Object.entries(skills).sort()
+  const skillsTotal = flat(skills).length
   const skillsCatCount = skillEntries.length
 
   const skillsBody = () => {
@@ -276,8 +277,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   }
 
   // ── Collapsible tools section ──
-  const toolEntries = Object.entries(info.tools).sort()
-  const toolsTotal = flat(info.tools).length
+  const tools = info.tools ?? {}
+  const toolEntries = Object.entries(tools).sort()
+  const toolsTotal = flat(tools).length
 
   // MCP headline counts *connected* servers, not configured-but-disabled ones,
   // so it matches the classic CLI banner (`sum(s.connected)` in
@@ -354,7 +356,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
       <Text />
 
       <Text color={t.color.accent}>
-        {info.model.split('/').pop()}
+        {(info.model ?? '').split('/').pop()}
         <Text color={t.color.muted}> · Nous Research</Text>
       </Text>
 
@@ -386,7 +388,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         // here so they aren't lost.
         <Box flexDirection="column" marginBottom={1}>
           <Text color={t.color.accent} wrap="truncate-end">
-            {info.model.split('/').pop()}
+            {(info.model ?? '').split('/').pop()}
             <Text color={t.color.muted}> · Nous Research</Text>
           </Text>
           <Text color={t.color.muted} wrap="truncate-end">

@@ -1,7 +1,7 @@
 """Local-CDP battery orchestrator: tasks x arms x models x reps.
 
 Resume-safe: completed cells in results.jsonl are skipped, so a killed
-battery continues where it left off (same pattern as scripts/toolperf_abeval).
+battery continues where it left off (same pattern as evals/toolperf_abeval).
 
 Usage:
     # start a headless Chrome first:

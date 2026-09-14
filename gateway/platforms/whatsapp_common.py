@@ -15,15 +15,16 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gateway.platforms._shared import get_scoped_secret as _get_wsecret
+from gateway.platforms._shared import extra_or_secret as _extra_or_wsecret, get_scoped_secret as _get_wsecret
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"true", "1", "yes", "on"}
-_OPTIN_TRUTHY = {"true", "1", "yes"}
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
@@ -46,15 +47,16 @@ def _header_to_bold(m: re.Match) -> str:
     return f"*{inner}*"
 
 
-class WhatsAppBehaviorMixin:
+class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
     """Shared behavior for all WhatsApp adapters (Baileys + Cloud API); owns no state
     of its own — see the module docstring for the host adapter's attribute contract."""
 
     # Practical UX limit, not the ~65K protocol max (long messages are unreadable on mobile).
     MAX_MESSAGE_LENGTH: int = 4096
+    ALLOW_ALL_ENV_PREFIX = "WHATSAPP"
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
 
-    DEFAULT_REPLY_PREFIX: str = "⚕ *Hermes Agent*\n────────────\n"
+    DEFAULT_REPLY_PREFIX: str = "☤ *Hermes Agent*\n────────────\n"
 
     _OUTBOUND_INVISIBLE_CHARS_RE = re.compile(r"[\u200b\u2060\u2063\ufeff]")
     _OUTBOUND_ODD_SPACE_RE = re.compile(r"[\u00a0\u1680\u180e\u2000-\u200a\u202f\u205f\u3000]")
@@ -66,11 +68,6 @@ class WhatsAppBehaviorMixin:
         if not content:
             return content
         return cls._OUTBOUND_ODD_SPACE_RE.sub(" ", cls._OUTBOUND_INVISIBLE_CHARS_RE.sub("", content))
-
-    @property
-    def enforces_own_access_policy(self) -> bool:
-        """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
-        return True
 
     def _effective_reply_prefix(self) -> str:
         """Prefix for outgoing replies in self-chat mode (Cloud API overrides to ``""``)."""
@@ -96,10 +93,9 @@ class WhatsAppBehaviorMixin:
         return bool(configured)
 
     def _whatsapp_free_response_chats(self) -> set[str]:
-        raw = self.config.extra.get("free_response_chats")
-        if raw is None:
-            raw = _get_wsecret("WHATSAPP_FREE_RESPONSE_CHATS", default="") or ""
-        return self._coerce_allow_list(raw)
+        """``extra.free_response_chats`` (blank = unset) else the scoped env CSV."""
+        return self._coerce_allow_list(
+            _extra_or_wsecret(self.config.extra, "free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"))
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
@@ -131,7 +127,10 @@ class WhatsAppBehaviorMixin:
         set (pairing revoke purges it in place) — a stale env value must not broaden access."""
         source = getattr(self, "_dm_allowlist_source", None)
         if isinstance(source, str) and source != "config":
-            return self._coerce_allow_list(os.environ[source]) if source in os.environ else set()
+            # Scoped read: under multiplex os.environ is the DEFAULT profile's allowlist. None = key
+            # absent (revoked) → empty, never the construction snapshot.
+            live = _get_wsecret(source)
+            return self._coerce_allow_list(live) if live is not None else set()
         return set(self._allow_from or ())
 
     # ------------------------------------------------------------------ JID helpers
@@ -152,11 +151,6 @@ class WhatsAppBehaviorMixin:
         return cid == "status@broadcast" or cid.endswith(("@broadcast", "@newsletter"))
 
     # ------------------------------------------------------------------ gating
-    def _open_dm_opted_in(self) -> bool:
-        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in _OPTIN_TRUTHY:
-            return True
-        return (_get_wsecret("WHATSAPP_ALLOW_ALL_USERS", default="") or "").lower() in _OPTIN_TRUTHY
-
     @staticmethod
     def _matches_whatsapp_allowlist(candidate: str, allow_from) -> bool:
         """Match a WhatsApp identifier against an allowlist across phone/LID forms. Inbound senders
@@ -177,28 +171,8 @@ class WhatsAppBehaviorMixin:
             for entry in allow_from
         )
 
-    def _is_dm_allowed(self, sender_id: str) -> bool:
-        """Strict DM authorization — pairing does not imply access."""
-        if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(sender_id, self._live_dm_allow_from())
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_dm_intake_allowed(self, sender_id: str) -> bool:
-        """Whether a DM may reach the gateway intake (pairing handshake path)."""
-        principal = str(sender_id or "").strip()
-        if not principal:
-            return False
-        if self._dm_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(principal, self._live_dm_allow_from())
-        if self._dm_policy == "pairing":
-            return True
-        return self._dm_policy == "open" and self._open_dm_opted_in()
-
-    def _is_group_allowed(self, chat_id: str) -> bool:
-        """Check whether a group chat should be processed."""
-        if self._group_policy == "allowlist":
-            return self._matches_whatsapp_allowlist(chat_id, self._group_allow_from)
-        return self._group_policy == "open"
+    def _entry_matches(self, entries, target: str) -> bool:
+        return self._matches_whatsapp_allowlist(target, entries)
 
     def _compile_mention_patterns(self):
         patterns = self.config.extra.get("mention_patterns")
@@ -310,9 +284,8 @@ def resolve_whatsapp_bridge_dir() -> Path:
     """Bridge directory for CLI and adapter. A read-only install tree (e.g. Docker
     /opt/hermes) is mirrored to HERMES_HOME so npm install works."""
     import shutil
-    from pathlib import Path as _Path
     from hermes_constants import get_hermes_home
-    install_bridge = _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    install_bridge = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
     hermes_home_bridge = get_hermes_home() / "scripts" / "whatsapp-bridge"
     try:
         (install_bridge / ".write_test").touch()

@@ -11,12 +11,12 @@ redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 import asyncio
 import contextlib
 import contextvars
+import html
 import importlib.util as _importlib_util
 import json
 import logging
 import os
 import re
-import secrets
 import socket
 import stat
 import sys
@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from hermes_constants import secure_parent_dir
+from utils import atomic_json_write
 from tools.mcp_dashboard_oauth import contextvar_set as _contextvar_set, get_dashboard_oauth_flow
 
 if TYPE_CHECKING:  # annotations only; the SDK is imported lazily at runtime
@@ -169,16 +170,35 @@ def _cached_redirect(storage: "HermesTokenStorage | None") -> "tuple[str | None,
     return uri, port
 
 
+def _stdin_is_console() -> bool:
+    """A human can type on stdin. ``isatty()`` alone is wrong on Windows: the CRT reports True for
+    a DEVNULL / detached / CREATE_NO_WINDOW stdin (the gateway's), so a background process looked
+    interactive and launched browser OAuth flows nobody could finish. Confirm with the console API
+    there: ``GetConsoleMode`` fails on anything that is not a real console handle."""
+    try:
+        if not sys.stdin.isatty():
+            return False
+    except (AttributeError, ValueError):
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        import msvcrt
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        mode = ctypes.c_ulong()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(ctypes.c_void_p(handle), ctypes.byref(mode)))
+    except Exception:
+        return False
+
+
 def _is_interactive() -> bool:
     """True if we can reasonably expect to interact with a user."""
     if not _oauth_interactive_enabled.get():
         return False
     if _oauth_interactive_forced.get():
         return True
-    try:
-        return sys.stdin.isatty()
-    except (AttributeError, ValueError):
-        return False
+    return _stdin_is_console()
 
 
 def _raise_if_non_interactive(lead: str) -> None:
@@ -236,33 +256,11 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    """Atomically write *data* as JSON created at 0o600 (``O_EXCL`` + mode avoids the write-then-chmod
-    window where the file inherits a world-readable umask); parent dir tightened to 0o700. The random
-    per-process tmp suffix avoids clashes with concurrent writers/crash leftovers.
-
-    The previous ``write_text`` + post-write ``chmod`` opened a TOCTOU window where the temp file briefly
-    inherited the process umask (commonly 0o644 = world-readable), exposing OAuth tokens to other local
-    users between create and chmod. Mirrors the fix in ``agent/google_oauth.py`` (#19673).
-    """
+    """OAuth tokens/client info at 0600 from creation, parent tightened to 0700 (``secure_parent_dir``
+    refuses ``/``, top-level dirs and the install tree — #25821, #93050)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # secure_parent_dir refuses to chmod /, top-level dirs, or the hermes-agent install tree (#25821,
-    # #93050).
-    # Tighten parent dir to 0o700 so siblings can't traverse to the creds. No-op on Windows (POSIX mode bits
-    # aren't enforced); ignore failures. secure_parent_dir refuses to chmod /, top-level dirs, or the
-    # hermes-agent install tree (#25821, #93050).
     secure_parent_dir(path)
-    tmp = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
-    try:
-        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2, default=str)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        raise
+    atomic_json_write(path, data, mode=0o600, default=str)
 
 
 def _model_json(model: Any) -> dict:
@@ -277,6 +275,11 @@ class HermesTokenStorage:
     def __init__(self, server_name: str, *, hermes_home: str | Path | None = None):
         self._server_name = _safe_filename(server_name)
         self._hermes_home = Path(hermes_home) if hermes_home is not None else None
+        # Issuer binding: ``loaded_issuer`` is what the token file on disk recorded (the authorization
+        # server that granted the stored refresh token); ``_bound_issuer`` is stamped onto the next
+        # ``set_tokens`` write. See ``tools.mcp_oauth_provider.enforce_refresh_token_issuer``.
+        self.loaded_issuer: str | None = None
+        self._bound_issuer: str | None = None
 
     def _path(self, suffix: str) -> Path:
         return _get_token_dir(self._hermes_home) / f"{self._server_name}{suffix}"
@@ -295,6 +298,10 @@ class HermesTokenStorage:
         ``fixup(data)`` may rewrite the raw dict before validation."""
         data = _read_json(path)
         cls = _sdk_class(sdk_name) if data is not None else None
+        if (cls is not None and sdk_name == "OAuthMetadata" and isinstance(data, dict)
+                and data.get("device_authorization_endpoint")):
+            from tools.mcp_oauth_device import DeviceOAuthMetadata
+            cls = DeviceOAuthMetadata
         if cls is None:
             return None
         if fixup is not None:
@@ -302,7 +309,13 @@ class HermesTokenStorage:
         try:
             return cls.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
-            logger.warning("Corrupt %s at %s -- ignoring: %s", label, path, exc)
+            # A pydantic ValidationError's str() echoes the raw input (the token material); log
+            # only which fields failed.
+            detail = exc
+            if hasattr(exc, "errors"):  # pydantic ValidationError
+                detail = "validation failed for " + ", ".join(
+                    ".".join(map(str, e.get("loc", ()))) for e in exc.errors(include_input=False))
+            logger.warning("Corrupt %s at %s -- ignoring: %s", label, path, detail)
             return None
 
     def _rebase_expires_in(self, data: dict) -> None:
@@ -318,8 +331,14 @@ class HermesTokenStorage:
                 implied_expiry = self._tokens_path().stat().st_mtime + int(data["expires_in"])
                 data["expires_in"] = int(max(implied_expiry - time.time(), 0))
 
+    def _fixup_loaded_tokens(self, data: dict) -> None:
+        # ``hermes_issuer`` is Hermes bookkeeping, not an SDK OAuthToken field: pop before validation.
+        self.loaded_issuer = data.pop("hermes_issuer", None)
+        self._rebase_expires_in(data)
+
     async def get_tokens(self) -> "OAuthToken | None":
-        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._rebase_expires_in)
+        self.loaded_issuer = None
+        return self._load_model(self._tokens_path(), "OAuthToken", "tokens", self._fixup_loaded_tokens)
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
         payload = _model_json(tokens)
@@ -327,8 +346,47 @@ class HermesTokenStorage:
         if payload.get("expires_in") is not None:
             with contextlib.suppress(TypeError, ValueError):  # mock tokens / odd shapes: skip, don't fail persistence
                 payload["expires_at"] = time.time() + int(payload["expires_in"])
+        if self._bound_issuer:  # which authorization server granted these tokens (never sent on the wire)
+            payload["hermes_issuer"] = self._bound_issuer
+            self.loaded_issuer = self._bound_issuer
         _write_json(self._tokens_path(), payload)
         logger.debug("OAuth tokens saved for %s", self._server_name)
+
+    def bind_issuer(self, issuer: str | None) -> None:
+        """Set the authorization-server issuer stamped on future token writes."""
+        self._bound_issuer = str(issuer) if issuer else None
+
+    def stamp_issuer(self, issuer: str) -> None:
+        """Backfill ``hermes_issuer`` onto a pre-binding token file: adopt the currently discovered
+        issuer once instead of forcing a re-login, so the *next* read is protected."""
+        data = _read_json(self._tokens_path())
+        if data is None or data.get("hermes_issuer"):
+            return
+        data["hermes_issuer"] = str(issuer)
+        try:
+            _write_json(self._tokens_path(), data)
+        except OSError as exc:  # non-fatal — worst case we stamp next time
+            logger.debug("Could not stamp issuer on tokens for %s: %s", self._server_name, exc)
+            return
+        self.loaded_issuer = str(issuer)
+
+    def strip_refresh_token(self) -> None:
+        """Drop the refresh token (and its issuer record) from disk, keeping the access token: the
+        unexpired access token may still be used, but a refresh token must never go to a different
+        issuer than the one that granted it."""
+        data = _read_json(self._tokens_path())
+        if data is None or not data.get("refresh_token"):
+            return
+        data.pop("refresh_token", None)
+        data.pop("hermes_issuer", None)
+        self.loaded_issuer = None
+        try:
+            _write_json(self._tokens_path(), data)
+        except OSError as exc:
+            logger.warning("Could not strip refresh token for %s: %s", self._server_name, exc)
+            return
+        logger.info("Removed issuer-mismatched refresh token for %s (re-authorization will be required "
+                    "when the access token expires)", self._server_name)
 
     @staticmethod
     def _coerce_secret_auth_method(data: dict) -> bool:
@@ -466,7 +524,7 @@ def _make_callback_handler() -> tuple[type, dict]:
             parsed = _parse_redirect_query(urlparse(self.path).query)
             result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
             body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
-                    else f"<h2>Authorization Failed</h2><p>Error: {parsed['error'] or 'unknown'}</p>")
+                    else f"<h2>Authorization Failed</h2><p>Error: {html.escape(parsed['error'] or 'unknown')}</p>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()

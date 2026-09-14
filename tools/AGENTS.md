@@ -10,7 +10,10 @@ Most capabilities should NOT be core tools. Long-form: `website/docs/developer-g
 `registry.register()` at import time; `model_tools.py` imports the registry and triggers discovery
 (`discover_builtin_tools()`), then `run_agent.py`, `cli.py`, `batch_runner.py`, `environments/`
 consume it. Any `tools/*.py` with a top-level `registry.register()` is imported automatically — no
-manual import list. The registry handles schema collection, dispatch (`handle_function_call()`),
+manual import list. A tool that is a whole package (`tools/connectors/`) registers from
+`tools/<pkg>/tool.py`, the only file discovery scans inside a package; every sibling in the package
+is a library by construction, and the package needs an `__init__.py` or discovery skips it with a
+warning (setuptools would drop it from the wheel). The registry handles schema collection, dispatch (`handle_function_call()`),
 availability (`check_fn`, TTL-cached process-wide), and error wrapping. **All handlers return a JSON
 string.**
 
@@ -79,12 +82,21 @@ fixed at the mount, not by adding a tool.
 Spawns a subagent with isolated context + terminal session; the parent waits for the summary unless
 `background=true`, which returns a delegation id and re-enters the result via the async-delegation
 completion queue. Shapes: single (`goal` + optional `context`, `toolsets`) or batch (`tasks: [...]`,
-concurrency capped by `delegation.max_concurrent_children`, default 3). Roles: `leaf` (default;
+concurrency capped by `delegation.max_concurrent_children`, default 3). A background batch returns as ONE
+completion by default; with `delegation.independent_completions` it is split into completion **units**
+(`delegate_tool_dispatch._units_of`): tasks sharing a `group` join and report together; each ungrouped
+task reports alone as it finishes. Units of one call share ONE pool slot (`slot_key` in
+`async_delegation._dispatch`) — never count units against capacity; the executor is sized by live UNITS
+and the stall clock arms when the runner starts, so a queued unit is never judged stalled. Roles: `leaf` (default;
 no `delegate_task`, `clarify`, `memory`, `send_message`, `cronjob`; keeps `execute_code`) and
 `orchestrator` (keeps `delegate_task`; gated by `delegation.orchestrator_enabled`, bounded by
 `delegation.max_spawn_depth`, default 2). Config knobs under `delegation:`:
-`max_concurrent_children, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
-subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Durability:** background
+`max_concurrent_children, independent_completions, max_spawn_depth, child_timeout_seconds, orchestrator_enabled,
+subagent_auto_approve, inherit_mcp_toolsets, max_iterations`. **Child processes:** a child's background
+processes are killed at its teardown and their notices are suppressed in the parent; `process_manage(action="handoff")`
+(children only) flips `ProcessSession.owner_task_id` to the parent under the registry lock
+(`process_registry.transfer_ownership`) so the completion routes and reaps by the new owner; un-handed leftovers land on
+the result as `orphaned_processes`, exited-but-never-read notify processes as `unread_completions` (`_ChildRun.account_background_processes`, before `cleanup` kills them). **Durability:** background
 delegation is process-local; work that must survive restart uses `cronjob` or
 `terminal(background=True, notify_on_complete=True)`. API: `website/docs/developer-guide/subagent-lifecycle-api.md`.
 

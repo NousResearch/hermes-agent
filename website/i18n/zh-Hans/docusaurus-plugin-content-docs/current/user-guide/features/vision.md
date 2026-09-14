@@ -196,8 +196,8 @@ powershell.exe -NoProfile -Command "Add-Type -AssemblyName System.Windows.Forms;
 
 | 你的模型 | 图像处理方式 |
 |---|---|
-| **支持视觉的模型**（GPT-4V、Claude with vision、Gemini、Qwen-VL、MiMo-VL 等） | 使用上述提供商原生图像内容格式，以**真实像素**发送。无文本摘要层。 |
-| **纯文本模型**（DeepSeek V3、较小的开源模型、旧版纯对话端点） | 通过 `vision_analyze` 辅助工具路由——辅助视觉模型描述图像，文本描述注入对话。 |
+| **支持视觉的模型**（GPT-4V、Claude with vision、Gemini、Qwen-VL、MiMo-VL、DeepSeek Flash / V4.1-Flash 等） | 使用上述提供商原生图像内容格式，以**真实像素**发送。无文本摘要层。 |
+| **纯文本模型**（DeepSeek V4 Pro、DeepSeek V3、较小的开源模型、旧版纯对话端点） | 通过 `vision_analyze` 辅助工具路由——辅助视觉模型描述图像，文本描述注入对话。 |
 
 无需手动配置——Hermes 在提供商元数据中查找当前模型的能力并自动选择正确路径。实际效果：你可以在会话中途切换视觉模型与非视觉模型，图像处理"开箱即用"，无需更改工作流。纯文本模型会获得关于图像的连贯上下文，而不是一个会被拒绝的损坏多模态载荷。
 

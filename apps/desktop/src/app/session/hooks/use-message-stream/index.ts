@@ -23,7 +23,8 @@ import {
   generatedImageEchoSources,
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
-import { nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
+import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
+import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
@@ -33,6 +34,7 @@ import { $todosBySession, setSessionTodos } from '@/store/todos'
 import type { ClientSessionState } from '../../../types'
 
 import { useGatewayEventHandler } from './gateway-event'
+import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -461,7 +463,7 @@ export function useMessageStream({
 
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
-      if (payload?.name === 'todo') {
+      if (payload && isTodoToolName(payload.name)) {
         const todos = nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload)
 
         if (todos) {
@@ -880,11 +882,25 @@ export function useMessageStream({
     upsertToolCall
   })
 
+  // Server→client requests (clarify, approval, sudo, …) from every socket the
+  // registry owns. The request answers itself over the socket it arrived on,
+  // so no owner routing is involved here — only which card to show.
+  const handleServerRequest = useCallback(
+    (request: ScopedServerRequest): boolean =>
+      dispatchServerRequest(
+        request,
+        { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },
+        activeSessionIdRef.current
+      ),
+    [activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall]
+  )
+
   return {
     appendAssistantDelta,
     appendReasoningDelta,
     completeAssistantMessage,
     handleGatewayEvent,
+    handleServerRequest,
     finalizeInterimAssistantMessage,
     upsertToolCall
   }

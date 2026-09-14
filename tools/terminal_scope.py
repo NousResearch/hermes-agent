@@ -86,14 +86,23 @@ def terminal_env(name: str, default: str = "") -> str:
     return default if value is None else str(value)
 
 
-def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
+def build_profile_terminal_scope(
+    hermes_home: "Any", *, env_overlay: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Build the COMPLETE effective ``TERMINAL_*`` policy for a profile home.
 
-    Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- profile
-    ``config.yaml`` ``terminal:``. Total by construction, so a bound scope never widens back to
-    ambient authority. Raises :class:`TerminalPolicyUnavailable` if a present file is unreadable.
+    Projection: ``DEFAULT_CONFIG['terminal']`` <- profile ``.env`` TERMINAL_* <- *env_overlay*
+    <- profile ``config.yaml`` ``terminal:``. Total by construction, so a bound scope never
+    widens back to ambient authority. Raises :class:`TerminalPolicyUnavailable` if a present
+    file is unreadable.
+
+    *env_overlay* is a TRUSTED ``TERMINAL_*`` mapping captured from the launch process before
+    multiplexing began (``tui_gateway/launch_terminal_policy.py``): the launch profile's
+    env-only policy (``TERMINAL_ENV=ssh`` from systemd, ``op run``, a launcher bridge) has no
+    file to rebuild it from, and reading live ``os.environ`` here is the leak this module
+    closes. It sits where the process env sits in the standalone bridge — explicit YAML keys
+    still win (``apply_terminal_config_to_env``).
     """
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
     home = Path(hermes_home)
@@ -106,7 +115,10 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
                 continue
             env_var = TERMINAL_CONFIG_ENV_MAP.get(cfg_key)
             if env_var:
-                scope[env_var] = str(value)
+                # List/dict config values must be JSON (same contract as
+                # apply_terminal_config_to_env). str() yields Python repr, which
+                # json.loads in terminal_tool rejects.
+                scope[env_var] = _terminal_env_value(value)
 
     _apply({**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
     env_path = home / ".env"
@@ -121,6 +133,8 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
 
         scope.update((k, str(v)) for k, v in load_env_file(env_path).items()
                      if k.startswith("TERMINAL_"))
+    if env_overlay:
+        scope.update((k, str(v)) for k, v in env_overlay.items() if k.startswith("TERMINAL_"))
     # Read config.yaml directly, not via read_raw_config() (which collapses "missing" and
     # "unparseable" into {}): present-but-unparseable must fail closed.
     config_path = home / "config.yaml"
@@ -139,13 +153,37 @@ def build_profile_terminal_scope(hermes_home: "Any") -> Dict[str, str]:
         raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None
         if isinstance(raw_terminal, dict):
             _apply(raw_terminal)
+    _resolve_scope_cwd_placeholder(scope)
     return scope
 
 
-def install_profile_terminal_scope(hermes_home: "Any") -> Token:
+def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
+    """Give a scope with no explicit ``terminal.cwd`` the same resolved ``TERMINAL_CWD`` a standalone
+    gateway computes at import (``gateway/run.py``: local backend → ``$HOME``; docker with the
+    workspace mount → the host cwd signal; other backends → unset). Without it a routed turn's
+    ``resolve_agent_cwd()`` falls back to the multiplexer PROCESS cwd (wherever ``hermes gateway``
+    was launched), so the system prompt, context-file discovery and the local terminal all run in
+    a directory the profile's standalone gateway would never have used."""
+    if scope.get("TERMINAL_CWD"):
+        return
+    from gateway.cwd_placeholder import resolve_placeholder_terminal_cwd
+
+    resolved = resolve_placeholder_terminal_cwd(
+        configured_cwd="", terminal_backend=scope.get("TERMINAL_ENV", ""),
+        messaging_cwd=None,
+        docker_mount_cwd_to_workspace=scope.get(
+            "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {"true", "1", "yes"},
+        home_fallback=str(Path.home()),
+    )
+    if resolved:
+        scope["TERMINAL_CWD"] = resolved
+
+
+def install_profile_terminal_scope(
+    hermes_home: "Any", *, env_overlay: Optional[Dict[str, str]] = None) -> Token:
     """Build AND install a profile's policy; on failure install the refusal scope. Never raises."""
     try:
-        return set_terminal_scope(build_profile_terminal_scope(hermes_home))
+        return set_terminal_scope(build_profile_terminal_scope(hermes_home, env_overlay=env_overlay))
     except TerminalPolicyUnavailable as exc:
         logger.warning("terminal policy unavailable: %s", exc)
         return _terminal_scope_var.set(TerminalPolicyRefusal(str(exc)))

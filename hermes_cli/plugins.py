@@ -192,11 +192,23 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # card_action_response: Feishu interactive-card tap callback. The adapter fires this
+    # synchronously on the SDK callback thread and, if a plugin returns a card dict
+    # (header and/or elements), swaps the tapped card in place via P2CardActionTriggerResponse.
+    # Feishu rejects im.v1.message.update for interactive cards (230001 invalid msg_type);
+    # returning the card from this callback is the only in-place update path (same mechanism
+    # approval cards already use). None / no matching dict keeps the synthetic /card command.
+    # Python plugins only — the return is a card dict, not a shell-hook directive.
+    # Kwargs: action_value (dict), chat_id (str), open_id (str), token (str).
+    "card_action_response",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "transform_api_error_classification",
+    "card_action_response",
+}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

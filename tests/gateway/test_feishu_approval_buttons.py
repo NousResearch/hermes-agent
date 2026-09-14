@@ -664,3 +664,135 @@ class TestResolveUpdatePrompt:
         assert 3 in adapter._update_prompt_state
 
 
+def _ready_adapter() -> FeishuAdapter:
+    adapter = _make_adapter()
+    adapter._loop = MagicMock()
+    adapter._loop.is_closed = MagicMock(return_value=False)
+    return adapter
+
+
+def _close_submit(_loop, coro):
+    """Close coroutines passed to ``_submit_on_loop`` in sync tests."""
+    coro.close()
+    return True
+
+
+# ===========================================================================
+# card_action_response plugin hook — in-place swap for non-approval taps
+# ===========================================================================
+
+def test_card_action_response_in_valid_hooks():
+    from hermes_cli.plugins import SHELL_UNSUPPORTED_HOOKS, VALID_HOOKS
+    from hermes_cli.plugins_dispatch import _HOOK_CALLER_THREAD_HOOKS
+
+    assert "card_action_response" in VALID_HOOKS
+    assert "card_action_response" in SHELL_UNSUPPORTED_HOOKS
+    assert "card_action_response" in _HOOK_CALLER_THREAD_HOOKS
+
+
+class TestPluginCardActionResponse:
+    """Plugins can return a card dict and swap the tapped card in place."""
+
+    def test_plugin_card_swaps_inline_and_skips_synthetic_command(
+        self, _patch_callback_card_types,
+    ):
+        adapter = _ready_adapter()
+        card = {
+            "header": {"title": {"tag": "plain_text", "content": "Next layer"}},
+            "elements": [{"tag": "markdown", "content": "ok"}],
+        }
+        data = _make_card_action_data(
+            {"ms_nav": "providers", "chat_id": "oc_12345"},
+            chat_id="oc_12345",
+            open_id="ou_bob",
+            token="tok_plugin",
+        )
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[card]) as hook,
+            patch.object(adapter, "_submit_on_loop") as submit,
+        ):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        assert response.card.data == card
+        submit.assert_not_called()
+        hook.assert_called_once()
+        kwargs = hook.call_args.kwargs
+        assert kwargs["action_value"]["ms_nav"] == "providers"
+        assert kwargs["chat_id"] == "oc_12345"
+        assert kwargs["open_id"] == "ou_bob"
+        assert kwargs["token"] == "tok_plugin"
+        assert "event" not in kwargs
+
+    def test_empty_hook_falls_through_to_synthetic_command(
+        self, _patch_callback_card_types,
+    ):
+        adapter = _ready_adapter()
+        data = _make_card_action_data({"custom_action": "something_else"})
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]) as hook,
+            patch.object(adapter, "_submit_on_loop", side_effect=_close_submit) as submit,
+        ):
+            response = adapter._on_card_action_trigger(data)
+
+        hook.assert_called_once()
+        submit.assert_called_once()
+        assert response is not None
+        assert response.card is None
+
+    def test_non_card_dict_falls_through(self, _patch_callback_card_types):
+        adapter = _ready_adapter()
+        data = _make_card_action_data({"custom_action": "x"})
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[{"ok": True}]),
+            patch.object(adapter, "_submit_on_loop", side_effect=_close_submit) as submit,
+        ):
+            adapter._on_card_action_trigger(data)
+
+        submit.assert_called_once()
+
+    def test_hook_exception_falls_through(self, _patch_callback_card_types):
+        adapter = _ready_adapter()
+        data = _make_card_action_data({"custom_action": "x"})
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=RuntimeError("boom")),
+            patch.object(adapter, "_submit_on_loop", side_effect=_close_submit) as submit,
+        ):
+            response = adapter._on_card_action_trigger(data)
+
+        submit.assert_called_once()
+        assert response.card is None
+
+    def test_approval_path_does_not_invoke_plugin_hook(
+        self, _patch_callback_card_types,
+    ):
+        adapter = _ready_adapter()
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[1] = {
+            "session_key": "sess-1",
+            "message_id": "msg-1",
+            "chat_id": "oc_12345",
+        }
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 1},
+            open_id="ou_bob",
+        )
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook") as hook,
+            patch.object(adapter, "_submit_on_loop", side_effect=_close_submit),
+        ):
+            response = adapter._on_card_action_trigger(data)
+
+        hook.assert_not_called()
+        assert response.card is not None
+        assert response.card.data["header"]["template"] == "green"
+
+

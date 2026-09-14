@@ -2073,7 +2073,8 @@ class FeishuAdapter(BasePlatformAdapter):
         """Synchronous SDK card-action callback.
 
         Approval/update-prompt buttons return the resolved card inline (the only reliable way
-        to sync all clients) and schedule the async resolution; other clicks are routed as
+        to sync all clients) and schedule the async resolution. Plugins may claim other taps
+        via the ``card_action_response`` hook (also inline). Unclaimed clicks are routed as
         synthetic commands via ``_handle_card_action_event``.
         """
         loop = self._loop
@@ -2088,8 +2089,44 @@ class FeishuAdapter(BasePlatformAdapter):
                 return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
             if action_value.get("hermes_update_prompt_action"):
                 return self._handle_update_prompt_card_action(event=event, action_value=action_value, loop=loop)
+        plugin_card = self._plugin_card_action_response(
+            event, action_value if isinstance(action_value, dict) else {},
+        )
+        if plugin_card is not None:
+            inline = self._card_response(plugin_card)
+            if inline is not None:
+                return inline
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         return self._card_response()
+
+    def _plugin_card_action_response(self, event: Any, action_value: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Fire the ``card_action_response`` plugin hook (synchronous, caller thread).
+
+        Feishu cannot update interactive cards via ``im.v1.message.update`` (230001
+        invalid msg_type). A plugin returning a card dict is swapped in place through
+        ``_card_response``; ``None`` keeps the synthetic ``/card`` command path.
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook
+        except Exception:
+            return None
+        context = getattr(event, "context", None)
+        operator = getattr(event, "operator", None)
+        try:
+            results = invoke_hook(
+                "card_action_response",
+                action_value=dict(action_value or {}),
+                chat_id=str(getattr(context, "open_chat_id", "") or ""),
+                open_id=str(getattr(operator, "open_id", "") or ""),
+                token=str(getattr(event, "token", "") or ""),
+            )
+        except Exception as exc:
+            logger.debug("card_action_response hook dispatch failed: %s", exc)
+            return None
+        for result in results or []:
+            if isinstance(result, dict) and (result.get("elements") or result.get("header")):
+                return result
+        return None
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:

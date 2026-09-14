@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from hermes_constants import FINISH_REASON_LENGTH
 
 
 @pytest.fixture()
@@ -40,9 +40,15 @@ def loop_agent():
 
 
 def _stub(content):
+    """Genuine finish_reason='length' truncation (normal response id).
+
+    Despite the name this must NOT be the PARTIAL_STREAM_STUB_ID network-stall
+    stub: stalls have their own higher continuation cap and ceiling message
+    (see test_stream_stall_ceiling.py). These tests pin the length-truncation
+    ceiling at 4."""
     from tests.agent.test_run_agent import _mock_assistant_msg
     return SimpleNamespace(
-        id=PARTIAL_STREAM_STUB_ID,
+        id="chatcmpl-length-truncated",
         model="test/model",
         choices=[SimpleNamespace(
             index=0,

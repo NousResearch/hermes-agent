@@ -1,12 +1,10 @@
 """Doc-fact contract: slash-commands.md must match the command registry.
 
-Ported from nearai/ironclaw#7378 (doc-fact contract tests: parse the real
-surface, cross-check the published doc in both directions). Their CLI
-reference test caught real drift — commands with no doc row and doc rows
-teaching commands the binary doesn't have. Same class of drift existed
-here: ``/loop`` shipped with a feature page (user-guide/features/loops.md)
-but never got a row in the slash-commands reference, and the zh-Hans doc
-carried retired ``/credits``/``/billing`` rows for months (PR #69639).
+Parse the real surface and cross-check the published doc in both directions.
+This class of drift has bitten before: ``/loop`` shipped with a feature page
+(user-guide/features/loops.md) but never got a row in the slash-commands
+reference, and the zh-Hans doc carried retired ``/credits``/``/billing`` rows
+for months (PR #69639).
 
 Two directions, both driven by ``hermes_cli.commands.COMMAND_REGISTRY``
 (the single source every surface derives from):

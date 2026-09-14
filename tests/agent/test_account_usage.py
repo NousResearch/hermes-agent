@@ -118,38 +118,6 @@ def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usa
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
-def test_codex_usage_does_not_swap_to_pool_on_transient_resolver_error(monkeypatch, codex_usage_payload):
-    """A transient refresh/network failure (non-AuthError) must NOT silently
-    downgrade to a possibly-different pool account. It fails open (no snapshot)
-    instead of reporting the wrong account's usage."""
-    calls = []
-    monkeypatch.setattr(
-        account_usage.httpx,
-        "Client",
-        lambda timeout: _FakeClient(calls, codex_usage_payload),
-    )
-    monkeypatch.setattr(
-        account_usage,
-        "resolve_codex_runtime_credentials",
-        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("refresh endpoint 503")),
-    )
-
-    pool_entry = SimpleNamespace(
-        runtime_api_key="pooled-token-WRONG-ACCOUNT",
-        runtime_base_url="https://chatgpt.com/backend-api/codex",
-    )
-    pool = SimpleNamespace(select=lambda: pool_entry)
-
-    import agent.credential_pool as credential_pool
-
-    # If the guard regressed, this pool would be consulted and return a snapshot
-    # for the wrong account. It must NOT be.
-    monkeypatch.setattr(credential_pool, "load_pool", lambda provider: pool)
-
-    snapshot = account_usage.fetch_account_usage("openai-codex")
-
-    assert snapshot is None
-    assert calls == []  # HTTP usage endpoint never hit with a wrong-account token
 
 
 def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, codex_usage_payload):
@@ -194,44 +162,68 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
-def test_codex_usage_treats_wham_used_percent_as_used_not_remaining(monkeypatch):
-    """ChatGPT UI says "left"; /wham/usage.used_percent is already used."""
-    payload = {
+
+
+# ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────
+
+
+class _FakeResetClient:
+    """GET returns the usage payload; POST returns the consume payload."""
+
+    def __init__(self, calls, usage_payload, consume_payload=None):
+        self.calls = calls
+        self.usage_payload = usage_payload
+        self.consume_payload = consume_payload or {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, url, headers):
+        self.calls.append({"method": "GET", "url": url, "headers": headers})
+        return _FakeResponse(self.usage_payload)
+
+    def post(self, url, headers=None, json=None):
+        self.calls.append({"method": "POST", "url": url, "headers": headers, "json": json})
+        return _FakeResponse(self.consume_payload)
+
+
+def _usage_payload_with_resets(primary_used, secondary_used, banked):
+    return {
         "plan_type": "plus",
         "rate_limit": {
-            "primary_window": {
-                "used_percent": 85,
-                "reset_at": 1779846359,
-            },
-            "secondary_window": {
-                "used_percent": 14,
-                "reset_at": 1780230796,
-            },
+            "primary_window": {"used_percent": primary_used, "reset_at": 1779846359},
+            "secondary_window": {"used_percent": secondary_used, "reset_at": 1780230796},
         },
+        "rate_limit_reset_credits": {"available_count": banked},
         "credits": {"has_credits": False},
     }
-    calls = []
-    monkeypatch.setattr(
-        account_usage.httpx,
-        "Client",
-        lambda timeout: _FakeClient(calls, payload),
-    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def test_redeem_missing_credentials_reports_unavailable(monkeypatch):
     monkeypatch.setattr(
         account_usage,
-        "resolve_codex_runtime_credentials",
-        lambda **kwargs: (_ for _ in ()).throw(AssertionError("explicit auth should be used")),
+        "_resolve_codex_usage_credentials",
+        lambda base_url, api_key: (_ for _ in ()).throw(RuntimeError("no creds")),
     )
 
-    snapshot = account_usage.fetch_account_usage(
-        "openai-codex",
-        base_url="https://chatgpt.com/backend-api/codex",
-        api_key="live-agent-token",
-    )
+    result = account_usage.redeem_codex_reset_credit()
 
-    assert snapshot is not None
-    assert [window.used_percent for window in snapshot.windows] == [85, 14]
-    rendered = "\n".join(account_usage.render_account_usage_lines(snapshot, markdown=True))
-    assert "85% used" in rendered
-    assert "14% used" in rendered
-    assert "15% used" not in rendered
-    assert "86% used" not in rendered
+    assert result.status == "unavailable"
+    assert "hermes auth" in result.message

@@ -1,50 +1,35 @@
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { persistInFlightTurnState } from '@/lib/inflight-turn-journal'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
-  $busy,
+  $activeSessionId,
   $messages,
-  noteSessionActivity,
-  onSessionWatchdogClear,
+  setActiveSessionStoredIdRotation,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
-  setSessionAttention,
-  setSessionWorking,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { $sessionStates, $sessionTiles, publishSessionState, releaseSessionTranscript } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
+import { SessionStateCache } from '../session-state-cache'
 
-// Shallow per-message identity check. When a flush carries no transcript
-// changes, `preserveLocalAssistantErrors` returns the same message objects in
-// the same order, so reference equality per slot is enough to detect "nothing
-// to publish" and avoid a needless `$messages` churn.
-function sameMessageList(a: ChatMessage[], b: ChatMessage[]): boolean {
-  if (a === b) {
-    return true
-  }
-
-  if (a.length !== b.length) {
-    return false
-  }
-
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) {
-      return false
-    }
-  }
-
-  return true
-}
+import {
+  invalidatePersistedDisplayTranscriptAuthority,
+  suppressTranscriptForView
+} from './use-session-actions/transcript-provenance'
+import { chatMessageArraysEquivalent } from './use-session-actions/utils'
 
 interface SessionStateCacheOptions {
   activeSessionId: string | null
@@ -73,61 +58,164 @@ export function useSessionStateCache({
   setBusy,
   setMessages
 }: SessionStateCacheOptions) {
-  const busy = useStore($busy)
-  const activeSessionIdRef = useRef<string | null>(null)
-  const selectedStoredSessionIdRef = useRef<string | null>(null)
-  const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
+  const busy = useStore(PRIMARY_SESSION_VIEW.$busy)
+  const sessionTiles = useStore($sessionTiles)
+  const activeSessionIdRef = useRef<string | null>(activeSessionId)
+  const selectedStoredSessionIdRef = useRef<string | null>(selectedStoredSessionId)
+
+  // Mirror the latest prop into its ref synchronously during render — not via
+  // a passive useEffect, which only fires a frame after paint and left the
+  // ref pointing at the outgoing session for one commit (#59305). Guarded to
+  // fire only when the PROP itself changed since the last render (the same
+  // condition a `useEffect(..., [activeSessionId])` dependency array already
+  // enforced) rather than unconditionally: submit.ts and use-session-actions
+  // pin these refs imperatively mid-flight (e.g. to a just-resumed runtime id)
+  // without updating the source atom in lockstep, and wiring.tsx re-renders
+  // constantly during an active turn — an unconditional resync would silently
+  // clobber that pin on the next incidental render (#54527-class regression).
+  const activeSessionIdPropRef = useRef(activeSessionId)
+
+  if (activeSessionIdPropRef.current !== activeSessionId) {
+    activeSessionIdPropRef.current = activeSessionId
+    activeSessionIdRef.current = activeSessionId
+  }
+
+  const selectedStoredSessionIdPropRef = useRef(selectedStoredSessionId)
+
+  if (selectedStoredSessionIdPropRef.current !== selectedStoredSessionId) {
+    selectedStoredSessionIdPropRef.current = selectedStoredSessionId
+    selectedStoredSessionIdRef.current = selectedStoredSessionId
+  }
+
   const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
+  const sessionStateByRuntimeIdRef = useRef<SessionStateCache>(null!)
+
+  if (sessionStateByRuntimeIdRef.current === null) {
+    sessionStateByRuntimeIdRef.current = new SessionStateCache({
+      isReferenced: (runtimeId, state) =>
+        runtimeId === activeSessionIdRef.current ||
+        state.storedSessionId === selectedStoredSessionIdRef.current ||
+        $sessionTiles
+          .get()
+          .some(
+            tile =>
+              tile.runtimeId === runtimeId ||
+              (state.storedSessionId !== null && tile.storedSessionId === state.storedSessionId)
+          ),
+      // A connection death mid-turn leaves snapshots whose frozen busy flags
+      // will never settle (the respawned backend re-mints runtime ids), which
+      // pinned megabytes of warm transcript per reconnect cycle behind
+      // #isWarmSettled (#95189). Trust the cached in-flight flags only while
+      // the authoritative store still claims work for the same runtime id.
+      isAuthoritativelyActive: runtimeId => {
+        const live = $sessionStates.get()[runtimeId]
+
+        return Boolean(live && (live.busy || live.awaitingResponse))
+      },
+      onEvict: (runtimeId, state) => {
+        // Ownership is removed with the transcript, but only if both sides still
+        // describe this exact binding. A recycled runtime must not erase its
+        // new owner's reverse entry.
+        if (state.storedSessionId && runtimeIdByStoredSessionIdRef.current.get(state.storedSessionId) === runtimeId) {
+          runtimeIdByStoredSessionIdRef.current.delete(state.storedSessionId)
+        }
+
+        releaseSessionTranscript(runtimeId)
+      }
+    })
+  }
+
+  const sessionStateCache = sessionStateByRuntimeIdRef.current
   const pendingViewStateRef = useRef<{ sessionId: string; state: ClientSessionState } | null>(null)
   const viewSyncRafRef = useRef<number | null>(null)
+  const transcriptViewGateByRuntimeIdRef = useRef(new Map<string, symbol>())
   // Runtime id whose transcript currently occupies `$messages` — lets the
   // flush below tell a same-session refresh from a thread switch.
   const viewSessionIdRef = useRef<string | null>(null)
 
-  useEffect(() => {
-    activeSessionIdRef.current = activeSessionId
-  }, [activeSessionId])
-
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     setMutableRef(busyRef, busy)
   }, [busy, busyRef])
 
-  useEffect(() => {
-    selectedStoredSessionIdRef.current = selectedStoredSessionId
-  }, [selectedStoredSessionId])
+  const ensureSessionState = useCallback(
+    (sessionId: string, storedSessionId?: string | null) => {
+      const existing = sessionStateCache.get(sessionId)
 
-  const ensureSessionState = useCallback((sessionId: string, storedSessionId?: string | null) => {
-    const existing = sessionStateByRuntimeIdRef.current.get(sessionId)
+      if (existing) {
+        if (storedSessionId !== undefined && storedSessionId !== existing.storedSessionId) {
+          // Stored id changed (e.g. auto-compression rotated it). Create a NEW
+          // state object rather than mutating in place — updateSessionState needs
+          // the PREVIOUS state to detect transitions (busy→idle, id rotation).
+          const updated = invalidatePersistedDisplayTranscriptAuthority({ ...existing, storedSessionId })
 
-    if (existing) {
-      if (storedSessionId !== undefined) {
-        const previousStoredSessionId = existing.storedSessionId
-        existing.storedSessionId = storedSessionId
+          // Drop the obsolete stored→runtime reverse mapping as soon as the id
+          // rotates (e.g. auto-compression forks a continuation). Leaving the
+          // stale key lets getRuntimeIdForStoredSession resolve the old stored id
+          // to this runtime, which the compression route-follow logic relies on
+          // being absent. The rotation signal was previously emitted centrally
+          // from handleTransition (session-states.ts), but updateSessionState
+          // now skips publishSessionState (and thus handleTransition) when the
+          // updater is a no-op — fire it here so the route-follow effect still
+          // tracks compression without needing a dummy state write.
+          if (existing.storedSessionId && existing.storedSessionId !== storedSessionId) {
+            runtimeIdByStoredSessionIdRef.current.delete(existing.storedSessionId)
 
-        if (storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
-
-          if (existing.busy) {
-            setSessionWorking(storedSessionId, true)
+            // A rotation event needs a real next id — a null/cleared stored id
+            // is a detach, not a rotation the route-follow effect should chase.
+            if (storedSessionId && sessionId === $activeSessionId.get()) {
+              setActiveSessionStoredIdRotation({
+                nextStoredSessionId: storedSessionId,
+                previousStoredSessionId: existing.storedSessionId,
+                runtimeSessionId: sessionId
+              })
+            }
           }
+
+          if (storedSessionId) {
+            runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+          }
+
+          sessionStateCache.set(sessionId, updated)
         }
 
-        if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
-          setSessionWorking(previousStoredSessionId, false)
-        }
+        return sessionStateCache.get(sessionId)!
       }
 
-      return existing
+      const created = createClientSessionState(storedSessionId ?? null)
+
+      if (storedSessionId) {
+        runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+      }
+
+      sessionStateCache.set(sessionId, created)
+
+      return created
+    },
+    [sessionStateCache]
+  )
+
+  const resetViewSync = useCallback(() => {
+    // Drop any RAF-pending transcript stage so a backgrounded turn cannot
+    // repaint over the chat the user just switched to (#47709 / #47743).
+    pendingViewStateRef.current = null
+    viewSessionIdRef.current = null
+
+    if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(viewSyncRafRef.current)
+      viewSyncRafRef.current = null
     }
+  }, [])
 
-    const created = createClientSessionState(storedSessionId ?? null)
-    sessionStateByRuntimeIdRef.current.set(sessionId, created)
+  const holdSessionTranscriptView = useCallback((runtimeId: string): (() => void) => {
+    const token = Symbol(runtimeId)
+    transcriptViewGateByRuntimeIdRef.current.set(runtimeId, token)
 
-    if (storedSessionId) {
-      runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+    return () => {
+      if (transcriptViewGateByRuntimeIdRef.current.get(runtimeId) === token) {
+        transcriptViewGateByRuntimeIdRef.current.delete(runtimeId)
+      }
     }
-
-    return created
   }, [])
 
   const flushPendingViewState = useCallback(() => {
@@ -144,7 +232,12 @@ export function useSessionStateCache({
     // the transcript. That churns ChatView → runtimeMessageRepository → the
     // assistant-ui runtime → the virtualizer, which re-measures and visibly
     // jerks the scroll position while the user is reading. Skip the publish when
-    // the merged result is content-identical to what's already on screen.
+    // the merged result is content-equivalent to what's already on screen.
+    // Deep comparison (not just reference equality) is needed because the warm
+    // resume path's `reconcileAuthoritativeMessages` creates new message objects
+    // via `toChatMessages` even when the content hasn't changed — reference
+    // equality would fail and cause a redundant second paint (the "warm resume
+    // jitter" bug).
     const currentMessages = $messages.get()
 
     // On a thread switch `$messages` still holds the *previous* thread, so
@@ -157,7 +250,7 @@ export function useSessionStateCache({
         ? preserveLocalAssistantErrors(pending.state.messages, currentMessages)
         : pending.state.messages
 
-    if (!sameMessageList(nextMessages, currentMessages)) {
+    if (!chatMessageArraysEquivalent(nextMessages, currentMessages)) {
       setMessages(nextMessages)
     }
 
@@ -188,8 +281,10 @@ export function useSessionStateCache({
         return
       }
 
-      syncRuntimeMetadataToView(state)
-      pendingViewStateRef.current = { sessionId, state }
+      const viewState = suppressTranscriptForView(state, transcriptViewGateByRuntimeIdRef.current.has(sessionId))
+
+      syncRuntimeMetadataToView(viewState)
+      pendingViewStateRef.current = { sessionId, state: viewState }
 
       // Terminal / attention transitions (turn finished, error, or the agent is
       // now waiting on the user) MUST reach the view immediately. Electron
@@ -201,7 +296,7 @@ export function useSessionStateCache({
       // state anyway). The plain busy heartbeat stays RAF-batched: that
       // coalescing exists only to keep periodic `session.info` updates from
       // churning `$messages` and jerking the scroll position while reading.
-      const isCriticalTransition = !state.busy || state.needsInput
+      const isCriticalTransition = !viewState.busy || viewState.needsInput
 
       if (isCriticalTransition) {
         if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
@@ -249,66 +344,67 @@ export function useSessionStateCache({
       storedSessionId?: string | null
     ) => {
       const previous = ensureSessionState(sessionId, storedSessionId)
-      const next = updater({ ...previous, messages: previous.messages })
-      sessionStateByRuntimeIdRef.current.set(sessionId, next)
+      // Give the updater the raw previous state so it can return the same
+      // reference when nothing changed (the caller sees a no-op). Previously
+      // the param was always a fresh spread, so every call looked like a
+      // change — including periodic ~1/s session.info heartbeats that churn
+      // $sessionStates and its computed atoms on every tick.
+      const next = updater(previous)
 
-      if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
-        setSessionWorking(previous.storedSessionId, false)
+      // If the updater returned the same reference, nothing changed for this
+      // session — skip the store write, publishSessionState, and view sync.
+      // The cache entry was already updated by ensureSessionState (if
+      // storedSessionId rotated); the caller gets its return value from the
+      // cache, so stale reads don't regress.
+      if (next === previous) {
+        return previous
       }
 
-      if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
-        setSessionAttention(previous.storedSessionId, false)
-      }
-
-      setSessionWorking(next.storedSessionId, next.busy)
-      setSessionAttention(next.storedSessionId, next.needsInput)
-
-      // Every state update is effectively a "still alive" heartbeat for
-      // streaming events. The session-store watchdog uses this to keep the
-      // working flag alive during long-running turns and to clear it once
-      // the stream goes silent.
-      if (next.busy) {
-        noteSessionActivity(next.storedSessionId)
-      }
-
+      sessionStateCache.set(sessionId, next)
+      // Crash-survivable turn progress: journal the running turn's visible
+      // tail (throttled localStorage write; cleared the moment the turn
+      // settles) so a renderer/app death mid-turn can be recovered on resume.
+      persistInFlightTurnState(next)
+      // Publishing to $sessionStates automatically fires transition side-effects
+      // (watchdog, settle grace, unread marker, compression id rotation) inside
+      // publishSessionState — no manual transition call needed.
+      publishSessionState(sessionId, next)
+      sessionStateCache.prune()
       syncSessionStateToView(sessionId, next)
 
       return next
     },
-    [ensureSessionState, syncSessionStateToView]
+    [ensureSessionState, sessionStateCache, syncSessionStateToView]
   )
 
-  // When the store watchdog force-clears a stuck session (8 min of stream
-  // silence — a hung or looping turn that never delivered its terminal event),
-  // also drop that session's busy/awaiting flags here. Clearing the sidebar dot
-  // alone leaves the composer wedged on "Thinking"/Stop; updateSessionState
-  // re-syncs `$busy` when the healed session is the one on screen.
-  useEffect(
-    () =>
-      onSessionWatchdogClear(storedSessionId => {
-        const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
-        const state = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+  useEffect(() => {
+    sessionStateCache.prune()
+  }, [activeSessionId, selectedStoredSessionId, sessionStateCache, sessionTiles])
 
-        if (!runtimeId || !state?.busy) {
-          return
-        }
+  const getRuntimeIdForStoredSession = useCallback(
+    (storedSessionId: string): string | null => {
+      const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
 
-        updateSessionState(runtimeId, current => ({
-          ...current,
-          awaitingResponse: false,
-          busy: false,
-          needsInput: false
-        }))
-      }),
-    [updateSessionState]
+      if (!runtimeId) {
+        return null
+      }
+
+      const runtimeState = sessionStateCache.get(runtimeId)
+
+      return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
+    },
+    [sessionStateCache]
   )
 
   return {
     activeSessionIdRef,
     ensureSessionState,
+    getRuntimeIdForStoredSession,
+    holdSessionTranscriptView,
+    resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
-    sessionStateByRuntimeIdRef,
+    sessionStateByRuntimeIdRef: sessionStateByRuntimeIdRef as MutableRefObject<Map<string, ClientSessionState>>,
     syncSessionStateToView,
     updateSessionState
   }

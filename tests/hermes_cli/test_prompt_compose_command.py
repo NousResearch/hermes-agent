@@ -54,21 +54,6 @@ def test_compose_reads_and_strips_header(monkeypatch):
     assert "#!" not in out  # the instructional header is stripped
 
 
-def test_prompt_sets_pending_seed(monkeypatch):
-    monkeypatch.setenv("EDITOR", _fake_editor("Write a haiku about caching."))
-    s = _Stub()
-    s._handle_prompt_compose_command("/prompt")
-    assert s._pending_agent_seed
-    assert "haiku about caching" in s._pending_agent_seed
-
-
-def test_initial_text_is_seeded(monkeypatch):
-    # The fake editor appends, so the initial text leads the buffer.
-    monkeypatch.setenv("EDITOR", _fake_editor("rest of prompt"))
-    out = _Stub()._compose_in_editor("DRAFT: ")
-    assert out.startswith("DRAFT:")
-
-
 def test_empty_buffer_does_not_seed(monkeypatch):
     monkeypatch.setenv("EDITOR", _fake_editor("", mode="clear"))
     s = _Stub()

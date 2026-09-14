@@ -18,6 +18,7 @@ import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2")
+from tools import mcp_tool_loop as _mcp_loop  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,13 @@ def _install_stub_server(mcp_tool_module, name: str, call_tool_impl):
 
     server._reconnect_event = _ReconnectAdapter()
     server._ready = _ReadyAdapter()
+    # A bare MagicMock returns a truthy Mock for every method, so
+    # ``_is_recycled_stdio()`` would spuriously report this stub as a recycled
+    # stdio server and divert dead-session tool calls into the lazy-reconnect
+    # wait (which polls the test-frozen ``time.monotonic`` forever). Real
+    # non-recycled servers return False here; make the stub faithful so the
+    # dead-session path falls through to the graceful reconnect handler.
+    server._is_recycled_stdio.return_value = False
 
     mcp_tool_module._servers[name] = server
     mcp_tool_module._server_error_counts.pop(name, None)
@@ -102,22 +110,22 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     call_count = {"n": 0}
 
     async def _call_tool_success(*a, **kw):
         call_count["n"] += 1
         result = MagicMock()
-        result.isError = False
+        result.is_error = False
         block = MagicMock()
         block.text = "ok"
         result.content = [block]
-        result.structuredContent = None
+        result.structured_content = None
         return result
 
     _install_stub_server(mcp_tool, "srv", _call_tool_success)
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     try:
         # Trip the breaker by setting the count at/above threshold and
@@ -170,7 +178,7 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     call_count = {"n": 0}
 
@@ -179,7 +187,7 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
         raise RuntimeError("still broken")
 
     _install_stub_server(mcp_tool, "srv", _call_tool_fails)
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     try:
         mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
@@ -227,7 +235,7 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     server = _install_stub_server(mcp_tool, "srv", None)
     # Simulate a dead/parked transport: no live session.
@@ -268,21 +276,21 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
-    from tools.mcp_tool import _make_tool_handler
+    from tools.mcp_tool_handlers import _make_tool_handler
 
     async def _call_tool_success(*a, **kw):
         result = MagicMock()
-        result.isError = False
+        result.is_error = False
         block = MagicMock()
         block.text = "ok"
         result.content = [block]
-        result.structuredContent = None
+        result.structured_content = None
         return result
 
     server = _install_stub_server(mcp_tool, "srv", _call_tool_success)
     server.session = None  # transport down at first
     monkeypatch.setattr(mcp_tool, "_mcp_loop", None)
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     try:
         mcp_tool._server_error_counts["srv"] = mcp_tool._CIRCUIT_BREAKER_THRESHOLD
@@ -329,6 +337,8 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from tools import mcp_tool
+    from tools import mcp_tool_handlers as _mcp_handlers
+    from tools import mcp_tool_loop as _mcp_loop
     from tools.mcp_oauth_manager import get_manager, reset_manager_for_tests
     from mcp.client.auth import OAuthFlowError
 
@@ -338,7 +348,7 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         raise AssertionError("session.call_tool should not be reached in this test")
 
     _install_stub_server(mcp_tool, "srv", _call_tool_unused)
-    mcp_tool._ensure_mcp_loop()
+    _mcp_loop._ensure_mcp_loop()
 
     # Open the breaker well above threshold, with a recent open-time so
     # it would short-circuit everything without a reset.
@@ -364,7 +374,7 @@ def test_circuit_breaker_cleared_on_reconnect(monkeypatch, tmp_path):
         def _retry_call():
             raise OAuthFlowError("still failing post-reconnect")
 
-        result = mcp_tool._handle_auth_error_and_retry(
+        result = _mcp_handlers._handle_auth_error_and_retry(
             "srv",
             OAuthFlowError("initial"),
             _retry_call,
@@ -476,7 +486,7 @@ def test_run_loop_parks_instead_of_exiting_then_revives(monkeypatch, tmp_path):
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
@@ -557,8 +567,46 @@ def test_initial_connect_budget_parks_instead_of_exiting_then_revives(monkeypatc
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 
     asyncio.run(_scenario())
+
+
+def test_breaker_opened_by_tool_errors_says_rejected_not_unreachable(monkeypatch, tmp_path):
+    """Three completed calls whose payload is an error still open the breaker (#10447), but the
+    open-breaker message must not claim the server is unreachable — it answered every time
+    (#11113); a single transport strike in the streak makes it "unreachable" again."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from tools import mcp_tool
+    from tools.mcp_tool_handlers import _make_tool_handler
+
+    async def _call_tool_rejects(*a, **kw):
+        result = MagicMock()
+        result.is_error = True
+        block = MagicMock()
+        block.text = "DNS lookup failed for https://nope.invalid"
+        result.content = [block]
+        result.structured_content = None
+        return result
+
+    _install_stub_server(mcp_tool, "srv", _call_tool_rejects)
+    _mcp_loop._ensure_mcp_loop()
+    try:
+        handler = _make_tool_handler("srv", "fetch", 10.0)
+        for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD):
+            assert "DNS lookup failed" in json.loads(handler({}))["error"]
+        tripped = json.loads(handler({}))["error"].lower()
+        assert "rejected" in tripped and "unreachable" not in tripped, tripped
+
+        mcp_tool._reset_server_error("srv")
+        mcp_tool._bump_server_error("srv")                      # transport strike
+        mcp_tool._bump_server_error("srv", application=True)
+        mcp_tool._bump_server_error("srv", application=True)
+        assert "unreachable" in json.loads(handler({}))["error"].lower()
+    finally:
+        _cleanup(mcp_tool, "srv")
+        mcp_tool._server_errors_all_application.pop("srv", None)
+

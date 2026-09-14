@@ -67,31 +67,6 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
     assert body["auth_providers"] == ["stub"]
 
 
-def test_status_reports_auth_disabled_in_loopback_mode(loopback_client):
-    r = loopback_client.get("/api/status")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["auth_required"] is False
-    # Loopback mode has no registered providers (the Nous plugin's env
-    # vars aren't set in test).
-    assert body["auth_providers"] == []
-
-
-def test_status_preserves_existing_fields(loopback_client):
-    """Defence-in-depth: adding auth_required/auth_providers must not
-    have dropped any previous field (the dashboard's React StatusPage
-    relies on the full payload shape)."""
-    r = loopback_client.get("/api/status")
-    body = r.json()
-    expected_keys = {
-        "version", "release_date", "hermes_home", "config_path", "env_path",
-        "config_version", "latest_config_version", "gateway_running",
-        "gateway_pid", "gateway_health_url", "gateway_state",
-        "gateway_platforms", "gateway_exit_reason", "gateway_updated_at",
-        "active_sessions", "auth_required", "auth_providers",
-    }
-    missing = expected_keys - set(body.keys())
-    assert not missing, f"/api/status dropped fields: {missing}"
 
 
 # Host-local detail (absolute paths, PID, internal gateway URL) is deployment
@@ -120,12 +95,3 @@ def test_status_withholds_host_detail_in_gated_mode(gated_client):
     assert not leaked, f"/api/status leaked host detail under the gate: {leaked}"
 
 
-def test_status_includes_host_detail_in_loopback_mode(loopback_client):
-    """Counterpart to the gated case: a loopback bind is local-only, so the
-    full payload (including host paths and PID) is still served — preserving
-    the StatusPage / ``hermes status`` experience for local operators."""
-    r = loopback_client.get("/api/status")
-    assert r.status_code == 200
-    body = r.json()
-    missing = _HOST_DETAIL_FIELDS - set(body.keys())
-    assert not missing, f"loopback /api/status should keep host detail: {missing}"

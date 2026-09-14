@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  currentPickerSelection,
-  displayModelName,
-  formatModelStatusLabel,
-  reasoningEffortLabel
-} from './model-status-label'
+import { currentPickerSelection, displayModelName, formatModelPillLabel, modelDisplayParts } from './model-status-label'
+import { reasoningEffortLabel } from './reasoning-effort'
 
 describe('model-status-label', () => {
   it('formats display names consistently', () => {
@@ -20,25 +16,31 @@ describe('model-status-label', () => {
     expect(displayModelName('anthropic/claude-haiku-4-5-20251001')).toBe('Haiku 4 5')
   })
 
+  it('renders local GGUF ids as a clean name with a quant tag', () => {
+    expect(modelDisplayParts('Qwen3.6-27B-UD-Q4_K_XL')).toEqual({ name: 'Qwen3.6 27B', tag: 'Q4' })
+    expect(modelDisplayParts('Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL')).toEqual({
+      name: 'Nemotron 3 Nano 30B A3B',
+      tag: 'Q4'
+    })
+    expect(modelDisplayParts('Qwen3-4B-Instruct-2507-UD-Q8_K_XL')).toEqual({ name: 'Qwen3 4B', tag: 'Q8' })
+    expect(modelDisplayParts('some-model-Q6_K')).toEqual({ name: 'Some Model', tag: 'Q6' })
+    // Cloud ids keep their existing behavior.
+    expect(modelDisplayParts('anthropic/claude-opus-4.8-fast').tag).toBe('Fast')
+  })
+
   it('maps reasoning effort to compact labels', () => {
     expect(reasoningEffortLabel('high')).toBe('High')
-    expect(reasoningEffortLabel('xhigh')).toBe('Max')
+    expect(reasoningEffortLabel('xhigh')).toBe('XHigh')
+    expect(reasoningEffortLabel('max')).toBe('Max')
+    expect(reasoningEffortLabel('ultra')).toBe('Ultra')
     expect(reasoningEffortLabel('')).toBe('')
   })
 
-  it('appends fast + effort session state to the status label', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { fastMode: true, reasoningEffort: 'high' })).toBe(
-      'GPT-5.5 · Fast High'
-    )
-  })
-
-  it('always surfaces the effort (default medium) so the level is visible', () => {
-    expect(formatModelStatusLabel('openai/gpt-5.5', { reasoningEffort: 'medium' })).toBe('GPT-5.5 · Med')
-    expect(formatModelStatusLabel('openai/gpt-5.5')).toBe('GPT-5.5 · Med')
-  })
-
-  it('returns just the placeholder name when there is no model', () => {
-    expect(formatModelStatusLabel('')).toBe('No model')
+  it('keeps the model pill to name + Fast; the effort lives on its own pill', () => {
+    expect(formatModelPillLabel('openai/gpt-5.5', { fastMode: true })).toBe('GPT-5.5 · Fast')
+    expect(formatModelPillLabel('anthropic/claude-opus-4.8-fast')).toBe('Opus 4.8 · Fast')
+    expect(formatModelPillLabel('openai/gpt-5.5')).toBe('GPT-5.5')
+    expect(formatModelPillLabel('')).toBe('No model')
   })
 
   describe('currentPickerSelection', () => {
@@ -46,19 +48,23 @@ describe('model-status-label', () => {
     const options = { model: 'hermes-4', provider: 'nous' }
 
     it('prefers the sticky composer pick over the profile default pre-session', () => {
-      expect(currentPickerSelection(false, store, options)).toEqual(store)
+      expect(currentPickerSelection(store, options)).toEqual(store)
     })
 
-    it('lets the live session model.options win when a session exists', () => {
-      expect(currentPickerSelection(true, store, options)).toEqual(options)
+    it('keeps the SessionView selection when a stale options response disagrees', () => {
+      expect(currentPickerSelection(store, options)).toEqual(store)
     })
 
     it('falls back to options when the store is empty', () => {
-      expect(currentPickerSelection(false, { model: '', provider: '' }, options)).toEqual(options)
+      expect(currentPickerSelection({ model: '', provider: '' }, options)).toEqual(options)
+    })
+
+    it('uses the complete options pair instead of mixing a partial store selection', () => {
+      expect(currentPickerSelection({ model: 'opus', provider: '' }, options)).toEqual(options)
     })
 
     it('falls back to the store while options are still loading', () => {
-      expect(currentPickerSelection(true, store, undefined)).toEqual(store)
+      expect(currentPickerSelection(store, undefined)).toEqual(store)
     })
   })
 })

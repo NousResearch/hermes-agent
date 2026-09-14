@@ -1,37 +1,33 @@
-import { normalize } from '@/lib/text'
-
-const REASONING_LABELS: Record<string, string> = {
-  none: 'Off',
-  minimal: 'Min',
-  low: 'Low',
-  medium: 'Med',
-  high: 'High',
-  xhigh: 'Max'
-}
-
-export function reasoningEffortLabel(effort: string): string {
-  const key = normalize(effort)
-
-  if (!key) {
-    return ''
-  }
-
-  return REASONING_LABELS[key] ?? effort
-}
-
-/** Which model/provider a picker should mark "current". With a live session the
- *  gateway's `model.options` is authoritative; pre-session there is no server
- *  "current", so the sticky composer pick wins over the profile default the
- *  global options query returns — else the checkmark snaps back to the default
- *  and the pick looks ignored. */
+/** Which model/provider pair a picker should mark "current". SessionView state
+ *  also drives the composer label, so a complete pair there wins over an older
+ *  `model.options` response. During initial hydration (or pre-session startup),
+ *  options remain the fallback. Pick one complete pair before mixing fields so
+ *  a model is never shown under a different provider. */
 export function currentPickerSelection(
-  hasSession: boolean,
   store: { model: string; provider: string },
   options?: { model?: string; provider?: string }
 ): { model: string; provider: string } {
+  const storeSelection = {
+    model: String(store.model || ''),
+    provider: String(store.provider || '')
+  }
+
+  const optionsSelection = {
+    model: String(options?.model || ''),
+    provider: String(options?.provider || '')
+  }
+
+  if (storeSelection.model && storeSelection.provider) {
+    return storeSelection
+  }
+
+  if (optionsSelection.model && optionsSelection.provider) {
+    return optionsSelection
+  }
+
   return {
-    model: String((hasSession && options?.model) || store.model || options?.model || ''),
-    provider: String((hasSession && options?.provider) || store.provider || options?.provider || '')
+    model: storeSelection.model || optionsSelection.model,
+    provider: storeSelection.provider || optionsSelection.provider
   }
 }
 
@@ -77,12 +73,26 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
   let base = modelBaseId(model)
   let tag = ''
 
-  for (const [pattern, label] of VARIANT_TAGS) {
-    if (pattern.test(base)) {
-      tag = label
-      base = base.replace(pattern, '')
+  // Local GGUF ids carry a quant suffix (`…-UD-Q4_K_XL`, `…-Q8_0`). Render it
+  // as a quiet tag — "Qwen3.6 27B · Q4" — never as part of the name. Without
+  // this the composer pill reads raw quant soup ("Qwen3.6 27B UD Q4 K XL").
+  const quant = base.match(/-(?:UD-)?(Q\d(?:_[A-Z0-9]+)*|IQ\d(?:_[A-Z0-9]+)*|F16|BF16)$/i)
 
-      break
+  if (quant) {
+    tag = quant[1].split('_')[0].toUpperCase()
+    base = base.slice(0, -quant[0].length)
+    // Instruct/chat markers are noise once the quant confirmed a local build.
+    base = base.replace(/-(?:Instruct|Chat)(?:-\d{4})?$/i, '')
+  }
+
+  if (!tag) {
+    for (const [pattern, label] of VARIANT_TAGS) {
+      if (pattern.test(base)) {
+        tag = label
+        base = base.replace(pattern, '')
+
+        break
+      }
     }
   }
 
@@ -97,28 +107,17 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Status bar trigger label — model name plus the live session state (effort/fast). */
-export function formatModelStatusLabel(
-  model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
-): string {
+/** Composer model-pill label — model name plus Fast when it applies. The
+ *  reasoning level is NOT here: it has its own pill (`ReasoningPill`), so a
+ *  long model name can no longer push the effort out of the truncating span. */
+export function formatModelPillLabel(model: string, options?: { fastMode?: boolean }): string {
   const name = displayModelName(model)
-
-  if (!model.trim()) {
-    return name
-  }
-
-  const parts: string[] = []
 
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
   // active model is a `…-fast` variant (fast via a separate model id).
-  if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
-    parts.push('Fast')
+  if (model.trim() && (options?.fastMode || /-fast$/i.test(modelBaseId(model)))) {
+    return `${name} · Fast`
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
-
-  return `${name} · ${parts.join(' ')}`
+  return name
 }

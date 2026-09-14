@@ -95,7 +95,7 @@ hermes skills install official/research/arxiv
 # 在聊天会话中从 Hub 安装
 /skills install official/creative/songwriting-and-ai-music
 
-# 直接从任意 HTTP(S) URL 安装单文件 SKILL.md
+# 从 HTTP(S) URL 安装 SKILL.md 及其引用的支持文件
 hermes skills install https://sharethis.chat/SKILL.md
 /skills install https://example.com/SKILL.md --name my-skill
 ```

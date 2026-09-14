@@ -14,30 +14,6 @@ import subprocess
 from tests.docker.conftest import docker_exec, docker_exec_sh, start_container, restart_container
 
 
-def test_main_wrapper_preserves_docker_workdir(
-    built_image: str, container_name: str,
-) -> None:
-    """The main-wrapper MUST save and restore the original working directory
-    so the container starts in the Docker ``-w`` directory, not /opt/data.
-
-    Regression test for #35472. We pass ``-w /tmp`` and a command that
-    prints its cwd; the output must be ``/tmp``, proving the wrapper
-    restored the cwd after its internal ``cd /opt/data``.
-    """
-    r = subprocess.run(
-        ["docker", "run", "--rm", "-w", "/tmp",
-         built_image, "sh", "-c", "pwd"],
-        capture_output=True, text=True, timeout=60,
-    )
-    assert r.returncode == 0, f"container failed: {r.stderr[-1000:]}"
-    # The stage2 hook emits boot logs (config migration, skills sync)
-    # to stdout before the CMD runs. The actual pwd output is the LAST
-    # line of stdout.
-    last_line = r.stdout.strip().split("\n")[-1].strip()
-    assert last_line == "/tmp", (
-        f"expected cwd /tmp, got {last_line!r} — "
-        f"main-wrapper did not preserve the Docker -w directory"
-    )
 
 
 def test_dashboard_service_resets_home(

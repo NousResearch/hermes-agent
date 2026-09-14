@@ -4091,12 +4091,7 @@ def _run_quiet_single_query(cli, effective_query):
 
     author = take_turn_author_from_env()
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
-    key_token, reset_session_key = None, None
-    try:
-        key_token, reset_session_key = bind_quiet_session_key(getattr(cli, "session_id", "") or "default")
-    except Exception:
-        key_token, reset_session_key = None, None
-    try:
+    with bind_quiet_session_key(getattr(cli, "session_id", "") or "default"):
         try:
             result = cli.agent.run_conversation(
                 user_message=effective_query, conversation_history=cli.conversation_history, **author_kwargs,
@@ -4133,12 +4128,6 @@ def _run_quiet_single_query(cli, effective_query):
             if isinstance(continued, dict):
                 result = continued
         response = result.get("final_response", "") if isinstance(result, dict) else str(result)
-    finally:
-        if key_token is not None and reset_session_key is not None:
-            try:
-                reset_session_key(key_token)
-            except Exception:
-                pass
     # Surface backend errors that produced no visible output (e.g. invalid model slug
     # -> provider 4xx) on stderr so piped stdout stays clean.
     if (

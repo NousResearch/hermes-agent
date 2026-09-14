@@ -18,6 +18,24 @@ _registry = HandlerRegistry()
 # Answered from the live session ONLY when the agent lives on a compute host.
 _ISOLATED_SESSION_READ_COMMANDS = frozenset({"context", "tools", "help"})
 
+# Read-only views that render entirely from persisted session state (transcript,
+# usage mirror) and never touch the live agent. Without this, an idle session
+# falls through to the CLI handler, which needs ``self.agent`` and answers
+# "No active agent -- send a message first." for a session that plainly has
+# messages. Scoped to /context: the other isolated-read commands do consult the
+# agent (``_format_live_tools_output`` reads ``session["agent"]``), so serving
+# them from here would answer worse, not better.
+_PERSISTED_READ_COMMANDS = frozenset({"context"})
+
+
+def _serves_persisted_read(session, name: str) -> bool:
+    """True when *name* can be answered from stored state for an agentless session."""
+    return (
+        name in _PERSISTED_READ_COMMANDS
+        and session is not None
+        and session.get("agent") is None
+    )
+
 _NO_AGENT_USAGE = "(._.) No active agent -- send a message first."
 _NO_AGENT = "No active agent -- send a message first."
 
@@ -219,7 +237,10 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     arg = arg or ""
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
-    if name in _ISOLATED_SESSION_READ_COMMANDS and not (session is not None and _session_uses_compute_host(session)):
+    if name in _ISOLATED_SESSION_READ_COMMANDS and not (
+        (session is not None and _session_uses_compute_host(session))
+        or _serves_persisted_read(session, name)
+    ):
         return None
     entry = _LIVE_SLASH_OUTPUT.get(name)
     if entry is None:

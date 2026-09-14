@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -61,6 +61,38 @@ describe('VaultSettings', () => {
 
     await waitFor(() => expect(screen.getByText('Nothing saved yet')).toBeTruthy())
     expect(requestGateway).toHaveBeenCalledWith('vault.list', {})
+  })
+
+  it('refreshes password-manager detection whenever the page is reopened', async () => {
+    let installed = false
+
+    requestGateway.mockImplementation(async (method: string) =>
+      method === 'vault.sources'
+        ? {
+            sources: [
+              {
+                name: 'onepassword',
+                display_name: '1Password',
+                enabled: installed,
+                needs_unlock: true,
+                unlocked: installed,
+                installed
+              }
+            ]
+          }
+        : { items: [] }
+    )
+
+    const first = renderVault()
+    await screen.findByText('Not detected')
+    first.unmount()
+    installed = true
+    $gatewayState.set('closed')
+
+    renderVault()
+    act(() => $gatewayState.set('open'))
+    await waitFor(() => expect(screen.getByRole('switch', { name: '1Password' })).toBeTruthy())
+    expect(requestGateway.mock.calls.filter(([method]) => method === 'vault.sources')).toHaveLength(2)
   })
 
   it('lists items with label, kind badge, identifier, and origin — never passwords', async () => {

@@ -2772,7 +2772,39 @@ def _prepare_agent_startup(args) -> None:
     _apply_user_config_bypass(args)
     _guard_noninteractive_user_config(args)
 
-    if not (args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)):
+    _is_agent_session = (
+        args.command in _AGENT_COMMANDS or _agent_subcommand_selected(args)
+    )
+    # Agent-hosting servers (serve/dashboard/desktop/gui) run agent turns and
+    # spawn kernels through their own startup path — they need the marker
+    # clear but, like non-agent commands, not this function's plugin/MCP
+    # discovery (they perform their own later).
+    _is_agent_host_server = args.command in {"serve", "dashboard", "desktop", "gui"}
+    if not (_is_agent_session or _is_agent_host_server):
+        return
+
+    # A top-level agent session process is a root delegation context, even
+    # when its launcher inherited HERMES_DELEGATED_CHILD_CONTEXT from an
+    # ancestor (e.g. a Kanban worker shelling out to ``hermes chat -q``, or a
+    # code-execution kernel spawned under such a CLI).  delegate_task marks
+    # children with a ContextVar *in-process* (agent/delegation_context.py) —
+    # never by environment heredity — so a freshly launched agent process that
+    # merely inherited the marker would be misread as a delegated child and
+    # every one of its own Kanban writes would fail closed
+    # (kanban_db._assert_not_delegated_child_mutation).  Clear it here so the
+    # session starts clean.  Plain CLI subcommands (kanban, boards, cron list,
+    # ...) never reach this gate: they keep the inherited marker, which is
+    # exactly the lineage-crossing path the DB-layer guard relies on when a
+    # genuine delegate child shells out to the CLI.
+    if os.environ.pop("HERMES_DELEGATED_CHILD_CONTEXT", None) is not None:
+        logger.debug(
+            "Cleared inherited HERMES_DELEGATED_CHILD_CONTEXT at top-level "
+            "agent session startup (%s); delegate lineage is in-process "
+            "state, not env heredity.",
+            args.command,
+        )
+
+    if not _is_agent_session:
         return
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))

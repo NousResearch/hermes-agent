@@ -1168,10 +1168,10 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
     if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
         provider_name = f"model={response.model}"
 
-    if provider_name == "Unknown" and response:
-        resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
-        if agent.verbose_logging:
-            logging.debug(f"Response attributes for invalid response: {resp_attrs}")
+    if provider_name == "Unknown" and response and agent.verbose_logging:
+        attributes = response if isinstance(response, dict) else getattr(response, "__dict__", {})
+        resp_attrs = {k: str(v)[:100] for k, v in attributes.items() if not k.startswith('_')}
+        logging.debug(f"Response attributes for invalid response: {resp_attrs}")
 
     _resp_error_code = None
     if _has_error:

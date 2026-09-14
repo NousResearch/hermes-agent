@@ -132,12 +132,12 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
     // stale remnants from profile switches or failed drags that the main loop
     // missed because the group was already minimized.
     const allPrefixPanes = treePanesWithPrefix(`${cfg.prefix}:`)
+    const livePanes = registry.getArea('panes')
     for (const id of allPrefixPanes) {
       const key = id.slice(cfg.prefix.length + 1)
       if (!wanted.has(key)) {
         // Already removed above, but double-check it's actually gone
-        const panes = registry.getArea('panes')
-        const stillExists = panes.some(c => c.id === id)
+        const stillExists = livePanes.some(c => c.id === id)
         if (stillExists) {
           removeTreePane(id)
         }

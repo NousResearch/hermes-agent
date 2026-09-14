@@ -124,10 +124,12 @@ _DETAILS_SECTIONS = ("thinking", "tools", "subagents", "activity")
 _DETAILS_MODES = ("hidden", "collapsed", "expanded")
 
 
-def _details_root_meta(candidate: str) -> str:
+def _details_root_meta(candidate: str) -> tuple[str, str]:
     if candidate in _DETAILS_SECTIONS:
-        return "section override"
-    return "cycle global mode" if candidate == "cycle" else "global mode"
+        return "section override", "completion.sectionOverride"
+    if candidate == "cycle":
+        return "cycle global mode", "completion.cycleGlobalMode"
+    return "global mode", "completion.globalMode"
 
 
 def _details_completions(text: str) -> list[dict] | None:
@@ -143,22 +145,42 @@ def _details_completions(text: str) -> list[dict] | None:
     root_candidates = (*_DETAILS_MODES, "cycle", *_DETAILS_SECTIONS)
     if not body or (not parts and trailing):
         lead = "" if trailing else " "
-        return [_item(f"{lead}{c}", _details_root_meta(c)) for c in root_candidates]
+        return [
+            _item(f"{lead}{c}", meta, meta_key=meta_key)
+            for c in root_candidates
+            for meta, meta_key in (_details_root_meta(c),)
+        ]
     if len(parts) == 1 and not trailing:
         prefix = parts[0].lower()
-        return [_item(c, _details_root_meta(c)) for c in root_candidates if c.startswith(prefix) and c != prefix]
+        return [
+            _item(c, meta, meta_key=meta_key)
+            for c in root_candidates
+            if c.startswith(prefix) and c != prefix
+            for meta, meta_key in (_details_root_meta(c),)
+        ]
     section = parts[0].lower() if parts else ""
     if section not in _DETAILS_SECTIONS:
         return []
 
-    def section_meta(candidate: str) -> str:
-        return f"clear {section} override" if candidate == "reset" else f"set {section}"
+    def section_meta(candidate: str) -> tuple[str, str]:
+        if candidate == "reset":
+            return f"clear {section} override", "completion.clearSectionOverride"
+        return f"set {section}", "completion.setSection"
     mode_candidates = (*_DETAILS_MODES, "reset")
     if len(parts) == 1:  # trailing space after the section
-        return [_item(c, section_meta(c)) for c in mode_candidates]
+        return [
+            _item(c, meta, meta_key=meta_key, meta_vars={"section": section})
+            for c in mode_candidates
+            for meta, meta_key in (section_meta(c),)
+        ]
     if len(parts) == 2 and not trailing:
         prefix = parts[1].lower()
-        return [_item(c, section_meta(c)) for c in mode_candidates if c.startswith(prefix) and c != prefix]
+        return [
+            _item(c, meta, meta_key=meta_key, meta_vars={"section": section})
+            for c in mode_candidates
+            if c.startswith(prefix) and c != prefix
+            for meta, meta_key in (section_meta(c),)
+        ]
     return []
 
 

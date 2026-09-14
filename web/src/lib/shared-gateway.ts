@@ -15,14 +15,6 @@ export function sharedGatewayProfiles(
   );
 }
 
-export function sharedGatewayRestartDescription(profiles: string[]): string {
-  return `All bots on this device reconnect: ${profiles.join(", ")}`;
-}
-
-export function sharedGatewayRestartedMessage(count: number): string {
-  return `Shared gateway restarted (${count} ${count === 1 ? "bot" : "bots"})`;
-}
-
 /** The REST layer throws `"<status>: <body>"`; a 409 on gateway start/stop for a served profile
  *  carries the multiplexer explanation in `detail`. Return it as a plain sentence, else null. */
 export function servedProfileRefusal(error: unknown): string | null {

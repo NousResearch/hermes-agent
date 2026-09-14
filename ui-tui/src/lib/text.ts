@@ -9,6 +9,8 @@ import {
   VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
+import { type Locale, translate } from '../i18n/index.js'
+import type { ToolTrailEntry } from '../types.js'
 import type { ThinkingMode } from '../types.js'
 
 const WS_RE = /\s+/g
@@ -60,18 +62,17 @@ export const edgePreview = (s: string, head = 16, tail = 28) => {
       : `${one.slice(0, head).trimEnd()}.. ${one.slice(-tail).trimStart()}`
 }
 
-export const pasteTokenLabel = (text: string, lineCount: number) => {
+export const pasteTokenLabel = (text: string, lineCount: number, locale: Locale = 'en') => {
   const preview = edgePreview(text)
+  const lineLabel = translate(locale, 'input.pasteLines', { count: compactNumber(lineCount) })
 
   if (!preview) {
-    return `[[ [${compactNumber(lineCount)} lines] ]]`
+    return `[[ [${lineLabel}] ]]`
   }
 
   const [head = preview, tail = ''] = preview.split('.. ', 2)
 
-  return tail
-    ? `[[ ${head.trimEnd()}.. [${compactNumber(lineCount)} lines] .. ${tail.trimStart()} ]]`
-    : `[[ ${preview} [${compactNumber(lineCount)} lines] ]]`
+  return tail ? `[[ ${head.trimEnd()}.. [${lineLabel}] .. ${tail.trimStart()} ]]` : `[[ ${preview} [${lineLabel}] ]]`
 }
 
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
@@ -104,13 +105,14 @@ export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: numb
 
 export const boundedLiveRenderText = (
   text: string,
-  { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
-) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
+  { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {},
+  locale: Locale = 'en'
+) => boundedRenderText(text, { maxChars, maxLines }, locale)
 
 const boundedRenderText = (
   text: string,
-  labelPrefix: string,
-  { maxChars, maxLines }: { maxChars: number; maxLines: number }
+  { maxChars, maxLines }: { maxChars: number; maxLines: number },
+  locale: Locale
 ) => {
   if (text.length <= maxChars && text.split('\n', maxLines + 1).length <= maxLines) {
     return text
@@ -143,10 +145,10 @@ const boundedRenderText = (
   const omittedLines = countNewlines(text, start)
   const omittedChars = Math.max(0, text.length - tail.length)
 
-  const label =
-    omittedLines > 0
-      ? `[${labelPrefix}; omitted ${compactNumber(omittedLines)} lines / ${compactNumber(omittedChars)} chars]\n`
-      : `[${labelPrefix}; omitted ${compactNumber(omittedChars)} chars]\n`
+  const label = translate(locale, omittedLines > 0 ? 'liveRender.omittedLines' : 'liveRender.omittedChars', {
+    chars: compactNumber(omittedChars),
+    lines: compactNumber(omittedLines)
+  })
 
   return `${label}${tail}`
 }
@@ -192,7 +194,7 @@ export const buildToolTrailLine = (
   return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
-const verboseToolBlock = (label: string, text?: string) => {
+const verboseToolBlock = (label: string, text: string | undefined, locale: Locale) => {
   const body = (text ?? '').trim()
 
   // Persisted trail blocks are kept all session and rendered expanded by
@@ -200,10 +202,14 @@ const verboseToolBlock = (label: string, text?: string) => {
   // budget) so a large tool output can't balloon the Ink render tree and
   // silently OOM-kill the TUI. See VERBOSE_TRAIL_MAX_CHARS (#34095).
   return body
-    ? `${label}:\n${boundedLiveRenderText(body, {
-        maxChars: VERBOSE_TRAIL_MAX_CHARS,
-        maxLines: VERBOSE_TRAIL_MAX_LINES
-      })}`
+    ? `${label}:\n${boundedLiveRenderText(
+        body,
+        {
+          maxChars: VERBOSE_TRAIL_MAX_CHARS,
+          maxLines: VERBOSE_TRAIL_MAX_LINES
+        },
+        locale
+      )}`
     : ''
 }
 
@@ -213,9 +219,13 @@ export const buildVerboseToolTrailLine = (
   error?: boolean,
   duration?: number,
   argsText?: string,
-  resultText?: string
+  resultText?: string,
+  locale: Locale = 'en'
 ) => {
-  const detail = [verboseToolBlock('Args', argsText), verboseToolBlock(error ? 'Error' : 'Result', resultText)]
+  const detail = [
+    verboseToolBlock(translate(locale, 'tool.args'), argsText, locale),
+    verboseToolBlock(translate(locale, error ? 'tool.error' : 'tool.result'), resultText, locale)
+  ]
     .filter(Boolean)
     .join('\n')
 
@@ -254,14 +264,15 @@ export const splitToolDuration = (call: string) => {
   return match ? { label: match[1]!, duration: match[2]! } : { label: call, duration: '' }
 }
 
-export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'
+export const isTransientToolProgress = (entry: ToolTrailEntry) => typeof entry !== 'string'
 
-export const sameToolTrailGroup = (label: string, entry: string) =>
-  entry === `${label} ✓` ||
-  entry === `${label} ✗` ||
-  entry.startsWith(`${label}(`) ||
-  entry.startsWith(`${label} ::`) ||
-  entry.startsWith(`${label}:`)
+export const sameToolTrailGroup = (label: string, entry: ToolTrailEntry) =>
+  typeof entry === 'string' &&
+  (entry === `${label} ✓` ||
+    entry === `${label} ✗` ||
+    entry.startsWith(`${label}(`) ||
+    entry.startsWith(`${label} ::`) ||
+    entry.startsWith(`${label}:`))
 
 export const lastCotTrailIndex = (trail: readonly string[]) => {
   for (let i = trail.length - 1; i >= 0; i--) {
@@ -324,13 +335,19 @@ export const estimateRows = (text: string, w: number, compact = false) => {
  * vanish from the screen while the agent's follow-up still refers to "the
  * options above".  Mirrors the option formatting in ClarifyPrompt (the same
  * 1-based numbered list) so the persisted record reads identically to what was
- * on screen.  `reason` states why the prompt ended ("timed out", "cancelled").
+ * on screen. `reason` is a stable catalog identity rather than display copy.
  */
-export const formatAbandonedClarify = (question: string, choices: string[] | null, reason: string) => {
-  const head = `ask ${question.trim()}`
+export const formatAbandonedClarify = (
+  question: string,
+  choices: string[] | null,
+  reason: 'cancelled' | 'timedOut',
+  locale: Locale = 'en'
+) => {
+  const head = translate(locale, 'clarify.question', { question: question.trim() })
   const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
+  const reasonText = translate(locale, reason === 'cancelled' ? 'clarify.reason.cancelled' : 'clarify.reason.timedOut')
 
-  return [head, ...opts, `  (${reason} — no selection)`].join('\n')
+  return [head, ...opts, `  ${translate(locale, 'clarify.noSelection', { reason: reasonText })}`].join('\n')
 }
 
 /**
@@ -341,15 +358,24 @@ export const formatAbandonedClarify = (question: string, choices: string[] | nul
 export const formatAbandonedClarifyBatch = (
   questions: { qid: string; question: string }[],
   answers: Record<string, string>,
-  reason: string
+  reason: 'cancelled' | 'timedOut',
+  locale: Locale = 'en'
 ) => {
   const lines = questions.map(q => {
     const answer = answers[q.qid]
 
-    return answer ? `  ✓ ${q.question} → ${answer}` : `  · ${q.question} (no answer)`
+    return answer
+      ? `  ${translate(locale, 'clarify.batchAnswered', { question: q.question, answer })}`
+      : `  ${translate(locale, 'clarify.batchUnanswered', { question: q.question })}`
   })
 
-  return [`ask (${questions.length} questions)`, ...lines, `  (${reason})`].join('\n')
+  const reasonText = translate(locale, reason === 'cancelled' ? 'clarify.reason.cancelled' : 'clarify.reason.timedOut')
+
+  return [
+    translate(locale, 'clarify.batchHeading', { count: questions.length }),
+    ...lines,
+    `  ${translate(locale, 'clarify.batchReason', { reason: reasonText })}`
+  ].join('\n')
 }
 
 /**

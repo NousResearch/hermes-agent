@@ -24,6 +24,8 @@ export interface GatewayCompletionItem {
    *  skill bundles — the only kind offered for an inline `/skill` reference. */
   kind?: string
   meta?: string
+  meta_key?: string
+  meta_vars?: Record<string, string | number>
   text: string
 }
 
@@ -32,6 +34,7 @@ export interface GatewayCompletionItem {
 export interface CommandsCatalogResponse {
   canon?: Record<string, string>
   categories?: SlashCategory[]
+  description_keys?: Record<string, string>
   pairs?: [string, string][]
   skill_count?: number
   sub?: Record<string, string[]>
@@ -80,6 +83,7 @@ export interface ConfigDisplayConfig {
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean
+  language?: string
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean
@@ -159,6 +163,7 @@ export interface ConfigSetResponse {
   deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
+  scope?: 'global' | 'once' | 'session'
   value?: string
   warning?: string
 }
@@ -264,6 +269,18 @@ export interface SessionUsageResponse {
 }
 
 export interface SessionStatusResponse {
+  details?: {
+    agent_running: boolean
+    created: string
+    last_activity: string
+    model: string
+    path: string
+    project?: string
+    provider: string
+    session_id: string
+    title?: string
+    tokens: number
+  }
   output?: string
 }
 
@@ -276,6 +293,14 @@ export interface SessionCompressResponse {
   messages?: GatewayTranscriptMessage[]
   removed?: number
   summary?: {
+    aborted?: boolean
+    after_count?: number
+    after_tokens?: number
+    before_count?: number
+    before_tokens?: number
+    dropped_count?: number
+    failure_reason?: null | string
+    fallback_used?: boolean
     headline?: string
     noop?: boolean
     note?: null | string
@@ -345,6 +370,7 @@ export interface ClipboardPasteResponse {
   count?: number
   height?: number
   message?: string
+  reason?: 'empty' | 'extract_failed' | string
   token_estimate?: number
   width?: number
 }

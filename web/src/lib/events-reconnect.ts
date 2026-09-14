@@ -52,33 +52,3 @@ export function shouldRetryEventsClose(code: number | undefined): boolean {
 export function isEventsAuthRejection(code: number | undefined): boolean {
   return code !== undefined && WS_CLOSE_AUTH_CODES.has(code)
 }
-
-// The sidebar's banner is shared with `info.credential_warning` and with the
-// JSON-RPC sidecar's errors, so the events socket may only clear a message it
-// wrote itself. Everything this module can put in the banner is listed here.
-export const EVENTS_DISCONNECTED_MESSAGE = 'events feed disconnected — the chat title may not update'
-
-export function eventsReconnectingMessage(delayMs: number): string {
-  return `events feed disconnected — reconnecting in ${Math.round(delayMs / 1000)}s…`
-}
-
-export function eventsRejectedMessage(code: number): string {
-  return `events feed rejected (${code}) — reload the page`
-}
-
-export function eventsGaveUpMessage(): string {
-  return `events feed disconnected — gave up after ${EVENTS_MAX_RECONNECT_ATTEMPTS} attempts, reload the page`
-}
-
-/**
- * True when `message` is one this module produced, i.e. safe to clear on a
- * successful reconnect. Guards against stomping a `credential_warning` or a
- * sidecar error that happens to be showing when the feed recovers.
- */
-export function isEventsFeedMessage(message: string | null): boolean {
-  if (!message) {
-    return false
-  }
-
-  return message.startsWith('events feed ')
-}

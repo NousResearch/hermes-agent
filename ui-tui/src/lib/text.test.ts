@@ -24,7 +24,7 @@ describe('stripTrailingPasteNewlines', () => {
 
 describe('formatAbandonedClarify', () => {
   it('renders the question, numbered options, and reason', () => {
-    const out = formatAbandonedClarify('How do you want to scope?', ['Option A', 'Option B', 'Option C'], 'timed out')
+    const out = formatAbandonedClarify('How do you want to scope?', ['Option A', 'Option B', 'Option C'], 'timedOut')
 
     expect(out).toBe(
       [
@@ -44,16 +44,22 @@ describe('formatAbandonedClarify', () => {
   })
 
   it('trims surrounding whitespace on the question', () => {
-    const out = formatAbandonedClarify('  trailing space  ', [], 'timed out')
+    const out = formatAbandonedClarify('  trailing space  ', [], 'timedOut')
 
     expect(out.split('\n')[0]).toBe('ask trailing space')
   })
 
   it('numbers options 1-based to match the live ClarifyPrompt', () => {
-    const out = formatAbandonedClarify('q', ['first'], 'timed out')
+    const out = formatAbandonedClarify('q', ['first'], 'timedOut')
 
     expect(out).toContain('  1. first')
     expect(out).not.toContain('  0.')
+  })
+
+  it('renders framework-owned clarify chrome in the active locale', () => {
+    const out = formatAbandonedClarify('范围？', ['A'], 'timedOut', 'zh')
+
+    expect(out).toBe(['询问：范围？', '  1. A', '  （已超时，未选择）'].join('\n'))
   })
 })
 
@@ -65,7 +71,7 @@ describe('formatAbandonedClarifyBatch', () => {
         { qid: 'q1', question: 'Two?' }
       ],
       { q0: 'alpha' },
-      'timed out'
+      'timedOut'
     )
 
     expect(out).toBe(['ask (2 questions)', '  ✓ One? → alpha', '  · Two? (no answer)', '  (timed out)'].join('\n'))
@@ -75,6 +81,20 @@ describe('formatAbandonedClarifyBatch', () => {
     const out = formatAbandonedClarifyBatch([{ qid: 'q0', question: 'One?' }], { q0: '' }, 'cancelled')
 
     expect(out).toContain('· One? (no answer)')
+  })
+
+  it('localizes framework-owned batch chrome without translating dynamic content', () => {
+    const out = formatAbandonedClarifyBatch(
+      [
+        { qid: 'q0', question: '范围？' },
+        { qid: 'q1', question: '模式？' }
+      ],
+      { q0: 'A' },
+      'timedOut',
+      'zh'
+    )
+
+    expect(out).toBe(['询问（2 个问题）', '  ✓ 范围？ → A', '  · 模式？（未回答）', '  （已超时）'].join('\n'))
   })
 })
 

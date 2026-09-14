@@ -53,7 +53,7 @@ const guarded =
   }
 
 /** Build a ctx whose rpc routes by method name to a supplied map of results. */
-const buildCtx = (results: Record<string, unknown>) => {
+const buildCtx = (results: Record<string, unknown>, locale = 'en') => {
   const sys = vi.fn()
   const calls: Array<{ method: string; params: unknown }> = []
 
@@ -69,7 +69,8 @@ const buildCtx = (results: Record<string, unknown>) => {
     guardedErr: vi.fn(),
     sid: 'sid-1',
     stale: () => false,
-    transcript: { page: vi.fn(), panel: vi.fn(), sys }
+    transcript: { page: vi.fn(), panel: vi.fn(), sys },
+    ui: { locale }
   }
 
   const run = async (arg: string) => {
@@ -163,6 +164,90 @@ describe('/billing slash command (overlay-driven)', () => {
       const out = printed(sys)
       expect(out).toContain('Charge submitted')
       expect(out).toContain('✅ $100 added.')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ctx.charge → shared settlement driver keeps the Simplified Chinese transcript localized', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const { run, sys } = buildCtx(
+        {
+          'billing.state': ownerState(),
+          'billing.charge': { ok: true, charge_id: 'ch_1', idempotency_key: 'k' },
+          'billing.charge_status': { ok: true, status: 'settled', amount_usd: '100' }
+        },
+        'zh'
+      )
+
+      await run('')
+      getOverlayState().billing!.ctx.charge('100')
+      await vi.runAllTimersAsync()
+      const out = printed(sys)
+      expect(out).toContain('扣款已提交')
+      expect(out).toContain('已添加 $100')
+      expect(out).not.toContain('Charge submitted')
+      expect(out).not.toContain('added.')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ctx.charge → refused settlement does not leak a backend English message into Simplified Chinese', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const { run, sys } = buildCtx(
+        {
+          'billing.state': ownerState(),
+          'billing.charge': { ok: true, charge_id: 'ch_1', idempotency_key: 'k' },
+          'billing.charge_status': {
+            ok: false,
+            error: 'invalid_charge_id',
+            message: 'No charge found.'
+          }
+        },
+        'zh'
+      )
+
+      await run('')
+      getOverlayState().billing!.ctx.charge('100')
+      await vi.runAllTimersAsync()
+      const out = printed(sys)
+      expect(out).toContain('无法检查扣款状态')
+      expect(out).toContain('计费请求失败')
+      expect(out).not.toContain('No charge found')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ctx.charge → ambiguous mid-poll scope loss stays localized and warns before retry', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const { run, sys } = buildCtx(
+        {
+          'billing.state': ownerState(),
+          'billing.charge': { ok: true, charge_id: 'ch_1', idempotency_key: 'k' },
+          'billing.charge_status': {
+            ok: false,
+            error: 'insufficient_scope',
+            message: 'Remote spending scope is missing.'
+          }
+        },
+        'zh'
+      )
+
+      await run('')
+      getOverlayState().billing!.ctx.charge('100')
+      await vi.runAllTimersAsync()
+      const out = printed(sys)
+      expect(out).toContain('需要远程消费授权')
+      expect(out).toContain('上一笔扣款结果尚未确认')
+      expect(out).not.toContain('Remote spending scope is missing')
     } finally {
       vi.useRealTimers()
     }
@@ -311,8 +396,8 @@ describe('/billing slash command (overlay-driven)', () => {
   // ── CF-4: revoked-terminal UX (kill the "15-minute zombie button") ──
 
   it.each([
-    ['admin', 'An admin stopped remote spending for this terminal'],
-    ['self', 'You stopped remote spending for this terminal']
+    ['admin', 'An admin stopped Remote Spending for this terminal'],
+    ['self', 'You stopped Remote Spending for this terminal']
   ])(
     'ctx.charge remote_spending_revoked (%s) → clears the overlay (no zombie button) + actor copy',
     async (actor, copy) => {
@@ -387,7 +472,7 @@ describe('/billing slash command (overlay-driven)', () => {
     await Promise.resolve()
     await Promise.resolve()
     const out = printed(sys)
-    expect(out).toContain('Remote spending is off for this account')
+    expect(out).toContain('Remote Spending is off for this account')
     // Account-wide switch is NOT a per-terminal revoke — overlay stays open.
     expect(getOverlayState().billing).toBeTruthy()
   })

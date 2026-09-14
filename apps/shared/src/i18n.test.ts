@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyDocumentLocale, LOCALE_ENDONYMS, mergeTranslations, RTL_LOCALES, type TranslationOverride } from './i18n'
+import { applyDocumentLocale } from './document-locale'
+import { LOCALE_ENDONYMS, mergeTranslations, RTL_LOCALES, type TranslationOverride } from './i18n'
 
 describe('mergeTranslations', () => {
   it('keeps untouched sibling keys on a nested partial override and replaces functions/arrays wholesale', () => {

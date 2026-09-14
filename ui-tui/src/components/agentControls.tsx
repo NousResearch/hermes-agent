@@ -2,6 +2,7 @@ import { Box, Text, useInput } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { useI18n } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -45,6 +46,7 @@ export function AgentSteerForm({
   cols,
   onClose
 }: ControlProps & { cols: number; onClose: () => void }) {
+  const { t: ti } = useI18n()
   const [text, setText] = useState('')
   const [feedback, setFeedback] = useState('')
   const [pending, setPending] = useState(false)
@@ -63,13 +65,13 @@ export function AgentSteerForm({
 
     try {
       const result = await sendAgentSteer(gw, sid, id, text)
-      setFeedback(result.message)
+      setFeedback(ti(result.accepted ? 'agents.steerQueued' : 'agents.steerRejected'))
 
       if (result.accepted) {
         setText('')
       }
     } catch (error) {
-      setFeedback(`Not queued: ${error instanceof Error ? error.message : String(error)}`)
+      setFeedback(ti('agents.steerFailed', { error: error instanceof Error ? error.message : String(error) }))
     } finally {
       setPending(false)
     }
@@ -78,9 +80,9 @@ export function AgentSteerForm({
   return (
     <Box flexDirection="column" flexGrow={1}>
       <Text bold color={t.color.accent} wrap="truncate-end">
-        Steer {id}
+        {ti('agents.steerTitle', { id })}
       </Text>
-      <Text color={t.color.muted}>Guidance queues at the next tool boundary; current work is not interrupted.</Text>
+      <Text color={t.color.muted}>{ti('agents.steerDescription')}</Text>
       <Box marginTop={1}>
         <Text color={t.color.accent}>❯ </Text>
         <TextInput
@@ -92,14 +94,15 @@ export function AgentSteerForm({
           value={text}
         />
       </Box>
-      <Text color={t.color.muted}>{pending ? 'Queueing…' : feedback}</Text>
-      <Text color={t.color.muted}>Enter queue · Esc back · main composer draft is preserved</Text>
+      <Text color={t.color.muted}>{pending ? ti('agents.steerQueueing') : feedback}</Text>
+      <Text color={t.color.muted}>{ti('agents.steerHint')}</Text>
     </Box>
   )
 }
 
 export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
-  const [tail, setTail] = useState('Loading live transcript…')
+  const { t: ti } = useI18n()
+  const [tail, setTail] = useState(() => ti('agents.tailLoading'))
   useEffect(() => {
     let active = true
     let pending = false
@@ -119,13 +122,13 @@ export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
         if (active) {
           setTail(
             result?.available
-              ? `${result.truncated ? '[last 16 KiB]\n' : ''}${result.text}`
-              : 'Live transcript unavailable; child may have finished. Progress and output remain below.'
+              ? `${result.truncated ? `${ti('agents.tailTruncated')}\n` : ''}${result.text}`
+              : ti('agents.tailUnavailable')
           )
         }
       } catch {
         if (active) {
-          setTail('Could not refresh live transcript.')
+          setTail(ti('agents.tailRefreshFailed'))
         }
       } finally {
         pending = false
@@ -139,12 +142,12 @@ export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
       active = false
       clearInterval(timer)
     }
-  }, [gw, sid, id])
+  }, [gw, sid, id, ti])
 
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        Live transcript
+        {ti('agents.tailTitle')}
       </Text>
       <Text color={t.color.text} wrap="wrap">
         {tail}

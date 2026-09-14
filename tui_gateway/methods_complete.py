@@ -12,16 +12,33 @@ _profile_scoped = _registry.profile_scoped
 
 _BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "staged"})
 _AT_DIRECTIVE_HINTS = [
-    ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
-    ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
+    ("@diff", "git diff", "completion.gitDiff"),
+    ("@staged", "staged diff", "completion.stagedDiff"),
+    ("@file:", "attach file", "completion.attachFile"),
+    ("@folder:", "attach folder", "completion.attachFolder"),
+    ("@url:", "fetch url", "completion.fetchUrl"),
+    ("@git:", "git log", "completion.gitLog"),
+]
 _SLASH_EXTRAS = [
     ("/density", "Toggle compact display mode"), ("/details", "Control agent detail visibility"),
     ("/logs", "Show recent gateway log lines"),
     ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]
 
 
-def _item(text: str, meta: str, display: str | None = None) -> dict:
-    return {"text": text, "display": display if display is not None else text, "meta": meta}
+def _item(
+    text: str,
+    meta: str,
+    display: str | None = None,
+    *,
+    meta_key: str | None = None,
+    meta_vars: dict | None = None,
+) -> dict:
+    item = {"text": text, "display": display if display is not None else text, "meta": meta}
+    if meta_key:
+        item["meta_key"] = meta_key
+    if meta_vars:
+        item["meta_vars"] = meta_vars
+    return item
 
 
 def _catch(fail_code: int):
@@ -133,13 +150,14 @@ def _fuzzy_basename_items(root: str, path_part: str, prefix_tag: str) -> list[di
     return [
         _item(
             f"@{'folder' if is_dir else tag}:{rel}{'/' if is_dir else ''}",
-            "dir" if is_dir else os.path.dirname(rel), basename + ("/" if is_dir else ""))
+            "dir" if is_dir else os.path.dirname(rel), basename + ("/" if is_dir else ""),
+            meta_key="completion.directory" if is_dir else None)
         for _, rel, basename, is_dir in ranked[:30]]
 
 
 def _at_root_items() -> list[dict]:
     """Completions for a bare ``@``: directive hints, agent profiles, plugin ``@<prefix>:`` providers."""
-    items = [_item(t, m) for t, m in _AT_DIRECTIVE_HINTS] + _profile_mention_items("")
+    items = [_item(text, meta, meta_key=key) for text, meta, key in _AT_DIRECTIVE_HINTS] + _profile_mention_items("")
     with contextlib.suppress(Exception):
         from agent.context_references import get_context_reference_providers
         for pfx, prov in sorted(get_context_reference_providers().items()):
@@ -175,7 +193,8 @@ def _dir_listing_items(root: str, word: str, path_part: str, prefix_tag: str, is
             text = "~/" + os.path.relpath(full, os.path.expanduser("~")) + suffix
         else:
             text = ("./" if word.startswith("./") else "") + rel + suffix
-        items.append(_item(text, "dir" if is_dir else "", entry + suffix))
+        items.append(_item(text, "dir" if is_dir else "", entry + suffix,
+                           meta_key="completion.directory" if is_dir else None))
         if len(items) >= 30:
             break
     return items
@@ -231,21 +250,39 @@ def _(rid, params: dict) -> dict:
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_skill_commands
     from agent.skill_bundles import get_skill_bundles
+    from hermes_cli.commands import COMMAND_REGISTRY
     completer = SlashCommandCompleter(
         skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles())
     # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
     # skills/bundles are the only completions for an inline `/skill` typed mid-message.
     skill_names = {key.lstrip("/").lower() for key in (*get_skill_commands(), *get_skill_bundles())}
+    command_keys = {
+        f"/{key}": cmd.name
+        for cmd in COMMAND_REGISTRY
+        for key in (cmd.name, *cmd.aliases)
+    }
 
     def to_items(doc: Document) -> list[dict]:
         # display/display_meta are FormattedText; the TUI contract is a plain string
         # (the raw list trips Ink's row layout into 1-char truncation).
-        return [
-            {
-                "text": c.text, "display": to_plain_text(c.display) if c.display else c.text,
-                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
-                "kind": "skill" if c.text.strip().lstrip("/").lower() in skill_names else "command"}
-            for c in completer.get_completions(doc, None)]
+        items = []
+        for completion in completer.get_completions(doc, None):
+            item = {
+                "text": completion.text,
+                "display": to_plain_text(completion.display) if completion.display else completion.text,
+                "meta": to_plain_text(completion.display_meta) if completion.display_meta else "",
+                "kind": (
+                    "skill"
+                    if completion.text.strip().lstrip("/").lower() in skill_names
+                    else "command"
+                ),
+            }
+            token = completion.text if completion.text.startswith("/") else f"/{completion.text}"
+            if " " not in doc.text and item["kind"] == "command":
+                if description_key := command_keys.get(token):
+                    item["meta_key"] = description_key
+            items.append(item)
+        return items
     items = to_items(Document(text, len(text)))
     # Rank + bound while a `/token` is under the cursor (the one stage skills are
     # offered at); an argument stage (`/personality `) keeps its command's order.
@@ -264,7 +301,7 @@ def _(rid, params: dict) -> dict:
     text_lower = text.lower()
     for extra_text, extra_meta in _SLASH_EXTRAS:
         if extra_text.startswith(text_lower) and not any(item["text"] == extra_text for item in items):
-            items.append({**_item(extra_text, extra_meta), "kind": "command"})
+            items.append({**_item(extra_text, extra_meta, meta_key=extra_text.lstrip("/")), "kind": "command"})
     if (details_items := _details_completions(text)) is not None:
         return _ok(rid, {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)})
     return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})

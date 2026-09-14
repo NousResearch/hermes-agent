@@ -5,7 +5,7 @@ import { evictInkCaches } from '@hermes/ink'
 import type { SessionInflightTurn, SessionResumeResponse, Usage } from '@hermes/shared/gateway-events'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { buildSetupRequiredSections, setupRequiredTitle } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
 import { type GatewayClient } from '../gatewayClient.js'
@@ -16,6 +16,7 @@ import type {
   SessionTitleResponse,
   SetupStatusResponse
 } from '../gatewayTypes.js'
+import { translate, type TranslationKey } from '../i18n/index.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
@@ -83,6 +84,8 @@ export const signalFreshSessionBoundary = (
 
   return true
 }
+
+const ti = (key: TranslationKey, vars?: Record<string, string | number>) => translate(getUiState().locale, key, vars)
 
 const trimTail = (items: Msg[]) => {
   const q = [...items]
@@ -187,7 +190,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
 
       if (setup?.provider_configured === false) {
-        panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+        const { locale } = getUiState()
+        panel(setupRequiredTitle(locale), buildSetupRequiredSections(locale))
         patchUiState({ status: 'setup required' })
 
         return null
@@ -226,11 +230,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       }
 
       if (info?.credential_warning) {
-        sys(`warning: ${info.credential_warning}`)
+        sys(ti('transcript.credentialWarning', { message: info.credential_warning }))
       }
 
       if (info?.config_warning) {
-        sys(`warning: ${info.config_warning}`)
+        sys(ti('transcript.configWarning', { message: info.config_warning }))
       }
 
       if (msg) {
@@ -248,9 +252,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             const nextTitle = (result.title ?? requestedTitle).trim()
-            const suffix = result.pending ? ' (queued while session initializes)' : ''
+            const suffix = result.pending ? ti('session.titleQueuedSuffix') : ''
             patchUiState({ sessionTitle: nextTitle })
-            sys(`session title set: ${nextTitle}${suffix}`)
+            sys(ti('session.titleSet', { title: nextTitle, suffix }))
           })
           .catch((err: unknown) => {
             if (getUiState().sid !== r.session_id) {
@@ -258,7 +262,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             const message = err instanceof Error ? err.message : String(err)
-            sys(`warning: failed to set session title: ${message}`)
+            sys(ti('session.titleSetFailed', { message }))
           })
       }
 
@@ -275,7 +279,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const newLiveSession = useCallback(
-    (msg = 'new live session started', title?: string) => {
+    (msg = ti('sys.newLiveSessionStarted'), title?: string) => {
       patchOverlayState({ sessions: false })
 
       return startNewSession(msg, title, true)
@@ -293,7 +297,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           const r = asRpcResult<SessionActivateResponse>(raw)
 
           if (!r) {
-            sys('error: invalid response: session.activate')
+            sys(ti('errors.invalidResponse', { method: 'session.activate' }))
 
             return patchUiState({ status: 'ready' })
           }
@@ -303,7 +307,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
           resetSession()
           setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
-          const transcript = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
+
+          const transcript = [
+            ...toTranscriptMessages(r.messages, getUiState().locale),
+            ...liveSessionInflightMessages(r.inflight)
+          ]
+
           setHistoryItems(info ? [introMsg(info), ...transcript] : transcript)
           writeActiveSessionFile(r.session_key ?? r.session_id)
           patchUiState({
@@ -318,7 +327,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
         .catch((e: Error) => {
-          sys(`error: ${e.message}`)
+          sys(ti('errors.rpc', { message: e.message }))
           patchUiState({ status: 'ready' })
         })
     },
@@ -332,7 +341,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
         if (setup?.provider_configured === false) {
-          panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
+          const { locale } = getUiState()
+          panel(setupRequiredTitle(locale), buildSetupRequiredSections(locale))
           patchUiState({ status: 'setup required' })
 
           return
@@ -345,7 +355,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             const r = asRpcResult<SessionResumeResponse<SessionInfo>>(raw)
 
             if (!r) {
-              sys('error: invalid response: session.resume')
+              sys(ti('errors.invalidResponse', { method: 'session.resume' }))
 
               return patchUiState({ status: 'ready' })
             }
@@ -356,7 +366,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             resetSession()
             setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
 
-            const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
+            const resumed = [
+              ...toTranscriptMessages(r.messages, getUiState().locale),
+              ...liveSessionInflightMessages(r.inflight)
+            ]
 
             setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
             writeActiveSessionFile(r.resumed ?? r.session_id)
@@ -376,7 +389,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
           })
           .catch((e: Error) => {
-            sys(`error: ${e.message}`)
+            sys(ti('errors.rpc', { message: e.message }))
             patchUiState({ status: 'ready' })
           })
       })
@@ -385,12 +398,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const guardBusySessionSwitch = useCallback(
-    (what = 'switch sessions') => {
+    (what = ti('action.switchSessions')) => {
       if (!getUiState().busy) {
         return false
       }
 
-      sys(`interrupt the current turn before trying to ${what}`)
+      sys(ti('session.switchBusy', { what }))
 
       return true
     },
@@ -417,8 +430,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       newSession,
       resetSession,
       resetVisibleHistory,
-      resumeById,
-      trimTail
+      resumeById
     ]
   )
 }

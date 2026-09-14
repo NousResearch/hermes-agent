@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { normalizeLocale, translate } from '../i18n/index.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -16,7 +17,7 @@ import {
   type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
-import { patchUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -245,21 +246,56 @@ const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number =
 
 /** Fetch ``config.get full`` and fan the result through ``applyDisplay``.
  *
- * Extracted so the mtime-reload path can be exercised by the test
- * suite without a React runtime (Copilot round-12 review on #19835).
- * Both the initial hydration and the mtime poller use this shared
- * helper, so a regression in the fetch/apply plumbing now fails the
- * useConfigSync tests instead of only being visible at runtime. */
+ * Both initial hydration and live config refresh use this helper. Keeping
+ * display hydration separate from MCP reload is load-bearing: rebuilding the
+ * tool schema after a turn has started invalidates the prompt cache. */
 export async function hydrateFullConfig(
   gw: GatewayClient,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
-  setBellOnPrompt?: (v: boolean) => void
+  setBellOnPrompt?: (v: boolean) => void,
+  signal?: AbortSignal
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
+
+  if (signal?.aborted) {
+    return null
+  }
+
+  // A transient read failure must preserve every last-good display value,
+  // not only locale and voice.record_key. The mtime poll deliberately keeps
+  // the previous revision in this case so the same edit is retried.
   applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
 
   return cfg
+}
+
+/** Refresh a changed config revision and acknowledge it only after the full
+ * config payload was applied successfully. Keeping the old revision on failure
+ * makes the next poll retry the same edit instead of waiting for another write. */
+export async function syncConfigRevision(
+  gw: GatewayClient,
+  previousMtime: number,
+  setBell: (v: boolean) => void,
+  setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
+  observedRevision?: ConfigMtimeResponse | null,
+  setBellOnPrompt?: (v: boolean) => void,
+  signal?: AbortSignal
+): Promise<number> {
+  const revision =
+    observedRevision === undefined
+      ? await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+      : observedRevision
+
+  const next = Number(revision?.mtime ?? 0)
+
+  if (!next || next === previousMtime) {
+    return previousMtime
+  }
+
+  const cfg = await hydrateFullConfig(gw, setBell, setVoiceRecordKey, setBellOnPrompt, signal)
+
+  return cfg ? next : previousMtime
 }
 
 export const applyDisplay = (
@@ -268,6 +304,10 @@ export const applyDisplay = (
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
   setBellOnPrompt?: (v: boolean) => void
 ) => {
+  if (!cfg) {
+    return
+  }
+
   const d = cfg?.config?.display ?? {}
   const approvals = cfg?.config?.approvals
 
@@ -277,14 +317,7 @@ export const applyDisplay = (
 
   applyConfiguredTuiTheme(d.tui_theme)
 
-  // Only push the voice record key when the RPC actually returned a
-  // config payload. ``quietRpc()`` collapses failures to ``null``; if we
-  // reset the cached shortcut on every null we would clobber a custom
-  // binding after one transient RPC error until the next config edit
-  // (Copilot round-8 review on #19835). The mtime-poll loop advances
-  // ``mtimeRef`` before this call, so staying silent on null preserves
-  // the last-good state and lets the next successful poll refresh it.
-  if (setVoiceRecordKey && cfg) {
+  if (setVoiceRecordKey) {
     setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
   }
 
@@ -295,12 +328,13 @@ export const applyDisplay = (
     // Fail safe: only YAML boolean false disables the prompt. A transient
     // config RPC failure (cfg=null) preserves the last known policy instead
     // of silently changing approval behavior until the next successful poll.
-    ...(cfg ? { destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false } : {}),
+    destructiveSlashConfirm: approvals?.destructive_slash_confirm !== false,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
+    locale: normalizeLocale(d.language),
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
@@ -324,6 +358,7 @@ export function useConfigSync({
   sid
 }: UseConfigSyncOptions) {
   const mtimeRef = useRef(0)
+  const syncInFlightRef = useRef(false)
   const mcpRevRef = useRef<McpRevState>({ accepted: '', inFlight: false })
 
   useEffect(() => {
@@ -335,16 +370,37 @@ export function useConfigSync({
     // can run long enough to delay prompt.submit on the single stdio RPC pipe.
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
+    mtimeRef.current = 0
+    mcpRevRef.current = { accepted: '', inFlight: false }
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
-    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
-      mtimeRef.current = Number(r?.mtime ?? 0)
-      // Seed the MCP revision baseline too: after a normal boot mtime is
-      // already non-zero, so the poller's baseline branch never runs, and an
-      // unset baseline would make the FIRST cosmetic write (mtime bump, same
-      // mcp_rev) look like an MCP change and fire a needless reload.mcp.
-      mcpRevRef.current.accepted = String(r?.mcp_rev ?? '')
+    const controller = new AbortController()
+    syncInFlightRef.current = true
+    void (async () => {
+      const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
+
+      if (controller.signal.aborted) {
+        return
+      }
+
+      const cfg = await hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt, controller.signal)
+
+      if (!controller.signal.aborted) {
+        mcpRevRef.current.accepted = String(revision?.mcp_rev ?? '')
+
+        if (cfg) {
+          mtimeRef.current = Number(revision?.mtime ?? 0)
+        }
+      }
+    })().finally(() => {
+      if (!controller.signal.aborted) {
+        syncInFlightRef.current = false
+      }
     })
-    void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
+
+    return () => {
+      controller.abort()
+      syncInFlightRef.current = false
+    }
   }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceEnabled, setVoiceRecordKey, sid])
 
   useEffect(() => {
@@ -352,51 +408,61 @@ export function useConfigSync({
       return
     }
 
+    const controller = new AbortController()
+
     const id = setInterval(() => {
-      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
-        const next = Number(r?.mtime ?? 0)
-        const nextMcpRev = String(r?.mcp_rev ?? '')
+      if (syncInFlightRef.current) {
+        return
+      }
 
-        if (!mtimeRef.current) {
-          if (next) {
-            mtimeRef.current = next
-            mcpRevRef.current.accepted = nextMcpRev
-          }
+      syncInFlightRef.current = true
+      void (async () => {
+        const revision = await quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' })
 
+        if (controller.signal.aborted || !revision) {
           return
         }
 
-        // Reload MCP only when the MCP-relevant config actually changed.
-        // Cosmetic writes (/skin, /statusbar, /theme) bump mtime constantly;
-        // reconnecting every MCP server for those costs seconds and made
-        // skin switching feel glacial. The handshake runs on EVERY poll tick
-        // (not just mtime changes) so a failed reload retries until the
-        // server confirms the revision was loaded.
-        if (nextMcpRev) {
-          void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () =>
-            turnController.pushActivity('MCP reloaded after config change')
-          )
+        const nextMcpRev = String(revision.mcp_rev ?? '')
+
+        if (!mtimeRef.current && nextMcpRev && !mcpRevRef.current.accepted) {
+          // Seed the baseline after a transient startup read failure. The
+          // current revision is already loaded by the gateway, so it must not
+          // be mistaken for a new MCP edit.
+          mcpRevRef.current.accepted = nextMcpRev
+        } else if (nextMcpRev) {
+          void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () => {
+            if (!controller.signal.aborted) {
+              turnController.pushActivity(translate(getUiState().locale, 'activity.mcpReloadedAfterConfigChange'))
+            }
+          })
         }
 
-        if (!next || next === mtimeRef.current) {
-          return
+        const next = await syncConfigRevision(
+          gw,
+          mtimeRef.current,
+          setBellOnComplete,
+          setVoiceRecordKey,
+          revision,
+          setBellOnPrompt,
+          controller.signal
+        )
+
+        if (!controller.signal.aborted) {
+          mtimeRef.current = next
         }
-
-        mtimeRef.current = next
-
-        // Older gateways don't send mcp_rev — fall back to
-        // reload-on-any-change there (no ack tracking possible).
-        if (!nextMcpRev) {
-          quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-            r => r && turnController.pushActivity('MCP reloaded after config change')
-          )
+      })().finally(() => {
+        if (!controller.signal.aborted) {
+          syncInFlightRef.current = false
         }
-
-        void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey, setBellOnPrompt)
       })
     }, MTIME_POLL_MS)
 
-    return () => clearInterval(id)
+    return () => {
+      controller.abort()
+      clearInterval(id)
+      syncInFlightRef.current = false
+    }
   }, [gw, setBellOnComplete, setBellOnPrompt, setVoiceRecordKey, sid])
 }
 

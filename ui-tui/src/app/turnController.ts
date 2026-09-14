@@ -8,6 +8,7 @@ import {
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse } from '../gatewayTypes.js'
+import { translate } from '../i18n/index.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -15,10 +16,11 @@ import {
   buildToolTrailLine,
   buildVerboseToolTrailLine,
   estimateTokensRough,
-  isTransientTrailLine,
+  isTransientToolProgress,
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
+import type { ToolTrailEntry } from '../types.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
 import type { Notice } from './interfaces.js'
@@ -127,7 +129,7 @@ class TurnController {
   pendingSegmentTools: string[] = []
   statusTimer: Timer = null
   toolTokenAcc = 0
-  turnTools: string[] = []
+  turnTools: ToolTrailEntry[] = []
 
   private activeTools: ActiveTool[] = []
   private activeReasoningText = ''
@@ -336,11 +338,13 @@ class TurnController {
     if (partial || tools.length) {
       appendMessage({
         role: 'assistant',
-        text: partial ? `${partial}\n\n*[interrupted]*` : '*[interrupted]*',
+        text: partial
+          ? `${partial}\n\n*[${translate(getUiState().locale, 'common.interrupted')}]*`
+          : `*[${translate(getUiState().locale, 'common.interrupted')}]*`,
         ...(tools.length && { tools })
       })
     } else {
-      sys('interrupted')
+      sys(translate(getUiState().locale, 'common.interrupted'))
     }
 
     this.clearStatusTimer()
@@ -364,9 +368,9 @@ class TurnController {
   }
 
   pruneTransient() {
-    this.turnTools = this.turnTools.filter(line => !isTransientTrailLine(line))
+    this.turnTools = this.turnTools.filter(line => !isTransientToolProgress(line))
     patchTurnState(state => {
-      const next = state.turnTrail.filter(line => !isTransientTrailLine(line))
+      const next = state.turnTrail.filter(line => !isTransientToolProgress(line))
 
       return next.length === state.turnTrail.length ? state : { ...state, turnTrail: next }
     })
@@ -538,7 +542,7 @@ class TurnController {
     })
   }
 
-  pushTrail(line: string) {
+  pushTrail(line: ToolTrailEntry) {
     if (this.interrupted) {
       return
     }
@@ -548,7 +552,7 @@ class TurnController {
         return state
       }
 
-      const next = [...state.turnTrail.filter(item => !isTransientTrailLine(item)), line].slice(-TRAIL_LIMIT)
+      const next = [...state.turnTrail.filter(item => !isTransientToolProgress(item)), line].slice(-TRAIL_LIMIT)
 
       this.turnTools = next
 
@@ -756,7 +760,10 @@ class TurnController {
     // committed entry rather than merging into streaming reasoning.
     this.closeReasoningSegment()
 
-    const header = index && count ? `◇ Reference ${index}/${count} — ${label}` : `◇ Reference — ${label}`
+    const header = translate(getUiState().locale, 'transcript.moaReference', {
+      label,
+      position: index && count ? ` ${index}/${count}` : ''
+    })
 
     const body = text.trim()
     const thinking = body ? `${header}\n${body}` : header
@@ -851,7 +858,8 @@ class TurnController {
             false,
             duration ?? fallbackDuration,
             done?.verboseArgs,
-            resultText || summary || ''
+            resultText || summary || '',
+            getUiState().locale
           )
         : buildToolTrailLine(name, done?.context || '', false, summary || '', duration ?? fallbackDuration)
 
@@ -860,7 +868,7 @@ class TurnController {
     const next = this.turnTools.filter(item => !sameToolTrailGroup(label, item))
 
     if (!this.activeTools.length) {
-      next.push('analyzing tool output…')
+      next.push({ kind: 'analyze' })
     }
 
     this.turnTools = next.slice(-TRAIL_LIMIT)
@@ -944,7 +952,7 @@ class TurnController {
       this.streamTimer = null
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-      patchTurnState({ streaming: boundedLiveRenderText(visible) })
+      patchTurnState({ streaming: boundedLiveRenderText(visible, {}, getUiState().locale) })
     }, this.streamDelay)
   }
 
@@ -953,7 +961,7 @@ class TurnController {
     this.bufRef = text
     const raw = this.bufRef.trimStart()
     const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-    patchTurnState({ streaming: boundedLiveRenderText(visible) })
+    patchTurnState({ streaming: boundedLiveRenderText(visible, {}, getUiState().locale) })
   }
 
   startMessage() {

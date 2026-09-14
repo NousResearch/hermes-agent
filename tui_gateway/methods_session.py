@@ -1667,18 +1667,20 @@ def _(rid, params: dict, session: dict) -> dict:
     # mirror, the in-process agent is still the only route we know (same order as _session_info).
     live_agent = session.get("agent")
     agent = None if session.get("_compute_host_active") else live_agent
+    usage = _session_usage_snapshot(session)
     fields = build_status_fields(
         key, agent, _status_row(session, params, key),
         model=mirror.get("model") or getattr(live_agent, "model", None),
         provider=mirror.get("provider") or getattr(live_agent, "provider", None),
-        tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
+        tokens=usage.get("total"), agent_running=bool(session.get("running")),
     )
     project = _project_info_for_cwd(_display_session_cwd(session))
     lines = [
         "Hermes TUI Status", "", *status_lines(fields, "session_id", "path"),
         *([f"Project: {project['name']}"] if project else []),
         *status_lines(fields, "title", "model", "created", "last_activity", "tokens", "agent_running")]
-    return _ok(rid, {"output": "\n".join(lines)})
+    return _ok(rid, {"output": "\n".join(lines), "details": {**fields, "tokens": int(usage.get("total") or 0),
+                    "project": project["name"] if project else ""}})
 
 
 @_session_method("session.history")

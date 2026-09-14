@@ -8,6 +8,7 @@ import {
   estimateRows,
   estimateTokensRough,
   isToolTrailResultLine,
+  isTransientToolProgress,
   lastCotTrailIndex,
   parseToolTrailResultLine,
   pasteTokenLabel,
@@ -21,6 +22,16 @@ describe('isToolTrailResultLine', () => {
     expect(isToolTrailResultLine('foo ✓')).toBe(true)
     expect(isToolTrailResultLine('foo ✗')).toBe(true)
     expect(isToolTrailResultLine('drafting x…')).toBe(false)
+  })
+})
+
+describe('isTransientToolProgress', () => {
+  it('classifies transient progress by state while preserving arbitrary tool output', () => {
+    expect(isTransientToolProgress({ kind: 'draft', name: 'terminal' })).toBe(true)
+    expect(isTransientToolProgress({ kind: 'analyze' })).toBe(true)
+    expect(isTransientToolProgress('drafting terminal…')).toBe(false)
+    expect(isTransientToolProgress('正在分析工具输出…')).toBe(false)
+    expect(isTransientToolProgress('Terminal ✓')).toBe(false)
   })
 })
 
@@ -154,6 +165,13 @@ describe('boundedLiveRenderText', () => {
     expect(out).toContain('omitted 2 lines')
     expect(out).not.toContain('a\nb')
   })
+
+  it('localizes framework-owned truncation metadata', () => {
+    const out = boundedLiveRenderText('abcdefghij', { maxChars: 4, maxLines: 10 }, 'zh')
+
+    expect(out).toContain('已省略 6 个字符')
+    expect(out).toContain('ghij')
+  })
 })
 
 describe('edgePreview', () => {
@@ -181,6 +199,10 @@ describe('pasteTokenLabel', () => {
     expect(label.startsWith('[[ ')).toBe(true)
     expect(label).toContain('[250 lines]')
     expect(label.endsWith(' ]]')).toBe(true)
+  })
+
+  it('localizes the long-paste line count', () => {
+    expect(pasteTokenLabel('内容', 250, 'zh')).toContain('[250 行]')
   })
 })
 

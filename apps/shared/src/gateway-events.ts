@@ -96,6 +96,7 @@ export interface SubagentEventPayload {
 
 /** `tui_gateway/entry.py` (stdio) / `tui_gateway/ws.py` (WebSocket) first frame. */
 export interface GatewayReadyPayload {
+  language?: string
   /** Backends with the change watcher broadcast `*.changed` events; consumers
    *  demote their legacy polls to slow backstops. */
   change_events?: boolean
@@ -177,11 +178,17 @@ export interface ToolOutputRiskPayload {
 }
 
 export interface StatusUpdatePayload {
+  /** Stable display key; the English wire text remains the fallback for other clients. */
+  text_key?: string
+  text_vars?: Record<string, string | number>
   kind?: string
   text?: string
 }
 
 export interface NotificationShowPayload {
+  /** Stable display key; the English wire text remains the fallback for other clients. */
+  text_key?: string
+  text_vars?: Record<string, string | number>
   id?: string
   key?: string
   kind?: 'sticky' | 'ttl' | string

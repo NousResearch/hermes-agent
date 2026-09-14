@@ -335,6 +335,30 @@ class TestStripMdv2:
     def test_plain_text_unchanged(self):
         assert _strip_mdv2("plain text") == "plain text"
 
+    def test_strips_fenced_code_blocks(self):
+        assert _strip_mdv2("```python\ncode = 1\n```") == "code = 1"
+
+    def test_strips_lone_fence_markers(self):
+        assert _strip_mdv2("pre\n```\npost") == "pre\npost"
+
+    def test_strips_inline_code_backticks(self):
+        assert _strip_mdv2("use `inline code` here") == "use inline code here"
+
+    def test_strips_atx_headers(self):
+        assert _strip_mdv2("## Heading\nbody") == "Heading\nbody"
+
+    def test_strips_blockquote_prefix(self):
+        assert _strip_mdv2("> quoted line") == "quoted line"
+
+    def test_strips_link_markup_keeps_text(self):
+        assert _strip_mdv2("[see here](https://example.com)") == "see here"
+
+    def test_block_markdown_all_cleared(self):
+        # Guard: no block construct survives to the plain-text fallback.
+        import re
+        out = _strip_mdv2('# H\n> q\n```py\nx\n```\n[t](u)')
+        assert not re.search(r"```|^#|^>|\[[^\]]+\]\(", out, re.M)
+
 
 # =========================================================================
 # Markdown table auto-wrap

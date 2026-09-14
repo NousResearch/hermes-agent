@@ -439,6 +439,12 @@ class TestUpdate:
         shutil.rmtree(skills)
         _symlink_file_or_skip(skills, shared)
         (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
+        # Every other shipped entry changes upstream too: the refusal must fire before the
+        # first write, or the profile is left half-updated and every retry fails the same way.
+        (staged / "SOUL.md").write_text("updated soul\n")
+        (staged / "mcp.json").write_text('{"servers": {"new": {}}}\n')
+        (staged / "cron" / "daily.json").write_text('{"schedule": "0 10 * * *"}')
+        untouched = {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()}
 
         with pytest.raises(DistributionError, match="symlink"):
             update_distribution("link_safe")
@@ -446,6 +452,7 @@ class TestUpdate:
         assert skills.is_symlink() and skills.resolve() == shared.resolve()
         after = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
         assert after == before
+        assert {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()} == untouched
 
     def test_update_preserves_user_data(self, profile_env):
         # 1. Build staging dir, install

@@ -897,11 +897,14 @@ def _cmd_edit(args: argparse.Namespace) -> int:
 
 
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
-    """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
+    """Wrap a per-task ``op`` so a successful transition records ``reason`` as a
+    ``PREFIX: reason`` comment. The comment is written only after ``op(tid)``
+    succeeds, so a failed operation never leaves a comment claiming it happened."""
     def run(tid):
-        if reason:
+        ok = op(tid)
+        if ok and reason:
             kb.add_comment(conn, tid, author, f"{prefix}: {reason}")
-        return op(tid)
+        return ok
     return run
 
 

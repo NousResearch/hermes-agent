@@ -14,7 +14,6 @@ from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionLiveInfo
 from .connectors_operation import ConnectionOperationStatus
 from .registry import method
 
@@ -25,18 +24,18 @@ class ConfigGetParams(ProfileParams):
     """``key`` selects one getter from ``_CONFIG_GETTERS``; ``cwd`` feeds the ``project`` getter,
     ``session_id`` lets ``reasoning`` / ``fast`` answer with the session's live pin."""
 
-    key: str
-    cwd: str | None = None
-    session_id: str | None = None
+    key: str = ""
+    cwd: str = ""
+    session_id: str = ""
 
 
-class ConfigProviderRef(OpenModel):
-    """``hermes_cli/models.py::list_available_providers`` row."""
+class ConfigProviderRef(Result):
+    """``hermes_cli/models.py::list_available_providers`` emits every field."""
 
     id: str
     label: str
-    aliases: list[str] = Field(default_factory=list)
-    authenticated: bool = False
+    aliases: list[str]
+    authenticated: bool
 
 
 class ConfigGetResult(Result):
@@ -53,7 +52,8 @@ class ConfigGetResult(Result):
     home: str | None = None
     cwd: str | None = None
     branch: str | None = None
-    config: dict[str, JsonValue] | None = None
+    # WHY JsonValue: effective YAML is user-owned and extensible.
+    config: JsonValue | None = None
     prompt: str | None = None
     mtime: float | None = None
     mcp_rev: str | None = None
@@ -78,6 +78,7 @@ class ConfigSetParams(ProfileParams):
     the error). ``scope`` applies to ``yolo`` / ``reasoning``; ``confirm_expensive_model`` to ``model``."""
 
     key: str
+    # WHY JsonValue: config setters preserve raw YAML fragments until each key normalizes them.
     value: JsonValue = ""
     session_id: str | None = None
     scope: str | None = None
@@ -91,7 +92,8 @@ class ConfigSetResult(Result):
     ``info``; ``yolo`` reports its ``scope``. ``value`` is a bool only for the display toggles."""
 
     key: str
-    value: str | bool | None = None
+    # WHY JsonValue: setters echo normalized strings, booleans, and raw value-compatible results.
+    value: JsonValue
     warning: str | None = None
     confirm_required: bool | None = None
     confirm_message: str | None = None
@@ -101,7 +103,8 @@ class ConfigSetResult(Result):
     cwd: str | None = None
     branch: str | None = None
     history_reset: bool | None = None
-    info: SessionLiveInfo | None = None
+    # WHY JsonValue: ``methods_config_set._set_personality`` returns the producer-owned session snapshot.
+    info: JsonValue | None = None
 
 
 method("config.set", params=ConfigSetParams, result=ConfigSetResult,
@@ -177,6 +180,14 @@ method("diagnostics.share_nous", params=DiagnosticsShareNousParams, result=Diagn
 # ── free tier ─────────────────────────────────────────────────────────────────────────────────
 
 
+class FreeTierModel(WireEnum):
+    welcome = "nous/welcome"
+
+
+class FreeTierLabel(WireEnum):
+    free_tier = "Nous · free tier"
+
+
 class FreeTierStatusResult(Result):
     """``available`` = an identity exists AND the tier is on; whether inference runs on it is
     ``setup.runtime_check.free_tier``'s question."""
@@ -185,8 +196,8 @@ class FreeTierStatusResult(Result):
     enabled: bool
     available: bool
     notice_pending: bool
-    model: str
-    label: str
+    model: FreeTierModel
+    label: FreeTierLabel
 
 
 method("free_tier.status", params=ProfileParams, result=FreeTierStatusResult,
@@ -244,26 +255,28 @@ class ModelCapabilities(Result):
     can_disable_reasoning: bool | None = None
 
 
-class ModelOptionProvider(OpenModel):
-    """One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field
-    the builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path)."""
+class ModelOptionProvider(Result):
+    """Closed ``hermes_cli/inventory.py::build_model_options_payload`` provider row."""
 
     slug: str
     name: str
-    models: list[str] = Field(default_factory=list)
-    total_models: int | None = None
-    is_current: bool | None = None
-    is_user_defined: bool | None = None
-    source: str | None = None
+    models: list[str]
+    total_models: int
+    is_current: bool
+    is_user_defined: bool
+    source: str
     aliases: list[str] | None = None
     api_url: str | None = None
+    native_catalog_empty: bool | None = None
     auth_type: str | None = None
     authenticated: bool | None = None
     key_env: str | None = None
     warning: str | None = None
     featured_models: list[str] | None = None
-    capabilities: dict[str, ModelCapabilities] | None = None
-    pricing: dict[str, ModelPricing] | None = None
+    # WHY JsonValue: provider model IDs are dynamic map keys from inventory.py.
+    capabilities: JsonValue | None = None
+    # WHY JsonValue: provider model IDs are dynamic map keys from inventory.py.
+    pricing: JsonValue | None = None
     pricing_pending: bool | None = None
     free_tier: bool | None = None
     free_tier_pending: bool | None = None
@@ -273,8 +286,8 @@ class ModelOptionProvider(OpenModel):
 
 class ModelOptionsResult(Result):
     providers: list[ModelOptionProvider]
-    model: str = ""
-    provider: str = ""
+    model: str
+    provider: str
 
 
 method("model.options", params=ModelOptionsParams, result=ModelOptionsResult,
@@ -288,16 +301,40 @@ class ConnectorsListParams(ProfileParams):
     session_id: str
 
 
-class ConnectorRow(OpenModel):
-    """One ``manage_connections`` status entry after ``connector_ui_payload`` redaction; the
-    connector service owns the closed key set, so unknown metadata passes through."""
+class ConnectorRow(Result):
+    """Closed connector catalog row emitted by ``ConnectorClient.list_connectors``."""
 
-    connector: str = ""
-    connected: bool | None = None
-    enabled: bool | None = None
+    connector: str
+    connected: bool
+    enabled: bool
     connectionStatus: str | None = None
     name: str | None = None
     description: str | None = None
+
+
+class ConnectorConnectStatus(WireEnum):
+    active = "active"
+    initiated = "initiated"
+    failed = "failed"
+
+
+class ConnectorConnectEntry(Result):
+    """``tools/connections_tool.py:395-427`` authorization result."""
+
+    connector: str
+    status: ConnectorConnectStatus | None = None
+    connect_url: str | None = None
+    note: str | None = None
+    instruction: str | None = None
+
+
+class ConnectorConnectSummary(Result):
+    """``tools/tool_gateway/wire.py:166-170`` summary passed through unchanged."""
+
+    total: int = 0
+    active: int = 0
+    initiated: int = 0
+    failed: int = 0
 
 
 class ConnectorsListResult(Result):
@@ -322,6 +359,7 @@ class ConnectorsConnectResult(ConnectionOperationStatus):
 
     status: str | None = None
     note: str | None = None
+
 
 
 method("connectors.connect", params=ConnectorsConnectParams, result=ConnectorsConnectResult,
@@ -490,7 +528,7 @@ class SessionControlParams(ProfileParams):
 
 
 class SessionControlDispatch(Result):
-    """``_dispatch_envelope`` — the command result's user-visible envelope, every key always present."""
+    """``_dispatch_envelope`` always serializes all user-visible directive fields."""
 
     type: str | None
     output: str | None
@@ -517,28 +555,58 @@ class VerificationStatusParams(ProfileParams):
     cwd: str | None = None
 
 
-class VerificationEvidenceRow(OpenModel):
-    """One ``verification_events`` row (``agent/verification_evidence.py``)."""
+class VerificationKind(WireEnum):
+    test = "test"
+    lint = "lint"
+    typecheck = "typecheck"
+    build = "build"
+    format = "format"
+    check = "check"
+    verify = "verify"
+    ad_hoc = "ad_hoc"
 
-    id: int | None = None
-    created_at: str | None = None
-    session_id: str | None = None
-    cwd: str | None = None
-    root: str | None = None
-    command: str | None = None
-    canonical_command: str | None = None
-    kind: str | None = None
-    scope: str | None = None
-    status: str | None = None
-    exit_code: int | None = None
-    output_summary: str | None = None
+
+class VerificationScope(WireEnum):
+    full = "full"
+    targeted = "targeted"
+
+
+class VerificationOutcome(WireEnum):
+    passed = "passed"
+    failed = "failed"
+
+
+class VerificationStatus(WireEnum):
+    disabled = "disabled"
+    not_applicable = "not_applicable"
+    unverified = "unverified"
+    stale = "stale"
+    passed = "passed"
+    failed = "failed"
+    unknown = "unknown"
+
+
+class VerificationEvidenceRow(Result):
+    """Closed SQLite ``verification_events`` row from ``agent/verification_evidence.py:51-63``."""
+
+    id: int
+    created_at: str
+    session_id: str
+    cwd: str
+    root: str
+    command: str
+    canonical_command: str
+    kind: VerificationKind
+    scope: VerificationScope
+    status: VerificationOutcome
+    exit_code: int
+    output_summary: str
 
 
 class VerificationStatusInfo(Result):
-    """``verification_status()``: ``disabled`` / ``not_applicable`` / ``unverified`` / ``stale`` or the
-    latest event's own status; ``root`` and friends only once a workspace was identified."""
+    """``verification_status`` produces its closed status set at ``agent/verification_evidence.py:533-566``."""
 
-    status: str
+    status: VerificationStatus
     evidence: VerificationEvidenceRow | None = None
     root: str | None = None
     session_id: str | None = None

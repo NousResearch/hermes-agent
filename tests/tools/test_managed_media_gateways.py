@@ -93,7 +93,7 @@ def _install_fake_fal_client(captured):
                 "cancel_url": "http://127.0.0.1:3009/requests/req-123/cancel",
             }
 
-    def _maybe_retry_request(client, method, url, json=None, timeout=None, headers=None):
+    def _capture_request(client, method, url, json=None, timeout=None, headers=None):
         captured["submit_via"] = "managed_client"
         captured["http_client"] = client
         captured["method"] = method
@@ -102,6 +102,13 @@ def _install_fake_fal_client(captured):
         captured["timeout"] = timeout
         captured["headers"] = headers
         return FakeResponse()
+
+    def _maybe_retry_request(client, method, url, json=None, timeout=None, headers=None):
+        return _capture_request(client, method, url, json, timeout, headers)
+
+    class FakeHttpClient:
+        def request(self, method, url, json=None, timeout=None, headers=None):
+            return _capture_request(self, method, url, json, timeout, headers)
 
     class SyncRequestHandle:
         def __init__(self, request_id, response_url, status_url, cancel_url, client):
@@ -117,7 +124,7 @@ def _install_fake_fal_client(captured):
             captured["client_key"] = key
             captured["client_timeout"] = default_timeout
             self.default_timeout = default_timeout
-            self._client = object()
+            self._client = FakeHttpClient()
 
     fal_client_module = types.SimpleNamespace(
         submit=submit,
@@ -212,7 +219,7 @@ def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatc
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
 
     tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
-    monkeypatch.setattr(tts_tool.uuid, "uuid4", lambda: "tts-call-123")
+    monkeypatch.setattr(sys.modules["tools.tts_tool_openai"].uuid, "uuid4", lambda: "tts-call-123")
     output_path = tmp_path / "speech.mp3"
     tts_tool._generate_openai_tts("hello world", str(output_path), {"openai": {}})
 
@@ -247,7 +254,9 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
     _install_fake_tools_package()
     _install_fake_openai_module(whisper_capture, transcription_response="hello from whisper")
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text("stt:\n  provider: openai\n")
+    # The managed audio route is the stored "nous" selection (strict model);
+    # a stored "openai" selection now means direct credentials only.
+    (tmp_path / "config.yaml").write_text("stt:\n  provider: nous\n")
     monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "nousresearch.com")
@@ -257,7 +266,7 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
         "tools.transcription_tools",
         "transcription_tools.py",
     )
-    transcription_tools._load_stt_config = lambda: {"provider": "openai"}
+    transcription_tools._load_stt_config = lambda: {"provider": "nous"}
     audio_path = tmp_path / "audio.wav"
     audio_path.write_bytes(b"RIFF0000WAVEfmt ")
 

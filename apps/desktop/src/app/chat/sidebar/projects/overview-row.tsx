@@ -1,10 +1,14 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useRef } from 'react'
 
+import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $sidebarShowAllSessions } from '@/store/layout'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
@@ -26,7 +30,10 @@ import { WorkspaceAddButton } from './workspace-header'
 
 // A bare color dot (no icon) or an icon glyph — tinted by `color` when set, else
 // the lead's default tertiary. The glyph wrapper centers + caps size either way.
-export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
+// Auto-discovered repos (git lanes Desktop found by scanning disk, not rows in
+// projects.db) get the `repo` glyph so a glance tells explicit projects
+// (`folder-library`) apart from incidental disk/session findings.
+export function projectIcon({ color, icon, isAuto, isNoProject }: SidebarProjectTree) {
   if (color && !icon) {
     return (
       <SidebarRowLeadGlyph>
@@ -37,7 +44,10 @@ export function projectIcon({ color, icon, isNoProject }: SidebarProjectTree) {
 
   return (
     <SidebarRowLeadGlyph style={color ? { color } : undefined}>
-      <Codicon name={icon || (isNoProject ? 'home' : 'folder-library')} size={SIDEBAR_LEAD_ICON_SIZE} />
+      <Codicon
+        name={icon || (isNoProject ? 'home' : isAuto ? 'repo' : 'folder-library')}
+        size={SIDEBAR_LEAD_ICON_SIZE}
+      />
     </SidebarRowLeadGlyph>
   )
 }
@@ -64,6 +74,9 @@ interface ProjectOverviewRowProps {
   project: SidebarProjectTree
   onEnter?: (id: string) => void
   onNewSession?: (path: null | string) => void
+  /** Drag the project's "+" onto a chat zone: create a new session pinned to
+   *  this project's cwd, placed exactly where it's dropped. */
+  onNewSessionSplit?: NewSessionSplitHandler
   renderRows?: (sessions: SessionInfo[]) => React.ReactNode
   activeProjectId?: null | string
   previewSessions?: SessionInfo[]
@@ -78,6 +91,7 @@ export function ProjectOverviewRow({
   project,
   onEnter,
   onNewSession,
+  onNewSessionSplit,
   renderRows,
   activeProjectId,
   previewSessions,
@@ -94,8 +108,10 @@ export function ProjectOverviewRow({
   // The appearance popover anchors here (the full row) so it opens flush with
   // the sidebar's content edge regardless of which side the sidebar is on.
   const rowRef = useRef<HTMLDivElement>(null)
-  const fetched = (previewSessions ?? []).slice(0, PROJECT_PREVIEW_COUNT)
-  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, PROJECT_PREVIEW_COUNT)) : []
+  const showAllSessions = useStore($sidebarShowAllSessions)
+  const limit = showAllSessions ? Infinity : PROJECT_PREVIEW_COUNT
+  const fetched = (previewSessions ?? []).slice(0, limit)
+  const preview = renderRows ? (fetched.length ? fetched : latestProjectSessions(project, limit)) : []
 
   const lead = reorderable ? (
     <SidebarRowGrab
@@ -110,6 +126,22 @@ export function ProjectOverviewRow({
     <SidebarRowLead>{projectIcon(project)}</SidebarRowLead>
   )
 
+  const labelLink = (
+    <SidebarRowLink
+      // The glyph is aria-hidden and the tooltip only speaks on hover, so the
+      // link's own name carries the auto cue — screen readers get it too.
+      aria-label={
+        project.isAuto
+          ? `${s.projects.enter(project.label)} (${s.projects.autoDiscovered})`
+          : s.projects.enter(project.label)
+      }
+      labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
+      onClick={() => onEnter?.(project.id)}
+    >
+      {project.label}
+    </SidebarRowLink>
+  )
+
   const shell = (
     <SidebarGroupRow
       actions={
@@ -120,20 +152,37 @@ export function ProjectOverviewRow({
               for. */}
           {!project.isNoProject && <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />}
           {onNewSession && (
-            <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
+            <WorkspaceAddButton
+              label={s.newSessionIn(project.label)}
+              onClick={() => onNewSession(project.path)}
+              onPointerDown={
+                onNewSessionSplit
+                  ? event => {
+                      // Drag the "+" onto a chat zone: create the session
+                      // pinned to this project's cwd, exactly where it's
+                      // dropped. A sub-threshold release falls through to the
+                      // onClick above (ordinary new session in main).
+                      startNewSessionDrag(
+                        placement => {
+                          onNewSessionSplit(placement.dir, {
+                            anchor: placement.anchor,
+                            before: placement.before,
+                            cwd: project.path
+                          })
+                        },
+                        event,
+                        { cwd: project.path, label: s.newSessionIn(project.label) }
+                      )
+                    }
+                  : undefined
+              }
+            />
           )}
         </>
       }
       className={cn(dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
-      label={
-        <SidebarRowLink
-          aria-label={s.projects.enter(project.label)}
-          labelClassName={cn('hover:text-foreground hover:underline', isActive && 'text-foreground')}
-          onClick={() => onEnter?.(project.id)}
-        >
-          {project.label}
-        </SidebarRowLink>
-      }
+      data-glass-opaque={dragging ? '' : undefined}
+      label={project.isAuto ? <Tip label={s.projects.autoDiscovered}>{labelLink}</Tip> : labelLink}
       lead={lead}
       // The label is grab surface too, not just the lead's grabber — same
       // listeners, minus the controls that keep their own gestures. A project

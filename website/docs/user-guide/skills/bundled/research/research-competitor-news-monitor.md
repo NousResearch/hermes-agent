@@ -21,7 +21,7 @@ Watch named companies for material news; cited digests.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Competitors`, `News`, `Market-Research`, `Monitoring` |
-| Related skills | [`blogwatcher`](/docs/user-guide/skills/bundled/research/research-blogwatcher) |
+| Related skills | [`blogwatcher`](/docs/user-guide/skills/optional/research/research-blogwatcher), [`rss-feeds`](/docs/user-guide/skills/optional/research/research-rss-feeds), [`reddit-reading`](/docs/user-guide/skills/optional/social-media/social-media-reddit-reading) |
 
 ## Reference: full SKILL.md
 
@@ -60,7 +60,7 @@ For each company include, where available:
 5. reputable trade and financial press
 6. job postings as weak supporting evidence
 
-Use `blogwatcher` for feeds and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.hermes/competitor-watches/<watch-slug>.json`, then create the job:
+Use `rss-feeds` (optional) or `blogwatcher` (optional, stateful) for feeds, `reddit-reading` for community discussion, and `web_search`/`web_extract` for pages. Write the watch contract (watchlist, categories, materiality threshold, last cutoff) to a state file under `~/.hermes/competitor-watches/<watch-slug>.json`, then create the job:
 
 ```
 cronjob(action="create",

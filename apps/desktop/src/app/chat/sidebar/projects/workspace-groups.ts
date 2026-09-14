@@ -30,6 +30,9 @@ export interface SidebarSessionGroup {
   isKanban?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   sourceId?: string
+  // Exact owner for gateway/profile sidebar sections; absent for workspace lanes.
+  connectionId?: null | string
+  profile?: string
 }
 
 /** A repo node: holds its branch/worktree lanes (`repo -> lane -> sessions`). */
@@ -428,6 +431,31 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   return repoRoot
 }
 
+/** The lane a row files under: its live project, or Home for detached (cwd-less) rows. */
+export function sessionBucketId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
+  return liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+}
+
+/**
+ * The ONE row-level project-filter rule the flat list and the project lanes
+ * narrow by. Detached (cwd-less) rows belong to the Home bucket
+ * (`NO_PROJECT_ID`, like the overview preview overlay) — filing them under
+ * `''` meant filtering to Home hid Home's own rows.
+ */
+export function sessionMatchesProjectFilter(
+  session: SessionInfo,
+  filter: readonly string[],
+  explicitProjects: ProjectInfo[]
+): boolean {
+  if (!filter.length) {
+    return true
+  }
+
+  const id = sessionBucketId(session, explicitProjects)
+
+  return id !== null && filter.includes(id)
+}
+
 /**
  * The color a session inherits from its owning project — the explicit project
  * whose folder is the longest prefix of the session's cwd/repo-root, when that
@@ -451,21 +479,34 @@ export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[
 const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
   [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
 
+/** A live row's placement path, with an exact repo-root fallback when cwd is absent. */
+function livePathForRepo(repoRoot: string, session: SessionInfo): string {
+  const cwd = (session.cwd || '').trim()
+
+  if (cwd) {
+    return cwd
+  }
+
+  const persistedRoot = (session.git_repo_root || '').trim()
+
+  return persistedRoot && pathKey(persistedRoot) === pathKey(repoRoot) ? persistedRoot : ''
+}
+
 /**
- * The lane a live session belongs to WITHIN a known repo root, by path — the
- * entered project already knows its repo roots, so we don't need the session's
- * (often-unset, on a fresh row) git_repo_root. Mirrors the backend's lane ids:
+ * The lane a live session belongs to WITHIN a known repo root, by path. A fresh
+ * row normally uses cwd; older/imported rows can carry only git_repo_root, which
+ * still identifies the main checkout exactly. Mirrors the backend's lane ids:
  * main checkout -> branch lane, `.worktrees/t_<hex>` -> kanban, any other
  * `.worktrees/<slug>` -> that worktree's own lane.
  */
 function liveLaneForRepo(repoRoot: string, session: SessionInfo): null | SidebarSessionGroup {
-  const cwd = (session.cwd || '').trim()
+  const sessionPath = livePathForRepo(repoRoot, session)
 
-  if (!cwd || !isPathUnder(repoRoot, cwd)) {
+  if (!sessionPath || !isPathUnder(repoRoot, sessionPath)) {
     return null
   }
 
-  const wt = cwd.match(/^(.*[/\\]\.worktrees)[/\\]([^/\\]+)/)
+  const wt = sessionPath.match(/^(.*[/\\]\.worktrees)[/\\]([^/\\]+)/)
 
   if (wt) {
     const [worktreeRoot, worktreesDir, slug] = [wt[0], wt[1], wt[2]]
@@ -516,9 +557,9 @@ export function overlayRepoLanes(
   })
 
   for (const session of live) {
-    const cwd = (session.cwd || '').trim()
+    const sessionPath = livePathForRepo(repo.path ?? '', session)
 
-    if (removed.has(session.id) || !cwd) {
+    if (removed.has(session.id) || !sessionPath) {
       continue
     }
 
@@ -533,7 +574,7 @@ export function overlayRepoLanes(
     for (const g of lanes) {
       const lanePath = normalizePath(g.path)
 
-      if (!lanePath || pathKey(lanePath) === repoRootKey || !isPathUnder(lanePath, cwd)) {
+      if (!lanePath || pathKey(lanePath) === repoRootKey || !isPathUnder(lanePath, sessionPath)) {
         continue
       }
 
@@ -728,6 +769,26 @@ export function overlayLiveLanes(
   return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
 }
 
+/**
+ * Keep the project drill-in consistent with the overview while its separate
+ * full-tree request is stale or still loading. The live cache remains the
+ * freshest copy when both sources contain a row; overview previews only fill
+ * sessions that are missing from that cache.
+ */
+export function reconcileEnteredProjectSessions(
+  live: SessionInfo[],
+  previewSessions: SessionInfo[] | undefined
+): SessionInfo[] {
+  if (!previewSessions?.length) {
+    return live
+  }
+
+  const liveIds = new Set(live.map(session => session.id))
+  const missingPreviews = previewSessions.filter(session => !liveIds.has(session.id))
+
+  return missingPreviews.length ? [...live, ...missingPreviews] : live
+}
+
 interface PreviewOverlayOptions {
   removed?: ReadonlySet<string>
   /** The active sort key as an id order; recency when empty. */
@@ -749,8 +810,7 @@ export function overlayLivePreviews(
       continue
     }
 
-    const projectId =
-      liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+    const projectId = sessionBucketId(session, explicitProjects)
 
     if (!projectId) {
       continue

@@ -111,7 +111,7 @@ class TestCompressionTimeoutFloorSync:
         )
 
     def test_local_primary_uses_short_timeout_but_remote_fallback_keeps_floor(self):
-        primary = _client_sync("http://127.0.0.1:10243/v1")
+        primary = _client_sync("http://127.0.0.1:8765/v1")
         primary.chat.completions.create.side_effect = TimeoutError("local timeout")
         fallback = _client_sync("https://openrouter.ai/api/v1")
         local_timeout = 60.0
@@ -145,8 +145,9 @@ class TestCompressionTimeoutFloorSync:
         assert primary_timeout == local_timeout
         assert fallback_timeout >= COMPRESSION_TIMEOUT_FLOOR
 
+
     def test_explicit_call_timeout_survives_remote_fallback(self):
-        primary = _client_sync("http://localhost:10243/v1")
+        primary = _client_sync("http://localhost:8765/v1")
         primary.chat.completions.create.side_effect = TimeoutError("local timeout")
         fallback = _client_sync("https://openrouter.ai/api/v1")
         explicit = 45.0
@@ -177,6 +178,7 @@ class TestCompressionTimeoutFloorSync:
             )
 
         assert fallback.chat.completions.create.call_args.kwargs["timeout"] == explicit
+
 
 
 
@@ -227,7 +229,7 @@ class TestCompressionTimeoutFloorAsync:
 
     @pytest.mark.asyncio
     async def test_local_primary_uses_short_timeout_but_remote_fallback_keeps_floor(self):
-        primary = _client_async("http://[::1]:10243/v1")
+        primary = _client_async("http://[::1]:8765/v1")
         primary.chat.completions.create.side_effect = TimeoutError("local timeout")
         fallback = _client_async("https://openrouter.ai/api/v1")
         local_timeout = 60.0
@@ -264,3 +266,4 @@ class TestCompressionTimeoutFloorAsync:
         fallback_timeout = fallback.chat.completions.create.call_args.kwargs["timeout"]
         assert primary_timeout == local_timeout
         assert fallback_timeout >= COMPRESSION_TIMEOUT_FLOOR
+

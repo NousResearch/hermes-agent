@@ -15,13 +15,13 @@ Pre-commit review: security scan, quality gates, auto-fix.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development/requesting-code-review` |
+| Path | `skills/software-development\requesting-code-review` |
 | Version | `2.0.0` |
 | Author | Hermes Agent (adapted from obra/superpowers + MorAlekss) |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `code-review`, `security`, `verification`, `quality`, `pre-commit`, `auto-fix` |
-| Related skills | [`subagent-driven-development`](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development), [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review) |
+| Related skills | [`subagent-driven-development`](/docs/user-guide/skills/optional/software-development/software-development-subagent-driven-development), [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development), [`github`](/docs/user-guide/skills/bundled/software-development/software-development-github) |
 
 ## Reference: full SKILL.md
 
@@ -45,8 +45,8 @@ quality gates, an independent reviewer subagent, and an auto-fix loop.
 
 **Skip for:** documentation-only changes, pure config tweaks, or when user says "skip verification".
 
-**This skill vs github-code-review:** This skill verifies YOUR changes before committing.
-`github-code-review` reviews OTHER people's PRs on GitHub with inline comments.
+**This skill vs github:** This skill verifies YOUR changes before committing.
+`github` reviews OTHER people's PRs on GitHub with inline comments.
 
 ## Step 1 — Get the diff
 

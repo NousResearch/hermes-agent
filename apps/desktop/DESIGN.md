@@ -86,6 +86,15 @@ Menus and popovers use their own shared `shadow-md` +
 dashed targets and local blur. These are semantic surface classes, not licenses
 for call-site shadow or border inventions.
 
+## Window glass
+
+Glass defaults to **29% Tint, Sidebar only** in both light and dark appearances.
+Fade defaults to zero so the content column and text stay opaque. Native frost
+keeps its platform/appearance defaults. Explicitly saved settings take precedence;
+changing defaults must not overwrite a user's existing choices. The shared
+`apps/shared/src/translucency.ts` resolver owns these defaults for both the
+renderer and Electron's first window paint.
+
 ## Stroke & color tokens
 
 | Token | Use |
@@ -139,6 +148,17 @@ Never use native HTML `title=` on buttons — unstyled, ~500ms OS delay, clashes
 with the themed `Tip`. `src/components/ui/__tests__/no-native-title.test.ts`
 fails on any `<button>` / `<Button>` that still carries `title=`.
 
+**Tooltip timing.** A hover is not a click — the cursor crosses triggers on
+the way somewhere else. `Tip` waits 200ms before the first open so a sweep
+does not flash a trail. After a tip has opened the page is warm: the next
+trigger within 300ms opens instantly. The cooldown starts on close, so a
+hover a second later waits again. Close is immediate. `OverflowTip` stays
+on its own longer delay (list titles must not trail while scanning).
+
+**Slash descriptions.** Keep autocomplete rows single-line and ellipsized, but reveal the complete catalog description in the shared themed tooltip when hovering anywhere on a slash row. Size that tooltip to the window with collision padding and word wrapping; it must not intercept row selection. Catalog and completion producers preserve the full author-supplied description.
+
+**Model search.** Model filters and their highlighted labels treat hyphens, dots, underscores and spaces equivalently. Preserve original label spelling inside marks. The shared highlighter remains literal for other surfaces such as the command palette; model callers explicitly opt in. Model identifier search does not use dictionary spellcheck.
+
 **Keybind hints in tooltips.** On a tipped button bound to a rebindable hotkey,
 use `<TipKeybindLabel actionId="..." />` — it reads the i18n label and the
 current combo from `$bindings`. Pass `text={...}` only when the label is
@@ -150,6 +170,12 @@ Notes:
   fixed heights). Only icon buttons carry the shared 4px radius.
 - SVGs inherit `size-3.5` (`size-3` at `xs`). Don't re-set icon size.
 - Polymorph with `asChild` when the button must render as a link/Slot.
+
+## Badges — one component
+
+`src/components/ui/badge.tsx`. Variants: `default` (tinted primary), `muted`,
+`warn`, `destructive`, `outline`, `solid` (primary fill — icon-corner counts).
+Sizes: `default`, `xs`, `overlay` (titlebar glyph counts).
 
 ## Form controls
 
@@ -176,6 +202,32 @@ Notes:
 - **No dividers between rows** unless the list genuinely needs them; prefer
   spacing. When you do need one, it's a single `--ui-stroke-tertiary` hairline.
 
+## Panel titlebars
+
+Top-edge panels extend into the native titlebar band. Their tab strips remain
+inside their own zones so tab drops, focus, and split boundaries use the same
+geometry. Panels without room beside the measured window controls place their
+tabs on a full-width row below the controls. Minimized row groups use vertical
+restore rails, including groups with multiple tabs. Sidebar buttons and shortcuts
+restore minimized or fully hidden side groups without changing the selected tab.
+Lower panels keep local headers. Empty header space moves the window;
+tabs and actions remain no-drag, with native-control space reserved from the
+existing traffic-light and Window Controls Overlay measurements.
+
+The left cluster shows sidebar, settings, layout editor, and HUD controls. Flip
+and the right-sidebar toggle sit on the right; haptics remain in settings.
+Holding Cmd (Ctrl off macOS) reveals small slot numbers over the target strip's
+status dots after 400ms, without changing tab widths. Hints follow the same
+binding and hovered/focused-zone resolver as the number shortcuts.
+
+Tab close buttons fade the label with a content mask, not a painted gradient.
+The tab reads its surface token directly so glass tint is painted only once.
+
+Sticky user messages clip covered scrolling content, including the gap above
+them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
+Clipping follows the pinned prompt and its live height without changing layout,
+so glass and message-bubble transparency do not reveal scrolling text.
+
 ## Feedback & empty/error/loading states
 
 - **Loading:** `Loader` (`src/components/ui/loader.tsx`) — animated math/ascii
@@ -190,6 +242,15 @@ Notes:
 - **Empty:** `EmptyState` for plain page bodies; `PanelEmpty` for overlay
   master/detail empties with an icon and action. Don't hand-roll a third
   centered empty.
+- **Confirmation:** `ConfirmDialog` is the only way we ask "are you sure". It
+  opens focused on Confirm, so `Enter` confirms and `Esc` cancels, and it owns
+  the pending → done → close beat and the inline error — a call site passes an
+  async `onConfirm` and nothing else. A third way out (e.g. "Remove from
+  sidebar" beside "Delete worktree") goes in the one `secondaryAction` slot.
+  Never `window.confirm`: it's an unstyled blocking Chromium modal. A handler
+  that wants the answer inline instead of a mounted dialog calls `confirm()`
+  from `src/store/confirm.ts`, which renders this same primitive through the
+  single `ConfirmHost` at the shell — the way `notify()` backs notifications.
 
 ## Chat, tools & boot surfaces
 
@@ -205,8 +266,15 @@ Notes:
 - Bordered surfaces in the transcript (tables, fences, callouts, attachments)
   use `--ui-stroke-tertiary`. Not `border-border` — that's the app-wide
   default and reads too hot against the thread.
+- Interactive directive chips in the composer expose their action on hover.
+  The action stays visible for a 500ms grace period while the pointer crosses
+  from the chip to the floating pill; leaving both dismisses it.
 - A tool result may expose an inline action that opens a preview. It must not
   open the rail automatically.
+- Composer status groups start collapsed except todos. Progress updates and queue
+  pause/resume preserve the user's disclosure choice. Error banners meet the
+  stack's top edge without a blank padding strip. File and preview links remain
+  visible at the bottom of the stack, below the queue and all status groups.
 - Install, onboarding, connecting, boot failure, and reauthentication are
   distinct states with shared visual primitives. Preserve their recovery
   semantics when unifying appearance.
@@ -237,6 +305,10 @@ Notes:
 
 ## Motion
 
+- Visible windows keep animating when another app takes focus. Hidden/minimized
+  windows and inactive panes may pause; background polling stays focus-gated.
+- Animated integer counts reuse `AnimatedInt` in `src/components/ui/diff-count.tsx`.
+  Its spring updates the DOM directly without per-frame React renders.
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
@@ -272,6 +344,9 @@ long transcript or a busy terminal.
 
 - Keyboard ownership follows focus. The focused surface wins its keys; shell
   shortcuts must not steal a terminal's or editor's bindings.
+- Focusing the Sessions sidebar preserves the last active chat's visual emphasis.
+  Dimming still distinguishes session panes; sidebar navigation must not desaturate
+  the chat or transfer its active highlight to a hidden primary tab.
 - Register global shortcuts through the shared layer, not ad-hoc listeners.
 - One cancel gesture does one thing: cancel the active interaction, or close the
   topmost dismissable surface — never both, never the control underneath.
@@ -315,7 +390,8 @@ The detailed state contract lives in the scoped
 ## Before you add something — checklist
 
 - [ ] Reuse a primitive (`Button`, `SearchField`, `SegmentedControl`,
-      `ListRow`, `Loader`, `ErrorState`, `LogView`) instead of forking one?
+      `ListRow`, `Loader`, `ErrorState`, `LogView`, `ConfirmDialog`) instead of
+      forking one?
 - [ ] Tokens (`--ui-*`, `shadow-nous`, `--stroke-nous`) — zero raw colors /
       one-off shadows?
 - [ ] No `className` overriding a primitive's padding / size / radius / chrome?

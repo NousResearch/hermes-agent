@@ -56,9 +56,35 @@ const timelinePartMatch = (stored: ChatMessagePart, local: ChatMessagePart) => {
   return false
 }
 
-/** Keep richer live timing when durable hydration has only one timestamp per row. */
+/** Keep live timing and recall notices alongside their matched assistant turn. */
 function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
   const localAssistants = currentMessages.filter(message => message.role === 'assistant' && !message.hidden)
+  // Recall status is UI-only, not model history. A routine DB refresh must not
+  // erase it; use the existing assistant match to anchor it in the same turn.
+  // No matched assistant (e.g. compaction removed it) means no orphan notice.
+  const nextIds = new Set(nextMessages.map(message => message.id))
+  const recallsByAssistantId = new Map<string, ChatMessage[]>()
+  let recalls: ChatMessage[] = []
+
+  for (const message of currentMessages) {
+    if (message.role === 'user') {
+      recalls = []
+    }
+
+    if (message.hidden) {
+      continue
+    }
+
+    if (message.role === 'assistant') {
+      if (recalls.length) {
+        recallsByAssistantId.set(message.id, recalls)
+        recalls = []
+      }
+    } else if (message.role === 'system' && message.id.startsWith('memory-recall-') && !nextIds.has(message.id)) {
+      recalls.push(message)
+    }
+  }
+
   const matches = new Map<number, ChatMessage>()
   let localCursor = localAssistants.length - 1
 
@@ -81,11 +107,11 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
     }
   }
 
-  return nextMessages.map((message, messageIndex) => {
+  return nextMessages.flatMap((message, messageIndex) => {
     const local = matches.get(messageIndex)
 
     if (!local) {
-      return message
+      return [message]
     }
 
     const unusedLocalParts = new Set(local.parts.map((_, index) => index))
@@ -109,12 +135,15 @@ function reconcileLocalAssistantTimeline(nextMessages: ChatMessage[], currentMes
       } as ChatMessagePart
     })
 
-    return {
-      ...message,
-      completedAt: latestBoundary(message.completedAt, local.completedAt, ...parts.map(part => part.completedAt)),
-      parts,
-      timestamp: earliestBoundary(message.timestamp, local.timestamp, ...parts.map(part => part.timestamp))
-    }
+    return [
+      ...(recallsByAssistantId.get(local.id) ?? []),
+      {
+        ...message,
+        completedAt: latestBoundary(message.completedAt, local.completedAt, ...parts.map(part => part.completedAt)),
+        parts,
+        timestamp: earliestBoundary(message.timestamp, local.timestamp, ...parts.map(part => part.timestamp))
+      }
+    ]
   })
 }
 

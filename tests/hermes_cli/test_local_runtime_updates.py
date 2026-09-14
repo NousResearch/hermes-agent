@@ -121,3 +121,48 @@ def test_prune_keeps_n_minus_one(hermes_home):
     downloads.mkdir(exist_ok=True)
     prune_old_tags(["b10290"])
     assert downloads.exists()
+
+
+def test_boot_auto_cuda_rides_ladder_to_installed_vulkan(hermes_home, monkeypatch):
+    """#103949: on Linux NVIDIA the auto backend resolves to cuda, which ships no prebuilt;
+    boot rides the same cuda -> vulkan -> cpu ladder as the pane routes and serves the
+    backend the pane installed, instead of dying on the resolver's honest error."""
+    from hermes_cli.local_runtime import bootstrap
+
+    _install_fake_tag(hermes_home, "b10412", backend="vulkan")
+
+    seen = {}
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
+        lambda tag, backend, **kw: seen.update(tag=tag, backend=backend)
+        or (hermes_home / "runtimes" / "llamacpp" / tag / backend))
+    monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: "nvidia")
+    # Pin the host platform so select_backend()'s cuda branch runs on any CI host.
+    monkeypatch.setattr("hermes_cli.local_runtime.binaries._host_os_arch",
+                        lambda: ("ubuntu", "x64"))
+    monkeypatch.setattr(bootstrap, "staged_models", lambda: ["fake-model.q4_k_m"])
+    monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
+    monkeypatch.setattr(bootstrap, "_start_idle_sweeper", lambda sup: None)
+
+    class _FakeSup:
+        started = False
+        base_url = "http://127.0.0.1:1"
+
+        def __init__(self, install_dir, mdir, **kw):
+            self.install_dir = install_dir
+
+        def start(self):
+            type(self).started = True
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.LlamaServerSupervisor", _FakeSup)
+
+    cfg = {"local_runtime": {"enabled": True, "tag": "b10412"}}  # backend: auto
+    sup = bootstrap.ensure_local_runtime(cfg)
+
+    # select_backend(nvidia) says cuda; the ladder must land on vulkan before install.
+    assert seen == {"tag": "b10412", "backend": "vulkan"}
+    assert _FakeSup.started is True
+    assert sup is not None and sup.install_dir.name == "vulkan"

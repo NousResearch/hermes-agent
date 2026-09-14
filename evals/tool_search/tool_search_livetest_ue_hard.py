@@ -269,7 +269,7 @@ def run_one(scenario, mode, rep, out_dir: Path):
     elapsed = time.time() - started
     bridge_call_log = base._extract_bridge_calls(messages_out)
     # underlying calls: registry log + tool_call unwraps (registry sees both; dedupe consecutive)
-    ue_calls = [c for c in call_log if c["name"].lower() not in ("tool_search", "tool_describe", "tool_call")
+    ue_calls = [c for c in call_log if c["name"].lower() not in ("tool_search", "tool_describe", "invoke_tool")
                 and not c["name"].startswith(("skills_list", "skill_", "todo", "memory"))]
 
     def matches(name, subs):

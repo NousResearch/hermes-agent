@@ -290,9 +290,9 @@ for m in messages:
                 fargs = json.loads(fn.get("arguments") or "{}")
             except Exception:
                 fargs = {}
-            if name in ("tool_search", "tool_describe", "tool_call"):
+            if name in ("tool_search", "tool_describe", "invoke_tool"):
                 bridge_calls += 1
-                if name == "tool_call":
+                if name == "invoke_tool":
                     uname = str(fargs.get("name") or "")
                     uargs = fargs.get("arguments") or {}
                     if isinstance(uargs, str):

@@ -21,13 +21,13 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
         {"name": "connectors__gmail__SEND_EMAIL" if mixed else "todo_list", "arguments": {}},
     ]
     name, args, error = resolve_underlying_call({"calls": calls})
-    assert name is None and "one entry per tool_call" in error
+    assert name is None and "one entry per invoke_tool" in error
     invoked = []
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
     monkeypatch.setattr(bridge, "_default_client_factory", lambda: invoked.append("gateway"))
     result = json.loads(model_tools.handle_function_call(
-        "tool_call", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"]))
-    assert "one entry per tool_call" in result["error"]
+        "invoke_tool", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"]))
+    assert "one entry per invoke_tool" in result["error"]
     assert invoked == []
 
 
@@ -60,7 +60,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     try:
         for entry in calls:
             name, args, error = _unwrap_tool_search_call(
-                agent, "tool_call", {"calls": [entry]}, flatten_probe=flatten_probe)
+                agent, "invoke_tool", {"calls": [entry]}, flatten_probe=flatten_probe)
             assert name == entry["name"] and error is None
             results.append(json.loads(invoke_tool(
                 agent, name, args, "task", tool_call_id="call", pre_tool_block_checked=True)))

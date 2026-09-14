@@ -34,7 +34,7 @@ def fmt_bridge_seq(calls):
         return "(none)"
     parts = []
     for c in calls:
-        if c["name"] == "tool_call":
+        if c["name"] == "invoke_tool":
             inner = (c.get("args") or {}).get("name", "?")
             parts.append(f"tool_call→{inner}")
         elif c["name"] == "tool_search":

@@ -377,7 +377,7 @@ def g_distractor(ctx):
         score += 1.0
     else:
         notes.append("retry_limit value not found")
-    bridge = sum(ctx["tool_counts"].get(n, 0) for n in ("tool_search", "tool_describe", "tool_call"))
+    bridge = sum(ctx["tool_counts"].get(n, 0) for n in ("tool_search", "tool_describe", "invoke_tool"))
     if bridge:
         notes.append(f"bridge_calls={bridge} (false-discovery overhead)")
     return score, notes

@@ -549,7 +549,7 @@ class TestBridgeDispatch:
 
     def test_tool_call_bad_args_error(self):
         with patch("model_tools.get_tool_definitions", return_value=[]):
-            result = json.loads(handle_function_call("tool_call", {}))
+            result = json.loads(handle_function_call("invoke_tool", {}))
         assert "requires 'calls'" in result["error"]
 
     def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
@@ -557,7 +557,7 @@ class TestBridgeDispatch:
         with patch("model_tools.get_tool_definitions", return_value=[]), \
              patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
-            result = json.loads(handle_function_call("tool_call", {"name": "mcp_x"}))
+            result = json.loads(handle_function_call("invoke_tool", {"name": "mcp_x"}))
         assert "not available in this session" in result["error"]
 
         with patch("model_tools.get_tool_definitions", return_value=[]), \
@@ -565,6 +565,6 @@ class TestBridgeDispatch:
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
              patch.object(ts, "validate_deferred_call_args", return_value=None), \
              patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
-            out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
+            out = handle_function_call("invoke_tool", {"name": "mcp_x"}, task_id="t")
         assert json.loads(out) == {"ok": True}
         assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}

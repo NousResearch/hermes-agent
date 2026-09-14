@@ -167,7 +167,7 @@ def run_one(scenario: Dict[str, Any], mode: str, rep: int, out_dir: Path) -> Dic
     called_names = [c.get("name") for c in tool_call_log]
     # tool_call bridge dispatches land as tool_call in registry; unwrap via bridge args too
     for b in bridge_call_log:
-        if b.get("name") == "tool_call":
+        if b.get("name") == "invoke_tool":
             inner = (b.get("args") or {}).get("name")
             if inner:
                 called_names.append(inner)

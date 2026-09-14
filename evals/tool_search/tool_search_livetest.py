@@ -488,7 +488,7 @@ def _count_assistant_turns(messages: List[Dict[str, Any]]) -> int:
 
 def _extract_bridge_calls(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Pull out every tool_search / tool_describe / tool_call from a transcript."""
-    bridges = ("tool_search", "tool_describe", "tool_call")
+    bridges = ("tool_search", "tool_describe", "invoke_tool")
     out: List[Dict[str, Any]] = []
     for m in messages or []:
         if not isinstance(m, dict) or m.get("role") != "assistant":

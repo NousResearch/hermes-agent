@@ -290,3 +290,47 @@ class TestOpenRouterProfileClamp:
             reasoning_config={"enabled": False}, supports_reasoning=True, model="z-ai/glm-5.1",
         )
         assert extra_body["reasoning"] == {"enabled": False}
+
+
+class TestSupportsReasoningExtraBodySuffixStripping:
+    """Routing variants inherit base capabilities; catalog SKUs keep their own identity."""
+
+    @staticmethod
+    def _make_agent(model):
+        from run_agent import AIAgent
+        return AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model=model,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    def test_routing_variants_inherit_catalog_or_static_base_capability(self, monkeypatch):
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {
+            # OpenRouter's actual alias id includes ``~``; only the routing suffix is absent.
+            "~z-ai/glm-flash-latest": {"supports_reasoning": True},
+            "nvidia/nemotron-3-ultra": {"supports_reasoning": True},
+        })
+        for model in (
+            "~z-ai/glm-flash-latest:floor",
+            "nvidia/nemotron-3-ultra:nitro",
+        ):
+            assert self._make_agent(model)._supports_reasoning_extra_body() is True
+
+        # Cold/unlisted aliases use the normalized vendor prefix, while unknown vendors stay false.
+        monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {"a/b": None})
+        assert self._make_agent("~z-ai/future-model:exacto")._supports_reasoning_extra_body() is True
+        assert self._make_agent("somevendor/model-x:online")._supports_reasoning_extra_body() is False
+
+    def test_catalog_sku_suffix_is_not_treated_as_routing_variant(self, monkeypatch):
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(models_mod, "_openrouter_reasoning_caps_cache", {
+            "z-ai/glm-5.2:free": {"supports_reasoning": False},
+            "z-ai/glm-5.2": {"supports_reasoning": True},
+        })
+        assert self._make_agent("z-ai/glm-5.2:free")._supports_reasoning_extra_body() is False

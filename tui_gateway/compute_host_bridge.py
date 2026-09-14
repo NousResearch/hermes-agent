@@ -8,6 +8,8 @@ import contextlib
 import threading
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.common import SessionLiveInfo
+from .contracts.events import ErrorPayload, MessageCompletePayload
 
 _registry = HandlerRegistry()
 
@@ -235,13 +237,13 @@ def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -
         session.pop("_compute_host_open_request", None)
     if frame.get("type") == "turn.error":
         message = str(frame.get("message") or "compute host turn failed")
-        _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
+        _emit("message.complete", sid, MessageCompletePayload(text=f"Error: {message}", status="error"))
     _apply_compute_host_metadata_mirror(session, frame)
     # Settlement of a turn whose session was closed mid-flight: the real lease was held for it.
     _release_deferred_active_session_lease(session)
     info = _compute_host_session_info(session)
     if not frame.get("session_info_emitted"):
-        _emit("session.info", sid, info)
+        _emit("session.info", sid, SessionLiveInfo.model_validate(info))
     _drain_queued_prompt(rid, sid, session)
 
 
@@ -323,11 +325,11 @@ def _adopt_late_compute_host_compress_ack(sid: str, session: dict, ack: dict, *,
             return
     if not isinstance(ack, dict) or ack.get("type") in {"control.error", "error"}:
         message = str((ack or {}).get("message") or f"compute-host {route_name} failed")
-        _emit("error", sid, {"message": f"compression failed: {message}"})
+        _emit("error", sid, ErrorPayload(message=f"compression failed: {message}"))
         _status_update(sid, "ready")
         return
     _apply_compute_host_metadata_mirror(session, ack)
-    _emit("session.info", sid, _compute_host_session_info(session))
+    _emit("session.info", sid, SessionLiveInfo.model_validate(_compute_host_session_info(session)))
     _status_update(sid, "compacted", "✓ Context compression complete")
 
 

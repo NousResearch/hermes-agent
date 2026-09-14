@@ -15,6 +15,11 @@ from tui_gateway.contracts.server_requests import (
     VaultUnlockRequestParams)
 
 from .method_ctx import bind_module
+from .contracts.common import SessionLiveInfo
+from .contracts.events import (
+    MessageCompletePayload, MessageInterimPayload, NotificationClearPayload, NotificationShowPayload,
+    PreviewRestartProgressPayload, ReactionPayload, StreamDeltaPayload, ToolCompletePayload,
+    ToolGeneratingPayload, ToolStartPayload)
 
 
 # Child-session live mirror: a delegated child's activity reaches the gateway only as
@@ -63,12 +68,12 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
         if event_type in _CHILD_DELTA_EVENTS:
             if text:
                 _emit(_CHILD_DELTA_EVENTS[event_type], csid,
-                      {"text": f"{text}\n" if event_type == "subagent.start" else text})
+                      StreamDeltaPayload(text=f"{text}\n" if event_type == "subagent.start" else text))
             return
         if event_type not in ("subagent.tool", "subagent.complete"):
             return
         if st["open_tool"]:
-            _emit("tool.complete", csid, st["open_tool"])
+            _emit("tool.complete", csid, ToolCompletePayload(**st["open_tool"]))
         if event_type == "subagent.tool":
             st["seq"] += 1
             tool = {"name": str(payload.get("tool_name") or "tool"),
@@ -76,10 +81,10 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             if preview := str(payload.get("tool_preview") or payload.get("text") or ""):
                 tool["preview"] = preview
             st["open_tool"] = tool
-            _emit("tool.start", csid, tool)
+            _emit("tool.start", csid, ToolStartPayload(**tool))
         else:
             summary = str(payload.get("summary") or payload.get("text") or "")
-            _emit("message.complete", csid, {"text": summary})
+            _emit("message.complete", csid, MessageCompletePayload(text=summary))
             _child_mirrors.pop(child_key, None)
 
 
@@ -109,7 +114,7 @@ def _agent_thinking_update(sid: str, text: str) -> None:
     from gateway.warning_notifications import DiagnosticText
     if not _agent_presentation_enabled(sid, diagnostic=isinstance(text, DiagnosticText)):
         return
-    _emit("thinking.delta", sid, {"text": text})
+    _emit("thinking.delta", sid, StreamDeltaPayload(text=text))
 
 
 def _agent_notice_update(sid: str, notice) -> None:
@@ -117,8 +122,8 @@ def _agent_notice_update(sid: str, notice) -> None:
     if not _agent_presentation_enabled(sid, diagnostic=is_diagnostic_notice(notice)):
         return
     _emit("notification.show", sid,
-          {"text": notice.text, "level": notice.level, "kind": notice.kind,
-           "ttl_ms": notice.ttl_ms, "key": notice.key, "id": notice.id})
+          NotificationShowPayload(text=notice.text, level=notice.level, kind=notice.kind,
+                                 ttl_ms=notice.ttl_ms, key=notice.key, id=notice.id))
 
 
 def _agent_cbs(sid: str) -> dict:
@@ -134,16 +139,16 @@ def _agent_cbs(sid: str) -> dict:
         "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
-        "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, ToolGeneratingPayload(name=name)),
         "thinking_callback": lambda text: _agent_thinking_update(sid, text),
         # Affection reaction (ily / <3 / good bot) → hearts; core-detected so TUI/desktop share it.
-        "reaction_callback": lambda kind: _emit("reaction", sid, {"kind": kind}),
+        "reaction_callback": lambda kind: _emit("reaction", sid, ReactionPayload(kind=kind)),
         "reasoning_callback": lambda text: _emit(
-            "reasoning.delta", sid, {"text": text, **({"verbose": True} if _session_verbose(sid) else {})}),
+            "reasoning.delta", sid, StreamDeltaPayload(text=text, verbose=True if _session_verbose(sid) else None)),
         "status_callback": lambda kind, text=None: _agent_status_update(sid, kind, text),
         # Credits/notice spine: AgentNotice → notification.show; recovery → notification.clear.
         "notice_callback": lambda n: _agent_notice_update(sid, n),
-        "notice_clear_callback": lambda key: _emit("notification.clear", sid, {"key": key}),
+        "notice_clear_callback": lambda key: _emit("notification.clear", sid, NotificationClearPayload(key=key)),
         "clarify_callback": lambda q, c, multi_select=False, questions=None: (
             _clarify_block(sid, q, c, multi_select=multi_select, questions=questions)),
         "read_terminal_callback": _read_block("terminal.read", 30),
@@ -168,7 +173,7 @@ def _agent_cbs(sid: str) -> dict:
     # messages; _run_prompt_submit overwrites it per turn and clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
         callbacks["interim_assistant_callback"] = lambda text, *, already_streamed=False: _emit(
-            "message.interim", sid, {"text": str(text), "already_streamed": bool(already_streamed)})
+            "message.interim", sid, MessageInterimPayload(text=str(text), already_streamed=bool(already_streamed)))
     return callbacks
 
 
@@ -196,7 +201,7 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
             "project": _project_info_for_cwd(resolved), "lazy": True}
-        _emit("session.info", sid, info)
+        _emit("session.info", sid, SessionLiveInfo.model_validate(info))
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
 
@@ -295,7 +300,7 @@ def _apply_personality_to_session(
         session["history"].append({"role": "user", "content": marker, "display_kind": "personality_switch"})
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(agent)
-    _emit("session.info", sid, info)
+    _emit("session.info", sid, SessionLiveInfo.model_validate(info))
     return False, info
 
 
@@ -426,7 +431,7 @@ def _preview_restart_callbacks(parent: str, task_id: str) -> dict:
 
     def progress(message: str, level: str = "info") -> None:
         if text := str(message or "").strip():
-            _emit("preview.restart.progress", parent, {"task_id": task_id, "level": level, "text": text})
+            _emit("preview.restart.progress", parent, PreviewRestartProgressPayload(task_id=task_id, level=level, text=text))
 
     def tool_start(tool_call_id: str, name: str, args: dict) -> None:
         started_at[tool_call_id] = time.time()
@@ -528,7 +533,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         session["history"] = []
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(new_agent, session)
-    _emit("session.info", sid, info)
+    _emit("session.info", sid, SessionLiveInfo.model_validate(info))
     _restart_slash_worker(sid, session)
     return info
 

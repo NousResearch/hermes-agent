@@ -9,6 +9,8 @@ from __future__ import annotations
 import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.common import SessionLiveInfo
+from .contracts.sessions import SessionStatusParams
 
 _registry = HandlerRegistry()
 
@@ -198,10 +200,10 @@ def _format_live_model_output(session: dict) -> str:
 
 
 def _format_live_status_output(sid: str, session: dict, arg: str) -> str:
-    response = _methods["session.status"]("status", {"session_id": sid})
-    if response.get("error"):
-        return str(response["error"].get("message") or "status unavailable")
-    return str(response.get("result", {}).get("output") or "")
+    response = invoke("session.status", SessionStatusParams(session_id=sid))
+    if isinstance(response, dict):
+        return str(response.get("error", {}).get("message") or "status unavailable")
+    return str(response.output or "")
 
 
 # name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
@@ -289,7 +291,7 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
         after_messages = list(session.get("history", []))
     after_tokens = estimate(
         after_messages, getattr(agent, "_cached_system_prompt", "") or sys_prompt, getattr(agent, "tools", None) or tools)
-    _emit("session.info", sid, _session_info(agent, session))
+    _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, session)))
     fb = summarize_manual_compression(
         before_messages, after_messages, before_tokens, after_tokens,
         compression_state=getattr(agent, "context_compressor", None))
@@ -324,7 +326,7 @@ def _mirror_fast(sid, session, agent, arg) -> None:
     if agent:
         if arg.lower() in _FAST_TIERS:
             agent.service_tier = _FAST_TIERS[arg.lower()]
-        _emit("session.info", sid, _session_info(agent, session))
+        _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, session)))
 
 
 def _mirror_reload_mcp(sid, session, agent, arg) -> None:

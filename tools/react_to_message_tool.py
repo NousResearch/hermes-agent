@@ -9,6 +9,7 @@ import json
 
 from gateway.session_context import get_session_env
 from tools import desktop_ui
+from tui_gateway.contracts.events import MessageReactionPayload
 from tools.registry import registry, tool_error
 
 
@@ -50,7 +51,7 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
         # Paint it live; a missing bridge (non-desktop) is not an error — the reaction is
         # persisted. `role` lets the renderer match a live message without a durable row id.
         with contextlib.suppress(Exception):
-            desktop_ui.emit("message.reaction", {"row_id": int(row_id), "reactions": reactions, "role": target_role})
+            desktop_ui.emit("message.reaction", MessageReactionPayload(row_id=int(row_id), reactions=reactions, role=target_role))
         return json.dumps({"success": True, "row_id": int(row_id), "reactions": reactions}, ensure_ascii=False)
     finally:
         with contextlib.suppress(Exception):

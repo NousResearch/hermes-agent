@@ -1,0 +1,10 @@
+name: nova-policy
+version: 1.0.0
+description: >-
+  NOVA policy enforcement. Resolves every tool call against this agent's compiled policy
+  and either permits it, escalates it to the human approval gate, or refuses it. Installed
+  and maintained by NOVA; edits here are overwritten on the next apply.
+author: NOVA
+kind: backend
+hooks:
+  - pre_tool_call

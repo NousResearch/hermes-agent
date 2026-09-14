@@ -1,0 +1,59 @@
+#!/bin/bash
+# NOVA runtime bootstrap. Deliberately short: everything that can be decided ahead of time
+# belongs in the image, not in a script that runs once on a host nobody will read again.
+set -euo pipefail
+
+STATE_DEVICE="${state_device}"
+STATE_MOUNT="${state_mount}"
+
+dnf install -y docker
+systemctl enable --now docker
+
+# Format only if the volume is blank. The audit log lives here; an unconditional mkfs on a
+# reboot would be a data-destroying no-op the first ninety-nine times it ran.
+if ! blkid "$STATE_DEVICE" >/dev/null 2>&1; then
+  mkfs -t xfs "$STATE_DEVICE"
+fi
+
+mkdir -p "$STATE_MOUNT"
+grep -q "$STATE_MOUNT" /etc/fstab || \
+  echo "$STATE_DEVICE $STATE_MOUNT xfs defaults,nofail 0 2" >> /etc/fstab
+mount -a
+
+aws ecr get-login-password --region "${region}" \
+  | docker login --username AWS --password-stdin "$(echo "${image_uri}" | cut -d/ -f1)"
+docker pull "${image_uri}"
+
+cat > /etc/nova.env <<ENVEOF
+NOVA_TENANT_ID=${tenant_id}
+NOVA_AWS_REGION=${region}
+NOVA_INTEGRATION_EXTERNAL_ID=${external_id}
+NOVA_INTEGRATIONS=${integrations}
+ENVEOF
+chmod 0640 /etc/nova.env
+
+cat > /etc/systemd/system/nova.service <<UNITEOF
+[Unit]
+Description=NOVA runtime
+After=docker.service local-fs.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/nova.env
+ExecStartPre=-/usr/bin/docker rm -f nova
+ExecStart=/usr/bin/docker run --rm --name nova \
+  --env-file /etc/nova.env \
+  --volume ${state_mount}:/var/lib/nova \
+  --log-driver awslogs \
+  --log-opt awslogs-region=${region} \
+  --log-opt awslogs-group=${log_group} \
+  ${image_uri}
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+systemctl daemon-reload
+systemctl enable --now nova.service

@@ -1,0 +1,7 @@
+# The upstream root .gitignore excludes any directory named `examples/`, which silently
+# swallowed `nova/examples/` — the tenant bundle every platform test loads. A suite that
+# cannot run on a fresh clone is a suite whose passing means nothing.
+#
+# Re-included here rather than in the root file so the core patch budget stays at 1:
+# `nova/**` does not exist upstream and cannot conflict.
+!examples/

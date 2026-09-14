@@ -63,6 +63,52 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
+#: Base delay before re-spawning a task whose last run crashed, timed out or
+#: failed to spawn. Doubles per consecutive failure up to the cap below.
+#:
+#: Before this, an ordinary crash had NO backoff: the reclaim pass returned the
+#: card to ``ready`` and the very next tick re-spawned it, so a task that
+#: crashes on startup burned a spawn slot every tick until the circuit breaker
+#: tripped. On a shared host that is a noisy-neighbour amplifier — one tenant's
+#: broken card consuming budget other tenants are queued for.
+#:
+#: The rate-limit cooldown above is deliberately separate: it is a fixed wait
+#: for a quota window to reopen, not a growing wait for a sick task.
+DEFAULT_RETRY_BACKOFF_SECONDS = 15
+DEFAULT_RETRY_BACKOFF_MAX_SECONDS = 600  # 10 minutes
+
+#: Run outcomes that represent a failed attempt and so earn a backoff. A
+#: ``blocked`` or ``reclaimed`` run is not a failure (a human parked it, or the
+#: dispatcher took it back), and ``rate_limited`` has its own cooldown.
+_BACKOFF_OUTCOMES = frozenset({"crashed", "timed_out", "spawn_failed", "failed"})
+
+
+def _resolve_retry_backoff_seconds() -> int:
+    """``HERMES_KANBAN_RETRY_BACKOFF_SECONDS`` (0 disables) else the default."""
+    return _kb._env_int("HERMES_KANBAN_RETRY_BACKOFF_SECONDS", DEFAULT_RETRY_BACKOFF_SECONDS)
+
+
+def _resolve_retry_backoff_max_seconds() -> int:
+    return _kb._env_int(
+        "HERMES_KANBAN_RETRY_BACKOFF_MAX_SECONDS", DEFAULT_RETRY_BACKOFF_MAX_SECONDS
+    )
+
+
+def retry_backoff_seconds(consecutive_failures: int) -> int:
+    """Delay owed before the next attempt, after ``consecutive_failures``.
+
+    Exponential, capped, and deterministic — no jitter. Jitter exists to spread
+    a thundering herd of independent clients; here a single dispatcher decides
+    when each card runs, and determinism is what makes the behaviour testable
+    and an operator's "why has this not retried yet?" answerable.
+    """
+    base = _resolve_retry_backoff_seconds()
+    if base <= 0 or consecutive_failures <= 0:
+        return 0
+    cap = _resolve_retry_backoff_max_seconds()
+    delay = base * (2 ** max(0, int(consecutive_failures) - 1))
+    return int(min(delay, cap)) if cap > 0 else int(delay)
+
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
@@ -110,6 +156,12 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_per_tenant_capped: list[tuple[str, str, int]] = field(default_factory=list)
+    """``(task_id, tenant, current_running_count)`` deferred because the tenant is
+    at ``kanban.max_in_progress_per_tenant``. Like the per-profile bucket this is
+    "busy, retry later", not operator-actionable — but it is the signal that a
+    tenant is being held to its share, so it is tracked separately from the
+    profile cap (a tenant may run many profiles, and a profile may serve none)."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1128,6 +1180,8 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
+    ``"failure_backoff"`` (last run crashed/timed out and the exponential
+    :func:`retry_backoff_seconds` wait has not elapsed),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
@@ -1140,7 +1194,7 @@ def check_respawn_guard(
     dead claim locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, consecutive_failures FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -1170,7 +1224,21 @@ def check_respawn_guard(
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 
-    # 2. Quota / auth blocker: retrying immediately will not help.
+    # 2. Failure backoff. The reclaim pass returns a crashed/timed-out card to
+    #    ``ready`` immediately, so without this the next tick re-spawns it at
+    #    once and keeps doing so until the circuit breaker trips — a hot loop
+    #    that costs a spawn slot every tick. The wait grows with
+    #    ``consecutive_failures`` (reset to 0 by a successful completion), so a
+    #    transient crash retries quickly and a genuinely broken card backs off.
+    failures = int(_kb._row_get(row, "consecutive_failures", 0) or 0)
+    if failures > 0:
+        owed = retry_backoff_seconds(failures)
+        if owed > 0 and latest_run is not None and latest_run["outcome"] in _BACKOFF_OUTCOMES:
+            ended_at = latest_run["ended_at"]
+            if ended_at is not None and (now - int(ended_at)) < owed:
+                return "failure_backoff"
+
+    # 3. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
         return "blocker_auth"
@@ -1180,7 +1248,7 @@ def check_respawn_guard(
     if lane == "review":
         return None
 
-    # 3. Completed run within guard window. Exception: an explicit re-queue
+    # 4. Completed run within guard window. Exception: an explicit re-queue
     #    AFTER that success (done→ready drag, re-promotion, unblock, reclaim) is
     #    a deliberate "run it again" — otherwise a manual done→ready would sit
     #    silently held until the window elapses.
@@ -1428,6 +1496,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_tenant: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1451,6 +1520,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_tenant=max_in_progress_per_tenant,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -1501,6 +1571,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    per_tenant_cap: Optional[int] = None,
+    per_tenant_running: Optional[dict[str, int]] = None,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1522,6 +1594,16 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    # Per-tenant cap. The fair ordering above decides who goes FIRST; this decides
+    # how much of the host any one tenant may hold AT ONCE. Ordering alone is not
+    # enough: with a big enough budget and no other tenant queued, one tenant
+    # would still take every slot and then hold them for the length of its jobs.
+    row_tenant = (_kb._row_get(row, "tenant") or "")
+    if per_tenant_cap is not None and per_tenant_running is not None:
+        held = per_tenant_running.get(row_tenant, 0)
+        if held >= per_tenant_cap:
+            result.skipped_per_tenant_capped.append((task_id, row_tenant, held))
+            return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -1542,6 +1624,10 @@ def _dispatch_lane_task(
         # ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        # Same within-tick bookkeeping for the tenant, or a single tick could
+        # blow straight past the cap: every row would read the same stale count.
+        if per_tenant_cap is not None and per_tenant_running is not None:
+            per_tenant_running[row_tenant] = per_tenant_running.get(row_tenant, 0) + 1
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
@@ -1711,10 +1797,68 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, tenant FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+
+
+def _running_by_tenant(conn: sqlite3.Connection) -> dict[str, int]:
+    """How many workers each tenant currently has in flight."""
+    return {
+        (r["tenant"] or ""): int(r["n"])
+        for r in conn.execute(
+            "SELECT COALESCE(tenant, '') AS tenant, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' GROUP BY COALESCE(tenant, '')"
+        )
+    }
+
+
+def _tenant_fair_order(
+    rows: list[sqlite3.Row], running_by_tenant: dict[str, int]
+) -> list[sqlite3.Row]:
+    """Re-order one lane so a spawn budget is shared across tenants.
+
+    The lane query orders globally by ``priority DESC, created_at ASC``. On a
+    single-tenant board that is exactly right. On a shared one it is the
+    noisy-neighbour bug: a tenant that enqueues five hundred cards owns the head
+    of the queue, and every tick's budget is spent on it while another tenant's
+    single card waits — not because it was deprioritised, but because it was
+    *behind*.
+
+    So: group the lane by tenant, keep each tenant's own priority order intact,
+    and deal one card at a time from each in turn — least-loaded tenant first,
+    where "loaded" is how many workers that tenant already has running. A tenant
+    with nothing running is served before one with four, and within a round
+    every tenant gets one card before any tenant gets two.
+
+    Priority is preserved *within* a tenant, deliberately. Cross-tenant priority
+    is not a thing a shared scheduler can honour — it would let any tenant
+    starve the others by setting priority=9 on everything, which is the exact
+    failure this function exists to prevent.
+
+    A board with one tenant (or none) comes back in its original order, so
+    nothing changes for single-tenant deployments.
+    """
+    if len(rows) < 2:
+        return list(rows)
+    buckets: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        buckets.setdefault(row["tenant"] or "", []).append(row)
+    if len(buckets) < 2:
+        return list(rows)
+
+    # Least-loaded first; ties broken by the tenant's best queued position so
+    # the ordering is deterministic (tests, and reproducible dispatch logs).
+    first_seen = {t: rows.index(q[0]) for t, q in buckets.items()}
+    order = sorted(buckets, key=lambda t: (running_by_tenant.get(t, 0), first_seen[t]))
+
+    interleaved: list[sqlite3.Row] = []
+    while any(buckets[t] for t in order):
+        for tenant in order:
+            if buckets[tenant]:
+                interleaved.append(buckets[tenant].pop(0))
+    return interleaved
 
 
 def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
@@ -1760,6 +1904,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    max_in_progress_per_tenant: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -1807,10 +1952,20 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    # Tenant share. The running counts are needed for the fair ordering even when
+    # no cap is configured — least-loaded-first is what keeps one tenant from
+    # monopolising the head of the queue.
+    per_tenant_running = _running_by_tenant(conn)
+    per_tenant_cap = max_in_progress_per_tenant if (
+        isinstance(max_in_progress_per_tenant, int) and max_in_progress_per_tenant > 0
+    ) else None
+    ready_rows = _tenant_fair_order(ready_rows, per_tenant_running)
+    review_rows = _tenant_fair_order(review_rows, per_tenant_running)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        per_tenant_cap=per_tenant_cap, per_tenant_running=per_tenant_running,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0

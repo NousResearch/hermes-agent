@@ -1,0 +1,10 @@
+name: nova-knowledge
+version: 1.0.0
+description: >-
+  NOVA Knowledge. Gives this agent a scoped search over the corpora its tenant has granted
+  it, returning cited passages as untrusted reference material. Installed and maintained by
+  NOVA; edits here are overwritten on the next apply.
+author: NOVA
+kind: standalone
+provides_tools:
+  - knowledge_search

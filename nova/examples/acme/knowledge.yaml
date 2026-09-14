@@ -1,0 +1,25 @@
+# Acme's declared knowledge corpora.
+#
+# A source is a directory of documents plus the rules for reading it. Agents are granted
+# sources by id in their own spec; nothing here decides who may read what. The split is
+# deliberate: an operator adding documents to a corpus should not be able to change which
+# agents can see it, and vice versa.
+#
+# Roots here are relative to this bundle so the example is self-contained. A real
+# deployment points them at the customer's own document directories, absolute or via
+# ${ACME_DOCS_ROOT} — anywhere the NOVA host can read.
+
+sources:
+  - id: company-handbook
+    title: Company Handbook
+    description: Policies every agent is expected to follow — refunds, escalation, tone.
+    root: knowledge/handbook
+    include: ["**/*.md"]
+    classification: internal
+
+  - id: product-docs
+    title: Product Documentation
+    description: What the product does, its limits, and its supported configurations.
+    root: knowledge/product
+    include: ["**/*.md"]
+    classification: public

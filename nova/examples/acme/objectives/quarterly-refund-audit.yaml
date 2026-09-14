@@ -1,0 +1,51 @@
+# A repeatable business process, declared rather than prompted.
+#
+# The owner is accountable for the objective. Every step's assignee must be the owner or an
+# agent the owner's `delegation.may_assign_to` permits — NOVA refuses the whole objective
+# otherwise, before anything reaches the board.
+
+id: quarterly-refund-audit
+title: Quarterly refund audit
+owner: operations
+description: >-
+  Check that refunds issued last quarter followed the approval thresholds in the company
+  handbook, and write up anything that did not.
+acceptance: >-
+  Every refund above the handbook's approval threshold has a recorded sign-off, and any
+  that does not is listed in the findings with its amount, date and the missing approver.
+
+steps:
+  - id: pull-ledger
+    title: Extract last quarter's refunds
+    assignee: operations
+    body: >-
+      Produce a list of every refund issued in the last completed quarter, with amount,
+      date, customer, the agent who issued it, and any recorded approval.
+
+  - id: handbook-thresholds
+    title: Restate the current approval thresholds
+    assignee: customer-support
+    body: >-
+      Search the company handbook for the refund approval thresholds and quote them with
+      their citation. Do not answer from memory — the thresholds change, and the audit is
+      only as good as the rule it checks against.
+    # No depends_on, so this runs in parallel with pull-ledger. There is no `parallel`
+    # keyword; independence is expressed by the absence of a dependency.
+
+  - id: compare
+    title: Find refunds that missed their approval
+    assignee: operations
+    depends_on: [pull-ledger, handbook-thresholds]
+    priority: 1
+    body: >-
+      Compare each refund against the thresholds. List every refund that needed a sign-off
+      and does not have one.
+
+  - id: write-findings
+    title: Write the audit findings
+    assignee: operations
+    depends_on: [compare]
+    max_runtime_seconds: 1800
+    body: >-
+      Write the findings for the finance lead: what was checked, what failed, and what to
+      do about each failure. State plainly if nothing failed.

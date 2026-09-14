@@ -1,0 +1,55 @@
+# Business actions, named in the customer's language rather than the runtime's.
+# The person who decides that refunds need approval is not the person who knows which
+# tool issues one; this file is where those two meet.
+actions:
+  refund:
+    description: Issue a refund to a customer
+    tools: [crm_refund]
+    requires_approval: true
+
+  account_deletion:
+    description: Permanently delete a customer record
+    tools: [crm_delete_customer]
+    requires_approval: true
+
+  send_external_email:
+    description: Send email to someone outside the company
+    tools: [email_send]
+    # Not required tenant-wide; an individual agent may still require it.
+    requires_approval: false
+
+# Named permissions and the tools they grant. An agent's `permissions:` list draws
+# from these.
+permissions:
+  read_customers:
+    description: Look up customer records
+    tools: [crm_lookup, crm_search]
+
+  create_ticket:
+    description: Raise a support ticket
+    tools: [ticket_create, ticket_update]
+
+  read_inventory:
+    description: Read warehouse and stock data
+    tools: [erp_stock_query]
+
+  contact_suppliers:
+    description: Email suppliers about stock and deliveries
+    tools: [email_send]
+
+# Tools every agent keeps regardless of its permissions. Without these an allow-list
+# would produce agents that run work and never close it.
+baseline_tools:
+  - kanban_complete
+  - kanban_block
+  - kanban_comment
+  - kanban_heartbeat
+  - kanban_request_review
+  - kanban_show
+  - clarify
+  - todo_list
+
+defaults:
+  # Deny anything no rule mentions. The posture a security review will ask for; switch to
+  # `allow` while a deployment is still being mapped out.
+  unlisted_tool: deny

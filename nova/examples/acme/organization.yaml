@@ -1,0 +1,6 @@
+# Who this deployment serves. The tenant id is stamped on every audit event.
+tenant_id: acme
+legal_name: Acme Corporation
+region: eu-west-1
+timezone: Europe/London
+contact_email: platform@acme.example

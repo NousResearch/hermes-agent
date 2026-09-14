@@ -1,0 +1,18 @@
+# White-label identity. Changing this file and re-applying rebrands the deployment;
+# no source change, no rebuild, no different image.
+product_name: Acme Intelligence
+company_name: Acme Corporation
+theme:
+  accent: "#1f6f5c"
+  surface: "#f5f7f7"
+  on_accent: "#ffffff"
+support:
+  email: support@acme.example
+  url: https://help.acme.example
+messages:
+  welcome: Welcome to Acme Intelligence. Type your message or /help for commands.
+agents:
+  customer-support:
+    display_name: Acme Support Assistant
+  operations:
+    display_name: Acme Ops

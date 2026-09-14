@@ -1,0 +1,47 @@
+# The channels Acme's workforce is reachable on.
+#
+# NOTHING SECRET BELONGS IN THIS FILE. A channel declaration names agents and conversations;
+# the provider's credential variables are fixed by its adapter, and their values go in
+# <profile>/.env — which NOVA never writes and the runtime already reads. A key pasted here
+# is refused at parse time, because once it is in version control refusing would be too late.
+#
+# `allowed_agents` is the grant. Every route is checked against it, and a route naming an
+# agent outside it is refused rather than compiled into a routing table where it would work.
+
+channels:
+  - id: acme-support-telegram
+    provider: telegram
+    display_name: Acme Support (Telegram)
+    # The two agents this connection may reach. Nothing else, whatever a route says.
+    allowed_agents:
+      - customer-support
+      - operations
+
+    # Anything reached over this channel escalates these to a human, on top of whatever
+    # the agent already escalates everywhere. Additive only: a channel can tighten
+    # approval, never loosen it — a permission that could be widened by connecting a
+    # messaging app would make the channel list part of the security review.
+    #
+    # This costs a profile. `customer-support` reached over this channel becomes
+    # `customer-support__acme-support-telegram`, with its own compiled policy, because the
+    # runtime's policy hook is never told which channel it is serving. See
+    # docs/PHASE_10.md for why that is the honest shape.
+    approval:
+      required_for:
+        - send_external_email
+
+    routes:
+      # Most specific wins, exactly as the runtime orders them: a named conversation beats
+      # the catch-all, so the escalations group reaches operations and everything else
+      # reaches support.
+      - name: escalations-group
+        agent: operations
+        conversation: "-1001234567890"
+
+      - name: everything-else
+        agent: customer-support
+
+    # Non-secret provider settings, passed through to the runtime's own platform config.
+    # NOVA refuses `token` and `api_key` here by construction.
+    settings:
+      reply_to_mode: first

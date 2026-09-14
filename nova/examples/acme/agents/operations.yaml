@@ -1,0 +1,33 @@
+id: operations
+name: Operations Agent
+role: operations
+description: Runs scheduled operational checks and reports.
+enabled: true
+
+instructions: prompts/operations.md
+
+model:
+  # Deployment settings come from deployment.yaml. An agent overrides only what differs —
+  # a cheaper model, another region — and inherits the rest field by field.
+  reasoning_effort: medium
+
+tools:
+  toolsets: [web, file]
+  deny: [execute_code]
+
+delegation:
+  # Operations owns the quarterly refund audit and hands its handbook lookup to support.
+  # Without this line NOVA refuses that objective outright rather than routing the step —
+  # which is the point of declaring delegation at all.
+  may_assign_to: [customer-support]
+
+permissions:
+  - read_inventory
+  # Operations emails suppliers directly. Internally that needs no sign-off; over a
+  # customer-facing channel it does — see the approval block in channels.yaml.
+  - contact_suppliers
+
+limits:
+  max_concurrent_tasks: 2
+  max_task_runtime_seconds: 1800
+  max_turns: 40

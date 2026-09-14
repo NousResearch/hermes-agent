@@ -1,0 +1,30 @@
+# Copy to terraform.tfvars and fill in. Everything here is infrastructure the customer owns;
+# nothing in this file is a secret, and nothing in it should ever become one.
+#
+# The integrations list is NOT here on purpose: `nova deploy render` writes it to
+# nova.auto.tfvars.json from the tenant bundle, so that what the agents may reach is derived
+# from the declaration rather than maintained beside it.
+
+tenant_id = "acme"
+region    = "eu-west-2"
+
+vpc_id    = "vpc-0123456789abcdef0"
+subnet_id = "subnet-0123456789abcdef0" # private; egress via NAT or VPC endpoints
+
+# The customer's own registry. Pin a digest or an immutable tag.
+image_uri = "111122223333.dkr.ecr.eu-west-2.amazonaws.com/nova:1.0.0"
+
+# Pin before this carries production work. Empty tracks the latest Amazon Linux 2023,
+# which will replace the instance when AWS publishes a new one.
+ami_id = ""
+
+instance_type = "t3.large"
+volume_gb     = 100
+
+# Enumerated, never wildcarded: this list is the answer to "which models can this call?".
+bedrock_model_ids = [
+  "eu.anthropic.claude-sonnet-4-20250514-v1:0",
+]
+
+# The runtime may read secrets under this prefix and nowhere else.
+secret_prefix = "nova/acme/"

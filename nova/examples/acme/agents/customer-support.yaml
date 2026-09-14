@@ -1,0 +1,51 @@
+id: customer-support
+name: Customer Support Agent
+role: customer_support
+description: Answers customer questions and raises tickets.
+enabled: true
+
+instructions: prompts/customer-support.md
+
+model:
+  # Deployment settings come from deployment.yaml. An agent overrides only what differs and
+  # inherits the rest field by field — so a cheaper model here keeps the tenant's endpoint
+  # and credential rather than restating them, which is where restated config drifts.
+  reasoning_effort: medium
+
+tools:
+  toolsets: [web, file]
+  deny: [terminal, execute_code]
+
+knowledge:
+  # Declared in knowledge.yaml; this agent is granted these two and nothing else.
+  sources: [company-handbook, product-docs]
+
+permissions:
+  - read_customers
+  - create_ticket
+
+approval:
+  # refund and account_deletion already require approval tenant-wide; this agent also
+  # escalates outbound email, which the tenant default permits.
+  required_for: [send_external_email]
+
+limits:
+  # HARD, pre-emptive — the runtime refuses before work happens.
+  max_turns: 60
+  max_concurrent_tasks: 3
+  # HARD at the tool boundary — NOVA refuses further tool calls past this count.
+  max_tool_calls_per_run: 200
+  delegation:
+    max_concurrent_children: 3
+    max_depth: 1
+    max_child_turns: 80
+
+  # SOFT — asks the agent to wrap up. Not a limit; nothing terminates.
+  soft_wrapup_after_seconds: 1500
+
+  # Recorded only — the dispatcher enforces these as task columns NOVA cannot set yet.
+  max_task_runtime_seconds: 900
+  max_retries: 2
+
+delegation:
+  may_assign_to: [operations]

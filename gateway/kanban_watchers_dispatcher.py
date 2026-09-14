@@ -41,6 +41,7 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    max_in_progress_per_tenant: Optional[int]
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -114,6 +115,10 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Per-tenant concurrency cap: one tenant's long-running fan-out must not
+        # hold every slot on a host shared with other tenants. Unset = no cap,
+        # which is the correct default for a single-tenant deployment.
+        max_in_progress_per_tenant=_positive_int_setting(kanban_cfg, "max_in_progress_per_tenant"),
     )
 
 

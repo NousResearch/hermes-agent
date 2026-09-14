@@ -1,0 +1,76 @@
+# Where this deployment's models live. Operator-owned, and separate from the agent specs
+# because it changes when infrastructure changes rather than when the agents do.
+#
+# NOTHING SECRET BELONGS IN THIS FILE. `api_key_env` names the variable that holds the
+# credential; the value goes in <profile>/.env, which NOVA never writes and the runtime
+# already reads. A literal credential here is refused at parse time — once it is in version
+# control, refusing it would be too late to help.
+
+provider:
+  # The runtime routes by this name. A name it resolves natively (bedrock, anthropic,
+  # vertex, …) needs only a region and uses that provider's own credential variable. Any
+  # other name becomes a custom endpoint, which is the shape below: a gateway the customer
+  # runs themselves.
+  provider: ${ACME_LLM_PROVIDER:-acme-gateway}
+  model: ${ACME_LLM_MODEL:-acme-default}
+  endpoint: ${ACME_LLM_URL}
+  # The NAME of the variable, never the value.
+  api_key_env: ACME_LLM_KEY
+  context_window: 200000
+
+# Settings NOVA does not model, written verbatim into each agent's runtime configuration.
+# NOVA-compiled keys (plugins, approvals, agent, delegation, kanban, model) are refused
+# here: overriding one would undo a governance control while every NOVA-side check still
+# reported it enforced.
+runtime_config:
+  tools:
+    tool_search:
+      enabled: auto
+
+# ---------------------------------------------------------------------------
+# Where this tenant runs, when NOVA renders the infrastructure (`nova deploy render`,
+# then `deploy/aws`). Absent is valid and common: a runtime already installed somewhere
+# needs none of this.
+#
+# Values below are placeholders. There is no real account behind them, and there must
+# never be one in a file under version control.
+# ---------------------------------------------------------------------------
+infrastructure:
+  region: eu-west-2
+  vpc_id: vpc-0123456789abcdef0
+  subnet_id: subnet-0123456789abcdef0
+  # The customer's own registry. Pin a digest or an immutable tag: a mutable tag means
+  # the thing that passed review is not the thing that runs.
+  image_uri: 111122223333.dkr.ecr.eu-west-2.amazonaws.com/nova:1.0.0
+  # Enumerated, never wildcarded. This list is the answer to "which models can this
+  # system call?", and a wildcard makes that question unanswerable.
+  bedrock_model_ids:
+    - eu.anthropic.claude-sonnet-4-20250514-v1:0
+  # The runtime may read secrets under this prefix and nowhere else.
+  secret_prefix: nova/acme/
+
+# ---------------------------------------------------------------------------
+# Everything the agents can reach outside the runtime. Each becomes one IAM role,
+# assumed by the runtime role and by nothing else.
+#
+# The runtime role itself carries no customer-data permissions, so this list is the
+# complete answer to "what can the agents touch?" — and an empty list means nothing.
+# ---------------------------------------------------------------------------
+integrations:
+  - id: crm-export
+    description: Read-only access to the nightly CRM export bucket
+    # Recorded, not enforced in IAM — the runtime assumes the role as one identity, so a
+    # per-agent IAM boundary would be a claim the infrastructure cannot keep. It is here
+    # so a reviewer can see why the grant exists, and so renaming an agent out from under
+    # a grant is caught at render time.
+    agents: [operations]
+    allow:
+      - actions: [s3:GetObject]
+        resources: ["arn:aws:s3:::acme-crm-export/*"]
+      - actions: [s3:ListBucket]
+        resources: ["arn:aws:s3:::acme-crm-export"]
+        # The customer's own narrowing, carried opaquely. NOVA does not model conditions:
+        # inventing a schema for them would only limit what they can express.
+        condition:
+          StringLike:
+            "s3:prefix": ["exports/"]

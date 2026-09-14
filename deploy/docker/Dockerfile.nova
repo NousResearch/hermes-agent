@@ -1,0 +1,122 @@
+# NOVA control plane — production image.
+#
+# Separate from the repository's root `Dockerfile`, which builds the full Hermes agent
+# runtime (s6 supervision, a pinned SQLite, the whole toolchain). This image is the
+# thing `deploy/aws` actually runs: the NOVA control plane and the Hermes libraries it
+# reads state through. Keeping them apart keeps the upstream image untouched.
+#
+# **Deliberately small.** NOVA depends on the standard library and PyYAML, and the Hermes
+# modules it reaches for — `hermes_cli.kanban_db`, `cron.jobs` — import on that alone.
+# Verified, not assumed: the full control plane was exercised against an environment
+# containing only Python and PyYAML before this file was written. Installing the runtime's
+# full dependency set would add hundreds of megabytes of model SDKs that a control plane
+# never calls.
+#
+# What this image is NOT: an agent worker. It reads and governs runtime state. Executing
+# an agent needs the full Hermes runtime image and its provider credentials.
+
+# The base is an argument so a build behind a registry allowlist can name a mirror
+# (e.g. mirror.gcr.io/library/python:3.12-slim-bookworm) without the Dockerfile drifting
+# from the canonical image. Both resolve to the same content digest:
+#   sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+# Pin that digest in a locked-down environment; an image digest is content-addressed, so
+# it identifies the same bytes whichever registry served them.
+ARG PYTHON_BASE=python:3.12-slim-bookworm
+FROM ${PYTHON_BASE}
+
+# Pinned by digest-free name plus an explicit version label below; the tag carries the
+# immutable identity (see deploy/docker/build.sh).
+LABEL org.opencontainers.image.title="nova-control-plane" \
+      org.opencontainers.image.description="NOVA enterprise control plane over the Hermes runtime" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/yahyeameer/hermes-agen-"
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    # The application lives on PYTHONPATH rather than being pip-installed: the
+    # repository's setuptools config enumerates the Hermes packages and does not include
+    # `nova`, and widening it is an upstream change this deployment does not need.
+    PYTHONPATH=/opt/nova \
+    # Where the control plane keeps state and finds the tenant's declarations. Both sit
+    # under /var/lib/nova because that is the path deploy/aws already mounts the EBS
+    # volume at; the entrypoint documents them, and neither is baked into application code.
+    # NOVA_HOME is read by nova/runtime/hermes/paths.py; the rest are the entrypoint's.
+    NOVA_HOME=/var/lib/nova/home \
+    NOVA_BUNDLE=/var/lib/nova/bundle \
+    NOVA_BIND_HOST=127.0.0.1 \
+    NOVA_BIND_PORT=8787 \
+    NOVA_LOG_FORMAT=json
+
+# No apt layer at all. The health check is written in Python rather than shelling out to
+# curl, so the image needs nothing Debian does not already ship — which also means no
+# package index is consulted at build time and no extra CVE surface is carried at runtime.
+#
+# tini is not needed either: the entrypoint execs the Python process, so it becomes PID 1
+# and receives SIGTERM directly. A container's PID 1 gets no default signal dispositions
+# from the kernel, so `nova serve` installs its own SIGTERM handler (nova/control/server.py,
+# `_install_shutdown_handlers`) — verified here, not assumed: without it `docker stop` sat
+# out the full grace period and exited 137.
+
+# Two pinned dependencies, both matching pyproject.toml.
+#
+# PyYAML is NOVA's only non-stdlib dependency. croniter is the runtime's: `cron.jobs`
+# imports it lazily and refuses weekday/time schedules ("every monday 9am") without it.
+# Leaving it out was a real defect caught in local validation — the Automations screen
+# rendered, the create route authorised, and then the schedule was rejected at the last
+# step. A control plane that offers a feature must carry what the feature needs.
+#
+# The secret mount is for building behind a TLS-intercepting corporate proxy: pass the
+# proxy's CA with `--build-arg`-free `--secret id=proxy_ca,src=/path/ca.crt` and pip will
+# trust it for this one step. It is mounted, not copied, so it never becomes a layer and
+# never ships in the image. Omitted on a normal build, and then pip uses its own bundle.
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -s /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
+    pip install --no-cache-dir "PyYAML==6.0.2" "croniter==6.0.0"
+
+WORKDIR /opt/nova
+
+# Only what the control plane reads. Copying the whole tree would pull in tests, the
+# frontend sources, evals and the Terraform — none of which belong in a runtime image,
+# and some of which (deploy/aws/*.tfvars) is exactly where a customer's values would sit.
+COPY nova/ /opt/nova/nova/
+COPY hermes_cli/ /opt/nova/hermes_cli/
+COPY cron/ /opt/nova/cron/
+COPY agent/ /opt/nova/agent/
+COPY tools/ /opt/nova/tools/
+COPY gateway/ /opt/nova/gateway/
+COPY plugins/ /opt/nova/plugins/
+COPY providers/ /opt/nova/providers/
+# The runtime's top-level modules. Enumerating the handful the control plane appears to
+# need was a mistake the first time — `hermes_state` imports `hermes_state_errors`, which
+# imports further siblings — and a partially-copied module root fails at runtime, not at
+# build time. The whole set is ~1.5 MB of source; copying it is cheaper than being wrong.
+COPY *.py /opt/nova/
+COPY deploy/docker/entrypoint.sh /usr/local/bin/nova-entrypoint
+COPY deploy/docker/healthcheck.py /usr/local/bin/nova-healthcheck
+
+# Non-root. The state directory is created here and chowned so a bind mount inherits a
+# usable owner on first boot; the AWS unit mounts an empty XFS volume over it.
+RUN useradd --system --create-home --uid 10001 nova \
+ && mkdir -p /var/lib/nova \
+ && chown -R nova:nova /var/lib/nova /opt/nova \
+ && chmod 0755 /usr/local/bin/nova-entrypoint /usr/local/bin/nova-healthcheck
+
+USER nova
+
+# Loopback by default. Binding anything else makes NOVA require a principals file AND
+# TLS (or an explicit statement that a TLS proxy terminates in front) — the control plane
+# refuses to expose a tenant's agents in cleartext, and this image does not weaken that.
+EXPOSE 8787
+
+VOLUME ["/var/lib/nova"]
+
+# Liveness only: /platform/v1/health is the one route that answers without a bundle being
+# healthy, so a failing health check means the process is down rather than that a tenant's
+# configuration is wrong.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/nova-healthcheck"]
+
+ENTRYPOINT ["/usr/local/bin/nova-entrypoint"]
+CMD ["serve"]

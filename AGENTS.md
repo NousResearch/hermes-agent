@@ -420,6 +420,7 @@ extract, not to regex around it.
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | Frontmatter, HARDLINE authoring standards, curator |
 | `cron/`, kanban (`hermes_cli/kanban*.py`, `tools/kanban_tools.py`, `plugins/kanban/`) | `cron/AGENTS.md` | Scheduler invariants, job fields, kanban board/dispatcher |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | Step-by-step adapter guide |
+|  `nova/`, `deploy/`, `docs/platform/` | `nova/AGENTS.md` | Platform layer boundaries: upstream-owned vs platform-owned, protected identifiers (never rename), branding as compiled config, control-plane boundary, core patch budget |
 
 Long-form background lives in `website/docs/developer-guide/` (agent-loop, prompt-assembly,
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,

@@ -664,6 +664,39 @@ def _open_configured(path: Path, under_lock) -> tuple[sqlite3.Connection, Any]:
     return conn, out
 
 
+_TENANT_BOUND = False
+
+
+def _bind_ambient_tenant() -> None:
+    """Adopt ``HERMES_TENANT`` as this process's tenant, once.
+
+    The dispatcher already exports the variable to every worker it spawns (see
+    ``_default_spawn``), so a worker inherits its boundary here with no new
+    plumbing: from its first kanban connection onwards every lookup, claim and
+    completion it attempts is scoped to the tenant that owns its task.
+
+    The dispatcher and the CLI do NOT have the variable set — they schedule and
+    administer across tenants — so they stay unscoped, which is what keeps
+    single-tenant installs unchanged.
+
+    Bound once per process: re-binding on every connect would stomp a narrower
+    scope that a caller established deliberately with ``kanban_tenant.use``.
+    """
+    global _TENANT_BOUND
+    if _TENANT_BOUND:
+        return
+    _TENANT_BOUND = True
+    try:
+        from hermes_cli import kanban_tenant
+
+        if kanban_tenant.current() is None:
+            kanban_tenant.from_env()
+    except Exception:
+        # A tenant we failed to bind must not stop the board from opening; the
+        # scope simply stays unset, which is the historical behaviour.
+        pass
+
+
 def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB. WAL is (re)enabled on
     every connection so a re-created file stays robust; the first connection
@@ -671,6 +704,7 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     ``_INITIALIZED_PATHS``. Path: explicit ``db_path``, else ``board``, else
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
+    _bind_ambient_tenant()
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     from agent.delegation_context import is_delegated_child_process_context
     if is_delegated_child_process_context():
@@ -832,6 +866,27 @@ def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
+def _create_index_if_columns(
+    conn: sqlite3.Connection, table: str, columns: tuple[str, ...], ddl: str
+) -> bool:
+    """Create an index only once every column it references exists.
+
+    Same rule the surrounding migration already follows for ``idx_tasks_tenant``
+    ("index after column"), but the newer indexes are composite and one of their
+    columns (``priority``) lives only in SCHEMA_SQL, never in the ALTER passes.
+    A very old board — see the #20842 fixtures — has ``tasks`` with four columns
+    and no ``task_runs`` at all, and a CREATE INDEX naming a missing column
+    aborts the whole migration for that board.
+    """
+    if not _table_exists(conn, table):
+        return False
+    have = _column_names(conn, table)
+    if not set(columns).issubset(have):
+        return False
+    conn.execute(ddl)
+    return True
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return conn.execute(
         f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'"
@@ -872,10 +927,63 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
 
+    # Idempotency is a UNIQUE constraint, not a lookup convention.
+    #
+    # Two separate defects lived in the old "SELECT by key, then INSERT" in
+    # create_task. It matched on the key ALONE, so two tenants using the same
+    # natural key ("nightly-export") collapsed onto one task — the second
+    # tenant's job never ran and it was handed a live id for the first
+    # tenant's card. And the SELECT ran outside the write transaction, which
+    # the code comment admitted would double-insert under a concurrent create.
+    #
+    # COALESCE(tenant,'') keeps untenanted boards in ONE namespace, preserving
+    # the historical global-dedupe behaviour there; a bare column index would
+    # make every NULL distinct (SQLite treats NULLs as unequal in UNIQUE) and
+    # silently stop deduplicating exactly where it used to work.
+    #
+    # Partial on status: archiving frees the key for reuse, which is what the
+    # old "AND status != 'archived'" lookup meant.
+    _create_index_if_columns(
+        conn, "tasks", ("tenant", "idempotency_key", "status"),
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idem_tenant_unique "
+        "ON tasks(COALESCE(tenant, ''), idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL AND status != 'archived'",
+    )
+    # Covering index for the tenant-fair dispatch scan: the scheduler groups
+    # claimable rows by tenant every tick, and without this that is a full scan
+    # of the board per tick on a busy multi-tenant deployment.
+    _create_index_if_columns(
+        conn, "tasks", ("status", "tenant", "priority", "created_at"),
+        "CREATE INDEX IF NOT EXISTS idx_tasks_tenant_dispatch "
+        "ON tasks(status, tenant, priority DESC, created_at)",
+    )
+
     # task_events.run_id back-fills as NULL for historical events (they predate
     # runs and can't be attributed).
     if "run_id" not in _column_names(conn, "task_events"):
         _add_column_if_missing(conn, "task_events", "run_id", "run_id INTEGER")
+
+    # Every child row carries its tenant. The requirement is that an execution,
+    # event, comment or artifact *carries* tenant_id — not that it can be
+    # recovered by joining back to tasks, which is a join no reader was doing
+    # and which breaks the moment a task is hard-deleted. Back-filled from the
+    # parent task below so existing boards are correct, not merely NULL.
+    for _child in ("task_runs", "task_events", "task_comments", "task_attachments"):
+        if _table_exists(conn, _child) and "tenant" not in _column_names(conn, _child):
+            _add_column_if_missing(conn, _child, "tenant", "tenant TEXT")
+            conn.execute(
+                f"UPDATE {_child} SET tenant = ("
+                f"  SELECT t.tenant FROM tasks t WHERE t.id = {_child}.task_id"
+                f") WHERE tenant IS NULL"
+            )
+    _create_index_if_columns(
+        conn, "task_runs", ("tenant", "status"),
+        "CREATE INDEX IF NOT EXISTS idx_runs_tenant ON task_runs(tenant, status)",
+    )
+    _create_index_if_columns(
+        conn, "task_events", ("tenant", "id"),
+        "CREATE INDEX IF NOT EXISTS idx_events_tenant ON task_events(tenant, id)",
+    )
 
     # Same ordering rule as the ``tasks`` indexes above: index after column.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_run ON task_events(run_id, id)")

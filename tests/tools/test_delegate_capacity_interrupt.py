@@ -101,7 +101,7 @@ def _batch(parent, *children):
         creds={"model": children[0].model}, context=None, top_role="leaf", max_children=len(children),
         live_deleg_id=None, live_writers=[], live_paths=[], origin_wake_sid="",
         origin_ui_session_id="", origin_owner_transport=None,
-        origin_owner_session_record=None, overall_start=time.monotonic(),
+        origin_owner_session_record=None, origin_session_history_delivery=False, overall_start=time.monotonic(),
     )
 
 

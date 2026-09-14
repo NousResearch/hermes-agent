@@ -375,19 +375,10 @@ def _dispatch_unit(unit: _Batch, unit_id: Optional[str], slot_key: Optional[str]
     )
 
 def _restore_parent_cancellation(unit: _Batch) -> None:
-    # Rejected children remain owned by the parent. Attach before replaying a
-    # cancellation that may have arrived while async admission had them detached.
-    parent = unit.parent_agent
+    """Rejected children stay owned by the parent: re-attach them (``_attach_child`` replays a stop that
+    arrived while async admission had them detached)."""
     for _, _, child in unit.children:
-        _attach_child(parent, child)
-    if getattr(parent, "_interrupt_requested", False) is True:
-        hard_stop = getattr(parent, "_hard_interrupt_requested", None)
-        for _, _, child in unit.children:
-            if hard_stop is not None and hard_stop.is_set():
-                _signal_child_stop(child, getattr(parent, "_interrupt_message", None))
-            else:
-                with _quiet("Failed to propagate interrupt to fallback child: %s"):
-                    child.interrupt(getattr(parent, "_interrupt_message", None))
+        _attach_child(unit.parent_agent, child)
 
 def _dispatch_background(batch: _Batch) -> str:
     """Dispatch the call as independent async units (see ``_units_of``) and return the tool result JSON. Every unit

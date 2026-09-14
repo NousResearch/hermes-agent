@@ -68,8 +68,16 @@ def _attach_child(parent_agent: Any, child: Any) -> None:
     so the whole spawn tree dies with its parent."""
     if hasattr(parent_agent, "_active_children"):
         _with_children_lock(parent_agent, "append", child)
-    if getattr(parent_agent, "_interrupt_requested", False) is True:
-        _signal_child_stop(child, getattr(parent_agent, "_interrupt_message", None) or "parent agent interrupted")
+    if getattr(parent_agent, "_interrupt_requested", False) is not True:
+        return
+    # Same soft/hard split as ``interrupt()``'s own fan-out: a hard stop cancels, a soft one redirects.
+    message = getattr(parent_agent, "_interrupt_message", None)
+    hard = getattr(parent_agent, "_hard_interrupt_requested", None)
+    if hard is None or hard.is_set():
+        _signal_child_stop(child, message or "parent agent interrupted")
+    else:
+        with _quiet("Failed to propagate interrupt to late child: %s"):
+            child.interrupt(message)
 
 def _detach_child(parent_agent: Any, child: Any) -> None:
     """Remove the child from parent interrupt propagation (no-op if absent)."""

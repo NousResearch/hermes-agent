@@ -351,10 +351,13 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             path = path.resolve()
         except OSError:
             continue
-        try:
-            path.relative_to(scratch_root.resolve())
-        except ValueError:
-            # Safety: never delete outside the scratch root.
+        # Safety: strict-descendant ownership only, via the workspace module's
+        # managed-scratch predicate (#28818). A bare ``relative_to`` containment
+        # also accepts ``path == root``, so an archived malformed/imported task
+        # whose workspace_path points at the scratch root itself would wipe every
+        # task's workspace; the predicate refuses roots and anything outside
+        # managed scratch storage.
+        if not kbw._is_managed_scratch_path(path):
             continue
         if path.exists() and path.is_dir():
             if _rmtree_force(path):

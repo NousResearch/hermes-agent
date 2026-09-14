@@ -1262,34 +1262,80 @@ def _snapshot_dirs(root: Path) -> List[Path]:
                          and not d.name.endswith(".partial"))
 
 
-def _snapshot_contains_db(snap_dir: Path, rel: str) -> bool:
-    """True when *snap_dir*'s manifest lists *rel* among its captured files."""
+def _snapshot_db_status(snap_dir: Path, rel: str) -> str:
+    """Status of *rel* inside snapshot *snap_dir*, verified against the file tree.
+
+    ``"verified"`` — a readable manifest lists *rel* AND the file is present as a
+    non-empty regular file. This is the only status that counts as a recovery
+    copy.
+
+    ``"opaque"`` — the manifest is missing/unreadable/corrupt JSON, so the
+    snapshot's contents cannot be proven either way. It must never be pruned on a
+    guess, but it also must never be *accepted* as a recovery copy (review on
+    #109586: a corrupt newer manifest used to shield itself while the real older
+    copy was deleted).
+
+    ``"absent"`` — the manifest is readable and the DB is not in it, or it is in
+    it but the file is missing/empty (a lying manifest). Nothing to protect.
+    """
     try:
         with open(snap_dir / "manifest.json", encoding="utf-8") as f:
-            return rel in (json.load(f).get("files") or {})
+            files = json.load(f).get("files") or {}
     except (OSError, json.JSONDecodeError):
-        # Unreadable manifest: treat as containing the DB so it is never pruned
-        # on a guess (fail-safe toward keeping recovery sources).
-        return True
+        return "opaque"
+    if rel not in files:
+        return "absent"
+    candidate = snap_dir / rel
+    try:
+        if not candidate.is_file() or candidate.stat().st_size <= 0:
+            return "absent"
+        # In-tree only: a symlink pointing outside the snapshot dir is not a
+        # self-contained recovery copy (the review asked for a verified
+        # regular/readable in-tree file).
+        if not candidate.resolve().is_relative_to(snap_dir.resolve()):
+            return "absent"
+    except OSError:
+        return "absent"
+    return "verified"
 
 
 def _prune_quick_snapshots_window(root: Path, keep: int, oversized_rels: list) -> int:
     """Prune snapshots past the *keep* window, protecting recovery copies.
 
     For every DB rel skipped for size in the newest snapshot, the newest snapshot
-    that still captured it is never pruned — it holds the only recoverable copy
-    (#68805). Everything else past the window goes, so a persistently oversized
-    state.db can no longer pin the whole snapshot history.
+    that VERIFIABLY still holds it is never pruned — it holds the only recoverable
+    copy (#68805). Snapshots with unreadable manifests are opaque: preserved, and
+    the search continues past them for a verifiable copy. When no snapshot
+    verifiably holds a skipped DB at all, pruning aborts entirely rather than
+    deleting snapshots on a guess (review on #109586). Everything else past the
+    window goes, so a persistently oversized state.db can no longer pin the whole
+    snapshot history.
     """
     snaps = _snapshot_dirs(root)
     if len(snaps) <= keep:
         return 0
-    protected = set()
+    verified = set()
+    opaque = set()
     for rel in oversized_rels:
+        found_verified = False
         for d in snaps:  # newest first
-            if _snapshot_contains_db(d, rel):
-                protected.add(d)
+            status = _snapshot_db_status(d, rel)
+            if status == "verified":
+                verified.add(d)
+                found_verified = True
                 break
+            if status == "opaque":
+                opaque.add(d)  # preserve; keep looking for a verifiable copy
+        if not found_verified:
+            # No snapshot verifiably holds this skipped DB. The only possible
+            # recovery copy lives inside an opaque snapshot, and deleting past
+            # the keep window could destroy it — abort pruning entirely.
+            logger.warning(
+                "Skipping snapshot prune: no snapshot verifiably holds oversized "
+                "DB %s (unreadable/corrupt manifests) — preserving every snapshot",
+                rel)
+            return 0
+    protected = verified | opaque
     deleted = 0
     for p in snaps[keep:]:  # oldest tail beyond the window
         if p in protected:

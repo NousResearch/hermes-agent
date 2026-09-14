@@ -15,7 +15,7 @@ import { useSessionLinkTitle } from '@/lib/session-link-title'
 import { parseSessionRefValue, sessionRefFallbackLabel } from '@/lib/session-refs'
 import { cn } from '@/lib/utils'
 
-import { referenceKind, referenceRe, referenceStyle, WIRE_REFERENCE_KINDS } from './reference-kinds'
+import { referenceKind, referenceRe, referenceStyle, unwrapReferenceValue, WIRE_REFERENCE_KINDS } from './reference-kinds'
 
 const HERMES_REF_TYPES = WIRE_REFERENCE_KINDS
 type HermesRefType = (typeof HERMES_REF_TYPES)[number]
@@ -137,23 +137,6 @@ const HERMES_DIRECTIVE_RE = referenceRe()
 // something other than another slash.
 const SLASH_SKILL_RE = /(?<=^|\s)\/([a-zA-Z][\w-]*)(?![\w-]*\/)/g
 
-const TRAILING_PUNCTUATION_RE = /[,.;!?]+$/
-
-function unwrapRefValue(raw: string): string {
-  if (raw.length < 2) {
-    return raw
-  }
-
-  const head = raw[0]
-  const tail = raw[raw.length - 1]
-
-  if ((head === '`' && tail === '`') || (head === '"' && tail === '"') || (head === "'" && tail === "'")) {
-    return raw.slice(1, -1)
-  }
-
-  return raw.replace(TRAILING_PUNCTUATION_RE, '')
-}
-
 function needsQuoting(value: string): boolean {
   return /[\s()[\]{}<>"'`]/.test(value)
 }
@@ -235,7 +218,7 @@ function parseDirectiveText(text: string): Unstable_DirectiveSegment[] {
       id: match[3] || match[2] || ''
     })),
     ...Array.from(text.matchAll(HERMES_DIRECTIVE_RE)).map(match => {
-      const id = unwrapRefValue(match[2] || '')
+      const id = unwrapReferenceValue(match[2] || '')
 
       return {
         start: match.index ?? 0,

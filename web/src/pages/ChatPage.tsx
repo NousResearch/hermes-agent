@@ -840,7 +840,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     // Dashboard chat should scroll the browser-side transcript, not send
     // mouse-wheel protocol bytes through the PTY.
+    const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+    let lastTouchScrollAt = 0;
     term.attachCustomWheelEventHandler((ev) => {
+      // Safari synthesizes a wheel event from the same finger pan. Let the
+      // touch bridge own coarse pointers so one gesture cannot scroll twice.
+      if (coarsePointer || Date.now() - lastTouchScrollAt < 450) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        return false;
+      }
       const delta = ev.deltaY;
       if (!delta) {
         return false;
@@ -950,8 +959,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // single touch into scrollback rows locally; taps still reach the helper
     // textarea and multi-touch gestures remain browser-owned.
     let touchScroll: TouchScrollState | null = null;
+    let touchOriginY: number | null = null;
+    let touchPanning = false;
+    let suppressClickAfterPan = false;
     const resetTouchScroll = () => {
       touchScroll = null;
+      touchOriginY = null;
+      touchPanning = false;
     };
     const handleTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) {
@@ -959,9 +973,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       touchScroll = { lastY: event.touches[0].clientY, remainderPx: 0 };
+      touchOriginY = event.touches[0].clientY;
     };
     const handleTouchMove = (event: TouchEvent) => {
-      if (!touchScroll || event.touches.length !== 1) return;
+      if (!touchScroll || touchOriginY === null || event.touches.length !== 1) return;
+      if (!touchPanning && Math.abs(touchOriginY - event.touches[0].clientY) < 8) {
+        return;
+      }
+      touchPanning = true;
       const fontSize = Number(term.options.fontSize) || 14;
       const lineHeight = Number(term.options.lineHeight) || 1;
       const step = advanceTouchScroll(
@@ -970,13 +989,28 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         fontSize * lineHeight,
       );
       touchScroll = step.state;
-      if (step.lines) term.scrollLines(step.lines);
+      if (step.lines) {
+        term.scrollLines(step.lines);
+        lastTouchScrollAt = Date.now();
+      }
       event.preventDefault();
+      event.stopPropagation();
     };
-    host.addEventListener("touchstart", handleTouchStart, { passive: true });
-    host.addEventListener("touchmove", handleTouchMove, { passive: false });
-    host.addEventListener("touchend", resetTouchScroll, { passive: true });
-    host.addEventListener("touchcancel", resetTouchScroll, { passive: true });
+    const handleTouchEnd = () => {
+      if (touchPanning) suppressClickAfterPan = true;
+      resetTouchScroll();
+    };
+    const suppressPanClick = (event: Event) => {
+      if (!suppressClickAfterPan) return;
+      suppressClickAfterPan = false;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    host.addEventListener("touchstart", handleTouchStart, { passive: true, capture: true });
+    host.addEventListener("touchmove", handleTouchMove, { passive: false, capture: true });
+    host.addEventListener("touchend", handleTouchEnd, { passive: true, capture: true });
+    host.addEventListener("touchcancel", handleTouchEnd, { passive: true, capture: true });
+    host.addEventListener("click", suppressPanClick, true);
 
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
@@ -1602,10 +1636,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       host.removeEventListener("paste", handleBrowserPaste, true);
       host.removeEventListener("dragover", handleBrowserDragOver, true);
       host.removeEventListener("drop", handleBrowserDrop, true);
-      host.removeEventListener("touchstart", handleTouchStart);
-      host.removeEventListener("touchmove", handleTouchMove);
-      host.removeEventListener("touchend", resetTouchScroll);
-      host.removeEventListener("touchcancel", resetTouchScroll);
+      host.removeEventListener("touchstart", handleTouchStart, true);
+      host.removeEventListener("touchmove", handleTouchMove, true);
+      host.removeEventListener("touchend", handleTouchEnd, true);
+      host.removeEventListener("touchcancel", handleTouchEnd, true);
+      host.removeEventListener("click", suppressPanClick, true);
       if (metricsDebounce) clearTimeout(metricsDebounce);
       window.removeEventListener("resize", scheduleSyncTerminalMetrics);
       keyboardInsetSyncRef.current = null;
@@ -1938,7 +1973,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           {narrow && keyboardInsetPx > 0 && (
             <div
               aria-label="Terminal keyboard controls"
-              className="absolute inset-x-2 z-20 flex h-9 items-center justify-center gap-1 rounded border border-white/20 bg-black/90 px-1 shadow-lg"
+              className="absolute inset-x-2 z-20 flex h-9 items-center justify-start gap-1 overflow-x-auto rounded border border-white/20 bg-black/90 px-1 shadow-lg"
               style={{ bottom: keyboardInsetPx + 4, color: terminalFg }}
             >
               <Button ghost size="sm" onPointerDown={preserveTerminalFocus} onClick={pasteIntoTerminal}>

@@ -29,14 +29,36 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 
-def _launch_cwd_for_session(source: str) -> Optional[str]:
-    """cwd to stamp on a new session row (``hermes -c`` / ``--resume``), or None.
+# Sources whose process cwd IS the session's real host working directory. A local
+# CLI session runs in the user's shell cwd; a kanban worker is spawned by the
+# dispatcher with ``cwd=<card workspace>`` (``hermes_cli/kanban_db_dispatch.py``),
+# so ``os.getcwd()`` is exactly the workspace the card's work happens in — and the
+# value cwd-based attribution (e.g. session→project grouping) needs.
+_CWD_RECORDING_SOURCES = frozenset({"cli", "kanban"})
 
-    Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
-    stable host cwd for the agent's tools.
+
+def _launch_cwd_for_session(source: str) -> Optional[str]:
+    """cwd to stamp on a new session row, or None.
+
+    Only sources with a stable host cwd record one: ``cli`` (the user's shell) and ``kanban`` (the card
+    workspace the dispatcher launched the worker in). Gateway/cron/remote backends (non-"local"
+    ``TERMINAL_ENV``) have no stable host cwd for the agent's tools.
     """
-    if source != "cli" or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in _CWD_RECORDING_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
         return None
+    if source == "kanban":
+        # The dispatcher launches workers with ``cwd=workspace if os.path.isdir(workspace) else
+        # None`` (hermes_cli/kanban_db_dispatch.py). When the workspace dir is missing at spawn,
+        # the worker inherits the DISPATCHER's cwd, and stamping os.getcwd() would silently
+        # attribute the session to the gateway's directory. The worker knows the real workspace
+        # from HERMES_KANBAN_WORKSPACE: stamp that when it exists, nothing otherwise.
+        workspace = (os.environ.get("HERMES_KANBAN_WORKSPACE") or "").strip()
+        if not workspace:
+            return None
+        try:
+            return workspace if os.path.isdir(workspace) else None
+        except OSError:
+            return None
     try:
         return os.getcwd()
     except OSError:  # cwd was unlinked out from under us

@@ -393,66 +393,72 @@ with a `handler(draft) => draft | null`).
 
 ### Native chat inside your surface
 
-A plugin surface that needs a real conversation — not a preview of one, and not a
-second chat client — embeds the app's own chat: the same transcript, composer,
-streaming, tools and approval flow as the primary chat and session tiles. Create
-the session on one exact profile route, then render it:
+A plugin surface that needs a real conversation — not a preview of one, and not
+a second chat client — embeds the app's own chat: the same transcript, composer,
+streaming, tools and approval flow as the primary chat and session tiles. The
+caller picks its OWN exact registry route (one row of
+`host.profileRoutes()`) and the plugin keys the conversation by route + subject,
+then renders it:
 
 ```javascript
-import { host, NativeChatPanel } from '@hermes/plugin-sdk'
+import * as sdk from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 import { jsx } from 'react/jsx-runtime'
 
-const ID = 'mail-chat'
+const ID = 'companion-chat'
+// The plugin's own subject: one row of host.profileRoutes() plus the thing
+// this surface is about (a mail thread, a doc, …). Set it when it changes.
+const $subject = sdk.atom(null)
 
-function MailChat({ ctx, threadId }) {
+function CompanionChat({ ctx, route, threadId }) {
   const [binding, setBinding] = useState(null)
+  // One conversation per EXACT route + thread: connectionId + profile +
+  // targetProfile, never an ambient/partial route.
+  const key = [route.connectionId, route.profile, route.targetProfile, threadId].join(':')
 
   useEffect(() => {
     let live = true
 
     void (async () => {
-      // YOUR route from the registry — connectionId + mode + profile +
-      // targetProfile are all required, so an ambient/partial route can't slip in.
-      const route = (await host.profileRoutes()).find(r => r.profile === 'Internal')
-
-      if (!route) {
-        return
-      }
-
-      // Resume the conversation this thread already owns, else open one.
-      // Persist the whole binding: only storedSessionId is durable across a
-      // Desktop/backend restart, and a stale runtimeSessionId just re-resumes.
-      const stored = await ctx.storage.get(`binding:${threadId}`)
-      const created = stored ?? (await host.createNativeChatSession({ route }))
+      // Resume this subject's conversation, else open one. Persist the WHOLE
+      // binding: only storedSessionId is durable across a restart, and a stale
+      // runtimeSessionId just re-resumes.
+      const stored = await ctx.storage.get(key)
+      const next = stored ?? (await sdk.host.createNativeChatSession({ route }))
 
       if (!stored) {
-        await ctx.storage.set(`binding:${threadId}`, created)
+        await ctx.storage.set(key, next)
       }
 
       if (live) {
-        setBinding(created)
+        setBinding(next)
       }
     })()
 
     return () => {
       live = false
     }
-  }, [ctx, threadId])
+  }, [ctx, key, route])
 
-  return binding ? jsx(NativeChatPanel, { binding, className: 'h-full' }) : null
+  if (!binding) {
+    return null
+  }
+
+  // Keyed by the exact binding: switching thread (or route) remounts the
+  // panel and drops the previous conversation's component state.
+  return jsx(sdk.NativeChatPanel, { binding, className: 'h-full', key })
 }
 
 export default {
   id: ID,
-  name: 'Mail Chat',
+  name: 'Companion Chat',
   register(ctx) {
     ctx.register({
       id: 'chat',
       area: 'panes',
-      title: 'Mail',
+      title: 'Companion',
       data: { placement: 'right', width: '380px' },
-      render: () => jsx(MailChat, { ctx, threadId: 'thread-42' })
+      render: () => jsx(CompanionPane, { ctx })
     })
   }
 }
@@ -473,13 +479,12 @@ What the pair guarantees:
   the Hub, selects the session, opens a workspace tab, or changes which session
   is globally focused — it is an ordinary session surface that happens to live
   in your UI. Increment `focusRequest` to focus **its own** composer.
-- **Drafts and unsent attachments survive** a close/reopen of your panel, and
-  the route lease is held until the conversation has a durable row. Unmounting
-  the panel releases both the lease and its foreground keep-alive.
-- **Feature-detect older desktops:**
-  `typeof host.createNativeChatSession === 'function'` (the `NativeChatPanel`
-  export ships alongside it); fall back to a regular pane plus
-  `host.newChat()` when absent.
+- **Feature-detect older desktops before touching either door:** the module
+  namespace (`sdk.NativeChatPanel`, `sdk.host.createNativeChatSession`), then
+  fall back to a regular pane plus `host.newChat()` when they're absent.
+- **Drafts and unsent attachments survive** a close/reopen of your panel: the
+  creation lease is held (bounded) until the conversation's first durable
+  message row, and the foreground keep-alive is released on unmount.
 
 `composer.middleware` handlers and `composer.attachments` providers also
 receive the exact invoking surface — an optional

@@ -5,11 +5,22 @@ import { useViewedInterval } from '@/hooks/use-viewed-interval'
 // Module-level registry so timers survive component unmount/remount (e.g.
 // when a tool row scrolls out and back). Keyed by caller-supplied timerKey;
 // anonymous timers (no key) start fresh each mount.
+const MAX_TIMER_REGISTRY_SIZE = 500
+
 const startedAtByKey = new Map<string, number>()
 
 // Durations of things that have already finished, kept beside the origins that
 // measured them. See `useMeasuredDuration`.
 const durationByKey = new Map<string, number>()
+
+function evictOldestIfNeeded(map: Map<string, unknown>) {
+  while (map.size > MAX_TIMER_REGISTRY_SIZE) {
+    const oldest = map.keys().next().value as string | undefined
+
+    if (oldest === undefined) {break}
+    map.delete(oldest)
+  }
+}
 
 function startedAt(key?: string): number {
   if (!key) {
@@ -24,6 +35,7 @@ function startedAt(key?: string): number {
 
   const now = Date.now()
   startedAtByKey.set(key, now)
+  evictOldestIfNeeded(startedAtByKey)
 
   return now
 }
@@ -102,6 +114,7 @@ export function useMeasuredDuration(active: boolean, timerKey: string): null | n
 
       setWatching(false)
       durationByKey.set(timerKey, finalElapsed)
+      evictOldestIfNeeded(durationByKey)
       setMeasured(finalElapsed)
     }
   }, [active, elapsed, timerKey, watching])

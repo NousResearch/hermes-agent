@@ -2590,6 +2590,7 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
 // installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
 // (covers a bare `hermes` resolved from PATH with no known source root). Result
 // is cached per resolved runtime so we probe at most once per backend.
+const SERVE_SUPPORT_CACHE_LIMIT = 50
 const _serveSupportCache = new Map()
 
 function backendSupportsServe(backend) {
@@ -2642,6 +2643,13 @@ function backendSupportsServe(backend) {
   }
 
   _serveSupportCache.set(key, supported)
+
+  if (_serveSupportCache.size > SERVE_SUPPORT_CACHE_LIMIT) {
+    const oldest2 = _serveSupportCache.keys().next().value as string | undefined
+
+    if (oldest2 !== undefined) {_serveSupportCache.delete(oldest2)}
+  }
+
   rememberLog(
     `[backend] \`serve\` ${supported ? 'supported' : 'unsupported → routing via legacy `dashboard`'} for ${backend.label || key}`
   )
@@ -5776,6 +5784,7 @@ const RENDER_TITLE_BLOCKED_RESOURCES = new Set([
 let linkTitleSession = null
 let oauthSession = null
 let renderTitleInFlight = 0
+const RENDER_TITLE_QUEUE_LIMIT = 100
 const renderTitleQueue = []
 
 function canonicalTitleCacheKey(rawUrl) {
@@ -5983,6 +5992,11 @@ function runRenderTitleJob(rawUrl) {
 
 function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
   return new Promise(resolve => {
+    if (renderTitleQueue.length >= RENDER_TITLE_QUEUE_LIMIT) {
+      const dropped = renderTitleQueue.shift()
+      dropped?.resolve(null)
+    }
+
     renderTitleQueue.push({ resolve, url: rawUrl })
     dequeueRenderTitle()
   })
@@ -6537,6 +6551,7 @@ function watchDirectory(rawDir) {
 // a password-provider gateway (which cannot satisfy the bearer/cookie checks
 // by design) from a real OAuth one. Any failure returns [] so callers keep the
 // strict guard — backends predating /api/auth/providers are unaffected.
+const GATEWAY_AUTH_PROVIDERS_CACHE_LIMIT = 50
 const gatewayAuthProvidersCache = new Map<string, any[]>()
 
 async function gatewayAuthProviders(baseUrl, headers = {}) {
@@ -6562,6 +6577,12 @@ async function gatewayAuthProviders(baseUrl, headers = {}) {
     }
 
     gatewayAuthProvidersCache.set(baseUrl, providers)
+
+    if (gatewayAuthProvidersCache.size > GATEWAY_AUTH_PROVIDERS_CACHE_LIMIT) {
+      const oldest3 = gatewayAuthProvidersCache.keys().next().value as string | undefined
+
+      if (oldest3 !== undefined) {gatewayAuthProvidersCache.delete(oldest3)}
+    }
   } catch {
     // Optional metadata — an unreadable list keeps the strict guard.
   }
@@ -7938,6 +7959,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 
 // In-memory cache of decrypted native tokens, keyed by normalized base URL.
 // Backed by the encrypted on-disk store so it survives restarts.
+const NATIVE_TOKENS_CACHE_LIMIT = 50
 const _nativeTokens = new Map<string, NativeTokenSet>()
 
 function _nativeTokenStorePath() {
@@ -7978,6 +8000,12 @@ function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
 
   if (tokens) {
     _nativeTokens.set(baseUrl, tokens)
+
+    if (_nativeTokens.size > NATIVE_TOKENS_CACHE_LIMIT) {
+      const oldest = _nativeTokens.keys().next().value as string | undefined
+
+      if (oldest !== undefined) {_nativeTokens.delete(oldest)}
+    }
   }
 
   return tokens
@@ -7986,6 +8014,12 @@ function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
 function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
   _persistNativeTokens(baseUrl, tokens)
   _nativeTokens.set(baseUrl, tokens)
+
+  if (_nativeTokens.size > NATIVE_TOKENS_CACHE_LIMIT) {
+    const oldest = _nativeTokens.keys().next().value as string | undefined
+
+    if (oldest !== undefined) {_nativeTokens.delete(oldest)}
+  }
 }
 
 function _clearNativeTokens(baseUrl: string) {

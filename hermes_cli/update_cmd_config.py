@@ -16,12 +16,14 @@ def _reload_config_modules() -> None:
     """Force-reload config modules after git pull: the updater is the PRE-pull process, so the
     cached modules hold OLD code and ``check_config_version()`` would report "up to date" despite a
     pulled migration. ``_subprocess_compat`` / ``dashboard_procs`` reload too so the later dashboard
-    cleanup sees symbols the update added."""
+    cleanup sees symbols the update added. ``tools_config`` reloads as well: migrations import its
+    helpers at call time (``_migrate_to_45`` needs ``_configurable_keys``), and a pre-pull cache
+    lacks symbols the pull added (#111271)."""
     import importlib
     importlib.invalidate_caches()
     for mod_name in (
-        "hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations",
-        "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
+        "hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.tools_config",
+        "hermes_cli.config_migrations", "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
         mod = sys.modules.get(mod_name)
         if mod is not None:
             try:

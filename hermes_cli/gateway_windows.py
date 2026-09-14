@@ -324,8 +324,25 @@ def _build_gateway_cmd_script(python_path: str, working_dir: str, hermes_home: s
     return "\r\n".join(lines) + "\r\n"
 
 
-def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: str, profile_arg: str) -> str:
+def _build_gateway_vbs_script(
+    python_path: str,
+    working_dir: str,
+    hermes_home: str,
+    profile_arg: str,
+    *,
+    max_failures: int = 5,
+    stable_run_seconds: int = 300,
+    restart_base_delay_ms: int = 60_000,
+    restart_max_delay_ms: int = 900_000,
+) -> str:
     """Build the hidden-console ``gateway.vbs`` launcher (CRLF-terminated).
+
+    The launcher is the primary crash supervisor: Task Scheduler reliably
+    starts it at login but does not consistently re-run an action that started
+    successfully and later returned non-zero.  A clean child exit (the normal
+    ``gateway stop`` path) exits immediately; rapid failures get bounded
+    exponential retries.  A child that stayed alive for ``stable_run_seconds``
+    starts a fresh failure window, so an isolated crash remains recoverable.
 
     Run via ``wscript.exe``, not ``cmd.exe``: at logon Windows broadcasts CTRL_CLOSE_EVENT to console
     groups, killing a cmd-hosted gateway with STATUS_CONTROL_C_EXIT, which Task Scheduler treats as a
@@ -341,15 +358,16 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
     No cmd.exe anywhere in the chain. Mirrors ``_build_gateway_cmd_script`` (same env + argv via
     ``_resolve_detached_python``).
     """
+    if min(max_failures, stable_run_seconds, restart_base_delay_ms, restart_max_delay_ms) <= 0:
+        raise ValueError("gateway launcher retry settings must be positive")
     python_exe_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
-    # list2cmdline gives CreateProcess-correct quoting for WScript.Shell.Run.
     command_line = subprocess.list2cmdline(_gateway_run_argv(python_exe_path, profile_arg))
     static_pythonpath = os.pathsep.join(_launcher_pythonpath_entries(extra_pythonpath))
     q = _quote_vbs_string
     lines = [
         f"' {_TASK_DESCRIPTION}",
         "Option Explicit",
-        "Dim sh, env, existing_pp, result",
+        "Dim sh, env, existing_pp, result, failures, started_at, ran_seconds, delay_ms",
         'Set sh = CreateObject("WScript.Shell")',
         'Set env = sh.Environment("PROCESS")',
         f"env.Item({q('HERMES_HOME')}) = {q(hermes_home)}",
@@ -363,9 +381,22 @@ def _build_gateway_vbs_script(python_path: str, working_dir: str, hermes_home: s
         f"  env.Item({q('PYTHONPATH')}) = {q(static_pythonpath)}",
         "End If",
         f"sh.CurrentDirectory = {q(working_dir)}",
-        # Keep wscript alive and propagate the child exit to RestartOnFailure.
-        f"result = sh.Run({q(command_line)}, 0, True)",
-        "WScript.Quit result",
+        "failures = 0",
+        "Do",
+        "  started_at = Now",
+        f"  result = sh.Run({q(command_line)}, 0, True)",
+        "  If result = 0 Then WScript.Quit 0",
+        '  ran_seconds = DateDiff("s", started_at, Now)',
+        f"  If ran_seconds >= {int(stable_run_seconds)} Then",
+        "    failures = 1",
+        "  Else",
+        "    failures = failures + 1",
+        "  End If",
+        f"  If failures >= {int(max_failures)} Then WScript.Quit result",
+        f"  delay_ms = {int(restart_base_delay_ms)} * (2 ^ (failures - 1))",
+        f"  If delay_ms > {int(restart_max_delay_ms)} Then delay_ms = {int(restart_max_delay_ms)}",
+        "  WScript.Sleep CLng(delay_ms)",
+        "Loop",
     ]
     return "\r\n".join(lines) + "\r\n"
 

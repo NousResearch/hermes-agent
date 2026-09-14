@@ -248,6 +248,9 @@ def _build_child_agent(
                 tool_progress_callback=child_progress_cb,
                 iteration_budget=None,  # fresh budget per subagent
             )
+            # Purpose is Plugin-owned admission metadata, but it must exist
+            # before the child's first tool resolution.
+            child._delegate_purpose = delegation_purpose
         except BaseException:
             # No child close() will ever run: release the dedicated handle here.
             if child_session_db is not None:
@@ -267,7 +270,6 @@ def _build_child_agent(
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     child._delegate_task_index = task_index
     child._delegate_parent_tool_call_id = parent_tool_call_id
-    child._delegate_purpose = delegation_purpose
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.

@@ -408,29 +408,31 @@ class TestFalsePositiveReductions:
     """Patterns that previously flagged benign, intrinsic skill content."""
 
     def test_markdown_link_destination_is_not_path_traversal(self, tmp_path):
+        # #110974: a 3-level relative doc link in a README is documentation structure, not
+        # filesystem access, yet it scored `high` and hard-blocked community installs.
         skill_dir = tmp_path / "linked-skill"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("# Linked skill\n", encoding="utf-8")
-        readme = skill_dir / "README.md"
-        readme.write_text(
-            "See the [repository guide](../../../docs/guide.md).\n",
-            encoding="utf-8",
-        )
+        (skill_dir / "README.md").write_text(
+            "See the [repository guide](../../../docs/guide.md).\n", encoding="utf-8")
         result = scan_skill(skill_dir, source="community")
 
         assert result.verdict == "safe"
         assert should_allow_install(result)[0] is True
         assert not any(finding.category == "traversal" for finding in result.findings)
 
-        script = skill_dir / "read.py"
-        script.write_text(
-            "data = Path('../../../outside.txt').read_text()\n",
-            encoding="utf-8",
-        )
+    def test_path_traversal_outside_markdown_links_still_fires(self, tmp_path):
+        # Only the link destination is exempt: a traversal in a script, or in prose on the
+        # same line as a link, must still be reported.
+        script = tmp_path / "install.sh"
+        script.write_text("source ../../../shared/install.sh\n", encoding="utf-8")
+        readme = tmp_path / "README.md"
+        readme.write_text(
+            "See [guide](../../../docs/guide.md) then run `cat ../../../etc/passwd`\n",
+            encoding="utf-8")
 
-        assert any(
-            finding.pattern_id == "path_traversal_deep" for finding in scan_file(script, "read.py")
-        )
+        for path in (script, readme):
+            assert any(f.pattern_id == "path_traversal_deep" for f in scan_file(path, path.name)), path.name
 
     def test_cat_write_heredoc_is_not_a_secrets_read(self, tmp_path):
         # Setup doc telling the user to write their OWN keys into their OWN

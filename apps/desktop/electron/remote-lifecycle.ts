@@ -1237,43 +1237,37 @@ async function spawnRemoteDashboard(
     throw error
   }
 
-  let out
+  // Close the marker race after the token-file write and immediately before
+  // process creation. The caller's probe imports no changing checkout code.
+  await assertInstallClear()
 
-  try {
-    // Close the marker race after the token-file write and immediately before
-    // process creation. The caller's probe imports no changing checkout code.
-    await assertInstallClear()
-    out = await ssh.exec(
-      buildSpawnCommand(hermesPath, profile, {
-        spawnNonce,
-        tokenFilePath,
-        logPath,
-        hermesHome,
-        guestOnboarding,
+  // The exec result can be lost after the detached serve has started. From
+  // here the token file belongs to the child named by the lockfile; deleting
+  // it on an unknown outcome would cause an authentication mismatch. A
+  // pre-spawn failure leaves only a nonce-scoped file, which expires in an hour.
+  const out = await ssh.exec(
+    buildSpawnCommand(hermesPath, profile, {
+      spawnNonce,
+      tokenFilePath,
+      logPath,
+      hermesHome,
+      guestOnboarding,
+      ownershipId,
+      reservationNonce: spawnNonce,
+      lockMetadata: {
         ownershipId,
-        reservationNonce: spawnNonce,
-        lockMetadata: {
-          ownershipId,
-          spawnNonce,
-          port: 0,
-          profile,
-          hermesPath,
-          hermesHome,
-          logPath,
-          tokenFingerprint: fingerprintToken(token),
-          protocolVersion: PROTOCOL_VERSION,
-          startedAt: new Date().toISOString()
-        }
-      })
-    )
-  } catch (error) {
-    // The exec result can be lost after the detached serve has started. At
-    // that point the token file belongs to the child named by the lockfile;
-    // deleting it turns a recoverable unknown outcome into an authentication
-    // mismatch. A pre-spawn failure leaves only this nonce-scoped file, which
-    // the upload path expires after one hour.
-    throw error
-  }
+        spawnNonce,
+        port: 0,
+        profile,
+        hermesPath,
+        hermesHome,
+        logPath,
+        tokenFingerprint: fingerprintToken(token),
+        protocolVersion: PROTOCOL_VERSION,
+        startedAt: new Date().toISOString()
+      }
+    })
+  )
 
   const outputLines = String(out || '')
     .trim()

@@ -1533,6 +1533,7 @@ test('spawnRemoteDashboard removes a token file when upload reporting fails', as
 
 test('spawnRemoteDashboard preserves the token when spawn reporting fails', async () => {
   const failure = new Error('channel timed out after remote spawn')
+
   const ssh = fakeSsh([
     [/grep -q ssh-session-token-file/, 'YES\n'],
     [/python3 -c/, ''],

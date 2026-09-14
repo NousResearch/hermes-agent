@@ -5,14 +5,16 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from stat import S_ISREG
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Final, List, Optional, Sequence, Tuple
 
 from hermes_state_ids import new_session_id
 
@@ -25,6 +27,11 @@ _WRAPPER_TAG_RE = re.compile(
 _TITLE_MAX = 60
 _SOURCE_LABELS = {"claude": "Claude Code", "codex": "Codex CLI"}
 _SOURCE_DB_NAMES = {"claude": "claude-code", "codex": "codex-cli"}
+
+# Persisted with source evidence so readers can distinguish estimates from observed time.
+_IMPORT_TIMESTAMP_POLICY: Final[str] = (
+    "earliest merged event; missing uses preceding/first known, else import time"
+)
 
 
 @dataclass
@@ -80,23 +87,53 @@ def _flatten_blocks(content: Any) -> str:
     return "\n\n".join(p for p in (_block_text(b).strip() for b in content) if p)
 
 
-def _merge_turns(raw_turns: List[Tuple[str, str]]) -> List[Dict[str, str]]:
+def _merge_turns(
+    raw_turns: List[Tuple[str, str]],
+    timestamps: Sequence[Any] = (),
+    ranges: Optional[List[List[Optional[float]]]] = None,
+) -> List[Dict[str, str]]:
     """Merge consecutive same-role turns; guarantee strict alternation.
 
     A leading assistant turn (session began before the log window) gets a minimal user stub so the
     first message is always ``user``; this is the only place a stub is ever inserted.
+    When collecting ranges, the caller supplies one raw timestamp per input turn.
     """
     merged: List[Dict[str, str]] = []
-    for role, text in raw_turns:
+    for index, (role, text) in enumerate(raw_turns):
         if not (text := text.strip()):
             continue
         if merged and merged[-1]["role"] == role:
             merged[-1]["content"] += "\n\n" + text
         else:
             merged.append({"role": role, "content": text})
+            if ranges is not None:
+                ranges.append([])
+        if ranges is not None:
+            ranges[-1].append(_source_timestamp(timestamps[index]))
     if merged and merged[0]["role"] == "assistant":
         merged.insert(0, {"role": "user", "content": "(imported conversation begins with an assistant reply)"})
+        if ranges is not None:
+            ranges.insert(0, [])  # Synthetic context has no source event time.
     return merged
+
+
+def _source_timestamp(value: Any) -> Optional[float]:
+    """Accept epoch seconds or timezone-qualified ISO dates; never assume the importing host's zone."""
+    if isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            result = float(value)
+        elif isinstance(value, str):
+            date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if date.tzinfo is None:
+                return None
+            result = date.timestamp()
+        else:
+            return None
+        return result if math.isfinite(result) else None
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def _message_turn(message: Any) -> Optional[Tuple[str, str]]:
@@ -116,14 +153,17 @@ def _first_user_line(turns: List[Tuple[str, str]]) -> Optional[str]:
 
 
 def _parsed(turns: List[Tuple[str, str]], cwd: Optional[str], session_id: Optional[str],
-            title: Optional[str] = None) -> Dict[str, Any]:
-    return {"turns": _merge_turns(turns), "cwd": cwd, "title_guess": title or _first_user_line(turns),
+            title: Optional[str] = None, timestamps: Optional[List[Any]] = None) -> Dict[str, Any]:
+    ranges: List[List[Optional[float]]] = []
+    merged = _merge_turns(turns, timestamps if timestamps is not None else [None] * len(turns), ranges)
+    return {"turns": merged, "source_timestamps": ranges, "cwd": cwd, "title_guess": title or _first_user_line(turns),
             "session_id": session_id}
 
 
 def parse_claude_session(path: Path) -> Dict[str, Any]:
     """Parse one Claude Code session JSONL into normalized turns + meta."""
     turns: List[Tuple[str, str]] = []
+    timestamps: List[Any] = []
     cwd = summary = session_id = None
     for obj in _read_json_lines(path):
         otype = obj.get("type")
@@ -137,12 +177,14 @@ def parse_claude_session(path: Path) -> Dict[str, Any]:
                 session_id = obj["sessionId"]
             if turn := _message_turn(obj.get("message")):
                 turns.append(turn)
-    return _parsed(turns, cwd, session_id, summary)
+                timestamps.append(obj.get("timestamp"))
+    return _parsed(turns, cwd, session_id, summary, timestamps)
 
 
 def parse_codex_session(path: Path) -> Dict[str, Any]:
     """Parse one Codex CLI rollout JSONL into normalized turns + meta."""
     turns: List[Tuple[str, str]] = []
+    timestamps: List[Any] = []
     cwd = session_id = None
     for obj in _read_json_lines(path):
         otype, payload = obj.get("type"), obj.get("payload")
@@ -157,11 +199,13 @@ def parse_codex_session(path: Path) -> Dict[str, Any]:
             ptype = payload.get("type")
             if ptype == "message" and (turn := _message_turn(payload)):  # developer/system payloads skipped
                 turns.append(turn)
+                timestamps.append(obj.get("timestamp"))
             elif ptype in ("custom_tool_call", "function_call", "local_shell_call"):
                 # Assistant activity; merged into neighbours later. Tool outputs / reasoning skipped.
                 name = payload.get("name") or payload.get("tool") or "tool"
                 turns.append(("assistant", f"[ran tool: {name}]"))
-    return _parsed(turns, cwd, session_id)
+                timestamps.append(obj.get("timestamp"))
+    return _parsed(turns, cwd, session_id, timestamps=timestamps)
 
 
 # source -> (default root under ~, env override var, subdir under the env root, glob pattern,
@@ -246,10 +290,23 @@ def import_foreign_session(source: str, path, db=None) -> str:
         db = SessionDB()
     try:
         session_id = new_session_id()
-        origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id")}}
-        db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin))
-        for turn in turns:
-            db.append_message(session_id, turn["role"], turn["content"])
+        imported_at = time.time()
+        ranges = parsed["source_timestamps"]
+        known = [stamp for group in ranges for stamp in group if stamp is not None]
+        # Missing turns borrow the preceding known turn (leading gaps borrow the first).
+        # The provenance retains nulls, so an estimate never masquerades as source evidence.
+        previous = next((min(s for s in group if s is not None)
+                         for group in ranges if any(s is not None for s in group)), imported_at)
+        origin = {"imported_from": {"tool": tool, "path": str(path), "foreign_session_id": parsed.get("session_id"),
+                  "imported_at": imported_at, "source_timestamps": ranges,
+                  "timestamp_policy": _IMPORT_TIMESTAMP_POLICY,
+                  "source_started_at": min(known) if known else None,
+                  "source_ended_at": max(known) if known else None}}
+        db.create_session(session_id, source=tool, cwd=parsed.get("cwd"), origin_json=json.dumps(origin),
+                          started_at=min(known) if known else imported_at)
+        for turn, group in zip(turns, ranges):
+            previous = min((s for s in group if s is not None), default=previous)
+            db.append_message(session_id, turn["role"], turn["content"], timestamp=previous)
         with contextlib.suppress(Exception):  # title is cosmetic; the import itself succeeded
             db.set_session_title(session_id, f"Imported from {_SOURCE_LABELS[source]}: {first_user}")
         return session_id

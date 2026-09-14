@@ -198,6 +198,22 @@ KANBAN_BLOCK_SCHEMA = _schema(
     ["reason"],
 )
 
+KANBAN_SUBMIT_REVIEW_SCHEMA = _schema(
+    "kanban_submit_review",
+    (
+        "Hand your current task to a reviewer instead of completing it "
+        "yourself. Transitions the task from running to review and keeps its "
+        "worktree so the review agent sees your diff. Use this when your "
+        "implementation is done and should be checked (diff + tests + spec) "
+        "before it counts as complete. If no review is needed, call "
+        "kanban_complete directly."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+    },
+    [],
+)
+
 KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
     "kanban_request_review",
     (

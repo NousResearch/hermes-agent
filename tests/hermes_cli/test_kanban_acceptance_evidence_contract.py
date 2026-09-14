@@ -6,10 +6,12 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.kanban_acceptance_evidence import EvidenceValidationError, normalize_contract
 
 
-_SCHEMA = Path(__file__).parents[2] / "docs" / "kanban" / "acceptance-evidence.schema.json"
+_SCHEMA = Path(__file__).parents[2] / "website" / "docs" / "user-guide" / "features" / "acceptance-evidence.schema.json"
 
 
 def _valid_contract() -> dict:
@@ -63,3 +65,27 @@ def test_schema_rejects_missing_or_unusable_completion_evidence(mutate) -> None:
     mutate(contract)
     with pytest.raises(EvidenceValidationError):
         normalize_contract(contract)
+
+
+def test_completion_rejects_missing_declared_evidence_without_state_transition(tmp_path, monkeypatch) -> None:
+    """A declared but unobserved requirement must keep a card in flight."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    contract = {
+        "version": 1,
+        "required": [{"id": "focused-tests", "kind": "check", "description": "Focused tests pass"}],
+        "observed": [],
+    }
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="evidence-gated", acceptance_evidence=contract)
+        assert kb.complete_task(conn, task_id, summary="local tests ran") is False
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+
+    assert task is not None
+    assert task.status == "ready"
+    assert any(event.kind == "acceptance_evidence_rejected" for event in events)

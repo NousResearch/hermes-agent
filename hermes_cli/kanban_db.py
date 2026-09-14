@@ -715,6 +715,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    acceptance_evidence: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -730,6 +731,7 @@ class Task:
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            acceptance_evidence=_json_or(g("acceptance_evidence")),
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -941,7 +943,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Versioned declaration of named completion evidence; NULL preserves legacy tasks.
+    acceptance_evidence  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1232,6 +1236,7 @@ def create_task(
     project_source_task_id: Optional[str] = None,
     creator_task_id: Optional[str] = None,
     completion_contract: Optional[str] = None,
+    acceptance_evidence: Optional[dict] = None,
 ) -> str:
     """Create a task (optionally under ``parents``); returns its id.
 
@@ -1250,8 +1255,10 @@ def create_task(
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
+    from hermes_cli.kanban_acceptance_evidence import normalize_contract
 
     completion_contract = validate_contract(completion_contract)
+    acceptance_evidence = normalize_contract(acceptance_evidence)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
@@ -1331,8 +1338,8 @@ def create_task(
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
-                        goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, completion_contract, acceptance_evidence
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
@@ -1342,6 +1349,7 @@ def create_task(
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
+                        json.dumps(acceptance_evidence) if acceptance_evidence is not None else None,
                     ),
                 )
                 for pid in parents:
@@ -2533,10 +2541,68 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+def _completion_evidence_gate(
+    conn: sqlite3.Connection, task_id: str, submitted: Optional[dict],
+) -> tuple[Optional[dict], Optional[dict]]:
+    """Return a validated attempt receipt or a safe rejection payload.
+
+    The task-owned declaration is immutable at completion. A caller may submit a
+    fresh full snapshot only when its requirements exactly match that declaration;
+    only its observations are recorded on the closing run.
+    """
+    from hermes_cli.kanban_acceptance_evidence import (
+        EvidenceValidationError,
+        normalize_contract,
+        unsatisfied_requirement_ids,
+    )
+
+    row = conn.execute(
+        "SELECT acceptance_evidence, current_run_id, worker_pid, last_heartbeat_at "
+        "FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or row["acceptance_evidence"] is None:
+        return None, None
+    try:
+        declared = normalize_contract(_json_or(row["acceptance_evidence"]))
+        if declared is None:
+            raise EvidenceValidationError("stored declaration is not an object")
+        receipt = declared
+        if submitted is not None:
+            candidate = normalize_contract(submitted)
+            if candidate is None or candidate["required"] != declared["required"]:
+                return None, {"classification": "declaration_mismatch", "required_ids": [item["id"] for item in declared["required"]]}
+            receipt = {**declared, "observed": candidate["observed"]}
+        missing = unsatisfied_requirement_ids(receipt)
+        if missing:
+            return None, {"classification": "unsatisfied", "required_ids": missing}
+        for item in receipt["observed"]:
+            required = next(req for req in receipt["required"] if req["id"] == item["id"])
+            if required["kind"] != "canary" or item["status"] != "passed":
+                continue
+            payload = item["payload"]
+            run = conn.execute(
+                "SELECT worker_pid, started_at, last_heartbeat_at FROM task_runs WHERE id = ?",
+                (row["current_run_id"],),
+            ).fetchone()
+            if not (
+                run is not None
+                and payload["run_id"] == row["current_run_id"]
+                and payload["pid"] == row["worker_pid"] == run["worker_pid"]
+                and run["started_at"] <= payload["spawned_at"]
+                and (row["last_heartbeat_at"] or 0) >= payload["heartbeat_at"]
+                and (run["last_heartbeat_at"] or 0) >= payload["heartbeat_at"]
+            ):
+                return None, {"classification": "canary_readback_mismatch", "required_ids": [item["id"]]}
+        return receipt, None
+    except EvidenceValidationError:
+        return None, {"classification": "invalid", "required_ids": []}
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
+    acceptance_evidence: Optional[dict] = None,
     fire_lifecycle_hook: bool = True,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
@@ -2567,6 +2633,17 @@ def complete_task(
         # reopened while this task waited.
         if not _parents_satisfied(conn, task_id):
             return False
+        evidence_receipt, evidence_rejection = _completion_evidence_gate(
+            conn, task_id, acceptance_evidence,
+        )
+        if evidence_rejection is not None:
+            _append_event(
+                conn, task_id, "acceptance_evidence_rejected", evidence_rejection,
+                run_id=_current_run_id(conn, task_id),
+            )
+            return False
+        if evidence_receipt is not None:
+            metadata = {**(metadata or {}), "acceptance_evidence": evidence_receipt}
         if acceptance is not None and not record_acceptance(conn, task_id, acceptance):
             return False
         prior_status = _task_status(conn, task_id)
@@ -2607,6 +2684,12 @@ def complete_task(
         event_summary = handoff_summary
         if prior_status == "review" and not event_summary:
             event_summary = _REVIEW_APPROVED_NOTE
+        if evidence_receipt is not None:
+            _append_event(
+                conn, task_id, "acceptance_evidence",
+                {"required_ids": [item["id"] for item in evidence_receipt["required"]]},
+                run_id=run_id,
+            )
         _append_event(
             conn, task_id, "completed",
             _completed_event_payload(result, event_summary, verified_cards, metadata),

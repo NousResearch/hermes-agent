@@ -69,6 +69,15 @@ def normalize_contract(value: Any) -> dict[str, Any] | None:
     return value
 
 
+def unsatisfied_requirement_ids(contract: dict[str, Any]) -> list[str]:
+    """Return applicable requirements without one passing final observation."""
+    observed = {item["id"]: item["status"] for item in contract["observed"]}
+    return [
+        item["id"] for item in contract["required"]
+        if item.get("applicable", True) and observed.get(item["id"]) != "passed"
+    ]
+
+
 def _identifier(value: Any) -> bool:
     import re
     return isinstance(value, str) and bool(re.fullmatch(r"[a-z][a-z0-9-]{0,63}", value))

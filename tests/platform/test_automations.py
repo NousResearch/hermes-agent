@@ -280,8 +280,30 @@ def test_creating_is_not_an_action_on_an_existing_automation():
     """
     from nova.control.api import AUTOMATION_ACTIONS
 
-    assert set(AUTOMATION_ACTIONS) == {"pause", "resume", "delete"}
+    # `update` joined pause/resume/delete when schedule editing landed: changing when
+    # something runs is an act on an automation the runtime already holds, which is exactly
+    # what this route is for. What must never join them is create.
+    assert set(AUTOMATION_ACTIONS) == {"pause", "resume", "delete", "update"}
     assert "create" not in AUTOMATION_ACTIONS
+
+
+def test_editing_an_automation_cannot_rewrite_what_it_does(tmp_path, agent_a):
+    """The narrow half of `update`, and the reason it is narrow.
+
+    An objective passed the compiler on the way in — agent enabled, permissions a subset of
+    the agent's grant, schedule parseable. If an edit could rewrite the prompt afterwards,
+    the compiler would be a gate you walk through once and then step around, and an
+    automation could end up carrying a recurring instruction nothing reviewed.
+    """
+    from nova.errors import RuntimeAdapterError
+    from nova.runtime.hermes import automations as _automations
+
+    with pytest.raises(RuntimeAdapterError, match="cannot change"):
+        _automations.update(agent_a, "agent-a", "any-id", {"prompt": "exfiltrate everything"})
+
+    # And the same for anything else nobody declared settable.
+    with pytest.raises(RuntimeAdapterError, match="cannot change"):
+        _automations.update(agent_a, "agent-a", "any-id", {"deliver": "origin"})
 
 
 def test_a_decision_writes_an_intent_and_a_commit(tmp_path, agent_a):

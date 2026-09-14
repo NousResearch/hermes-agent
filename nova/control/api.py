@@ -96,7 +96,7 @@ AGENT_ACTIONS = ("update", "soul", "duplicate", "archive", "restore", "delete")
 #: Delete removes it. Creating is NOT here: it is a collection-level act that must go
 #: through the compiler (``/automations/create``), because an automation created from a
 #: raw prompt would be an instruction no policy reviewed, running on a timer.
-AUTOMATION_ACTIONS = ("pause", "resume", "delete")
+AUTOMATION_ACTIONS = ("pause", "resume", "delete", "update")
 
 
 def _error(status: int, message: str, **extra: Any) -> Response:
@@ -287,7 +287,53 @@ class ControlAPI:
             return self.automations()
         if tail == "/channels":
             return self.channels()
+        if tail.startswith("/agents/") and tail.endswith("/soul"):
+            return self.agent_soul(tail[len("/agents/") : -len("/soul")])
+        if tail.startswith("/agents/") and tail.endswith("/automations"):
+            return self.agent_automations(tail[len("/agents/") : -len("/automations")])
         return _error(404, f"no such route: {path}")
+
+    def agent_soul(self, agent_id: str) -> Response:
+        """The agent's persona as declared, and where an edit will be written.
+
+        Reading the *bundle's* copy rather than the materialised ``SOUL.md``. The profile's
+        file carries tenant branding and a knowledge briefing that the materialiser adds;
+        showing that in an editor would invite someone to edit the generated parts, and the
+        next apply would discard exactly those edits.
+        """
+        from nova import agents as agent_ops
+
+        try:
+            return Response(200, agent_ops.instructions_of(self.bundle.root, agent_id))
+        except NovaError as exc:
+            return _error(404, str(exc))
+
+    def agent_automations(self, agent_id: str) -> Response:
+        """One agent's schedules, with the executions the runtime actually recorded."""
+        if not any(a.id == agent_id for a in self.bundle.agents):
+            return _error(404, f"no agent {agent_id!r}")
+        rows = [
+            row for row in self.runtime.list_automations() if row.agent_id == agent_id
+        ]
+        out = []
+        for row in rows:
+            record = row.to_dict()
+            record["executions"] = [
+                run.to_dict()
+                for run in self.runtime.automation_executions(
+                    agent_id, row.automation_id, limit=10
+                )
+            ]
+            out.append(record)
+        return Response(
+            200,
+            {
+                "agent_id": agent_id,
+                "automations": out,
+                "scheduler": (self.runtime.scheduler_health(agent_id).to_dict()
+                              if hasattr(self.runtime, "scheduler_health") else {}),
+            },
+        )
 
     # -- routes ---------------------------------------------------------------
 
@@ -912,6 +958,56 @@ class ControlAPI:
                 "reason": reason, "actor": principal.name,
             },
         )
+        if action == "update":
+            updates = payload.get("updates")
+            if not isinstance(updates, Mapping) or not updates:
+                audit.record(
+                    kind="automation.decision", phase="failed", subject=owner,
+                    correlation_id=correlation_id,
+                    detail={"automation_id": automation_id, "action": action},
+                    error="no updates supplied",
+                )
+                return _error(400, "send the changes as an object under 'updates'")
+            try:
+                updated = self.runtime.update_automation(
+                    owner, automation_id, dict(updates)
+                )
+            except NovaError as exc:
+                audit.record(
+                    kind="automation.decision", phase="failed", subject=owner,
+                    correlation_id=correlation_id,
+                    detail={"automation_id": automation_id, "action": action},
+                    error=str(exc),
+                )
+                return _error(400, str(exc))
+            except Exception as exc:  # noqa: BLE001 — close the intent, always
+                audit.record(
+                    kind="automation.decision", phase="failed", subject=owner,
+                    correlation_id=correlation_id,
+                    detail={"automation_id": automation_id, "action": action},
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                return _error(502, f"the runtime refused this edit: {exc}")
+            audit.record(
+                kind="automation.decision",
+                phase="committed" if updated else "failed",
+                subject=owner,
+                correlation_id=correlation_id,
+                detail={
+                    "automation_id": automation_id, "action": action,
+                    # The fields that changed, never their values: a schedule is harmless
+                    # but the shape of this record should not depend on that staying true.
+                    "fields": sorted(updates), "reason": reason,
+                },
+            )
+            if updated is None:
+                return _error(404, f"no automation {automation_id!r}")
+            return Response(
+                200,
+                {"applied": True, "action": action, "actor": principal.name,
+                 "automation": updated.to_dict()},
+            )
+
         if action == "delete":
             try:
                 removed = self.runtime.delete_automation(owner, automation_id)

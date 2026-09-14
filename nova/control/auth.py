@@ -114,17 +114,38 @@ ROUTE_COLLECTION_PREFIXES: Mapping[str, str] = {
 }
 
 
-def _collection_role(route: str) -> Optional[str]:
-    """The role for a single-member read like ``/tasks/<id>``, or None.
+#: Reads of the shape ``/<collection>/<id>/<leaf>``, keyed on collection and leaf.
+#:
+#: Kept separate from :data:`ROUTE_COLLECTION_PREFIXES` and enumerated rather than matched
+#: by prefix, because the id sits in the middle: a rule that accepted any leaf under
+#: ``/agents/<id>/`` would hand out every future sub-read as soon as somebody added one.
+#:
+#: ``soul`` is **absent on purpose** and therefore admin, like every undeclared route. An
+#: agent's persona is its standing instruction on every turn — the same class of text as an
+#: automation's objective, which a viewer already cannot read.
+ROUTE_MEMBER_LEAVES: Mapping[tuple[str, str], str] = {
+    # What runs and when is operational state, exactly as the /automations collection is.
+    ("agents", "automations"): "viewer",
+}
 
-    One path segment only. ``/tasks/a/b`` is not a task read and must not inherit the
-    collection's role by accident.
+
+def _collection_role(route: str) -> Optional[str]:
+    """The role for a member read like ``/tasks/<id>`` or ``/agents/<id>/automations``.
+
+    A bare member takes the collection's role; a leaf under a member takes one only if it
+    is declared in :data:`ROUTE_MEMBER_LEAVES`. Anything else returns None and falls
+    through to the admin default, which is the safe direction for a route nobody has
+    thought about yet.
     """
     for prefix, role in ROUTE_COLLECTION_PREFIXES.items():
         if route.startswith(prefix):
             member = route[len(prefix):]
             if member and "/" not in member:
                 return role
+
+    parts = [part for part in route.split("/") if part]
+    if len(parts) == 3:
+        return ROUTE_MEMBER_LEAVES.get((parts[0], parts[2]))
     return None
 
 

@@ -305,6 +305,56 @@ def delete(profile_dir: Path, agent_id: str, automation_id: str) -> bool:
         return bool(cron_jobs.remove_job(automation_id))
 
 
+def update(
+    profile_dir: Path, agent_id: str, automation_id: str, updates: dict
+) -> Optional[AutomationView]:
+    """Change an existing schedule in place. ``None`` when this agent does not own it.
+
+    Editing was missing, so changing when something ran meant deleting the automation and
+    declaring a new one — which loses its id, its provenance record and its execution
+    history. ``cron.jobs.update_job`` already existed and does the whole job: it re-parses
+    the schedule and recomputes ``next_run_at`` itself, so nothing here duplicates that.
+
+    Only the fields NOVA compiles are settable. In particular the *prompt* is not: an
+    automation's objective is the instruction it carries, it passed through the compiler's
+    checks on the way in, and letting it be rewritten afterwards would be the "recurring
+    instruction no policy reviewed" the whole governed-automation design exists to refuse.
+    Changing an objective means declaring a new automation.
+    """
+    allowed = {"name", "schedule"}
+    unknown = sorted(set(updates) - allowed)
+    if unknown:
+        from nova.errors import RuntimeAdapterError
+
+        raise RuntimeAdapterError(
+            f"cannot change {', '.join(unknown)} on an existing automation. Settable: "
+            f"{', '.join(sorted(allowed))}. To change what it does, declare a new one so it "
+            "goes through the compiler again"
+        )
+    if "schedule" in updates:
+        validate_schedule(str(updates["schedule"]))
+
+    with _store(profile_dir) as cron_jobs:
+        if cron_jobs.get_job(automation_id) is None:
+            return None
+        record = cron_jobs.update_job(automation_id, dict(updates))
+        if record is None:
+            return None
+    runs = _recent_runs(profile_dir, (automation_id,), per_job=5).get(automation_id, ())
+    return _to_view(record, agent_id, runs)
+
+
+def executions(profile_dir: Path, automation_id: str, *, limit: int = 20) -> tuple:
+    """Recorded executions for one automation, newest first.
+
+    Read from the runtime's own ledger. An empty list means the runtime has recorded no
+    execution — which is the common case here, because Hermes' cron ticker lives inside the
+    gateway and there is no standalone daemon. That is reported as "none recorded", never
+    softened into "not yet".
+    """
+    return _recent_runs(profile_dir, (automation_id,), per_job=limit).get(automation_id, ())
+
+
 def validate_schedule(schedule: str):
     """Parse a schedule phrase with the runtime's own parser, or raise ``SpecError``.
 

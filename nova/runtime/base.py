@@ -808,6 +808,23 @@ class AgentRuntime(ABC):
         """Remove one automation; False when absent or not this agent's."""
         return False
 
+    def update_automation(
+        self, agent_id: str, automation_id: str, updates: dict
+    ) -> Optional["AutomationView"]:
+        """Change an existing automation's name or schedule; None when unsupported.
+
+        Deliberately narrow. The objective is not settable here — it went through the
+        compiler on the way in, and a method that could rewrite it afterwards would be a
+        way to schedule an instruction nothing reviewed.
+        """
+        return None
+
+    def automation_executions(
+        self, agent_id: str, automation_id: str, *, limit: int = 20
+    ) -> tuple:
+        """Recorded executions for one automation, newest first. Empty when none ran."""
+        return ()
+
     def set_automation_enabled(
         self, agent_id: str, automation_id: str, *, enabled: bool, reason: str = "",
     ) -> Optional["AutomationView"]:

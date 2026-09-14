@@ -1,4 +1,6 @@
 import * as React from "react";
+
+import { SoulEditor } from "@/screens/soul";
 import { ArrowLeft, BookOpen, Boxes, ShieldCheck } from "lucide-react";
 import { Chip, EmptyState, GlassCard, GlassPanel, SectionHeader, StatusPill } from "@/components/glass";
 import { Hint, InfoDot } from "@/components/tooltip";
@@ -148,6 +150,9 @@ export function AgentDetail({
 
   const tabs = [
     { id: "work", label: "Work", count: mine.length },
+    // First after Work: this is the tab the agent profile exists for. Everything else on
+    // this screen reports what the agent did; this is where you change what it is.
+    { id: "soul", label: "Soul" },
     { id: "knowledge", label: "Knowledge", count: corpora.length },
     { id: "channels", label: "Channels", count: reaching.length },
     { id: "permissions", label: "Permissions" },
@@ -205,6 +210,9 @@ export function AgentDetail({
         ))}
       </div>
 
+      {/* The Soul tab brings its own panel: it is an editor, not a list, and nesting it
+          inside the shared one would double the border and the padding. */}
+      {tab === "soul" ? <SoulEditor agentId={agent.id} /> : (
       <GlassPanel className="p-5">
         {tab === "work" ? (
           mine.length ? (
@@ -331,6 +339,7 @@ export function AgentDetail({
           )
         ) : null}
       </GlassPanel>
+      )}
 
       {mineDecisions.length ? (
         <GlassPanel className="p-5">

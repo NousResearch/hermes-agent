@@ -360,3 +360,44 @@ def test_a_failed_edit_still_reaches_a_terminal_audit_phase(api, tmp_path):
     assert [r["phase"] for r in updates] == ["intent", "failed"], (
         "an intent with no terminal phase is indistinguishable from a crash mid-write"
     )
+
+
+# -- reads ---------------------------------------------------------------------
+
+
+def test_the_soul_read_returns_the_bundle_s_copy_not_the_materialised_one(api, tmp_path):
+    """The profile's SOUL.md carries branding and a knowledge briefing the materialiser
+    adds. Showing that in an editor invites someone to edit the generated parts, and the
+    next apply discards exactly those edits."""
+    _write(api, "/agents/operations/soul", ADMIN, {"instructions": "Just this."})
+    body = api.handle("/platform/v1/agents/operations/soul").body
+    assert body["instructions"].strip() == "Just this."
+    assert body["path"].endswith(".md")
+
+    materialised = (tmp_path / "home" / "profiles" / "operations" / "SOUL.md").read_text()
+    assert "Just this." in materialised
+    assert len(materialised) > len(body["instructions"]), (
+        "the materialised persona should carry more than the bundle's text"
+    )
+
+
+def test_a_viewer_may_not_read_a_persona(api):
+    """Same class of text as an automation's objective, which a viewer already cannot read."""
+    assert VIEWER.may("/agents/operations/soul") is False
+    assert ADMIN.may("/agents/operations/soul") is True
+
+
+def test_a_viewer_may_read_what_an_agent_has_scheduled(api):
+    """What runs and when is operational state, like the /automations collection itself."""
+    assert VIEWER.may("/agents/operations/automations") is True
+
+
+def test_an_undeclared_leaf_under_an_agent_is_admin_by_default(api):
+    """A rule matching any leaf would hand out every future sub-read the moment somebody
+    added one, so an undeclared leaf falls through to the admin default."""
+    assert VIEWER.may("/agents/operations/credentials") is False
+    assert VIEWER.may("/agents/operations/env") is False
+
+
+def test_reading_an_unknown_agent_s_persona_is_a_404(api):
+    assert api.handle("/platform/v1/agents/ghost/soul").status == 404

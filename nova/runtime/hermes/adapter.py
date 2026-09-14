@@ -525,6 +525,22 @@ class HermesRuntime(AgentRuntime):
             return False
         return _automations.delete(profile, agent_id, automation_id)
 
+    def update_automation(self, agent_id: str, automation_id: str, updates: dict):
+        from nova.runtime.hermes import automations as _automations
+
+        profile = self.paths.profile_dir(agent_id)
+        if not profile.is_dir():
+            return None
+        return _automations.update(profile, agent_id, automation_id, updates)
+
+    def automation_executions(self, agent_id: str, automation_id: str, *, limit: int = 20):
+        from nova.runtime.hermes import automations as _automations
+
+        profile = self.paths.profile_dir(agent_id)
+        if not profile.is_dir():
+            return ()
+        return _automations.executions(profile, automation_id, limit=limit)
+
     def health(self) -> RuntimeHealth:
         present, detail = _work.store_status(self.paths.home)
         home_exists = self.paths.home.is_dir()

@@ -2201,6 +2201,11 @@ export const zhHant = defineLocale({
     projectLoadFailed: '會話載入失敗',
     noSessions: '尚無工作階段',
     noFilterMatches: '沒有工作階段符合這些篩選條件',
+    recency: {
+      label: '最近活躍',
+      day1: '近 1 天',
+      day2: '近 2 天'
+    },
     projects: {
       showAllSessions: '顯示所有工作階段',
       sectionLabel: '專案',

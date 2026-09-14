@@ -2282,6 +2282,11 @@ export interface Translations {
     projectLoadFailed: string
     noSessions: string
     noFilterMatches: string
+    recency: {
+      label: string
+      day1: string
+      day2: string
+    }
     projects: {
       showAllSessions: string
       sectionLabel: string

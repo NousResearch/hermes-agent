@@ -2844,6 +2844,11 @@ export const zh = defineLocale({
     projectLoadFailed: '会话加载失败',
     noSessions: '暂无会话',
     noFilterMatches: '没有会话符合这些筛选条件',
+    recency: {
+      label: '最近活跃',
+      day1: '近 1 天',
+      day2: '近 2 天'
+    },
     projects: {
       showAllSessions: '显示所有会话',
       sectionLabel: '项目',

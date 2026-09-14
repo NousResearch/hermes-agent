@@ -2215,6 +2215,11 @@ export const ja = defineLocale({
     projectLoadFailed: 'セッションの読み込みに失敗しました',
     noSessions: 'セッションはまだありません',
     noFilterMatches: 'このフィルターに一致するセッションはありません',
+    recency: {
+      label: '最近の利用',
+      day1: '1 日以内',
+      day2: '2 日以内'
+    },
     projects: {
       showAllSessions: 'すべてのセッションを表示',
       sectionLabel: 'プロジェクト',

@@ -2656,6 +2656,11 @@ export const en: Translations = {
     projectLoadFailed: 'Could not load sessions',
     noSessions: 'No sessions yet',
     noFilterMatches: 'No sessions match these filters',
+    recency: {
+      label: 'Recency',
+      day1: '1 day',
+      day2: '2 day'
+    },
     projects: {
       showAllSessions: 'Show all sessions',
       sectionLabel: 'Projects',

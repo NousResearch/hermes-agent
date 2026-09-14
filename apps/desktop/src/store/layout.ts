@@ -50,6 +50,7 @@ const SIDEBAR_SHOW_ARCHIVED_STORAGE_KEY = 'hermes.desktop.sidebarShowArchived'
 const SIDEBAR_PROJECT_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarProjectFilter'
 const SIDEBAR_PROFILE_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarProfileFilter'
 const SIDEBAR_PR_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarPrFilter'
+const SIDEBAR_RECENCY_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarRecencyFilter'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
 const SIDEBAR_PROJECT_ORDER_STORAGE_KEY = 'hermes.desktop.projectOrder'
@@ -260,6 +261,9 @@ export type SidebarSortKey = Exclude<SidebarOrdering, 'manual'>
 /** Optional per-row metadata the user can switch on. `preview` is card-only:
  *  the one-line row has nowhere to put a second line. */
 export type SidebarRowMeta = 'cost' | 'pr' | 'preview' | 'profile' | 'tokens' | 'updated'
+/** How recently the sessions were worked on, as a window the sidebar can
+ *  narrow to. Ids are storage-stable; the menu shows them as "1 day" / "2 day". */
+export type SidebarRecencyFilter = '1d' | '2d'
 
 function oneOf<T extends string>(values: readonly T[], fallback: T): Codec<T> {
   return {
@@ -278,6 +282,7 @@ function listOf<T extends string>(values: readonly T[]): Codec<T[]> {
 const ROW_META: readonly SidebarRowMeta[] = ['cost', 'pr', 'preview', 'profile', 'tokens', 'updated']
 const STATUS_FILTERS: readonly SessionStatusBucket[] = ['needs-input', 'working', 'unread', 'draft', 'idle']
 const PR_FILTERS: readonly PullRequestBucket[] = ['open', 'draft', 'merged', 'closed', 'none']
+const RECENCY_FILTERS: readonly SidebarRecencyFilter[] = ['1d', '2d']
 export const SIDEBAR_SORT_KEYS: readonly SidebarSortKey[] = ['updated', 'created', 'status', 'tokens', 'cost']
 
 // `project` deliberately does NOT live here. Entering a project from ⌘K, the
@@ -377,6 +382,15 @@ export const $sidebarPrFilter = persistentAtom<PullRequestBucket[]>(
   listOf(PR_FILTERS)
 )
 
+// How recently the session was worked on, as a union of time windows. Reads
+// the same `last_active || started_at` clock the rows sort by — see
+// recency-filter.ts for the windows themselves.
+export const $sidebarRecencyFilter = persistentAtom<SidebarRecencyFilter[]>(
+  SIDEBAR_RECENCY_FILTER_STORAGE_KEY,
+  [],
+  listOf(RECENCY_FILTERS)
+)
+
 export const $sidebarGrouping: ReadableAtom<SidebarGrouping> = computed(
   [$sidebarAgentsGrouped, $sidebarFlatGrouping, $sidebarAllProfilesGrouping, $showAllProfiles],
   (grouped, flat, allProfiles, showAll) => (grouped ? 'project' : showAll ? allProfiles : flat)
@@ -390,9 +404,21 @@ export const $sidebarOrdering: ReadableAtom<SidebarOrdering> = computed(
 )
 
 export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
-  [$sidebarStatusFilter, $sidebarProjectFilter, $sidebarProfileFilter, $sidebarPrFilter, $sidebarShowArchived],
-  (statuses, projects, profiles, prs, archived) =>
-    statuses.length > 0 || projects.length > 0 || profiles.length > 0 || prs.length > 0 || archived
+  [
+    $sidebarStatusFilter,
+    $sidebarProjectFilter,
+    $sidebarProfileFilter,
+    $sidebarPrFilter,
+    $sidebarRecencyFilter,
+    $sidebarShowArchived
+  ],
+  (statuses, projects, profiles, prs, recency, archived) =>
+    statuses.length > 0 ||
+    projects.length > 0 ||
+    profiles.length > 0 ||
+    prs.length > 0 ||
+    recency.length > 0 ||
+    archived
 )
 
 /** Anything at all moved off the shipped view — what makes a reset worth
@@ -700,11 +726,16 @@ export function toggleSidebarPrFilter(bucket: PullRequestBucket) {
   toggleIn($sidebarPrFilter, bucket)
 }
 
+export function toggleSidebarRecencyFilter(windowId: SidebarRecencyFilter) {
+  toggleIn($sidebarRecencyFilter, windowId)
+}
+
 function clearSidebarFilters() {
   $sidebarStatusFilter.set([])
   $sidebarProjectFilter.set([])
   $sidebarProfileFilter.set([])
   $sidebarPrFilter.set([])
+  $sidebarRecencyFilter.set([])
   $sidebarShowArchived.set(false)
 }
 

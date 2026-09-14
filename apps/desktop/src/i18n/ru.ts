@@ -2477,6 +2477,11 @@ export const ru = defineLocale({
     projectLoadFailed: 'Не удалось загрузить сеансы',
     noSessions: 'Сеансов пока нет',
     noFilterMatches: 'Нет сеансов по этим фильтрам',
+    recency: {
+      label: 'Недавняя активность',
+      day1: 'За 1 день',
+      day2: 'За 2 дня'
+    },
     projects: {
       showAllSessions: 'Показать все сессии',
       sectionLabel: 'Проекты',

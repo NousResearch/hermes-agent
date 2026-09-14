@@ -1365,6 +1365,25 @@ class TestMultimodalToolContentUnsupported:
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
         assert result.retryable is True
 
+    def test_deepseek_unsupported_image_in_tool_message(self):
+        """DeepSeek rejects image parts inside a ``tool`` message with a
+        generic "unsupported image" 400 — it never says list-vs-string, so it
+        needs its own pattern. Reported symptom: a ``browser_vision``
+        screenshot attached to a tool result wedged the session; every later
+        turn replayed the same image and 400'd. Observed on
+        deepseek-v4-flash, 2026-09.
+        """
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'message': '.messages[565].image[0]: You have uploaded "
+            "an unsupported image. Please make sure your image is valid and has one of the "
+            "following formats: webp, png, jpeg, and gif.', 'type': 'invalid_request_error', "
+            "'param': None, 'code': 'invalid_request_error'}}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="deepseek", model="deepseek-v4-flash")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
 
 
 

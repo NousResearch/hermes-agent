@@ -188,6 +188,13 @@ _MULTIMODAL_TOOL_CONTENT_PATTERNS = (
     "tool message must be a string", "expected string, got list", "expected string, got array",
     # Console Go / pydantic-v2 relays behind opencode-go (422, param ``messages.N.tool.content.str``, #104731).
     "tool_call.content must be string", "tool.content.str", "input should be a valid string",
+    # DeepSeek rejects image parts inside a ``tool`` message with a generic
+    # "unsupported image" 400 — it never says list-vs-string, so it needs its
+    # own pattern. A browser/computer-use screenshot attached to a tool result
+    # wedges the session: every later turn replays the same image and 400s.
+    # Observed on deepseek-v4-flash, 2026-09. Recovery is identical to the
+    # patterns above (strip image parts from tool messages, retry once).
+    "uploaded an unsupported image",
 )
 
 # Local-inference memory/resource-ceiling rejections (oMLX/MLX memory guard,

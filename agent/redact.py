@@ -180,6 +180,12 @@ def _redact_env_secret_values(text: str) -> str:
     Longest-first ordering guarantees that when one secret value is a prefix
     of another (e.g. "abc" vs "abcdef"), the longer one is replaced whole
     rather than leaving a residual suffix.
+
+    Only the WHOLE value is masked: a deliberate slice (``${VAR:0:4}``,
+    ``cut -c1-4``) or a truncated fragment is not the full value and passes
+    through unmasked. Like every content redactor, this guards against
+    ACCIDENTAL leakage, not deliberate exfiltration by an agent that already
+    holds the value in its environment.
     """
     if not isinstance(text, str) or not text:
         return text

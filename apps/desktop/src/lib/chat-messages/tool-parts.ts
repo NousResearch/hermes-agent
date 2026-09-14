@@ -398,15 +398,23 @@ function findPendingClarifyLocation(
         continue
       }
 
-      pendingCount += 1
-      solePending = { messageIndex, partIndex }
-
       const exactId = Boolean(stableId && part.toolCallId === stableId)
       const contextual = hasToolMatchOverlap(matchValues, toolPartMatchValues(part))
 
       if (exactId || contextual) {
         return { messageIndex, partIndex }
       }
+
+      // A sealed call (settle-time `completedAt`, no result) is a clarify the
+      // turn stopped on without an answer. It is history, not the session's
+      // open question, so it may only be re-armed by a genuine correlation
+      // above, never adopted as the fallback for an uncorrelated request.
+      if (part.completedAt !== undefined) {
+        continue
+      }
+
+      pendingCount += 1
+      solePending = { messageIndex, partIndex }
     }
   }
 
@@ -536,13 +544,25 @@ export function restorePendingClarifyToolCall(
 
   if (location) {
     const message = messages[location.messageIndex]
+    const part = message.parts[location.partIndex]
+    // A correlated row that settle sealed (stop, lost completion) is live
+    // again: drop the seal so the card renders as pending, not as history.
+    const sealed = part.type === 'tool-call' && part.completedAt !== undefined && part.result === undefined
 
-    if (message.pending) {
+    if (message.pending && !sealed) {
       return { messages, streamId: message.id }
     }
 
     const next = [...messages]
-    next[location.messageIndex] = { ...message, pending: true }
+
+    if (sealed) {
+      const { completedAt: _completedAt, ...unsealed } = part
+      const parts = [...message.parts]
+      parts[location.partIndex] = unsealed as ChatMessagePart
+      next[location.messageIndex] = { ...message, parts, pending: true }
+    } else {
+      next[location.messageIndex] = { ...message, pending: true }
+    }
 
     return { messages: next, streamId: message.id }
   }

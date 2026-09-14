@@ -102,6 +102,11 @@ def test_codex_terminal_manual_refresh_failure_quarantines_only_pool_row(tmp_pat
     waiter = credential_pool.load_pool("openai-codex")
 
     assert first.refresh_matching_api_key(stale) is None
+    stored = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    stored["credential_pool"]["openai-codex"][0]["access_token"] = _jwt_with_claims(
+        {"sub": "account-a", "jti": "newer-but-dead"}
+    )
+    (tmp_path / "hermes" / "auth.json").write_text(json.dumps(stored))
     assert waiter.refresh_matching_api_key(stale) is None
     selected = waiter.select()
     assert selected is not None and selected.runtime_api_key == singleton

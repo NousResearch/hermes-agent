@@ -1035,9 +1035,12 @@ class CredentialPool(CredentialPoolAdminMixin):
         if target.last_status == STATUS_DEAD:
             if self.provider != "openai-codex":
                 return None
-            with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
+            with _auth_store_lock(
+                timeout_seconds=self._single_use_refresh_lock_timeout(),
+                target_path=self._borrowed_refresh_root(target),
+            ):
                 target = self._sync_codex_entry_for_refresh(target)
-            if target.last_status == STATUS_DEAD and target.runtime_api_key == stale_key:
+            if target.last_status == STATUS_DEAD:
                 return None
         if target.auth_type != AUTH_TYPE_OAUTH or not target.refresh_token:
             return None
@@ -1250,6 +1253,12 @@ class CredentialPool(CredentialPoolAdminMixin):
             return self._sync_entry_from_auth_store(entry)
         return self._sync_entry_from_pool_store(entry)
 
+    def _borrowed_refresh_root(self, entry: PooledCredential) -> Optional[Path]:
+        """Return the root auth store that owns a borrowed pool row."""
+        if entry.id not in self._borrowed_root_ids:
+            return None
+        return _borrowed_single_use_pool_root()
+
     def _sync_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Codex / xAI device_code entry from auth.json ``providers.<id>.tokens``.
 
@@ -1368,6 +1377,18 @@ class CredentialPool(CredentialPoolAdminMixin):
         # independent credentials and must not write to the singleton.
         if entry.source != "device_code" or self.provider not in ("nous", *_TOKENS_SINGLETON_PROVIDERS):
             return
+        borrowed_root = self._borrowed_refresh_root(entry)
+        if borrowed_root is not None:
+            try:
+                with _auth_store_lock(target_path=borrowed_root):
+                    auth_store = _load_auth_store(borrowed_root)
+                    state = _load_provider_state(auth_store, self.provider)
+                    if isinstance(state, dict) and self._apply_entry_to_singleton_state(entry, state):
+                        _store_provider_state(auth_store, self.provider, state, set_active=False)
+                        _save_auth_store(auth_store, target_path=borrowed_root)
+            except Exception as exc:
+                logger.debug("Failed to sync %s pool entry back to root auth store: %s", self.provider, exc)
+            return
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
@@ -1429,7 +1450,10 @@ class CredentialPool(CredentialPoolAdminMixin):
         # there was no recovery path at all). Serialize through the shared
         # cross-process auth-store flock; a waiter's in-lock re-sync picks up
         # the winner's rotated token and skips the POST.
-        with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
+        with _auth_store_lock(
+            timeout_seconds=self._single_use_refresh_lock_timeout(),
+            target_path=self._borrowed_refresh_root(entry),
+        ):
             if self.provider == "openai-codex":
                 synced = self._sync_codex_entry_for_refresh(entry)
                 if synced.last_status == STATUS_DEAD:

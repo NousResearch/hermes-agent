@@ -107,7 +107,7 @@ describe('manage_connections routing outside guided onboarding', () => {
     )
 
     await waitFor(() => {
-      expect(screen.getAllByRole('button', { name: 'Not now' })).toHaveLength(2)
+      expect(screen.getAllByRole('button', { name: 'Connect' })).toHaveLength(2)
     })
     expect(screen.queryByText(/running manage connections/i)).toBeNull()
   })

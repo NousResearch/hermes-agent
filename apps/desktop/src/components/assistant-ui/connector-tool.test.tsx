@@ -6,12 +6,30 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { connectionRequestOwnsPart, ConnectorOffer, ConnectorTool } from '@/components/assistant-ui/connector-tool'
 import { I18nProvider } from '@/i18n'
-import { $connectionRequests, type ConnectionRequest, setConnectionRequest } from '@/store/connection-request'
-import { $gateway } from '@/store/gateway'
+import {
+  $connectionRequests,
+  type ConnectionRequest,
+  type ConnectionTarget,
+  setConnectionRequest
+} from '@/store/connection-request'
+import { $gateway, setPrimaryGateway } from '@/store/gateway'
+import { $notifications } from '@/store/notifications'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
 const SESSION_ID = 'session-1'
 const OWNER = { connectionId: 'connection-1', profile: 'default' }
+// A null connection id routes the card's own RPCs through the primary gateway socket.
+const PRIMARY_OWNER = { connectionId: null, profile: 'default' }
+
+const GMAIL: ConnectionTarget = {
+  action: 'connect',
+  connectUrl: 'https://connect.example/gmail',
+  detail: '',
+  kind: 'connector',
+  name: 'gmail',
+  state: 'pending',
+  tools: []
+}
 
 const REQUEST: ConnectionRequest = {
   deadlineAt: 1_800_000_000,
@@ -20,17 +38,7 @@ const REQUEST: ConnectionRequest = {
   sessionId: SESSION_ID,
   settled: false,
   settledBy: null,
-  targets: [
-    {
-      action: 'connect',
-      connectUrl: 'https://connect.example/gmail',
-      detail: '',
-      kind: 'connector',
-      name: 'gmail',
-      state: 'pending',
-      tools: []
-    }
-  ]
+  targets: [GMAIL]
 }
 
 function props(): ToolCallMessagePartProps {
@@ -73,7 +81,7 @@ function view(sessionId: string): SessionView {
 function renderOffer(request = REQUEST) {
   return render(
     <I18nProvider configClient={null} initialLocale="en">
-      <ConnectorOffer owner={OWNER} request={request} />
+      <ConnectorOffer owner={PRIMARY_OWNER} request={request} />
     </I18nProvider>
   )
 }
@@ -95,6 +103,8 @@ afterEach(() => {
   cleanup()
   $connectionRequests.set({})
   $gateway.set(null)
+  setPrimaryGateway(null)
+  $notifications.set([])
   _resetSessionOwnerHintsForTests({ storage: true })
   vi.useRealTimers()
   vi.clearAllMocks()
@@ -113,6 +123,20 @@ describe('ConnectorTool operation card', () => {
     expect(vi.getTimerCount()).toBe(0)
   })
 
+  it('offers one verb per row and Continue below; nothing per row says no', () => {
+    renderOffer({
+      ...REQUEST,
+      targets: [
+        { ...GMAIL, state: 'initiated' },
+        { ...GMAIL, connectUrl: null, name: 'notion', state: 'failed' },
+        { ...GMAIL, name: 'linear', state: 'connected' }
+      ]
+    })
+
+    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['Connect', 'Try again', 'Continue'])
+    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
+  })
+
   it('opens the stored link from Connect on a waiting row, without an RPC', async () => {
     const request = vi.fn()
     // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
@@ -121,7 +145,7 @@ describe('ConnectorTool operation card', () => {
     // SAFETY: the card reads only `openExternal` from the preload bridge.
     window.hermesDesktop = { openExternal } as never
 
-    renderConnector({ ...REQUEST, targets: [{ ...REQUEST.targets[0], state: 'initiated' }] })
+    renderConnector({ ...REQUEST, targets: [{ ...GMAIL, state: 'initiated' }] })
 
     const connect = await waitFor(() => screen.getByRole('button', { name: 'Connect' }))
     expect(connect.hasAttribute('disabled')).toBe(false)
@@ -131,22 +155,62 @@ describe('ConnectorTool operation card', () => {
     expect(request).not.toHaveBeenCalledWith('connectors.connect', expect.anything())
   })
 
-  it('sends Not now as a per-target skipped response', async () => {
+  it('Try again mints a fresh link on the open operation and opens it at once', async () => {
+    const openExternal = vi.fn()
+    // SAFETY: the card reads only `openExternal` from the preload bridge.
+    window.hermesDesktop = { openExternal } as never
+
+    const request = vi.fn().mockResolvedValue({
+      targets: [{ connect_url: 'https://connect.example/gmail-2', name: 'gmail', state: 'initiated' }]
+    })
+
+    // SAFETY: the card calls only `request` on the primary socket; nothing else on the client is touched.
+    setPrimaryGateway({ request } as never)
+
+    renderOffer({ ...REQUEST, targets: [{ ...GMAIL, connectUrl: null, state: 'failed' }] })
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+    await waitFor(() => {
+      expect(openExternal).toHaveBeenCalledWith('https://connect.example/gmail-2')
+    })
+    expect(request).toHaveBeenCalledWith(
+      'connectors.connect',
+      { connectors: ['gmail'], reconnect: true, session_id: SESSION_ID },
+      expect.any(Number),
+      undefined
+    )
+  })
+
+  it('a refused Try again says so in a toast and leaves the row as it was', async () => {
+    const request = vi.fn().mockRejectedValue(new Error('LINK_STILL_VALID'))
+    // SAFETY: the card calls only `request` on the primary socket; nothing else on the client is touched.
+    setPrimaryGateway({ request } as never)
+
+    renderOffer({ ...REQUEST, targets: [{ ...GMAIL, connectUrl: null, state: 'failed' }] })
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+    await waitFor(() => {
+      expect($notifications.get().map(({ kind, title }) => ({ kind, title }))).toEqual([
+        { kind: 'error', title: 'Could not start authorization for Gmail.' }
+      ])
+    })
+    expect(screen.getByRole('button', { name: 'Try again' }).hasAttribute('disabled')).toBe(false)
+    expect(screen.queryByText('LINK_STILL_VALID')).toBeNull()
+  })
+
+  it('Continue settles the whole operation', async () => {
     const request = vi.fn().mockResolvedValue({ status: 'ok' })
     // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
     $gateway.set({ request } as never)
 
     renderConnector()
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Not now' })).toBeTruthy()
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Not now' }))
+    fireEvent.click(await waitFor(() => screen.getByRole('button', { name: 'Continue' })))
 
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        result: JSON.stringify({ targets: [{ name: 'gmail', status: 'skipped' }] }),
+        result: JSON.stringify({ settled_by: 'continue' }),
         session_id: SESSION_ID
       })
     })
@@ -159,15 +223,27 @@ describe('ConnectorTool operation card', () => {
     expect(connectionRequestOwnsPart(props(), REQUEST)).toBe(true)
   })
 
-  it('renders settled operations with no live controls', () => {
-    renderOffer({ ...REQUEST, settled: true, settledBy: 'all_resolved' })
+  it('renders a settled operation as three words and no live controls', () => {
+    renderOffer({
+      ...REQUEST,
+      settled: true,
+      settledBy: 'deadline',
+      targets: [
+        { ...GMAIL, state: 'connected' },
+        { ...GMAIL, name: 'notion', state: 'skipped' },
+        { ...GMAIL, detail: 'Access denied by user', name: 'linear', state: 'not_connected' }
+      ]
+    })
 
     // ScaffoldRow paints every settled tool row as a disabled disclosure button; the contract is
-    // that nothing is actionable: no enabled button, no Connect / Not now / Continue.
+    // that nothing is actionable and nothing explains.
     const buttons = [...window.document.querySelectorAll('[data-connector-offer] button')]
 
     expect(buttons.every(button => button.hasAttribute('disabled'))).toBe(true)
-    expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Continue' })).toBeNull()
+    expect(screen.getByText('Connected')).toBeTruthy()
+    expect(screen.getByText('Skipped')).toBeTruthy()
+    expect(screen.getByText('Not connected')).toBeTruthy()
+    expect(screen.queryByText('Access denied by user')).toBeNull()
   })
 })

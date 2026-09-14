@@ -7,24 +7,24 @@ import { useSessionView } from '@/app/chat/session-view'
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
-import {
-  ConnectorCard,
-  type ConnectorCardCopy,
-  type ConnectorCardOutcome,
-  type ConnectorCardState,
-  ConnectorSummary,
-  outcomeMeta
-} from '@/components/ui/connector-card'
+import { ConnectorCard, ConnectorRow, type ConnectorRowMark, ConnectorSummary } from '@/components/ui/connector-card'
 import { useI18n } from '@/i18n'
-import { connectorCalls, connectorText, connectorTitle, connectorToolName, recordOf } from '@/lib/connector-tools'
+import {
+  connectorAuthorizationUrl,
+  connectorCalls,
+  connectorText,
+  connectorTitle,
+  connectorToolName,
+  recordOf
+} from '@/lib/connector-tools'
 import {
   type ConnectionRequest,
   type ConnectionTarget,
   continueConnectionRequest,
-  sessionConnectionRequest,
-  skipConnectionTarget
+  sessionConnectionRequest
 } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
+import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
@@ -122,158 +122,85 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
 }
 
 type ConnectorCopy = ReturnType<typeof useI18n>['t']['connectors']
-type ConnectorAction = 'none' | 'open' | 'reissue'
+type ConnectorVerb = 'none' | 'open' | 'reissue'
 
-interface ConnectorCardPhase {
-  action: ConnectorAction
-  cardState: ConnectorCardState
-  dismissed: boolean
-  outcome: (target: ConnectionTarget, copy: ConnectorCopy) => ConnectorCardOutcome | undefined
-  phase: (copy: ConnectorCopy) => string | undefined
-  requiresUrl: boolean
-  unresolved: boolean
+/** The settled row's word; the card never says why. */
+interface SettledWord {
+  meta: string
+  tone?: 'ok'
 }
 
-const noOutcome = (): undefined => undefined
-const noPhase = (): undefined => undefined
+interface ConnectorCardPhase {
+  mark: ConnectorRowMark
+  resolved: boolean
+  settled: (copy: ConnectorCopy) => SettledWord
+  verb: ConnectorVerb
+}
 
-const errorOutcome = (target: ConnectionTarget, copy: ConnectorCopy): ConnectorCardOutcome => ({
-  detail: target.detail || copy.failed,
-  status: 'error'
-})
-
-const connectedOutcome = (target: ConnectionTarget): ConnectorCardOutcome => ({
-  status: 'connected',
-  tools: target.tools
-})
+const connected = (copy: ConnectorCopy): SettledWord => ({ meta: copy.connected, tone: 'ok' })
+const notConnected = (copy: ConnectorCopy): SettledWord => ({ meta: copy.notConnected })
+const skipped = (copy: ConnectorCopy): SettledWord => ({ meta: copy.skipped })
 
 const CONNECTOR_CARD_PHASES = {
-  connected: {
-    action: 'none',
-    cardState: 'connected',
-    dismissed: false,
-    outcome: connectedOutcome,
-    phase: noPhase,
-    requiresUrl: false,
-    unresolved: false
-  },
-  expired: {
-    action: 'reissue',
-    cardState: 'needs_auth',
-    dismissed: false,
-    outcome: errorOutcome,
-    phase: noPhase,
-    requiresUrl: false,
-    unresolved: true
-  },
-  failed: {
-    action: 'reissue',
-    cardState: 'not_configured',
-    dismissed: false,
-    outcome: errorOutcome,
-    phase: noPhase,
-    requiresUrl: false,
-    unresolved: true
-  },
-  initiated: {
-    action: 'open',
-    cardState: 'not_configured',
-    dismissed: false,
-    outcome: noOutcome,
-    phase: copy => copy.waiting,
-    requiresUrl: true,
-    unresolved: true
-  },
-  not_connected: {
-    action: 'none',
-    cardState: 'not_configured',
-    dismissed: false,
-    outcome: (target, copy) => ({ detail: target.detail || copy.notConnected, status: 'error' }),
-    phase: noPhase,
-    requiresUrl: false,
-    unresolved: true
-  },
-  pending: {
-    action: 'open',
-    cardState: 'not_configured',
-    dismissed: false,
-    outcome: noOutcome,
-    phase: noPhase,
-    requiresUrl: true,
-    unresolved: true
-  },
-  skipped: {
-    action: 'none',
-    cardState: 'not_configured',
-    dismissed: true,
-    outcome: noOutcome,
-    phase: noPhase,
-    requiresUrl: false,
-    unresolved: false
-  },
-  unavailable: {
-    action: 'none',
-    cardState: 'disabled',
-    dismissed: false,
-    outcome: errorOutcome,
-    phase: noPhase,
-    requiresUrl: false,
-    unresolved: true
-  }
+  connected: { mark: 'connected', resolved: true, settled: connected, verb: 'none' },
+  expired: { mark: 'idle', resolved: false, settled: notConnected, verb: 'reissue' },
+  failed: { mark: 'idle', resolved: false, settled: notConnected, verb: 'reissue' },
+  initiated: { mark: 'waiting', resolved: false, settled: notConnected, verb: 'open' },
+  not_connected: { mark: 'idle', resolved: false, settled: notConnected, verb: 'none' },
+  pending: { mark: 'idle', resolved: false, settled: notConnected, verb: 'open' },
+  skipped: { mark: 'idle', resolved: true, settled: skipped, verb: 'none' },
+  unavailable: { mark: 'idle', resolved: true, settled: notConnected, verb: 'none' }
 } satisfies Record<ConnectionTargetState, ConnectorCardPhase>
+
+const MARK_LABEL = {
+  connected: (copy: ConnectorCopy) => copy.connected,
+  idle: (copy: ConnectorCopy) => copy.notConnected,
+  waiting: (copy: ConnectorCopy) => copy.waiting
+} satisfies Record<ConnectorRowMark, (copy: ConnectorCopy) => string>
 
 interface ConnectorOfferProps {
   owner: ConnectorOwner
   request: ConnectionRequest
 }
 
-function connectorCardCopy(copy: ConnectorCopy): ConnectorCardCopy {
-  return {
-    connectAction: copy.connect,
-    connectTitle: copy.connectTitle,
-    decline: copy.skip,
-    envRequired: '',
-    grantAction: copy.grant,
-    retryAction: copy.retry,
-    stateConnected: copy.connected,
-    stateDeclined: copy.skipped,
-    stateDisabled: copy.disabled,
-    stateFailed: copy.failed,
-    stateNeedsAuth: copy.needsAuth,
-    toolCount: count => String(count),
-    trustCommunity: '',
-    trustCommunityTip: () => '',
-    trustVerified: () => '',
-    trustVerifiedTip: () => ''
-  }
-}
-
 export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const { t } = useI18n()
   const copy = t.connectors
-  const cardCopy = connectorCardCopy(copy)
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
-  const unresolved = request.targets.some(target => CONNECTOR_CARD_PHASES[target.state].unresolved)
+  const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
 
-  const reissue = async (name: string): Promise<void> => {
-    setReissuing(current => new Set(current).add(name))
+  // Try again is one RPC on the open operation; the backend re-mints only a dead link. The fresh link
+  // opens at once, and the update frame then paints the row as waiting. A refused re-mint is a click
+  // that changed nothing, so it gets a toast; the row stays as it was.
+  const reissue = async (target: ConnectionTarget): Promise<void> => {
+    setReissuing(current => new Set(current).add(target.name))
 
     try {
-      await requestGatewayForAgent(
+      const reply = await requestGatewayForAgent<ToolCallMessagePartProps['result']>(
         owner.connectionId,
         owner.profile,
         'connectors.connect',
         {
-          connectors: [name],
+          connectors: [target.name],
           reconnect: true,
           session_id: request.sessionId
         },
         45000
       )
+
+      const rows = recordOf(reply).targets
+      const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === target.name) : undefined
+      const url = connectorAuthorizationUrl(minted?.connect_url)
+
+      if (url) {
+        void window.hermesDesktop?.openExternal?.(url)
+      }
+    } catch (error) {
+      notifyError(error, copy.connectErrorFor(connectorTitle(target.name)))
     } finally {
       setReissuing(current => {
         const next = new Set(current)
-        next.delete(name)
+        next.delete(target.name)
 
         return next
       })
@@ -285,15 +212,14 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
     return (
       <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer>
         {request.targets.map(target => {
-          const phase = CONNECTOR_CARD_PHASES[target.state]
-          const outcome = phase.outcome(target, copy) ?? { status: 'declined' as const }
+          const { meta, tone } = CONNECTOR_CARD_PHASES[target.state].settled(copy)
 
           return (
             <ConnectorSummary
               connector={{ name: target.name, title: connectorTitle(target.name) }}
               key={target.name}
-              meta={outcomeMeta(outcome, cardCopy)}
-              tone={outcome.status === 'connected' ? 'ok' : outcome.status === 'error' ? 'error' : undefined}
+              meta={meta}
+              tone={tone}
             />
           )
         })}
@@ -303,42 +229,42 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
 
   return (
     <div className="my-2 grid min-w-0 max-w-lg gap-1" data-connector-offer>
-      {request.targets.map(target => {
-        const phase = CONNECTOR_CARD_PHASES[target.state]
-        const title = connectorTitle(target.name)
-        const waitingForReissue = reissuing.has(target.name)
+      <ConnectorCard title={copy.title}>
+        {request.targets.map(target => {
+          const phase = CONNECTOR_CARD_PHASES[target.state]
+          const busy = reissuing.has(target.name)
 
-        return (
-          <ConnectorCard
-            actionDisabled={phase.action === 'none' || waitingForReissue || (phase.requiresUrl && target.connectUrl === null)}
-            busy={waitingForReissue}
-            collapseWhenSettled={false}
-            connector={{
-              description: copy.describe(title),
-              name: target.name,
-              title
-            }}
-            copy={cardCopy}
-            dismissed={phase.dismissed}
-            key={target.name}
-            onConnect={() => {
-              if (phase.action === 'open' && target.connectUrl && window.hermesDesktop?.openExternal) {
-                void window.hermesDesktop.openExternal(target.connectUrl)
-              }
+          const action =
+            phase.verb === 'none'
+              ? undefined
+              : {
+                  busy,
+                  // Prevent concurrent sign-in tabs; a waiting row without a link has nothing to open yet.
+                  disabled: (reissuing.size > 0 && !busy) || (phase.verb === 'open' && target.connectUrl === null),
+                  label: phase.verb === 'open' ? copy.connect : copy.retry,
+                  onClick: () => {
+                    if (phase.verb === 'open' && target.connectUrl && window.hermesDesktop?.openExternal) {
+                      void window.hermesDesktop.openExternal(target.connectUrl)
+                    }
 
-              if (phase.action === 'reissue') {
-                void reissue(target.name)
-              }
-            }}
-            onDismiss={() => void skipConnectionTarget(request, target.name)}
-            otherBusy={reissuing.size > 0 && !waitingForReissue}
-            outcome={phase.outcome(target, copy)}
-            phase={phase.phase(copy)}
-            state={phase.cardState}
-            variant="avatar"
-          />
-        )
-      })}
+                    if (phase.verb === 'reissue') {
+                      void reissue(target)
+                    }
+                  }
+                }
+
+          return (
+            <ConnectorRow
+              action={action}
+              connector={{ name: target.name, title: connectorTitle(target.name) }}
+              cue={phase.mark === 'waiting' ? copy.waiting : undefined}
+              key={target.name}
+              mark={phase.mark}
+              markLabel={MARK_LABEL[phase.mark](copy)}
+            />
+          )
+        })}
+      </ConnectorCard>
       {unresolved ? (
         <div className="px-3.5">
           <Button onClick={() => void continueConnectionRequest(request)} size="xs" variant="textStrong">

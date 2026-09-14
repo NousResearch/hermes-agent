@@ -384,6 +384,22 @@ class SessionUsageMixin:
         self._insert_session_row(session_id, "unknown")
         self._execute_write(lambda conn: self._record_model_usage(conn, session_id, task=task, **usage))
 
+    def session_model_usage_page(self, session_id: str, *, limit: int, offset: int) -> List[Dict[str, Any]]:
+        """Read one session's ledger without exporting private billing routes."""
+        with self._read_ctx() as conn:
+            rows = conn.execute(
+                """SELECT model, task, api_call_count, input_tokens, output_tokens,
+                          cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                          estimated_cost_usd, actual_cost_usd AS recorded_actual_cost_usd,
+                          NULL AS actual_cost_usd, cost_status, first_seen, last_seen
+                   FROM session_model_usage WHERE session_id = ?
+                   ORDER BY task, model, billing_provider, billing_base_url, billing_mode
+                   LIMIT ? OFFSET ?""",
+                (session_id, limit, offset),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
         shrink with paging. Spend prefers the billed figure over the estimate."""

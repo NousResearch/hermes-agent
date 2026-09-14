@@ -49,6 +49,108 @@ def _run_apply_profile_override(
     return os.environ.get("HERMES_HOME")
 
 
+class TestApplyProfileOverrideHermesProfile:
+    def test_explicit_profile_sets_profile_identity_and_home(self, tmp_path, monkeypatch):
+        hermes_root = tmp_path / ".hermes"
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.setattr(
+            sys, "argv", ["hermes", "-p", "coder", "chat", "-q", "print env"]
+        )
+
+        from hermes_cli.main import _apply_profile_override
+
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") == str(profile_dir)
+        assert os.environ.get("HERMES_PROFILE") == "coder"
+
+    def test_explicit_profile_identity_uses_home_resolution_normalization(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_root = tmp_path / ".hermes"
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.setattr(sys, "argv", ["hermes", "--profile=Coder", "chat"])
+
+        from hermes_cli.main import _apply_profile_override
+
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") == str(profile_dir)
+        assert os.environ.get("HERMES_PROFILE") == "coder"
+
+    def test_explicit_profile_is_not_derived_from_model_or_other_env(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_root = tmp_path / ".hermes"
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("HERMES_PROFILE", "ambient-profile")
+        monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+        monkeypatch.setenv("MODEL_PROFILE", "model-authored-profile")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "hermes",
+                "-m",
+                "model-authored-profile",
+                "-p",
+                "coder",
+                "chat",
+                "-q",
+                "print env",
+            ],
+        )
+
+        from hermes_cli.main import _apply_profile_override
+
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") == str(profile_dir)
+        assert os.environ.get("HERMES_PROFILE") == "coder"
+        assert "HERMES_PROFILE_NAME" not in os.environ
+        assert os.environ.get("MODEL_PROFILE") == "model-authored-profile"
+
+    def test_sticky_profile_redirects_home_without_fabricating_profile_identity(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_root = tmp_path / ".hermes"
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        (hermes_root / "active_profile").write_text("coder")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.setenv("MODEL_PROFILE", "model-authored-profile")
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["hermes", "-m", "model-authored-profile", "chat", "-q", "print env"],
+        )
+
+        from hermes_cli.main import _apply_profile_override
+
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") == str(profile_dir)
+        assert "HERMES_PROFILE" not in os.environ
+        assert os.environ.get("MODEL_PROFILE") == "model-authored-profile"
+
+
 class TestApplyProfileOverrideHermesHomeGuard:
     """Regression guard for issue #22502.
 

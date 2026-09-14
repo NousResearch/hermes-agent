@@ -512,9 +512,9 @@ _ensure_project_root_on_path_fast()
 # ---------------------------------------------------------------------------
 # Profile override — MUST happen before any hermes module import.
 #
-# Many modules cache HERMES_HOME at import time (module-level constants).
-# We intercept --profile/-p from sys.argv here and set the env var so that
-# every subsequent ``os.getenv("HERMES_HOME", ...)`` resolves correctly.
+# Many modules cache profile-sensitive environment at import time. We intercept
+# --profile/-p from sys.argv here and set HERMES_HOME plus the explicit launcher
+# identity in HERMES_PROFILE before subsequent imports resolve profile state.
 # The flag is stripped from sys.argv so argparse never sees it.
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
@@ -658,10 +658,12 @@ def _apply_profile_override() -> None:
 
     # 3. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
+        canonical_profile_name = profile_name
         try:
-            from hermes_cli.profiles import resolve_profile_env
+            from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 
-            hermes_home = resolve_profile_env(profile_name)
+            canonical_profile_name = normalize_profile_name(profile_name)
+            hermes_home = resolve_profile_env(canonical_profile_name)
         except FileNotFoundError as exc:
             hermes_home = _resolve_sudo_user_profile_env(profile_name)
             if not hermes_home:
@@ -678,6 +680,8 @@ def _apply_profile_override() -> None:
             )
             return
         os.environ["HERMES_HOME"] = hermes_home
+        if consume > 0:
+            os.environ["HERMES_PROFILE"] = canonical_profile_name
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0 and profile_index is not None:
             start = profile_index + 1  # +1 because argv is sys.argv[1:]

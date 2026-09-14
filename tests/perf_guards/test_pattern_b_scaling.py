@@ -15,16 +15,17 @@ Guard design rules (to stay CI-stable):
 3. min-of-K timing samples to reject scheduler noise.
 
 Baseline measurements (2026-08-28, macOS arm64, Python 3.12):
-- streamed-text accumulation on main: 4N/N ratio ≈ 9.6 (superlinear —
-  ``+=`` through the attribute copies the whole reply per delta).
-  With PR #92166 (parts list + join): ratio ≈ 4 (linear).
+- streamed-text accumulation before the fix: 4N/N ratio ≈ 9.6 (superlinear —
+  ``+=`` through the attribute copied the whole reply per delta).  Fixed by
+  #101707 (parts list + join, the merged salvage of #92166): ratio ≈ 4
+  (linear), so guard 1 now asserts live.
 - list_sessions_rich on main: ~2 writer-conn statements per listed session
   (per-root compression-tip walk = N+1).  With PR #95380 (batched edge
   query): bounded constant.
 
-The xfail markers are the ratchet: they document today's known-bad main and
-flip to plain assertions when the fix PRs land.  Remove a marker in the same
-PR that merges its fix (or immediately after).
+The xfail marker is the ratchet: it documents today's known-bad main and
+flips to a plain assertion when the fix PR lands.  Remove a marker in the
+same PR that merges its fix (or immediately after).
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ def _min_time(fn, *, repeat: int = 5) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Guard 1 — streamed assistant text accumulation must be linear (#92166).
+# Guard 1 — streamed assistant text accumulation must be linear (#101707).
 # ---------------------------------------------------------------------------
 
 
@@ -74,11 +75,6 @@ class TestStreamedTextAccumulationLinear:
         # The accumulated value must be faithful regardless of representation.
         assert len(agent._current_streamed_assistant_text) == n * len(self.DELTA)
 
-    @pytest.mark.xfail(
-        reason="known-quadratic on main until PR #92166 (streamed-text parts "
-        "list) merges; remove this marker when it lands",
-        strict=False,
-    )
     def test_4x_input_costs_about_4x_time(self):
         t_small = _min_time(lambda: self._accumulate(self.N_SMALL))
         t_large = _min_time(lambda: self._accumulate(self.N_LARGE))
@@ -86,7 +82,7 @@ class TestStreamedTextAccumulationLinear:
         assert ratio < self.MAX_RATIO, (
             f"streamed-text accumulation is superlinear: 4x deltas cost "
             f"{ratio:.1f}x time (linear ≈ 4, quadratic ≈ 16). The reply is "
-            f"being recopied per delta — see PR #92166 for the fix shape."
+            f"being recopied per delta — see PR #101707 for the fix shape."
         )
 
 

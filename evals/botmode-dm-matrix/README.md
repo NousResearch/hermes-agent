@@ -6,13 +6,13 @@ Run from the repository root after installing root npm dependencies and building
 
 ```sh
 cp evals/botmode-dm-matrix/probe-dm-matrix.spec.ts apps/desktop/e2e/
-git apply evals/botmode-dm-matrix/mock-trigger.patch
+git apply --unidiff-zero evals/botmode-dm-matrix/mock-trigger.patch
 (cd apps/desktop && npm run build)
 # Set DISPLAY, current XAUTHORITY, XDG_RUNTIME_DIR and VIRTUAL_ENV first.
 (cd apps/desktop && HERMES_DESKTOP_CDP_PORT=off BOT_DM_SERVICE_PATH=1 \
   BOT_DM_EVIDENCE=/tmp/botmode-dm-matrix-proof \
   npx playwright test e2e/probe-dm-matrix.spec.ts --reporter=list)
-git apply -R evals/botmode-dm-matrix/mock-trigger.patch
+git apply --unidiff-zero -R evals/botmode-dm-matrix/mock-trigger.patch
 rm apps/desktop/e2e/probe-dm-matrix.spec.ts
 ```
 

@@ -7667,10 +7667,15 @@ async function clearOauthSession(baseUrl) {
   const sess = getOauthSessionForUrl(baseUrl)
 
   // Before anything else: the in-memory snapshot outlives the cookie jar, and
-  // a signed-out session must not keep riding renderer requests.
-  gatewayWsCookieStore.forget(baseUrl)
+  // a signed-out session must not keep riding renderer requests. The removal
+  // below is asynchronous, so hold the store's sign-out window open until it
+  // is done — a WS registration racing the cleanup would otherwise snapshot
+  // cookies that are already on their way out.
+  const signOutDone = gatewayWsCookieStore.forget(baseUrl)
 
   if (!sess) {
+    signOutDone()
+
     return
   }
 
@@ -7686,6 +7691,8 @@ async function clearOauthSession(baseUrl) {
     )
   } catch {
     // Best effort — a stale cookie self-expires anyway.
+  } finally {
+    signOutDone()
   }
 }
 

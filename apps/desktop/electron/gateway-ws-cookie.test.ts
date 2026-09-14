@@ -34,6 +34,21 @@ function createStore(
   return { advance: (ms: number) => (clock += ms), onError, readCookies, store }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
+  const promise = new Promise<T>((yes, no) => {
+    resolve = yes
+    reject = no
+  })
+
+  // A rejection is always awaited through register(); this only keeps Node from
+  // seeing an unhandled rejection in the tick between reject() and that await.
+  promise.catch(() => undefined)
+
+  return { promise, reject, resolve }
+}
+
 function cookieOn(store: ReturnType<typeof createGatewayWsCookieStore>, url: string, resourceType = 'webSocket') {
   const response = store.apply({ url, resourceType, requestHeaders: { Origin: 'app://hermes' } }, {})
 
@@ -171,6 +186,155 @@ describe('gateway WebSocket cookie forwarding', () => {
 
     expect(cookieOn(store, oneWs)).toBeUndefined()
     expect(cookieOn(store, twoWs)).toBe('session=two')
+  })
+
+  // Two Cloud agents deliberately share the legacy jar (oauth-partition.ts), so
+  // the partition is the right scope for a sign-out but NOT for replacement:
+  // registering B must not cancel A's in-flight handshake.
+  it('keeps two gateways sharing one partition independent', async () => {
+    const a = 'https://agent-a.example'
+    const b = 'https://agent-b.example'
+    const aWs = 'wss://agent-a.example/api/ws?ticket=a'
+    const bWs = 'wss://agent-b.example/api/ws?ticket=b'
+
+    const { store } = createStore({
+      [a]: [{ name: 'proxy_session', value: 'a-value' }],
+      [b]: [{ name: 'proxy_session', value: 'b-value' }]
+    })
+
+    await store.register(aWs, a)
+    await store.register(bWs, b)
+
+    expect(cookieOn(store, aWs)).toBe('proxy_session=a-value')
+    expect(cookieOn(store, bWs)).toBe('proxy_session=b-value')
+
+    // A read that finds no jar for B must not revoke A either.
+    await store.register('wss://agent-b.example/api/ws?ticket=b2', 'https://agent-c.example')
+
+    expect(cookieOn(store, aWs)).toBe('proxy_session=a-value')
+
+    // Sign-out still empties the shared jar for both.
+    store.forget(a)
+
+    expect(cookieOn(store, aWs)).toBeUndefined()
+    expect(cookieOn(store, bWs)).toBeUndefined()
+  })
+
+  // The jar read is asynchronous, so a registration can finish after the work
+  // that superseded or revoked it. Neither may publish or delete.
+  it('does not republish a cookie read that resolves after sign-out', async () => {
+    const jar = deferred<GatewayCookie[]>()
+    const store = createGatewayWsCookieStore({
+      readCookies: () => jar.promise,
+      resolvePartition: () => LEGACY
+    })
+
+    const pending = store.register(WS_URL, GATEWAY)
+
+    store.forget(GATEWAY)
+    jar.resolve(proxyJar)
+    await pending
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  // clearOauthSession() empties the jar asynchronously, so a read taken while
+  // that is in flight sees cookies that are already on their way out.
+  it('refuses a read taken while sign-out is still clearing the jar', async () => {
+    const { store } = createStore()
+
+    const signOutDone = store.forget(GATEWAY)
+
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+
+    signOutDone()
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  it('refuses a mid-sign-out read that only resolves after the jar is cleared', async () => {
+    const jar = deferred<GatewayCookie[]>()
+    const store = createGatewayWsCookieStore({
+      readCookies: () => jar.promise,
+      resolvePartition: () => LEGACY
+    })
+
+    const signOutDone = store.forget(GATEWAY)
+    const pending = store.register(WS_URL, GATEWAY)
+
+    signOutDone()
+    jar.resolve(proxyJar)
+    await pending
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  it('lets a registration started after sign-out completes authorize normally', async () => {
+    const { store } = createStore()
+
+    store.forget(GATEWAY)()
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
+  it('reopens only once concurrent sign-outs have all finished', async () => {
+    const { store } = createStore()
+
+    const first = store.forget(GATEWAY)
+    const second = store.forget(GATEWAY)
+
+    first()
+    first()
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+
+    second()
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
+  it('does not let a slow read replace the newer ticket url it lost to', async () => {
+    const stale = 'wss://gateway.example/api/ws?ticket=stale'
+    const slow = deferred<GatewayCookie[]>()
+    let reads = 0
+    const store = createGatewayWsCookieStore({
+      readCookies: () => (++reads === 1 ? slow.promise : Promise.resolve(proxyJar)),
+      resolvePartition: () => LEGACY
+    })
+
+    const pending = store.register(stale, GATEWAY)
+
+    await store.register(WS_URL, GATEWAY)
+    slow.resolve(proxyJar)
+    await pending
+
+    expect(cookieOn(store, stale)).toBeUndefined()
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+  })
+
+  it('does not let a slow failed read revoke the newer ticket url', async () => {
+    const onError = vi.fn()
+    const slow = deferred<GatewayCookie[]>()
+    let reads = 0
+    const store = createGatewayWsCookieStore({
+      readCookies: () => (++reads === 1 ? slow.promise : Promise.resolve(proxyJar)),
+      resolvePartition: () => LEGACY,
+      onError
+    })
+
+    const pending = store.register('wss://gateway.example/api/ws?ticket=stale', GATEWAY)
+
+    await store.register(WS_URL, GATEWAY)
+    slow.reject(new Error('partition unavailable'))
+    await pending
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+    expect(onError).toHaveBeenCalledWith('partition unavailable')
   })
 
   it('preserves headers already merged for the request and appends to any Cookie', async () => {

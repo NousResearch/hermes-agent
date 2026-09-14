@@ -20,13 +20,26 @@
 //
 //   - keyed by the EXACT ws url, so ordinary HTTP(S) traffic to the gateway,
 //     sibling paths, and unrelated sockets get nothing;
-//   - one live url per OAuth partition — registering the next mint drops the
-//     previous one, so a stale/pre-rotation ticket url carries no authority;
+//   - one live url per GATEWAY (its baseUrl is the owner) — registering the
+//     next mint for that gateway drops its previous one, so a stale /
+//     pre-rotation ticket url carries no authority. Replacement stops there:
+//     two Cloud agents share the legacy partition, and registering B must not
+//     cancel A's in-flight handshake, which nobody signed out;
 //   - additionally time-bounded, so an upgrade that never happens expires
-//     instead of lingering for the process lifetime;
+//     instead of lingering for the process lifetime, and bounded in count;
 //   - dropped per partition on sign-out, since one jar backs several urls (the
 //     portal and a Cloud agent share the legacy partition, so signing out of
 //     the portal must drop the agent's entry too).
+//
+// Registration reads the jar asynchronously, so both of its exits are fenced
+// against work that overtook them: a per-partition logout epoch (a read that
+// resolves after sign-out must not republish the signed-out cookie — the jar
+// cleanup cannot retract this separate snapshot) and a per-owner generation (a
+// slow read must neither replace nor revoke a newer registration's entry).
+//
+// Sign-out empties the jar asynchronously, so `forget` also opens a window,
+// closed by the callback it returns, during which no read may publish: one
+// started mid-cleanup sees cookies that are on their way out.
 //
 // This never mints or alters credentials: it forwards a session the user
 // already obtained interactively, to the one request it was needed for.
@@ -61,28 +74,76 @@ export interface RemoteRequestResponse {
 }
 
 const DEFAULT_TTL_MS = 120_000
+// Live urls are one-per-gateway and short-lived; the cap is only a backstop
+// against a pathological number of distinct owners accumulating entries.
+const MAX_ENTRIES = 32
+
+interface GatewayWsCookieEntry {
+  expiresAt: number
+  header: string
+  owner: string
+  partition: string
+}
 
 export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDependencies) {
-  const entries = new Map<string, { expiresAt: number; header: string; partition: string }>()
+  const entries = new Map<string, GatewayWsCookieEntry>()
+  // Latest generation issued per owner, and the current logout epoch per
+  // partition. Both are read before the jar await and re-checked after it.
+  const generations = new Map<string, number>()
+  const epochs = new Map<string, number>()
+  // Sign-outs still clearing their jar, per partition.
+  const signOuts = new Map<string, number>()
   const now = () => (dependencies.now ? dependencies.now() : Date.now())
   const ttlMs = dependencies.ttlMs ?? DEFAULT_TTL_MS
 
-  const dropPartition = (partition: string) => {
+  const dropWhere = (matches: (entry: GatewayWsCookieEntry) => boolean) => {
     for (const [wsUrl, entry] of entries) {
-      if (entry.partition === partition) {
+      if (matches(entry)) {
         entries.delete(wsUrl)
       }
     }
   }
 
-  // Authorize exactly one upgrade: `wsUrl`, using `baseUrl`'s jar. Replaces any
-  // url previously registered for the same partition.
+  // Keep the map bounded: expired entries first, then the soonest to expire.
+  const prune = () => {
+    const cutoff = now()
+
+    dropWhere(entry => entry.expiresAt <= cutoff)
+
+    if (entries.size <= MAX_ENTRIES) {
+      return
+    }
+
+    const oldest = [...entries.entries()]
+      .sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+      .slice(0, entries.size - MAX_ENTRIES)
+
+    for (const [wsUrl] of oldest) {
+      entries.delete(wsUrl)
+    }
+  }
+
+  // Authorize exactly one upgrade: `wsUrl`, using `baseUrl`'s jar. Replaces the
+  // url previously registered for the SAME gateway, and nothing else.
   const register = async (wsUrl: string, baseUrl: string) => {
     if (!wsUrl || !baseUrl) {
       return
     }
 
+    const owner = baseUrl
     const partition = dependencies.resolvePartition(baseUrl)
+    const generation = (generations.get(owner) ?? 0) + 1
+    const epoch = epochs.get(partition) ?? 0
+
+    generations.set(owner, generation)
+
+    // True only while this registration is still the newest one for its
+    // gateway AND no sign-out emptied the jar it read from. Checked on both
+    // exits: superseded or revoked work must neither publish nor delete.
+    const stillCurrent = () =>
+      generations.get(owner) === generation &&
+      (epochs.get(partition) ?? 0) === epoch &&
+      !signOuts.get(partition)
 
     let cookies: GatewayCookie[] | null
 
@@ -90,9 +151,16 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
       cookies = await dependencies.readCookies(baseUrl)
     } catch (error) {
       // Non-fatal: a gateway with no proxy in front connects without this.
-      dropPartition(partition)
+      if (stillCurrent()) {
+        dropWhere(entry => entry.owner === owner)
+      }
+
       dependencies.onError?.(error instanceof Error ? error.message : String(error))
 
+      return
+    }
+
+    if (!stillCurrent()) {
       return
     }
 
@@ -101,22 +169,61 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
       .map(cookie => `${cookie.name}=${cookie.value}`)
       .join('; ')
 
-    // Replace, never accumulate: only the newest ticket url stays authorized.
-    dropPartition(partition)
+    // Replace, never accumulate: only this gateway's newest ticket url stays
+    // authorized. Other gateways sharing the jar keep theirs.
+    dropWhere(entry => entry.owner === owner)
 
     if (header) {
-      entries.set(wsUrl, { expiresAt: now() + ttlMs, header, partition })
+      entries.set(wsUrl, { expiresAt: now() + ttlMs, header, owner, partition })
+      prune()
     }
   }
 
   // Drop every url authorized from `baseUrl`'s jar — all of them sharing its
   // partition, since sign-out empties the jar they were all read from.
+  //
+  // Call the returned callback once the jar itself has been cleared. Until
+  // then the partition stays closed to new authority, because a registration
+  // racing the cleanup would read cookies that are already being deleted.
   const forget = (baseUrl: string) => {
     if (!baseUrl) {
-      return
+      return () => undefined
     }
 
-    dropPartition(dependencies.resolvePartition(baseUrl))
+    const partition = dependencies.resolvePartition(baseUrl)
+
+    // Bump the epoch as well as dropping the live entries: a jar read already
+    // in flight for this partition must not publish the signed-out cookie.
+    const revoke = () => {
+      epochs.set(partition, (epochs.get(partition) ?? 0) + 1)
+      dropWhere(entry => entry.partition === partition)
+    }
+
+    revoke()
+    signOuts.set(partition, (signOuts.get(partition) ?? 0) + 1)
+
+    let closed = false
+
+    return () => {
+      if (closed) {
+        return
+      }
+
+      closed = true
+
+      const remaining = (signOuts.get(partition) ?? 1) - 1
+
+      if (remaining > 0) {
+        signOuts.set(partition, remaining)
+
+        return
+      }
+
+      signOuts.delete(partition)
+      // A read that began during the window resolves against the pre-logout
+      // jar, so retire that generation too rather than let it land late.
+      revoke()
+    }
   }
 
   // The header for a request, or null. Exact url match AND, when Chromium

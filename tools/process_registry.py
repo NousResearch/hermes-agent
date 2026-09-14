@@ -1335,15 +1335,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
-        # The reader thread has drained the pipe at this point (EOF reached
-        # before _move_to_finished runs). Release the retained Popen/PTY
-        # handles now so finished sessions stop holding OS file descriptors —
-        # otherwise every finished-but-unpruned session keeps its stdout pipe
-        # (or PTY master) FD open until the finished-process TTL elapses, and
-        # heavy background churn can exhaust the gateway's FD limit.
-        # poll()/wait()/read_log() serve output from the buffered
-        # ``output_buffer``, never from the pipe, so closing the handles here
-        # is lossless.
+        # Release the retained Popen/PTY handles now: otherwise every
+        # finished-but-unpruned session keeps its stdout pipe (or PTY master)
+        # FD open until FINISHED_TTL_SECONDS elapses, and heavy background
+        # churn can exhaust the gateway's FD limit. On the reader-thread path
+        # the pipe is already at EOF; on the kill/reconcile paths the reader
+        # may still be draining — its next read raises on the closed stream
+        # and the loop exits, dropping at most the unread tail of a process
+        # that was just killed. poll()/wait()/read_log() serve from the
+        # buffered ``output_buffer``, never from the pipe.
         self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
@@ -1382,21 +1382,18 @@ class ProcessRegistry(ProcessCheckpointMixin):
         kill anything — the child has already exited — it only releases the
         parent's pipe FDs, which is exactly the retained-resource leak.
         """
-        proc = getattr(session, "process", None)
+        proc = session.process
         if proc is not None:
-            for stream_name in ("stdout", "stderr", "stdin"):
-                stream = getattr(proc, stream_name, None)
+            for stream in (proc.stdout, proc.stderr, proc.stdin):
                 if stream is not None:
-                    try:
+                    with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
                         stream.close()
-                    except Exception:
-                        pass
-        pty = getattr(session, "_pty", None)
-        if pty is not None:
-            try:
-                pty.close()
-            except Exception:
-                pass
+        if session._pty is not None:
+            # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
+            # closes the master fd exactly once; it raises only if the child
+            # ignores SIGKILL, which we don't want to surface on the finish path.
+            with suppress(Exception):
+                session._pty.close()
 
     # ----- Query Methods -----
 

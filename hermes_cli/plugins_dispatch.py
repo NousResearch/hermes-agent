@@ -204,6 +204,52 @@ class PluginDispatchMixin:
                     "Hook '%s' callback %s raised: %s", hook_name, getattr(cb, "__name__", repr(cb)), exc)
         return results
 
+    def evaluate_goal_completion_gate(self, gate_id: str, **payload: Any) -> Dict[str, Any]:
+        """Evaluate one opted-in Goal completion gate with fail-closed delivery semantics."""
+        entry = self._goal_completion_gates.get(gate_id)
+        if entry is None:
+            return {
+                "action": "blocked", "gate_id": gate_id,
+                "reason": f"required goal completion gate is unavailable: {gate_id}",
+            }
+        callback_payload = {**payload, "gate_id": gate_id}
+        try:
+            from hermes_cli.plugins import _resolve_hook_callback_timeout
+            timeout = _resolve_hook_callback_timeout()
+            if timeout > 0:
+                result = self._run_hook_callback_bounded(
+                    f"goal_completion_gate:{gate_id}", entry.callback, callback_payload, timeout,
+                )
+                if result is _HOOK_SKIPPED:
+                    return {
+                        "action": "blocked", "gate_id": gate_id,
+                        "reason": f"goal completion gate timed out or is still running: {gate_id}",
+                    }
+            else:
+                result = self._invoke_hook_callback(entry.callback, callback_payload)
+        except Exception as exc:
+            logger.warning("Goal completion gate %s raised: %s", gate_id, exc)
+            return {
+                "action": "blocked", "gate_id": gate_id,
+                "reason": f"goal completion gate failed: {gate_id} ({type(exc).__name__})",
+            }
+        if not isinstance(result, Mapping):
+            return {
+                "action": "blocked", "gate_id": gate_id,
+                "reason": f"goal completion gate returned an invalid result: {gate_id}",
+            }
+        action = str(result.get("action") or "").strip().lower()
+        if action not in {"allow", "continue", "blocked"}:
+            return {
+                "action": "blocked", "gate_id": gate_id,
+                "reason": f"goal completion gate returned an invalid action: {gate_id}",
+            }
+        return {
+            "action": action,
+            "gate_id": gate_id,
+            "reason": str(result.get("reason") or "").strip() or f"goal completion gate returned {action}",
+        }
+
     def _run_hook_callback_bounded(
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
@@ -390,6 +436,10 @@ class PluginDispatchMixin:
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
+
+    def has_goal_completion_gate(self, gate_id: str) -> bool:
+        """Return True when an opted-in Goal gate provider is registered."""
+        return gate_id in self._goal_completion_gates
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Iterable, Optional
 
 from hermes_cli.goals import GoalContract, GoalManager
@@ -54,6 +55,13 @@ TASK_COMMIT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "Conditions that require BLOCKED/human intervention, never DONE.",
             },
+            "completion_gate": {
+                "type": ["string", "null"],
+                "description": (
+                    "Optional registered Plugin completion gate id. Missing/crashed gates fail closed only "
+                    "for Goals that explicitly opt in. None preserves the current gate on amend."
+                ),
+            },
         },
         "required": ["operation"],
         "additionalProperties": False,
@@ -76,6 +84,15 @@ def _text(value: Any, field: str, *, required: bool = False) -> Optional[str]:
     if not value:
         raise ValueError(f"{field} cannot be empty")
     return value
+
+
+def _gate_id(value: Any, *, preserve_none: bool = False) -> Optional[str]:
+    if value is None:
+        return None if preserve_none else ""
+    clean = _text(value, "completion_gate", required=True).lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", clean):
+        raise ValueError("completion_gate must match [a-z0-9][a-z0-9._-]{0,127}")
+    return clean
 
 
 def _items(value: Any, field: str) -> Optional[list[str]]:
@@ -134,6 +151,7 @@ def _snapshot(manager: GoalManager) -> Optional[dict]:
         "turns_used": state.turns_used,
         "max_turns": state.max_turns,
         "contract": state.contract.to_dict(),
+        "completion_gate": state.completion_gate,
     }
 
 
@@ -141,7 +159,10 @@ def _same_contract(left: GoalContract, right: GoalContract) -> bool:
     return left.to_dict() == right.to_dict()
 
 
-def _verify_persisted(session_id: str, expected_goal: str, expected_contract: GoalContract, expected_created_at: float) -> bool:
+def _verify_persisted(
+    session_id: str, expected_goal: str, expected_contract: GoalContract,
+    expected_created_at: float, expected_completion_gate: str,
+) -> bool:
     reloaded = GoalManager(session_id=session_id).state
     return bool(
         reloaded is not None
@@ -149,6 +170,7 @@ def _verify_persisted(session_id: str, expected_goal: str, expected_contract: Go
         and reloaded.status in {"active", "paused"}
         and reloaded.created_at == expected_created_at
         and _same_contract(reloaded.contract, expected_contract)
+        and reloaded.completion_gate == expected_completion_gate
     )
 
 
@@ -162,6 +184,7 @@ def task_commit(
     constraints: Optional[list[str]] = None,
     boundaries: Optional[list[str]] = None,
     stop_when: Optional[list[str]] = None,
+    completion_gate: Optional[str] = None,
 ) -> str:
     """Create, amend, or replace one session's persistent GoalContract."""
     try:
@@ -188,9 +211,14 @@ def task_commit(
                 values["outcome"], values["verification"],
                 list_values["constraints"], list_values["boundaries"], list_values["stop_when"],
             )
+            proposed_gate = _gate_id(completion_gate) or ""
 
             if operation == "create" and has_goal:
-                if current and current.goal == values["objective"] and _same_contract(current.contract, proposed):
+                if (
+                    current and current.goal == values["objective"]
+                    and _same_contract(current.contract, proposed)
+                    and current.completion_gate == proposed_gate
+                ):
                     return json.dumps({"success": True, "result": "idempotent_noop", "goal": _snapshot(manager)}, ensure_ascii=False)
                 return json.dumps({
                     "success": False,
@@ -200,7 +228,9 @@ def task_commit(
                 }, ensure_ascii=False)
 
             previous_created_at = current.created_at if current is not None else 0.0
-            state = manager.set(values["objective"], contract=proposed)
+            state = manager.set(
+                values["objective"], contract=proposed, completion_gate=proposed_gate,
+            )
             if current is not None and state.created_at <= previous_created_at:
                 # The timestamp is the V1 stale-event generation cutoff. Keep it strictly monotonic
                 # for every successor generation, including create-after-done/cleared, so a wall-clock
@@ -208,7 +238,9 @@ def task_commit(
                 state.created_at = previous_created_at + 0.000001
                 manager._save()
             result = "replaced" if operation == "replace" and has_goal else "created"
-            if not _verify_persisted(sid, state.goal, state.contract, state.created_at):
+            if not _verify_persisted(
+                sid, state.goal, state.contract, state.created_at, state.completion_gate,
+            ):
                 raise RuntimeError("Goal persistence verification failed")
             return json.dumps({"success": True, "result": result, "goal": _snapshot(manager)}, ensure_ascii=False)
 
@@ -235,11 +267,16 @@ def task_commit(
             boundaries=_join_items(merged["boundaries"]),
             stop_when=_join_items(merged["stop_when"]),
         )
-        if _same_contract(old, proposed):
+        proposed_gate = _gate_id(completion_gate, preserve_none=True)
+        if proposed_gate is None:
+            proposed_gate = current.completion_gate
+        if _same_contract(old, proposed) and current.completion_gate == proposed_gate:
             return json.dumps({"success": True, "result": "idempotent_noop", "goal": _snapshot(manager)}, ensure_ascii=False)
         created_at = current.created_at
-        manager.set_contract(proposed)
-        if not _verify_persisted(sid, current.goal, proposed, created_at):
+        current.contract = proposed
+        current.completion_gate = proposed_gate
+        manager._save()
+        if not _verify_persisted(sid, current.goal, proposed, created_at, proposed_gate):
             raise RuntimeError("Goal amendment persistence verification failed")
         return json.dumps({"success": True, "result": "amended", "goal": _snapshot(manager)}, ensure_ascii=False)
     except Exception as exc:
@@ -259,6 +296,7 @@ registry.register(
         constraints=args.get("constraints"),
         boundaries=args.get("boundaries"),
         stop_when=args.get("stop_when"),
+        completion_gate=args.get("completion_gate"),
     ),
     check_fn=check_task_commit_requirements,
 )

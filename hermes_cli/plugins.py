@@ -222,6 +222,15 @@ class LoadedPlugin:
     deferred: bool = False
 
 
+@dataclass(frozen=True)
+class RegisteredGoalCompletionGate:
+    """Plugin-owned veto provider consulted only for an opted-in candidate DONE transition."""
+
+    name: str
+    callback: Callable
+    plugin_id: str
+
+
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
 
@@ -290,6 +299,29 @@ class PluginContext:
     def state(self) -> PluginState:
         """This plugin's profile-scoped durable JSON state facade."""
         return PluginState(self.plugin_id, self.manifest.skill_namespace)
+
+    def register_goal_completion_gate(self, name: str, callback: Callable) -> PluginRegistration:
+        """Register one deterministic completion gate for explicitly opted-in Goals.
+
+        A gate is consulted only after the Goal judge returns ``done``. It may return
+        ``{"action": "allow"}``, ``{"action": "continue", "reason": ...}``, or
+        ``{"action": "blocked", "reason": ...}``; it can never promote a non-DONE candidate.
+        """
+        clean = str(name or "").strip().lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}", clean):
+            raise ValueError("goal completion gate name must match [a-z0-9][a-z0-9._-]{0,127}")
+        if not callable(callback):
+            raise TypeError("goal completion gate callback must be callable")
+        existing = self._manager._goal_completion_gates.get(clean)
+        if existing is not None:
+            raise ValueError(
+                f"goal completion gate {clean!r} is already registered by {existing.plugin_id!r}"
+            )
+        entry = RegisteredGoalCompletionGate(name=clean, callback=callback, plugin_id=self.plugin_id)
+        return self._register_entry(
+            "goal_completion_gate", clean, self._manager._goal_completion_gates, entry,
+            "Plugin %s registered goal completion gate: %s", clean, previous=None,
+        )
 
     @cached_property
     def platform_actions(self):
@@ -1150,6 +1182,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
         self._approval_transports: Dict[str, Any] = {}
+        self._goal_completion_gates: Dict[str, RegisteredGoalCompletionGate] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
         # Event bus: owner-tagged subscriptions (unload removes zombies); one daemon worker keeps
@@ -1726,6 +1759,11 @@ def has_hook(hook_name: str) -> bool:
     Lazy-discovers first — same gate-before-invoke rationale as :func:`has_middleware` (tracking #64178).
     """
     return _delivery_manager().has_hook(hook_name)
+
+
+def evaluate_goal_completion_gate(gate_id: str, **payload: Any) -> Dict[str, Any]:
+    """Evaluate an explicitly selected Plugin completion gate after candidate DONE."""
+    return _delivery_manager().evaluate_goal_completion_gate(gate_id, **payload)
 
 
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:

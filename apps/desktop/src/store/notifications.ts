@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { stripIpcErrorPrefix } from '@/lib/ipc-error'
 import { isLocalBackendSlotWaitTimeout, requestPoolLimitsSettings } from '@/store/pool-limits'
 
 export type NotificationKind = 'error' | 'warning' | 'info' | 'success'
@@ -154,8 +155,7 @@ function summarizeErrorMessage(message: string, fallback: string) {
 // rethrow) can reuse the same IPC-unwrapping + summarizing as notifyError.
 export function readableError(error: unknown, fallback: string): { message: string; detail?: string } {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
-  const unwrapped = raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw
-  const cleaned = cleanErrorText(unwrapped)
+  const cleaned = cleanErrorText(stripIpcErrorPrefix(raw))
   const detail = cleaned.match(/"detail"\s*:\s*"([^"]+)"/)?.[1] ?? cleaned
   const summary = summarizeErrorMessage(detail, fallback)
 

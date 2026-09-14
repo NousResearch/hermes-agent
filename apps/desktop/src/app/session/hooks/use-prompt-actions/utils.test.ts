@@ -129,6 +129,15 @@ describe('inlineErrorMessage', () => {
     expect(inlineErrorMessage(new Error("Error invoking remote method 'x': Error: boom"), 'fallback')).toBe('boom')
   })
 
+  it('unwraps an electron remote-method error with a custom error class', () => {
+    expect(
+      inlineErrorMessage(
+        new Error("Error invoking remote method 'hermes:api': DesktopBridgeError: The backend is unavailable."),
+        'fallback'
+      )
+    ).toBe('The backend is unavailable.')
+  })
+
   it('strips a leading Error: prefix', () => {
     expect(inlineErrorMessage(new Error('Error: nope'), 'fallback')).toBe('nope')
   })

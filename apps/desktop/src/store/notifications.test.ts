@@ -1,6 +1,6 @@
 import { beforeEach, expect, test } from 'vitest'
 
-import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError } from './notifications'
+import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError, readableError } from './notifications'
 
 beforeEach(() => {
   clearNotifications()
@@ -67,4 +67,14 @@ test('code-skew 503 unwraps to a restart-required summary, not raw IPC JSON', ()
   expect(lastMessage()).toMatch(/running old code after an update/i)
   expect(lastMessage()).not.toMatch(/hermes:api/)
   expect(lastMessage()).not.toMatch(/systemctl/)
+})
+
+test('custom IPC error classes do not leak into readable messages', () => {
+  const result = readableError(
+    new Error("Error invoking remote method 'hermes:api': DesktopBridgeError: The backend is unavailable."),
+    'fallback'
+  )
+
+  expect(result.message).not.toContain('invoking remote method')
+  expect(result.message).not.toContain('DesktopBridgeError')
 })

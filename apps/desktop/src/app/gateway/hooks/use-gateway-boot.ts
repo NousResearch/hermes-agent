@@ -15,6 +15,7 @@ import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
 import { decideLivenessForceClose, LIVENESS_REPROBE_DELAY_MS } from '@/lib/gateway-liveness-policy'
+import { stripIpcErrorPrefix } from '@/lib/ipc-error'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $desktopBoot,
@@ -717,7 +718,7 @@ export function useGatewayBoot({
           !cancelled && (switchToken === null ? !$gatewaySwitching.get() : isCurrentGatewaySwitch(switchToken))
 
         if (mayPublishFailure) {
-          const message = err instanceof Error ? err.message : String(err)
+          const message = stripIpcErrorPrefix(err instanceof Error ? err.message : String(err))
           failDesktopBoot(message)
 
           // Only the current owner may lower loading. A failed begin returns no
@@ -1194,7 +1195,7 @@ export function useGatewayBoot({
         bootRetryAttempt = 0
       } catch (err) {
         if (!cancelled) {
-          const message = err instanceof Error ? err.message : String(err)
+          const message = stripIpcErrorPrefix(err instanceof Error ? err.message : String(err))
 
           // Main's classification (#82679) still decides every failure it can
           // see. The one it cannot see is the renderer-owned WebSocket dial:

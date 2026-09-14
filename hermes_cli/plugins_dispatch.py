@@ -140,7 +140,7 @@ _MAX_HOOK_CALLBACK_TIMEOUT_SECS = 600.0
 _HOOK_SKIPPED = object()  # returned by _run_hook_callback_bounded on skip/timeout
 
 
-def _hook_call_identity(kwargs: Dict[str, Any]) -> Any:
+def _hook_call_identity(kwargs: Dict[str, Any]) -> Optional[str]:
     """Identity of the call this callback fires for, or ``None`` when the event has none.
 
     Concurrent invocations of the same tool in one session must not collapse into one
@@ -234,7 +234,10 @@ class PluginDispatchMixin:
         token = object()
         with self._hook_timeout_lock:
             suppressed_until = self._hook_timeout_suppressed_until.get(suppression_key)
-            running = gate_key in self._hook_running_callbacks
+            # A worker abandoned on timeout still holds a thread; a fresh call id must not
+            # start a second one for the same callback, or a hung plugin leaks a thread per call.
+            running = (gate_key in self._hook_running_callbacks
+                       or bool(self._hook_abandoned.get(suppression_key)))
             if (suppressed_until is not None and suppressed_until > time.monotonic()) or running:
                 logger.warning(
                     "Hook '%s' callback %s skipped after previous "
@@ -253,6 +256,11 @@ class PluginDispatchMixin:
             with self._hook_timeout_lock:
                 if self._hook_running_callbacks.get(gate_key) is token:
                     self._hook_running_callbacks.pop(gate_key, None)
+                    abandoned = self._hook_abandoned.get(suppression_key)
+                    if abandoned is not None:
+                        abandoned.discard(gate_key)
+                        if not abandoned:
+                            self._hook_abandoned.pop(suppression_key, None)
 
         def _runner() -> None:
             try:
@@ -277,6 +285,7 @@ class PluginDispatchMixin:
                 # See #6622.
                 self._hook_timeout_suppressed_until[suppression_key] = (
                     time.monotonic() + self._hook_timeout_suppression_seconds)
+                self._hook_abandoned.setdefault(suppression_key, set()).add(gate_key)
             logger.warning(
                 "Hook '%s' callback %s timed out after %gs — skipping", hook_name, callback_name, timeout)
             return _HOOK_SKIPPED

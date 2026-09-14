@@ -452,6 +452,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from gateway.code_skew import record_boot_fingerprint
     record_boot_fingerprint()
 
+    # Config verdicts come before the duplicate-instance guard: `--replace` must not stop a healthy
+    # gateway for a launch that cannot start.
+    resolved_config = config if config is not None else load_gateway_config_for_runner()
+    profile_homes = (_multiplex_profile_homes(resolved_config)
+                     if getattr(resolved_config, 'multiplex_profiles', False) else [])
+    if profile_homes and not _launch_home_may_multiplex():
+        return False
+
     # Duplicate-instance guard scoped to HERMES_HOME; distinct-home multi-profile setups coexist.
     from gateway.status import get_running_pid
     existing_pid = get_running_pid()
@@ -461,11 +469,6 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
     from gateway.runtime_ownership import process_ownership, OwnershipConflict
     from gateway.status import remove_pid_file, release_gateway_runtime_lock
-    resolved_config = config if config is not None else load_gateway_config_for_runner()
-    profile_homes = (_multiplex_profile_homes(resolved_config)
-                     if getattr(resolved_config, 'multiplex_profiles', False) else [])
-    if profile_homes and not _launch_home_may_multiplex():
-        return False
     try:
         process_ownership.reserve([get_hermes_home(), *(home for _, home in profile_homes)])
     except OwnershipConflict as exc:

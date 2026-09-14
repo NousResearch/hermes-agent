@@ -411,6 +411,17 @@ class TestAuthHeaders:
         assert result.count('"') == 2, result  # both quotes survive
         assert result.endswith('"'), result
 
+    def test_mixed_case_authorization_header_masked(self):
+        # Regression for #108807: the fast-path gate before _AUTH_HEADER_RE only
+        # checked the literal substrings "uthorization"/"UTHORIZATION", so mixed
+        # case (e.g. "aUtHoRiZaTiOn") skipped the regex entirely even though the
+        # regex itself is case-insensitive.
+        secret = "SyntheticOpaqueCredential92837465"
+        for header in ("aUtHoRiZaTiOn", "pRoXy-AuThOrIzAtIoN"):
+            text = f"{header}: Bearer {secret}"
+            result = redact_sensitive_text(text, force=True)
+            assert secret not in result, result
+
 
 
 class TestApiKeyHeaders:

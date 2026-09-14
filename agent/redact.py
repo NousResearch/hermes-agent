@@ -439,6 +439,11 @@ _PYTHON_EXCEPTION_LINE_RE = re.compile(
 # (unterminated quote → shell EOF / SyntaxError).
 _AUTH_HEADER_RE = re.compile(r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?([^\s\"']+)", re.IGNORECASE)
 
+# Cheap pre-gate for the substitution above: a compiled case-insensitive search is fast to
+# reject on (no substitution work, no per-call str.lower() copy) and, unlike checking for the
+# literal "uthorization"/"UTHORIZATION" substrings, actually catches mixed case (#108807).
+_AUTH_HEADER_GATE_RE = re.compile(r"uthorization", re.IGNORECASE)
+
 # API-key style headers (single opaque value, no scheme word): non-vendor-prefix
 # values would otherwise leak when a curl command is echoed into tool output.
 _SECRET_HEADER_NAMES = r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
@@ -847,7 +852,7 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if not code_file:
         text = _redact_assignments(text)
 
-    if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
+    if _AUTH_HEADER_GATE_RE.search(text):
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)
 
     if ":" in text:

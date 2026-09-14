@@ -180,6 +180,23 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+### Ignore edited messages
+
+By default, Telegram edits are handled like ordinary inbound messages. If an edited message should never begin a second agent turn, opt in per profile:
+
+```yaml
+telegram:
+  ignore_edited_messages: true
+```
+
+The default is `false`, preserving existing bot behavior. When enabled, edits to text, commands, location/venue messages, and media messages are ignored by the normal agent-turn handlers. This does not disable the separate `message_edited` platform event for installed event hooks; that observer is not the normal reply path.
+
+Equivalent environment variable:
+
+```bash
+TELEGRAM_IGNORE_EDITED_MESSAGES=true
+```
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

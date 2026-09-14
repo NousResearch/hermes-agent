@@ -586,6 +586,37 @@ def test_idle_sweep_busy_model_resets_clock(tmp_path, monkeypatch, stub_server):
     assert handler.unloaded == []
 
 
+def test_idle_sweep_probe_failure_keeps_elapsed_idle_clock(tmp_path, monkeypatch, stub_server):
+    """A transient telemetry failure cannot postpone an otherwise confirmed idle unload."""
+    port, handler = stub_server
+    handler.models = {"data": [{"id": "side-m", "status": {"value": "loaded"}}]}
+    handler.slots = []
+    handler.requests_processing = 0
+    handler.unloaded = []
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+    sup = LlamaServerSupervisor(tmp_path / "i", tmp_path / "m", port=port)
+    original_request = sup._request
+    fail_probe = False
+
+    def flaky_request(route, *args, **kwargs):
+        if fail_probe and route.startswith("/slots?"):
+            raise OSError("transient telemetry failure")
+        return original_request(route, *args, **kwargs)
+
+    monkeypatch.setattr(sup, "_request", flaky_request)
+    t0 = 1000.0
+    assert sup.sweep_idle(now=t0) == []
+
+    fail_probe = True
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S - 1) == []
+
+    fail_probe = False
+    assert sup.sweep_idle(now=t0 + sup.IDLE_UNLOAD_S + 1) == ["side-m"]
+    assert handler.unloaded == ["side-m"]
+
+
 def test_staged_models_requires_every_split_part(tmp_path, monkeypatch):
     """A split GGUF mid-download must NOT count as staged: the picker, the
     catalog's 'downloaded' flag, and the router's model list all read

@@ -370,7 +370,15 @@ class LlamaServerSupervisor:
         except Exception:  # noqa: BLE001
             return unloaded
         for model_id, status in statuses.items():
-            if status not in _RESIDENT or not self.is_idle(model_id):
+            if status not in _RESIDENT:
+                self._idle_since.pop(model_id, None)
+                continue
+            idle = self._probe_idle(model_id)
+            if idle is None:
+                logger.info(
+                    "idle probe failed for %s; retaining prior idle clock", model_id)
+                continue
+            if not idle:
                 self._idle_since.pop(model_id, None)
                 continue
             first_idle = self._idle_since.setdefault(model_id, now)
@@ -414,6 +422,10 @@ class LlamaServerSupervisor:
         """No processing requests and no busy slots. Router quirk: /slots and /metrics are
         per-child and require ?model= (bare calls 400). With ``model_id`` checks that one child;
         without, every loaded child."""
+        return self._probe_idle(model_id) is True
+
+    def _probe_idle(self, model_id: str | None = None) -> bool | None:
+        """Return confirmed idle/busy, or ``None`` when telemetry could not be read."""
         try:
             loaded = ([model_id] if model_id is not None
                       else [m for m, status in self.models().items() if status in _RESIDENT])
@@ -429,4 +441,4 @@ class LlamaServerSupervisor:
                         return False
             return True
         except Exception:  # noqa: BLE001
-            return False
+            return None

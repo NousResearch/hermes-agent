@@ -382,6 +382,47 @@ def test_llamacpp_endpoint_stale_state_falls_through(tmp_path, monkeypatch):
     assert DEFAULT_PROBE_PORTS  # (import kept honest)
 
 
+def _configured_non_default_llamacpp(tmp_path, monkeypatch, stub_server):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    port, handler = stub_server
+    handler.props = {"build_info": "b-test", "model_path": "model.gguf"}
+    (hermes_home / "config.yaml").write_text(
+        f"local_runtime:\n  detect_ports:\n    - {port}\n",
+        encoding="utf-8",
+    )
+    # Keep the tests independent of services on the production default port.
+    monkeypatch.setattr("hermes_cli.local_runtime.detect.DEFAULT_PROBE_PORTS", ())
+    return port
+
+
+def test_llamacpp_catalog_detects_configured_non_default_port(
+        tmp_path, monkeypatch, stub_server):
+    """Provider catalog resolution honors local_runtime.detect_ports."""
+    port = _configured_non_default_llamacpp(tmp_path, monkeypatch, stub_server)
+    from hermes_cli.providers import resolve_provider_full
+
+    provider = resolve_provider_full("llamacpp")
+    assert provider is not None
+    assert provider.source == "local-runtime"
+    assert provider.base_url == f"http://127.0.0.1:{port}/v1"
+
+
+def test_llamacpp_runtime_detects_configured_non_default_port(
+        tmp_path, monkeypatch, stub_server):
+    """Agent runtime resolution independently honors local_runtime.detect_ports."""
+    port = _configured_non_default_llamacpp(tmp_path, monkeypatch, stub_server)
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    runtime = resolve_runtime_provider(requested="llamacpp")
+    assert runtime["provider"] == "custom"
+    assert runtime["source"] == "local-runtime"
+    assert runtime["requested_provider"] == "llamacpp"
+    assert runtime["base_url"] == f"http://127.0.0.1:{port}/v1"
+    assert runtime["api_key"] == "no-key-required"
+
+
 def test_llamacpp_dead_server_raises_friendly_error(tmp_path, monkeypatch):
     """A llamacpp send with no server must say WHY in user terms, not fall
     through to the generic custom path (which lands on a cloud provider

@@ -16,6 +16,7 @@ from gateway import hosted_room_links, hosted_room_peer, hosted_rooms, session_g
 from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 from gateway.platforms.api_server_room_grants import _local_room_catalog
 from gateway.session_hosted_service import CanonicalHostedRoomService
+from gateway.session_authorities import SessionAuthorities
 from tui_gateway import hosted_room_service
 from tui_gateway.hosted_room_peer_transport import PeerMemberRoute, build_member_dispatch
 from tui_gateway.hosted_room_service import HostedRoomService
@@ -107,9 +108,9 @@ def test_route_preserves_catalog_without_activating_local_target(
     assert route.execution_policy_digest == catalog.execution_policy.policy_digest
     assert getattr(_route(catalog), "attachments", None) is False
 
-    # The real canonical catalog still refuses text AND attachments.
+    # A real registry with no owning authority must still refuse both capabilities.
     adapter = SimpleNamespace(
-        gateway_runner=SimpleNamespace(session_authorities=SimpleNamespace(active=lambda: None)),
+        gateway_runner=SimpleNamespace(session_authorities=SessionAuthorities(tmp_path)),
         _profile_scope=lambda profile: nullcontext(),
     )
     _, unavailable = _local_room_catalog(adapter, "default", "home")

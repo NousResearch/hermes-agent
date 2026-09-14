@@ -207,12 +207,6 @@ class AuthoritySupersededError(AuthorityConflictError):
     """Raised when a successful authority claim was later superseded."""
 
 
-class RoomQuarantinedError(AuthorityConflictError):
-    """Raised when an unsafe legacy takeover must remain read-only."""
-
-    reason = "room_authority_quarantined"
-
-
 # --- validation ---------------------------------------------------------------
 _canonical_json = partial(canonical_json, error=HostedRoomError, ensure_ascii=False)
 _validate_identifier = partial(identifier, error=HostedRoomError)

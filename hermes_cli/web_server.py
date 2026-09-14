@@ -33,7 +33,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__
-from hermes_cli.config import get_hermes_home, load_config
+from hermes_cli.config import detect_install_method, get_hermes_home, load_config
 from hermes_cli.web_server_memory import _field_is_set, _field_value
 from plugins.memory.config_schema import ProviderField
 from hermes_cli.web_routers.chat_ws import _CONSOLE_PROMPT
@@ -279,7 +279,7 @@ async def _lifespan(app: "FastAPI"):
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
 
             shutdown_local_runtime()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001, S110 -- reviewed: best-effort shutdown of the local runtime, must not block exit
             pass
         if os.getenv("HERMES_DESKTOP") == "1":
             _terminate_desktop_managed_gateway()
@@ -2015,7 +2015,7 @@ def _no_auth_provider_message(host: str) -> str:
 
         if _nous_plugin.LAST_SKIP_REASON:
             skip_reasons.append(f"  • nous: {_nous_plugin.LAST_SKIP_REASON}")
-    except Exception:
+    except Exception:  # noqa: S110 -- reviewed: optional plugin probe, absence/import failure is expected
         pass
 
     if host in _LOOPBACK_HOST_VALUES:
@@ -2024,7 +2024,7 @@ def _no_auth_provider_message(host: str) -> str:
             from hermes_cli.dashboard_auth.prefix import resolve_public_url
 
             public_url = resolve_public_url()
-        except Exception:
+        except Exception:  # noqa: S110 -- reviewed: optional public-url resolver, falls back to empty on failure
             pass
         gate_reason = (
             f"dashboard.public_url is set to "
@@ -2075,7 +2075,7 @@ def _no_auth_provider_message(host: str) -> str:
                 "`hermes plugins enable basic`), then restart the "
                 "dashboard.\n\n"
             ) + fix_hint
-    except Exception:
+    except Exception:  # noqa: S110 -- reviewed: cosmetic hint enrichment only, refusal message is built either way
         pass
     msg = (
         f"Refusing to bind dashboard to {host} — {gate_reason}, "
@@ -2356,7 +2356,7 @@ def _run_serve(serve, config, host: str, port: int) -> None:
                 asyncio.set_event_loop_policy(
                     asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
                 )
-            except Exception:
+            except Exception:  # noqa: S110 -- reviewed: Windows-only event-loop policy API, no-op fallback elsewhere
                 pass
 
     # ``capture_signals()`` re-raises the captured signal after graceful

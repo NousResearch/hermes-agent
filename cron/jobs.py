@@ -1147,7 +1147,7 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
     try:
         ensure_dirs()
         atomic_write_text(_current_cron_store().cron_dir / name, text, tmp_prefix=tmp_prefix)
-    except Exception:
+    except Exception:  # noqa: S110 -- reviewed: best-effort marker write, failures must not break the tick (see docstring)
         pass
 
 

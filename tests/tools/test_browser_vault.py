@@ -187,8 +187,43 @@ class TestClassifier:
         challenge = _ctrl(name="code", page_text="Identity verification", max_length=6)
         assert len(classify_otp_controls([challenge])) == 1
         assert classify_otp_controls([_ctrl(name="code", page_text="Redeem discount", max_length=6)]) == []
+        assert classify_otp_controls([_ctrl(name="code", page_text="Sign in to checkout", max_length=6)]) == []
         assert classify_otp_controls([_ctrl(name="code", page_text="Identity verification", max_length=40)]) == []
         assert classify_otp_controls([challenge, _ctrl(index=1, name="code", page_text="Identity verification")]) == []
+
+    def test_nearby_text_requires_specific_mfa_page_and_rejects_security_codes(self):
+        verification = _ctrl(
+            name="code", nearby_text="Código de verificación",
+            page_text="Sign in", max_length=6,
+        )
+        assert classify_otp_controls([verification]) == []
+        assert classify_otp_controls([_ctrl(
+            name="cvc", label="Security code", nearby_text="Código de seguridad",
+            page_text="Identity verification", max_length=3,
+        )]) == []
+        assert classify_otp_controls([_ctrl(
+            name="promo", nearby_text="Code de sécurité",
+            page_text="Vérification de l'identité", max_length=6,
+        )]) == []
+
+    def test_nearby_text_is_unique_or_an_all_single_digit_group(self):
+        shared = {
+            "nearby_text": "Código de verificación",
+            "page_text": "Verificación de identidad",
+        }
+        ambiguous = [
+            _ctrl(index=0, name="account", max_length=6, **shared),
+            _ctrl(index=1, name="code", max_length=6, **shared),
+        ]
+        assert classify_otp_controls(ambiguous) == []
+
+        boxes = [_ctrl(index=index, max_length=1, **shared) for index in range(6)]
+        assert [item.control.index for item in classify_otp_controls(boxes)] == list(range(6))
+
+    def test_normalized_verification_code_name_is_live_fallback(self):
+        challenge = _ctrl(name="verification_code", page_text="Enter verification code", max_length=6)
+        result = classify_otp_controls([challenge])
+        assert len(result) == 1 and result[0].score == 70
 
     def test_new_password_autocomplete_excluded(self):
         assert classify_login_control(

@@ -136,22 +136,22 @@ def classify_login_control(control: LoginControl) -> Optional[ClassifiedLoginCon
 
 
 _RE_OTP = re.compile(
-    r"\b(?:one[\s-]?time|verification|security|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
+    r"\b(?:one[\s-]?time|verification|auth(?:entication|enticator)?|2fa|two[\s-]?factor|mfa|totp|otp|"
     r"passcode|sms)\b.*\b(?:code|pin|token)\b|\b(?:otp|totp|2fa|mfa|verification\s*code|passcode)\b"
 )
 
 _RE_LOCALIZED_OTP = re.compile(
     r"\b(?:codigo|code|codice)\s+(?:(?:de|di)\s+)?(?:verificacion|verificacao|verification|verifica|"
-    r"seguridad|securite|sicurezza|autenticacion|autenticacao|authentification|temporaneo|temporal)\b|"
+    r"autenticacion|autenticacao|autenticazione|authentification|temporaneo|temporal|temporaire)\b|"
     r"\b(?:verificacion|verificacao|verification|verifica|autenticacion|autenticacao|authentification)"
     r"\s+(?:(?:de|di)\s+)?(?:codigo|code|codice)\b|"
-    r"\b(?:verifizierungs|bestatigungs|sicherheits|einmal)(?:code|kode)\b|\bverificatiecode\b"
+    r"\b(?:verifizierungs|bestatigungs|einmal)(?:code|kode)\b|\bverificatiecode\b"
 )
-_RE_BARE_CODE_NAME = re.compile(r"^(?:code|codigo|verification code|verification_code)$")
+_RE_BARE_CODE_NAME = re.compile(r"^(?:code|codigo|verification code)$")
 _RE_MFA_PAGE = re.compile(
     r"\b(?:identity|identidad|identidade|identite)\b.{0,40}\b(?:verification|verificacion|verificacao|"
-    r"verifica)\b|\b(?:two factor|2fa|mfa|totp|otp|second factor|doble factor|segundo factor|"
-    r"inicio de sesion|iniciar sesion|sign in|log in)\b"
+    r"verifica)\b|\b(?:verification|verificacion|verificacao|verifica)\b.{0,40}\b(?:identity|identidad|"
+    r"identidade|identite)\b|\b(?:two factor|2fa|mfa|totp|otp|second factor|doble factor|segundo factor)\b"
 )
 
 
@@ -160,12 +160,18 @@ def _says_one_time_code(value: str) -> bool:
     return bool(_RE_OTP.search(normalized) or _RE_LOCALIZED_OTP.search(normalized))
 
 
+def _is_mfa_page(value: str) -> bool:
+    normalized = _normalize_text(value)
+    return bool(_RE_MFA_PAGE.search(normalized) or _says_one_time_code(normalized))
+
+
 def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginControl]:
     """The controls that take a second-factor code. ``autocomplete=one-time-code`` is authoritative;
     otherwise a text/tel/number input whose name/label says code/OTP/2FA/verification. Some sites split
     the code into one input per digit (``maxlength=1`` boxes): they are returned in DOM order and the
     fill spreads the code across them."""
     out: List[ClassifiedLoginControl] = []
+    nearby_candidates: List[ClassifiedLoginControl] = []
     constrained_fallbacks: List[ClassifiedLoginControl] = []
     for c in controls:
         tokens = c.autocomplete.lower().split()
@@ -177,18 +183,29 @@ def classify_otp_controls(controls: List[LoginControl]) -> List[ClassifiedLoginC
         if _says_one_time_code(" ".join(p for p in (c.name, c.label) if p)):
             out.append(ClassifiedLoginControl(c, 70, "one-time-code"))
             continue
-        if _says_one_time_code(c.nearby_text):
-            out.append(ClassifiedLoginControl(c, 65, "one-time-code"))
+        plausible_nearby_length = c.max_length is None or c.max_length == 1 or 4 <= c.max_length <= 12
+        if (plausible_nearby_length and _says_one_time_code(c.nearby_text)
+                and _is_mfa_page(c.page_text)):
+            nearby_candidates.append(ClassifiedLoginControl(c, 65, "one-time-code"))
             continue
         normalized_name = _normalize_text(c.name)
         plausible_length = c.max_length is None or 4 <= c.max_length <= 12
         if (plausible_length and _RE_BARE_CODE_NAME.fullmatch(normalized_name)
-                and _RE_MFA_PAGE.search(_normalize_text(c.page_text))):
+                and _is_mfa_page(c.page_text)):
             constrained_fallbacks.append(ClassifiedLoginControl(c, 55, "one-time-code"))
+    if out:
+        return out
+    # Sibling text is weaker than an associated label. Accept one candidate,
+    # or a group made entirely of single-character OTP boxes, never a mixed
+    # form whose shared container happened to mention a verification code.
+    if len(nearby_candidates) == 1 or (
+            nearby_candidates
+            and all(candidate.control.max_length == 1 for candidate in nearby_candidates)):
+        return nearby_candidates
     # A bare ``id/name=code`` is accepted only as a unique candidate on a page
     # whose title/headings identify an authentication challenge. This covers
     # supplier MFA pages without turning coupon/product fields into OTP inputs.
-    return out or (constrained_fallbacks if len(constrained_fallbacks) == 1 else [])
+    return constrained_fallbacks if len(constrained_fallbacks) == 1 else []
 
 
 def select_password_fill(
@@ -315,7 +332,7 @@ _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
         element.getAttribute("placeholder") || "",
         element.getAttribute("title") || "",
       ].join(" "),
-      nearbyText: [boundedText(element.previousElementSibling, 160), boundedText(element.parentElement, 240)]
+      nearbyText: [boundedText(element.previousElementSibling, 160), boundedText(element.nextElementSibling, 160)]
         .filter(Boolean).join(" ").slice(0, 320),
       pageText,
       name: [element.name, element.id].join(" "),

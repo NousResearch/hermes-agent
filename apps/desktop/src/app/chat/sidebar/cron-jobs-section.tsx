@@ -184,6 +184,9 @@ export function SidebarCronJobsSection({
           onClick={onToggle}
           type="button"
         >
+          <span className="inline-grid size-4 shrink-0 place-items-center">
+            <Codicon className="text-(--theme-primary)" name="watch" size="0.75rem" />
+          </span>
           <SidebarPanelLabel>{label}</SidebarPanelLabel>
           <DisclosureCaret
             className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"

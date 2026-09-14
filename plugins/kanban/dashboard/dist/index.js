@@ -1045,6 +1045,16 @@
       setLastSelectedId(toId);
     }, [filteredBoard, lastSelectedId]);
 
+    // A plain click opens the drawer AND records the selection anchor, so a
+    // follow-up shift-click has a range origin. Without this the anchor is
+    // only ever set by ctrl/meta-click, which leaves the shipped shift-click
+    // range selection unreachable via the gesture users reach for first
+    // (click the first card, scroll, shift-click the last).
+    const openTask = useCallback(function (id) {
+      setLastSelectedId(id);
+      setSelectedTaskId(id);
+    }, []);
+
     const selectAllVisible = useCallback(function () {
       if (!filteredBoard || !filteredBoard.columns) return;
       const next = new Set();
@@ -1328,7 +1338,7 @@
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
           onDeleteSelected: deleteSelected,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),

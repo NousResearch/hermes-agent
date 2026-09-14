@@ -49,12 +49,29 @@ class ResolvedImage:
 # Explicit URL scheme ("ftp://", "s3://"). Bare Windows drive paths lack the "//".
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
+# Some local models (reproducibly gpt-oss via Ollama, issue #98428) hand back a
+# filesystem path they were given as `image_url: /abs/path` with a bare
+# "path:"/"local:" pseudo-scheme prefixed ("path:/home/.../img.jpg"). That is
+# not a real URI (no "//"), so _SCHEME_RE doesn't match and the whole string
+# falls through to the path branch, failing as "media file not found". Strip
+# the pseudo-scheme only when a path shape follows: POSIX absolute/home/dot
+# ("/", "~", "."), a Windows drive-absolute root ("C:\", "C:/"), or a UNC
+# root ("\\server\share"). Real schemes ("paths://x", "path://host" — the
+# "//" authority form is a genuine URI), bare relative names ("path:foo.png")
+# and drive-relative spellings ("path:C:img.png" — cwd-dependent, ambiguous)
+# keep their old shape.
+_PSEUDO_SCHEME_RE = re.compile(
+    r"^(?:path|local)\s*[:=]\s*(?=[/~.]|[A-Za-z]:[\\/]|\\\\)(?!//)",
+    re.IGNORECASE,
+)
+
 
 async def resolve_image_source(
     src: str, ctx: ResolveContext, *, permitted: tuple = ("image",)) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
+    s = _PSEUDO_SCHEME_RE.sub("", s, count=1)
     if s.startswith("data:"):
         data, mime = _resolve_data_url(s)
         return _finalize(data, mime, "data", s, permitted)

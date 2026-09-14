@@ -220,6 +220,72 @@ class TestSkillManageBatch(unittest.TestCase):
         )
         self.assertTrue(json.loads(raw)["success"])
 
+    def test_tc_003_to_008_invalid_batch_payloads_are_not_staged(self):
+        """Every payload-intrinsic failure is rejected before approval."""
+        from unittest.mock import patch as _patch
+
+        class _Decision:
+            allow = False
+            blocked = False
+            message = "staged for review"
+
+        cases = (
+            (
+                "TC-003-create-description-budget",
+                {"action": "create", "content": SK.format(n="probe").replace(
+                    "Use when probing batch ops. Behavior.", "a" * 61
+                )},
+                "60-char system-prompt budget",
+            ),
+            (
+                "TC-004-full-rewrite-frontmatter",
+                {"action": "patch", "content": "# Missing frontmatter\n"},
+                "must start with YAML frontmatter",
+            ),
+            (
+                "TC-005-targeted-patch-parameters",
+                {"action": "patch", "new_string": "Step 2."},
+                "old_string is required for 'patch'",
+            ),
+            (
+                "TC-006-mixed-patch-shapes",
+                {
+                    "action": "patch",
+                    "content": SK.format(n="probe"),
+                    "old_string": "Step 1.",
+                    "new_string": "Step 2.",
+                },
+                "EITHER content",
+            ),
+            (
+                "TC-007-supporting-file-traversal",
+                {
+                    "action": "write_file",
+                    "file_path": "../escape.md",
+                    "file_content": "x",
+                },
+                "Path traversal",
+            ),
+            (
+                "TC-008-remove-file-traversal",
+                {"action": "remove_file", "file_path": "../escape.md"},
+                "Path traversal",
+            ),
+        )
+
+        import tools.write_approval as wa
+
+        for case_id, operation, error_fragment in cases:
+            with self.subTest(case_id=case_id), \
+                 _patch.object(wa, "evaluate_gate", return_value=_Decision()), \
+                 _patch.object(wa, "stage_write") as stage_write:
+                result = self._call("probe", [operation])
+
+            self.assertFalse(result["success"], result)
+            self.assertNotIn("staged", result)
+            self.assertIn(error_fragment, result["error"])
+            stage_write.assert_not_called()
+
     def test_batch_stages_as_one_pending_write_when_gated(self):
         """Approval gate: the whole batch stages as ONE pending record, and
         apply_skill_pending replays it (operations key round-trips)."""

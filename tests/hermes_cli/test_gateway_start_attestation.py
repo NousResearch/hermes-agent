@@ -204,7 +204,7 @@ def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(atte
     the same death to the user.
     """
     marker = attest_home / "state" / "gateway.start-attestation.json"
-    assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # no marker yet
+    assert gateway_windows.attested_death_generation(current_pids=[]) is None  # no marker yet
 
     marker.parent.mkdir(exist_ok=True)
     # Exact positive ints only: ``True`` is an int subclass, 0/-1 are not PIDs, and a single
@@ -214,11 +214,11 @@ def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(atte
         '{"pids": [true]}', '{"pids": [0]}', '{"pids": [-1]}', '{"pids": [555, "556"]}', '{"pids": [555, 0]}',
     ):
         marker.write_text(malformed, encoding="utf-8")
-        assert gateway_windows.attested_gateway_died(current_pids=[]) is False, malformed
+        assert gateway_windows.attested_death_generation(current_pids=[]) is None, malformed
 
     gateway_windows._write_start_attestation([555], "cold-start after update")
-    assert gateway_windows.attested_gateway_died(current_pids=[555]) is False  # alive
-    assert gateway_windows.attested_gateway_died(current_pids=[]) is True  # dead, unclean
+    assert gateway_windows.attested_death_generation(current_pids=[555]) is None  # alive
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None  # dead, unclean
     assert marker.exists()  # unconsumed — the CLI start below still reports it
     assert gateway_windows.check_start_attestation(current_pids=[]) is not None
 
@@ -227,4 +227,4 @@ def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(atte
         encoding="utf-8",
     )
     gateway_windows._write_start_attestation([556], "cold-start after update")
-    assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # planned stop
+    assert gateway_windows.attested_death_generation(current_pids=[]) is None  # planned stop

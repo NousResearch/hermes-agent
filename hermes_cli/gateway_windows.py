@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -870,11 +871,18 @@ def _start_attestation_path() -> Path:
 
 
 def _write_start_attestation(pids: list[int], via: str) -> None:
-    """Persist the PIDs a ✓ vouched for. Best-effort, never raises."""
+    """Persist the PIDs a ✓ vouched for. Best-effort, never raises.
+
+    ``generation`` identifies this marker instance: the update resume token records the generation
+    whose death authorized a cold-start, so execution consumes exactly that marker and never a
+    newer one written by a concurrent ``hermes gateway start`` (#110020 review)."""
     try:
         path = _start_attestation_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat()}
+        payload = {
+            "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat(),
+            "generation": uuid.uuid4().hex,
+        }
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
@@ -887,6 +895,18 @@ def _clear_start_attestation() -> None:
         _start_attestation_path().unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _attestation_generation(data: object) -> str | None:
+    """The marker instance identity, or ``None`` for a marker that carries none."""
+    return str(data["generation"]) if isinstance(data, dict) and data.get("generation") else None
+
+
+def _consume_start_attestation(generation: str) -> None:
+    """Clear the marker only while it is still the ``generation`` that was acted on; a newer
+    marker belongs to a gateway start this caller knows nothing about and keeps its own report."""
+    if _attestation_generation(_read_start_attestation()) == generation:
+        _clear_start_attestation()
 
 
 def _read_start_attestation() -> object | None:
@@ -927,17 +947,22 @@ def _attested_dead(attested: list[int], current_pids: list[int]) -> bool:
     return not current_pids and not any(_attested_pid_exited_cleanly(pid) for pid in attested)
 
 
-def attested_gateway_died(current_pids: list[int]) -> bool:
-    """True when the start attestation vouches for gateway PID(s) that are gone without a clean exit.
+def attested_death_generation(current_pids: list[int]) -> str | None:
+    """The generation of a start attestation that vouches for gateway PID(s) gone without a clean exit,
+    or ``None``.
 
     Read-only twin of :func:`check_start_attestation` for callers that must not consume the
     one-shot marker — ``hermes update`` consults it to decide whether a Desktop-owned install
-    still owes a gateway cold-start (#109538). Callers pass the liveness they already established
-    (``[]`` after their own discovery came back empty) so the process table is not scanned twice.
-    ``False`` for anything undecidable (no marker, a clean ledger exit): "unknown" must never read
-    as "dead"."""
-    attested = _attested_pids_from(_read_start_attestation())
-    return bool(attested) and _attested_dead(attested, current_pids)
+    still owes a gateway cold-start (#109538) and records the generation in its resume token so the
+    execution step consumes exactly the marker it was authorized by. Callers pass the liveness they
+    already established (``[]`` after their own discovery came back empty) so the process table is
+    not scanned twice. ``None`` for anything undecidable (no marker, no generation, a clean ledger
+    exit): "unknown" must never read as "dead"."""
+    data = _read_start_attestation()
+    attested = _attested_pids_from(data)
+    if not attested or not _attested_dead(attested, current_pids):
+        return None
+    return _attestation_generation(data)
 
 
 def check_start_attestation(current_pids: list[int] | None = None) -> str | None:

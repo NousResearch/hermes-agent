@@ -59,7 +59,7 @@ def test_failed_readiness_keeps_the_dead_attestation_for_the_retry(monkeypatch, 
     with pytest.raises(RuntimeError, match="did not become ready"):
         _run_cold_start(monkeypatch, capsys, surviving_pids=[])
     assert marker.exists()
-    assert gateway_windows.attested_gateway_died(current_pids=[]) is True
+    assert gateway_windows.attested_death_generation(current_pids=[]) is not None
 
 
 def test_cold_start_reports_success_when_process_survives(monkeypatch, capsys):

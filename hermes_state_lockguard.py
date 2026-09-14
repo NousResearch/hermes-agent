@@ -14,6 +14,12 @@ extra to track or retire), and they conflict with a foreign EXCLUSIVE exactly li
 so the sibling's close-time unlink is refused while a guarded handle is open. The guard is
 lifted before the handle's own close so a true last close still ends the generation normally.
 No-op on Windows and on runtimes without OFD locks.
+
+Ownership model: the guard is a property of the *descriptor*, and a descriptor number is
+reusable. Each ``hold()`` therefore locks every matching descriptor unconditionally (an OFD
+re-lock on an already-locked description is idempotent) and ``release()`` unlocks only while
+another handle in this process still needs the range — tracked by handle count per INODE, not
+per fd, so a recycled fd number can never be mistaken for a surviving lock.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ import os
 import struct
 import sys
 import threading
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 logger = logging.getLogger("hermes_state")
 
@@ -50,12 +56,12 @@ except ImportError:  # Windows
 _FLOCK_FORMAT = "@qqihh" if sys.platform == "darwin" or "bsd" in sys.platform else "@hhqqi"
 
 Identity = Tuple[int, int]
-Held = Dict[int, Identity]  # fd -> (st_dev, st_ino) it referenced when locked
+Held = Dict[Identity, Tuple[int, int]]  # inode this handle guards -> its (start, length) range
 
-# Several handles in one process share the same inodes (and see each other's descriptors), so a
-# lock on a given (fd, inode) is reference-counted: only the last holder unlocks it.
+# Handles per guarded inode in this process. Several SessionDB handles on one file share the
+# same descriptors' locks (hold() locks every matching descriptor), so the LAST handle unlocks.
 _LOCK = threading.Lock()
-_REFS: Dict[Tuple[int, Identity], int] = {}
+_HANDLES: Dict[Identity, int] = {}
 
 
 def supported() -> bool:
@@ -86,9 +92,9 @@ def _identity(path: str) -> Optional[Identity]:
     return (st.st_dev, st.st_ino)
 
 
-def _own_fds_for(identities: Dict[Identity, Tuple[int, int]]):
-    """Yield ``(fd, identity, (start, length))`` for every descriptor of this process on one of
-    *identities* (SQLite's own connection descriptors; the cached header-probe fd too, harmless)."""
+def _own_fds_for(identities: Set[Identity]):
+    """Yield ``(fd, identity)`` for every descriptor of this process on one of *identities*
+    (SQLite's own connection descriptors; the cached header-probe fd too, harmless)."""
     for fd_dir in ("/proc/self/fd", "/dev/fd"):
         try:
             names = os.listdir(fd_dir)
@@ -103,58 +109,64 @@ def _own_fds_for(identities: Dict[Identity, Tuple[int, int]]):
             except OSError:
                 continue
             ident = (st.st_dev, st.st_ino)
-            rng = identities.get(ident)
-            if rng is not None:
-                yield fd, ident, rng
+            if ident in identities:
+                yield fd, ident
         return
+
+
+def _guard_ranges(db_path) -> Held:
+    base = os.fspath(db_path)
+    ranges: Held = {}
+    for path, rng in ((base, (_SHARED_FIRST, _SHARED_SIZE)), (base + "-shm", (_SHM_DMS_BYTE, 1))):
+        ident = _identity(path)
+        if ident is not None:
+            ranges[ident] = rng
+    return ranges
 
 
 def hold(db_path, held: Optional[Held] = None) -> Held:
     """Lock the guard ranges on every descriptor this process has open on ``state.db`` and its
-    ``-shm``; returns the record :func:`release` needs (pass it back to extend an existing one:
-    a ``-shm`` minted after open, a reopened connection). Safe to repeat."""
+    ``-shm``. Returns the record :func:`release` needs; pass it back to extend an existing one
+    (a ``-shm`` minted after open, a reopened connection). Idempotent per handle: an inode already
+    in *held* is re-locked (cheap, covers a new descriptor) without a second handle count."""
     held = {} if held is None else held
     if not supported():
         return held
-    base = os.fspath(db_path)
-    wanted: Dict[Identity, Tuple[int, int]] = {}
-    for path, rng in ((base, (_SHARED_FIRST, _SHARED_SIZE)), (base + "-shm", (_SHM_DMS_BYTE, 1))):
-        ident = _identity(path)
-        if ident is not None:
-            wanted[ident] = rng
+    ranges = _guard_ranges(db_path)
     try:
         with _LOCK:
-            for fd, ident, (start, length) in _own_fds_for(wanted):
-                if held.get(fd) == ident:
-                    continue
-                if _REFS.get((fd, ident)) or _ofd_lock(fd, _F_RDLCK, start, length):
-                    held[fd] = ident
-                    _REFS[(fd, ident)] = _REFS.get((fd, ident), 0) + 1
+            for fd, ident in _own_fds_for(set(ranges)):
+                start, length = ranges[ident]
+                if _ofd_lock(fd, _F_RDLCK, start, length) and ident not in held:
+                    held[ident] = ranges[ident]
+                    _HANDLES[ident] = _HANDLES.get(ident, 0) + 1
     except OSError:
-        logger.debug("WAL lock guard unavailable for %s", base, exc_info=True)
+        logger.debug("WAL lock guard unavailable for %s", os.fspath(db_path), exc_info=True)
     return held
 
 
 def release(held: Held) -> None:
-    """Unlock what :func:`hold` locked, on descriptors that still reference the same inode (a
-    number recycled onto another file is left alone). Call BEFORE the handle's own close so
-    SQLite's close-time reset sees only real holders: a sibling process's intact locks still
-    refuse the unlink, and a true last close ends the generation, so a later ``state.db``
-    replace never pairs with a stale WAL."""
-    if not supported():
+    """Drop this handle's claim. The last handle on an inode unlocks the range on every descriptor
+    still referencing it. Call BEFORE the handle's own close so SQLite's close-time reset sees only
+    real holders: a sibling process's intact locks still refuse the unlink, and a true last close
+    ends the generation, so a later ``state.db`` replace never pairs with a stale WAL."""
+    if not supported() or not held:
         return
     with _LOCK:
-        for fd, ident in list(held.items()):
-            remaining = _REFS.get((fd, ident), 1) - 1
+        to_unlock: Held = {}
+        for ident, rng in held.items():
+            remaining = _HANDLES.get(ident, 1) - 1
             if remaining > 0:
-                _REFS[(fd, ident)] = remaining
-                continue
-            _REFS.pop((fd, ident), None)
-            try:
-                st = os.fstat(fd)
-                if (st.st_dev, st.st_ino) == ident:
-                    _ofd_lock(fd, _F_UNLCK, _SHARED_FIRST, _SHARED_SIZE)
-                    _ofd_lock(fd, _F_UNLCK, _SHM_DMS_BYTE, 1)
-            except OSError:
-                pass
+                _HANDLES[ident] = remaining
+            else:
+                _HANDLES.pop(ident, None)
+                to_unlock[ident] = rng
         held.clear()
+        if not to_unlock:
+            return
+        try:
+            for fd, ident in _own_fds_for(set(to_unlock)):
+                start, length = to_unlock[ident]
+                _ofd_lock(fd, _F_UNLCK, start, length)
+        except OSError:
+            pass

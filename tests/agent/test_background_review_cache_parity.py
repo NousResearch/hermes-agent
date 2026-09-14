@@ -479,3 +479,101 @@ def test_review_effort_notice_only_for_same_model_review_forks():
     assert _warns({"reasoning_effort": "low"}, write_origin="side_question") == []
     with patch.object(bg_review, "_resolve_review_runtime", return_value=routed_runtime):
         assert _warns({"reasoning_effort": "low"}) == []
+
+
+def test_same_model_fork_inherits_parent_cache_scope_gateway_key(tmp_path):
+    """#109964 invariant 1 (gateway-key case): the same-model review fork must
+    resolve the PARENT's cache scope, even though it is _persist_disabled and
+    _session_db=None. Pre-fix, both resolvers diverged on their own — the header
+    (affinity) and body (prompt_cache_key) keyed a different bucket, costing one
+    cold ~full-context request per review."""
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+    from agent.prompt_cache_scope import (
+        declared_conversation_scope,
+        resolve_prompt_cache_scope,
+    )
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        agent = _make_agent_stub(run_agent.AIAgent)
+        # Gateway parent shape: declared key, real DB row behind it.
+        agent._gateway_session_key = "gw-key-1"
+        agent._session_db = db
+        db.create_session("sess-123", source="test")
+
+        with patch.object(run_agent, "AIAgent", _make_recorder_class()):
+            fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+
+        assert not routed
+        parent_scope = resolve_prompt_cache_scope(agent)
+        assert parent_scope.startswith("gwk_"), parent_scope
+        # The fork stamps the parent's resolved scope; both resolvers honor it.
+        assert getattr(fork, "_inherited_cache_scope", None) == parent_scope
+        assert declared_conversation_scope(fork) == parent_scope
+        assert resolve_prompt_cache_scope(fork) == parent_scope
+    finally:
+        db.close()
+
+
+def test_same_model_fork_inherits_parent_cache_scope_rotated_lineage(tmp_path):
+    """#109964 invariant 1 (rotated-lineage case): a CLI parent whose lineage
+    root != current physical id must also pass its scope to the fork. Pre-fix
+    the parent resolved 'root-sid' while the fork fell to the physical id.
+
+    Every identity the fork publishes must equal the parent's: body cache key, the
+    affinity header (None for both — a physical root is not a declared ``gwk_`` scope)
+    and the Portal ``conversation=`` root (fork has no DB to walk the lineage)."""
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+    from agent.prompt_cache_scope import declared_conversation_scope, resolve_prompt_cache_scope
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        agent = _make_agent_stub(run_agent.AIAgent)
+        agent._session_db = db
+        # Legacy compression rotation: parent row ends, child inherits its lineage.
+        db.create_session("root-sid", source="test")
+        db.end_session("root-sid", "compression")
+        db.create_session("sess-123", source="test", parent_session_id="root-sid")
+        agent.session_id = "sess-123"
+
+        with patch.object(run_agent, "AIAgent", _make_recorder_class()):
+            fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+
+        assert not routed
+        assert resolve_prompt_cache_scope(agent) == "root-sid"
+        assert getattr(fork, "_inherited_cache_scope", None) == "root-sid"
+        assert resolve_prompt_cache_scope(fork) == "root-sid"
+        assert declared_conversation_scope(fork) is declared_conversation_scope(agent) is None
+        fork_root = run_agent.AIAgent._conversation_root_id(fork)
+        assert fork_root == agent._conversation_root_id() == "root-sid"
+    finally:
+        db.close()
+
+
+def test_routed_fork_does_not_inherit_cache_scope():
+    """#109964 invariant 2: a routed (different-model) fork is cache-cold on
+    that model anyway — it must NOT inherit the parent's scope. Nor may fresh
+    agents (no attribute set) be affected: the fail-closed default stands."""
+    import run_agent
+    from agent.background_review import build_cache_parity_fork
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+    agent._gateway_session_key = "gw-key-1"
+    agent._prompt_cache_scope_memo = (("sess-123", True), "gwk_parentscope0000000000abc")
+
+    _RoutedRecorder = _make_recorder_class()
+
+    with patch.object(run_agent, "AIAgent", _RoutedRecorder), \
+         patch("agent.background_review._resolve_review_runtime",
+               lambda *a, **k: {"routed": True, "model": "other-model"}):
+        fork, _rt, routed = build_cache_parity_fork(agent, max_iterations=5)
+
+    assert routed
+    assert not getattr(fork, "_inherited_cache_scope", None), (
+        "Routed fork must not inherit the parent's cache scope — its prefix "
+        "is cache-cold on the different model regardless."
+    )

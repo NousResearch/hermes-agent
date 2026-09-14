@@ -122,3 +122,60 @@ class TestResolverPlumbing:
         no_desktop_env.setenv("HERMES_TUI_TOOLSETS", "web,memory")
 
         assert server._load_enabled_toolsets("desktop") == ["web", "memory"]
+
+
+@pytest.mark.parametrize("requester", ["desktop", "tui", None])
+def test_reload_preserves_each_sessions_surface_and_profile(
+    no_desktop_env, monkeypatch, tmp_path, requester
+):
+    """A process-wide reload must resolve each live session in its own profile."""
+    from types import SimpleNamespace
+
+    import yaml
+
+    from hermes_constants import get_hermes_home
+    from tools import mcp_tool_agent, mcp_tool_discovery, mcp_tool_lifecycle
+
+    captured = {}
+    sessions = {}
+    selections = {"desktop": "memory", "tui": "web", "desktop-other": "terminal"}
+    for sid, toolset in selections.items():
+        home = tmp_path / sid
+        home.mkdir()
+        (home / "config.yaml").write_text(yaml.safe_dump({
+            "agent": {"coding_context": "off"},
+            "platform_toolsets": {"cli": [toolset]},
+        }), encoding="utf-8")
+        sessions[sid] = {
+            "agent": SimpleNamespace(name=sid),
+            "source": "tui" if sid == "tui" else "desktop",
+            "profile_home": str(home),
+        }
+
+    def capture_refresh(agent, enabled_override=None, **kwargs):
+        captured[agent.name] = (set(enabled_override), get_hermes_home())
+
+    monkeypatch.setattr(mcp_tool_lifecycle, "shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr(mcp_tool_discovery, "discover_mcp_tools", lambda: None)
+    monkeypatch.setattr(mcp_tool_agent, "reprobe_tool_availability", lambda: None)
+    monkeypatch.setattr(mcp_tool_agent, "refresh_agent_mcp_tools", capture_refresh)
+    monkeypatch.setattr(server, "_compute_mcp_rev", lambda: "rev-test")
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+    monkeypatch.setattr(server, "_sessions", sessions)
+    monkeypatch.setattr(server, "_mcp_reload_gen", 0)
+    monkeypatch.setattr(server, "_mcp_reload_loaded_rev", "")
+
+    params = {"confirm": True}
+    if requester is not None:
+        params["session_id"] = requester
+    envelope = server._methods["reload.mcp"](1, params)
+
+    assert envelope["result"]["status"] == "reloaded"
+    assert captured.keys() == sessions.keys()
+    for sid, session in sessions.items():
+        enabled, home = captured[sid]
+        assert ("desktop_ui" in enabled) == (session["source"] == "desktop")
+        assert "project" in enabled
+        assert enabled & set(selections.values()) == {selections[sid]}
+        assert home == tmp_path / sid

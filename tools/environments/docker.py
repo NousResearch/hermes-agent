@@ -309,7 +309,7 @@ def _bind_value_may_be_host_path(value: str) -> bool:
 
 
 def _mount_value_may_be_host_path(value: str) -> bool:
-    """True when a ``--mount`` value declares an explicit ``type=bind``.
+    """Conservatively classify explicit binds and caller-selected volume drivers/options.
 
     Parsed as CSV because docker accepts quoted fields containing commas
     (``type=bind,"source=/tmp/a,b",target=/mnt``). Docker trims the whole value before
@@ -317,23 +317,26 @@ def _mount_value_may_be_host_path(value: str) -> bool:
     a quoted field from starting at position 0 and ``"type=bind"`` parses as the literal
     key ``"type``, which would miss the bind entirely.
 
-    Only ``type`` is inspected. The source is not: every explicit bind reaches the host,
-    whatever it names. ``src``/``source`` are therefore never read, and their ordering
-    does not matter here. An omitted type defaults to ``volume`` in docker, so only an
-    explicit bind counts.
+    Every explicit bind reaches the host, whatever its source. Ordinary volumes
+    retain the fast path, but explicit drivers/options can turn them into binds.
+    We do not inspect the daemon's registry or infer external volume provenance.
     """
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not value.strip():
         return False
     try:
-        fields = next(csv.reader([value.strip()]))
+        fields = next(csv.reader([value.strip()], strict=True))
     except (csv.Error, StopIteration):
-        fields = value.split(",")
-    mount_type = ""
+        # Ambiguous mount syntax must not buy an isolated-container fast path.
+        return True
+    pairs = []
     for field in fields:
         key, sep, val = field.partition("=")
-        if sep and key.strip().strip('"\'').lower() == "type":
-            mount_type = val.strip().strip('"\'').lower()
-    return mount_type == "bind"
+        if sep:
+            pairs.append((key.strip().strip('"\'').lower(), val.strip().strip('"\'').lower()))
+    return (
+        any(key == "type" and val == "bind" for key, val in pairs)
+        or any(key in {"volume-driver", "volume-opt"} for key, _ in pairs)
+    )
 
 
 def extra_args_may_bind_host_path(extra_args: list) -> bool:
@@ -349,12 +352,17 @@ def extra_args_may_bind_host_path(extra_args: list) -> bool:
     Deliberately conservative: this does NOT track which flags consume a following value,
     so a mount-looking token that is really another option's value (``--label
     --volume=/tmp:/mnt``) also returns True. Detecting a potential bind is the goal;
-    precisely determining docker isolation is not. Recognized named and anonymous volumes,
-    and unrelated arguments, stay isolated.
+    precisely determining docker isolation is not. Inherited volumes and explicit
+    driver choices/options conservatively enable guards. Recognized named and
+    anonymous volumes without those options, and unrelated arguments, stay isolated.
     """
     args = [a for a in (extra_args or []) if isinstance(a, str)]
     for i, arg in enumerate(args):
         nxt = args[i + 1] if i + 1 < len(args) else None
+        if arg in {"--volumes-from", "--volume-driver"} or arg.startswith(
+            ("--volumes-from=", "--volume-driver=")
+        ):
+            return True
         if arg == "--mount":
             if nxt is not None and _mount_value_may_be_host_path(nxt):
                 return True

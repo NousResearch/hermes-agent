@@ -20,7 +20,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from agent.message_sanitization import _sanitize_surrogates
@@ -363,6 +363,22 @@ def _apply_no_ckpt_on_close(conn: Optional[sqlite3.Connection]) -> bool:
     except Exception:
         return False
     return True
+
+
+def guard_transient_wal_handle(db) -> None:
+    """Best-effort: stop *db* from rotating the shared WAL generation on close.
+
+    A transient standalone writer (``hermes cron run`` / agent cron) that is the last
+    OS-level connection to state.db runs SQLite's close-time checkpoint; that can
+    unlink ``-wal``/``-shm`` while a live gateway still holds those inodes
+    (#109824). On Python 3.12+ this arms ``SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE``.
+    On 3.11 it is a no-op here; SessionDB.close() still pins instead of closing
+    when foreign holders exist.
+    """
+    if db is None or getattr(db, "read_only", False):
+        return
+    with suppress(Exception):
+        db._disable_close_time_checkpoint()
 
 
 def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path]":

@@ -64,6 +64,17 @@ def _close_late_session_db_result(future: "concurrent.futures.Future") -> None:
             release_or_close(db)
 
 
+def _guard_transient_cron_wal_handle(db) -> None:
+    """#109824: stop a cron-opened state.db handle from rotating the WAL generation on close."""
+    if db is None:
+        return
+    try:
+        from hermes_state import guard_transient_wal_handle
+        guard_transient_wal_handle(db)
+    except Exception:
+        logger.debug("cron transient state.db WAL guard skipped", exc_info=True)
+
+
 def _set_cron_session_title(session_db, session_id, base_title):
     """Persist a non-blank, unique title for a finished cron session; returns it (None if unset).
     Runs BEFORE end_session()/close() so no write races the close. Duplicate title (unique-index
@@ -1602,13 +1613,18 @@ def _open_cron_session_db(job: dict):
     try:
         from hermes_state_registry import acquire
 
+        def _acquire_guarded():
+            db = acquire()
+            _guard_transient_cron_wal_handle(db)
+            return db
+
         if _session_db_timeout <= 0:
-            return acquire()
+            return _acquire_guarded()
         _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Copy the context so a profile run resolves ITS OWN home/state.db on the worker thread
         # instead of the process-global default.
         _session_db_context = contextvars.copy_context()
-        _session_db_future = _session_db_pool.submit(_session_db_context.run, acquire)
+        _session_db_future = _session_db_pool.submit(_session_db_context.run, _acquire_guarded)
         try:
             return _session_db_future.result(timeout=_session_db_timeout)
         except concurrent.futures.TimeoutError:

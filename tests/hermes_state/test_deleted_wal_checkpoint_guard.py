@@ -13,13 +13,14 @@ incident's close-time damage.
 
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 import hermes_state_wal
 from hermes_state import (
     DeletedWalGenerationError, SessionDB, _close_time_checkpoint_configurable,
+    guard_transient_wal_handle,
 )
 
 
@@ -161,3 +162,22 @@ def test_writer_close_without_holders_still_closes(tmp_path, force_wal, monkeypa
         db.close()
     quiet_close.assert_called_once()
     assert db._connection_pinned is False
+
+
+def test_guard_noop_on_none_and_read_only():
+    guard_transient_wal_handle(None)
+    ro = Mock(read_only=True)
+    guard_transient_wal_handle(ro)
+    ro._disable_close_time_checkpoint.assert_not_called()
+
+
+def test_guard_disables_close_time_checkpoint_on_writable_handle():
+    db = Mock(read_only=False)
+    guard_transient_wal_handle(db)
+    db._disable_close_time_checkpoint.assert_called_once_with()
+
+
+def test_guard_swallows_checkpoint_config_failures():
+    db = Mock(read_only=False)
+    db._disable_close_time_checkpoint.side_effect = RuntimeError("no setconfig")
+    guard_transient_wal_handle(db)

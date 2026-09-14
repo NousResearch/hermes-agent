@@ -133,6 +133,26 @@ describe('remote HTML previews', () => {
     expect(localPreviewTarget('//srv/share/report #1?.html')?.url).toBe('file:////srv/share/report%20%231%3F.html')
   })
 
+  it('expands ~ paths to absolute paths using the bridge home', () => {
+    window.hermesDesktop = { homePath: '/Users/testuser' } as never
+    const target = localPreviewTarget('~/OneDrive/file.html')
+    expect(target?.path).toBe('/Users/testuser/OneDrive/file.html')
+    expect(target?.url).toBe('file:///Users/testuser/OneDrive/file.html')
+  })
+
+  it('expands bare ~ to the home directory', () => {
+    window.hermesDesktop = { homePath: '/Users/testuser' } as never
+    const target = localPreviewTarget('~')
+    expect(target?.path).toBe('/Users/testuser')
+  })
+
+  it('expands ~ paths with CJK characters and spaces', () => {
+    window.hermesDesktop = { homePath: '/Users/clintonemok' } as never
+    const target = localPreviewTarget('~/OneDrive - \u67d0\u67d0\u516c\u53f8/Hermes/report.html')
+    expect(target?.path).toBe('/Users/clintonemok/OneDrive - \u67d0\u67d0\u516c\u53f8/Hermes/report.html')
+    expect(target?.url).toBe('file:///Users/clintonemok/OneDrive%20-%20%E6%9F%90%E6%9F%90%E5%85%AC%E5%8F%B8/Hermes/report.html')
+  })
+
   it('opens ordinary targets without staging them', async () => {
     const openPreviewInBrowser = vi.fn(async () => undefined)
     const saveImageBuffer = vi.fn()

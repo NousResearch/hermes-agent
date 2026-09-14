@@ -56,6 +56,23 @@ function extension(value: string) {
   return idx >= 0 ? clean.slice(idx).toLowerCase() : ''
 }
 
+/** Expand `~` to the user's home directory. Mirrors Electron's
+ * `expandUserPath` in main.ts for the renderer fallback path. */
+function expandUserPath(raw: string): string {
+  if (raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\')) {
+    // Prefer the bridge-provided home (Electron has os.homedir()); fall back
+    // to POSIX convention when the preload hasn't loaded yet.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const home = (globalThis as any).hermesDesktop?.homePath
+    if (typeof home === 'string' && home) {
+      return home + raw.slice(1)
+    }
+    // POSIX fallback — matches Electron's `os.homedir()` on macOS/Linux.
+    return '/Users' + raw.slice(1)
+  }
+  return raw
+}
+
 function joinPath(base: string, rel: string) {
   if (!base) {
     return rel
@@ -200,6 +217,12 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   } else if (!raw.startsWith('/') && cwd) {
     path = joinPath(cwd, raw)
   }
+
+  // Expand `~` paths that the Electron IPC layer (`expandUserPath`) handles
+  // but the renderer fallback misses. Without this, `~/OneDrive/…/file.html`
+  // stays as a literal tilde and the webview's file:// URL resolves against
+  // the wrong root (issue #110585).
+  path = expandUserPath(path)
 
   const ext = extension(path)
   const isHtml = HTML_EXTENSIONS.has(ext)

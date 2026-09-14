@@ -145,3 +145,13 @@ class TestScreenshotDedup:
         cu_tool._capture_response(_cap(seed=1), session_id="s1")
         cu_tool.release_computer_use_session("s1")
         assert _is_multimodal(cu_tool._capture_response(_cap(seed=1), session_id="s1"))
+
+    def test_compaction_boundary_redelivers_pixels(self):
+        """The summary may have dropped the frame an "unchanged" note points at, so the first
+        capture after compaction must carry the image even when the screen is byte-identical."""
+        from agent.conversation_compression import _reset_read_dedup_caches
+
+        cu_tool._capture_response(_cap(seed=1), session_id="s1")
+        assert not _is_multimodal(cu_tool._capture_response(_cap(seed=1), session_id="s1"))
+        _reset_read_dedup_caches("task", session_id="s1")
+        assert _is_multimodal(cu_tool._capture_response(_cap(seed=1), session_id="s1"))

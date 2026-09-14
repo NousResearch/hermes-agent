@@ -116,12 +116,17 @@ def _screenshot_dedup_check(session_id: str, digest: str, target: Tuple[str, str
         return False
 
 def _reset_screenshot_dedup(session_id: Optional[str] = None) -> None:
-    """Forget dedup state (all sessions, or one)."""
+    """Forget dedup state (all sessions, or one scoped key)."""
     with _screenshot_dedup_lock:
         if session_id is None:
             _last_screenshot_state.clear()
         else:
             _last_screenshot_state.pop(session_id, None)
+
+def reset_screenshot_dedup(session_id: str) -> None:
+    """Compaction boundary hook (mirrors ``reset_file_dedup``): the summary may have dropped the frame an
+    "unchanged" note would point at, so the next capture of this session must deliver pixels again."""
+    _reset_screenshot_dedup(_scoped_sid(session_id))
 
 def _cua_permission_mode(session_id: str) -> str:
     """Map Hermes's approval bypass onto Cua's immutable mode; fails closed. Both identity namespaces are consulted

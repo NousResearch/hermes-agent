@@ -799,7 +799,7 @@ export default function SystemPage() {
               ghost
               size="icon"
               onClick={() => setHookModalOpen(false)}
-              className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
+              className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label="Close"
             >
               <X />

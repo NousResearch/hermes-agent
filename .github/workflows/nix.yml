@@ -52,10 +52,13 @@ jobs:
     if: needs.detect.outputs.nix == 'true'
     # The build compiles the package and its whole dependency closure, so this
     # takes minutes and not seconds when the cache misses. `nix flake check`
-    # builds 21 checks, and --max-jobs defaults to the core count. It uses the
-    # wider runner with no more configuration.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 60
+    # builds 21 checks, and --max-jobs defaults to the core count.
+    # TEMPORARY: was a 32-core Larger Runner. Larger Runners require GitHub
+    # Team/Enterprise; this account is on Free, so the job queued forever and
+    # never ran. Falling back to standard `ubuntu-latest` (4-core) unblocks CI
+    # at the cost of lower --max-jobs parallelism — timeout raised accordingly.
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

@@ -14,8 +14,12 @@ jobs:
     #
     # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 30
+    # TEMPORARY: was a 32-core Larger Runner. Larger Runners require GitHub
+    # Team/Enterprise; this account is on Free, so the job queued forever and
+    # never ran. Falling back to standard `ubuntu-latest` (4-core) unblocks CI
+    # at the cost of a smaller worker pool — timeout raised accordingly.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

@@ -30,8 +30,12 @@ jobs:
     # cargo builds codegen units and test binaries in parallel across the
     # cores. This lane also builds the crate from the start when Cargo.toml
     # changes.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 30
+    # TEMPORARY: was a 32-core Larger Runner. Larger Runners require GitHub
+    # Team/Enterprise; this account is on Free, so the job queued forever and
+    # never ran. Falling back to standard `ubuntu-latest` (4-core) unblocks CI
+    # at the cost of lower build parallelism — timeout raised accordingly.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: apps/bootstrap-installer/src-tauri

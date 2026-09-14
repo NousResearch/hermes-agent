@@ -14,15 +14,16 @@ concurrency:
 jobs:
   test:
     name: Run tests
-    # One 96-core runner for the whole suite. There is no slicing. Slicing
-    # existed to spread the suite over 4-core runners. It cost a matrix job, a
-    # duration cache, a per-slice artifact and a merge job to do it.
-    #
-    # 96 cores clear the floor that the slowest single test file sets (about
-    # 82s). A second slice divides work that is already at that floor, and
-    # adds a second setup.
-    runs-on: ubuntu-latest-96-core
-    timeout-minutes: 30
+    # TEMPORARY: was a 96-core Larger Runner (see git history for the original
+    # rationale — one runner for the whole suite, no slicing). Larger Runners
+    # require GitHub Team/Enterprise; this account is on Free, so every job
+    # requesting one queued forever and never ran. Falling back to the
+    # standard 4-core `ubuntu-latest` runner unblocks CI at the cost of much
+    # lower parallelism — timeout raised accordingly. Re-slicing the suite
+    # across a matrix (the pre-96-core approach) is the real fix if this
+    # remains too slow.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -48,7 +49,17 @@ jobs:
           # fetching a manifest from raw.githubusercontent.com on EVERY job —
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: "0.9.28"
+          #
+          # >= 0.12.13, not just "a recent uv": `uv python install 3.11` on an
+          # older uv's embedded python-build-standalone catalog resolves to a
+          # build whose bundled SQLite (3.50.4) carries the WAL-reset bug —
+          # hermes_state.py refuses every writable DB open on it, failing
+          # most of the suite. python-build-standalone re-cut the SAME
+          # "3.11.15" tag with a fixed SQLite (3.53.1); only a uv new enough
+          # to know about that re-cut resolves to it. See
+          # hermes_cli/managed_uv.py's _refresh_managed_uv_catalog for the
+          # same class of fix in the production installer/updater.
+          version: "0.12.13"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
           # pyproject.toml or uv.lock changes. `uv sync` still runs every
@@ -102,24 +113,19 @@ jobs:
           # This is the maximum number of test FILES that run together.
           # run_tests_parallel.py starts one pytest subprocess for each file
           # from a single ThreadPoolExecutor, so this value IS the limit. The
-          # default is cpu_count*2, which is 192 here.
+          # default is cpu_count*2, which would be 192 on the old 96-core
+          # runner.
           #
-          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
-          # two repetitions for each value. See run 32549672063:
-          #
-          #     workers   x cores   mean
-          #        48       0.5x    138s
-          #        96       1.0x    126s   <- fastest
-          #       144       1.5x    132s
-          #       192       2.0x    132s
-          #       240       2.5x    140s
-          #       288       3.0x    142s
-          #
-          # One worker for each core wins. The curve is shallow: 126s to 142s
-          # across a 6x range. The suite has sufficient concurrency at this
-          # size. The remaining time is the slowest files plus the setup.
-          # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
+          # TEMPORARY: the 96-workers value below was measured on the old
+          # 96-core Larger Runner (one worker per core, see git history for
+          # the measurement table). Now that the job runs on the standard
+          # 4-core `ubuntu-latest` runner (see the runs-on comment above),
+          # keeping it at 96 oversubscribes the box ~24x — every file's
+          # pytest subprocess contends for the same 4 cores, so file after
+          # file blows past its individual timeout and gets SIGKILL'd. Match
+          # the actual core count instead; revisit if the runner size changes
+          # again.
+          HERMES_TEST_WORKERS: 4
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
@@ -153,7 +159,17 @@ jobs:
           # fetching a manifest from raw.githubusercontent.com on EVERY job —
           # a transient fetch failure fails the whole job (2026-07-28 slice-5
           # incident). Pinned, the binary downloads directly; no manifest hop.
-          version: "0.9.28"
+          #
+          # >= 0.12.13, not just "a recent uv": `uv python install 3.11` on an
+          # older uv's embedded python-build-standalone catalog resolves to a
+          # build whose bundled SQLite (3.50.4) carries the WAL-reset bug —
+          # hermes_state.py refuses every writable DB open on it, failing
+          # most of the suite. python-build-standalone re-cut the SAME
+          # "3.11.15" tag with a fixed SQLite (3.53.1); only a uv new enough
+          # to know about that re-cut resolves to it. See
+          # hermes_cli/managed_uv.py's _refresh_managed_uv_catalog for the
+          # same class of fix in the production installer/updater.
+          version: "0.12.13"
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
           # pyproject.toml or uv.lock changes. `uv sync` still runs every

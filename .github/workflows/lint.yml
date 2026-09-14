@@ -44,7 +44,7 @@ jobs:
           # Pinned: unpinned setup-uv fetches a 'latest' manifest from
           # raw.githubusercontent.com every job; transient fetch failures
           # fail the job (2026-07-28 incident). Keep in sync with tests.yml.
-          version: "0.9.28"
+          version: "0.12.13"
 
       - name: Install ruff + ty
         uses: ./.github/actions/retry
@@ -138,7 +138,7 @@ jobs:
           # Pinned: unpinned setup-uv fetches a 'latest' manifest from
           # raw.githubusercontent.com every job; transient fetch failures
           # fail the job (2026-07-28 incident). Keep in sync with tests.yml.
-          version: "0.9.28"
+          version: "0.12.13"
 
       - name: Install ruff
         uses: ./.github/actions/retry
@@ -169,7 +169,7 @@ jobs:
           # Pinned: unpinned setup-uv fetches a 'latest' manifest from
           # raw.githubusercontent.com every job; transient fetch failures
           # fail the job (2026-07-28 incident). Keep in sync with tests.yml.
-          version: "0.9.28"
+          version: "0.12.13"
 
       - name: Set up Python 3.11
         uses: ./.github/actions/retry

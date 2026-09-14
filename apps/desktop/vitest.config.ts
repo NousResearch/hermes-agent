@@ -10,9 +10,15 @@ const reactUi: TestProjectConfiguration = {
     include: ['src/**/*.test.{ts,tsx}'],
     globals: true,
     // The first test in each file pays jsdom env init + full module transform,
-    // which can exceed vitest's 5000ms default under CI/load. 15s gives the
+    // which can exceed vitest's 5000ms default under CI/load. 15s gave the
     // cold start headroom without masking genuinely hung tests.
-    testTimeout: 15_000
+    //
+    // TEMPORARY: raised again to 30s because this job moved from a 32-core
+    // Larger Runner to the standard 4-core `ubuntu-latest` (GitHub Free has
+    // no Larger Runners) and 15s was no longer enough headroom — e.g.
+    // toolset-config-panel.test.tsx hit ~15.1s on a single render-heavy
+    // test alone under the new, much weaker CPU budget.
+    testTimeout: 30_000
   }
 }
 

@@ -71,6 +71,7 @@ class _CursesBrowser:
         self.result = None
         self.cursor = self.scroll = 0
         self.search = ""
+        self.searching = False  # True once '/' arms search mode — every printable char then drills into the query
         self.confirm_delete = None  # session dict pending y/n confirmation
         self.flash = ""  # one-frame notice (e.g. "Deleted.")
         self.filtered = list(sessions)
@@ -95,10 +96,10 @@ class _CursesBrowser:
 
     def _draw(self, stdscr, max_y, max_x):
         c = self.curses
-        if self.search:
+        if self.searching:
             header, header_attr = f"  Browse sessions — filter: {self.search}█", c.A_BOLD | self._pair(3)
         else:
-            header = "  Browse sessions — ↑↓ navigate  Enter select  Type to filter  Esc quit"
+            header = "  Browse sessions — ↑↓ navigate  Enter select  / filter  d delete  q quit  Esc exit"
             header_attr = c.A_BOLD | self._pair(2)
         self._put(stdscr, 0, 0, header, max_x - 1, header_attr)
         name_width = max(20, max_x - _FIXED_COLS)
@@ -141,12 +142,20 @@ class _CursesBrowser:
             footer = f"  {self.cursor + 1 if filtered else 0}/{len(filtered) or len(self.sessions)} sessions"
             if filtered and len(filtered) < len(self.sessions):
                 footer += f" (filtered from {len(self.sessions)})"
-            if self.delete_fn is not None and not self.search:
+            if self.delete_fn is not None and not self.searching:
                 footer += "   d delete"
         self._put(stdscr, max_y - 1, 0, footer, max_x - 1, footer_attr)
 
     def _handle_key(self, key) -> bool:
-        """Apply one keypress; return True when the picker should exit."""
+        """Apply one keypress; return True when the picker should exit.
+
+        Search is mode-based so single-letter actions can never swallow a
+        query's first character: press ``/`` to enter search mode, after which
+        every printable character (including ``d`` and ``q``) goes into the
+        filter. While *not* searching, ``q`` quits, ``d`` deletes, and any
+        other printable character auto-enters search mode with itself as the
+        first query character.
+        """
         c = self.curses
         if self.confirm_delete is not None:  # y/n confirmation mode — only an explicit 'y' deletes
             target, self.confirm_delete = self.confirm_delete, None
@@ -166,22 +175,34 @@ class _CursesBrowser:
             if self.filtered:
                 self.result = self.filtered[self.cursor]["id"]
             return True
-        elif key == 27 and not self.search:  # Esc: first clears the search, second exits
+        elif key == 27 and not self.searching:  # Esc: exits search mode first, otherwise the picker
             return True
         elif key == 27:
+            self.searching = False
             self.search = ""
             self._refilter()
         elif key in {c.KEY_BACKSPACE, 127, 8}:
             if self.search:
                 self.search = self.search[:-1]
                 self._refilter()
-        elif key == ord("q") and not self.search:
-            return True
-        elif key == ord("d") and not self.search and self.delete_fn is not None and self.filtered:
-            # 'd' deletes only when the filter is empty; mid-search it types into the query.
-            self.confirm_delete = self.filtered[self.cursor]
-        elif 32 <= key <= 126:
-            self.search += chr(key)
+                if not self.search:
+                    self.searching = False
+        elif 32 <= key <= 126:  # printable ASCII
+            ch = chr(key)
+            if not self.searching:
+                # Single-letter actions only outside search mode, so they can
+                # never swallow the first character of a query.
+                if ch == "q":
+                    return True
+                if ch == "d" and self.delete_fn is not None and self.filtered:
+                    self.confirm_delete = self.filtered[self.cursor]
+                    return False
+                if ch == "/":  # explicit entry into search mode
+                    self.searching = True
+                    return False
+                # First non-reserved printable char auto-enters search mode.
+                self.searching = True
+            self.search += ch
             self._refilter()
         return False
 

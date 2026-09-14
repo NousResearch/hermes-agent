@@ -1226,6 +1226,57 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     return profile_exists
 
 
+def _dispatch_profiles_allowlist():
+    """Home-scoped allowlist of claimable assignees: ``kanban.dispatch_profiles``.
+
+    Multi-home boards (one ``kanban.db`` shared across Hermes homes) claim by
+    profile NAME, and every home's root profile is named ``default``
+    (``hermes_cli.profiles.profile_exists`` short-circuits True for it), so
+    without a home-scoped gate every home's dispatcher considers another
+    home's ``default``-assigned cards spawnable and runs them in the wrong
+    container (issue #110995: exactly that happened, the card's required
+    files only existed in the home that was meant to run it).
+
+    Returns ``None`` when the key is unset (upstream behavior unchanged);
+    a set value, even an empty list, is a fail-closed allowlist.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = (load_config() or {}).get("kanban", {}).get("dispatch_profiles")
+    except Exception:
+        return None
+    if cfg is None:
+        return None
+    if isinstance(cfg, str):
+        cfg = [part.strip() for part in cfg.split(",") if part.strip()]
+    try:
+        return {str(part) for part in cfg}
+    except TypeError:
+        return None
+
+
+def _assignee_dispatchable(assignee):
+    """Spawnability of ``assignee`` honoring the home-scoped allowlist.
+
+    ``None`` means "cannot introspect": preserve the legacy assume-spawnable
+    fallback. When the allowlist key is set, a name outside it fails CLOSED
+    (that is the point of the gate); a name inside it still has to pass
+    ``profile_exists`` so the home can actually run it.
+    """
+    profile_exists = _profile_exists_fn()
+    allow = _dispatch_profiles_allowlist()
+    if allow is not None:
+        if not assignee or assignee not in allow:
+            return False
+        if profile_exists is None:
+            return None
+        return profile_exists(assignee)
+    if profile_exists is None:
+        return None
+    return bool(assignee) and profile_exists(assignee)
+
+
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
@@ -1234,11 +1285,11 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     ).fetchall()
     if not rows:
         return False
-    profile_exists = _profile_exists_fn()
-    if profile_exists is None:
-        # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
-    return any(profile_exists(row["assignee"]) for row in rows)
+    for row in rows:
+        spawnable = _assignee_dispatchable(row["assignee"])
+        if spawnable is None or spawnable:
+            return True
+    return False
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
@@ -1511,8 +1562,7 @@ def _dispatch_lane_task(
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
     # it by assigning a profile, and health telemetry suppresses "stuck" for it.
-    profile_exists = _profile_exists_fn()
-    if profile_exists is not None and not profile_exists(assignee):
+    if _assignee_dispatchable(assignee) is False:
         result.skipped_nonspawnable.append(task_id)
         return False
     # Per-profile cap: one profile's local model / API quota / browser pool
@@ -1722,10 +1772,11 @@ def _any_spawnable_review(review_rows: list[sqlite3.Row]) -> bool:
     don't tax ready throughput; assumes spawnable when profiles are unimportable."""
     if not review_rows:
         return False
-    profile_exists = _profile_exists_fn()
-    if profile_exists is None:
-        return any(row["assignee"] for row in review_rows)
-    return any(row["assignee"] and profile_exists(row["assignee"]) for row in review_rows)
+    for row in review_rows:
+        spawnable = _assignee_dispatchable(row["assignee"])
+        if spawnable is None or spawnable:
+            return True
+    return False
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:

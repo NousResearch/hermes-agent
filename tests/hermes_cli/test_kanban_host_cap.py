@@ -313,3 +313,90 @@ def test_review_budget_still_bounded_by_shared_cap(
 
     # Budget 2 total across both lanes, reservation notwithstanding.
     assert len(res.spawned) == 2
+
+
+# --- kanban.dispatch_profiles: home-scoped claim allowlist (#110995) -------
+
+def _allowlist_config(monkeypatch, profiles):
+    import hermes_cli.config as cfgmod
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"dispatch_profiles": profiles}},
+    )
+
+
+def test_dispatch_profiles_skips_foreign_default(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A card assigned to 'default' (which exists in EVERY home) is skipped
+    when this home's allowlist does not name it: the multi-home theft gate."""
+    _allowlist_config(monkeypatch, ["sage", "researcher"])
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="foreign card", assignee="default")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory(spawns))
+    assert spawns == []
+    assert len(res.skipped_nonspawnable) == 1
+    assert res.spawned == []
+
+
+def test_dispatch_profiles_allows_listed_assignee(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    _allowlist_config(monkeypatch, ["alice"])
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="local card", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory(spawns))
+    assert len(spawns) == 1
+    assert res.skipped_nonspawnable == []
+
+
+def test_dispatch_profiles_empty_list_claims_nothing(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A present-but-empty allowlist is fail-closed: the operator said this
+    home claims nothing, even though every profile exists."""
+    _allowlist_config(monkeypatch, [])
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="any card", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory(spawns))
+    assert spawns == []
+    assert len(res.skipped_nonspawnable) == 1
+
+
+def test_dispatch_profiles_unset_keeps_legacy_behavior(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    import hermes_cli.config as cfgmod
+    monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {"kanban": {}})
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="legacy card", assignee="alice")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory(spawns))
+    assert len(spawns) == 1
+
+
+def test_dispatch_profiles_string_form_is_accepted(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    _allowlist_config(monkeypatch, "alice, bob")
+    spawns: list = []
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="a", assignee="alice")
+        kb.create_task(conn, title="b", assignee="carol")
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn_factory(spawns))
+    assert len(spawns) == 1
+    assert len(res.skipped_nonspawnable) == 1
+
+
+def test_has_spawnable_ready_honors_allowlist(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="only card", assignee="default")
+        _allowlist_config(monkeypatch, ["sage"])
+        assert kbd.has_spawnable_ready(conn) is False
+        _allowlist_config(monkeypatch, ["default"])
+        assert kbd.has_spawnable_ready(conn) is True

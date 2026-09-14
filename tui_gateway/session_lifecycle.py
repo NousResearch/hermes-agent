@@ -259,15 +259,34 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         if _other_runtime_owns_lifecycle:
             logger.info("Preserving session %s during %s: another backend owns an active lease", session_id, end_reason)
         if session_id:
-            # The *session's* profile state.db (app-global remote mode), not the launch profile's.
+            # Ownership decision ONLY while the registry lock is held. The end write itself moved
+            # below, outside the lock: holding the registry file lock across a state.db write
+            # starves every registry reader (session list, bot delivery poll, session.resume)
+            # for the write's full duration — observed as hours of "active session file lock
+            # unavailable" when a long turn's finalize writes against a 1GB+ SQLite database.
             with contextlib.suppress(Exception), _session_db(session) as db:
-                if db is not None:
+                if db is not None and _tui_owns_lifecycle:
                     # Never end gateway-originated sessions: Groundhog Day loop (gateway self-heals to the parent,
                     # compression splits back to the reaped child, forever).
                     if _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                         _tui_owns_lifecycle = False
-                    elif _tui_owns_lifecycle:
-                        db.end_session(session_id, end_reason)
+    # Registry lock released here. Ending the row outside the lease guard opens a check-to-write
+    # window for the desktop-cleanup path (the guard used to make the pair atomic); compensate by
+    # re-checking the registry after the write and reopening the row when a sibling backend claimed
+    # inside the window — reopen_session is the same mechanism crash recovery already uses.
+    if session_id and _tui_owns_lifecycle:
+        with contextlib.suppress(Exception), _session_db(session) as db:
+            if db is not None:
+                db.end_session(session_id, end_reason)
+                if _desktop_automatic_cleanup:
+                    from hermes_cli.active_sessions import active_session_registry_snapshot
+                    if any(str(e.get("session_id") or "") == str(session_id)
+                           for e in active_session_registry_snapshot(
+                               registry_home=session.get("profile_home"))):
+                        db.reopen_session(session_id)
+                        logger.info(
+                            "Reopened session %s after %s: sibling backend claimed during end write",
+                            session_id, end_reason)
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI
     # sid; by durable session_key only when the TUI owns the lifecycle — a viewer tab must not kill gateway work.
     with contextlib.suppress(Exception):

@@ -65,6 +65,37 @@ class TestContainsDeniedKanbanMutation:
     def test_does_not_match_a_different_binary_whose_name_merely_contains_hermes(self, command):
         assert not contains_denied_kanban_mutation(command)
 
+    @pytest.mark.parametrize("command", [
+        "$(which hermes) kanban complete t_4989b28e",
+        "`which hermes` kanban boards rm victim --delete",
+        "$(command -v hermes) kanban complete t_4989b28e",
+        "$(type -p hermes) kanban request-review t_4989b28e",
+        "$(which hermes) kanban set-model t_4989b28e some-model",
+    ])
+    def test_flags_command_substitution_spelling_of_the_binary(self, command):
+        """Command substitution hides the name from a plain string scan — the token before `kanban`
+        is `)` or a backtick, never `hermes` — while the shell still resolves it and runs the real
+        command. `$(which hermes)` is an ordinary way to spell "find it on PATH", no more exotic than
+        the absolute path this guard already blocks."""
+        assert contains_denied_kanban_mutation(command)
+
+    def test_known_limitation_variable_indirection_is_out_of_reach(self):
+        """`${HERMES_BIN} kanban complete t_x` is NOT caught, and cannot be by a static scan: the
+        binary's name lives in a variable's VALUE, which this guard never sees, and the variable may
+        be named anything at all (`${X}`). Substitution of a command whose text names `hermes` IS
+        caught (test above) because the name is present in the text; an env-var reference is a
+        different class. Pinned as a known gap so a future reader does not mistake it for coverage —
+        the durable boundary for it is the ContextVar check in the delegated child's own process,
+        which does not depend on reading shell text at all."""
+        assert not contains_denied_kanban_mutation("${HERMES_BIN} kanban complete t_4989b28e")
+
+    def test_flags_set_model_which_was_absent_from_both_denylists(self):
+        """`set-model` repoints a task's model override — a mutation. It reached the parser without
+        being added to either denied set, so a delegated child could run it past both the CLI's
+        env-var check and this guard. tests/tools/test_kanban_denied_actions.py now fails on any
+        future verb added the same way."""
+        assert contains_denied_kanban_mutation("hermes kanban set-model t_4989b28e some-model")
+
     def test_known_limitation_quoted_prose_is_not_distinguished_from_a_real_command(self):
         """Documented best-effort gap: unlike cron.lifecycle_guard (which re-scans shlex-tokenized
         segments and can tell a quoted argument from command position), this guard is a plain

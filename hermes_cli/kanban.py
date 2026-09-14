@@ -28,6 +28,7 @@ from hermes_cli.kanban_output import (
     _task_to_dict,
 )
 from hermes_cli.kanban_boards import _dispatch_boards
+from hermes_cli.kanban_denied_actions import DENIED_BOARD_ACTIONS, DENIED_KANBAN_ACTIONS
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
 )
@@ -211,27 +212,12 @@ def _profile_author() -> str:
         return "user"
 
 
-_DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
-    "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "request-review", "request-changes", "reopen-review",
-    "gc",
-})
-
-_DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
-    "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
-    "set-default-workdir", "import",
-})
-
-
 def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
     action = getattr(args, "kanban_action", None)
     if action == "boards":
-        if (getattr(args, "boards_action", None) or "list") not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
+        if (getattr(args, "boards_action", None) or "list") not in DENIED_BOARD_ACTIONS:
             return False
-    elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
+    elif action not in DENIED_KANBAN_ACTIONS:
         return False
     try:
         from agent.delegation_context import is_delegated_child_process_context

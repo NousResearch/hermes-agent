@@ -864,9 +864,13 @@ function Intro() {
 
 /** Sentinel for "assignee IS NULL", used both as the Running column's lane key and as the
  *  ASSIGNEE filter's selected value. Deliberately NOT a bare `'unassigned'`: profile names match
- *  `[a-z0-9][a-z0-9_-]{0,63}` (hermes_cli/profiles.py), so a leading `:` cannot collide with a real
- *  profile — a profile literally named `unassigned` used to be indistinguishable from "no assignee"
- *  in both surfaces. Never rendered directly; `k.unassigned` is the display label. */
+ *  `[a-z0-9][a-z0-9_-]{0,63}` (hermes_cli/profiles.py `validate_profile_name`), so a leading `:`
+ *  cannot collide with any legally-created profile — a profile literally named `unassigned` used to
+ *  be indistinguishable from "no assignee" in both surfaces. Scope of that guarantee: assignee
+ *  strings are NOT validated against the profile registry on write (kanban_db `_canonical_assignee`
+ *  only lowercases and strips), so a direct CLI/API caller can still store an arbitrary string; the
+ *  `:` prefix removes the collision for every profile-driven and UI-driven path, not for a caller
+ *  writing a deliberately colliding value. Never rendered directly; `k.unassigned` is the label. */
 export const UNASSIGNED_LANE = ':unassigned'
 
 /** Pure predicate behind the board's client-side filters — extracted for testability

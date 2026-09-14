@@ -18,32 +18,28 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-# Mirrors hermes_cli/kanban.py's _DELEGATED_CHILD_DENIED_ACTIONS / _DELEGATED_CHILD_DENIED_BOARD_ACTIONS.
-# Duplicated rather than imported: hermes_cli.kanban pulls in the full CLI arg-parser machinery, which
-# would be a heavy, layering-inverted import from a tools/ guard module. Keep these two lists in sync.
-_DENIED_KANBAN_ACTIONS = frozenset({
-    "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
-    "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "request-review", "request-changes", "reopen-review", "gc",
-})
-# `hold`/`resume` are the board-automation verbs added by #110196; listed here ahead of that merge so
-# whichever lands first, a delegated child can never reach them. Denying a verb the parser does not yet
-# expose is inert — the pattern simply never matches — so there is no ordering hazard either way.
-_DENIED_BOARD_ACTIONS = frozenset({
-    "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
-    "hold", "resume", "set-default-workdir", "import",
-})
+from hermes_cli.kanban_denied_actions import DENIED_BOARD_ACTIONS, DENIED_KANBAN_ACTIONS
 
-_ACTIONS_ALT = "|".join(sorted(_DENIED_KANBAN_ACTIONS))
-_BOARD_ACTIONS_ALT = "|".join(sorted(_DENIED_BOARD_ACTIONS))
+_ACTIONS_ALT = "|".join(sorted(DENIED_KANBAN_ACTIONS))
+_BOARD_ACTIONS_ALT = "|".join(sorted(DENIED_BOARD_ACTIONS))
 
 # Python argv-list punctuation (`subprocess.run(["hermes", "kanban", "complete", ...])`) separates
 # exec'd words with brackets/commas/quotes; stripped only for the punctuation-stripped re-scan, never
 # from raw text. Mirrors cron/lifecycle_guard.py's constant of the same name/purpose (that one omits
 # quotes because it re-scans shlex-tokenized segments instead; this guard is a plain string scan).
 _ARGV_LIST_PUNCTUATION = re.compile(r"[\[\],\"']+")
+
+# Command substitution hides the binary's name from a plain string scan: in `$(which hermes) kanban
+# complete t_x` the token immediately before `kanban` is `)`, so the anchor below never sees `hermes`
+# at all. A shell resolves the substitution to the real path before exec, so the command runs; the
+# guard must therefore scan the substitution's own text too. Collapsing the delimiters to whitespace
+# reduces that case to one the main pattern already handles (`which hermes kanban complete t_x`) —
+# the same reduction strategy as the argv-list pass, rather than enumerating substitution spellings
+# inside the main pattern. Known gap by construction: `${HERMES_BIN} kanban complete t_x` cannot be
+# caught this way (the name lives in the variable's VALUE, never in the text, and the variable may
+# be named anything) — the ContextVar check in the child's own process is the boundary that does not
+# depend on reading shell text. Pinned in tests/tools/test_kanban_cli_mutation_guard.py.
+_SHELL_SUBSTITUTION_PUNCTUATION = re.compile(r"(?:\$\(|\$\{|[()`}])+")
 
 # Anchored like cron/lifecycle_guard.py's _GATEWAY_LIFECYCLE_PATTERN, with two deliberate widenings for
 # this guard's threat model (a child actively trying to evade it, rather than a job incidentally naming a
@@ -66,19 +62,28 @@ _KANBAN_MUTATION_PATTERN = re.compile(
     r"|(?:" + _ACTIONS_ALT + r")\b)"
 )
 
+# Each normalization reduces one syntactic disguise to plain command text. Applied independently
+# (not chained) so one rewrite cannot mask a match the other would have found; a normalization that
+# changes nothing is skipped rather than re-scanned.
+_NORMALIZATIONS = (_ARGV_LIST_PUNCTUATION, _SHELL_SUBSTITUTION_PUNCTUATION)
+
 
 def contains_denied_kanban_mutation(command: Optional[str]) -> bool:
     """True if *command* invokes a Kanban-mutating CLI verb: ``hermes kanban <verb>`` or
     ``hermes kanban boards <verb>`` for one of the actions ``hermes_cli/kanban.py`` denies to delegated
     children. Read-only verbs (``show``, ``list``, ``boards list``, ...) never match.
 
-    Also tries a punctuation-stripped variant so a Python argv list
-    (``subprocess.run(["hermes", "kanban", "complete", tid])``) is caught even though its tokens are
-    joined by commas/brackets rather than whitespace — same normalization
-    ``cron.lifecycle_guard._ARGV_LIST_PUNCTUATION`` applies for the analogous gateway-lifecycle case."""
+    Scans the raw text first, then each normalized variant: argv-list punctuation stripped (so
+    ``subprocess.run(["hermes", "kanban", "complete", tid])`` is caught even though its tokens are joined
+    by commas/brackets) and shell-substitution delimiters stripped (so ``$(which hermes) kanban complete
+    t_x`` is caught even though `hermes` never sits adjacent to `kanban`). Same normalization strategy
+    ``cron.lifecycle_guard`` applies for the analogous gateway-lifecycle case."""
     if not command or "kanban" not in command.lower():
         return False
     if _KANBAN_MUTATION_PATTERN.search(command):
         return True
-    stripped = _ARGV_LIST_PUNCTUATION.sub(" ", command)
-    return stripped != command and bool(_KANBAN_MUTATION_PATTERN.search(stripped))
+    for normalization in _NORMALIZATIONS:
+        normalized = normalization.sub(" ", command)
+        if normalized != command and _KANBAN_MUTATION_PATTERN.search(normalized):
+            return True
+    return False

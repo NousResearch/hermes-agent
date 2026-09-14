@@ -3238,10 +3238,8 @@ def _resolve_name(name: str) -> str:
 _paste_counter = 0
 
 
-# mcp.servers.* handlers (methods_tools) resolve these BARE through this namespace.
-from .mcp_rpc_helpers import (  # noqa: E402, F401
-    reset_profile as _mcp_reset_profile,
-    summarize_server as _mcp_summarize_server)
+# mcp.servers.* handlers (methods_tools) resolve this BARE through this namespace.
+from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server  # noqa: E402, F401
 
 
 # ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close

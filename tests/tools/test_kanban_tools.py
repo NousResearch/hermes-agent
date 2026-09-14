@@ -81,6 +81,32 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_returns_persisted_completion_proof(worker_env, tmp_path):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools.registry import registry
+
+    artifact = tmp_path / "workspace" / "report.txt"
+    artifact.parent.mkdir()
+    artifact.write_text("verified", encoding="utf-8")
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(
+            conn,
+            title="evidenced",
+            workspace_kind="dir",
+            workspace_path=str(artifact.parent),
+            completion_contract="evidence",
+        )
+        assert kb.complete_task(conn, tid, proof=["path:report.txt"])
+
+    shown = json.loads(registry.dispatch("kanban_show", {"task_id": tid}))
+    assert shown["task"]["completion_proof"] == [{
+        "type": "path",
+        "value": "report.txt",
+        "resolved": str(artifact.resolve()),
+    }]
+
+
 def test_list_filters_tasks(monkeypatch, worker_env):
     """kanban_list gives orchestrators filtered board discovery."""
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

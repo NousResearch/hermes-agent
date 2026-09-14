@@ -162,14 +162,13 @@ def test_account_crashes_rejects_task_reclaimed_between_reclaim_and_accounting(c
     )
 
 
-def test_account_crashes_still_counts_after_replacement_run_already_finished(conn):
+def test_account_crashes_after_replacement_run_succeeded_does_not_resurrect_streak(conn):
     """ABA case: the replacement run claimed between reclaim and accounting has
-    ALSO already finished (so ``current_run_id`` is NULL again) by the time
-    late accounting runs. A nullity check on ``current_run_id`` would treat
-    this as safe to overwrite; accounting must instead detect the later run
-    via ``task_runs`` and still only bump the counter."""
+    ALREADY succeeded by the time late accounting runs. ``complete_task``
+    already reset ``consecutive_failures`` to zero; the stale crash from the
+    superseded run must not bump it back up."""
     host = kb._claimer_id().split(":", 1)[0]
-    tid = kb.create_task(conn, title="aba", assignee="w")
+    tid = kb.create_task(conn, title="aba-success", assignee="w")
 
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     dead_pid = _dead_pid()
@@ -182,9 +181,9 @@ def test_account_crashes_still_counts_after_replacement_run_already_finished(con
     sweep = kbd._reclaim_dead_workers(conn)
     assert tid in sweep.crashed
 
-    # A new worker claims the task and finishes it before the old crash is
-    # accounted for — ``current_run_id`` is NULL again, same as right after
-    # the original reclaim.
+    # A new worker claims the task and finishes it successfully before the
+    # old crash is accounted for — ``current_run_id`` is NULL again, same as
+    # right after the original reclaim.
     kb.claim_task(conn, tid, claimer=f"{host}:B")
     kb.complete_task(conn, tid, summary="done")
 
@@ -196,7 +195,10 @@ def test_account_crashes_still_counts_after_replacement_run_already_finished(con
     ).fetchone()
     assert final["status"] == "done", "late accounting must not reopen the completed task"
     assert final["last_failure_error"] is None
-    assert final["consecutive_failures"] == 1
+    assert final["consecutive_failures"] == 0, (
+        "a success that already superseded the stale crash must not have its "
+        "streak resurrected by late accounting"
+    )
 
 
 def test_record_task_failure_timeout_still_running_counts_without_clobbering(conn):
@@ -234,11 +236,13 @@ def test_record_task_failure_timeout_still_running_counts_without_clobbering(con
     assert final["consecutive_failures"] == 1
 
 
-def test_record_task_failure_timeout_still_counts_after_replacement_run_already_finished(conn):
-    """ABA case for the timeout path: the replacement run has also already
-    finished by the time late accounting runs."""
+def test_record_task_failure_timeout_after_replacement_run_succeeded_does_not_resurrect_streak(conn):
+    """ABA case for the timeout path: the replacement run has already
+    succeeded by the time late accounting runs. ``complete_task`` already
+    reset ``consecutive_failures`` to zero; the stale timeout must not bump
+    it back up."""
     host = kb._claimer_id().split(":", 1)[0]
-    tid = kb.create_task(conn, title="timeout-aba", assignee="w")
+    tid = kb.create_task(conn, title="timeout-aba-success", assignee="w")
 
     kb.claim_task(conn, tid, claimer=f"{host}:A")
     old_run_id = kb._end_run(
@@ -265,4 +269,7 @@ def test_record_task_failure_timeout_still_counts_after_replacement_run_already_
     ).fetchone()
     assert final["status"] == "done"
     assert final["last_failure_error"] is None
-    assert final["consecutive_failures"] == 1
+    assert final["consecutive_failures"] == 0, (
+        "a success that already superseded the stale timeout must not have its "
+        "streak resurrected by late accounting"
+    )

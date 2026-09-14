@@ -1018,9 +1018,12 @@ def _record_task_failure(
     task rather than ``tasks.current_run_id`` nullity: a higher id means a
     later run has since been claimed, whether that run is still active or has
     itself already finished (the plain nullity check is an ABA hazard in that
-    second case). When stale, the failure still counts toward the unified
-    ``consecutive_failures`` budget — it happened — but must not stamp status,
-    claim state, or ``last_failure_error`` onto the unrelated later run.
+    second case). When stale and that later run has NOT itself completed
+    successfully, the failure still counts toward the unified
+    ``consecutive_failures`` budget — it happened — but must not stamp
+    status, claim state, or ``last_failure_error`` onto the unrelated later
+    run. If the later run already succeeded, ``complete_task`` has already
+    reset the streak to zero; the old failure must not resurrect it.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -1033,18 +1036,27 @@ def _record_task_failure(
         if row is None:
             return False
         stale = False
+        superseded_by_success = False
         if not release_claim and reclaimed_run_id is not None:
             latest = conn.execute(
                 "SELECT MAX(id) AS max_id FROM task_runs WHERE task_id = ?", (task_id,),
             ).fetchone()
             latest_id = _kb._row_get(latest, "max_id")
             stale = latest_id is not None and int(latest_id) != int(reclaimed_run_id)
+            if stale:
+                latest_run = conn.execute(
+                    "SELECT outcome FROM task_runs WHERE id = ?", (latest_id,),
+                ).fetchone()
+                superseded_by_success = (
+                    latest_run is not None and latest_run["outcome"] == "completed"
+                )
         if stale:
-            conn.execute(
-                "UPDATE tasks SET consecutive_failures = consecutive_failures + 1 "
-                "WHERE id = ?",
-                (task_id,),
-            )
+            if not superseded_by_success:
+                conn.execute(
+                    "UPDATE tasks SET consecutive_failures = consecutive_failures + 1 "
+                    "WHERE id = ?",
+                    (task_id,),
+                )
             return False
         retry_status = (
             _kb._retry_status_for_run(conn, task_id, row["current_run_id"])

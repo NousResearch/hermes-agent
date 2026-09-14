@@ -67,7 +67,7 @@ class _TwoTurnAgent:
     def __init__(self, **kwargs):
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
         type(self).calls.append(message)
         return {
             "final_response": f"done-{len(type(self).calls)}",
@@ -82,7 +82,7 @@ class _RaisingSecondTurnAgent:
     def __init__(self, **kwargs):
         self.tools = []
 
-    def run_conversation(self, message, conversation_history=None, task_id=None):
+    def run_conversation(self, message, conversation_history=None, task_id=None, **_kwargs):
         type(self).calls.append(message)
         if len(type(self).calls) >= 2:
             raise RuntimeError("boom in the queued follow-up turn")

@@ -399,15 +399,17 @@ class TestClassifyApiError:
             "organization_usage_limit_exceeded",
         ],
     )
-    def test_openai_spend_usage_limit_codes_are_billing(self, code):
-        # OpenAI / OpenAI-compatible aggregators emit these structured codes
-        # when a credit balance or org/project spend/usage cap is exhausted.
-        # They must classify as billing (rotate + fallback), not fall through
-        # to a generic bucket. (clean-room port of zed-industries/zed#63208)
-        # No status_code: SSE/stream-surfaced errors carry only the
-        # structured body, exercising the _classify_by_error_code path.
+    @pytest.mark.parametrize("status_code", [None, 429])
+    def test_openai_spend_usage_limit_codes_are_billing(self, code, status_code):
+        # OpenAI documents these structured codes on HTTP 429 when a credit
+        # balance or org/project spend/usage cap is exhausted. They must
+        # classify as billing (rotate + fallback) on the 429 path AND on the
+        # status-less path (SSE/stream-surfaced errors carry only the body),
+        # never as a retryable rate limit. (clean-room port of
+        # zed-industries/zed#63208)
         e = MockAPIError(
             "request rejected",
+            status_code=status_code,
             body={"error": {"code": code, "message": "request rejected"}},
         )
         result = classify_api_error(e, provider="openai", model="gpt-5")

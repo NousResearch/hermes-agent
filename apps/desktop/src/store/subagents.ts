@@ -18,6 +18,9 @@ export interface SubagentProgress {
   goal: string
   /** The child's own stored session id — lets UIs open its session window. */
   sessionId?: string
+  /** Batch (delegation) id — exact grouping key for one fan-out's workers,
+   *  so concurrent/nested batches never merge into one group. */
+  delegationId?: string
   model?: string
   status: SubagentStatus
   taskCount: number
@@ -189,6 +192,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     parentId: str(payload.parent_id) || prev?.parentId || null,
     goal: str(payload.goal) || prev?.goal || 'Subagent',
     sessionId: str(payload.child_session_id) || prev?.sessionId,
+    delegationId: str(payload.delegation_id) || prev?.delegationId,
     model: str(payload.model) || prev?.model,
     status,
     taskCount: num(payload.task_count) ?? prev?.taskCount ?? 1,
@@ -205,6 +209,49 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     stream,
     summary: str(payload.summary) || timeoutSummary(payload) || prev?.summary || undefined,
     currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool
+  }
+}
+
+/** Reconcile a scoped, race-checked snapshot without replacing stream history. */
+export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload[]) {
+  const map = $subagentsBySession.get()
+  const previous = map[sid] ?? []
+  const ids = new Set(children.map(p => str(p.subagent_id)).filter(Boolean))
+  const next = previous.filter(item => TERMINAL.has(item.status) || ids.has(item.id))
+
+  for (const payload of children) {
+    const id = str(payload.subagent_id)
+
+    if (!id) {
+      continue
+    }
+
+    const index = next.findIndex(item => item.id === id)
+    const prev = next[index]
+
+    if (prev && TERMINAL.has(prev.status)) {
+      continue
+    }
+
+    const projected = toProgress(payload, prev)
+    projected.startedAt = (num(payload.started_at) ?? 0) * 1000 || prev?.startedAt || projected.startedAt
+    projected.updatedAt = prev?.updatedAt ?? projected.startedAt
+
+    // A roster records the last tool, not a currently executing call. Seed cold
+    // activity only; a repeated snapshot must not append over newer live text.
+    if (!projected.stream.length && str(payload.last_tool)) {
+      projected.stream = [{ at: projected.updatedAt, kind: 'tool', text: formatTool(str(payload.last_tool)) }]
+    }
+
+    if (index < 0) {
+      next.push(projected)
+    } else {
+      next[index] = JSON.stringify(prev) === JSON.stringify(projected) ? prev : projected
+    }
+  }
+
+  if (next.length !== previous.length || next.some((item, index) => item !== previous[index])) {
+    $subagentsBySession.set({ ...map, [sid]: next })
   }
 }
 

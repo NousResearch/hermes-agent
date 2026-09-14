@@ -315,7 +315,6 @@ OPENVIKING_ENDPOINT=http://127.0.0.1:1933
 # OPENVIKING_API_KEY=...
 # OPENVIKING_ACCOUNT=default
 # OPENVIKING_USER=default
-# OPENVIKING_AGENT=hermes
 ```
 
 OpenViking server settings live in `ov.conf` (`--config`,
@@ -329,7 +328,24 @@ live in `ovcli.conf` (`OPENVIKING_CLI_CONFIG_FILE` or
 - `viking://` URI scheme for hierarchical knowledge browsing
 
 `OPENVIKING_ACCOUNT` and `OPENVIKING_USER` are used for local/trusted mode.
-`OPENVIKING_AGENT` is Hermes' peer ID in OpenViking for peer-scoped memories.
+Peer identity is optional. By default, Hermes sends no peer ID and writes
+explicit memories to `viking://user/<user>/memories/...`. Setup does not ask
+for a peer ID. For separate assistant context, set
+`memory.openviking.agent: work-assistant` in `config.yaml`.
+
+Existing non-empty peer settings keep their peer-scoped writes and recall.
+This includes `OPENVIKING_AGENT` and `actor_peer_id` or legacy `agent_id` in a
+linked OpenViking config. Existing memories are not moved or deleted.
+With no peer ID, default search covers user memory and existing peer memories
+under the same OpenViking user. Old peer memories remain searchable at their
+existing paths. Ranking and result limits determine which memories are returned.
+Set `memory.openviking.agent: hermes` to restore the old peer-scoped writes.
+Memories written at user scope before this change stay there and remain
+searchable. The setting changes future writes, not existing memory locations.
+
+Hermes sends `User-Agent: openviking-memory-hermes/<version>` on OpenViking
+requests. This standard harness identifier contains no per-user identifier and
+does not add a separate request.
 
 ---
 
@@ -398,6 +414,7 @@ The plugin authenticates with `X-API-Key` and uses the server's `/search` / `/me
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
 | `rerank` | `false` | Rerank search results for relevance (platform mode only) |
+| `sync_max_chars` | `450` | Per-message character cap applied before each turn is sent for fact extraction, cut at the last sentence boundary. The default fits 512-token embedders (Ollama `bge-small-zh-v1.5`, `all-minilm`); raise it (e.g. `6000`) for 8k-token embedders such as `text-embedding-3-small`, `jina-embeddings-v3` or `bge-m3` |
 
 **OSS supported providers:**
 

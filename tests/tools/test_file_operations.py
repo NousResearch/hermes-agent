@@ -1,22 +1,21 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import os
-import re
 import pytest
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
+from tools.environments.local import _find_bash, _msys_to_windows_path, LocalEnvironment
+from agent.file_safety import is_write_denied as _is_write_denied
+from tools.file_operations_common import LintResult, SearchMatch
 from tools.file_operations import (
-    _is_write_denied,
     ReadResult,
     WriteResult,
     PatchResult,
     SearchResult,
-    SearchMatch,
-    LintResult,
     ShellFileOperations,
-    MAX_LINE_LENGTH,
     normalize_read_pagination,
     normalize_search_pagination,
 )
@@ -155,10 +154,16 @@ class TestSearchResult:
         assert d["matches"][0]["path"] == "a.py"
 
 
-    def test_truncated_flag(self):
+    def test_truncated_flag_marks_total_as_lower_bound(self):
         r = SearchResult(total_count=100, truncated=True)
         d = r.to_dict()
         assert d["truncated"] is True
+        assert d["total_count_is_lower_bound"] is True
+
+    def test_untruncated_total_omits_lower_bound_flag(self):
+        r = SearchResult(total_count=100)
+        d = r.to_dict()
+        assert "total_count_is_lower_bound" not in d
 
 
 class TestSearchResultDensify:
@@ -255,16 +260,29 @@ def make_real_subprocess_env(cwd: str, include_stderr: bool = False) -> MagicMoc
     env.cwd = cwd
 
     def execute(command, **kwargs):
+        stdin_data = kwargs.get("stdin_data")
+        is_windows = os.name == "nt"
+        if is_windows:
+            # Match LocalEnvironment: commands are POSIX scripts executed by
+            # Git Bash, and stdin bytes must bypass Windows newline rewriting.
+            command = [_find_bash(), "-c", command]
         completed = subprocess.run(
             command,
-            shell=True,
-            text=True,
+            shell=not is_windows,
+            text=not is_windows,
             capture_output=True,
-            input=kwargs.get("stdin_data"),
+            input=(stdin_data.encode("utf-8", "surrogateescape")
+                   if is_windows and stdin_data is not None else stdin_data),
         )
-        output = completed.stdout
+        output = (
+            completed.stdout.decode("utf-8", "replace")
+            if is_windows else completed.stdout
+        )
         if include_stderr:
-            output += completed.stderr
+            output += (
+                completed.stderr.decode("utf-8", "replace")
+                if is_windows else completed.stderr
+            )
         return {
             "output": output,
             "returncode": completed.returncode,
@@ -303,19 +321,14 @@ class TestShellFileOpsHelpers:
 
         def side_effect(command, **kwargs):
             commands.append(command)
-            # The size probe gates `wc -c` behind `[ -f ]` so a FIFO or device
-            # cannot block the read; it still reports a plain byte count.
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "5\n", "returncode": 0}
-            if command.startswith("head -c") and "| base64" in command:
-                import base64 as b64
-                return {"output": b64.b64encode(b"hello").decode(), "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "hello", "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": "hello\n", "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            m = READ_SENTINEL_RE.search(command)
+            if m:
+                return {
+                    "output": compound_read_output(
+                        m.group(0), size=5, sample=b"hello", content="hello\n", total_lines=1
+                    ),
+                    "returncode": 0,
+                }
             return {"output": "", "returncode": 0}
 
         mock_env.execute.side_effect = side_effect
@@ -323,16 +336,22 @@ class TestShellFileOpsHelpers:
         result = ops.read_file(r"C:\Users\alice\notes.txt")
 
         assert result.error is None
-        assert commands[0] == (
+        # One compound probe carries every stage; each embeds the MSYS path.
+        # The size probe gates `wc -c` behind `[ -f ]` so a FIFO or device
+        # cannot block the read; it still reports a plain byte count.
+        assert len(commands) == 1
+        probe = commands[0]
+        assert probe.startswith(
             "if [ -f '/c/Users/alice/notes.txt' ]; "
             "then wc -c < '/c/Users/alice/notes.txt' 2>/dev/null; "
+        )
+        assert "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64" in probe
+        assert "sed -n '1,2000p' '/c/Users/alice/notes.txt' 2>/dev/null | cut -b1-8001" in probe
+        assert "wc -l < '/c/Users/alice/notes.txt'" in probe
+        assert (
             "elif [ -e '/c/Users/alice/notes.txt' ]; "
             "then echo __hermes_not_regular__; "
-            "else exit 1; fi"
-        )
-        assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64"
-        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt' | cut -b1-8001"
-        assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
+        ) in probe
 
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True
@@ -355,14 +374,15 @@ class TestShellFileOpsHelpers:
         )
 
         def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": "12\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "print('ok')\n", "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": leaked, "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            m = READ_SENTINEL_RE.search(command)
+            if m:
+                return {
+                    "output": compound_read_output(
+                        m.group(0), size=12, sample=b"print('ok')\n",
+                        content=leaked, total_lines=1,
+                    ),
+                    "returncode": 0,
+                }
             return {"output": "", "returncode": 0}
 
         mock_env.execute.side_effect = side_effect
@@ -397,6 +417,34 @@ class TestShellFileOpsHelpers:
 
         assert result.error is None
         assert result.content == "alpha\n"
+
+    def test_newline_terminated_content_has_no_phantom_line(self, file_ops):
+        # A file ending in a newline (the normal, well-formed case) has its
+        # last line terminated, NOT followed by an empty line. The gutter must
+        # match `cat -n`: three lines in, three numbered lines out.
+        result = file_ops._add_line_numbers("line1\nline2\nline3\n")
+        assert result == "1|line1\n2|line2\n3|line3"
+        assert "4|" not in result
+        assert len(result.split("\n")) == 3
+
+    def test_non_terminated_content_still_numbered_correctly(self, file_ops):
+        # Content with no trailing newline was already correct; guard it.
+        result = file_ops._add_line_numbers("line1\nline2\nline3")
+        assert result == "1|line1\n2|line2\n3|line3"
+
+    def test_trailing_blank_line_is_kept(self, file_ops):
+        # "a" then a genuine blank line, then the terminating newline: that is
+        # two lines (a, blank), so only the single terminator is dropped.
+        result = file_ops._add_line_numbers("a\n\n")
+        assert result == "1|a\n2|"
+        assert "3|" not in result
+
+    def test_newline_terminated_with_offset_has_no_phantom_line(self, file_ops):
+        # A truncated page (offset>1) that ends on a newline must not append a
+        # phantom numbered line at the page boundary.
+        result = file_ops._add_line_numbers("def f():\n    return 1\n", start_line=10)
+        assert result == "10|def f():\n11|    return 1"
+        assert "12|" not in result
 
 
 class TestSearchPathValidation:
@@ -437,7 +485,7 @@ class TestSearchPathValidation:
 
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
-        return make_real_subprocess_env("/")
+        return LocalEnvironment("/")
 
     def test_hidden_root_with_hidden_ancestor_includes_files(self, tmp_path, monkeypatch):
         """Fallback find should include visible files when path is inside hidden root."""
@@ -450,7 +498,7 @@ class TestSearchFilesFallbackHiddenPaths:
 
         for p in [visible_file, nested_hidden_file, visible_nested_file, hidden_dir_file]:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("x", encoding="utf-8")
+            p.write_text("x")
 
         ops = ShellFileOperations(self._make_env())
         monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
@@ -469,7 +517,7 @@ class TestSearchFilesFallbackHiddenPaths:
 
         for p in [visible_file, visible_nested_file, hidden_dir_file]:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("x", encoding="utf-8")
+            p.write_text("x")
 
         ops = ShellFileOperations(self._make_env())
         monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
@@ -495,6 +543,7 @@ class TestSearchFilesFallbackHiddenPaths:
         assert result.error is None
         assert result.files == [str(wanted)]
 
+
     def test_find_fallback_rejects_path_glob_instead_of_matching_everything(
         self, tmp_path, monkeypatch
     ):
@@ -509,6 +558,7 @@ class TestSearchFilesFallbackHiddenPaths:
 
         assert result.error is not None
         assert "Set `path`" in result.error
+
 
 
 class TestShellFileOpsWriteDenied:
@@ -638,7 +688,7 @@ class TestAtomicWriteNewFilePermissions:
             os.umask(old_umask)
 
         assert result.error is None, f"write failed: {result.error}"
-        assert dest.read_text(encoding="utf-8") == "test content\n"
+        assert dest.read_text() == "test content\n"
         expected_mode = 0o666 & ~test_umask
         actual_mode = dest.stat().st_mode & 0o777
         assert actual_mode == expected_mode, (
@@ -651,13 +701,13 @@ class TestAtomicWriteNewFilePermissions:
         mode preservation (e.g. an executable script stays 0755)."""
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         dest = tmp_path / "existing.sh"
-        dest.write_text("#!/bin/sh\n", encoding="utf-8")
+        dest.write_text("#!/bin/sh\n")
         dest.chmod(0o755)
 
         result = ops.write_file(str(dest), "#!/bin/sh\necho updated\n")
 
         assert result.error is None, f"write failed: {result.error}"
-        assert dest.read_text(encoding="utf-8") == "#!/bin/sh\necho updated\n"
+        assert dest.read_text() == "#!/bin/sh\necho updated\n"
         assert dest.stat().st_mode & 0o777 == 0o755
 
 
@@ -672,7 +722,7 @@ class TestAtomicWriteThroughSymlink:
         ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
         real = tmp_path / "real.txt"
         link = tmp_path / "link.txt"
-        real.write_text("original\n", encoding="utf-8")
+        real.write_text("original\n")
         link.symlink_to(real)
 
         result = ops.write_file(str(link), "newcontent\n")
@@ -681,7 +731,7 @@ class TestAtomicWriteThroughSymlink:
         # The link must survive as a symlink...
         assert link.is_symlink(), "symlink was replaced by a plain file"
         # ...and the real target must carry the new content.
-        assert real.read_text(encoding="utf-8") == "newcontent\n"
+        assert real.read_text() == "newcontent\n"
         assert os.path.realpath(link) == str(real)
 
     def test_write_through_broken_symlink_falls_back(self, tmp_path):
@@ -695,7 +745,7 @@ class TestAtomicWriteThroughSymlink:
 
         assert result.error is None, f"write failed: {result.error}"
         assert target.exists()
-        assert target.read_text(encoding="utf-8") == "data\n"
+        assert target.read_text() == "data\n"
 
 
 class TestReadNonUtf8IsBinary:
@@ -805,17 +855,19 @@ class TestByteLayerBinaryDetection:
     # --- integration: read_file over the mocked terminal ------------------
 
     def _dispatch(self, cjk_bytes):
-        import base64 as b64
-
         def side_effect(command, **kwargs):
-            if command.startswith("if [ -f ") or command.startswith("wc -c"):
-                return {"output": f"{len(cjk_bytes)}\n", "returncode": 0}
-            if command.startswith("head -c") and "| base64" in command:
-                return {"output": b64.b64encode(cjk_bytes[:1000]).decode(), "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": cjk_bytes.decode("utf-8", errors="replace"), "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
+            m = READ_SENTINEL_RE.search(command)
+            if m:
+                return {
+                    "output": compound_read_output(
+                        m.group(0),
+                        size=len(cjk_bytes),
+                        sample=cjk_bytes[:1000],
+                        content=cjk_bytes.decode("utf-8", errors="replace"),
+                        total_lines=1,
+                    ),
+                    "returncode": 0,
+                }
             return {"output": "", "returncode": 0}
 
         return side_effect

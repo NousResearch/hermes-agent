@@ -30,21 +30,43 @@ When Tool Search activates for a turn, the model sees three new tools in
 place of the deferred ones:
 
 ```
-tool_search(query, limit?)     — search the deferred-tool catalog
-tool_describe(name)            — load the full schema for one tool
-tool_call(name, arguments)     — invoke a deferred tool
+tool_search(queries, limit?)   search the deferred-tool catalog (one or more queries)
+tool_describe(names)           load the full schemas for one or more tools
+tool_call(calls)               invoke deferred tools; `calls` is an array of {name, arguments}
 ```
+
+`calls` takes one entry per invocation; a single local call is an array of
+one. Only `connectors__` names may be batched together; mixed and
+multi-local batches are rejected.
 
 A typical interaction looks like:
 
 ```
-Model: tool_search("create a github issue")
-  → { matches: [{ name: "mcp_github_create_issue", ... }, ...] }
-Model: tool_describe("mcp_github_create_issue")
-  → { parameters: { type: "object", properties: { ... } } }
-Model: tool_call("mcp_github_create_issue", { title: "...", body: "..." })
+Model: tool_search(["create a github issue", "send a slack message"])
+  → { results: [ { query: "create a github issue",
+                   matches: ["mcp_github_create_issue", ...] },
+                 { query: "send a slack message",
+                   matches: ["mcp_slack_post_message", ...] } ],
+      tools: { mcp_github_create_issue: { description: "...",
+                                          required: ["title"], ... },
+               mcp_slack_post_message: { ... } } }
+Model: tool_describe(["mcp_github_create_issue", "mcp_slack_post_message"])
+  → { tools: { mcp_github_create_issue: { parameters: { ... } },
+               mcp_slack_post_message: { parameters: { ... } } } }
+Model: tool_call({ calls: [{ name: "mcp_github_create_issue",
+                             arguments: { title: "...", body: "..." } }] })
   → { ok: true, issue_number: 42 }
 ```
+
+Each query in a `tool_search` call is searched independently against the
+same catalog (`limit` applies per query); the per-query groups carry tool
+names only, while the shared `tools` map holds each matched tool's
+description and required parameter names once. Queries are stemmed, so
+"issues" finds `create_issue`. Each query group that returns no matches
+includes an `available_sources` summary of the connected servers so a lexical
+miss is not mistaken for a missing capability.
+`tool_describe` resolves every requested name in one call; unknown names
+are reported in `not_found` without failing the rest of the batch.
 
 When the model invokes `tool_call`, Hermes **unwraps the bridge** and
 dispatches the underlying tool exactly as if the model had called it
@@ -78,19 +100,22 @@ tools:
     enabled: auto       # auto (default), on, or off
     threshold_pct: 5    # listing budget as a percentage of context
     search_default_limit: 5
-    max_search_limit: 20
+    max_search_limit: 25
     listing: auto       # embed a grouped name+description catalog manifest
     listing_max_tokens: 4000
 ```
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). |
+| `enabled` | `auto` | `auto`/`on` activate whenever at least one deferrable tool exists; `off` disables entirely (everything stays eager). `auto` is currently an alias of `on` — it is reserved for a future mode that inlines schemas when they fit the context and defers only when they don't. Pin `on` or `off` if you want today's behavior guaranteed across upgrades. |
 | `threshold_pct` | `5` | Listing budget as a percentage of the active model's context length. Range 0–100. |
-| `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
-| `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
+| `search_default_limit` | `5` | Hits returned per query when the model calls `tool_search` without a `limit`. |
+| `max_search_limit` | `25` | Hard upper bound the model can request via `limit` (per query). Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
 | `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
+
+Per-call array caps are internal safety bounds, not configuration. Over-cap
+calls return an error so the model can retry with a smaller batch.
 
 ### Why the listing exists
 
@@ -109,6 +134,51 @@ You can also flip the legacy boolean shape:
 tools:
   tool_search: true   # equivalent to {enabled: auto}
 ```
+
+## Connectors (remote tools)
+
+When you are signed in to the Nous Portal, the bridge additionally reaches
+**connectors** — remote tools served by the managed tool gateway. They are
+never registered locally: `tool_search` sends each query to the gateway, adds
+the gateway's hits to the local catalog as documents (tagged
+`source: "connectors"`, named `connectors__<connector>__<tool>`), and ranks
+both with the same BM25 pass and the same rarest-token rule, so `limit`
+caps the group as a whole and a connector tool that answers the query is
+never pushed out by local tools that share one word with it. The gateway
+call is bounded at 30 seconds; a slow or dark gateway degrades to local
+results only. `tool_describe` fetches connector schemas from the gateway,
+and `tool_call` sends each connector entry in a batch as its own gateway
+request, in input order (a tool name the gateway does not know under its
+conventional slug is retried once under the literal slug, so an entry can
+cost two requests). If a connector ever shipped both `GMAIL_X` and a literal
+`X`, both would compose to `connectors__gmail__X`, which runs `GMAIL_X`;
+search keeps that twin, drops the other, and logs a warning. Results splice back into the batch's original order
+with recomputed counts.
+
+```yaml
+tools:
+  connectors:
+    enabled: true   # false — never touch connector routes; the bridge
+                    # behaves exactly as if the feature didn't exist
+```
+
+Signed out (or when the gateway does not serve connectors for your
+account), everything above is invisible: local search behaves exactly as
+described in the rest of this page, with no errors shown to the model.
+
+A connector call that needs an account you haven't linked returns a
+`CONNECTION_REQUIRED` error carrying a connect link. The `manage_connections`
+tool (available on the same condition as the connector bridge) lists
+connectors and their connection state, starts an authorization, and can wait
+for the user to finish it; disconnecting an account is done by the user in
+the Portal.
+
+`tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
+entries (a single call is an array of one). Each connector entry in a batch
+is dispatched as its own gateway request, one after another; local deferred
+tools stay one entry per `tool_call`. Approvals settle per entry before
+dispatch, and a `/stop` between entries leaves the unstarted ones unsent
+(their slots report `INTERRUPTED`).
 
 ## When NOT to use it
 
@@ -136,6 +206,12 @@ to any progressive-disclosure design, not specific to this implementation:
   result enters the conversation history (so it does get cached on
   subsequent turns) but it never benefits from the system-prompt cache
   prefix.
+- **No provider-native validation for deferred schemas.** `tool_describe`
+  lets the model read a deferred tool's schema, but the provider still sees
+  only the generic `tool_call.arguments` object. Hermes therefore coerces and
+  validates the underlying arguments locally before dispatch; the concrete
+  tool or MCP server remains responsible for schemas Hermes cannot safely
+  validate, such as malformed schemas or external references.
 - **Model-quality dependence.** Tool Search assumes the model can write a
   reasonable search query for the tool it wants. Smaller models do this
   less well; the published Anthropic numbers (49% → 74% on Opus 4 with
@@ -148,11 +224,24 @@ to any progressive-disclosure design, not specific to this implementation:
 
 ## Implementation details
 
-- **Retrieval:** BM25 over tokenized tool name + description + parameter
-  names. Falls back to a literal substring match on the tool name when
-  BM25 returns no positive-score hits, which protects against
-  zero-IDF degenerate cases (e.g. searching `"github"` against a
-  catalog where every tool name contains "github").
+- **Retrieval:** BM25 over tokenized tool name, source name (the MCP
+  server or plugin toolset the tool belongs to, so searching `"linear"`
+  finds that server's tools even when a tool's own name doesn't carry
+  the service), description, and parameter names, with Snowball
+  stemming (English) applied to both the index and the query so
+  morphological variants match ("issues" finds `create_issue`). A tool is
+  a result only if it contains the query's rarest token (the one in the
+  fewest tool documents, so the word that names the intent: `gmail`,
+  `github`, `incident`, not `send` or `create`). A query whose rarest
+  token appears in no tool returns an empty group with the connected
+  sources and a retry hint, instead of `limit` tools that share one
+  common word.
+- **Parallel execution unwraps the bridge.** The batch planner decides
+  concurrency on the *underlying* tool of a `tool_call`, not on the
+  literal bridge name — so an MCP server opted in via
+  `supports_parallel_tool_calls: true` keeps its concurrency when its
+  tools are called through the bridge, and `tool_search` /
+  `tool_describe` lookups batch concurrently like any read-only tool.
 - **Catalog is stateless across turns.** It rebuilds from the current
   tool-defs list every assembly — no session-keyed `Map`. This avoids
   the class of bug where a stored catalog drifts out of sync with the

@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +70,7 @@ def _make_task(conn, title="t") -> str:
 
 
 def test_add_list_get_delete_attachment(kanban_home, tmp_path):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = _make_task(conn)
         # Write a real blob under the per-task dir so delete can unlink it.
@@ -111,7 +112,7 @@ def test_add_list_get_delete_attachment(kanban_home, tmp_path):
 
 
 def test_delete_attachment_missing_returns_none(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.delete_attachment(conn, 999999) is None
     finally:
@@ -134,7 +135,7 @@ def test_attachments_root_is_per_board(kanban_home, monkeypatch):
 
 
 def test_worker_context_lists_attachments_with_absolute_path(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = _make_task(conn, title="translate PDF")
         dest_dir = kb.task_attachments_dir(task_id)
@@ -231,7 +232,7 @@ def test_download_unknown_attachment_404(client):
 
 
 def test_store_attachment_bytes_roundtrip(kanban_home):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = _make_task(conn)
         att_id = kb.store_attachment_bytes(
@@ -259,7 +260,7 @@ def test_store_attachment_bytes_roundtrip(kanban_home):
 def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
     from hermes_cli.kanban import run_slash
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task_id = _make_task(conn, title="cli-attach")
     finally:
@@ -271,7 +272,7 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
     out = run_slash(f"attach {task_id} {src}")
     assert "Attached" in out, out
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         atts = kb.list_attachments(conn, task_id)
         assert len(atts) == 1
@@ -286,7 +287,7 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
 
     removed = run_slash(f"attach-rm {att_id}")
     assert "Deleted attachment" in removed
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.list_attachments(conn, task_id) == []
     finally:

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetElapsedTimerRegistryForTests } from '@/components/chat/activity-timer'
 import { I18nProvider } from '@/i18n'
+import { $providerWaitSessions, setSessionProviderWait } from '@/store/provider-wait'
 import { $activeSessionId, $turnStartedAt } from '@/store/session'
 
 import { ResponseLoadingIndicator } from './status'
@@ -22,7 +23,7 @@ describe('ResponseLoadingIndicator timer', () => {
     // useViewedInterval gates ticking on document focus + visibility; jsdom's
     // hasFocus() is unreliable across runners, so pin it (same as the
     // background-sync backstop tests).
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    vi.spyOn(globalThis.document, 'hasFocus').mockReturnValue(true)
     __resetElapsedTimerRegistryForTests()
   })
 
@@ -30,6 +31,7 @@ describe('ResponseLoadingIndicator timer', () => {
     cleanup()
     $activeSessionId.set(null)
     $turnStartedAt.set(null)
+    $providerWaitSessions.set({})
     __resetElapsedTimerRegistryForTests()
     vi.restoreAllMocks()
     vi.useRealTimers()
@@ -57,6 +59,16 @@ describe('ResponseLoadingIndicator timer', () => {
     renderIndicator()
 
     expect(screen.getAllByText((_, node) => node?.textContent === '8s').length).toBeGreaterThan(0)
+  })
+
+  it('names a prolonged provider wait in the existing response status row', () => {
+    $activeSessionId.set('session-a')
+    $turnStartedAt.set(Date.now())
+    setSessionProviderWait('session-a', '⏳ waiting on local-model — 30s with no output yet')
+
+    renderIndicator()
+
+    expect(screen.getByText('⏳ waiting on local-model — 30s with no output yet')).toBeTruthy()
   })
 })
 

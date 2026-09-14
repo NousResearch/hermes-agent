@@ -54,7 +54,7 @@ You can also set or auto-generate the description later with `hermes profile des
 hermes profile create work --clone
 ```
 
-Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, and skills into the new profile. Same API keys, model, and capabilities, but fresh sessions and memory. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
+Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, skills, and the curated memory files `memories/MEMORY.md` and `memories/USER.md` into the new profile — memory is treated as part of the agent's identity, like `SOUL.md`. Sessions, `state.db`, cron jobs and everything else start empty. For a blank memory as well, create the profile without `--clone` or delete the two files afterwards; the agent never falls back to another profile's memory when they are absent. Edit `~/.hermes/profiles/work/.env` for different API keys, or `~/.hermes/profiles/work/SOUL.md` for a different personality.
 
 ### Clone everything (`--clone-all`)
 
@@ -62,7 +62,11 @@ Copies your current profile's `config.yaml`, `.env`, `SOUL.md`, and skills into 
 hermes profile create backup --clone-all
 ```
 
-Copies **everything** — config, API keys, personality, all memories, skills, cron jobs, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. For a full backup including history, use `hermes profile export` or `hermes backup` instead.
+Copies **everything** — config, API keys, personality, all memories, skills, plugins. A complete working snapshot. Per-profile history is excluded (session history, `state.db`, `backups/`, `state-snapshots/`, `checkpoints/`) — these belong to the source profile and can reach tens of GB. **Cron jobs are not cloned** either: they are scheduled work bound to the source profile and its delivery channel, and a clone that inherited them would run every job twice (two gateways, same job ids). The new profile starts with an empty `cron/`. For a full backup including history and cron jobs, use `hermes profile export` or `hermes backup` instead.
+
+:::note OAuth logins are shared, not copied
+Anthropic (Claude Pro/Max), OpenAI Codex, and xAI OAuth logins use **single-use refresh tokens** — a copy of one is not a second credential, it is the same credential with two owners, and the first profile to refresh it revokes it for every other copy. `--clone-all` (and the dashboard's credential mirroring) therefore drops those OAuth rows from the clone. The new profile keeps reading the login from the root `~/.hermes/auth.json`, and a token refresh performed inside any profile is written back to root, so all profiles stay signed in. Static API keys are copied as usual. To give a profile its own separate OAuth login, run `hermes -p <name> auth add <provider>` inside it.
+:::
 
 ### Clone from a specific profile
 
@@ -75,6 +79,58 @@ hermes profile create work --clone-from coder
 ```bash
 hermes profile create work-backup --clone-from coder --clone-all
 ```
+
+### Messaging channels are never cloned (`--clone-channels` to opt in)
+
+Every clone — `--clone`, `--clone-from`, `--clone-all`, and the dashboard / Desktop / TUI
+"clone from profile" option — copies the source **without its messaging channels**: bot tokens
+and allowlists (`TELEGRAM_BOT_TOKEN`, `DISCORD_ALLOWED_USERS`, `WHATSAPP_ENABLED`,
+`API_SERVER_KEY`, `WEBHOOK_SECRET`, …), the `platforms:` / `telegram:` / `discord:` sections of
+`config.yaml`, `gateway.multiplex_profiles` / `profile_routes`, and (for `--clone-all`) the
+pairing store, WhatsApp session and other per-bot state. Provider and tool API keys, the model
+block, memory settings, skills and `SOUL.md` are copied as before. The command prints which
+platforms were left behind.
+
+The reason is that a bot can only belong to one profile: two standalone gateways holding the
+same token fight over its long-poll, and a [multiplexed gateway](./multi-profile-gateways.md)
+parks the duplicate adapter (and `hermes gateway migrate --multiplex` refuses with one
+duplicate-credential blocker per platform). Configure the new profile's own bots with
+`hermes -p <name> setup` or the dashboard Messaging page.
+
+```bash
+hermes profile create twin --clone --clone-channels   # keep the source's bots anyway
+```
+
+`--clone-channels` is refused when a running multiplexed gateway already serves the source
+(the copy would be parked immediately) — from the CLI, the dashboard and the TUI alike — and
+otherwise prints a warning naming the platforms now shared with the source. It is an error
+without a clone flag. `hermes profile list` prints the same warning for any existing
+profile whose bot credential is byte-identical to the default's, so older clones surface
+before they bite.
+
+**What counts as a channel setting** — the inventory is ownership-based and is judged in the
+*source* profile's plugin scope (its private `plugins/` adapters included):
+
+- every key an adapter declares (tokens, app/client ids, allowlists, allow-all switches, home
+  channels) and every key under its `<PLATFORM>_` prefix, including historical aliases
+  (`WECOM_*`, `SMS_*`/`TWILIO_*`, `QQ_*`, `HASS_*`, `EMAIL_*`);
+- gateway-wide channel policy `GATEWAY_ALLOW_ALL_USERS` / `GATEWAY_ALLOWED_USERS` and the
+  relay enrollment identity `GATEWAY_RELAY_ID` / `GATEWAY_RELAY_SECRET` / `GATEWAY_RELAY_DELIVERY_KEY`;
+- for `--clone-all`, per-bot state files **and directories** (`platforms/`, pairing ledgers,
+  `google_chat_user_tokens/`, `<platform>_*`).
+
+Credentials that a messaging adapter shares with a non-channel capability — `HASS_TOKEN`/`HASS_URL`
+(also the Home Assistant tool), `TWILIO_*` (also the telephony skill), `EMAIL_*` (also
+mail-sending scripts) — are stripped **only when the source's gateway would run that adapter**
+(the platform is enabled in its `config.yaml`, or its credential set is complete and not
+explicitly disabled). A source with `platforms.homeassistant.enabled: false` uses `HASS_TOKEN`
+as a tool key, so the clone keeps it. Allowlists and ports under those prefixes are always
+channel-only and always stripped.
+
+Clones are built in a hidden staging directory beside `profiles/` and published with one
+rename after the strip, so a running multiplexer (which rescans `profiles/` on create) can
+never start adapters on a half-copied tree. A symlinked source `.env`/`config.yaml` is
+materialized as a private copy first — the clone never writes through to the source.
 
 :::tip Honcho memory + profiles
 When Honcho is enabled, clone operations automatically create a dedicated AI peer for the new profile while sharing the same user workspace. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.
@@ -246,6 +302,24 @@ hermes profile import coder.tar.gz   # install an archive as a new profile
 ```
 
 In chat, the same two live as `/export` and `/import` — and in the desktop app as **⌘K → Export/Import profile…**. See [Sharing a profile](#sharing-a-profile).
+
+### Naming the default profile
+
+The default profile's internal ID is always `default` — it can't be truly
+renamed because `~/.hermes` is the installation root. Renaming it instead
+sets a **display name**, which UI surfaces show in place of the bare ID:
+
+```bash
+hermes profile rename default Harumesu   # Unicode fine: 小助手
+```
+
+The display name appears in `hermes profile list`/`show`, the `/profile`
+chat command, the dashboard, and the desktop app (including the Bot Mode
+roster). It is presentation-only: `-p default`, service names, cron jobs,
+and every other reference keep using the canonical `default` ID. It is
+stored as `display_name` in `~/.hermes/profile.yaml`; remove that line to
+revert. Named profiles can carry a `display_name` too (it survives a real
+rename), but `rename` for them still renames the profile itself.
 
 ## Deleting a profile
 

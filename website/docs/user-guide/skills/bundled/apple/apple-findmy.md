@@ -15,7 +15,7 @@ Track Apple devices/AirTags via FindMy.app on macOS.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/apple/findmy` |
+| Path | `skills/apple\findmy` |
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |

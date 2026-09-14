@@ -7,7 +7,7 @@ import yaml
 
 import gateway.run as gateway_run
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
 

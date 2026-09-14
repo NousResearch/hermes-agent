@@ -10,6 +10,7 @@ import {
   getToolsetConfig,
   getToolsetModels,
   pollOAuthSession,
+  type ProfileScope,
   revealEnvVar,
   runToolsetPostSetup,
   selectToolsetModel,
@@ -21,6 +22,7 @@ import { useI18n } from '@/i18n'
 import { Check, Loader2, Save, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type {
   ActionStatusResponse,
@@ -43,7 +45,7 @@ interface ToolsetConfigPanelProps {
   /** Capabilities profile-scope override: configure THIS profile instead of the
    *  app-wide active one. Omitted (every other caller) → app-wide active
    *  profile, so behavior is unchanged. Threaded into every fetch below. */
-  profile?: null | string
+  profile?: ProfileScope
 }
 
 /** Toolsets whose backends expose a selectable model catalog (mirrors the
@@ -101,7 +103,7 @@ interface EnvVarFieldProps {
   isSet: boolean
   onSaved: (key: string) => void
   onCleared: (key: string) => void
-  profile?: null | string
+  profile?: ProfileScope
 }
 
 function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarFieldProps) {
@@ -140,7 +142,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarField
   }
 
   async function handleClear() {
-    if (!window.confirm(copy.removeConfirm(envVar.key))) {
+    if (!(await confirm({ destructive: true, title: copy.removeConfirm(envVar.key) }))) {
       return
     }
 
@@ -249,7 +251,7 @@ interface PostSetupRunnerProps {
   /** Refresh the parent config after the install finishes (a backend may now
    *  report itself configured). */
   onComplete?: () => void
-  profile?: null | string
+  profile?: ProfileScope
 }
 
 /**
@@ -388,7 +390,7 @@ interface ModelCatalogPickerProps {
   /** True when this provider is the one written to config — selecting a model
    *  only makes sense for the active backend. */
   isActiveBackend: boolean
-  profile?: null | string
+  profile?: ProfileScope
 }
 
 /**

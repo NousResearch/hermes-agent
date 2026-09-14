@@ -56,6 +56,30 @@ test('redactSecrets handles null/undefined and non-secret text untouched', () =>
   assert.equal(redactSecrets('uname -s -m'), 'uname -s -m')
 })
 
+test('redactSecrets masks a credential glued into an ssh target string', () => {
+  // Real incident: password typed into the host field surfaced verbatim in
+  // desktop.log and a public debug share.
+  const line = 'connecting (no-mux) to root@100.84.204.123:Luisclawy2026:22'
+  const out = redactSecrets(line)
+  assert.ok(!out.includes('Luisclawy2026'), 'credential must be masked')
+  assert.match(out, /root@100\.84\.204\.123:<redacted>:22/)
+
+  // Comma-mangled IP variant from the same incident.
+  const mangled = redactSecrets('connecting (no-mux) to root@100,84,204,123:Luisclawy2026:22')
+  assert.ok(!mangled.includes('Luisclawy2026'))
+})
+
+test('redactSecrets leaves legitimate ssh target logging untouched', () => {
+  assert.equal(
+    redactSecrets('connecting (no-mux) to root@100.84.204.123:22'),
+    'connecting (no-mux) to root@100.84.204.123:22'
+  )
+  assert.equal(
+    redactSecrets('opening control master to alice@box.example.com:2222'),
+    'opening control master to alice@box.example.com:2222'
+  )
+})
+
 test('controlSocketPath is stable, short, and host-distinct', () => {
   const a = controlSocketPath('me', 'box1', 22, '/tmp/d')
   const a2 = controlSocketPath('me', 'box1', 22, '/tmp/d')
@@ -258,6 +282,24 @@ test('open() establishes the master when not already alive', async () => {
   const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
   await conn.open()
   assert.deepEqual(ops, ['check', 'master'], 'probes liveness first, then opens the master')
+})
+
+test('open() abort kills an in-flight SSH child instead of waiting for timeout', async () => {
+  const child = fakeChild({ hang: true })
+
+  const conn = new SshConnection(
+    { host: 'box', user: 'me' },
+    { spawnFn: () => child, controlDir: '/tmp/d', connectTimeoutMs: 1000 }
+  )
+
+  const controller = new AbortController()
+  const opening = conn.open({ signal: controller.signal })
+
+  await Promise.resolve()
+  controller.abort()
+
+  await assert.rejects(opening, (error: any) => error.kind === 'superseded')
+  assert.equal(child._killed, true)
 })
 
 test('open() is a no-op when the master is already alive and execs verify', async () => {
@@ -577,12 +619,12 @@ test('no-mux: an unrelated listener cannot mask a delayed bind failure', async (
   srv.close()
 })
 
-test('no-mux: tunnel death after readiness makes the connection unhealthy', async () => {
+test('no-mux: tunnel death after readiness triggers a bounded restart, then unhealthy', async () => {
   const net = await import('node:net')
   const srv = net.createServer()
   await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
   const localPort = (srv.address() as any).port
-  let tunnel
+  const tunnels: any[] = []
 
   const spawnFn: any = (_cmd, args) => {
     const child: any = new EventEmitter()
@@ -590,10 +632,15 @@ test('no-mux: tunnel death after readiness makes the connection unhealthy', asyn
     child.stderr = new EventEmitter()
     child.exitCode = null
 
-    child.kill = () => {}
+    child.kill = () => {
+      child.exitCode = 0
+      process.nextTick(() => child.emit('exit', 0))
+
+      return true
+    }
 
     if (args.includes('-N')) {
-      tunnel = child
+      tunnels.push(child)
       process.nextTick(() =>
         child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
       )
@@ -604,11 +651,129 @@ test('no-mux: tunnel death after readiness makes the connection unhealthy', asyn
     return child
   }
 
-  const conn = new SshConnection({ host: 'box' }, { spawnFn, mux: false })
+  const conn = new SshConnection(
+    { host: 'box' },
+    { spawnFn, mux: false, tunnelRestartLimit: 1, tunnelRestartDelayMs: 5 }
+  )
+
   await conn.open()
   await conn.forward(localPort, 9119)
-  tunnel.emit('exit', 255)
-  assert.equal(await conn.isAlive(), false)
+  assert.equal(tunnels.length, 1)
+
+  // First death after readiness: a restart is pending, so the connection is
+  // NOT reported dead — the exact flap that used to cascade into a SIGTERM of
+  // a healthy backend (#96266).
+  tunnels[0].exitCode = 255
+  tunnels[0].emit('exit', 255)
+  assert.equal(await conn.isAlive(), true, 'flap within the restart budget must not poison isAlive')
+
+  // The restart spawns a replacement -N child.
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(tunnels.length, 2, 'a replacement tunnel child is spawned')
+  assert.equal(await conn.isAlive(), true)
+
+  // Second death exhausts the budget (limit 1): now the connection is dead.
+  tunnels[1].exitCode = 255
+  tunnels[1].emit('exit', 255)
+  await new Promise(resolve => setTimeout(resolve, 30))
+  assert.equal(tunnels.length, 2, 'no restart past the budget')
+  assert.equal(await conn.isAlive(), false, 'exhausted budget reports the connection dead')
+  srv.close()
+})
+
+test('no-mux: cancelForward during a pending tunnel restart cancels the restart', async () => {
+  const net = await import('node:net')
+  const srv = net.createServer()
+  await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
+  const localPort = (srv.address() as any).port
+  const tunnels: any[] = []
+
+  const spawnFn: any = (_cmd, args) => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+
+    child.kill = () => {
+      child.exitCode = 0
+      process.nextTick(() => child.emit('exit', 0))
+
+      return true
+    }
+
+    if (args.includes('-N')) {
+      tunnels.push(child)
+      process.nextTick(() =>
+        child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
+      )
+    } else {
+      process.nextTick(() => child.emit('close', 0))
+    }
+
+    return child
+  }
+
+  const conn = new SshConnection(
+    { host: 'box' },
+    { spawnFn, mux: false, tunnelRestartLimit: 5, tunnelRestartDelayMs: 20 }
+  )
+
+  await conn.forward(localPort, 9119)
+  tunnels[0].exitCode = 255
+  tunnels[0].emit('exit', 255)
+
+  // Deliberate teardown while the restart timer is pending.
+  await conn.cancelForward(localPort, 9119)
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(tunnels.length, 1, 'cancelled forward must not restart its tunnel')
+  srv.close()
+})
+
+test('no-mux: close() during a pending tunnel restart cancels the restart', async () => {
+  const net = await import('node:net')
+  const srv = net.createServer()
+  await new Promise<void>(resolve => srv.listen(0, '127.0.0.1', resolve))
+  const localPort = (srv.address() as any).port
+  const tunnels: any[] = []
+
+  const spawnFn: any = (_cmd, args) => {
+    const child: any = new EventEmitter()
+    child.stdout = new EventEmitter()
+    child.stderr = new EventEmitter()
+    child.exitCode = null
+
+    child.kill = () => {
+      child.exitCode = 0
+      process.nextTick(() => child.emit('exit', 0))
+
+      return true
+    }
+
+    if (args.includes('-N')) {
+      tunnels.push(child)
+      process.nextTick(() =>
+        child.stderr.emit('data', Buffer.from(`Local forwarding listening on 127.0.0.1 port ${localPort}.`))
+      )
+    } else {
+      process.nextTick(() => child.emit('close', 0))
+    }
+
+    return child
+  }
+
+  const conn = new SshConnection(
+    { host: 'box' },
+    { spawnFn, mux: false, tunnelRestartLimit: 5, tunnelRestartDelayMs: 20 }
+  )
+
+  await conn.open()
+  await conn.forward(localPort, 9119)
+  tunnels[0].exitCode = 255
+  tunnels[0].emit('exit', 255)
+
+  await conn.close()
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.equal(tunnels.length, 1, 'closed connection must not restart its tunnels')
   srv.close()
 })
 
@@ -633,6 +798,44 @@ test('validateSshTarget rejects ports outside 1-65535', () => {
   assert.throws(() => validateSshTarget('box', '', 65536), /port/i)
   assert.throws(() => validateSshTarget('box', '', -1), /port/i)
   assert.throws(() => validateSshTarget('box', '', NaN), /port/i)
+})
+
+test('validateSshTarget rejects commas in host (mistyped IP)', () => {
+  assert.throws(() => validateSshTarget('100,84,204,123', 'root', 22), /commas/i)
+})
+
+test('validateSshTarget rejects whitespace in host (pasted ssh command)', () => {
+  assert.throws(() => validateSshTarget('ssh root@box', '', 22), /whitespace/i)
+  assert.throws(() => validateSshTarget('box extra', '', 22), /whitespace/i)
+})
+
+test('validateSshTarget rejects a password glued into the host field', () => {
+  // Real incident shape: user typed host:PASSWORD (port parsed off upstream).
+  assert.throws(() => validateSshTarget('100.84.204.123:hunter2', 'root', 22), /password|":" segment/i)
+
+  // The thrown message must not echo the credential verbatim.
+  try {
+    validateSshTarget('100.84.204.123:hunter2', 'root', 22)
+    assert.fail('expected throw')
+  } catch (err) {
+    assert.ok(!String(err.message).includes('hunter2'), 'error message must not leak the credential')
+  }
+})
+
+test('validateSshTarget rejects garbage hostnames', () => {
+  assert.throws(() => validateSshTarget('host!bad', '', 22), /not a valid hostname/i)
+  assert.throws(() => validateSshTarget('host/path', '', 22), /not a valid hostname/i)
+})
+
+test('validateSshTarget rejects @ or whitespace in user', () => {
+  assert.throws(() => validateSshTarget('box', 'root@extra', 22), /user/i)
+  assert.throws(() => validateSshTarget('box', 'ro ot', 22), /user/i)
+})
+
+test('validateSshTarget still accepts bare IPv6 hosts', () => {
+  assert.doesNotThrow(() => validateSshTarget('::1', 'root', 22))
+  assert.doesNotThrow(() => validateSshTarget('fe80::1%eth0', '', 22))
+  assert.doesNotThrow(() => validateSshTarget('2001:db8::42', '', 22))
 })
 
 test('validateSshTarget accepts valid targets', () => {

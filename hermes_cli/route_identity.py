@@ -28,7 +28,6 @@ def normalize_route_base_url(base_url: Any) -> str:
         port = parsed.port
     except (TypeError, ValueError):
         return raw
-
     route_host = parsed.netloc.rsplit("@", 1)[-1]
     if route_host.startswith("[") or ":" in host:
         host = f"[{host}]"
@@ -36,69 +35,33 @@ def normalize_route_base_url(base_url: Any) -> str:
         host = f"{host}:{port}"
     if "@" in parsed.netloc:
         host = f"{parsed.netloc.rsplit('@', 1)[0]}@{host}"
-
     path = parsed.path
     if path.endswith("/") and not had_query_delimiter:
         path = path[:-1]
-
     normalized = urlunsplit((scheme, host, path, parsed.query, ""))
     if had_query_delimiter and not parsed.query:
         normalized += "?"
     return normalized
 
 
-def should_clear_context_pin(
-    configured_model: Any,
-    active_model: Any,
-    configured_base_url: Any,
-    active_base_url: Any,
-    configured_provider: Any,
-    active_provider: Any,
-) -> bool:
+def should_clear_context_pin(configured_model: Any, active_model: Any, configured_base_url: Any, active_base_url: Any,
+                             configured_provider: Any, active_provider: Any) -> bool:
     """True when a configured ``model.context_length`` pin no longer matches its runtime route.
-
-    Fail-closed: any error during route comparison returns ``True`` (drop the pin)
-    so a stale window never silently inflates the compression threshold.
-    """
+    Fail-closed: any error during route comparison returns ``True`` (drop the pin) so a stale window
+    never silently inflates the compression threshold."""
     configured_model = str(configured_model or "").strip()
     if configured_model and configured_model != str(active_model or "").strip():
         return True
     try:
         from agent.agent_init import _context_route_mismatch
-
-        return _context_route_mismatch(
-            configured_base_url,
-            active_base_url,
-            configured_provider,
-            active_provider,
-        )
+        return _context_route_mismatch(configured_base_url, active_base_url, configured_provider, active_provider)
     except Exception:
         return True
 
 
-async def should_clear_context_pin_async(
-    configured_model: Any,
-    active_model: Any,
-    configured_base_url: Any,
-    active_base_url: Any,
-    configured_provider: Any,
-    active_provider: Any,
-) -> bool:
-    """Async wrapper for ``should_clear_context_pin``.
-
-    Offloads the route comparison to a worker thread so async gateway
-    handlers never run it on the event loop — the resolution chain is
-    cache-only (``allow_network=False``) but can still do cold-start disk
-    I/O. Shares all logic with the sync version — no code duplication.
-    """
+async def should_clear_context_pin_async(*args: Any) -> bool:
+    """``should_clear_context_pin`` on a worker thread so async gateway handlers never run it on the
+    event loop — the resolution chain is cache-only (``allow_network=False``) but can still do
+    cold-start disk I/O."""
     import asyncio
-
-    return await asyncio.to_thread(
-        should_clear_context_pin,
-        configured_model,
-        active_model,
-        configured_base_url,
-        active_base_url,
-        configured_provider,
-        active_provider,
-    )
+    return await asyncio.to_thread(should_clear_context_pin, *args)

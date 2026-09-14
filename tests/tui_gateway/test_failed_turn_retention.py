@@ -171,6 +171,66 @@ def test_returned_error_result_retains_snapshot_and_emits_terminal_frame(
     assert session["running"] is False
 
 
+def test_returned_error_result_carries_error_surface(emits, turn_env):
+    """A classified failure_reason rides the terminal frame AND the retained
+    snapshot as a structured {layer, code, retryable} descriptor, so the
+    desktop names the failing layer instead of sniffing the message."""
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        provider="openrouter",
+        model="test/model",
+        run_conversation=lambda *a, **k: {
+            "final_response": "",
+            "error": "Rate limit exceeded",
+            "failed": True,
+            "failure_reason": "rate_limit",
+        },
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "do the thing")
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["error_surface"] == {
+        "layer": "provider",
+        "code": "rate_limit",
+        "retryable": True,
+        # The failing session's identity rides the descriptor so clients
+        # report the model that actually failed, not the composer's current.
+        "provider": "openrouter",
+        "model": "test/model",
+    }
+
+    snapshot = server._inflight_snapshot(session)
+    assert snapshot is not None
+    assert snapshot["error_surface"]["layer"] == "provider"
+
+
+def test_returned_error_without_reason_omits_no_frame(emits, turn_env):
+    """Legacy result dicts (no failure_reason) still get a best-effort
+    descriptor — never a crash, never a missing terminal frame."""
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda *a, **k: {
+            "final_response": "",
+            "error": "something odd",
+            "failed": True,
+        },
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "go")
+
+    server._run_prompt_submit("rid", "sid", session, "go")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["status"] == "error"
+    assert payload["error_surface"]["layer"] == "provider"
+    assert payload["error_surface"]["code"] == "unknown"
+
+
 def test_completed_turn_still_clears_inflight(emits, turn_env):
     agent = types.SimpleNamespace(
         session_id="session-key",
@@ -224,6 +284,10 @@ def test_exception_closes_turn_with_terminal_complete_and_partial(emits, turn_en
     assert snapshot["assistant"] == "half an ans"
     assert snapshot["error"] == "connection reset mid-stream"
     assert session["running"] is False
+
+    # Dispatcher-side exceptions (not API errors) classify as gateway-layer.
+    assert payload["error_surface"]["layer"] == "gateway"
+    assert snapshot["error_surface"]["layer"] == "gateway"
 
 
 # ── Resume replay (the reason retention exists) ───────────────────────

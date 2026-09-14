@@ -88,7 +88,7 @@ class TestFormatSubagentFailureLine:
         assert SUBAGENT_FAILURE_STATUSES == {"failed", "error", "timeout"}
 
 
-def _make_runner_and_captured(monkeypatch, run_still_current=True):
+def _make_runner_and_captured(monkeypatch, run_still_current=True, user_config=None):
     """TurnRunner with a stub gateway runner; captures scheduled notices."""
     from gateway import run as run_mod
 
@@ -111,12 +111,23 @@ def _make_runner_and_captured(monkeypatch, run_still_current=True):
         _run_still_current=lambda: run_still_current,
         progress_queue=None,
         _loop_for_step=None,
+        user_config=user_config or {},
     )
     from gateway.run_turn_runner import TurnRunner
     return TurnRunner(_StubGatewayRunner(), ctx), captured
 
 
 class TestGatewayFailureNotice:
+    def test_profile_can_suppress_standalone_failure_notice(self, monkeypatch):
+        runner, captured = _make_runner_and_captured(
+            monkeypatch,
+            user_config={"delegation": {"surface_failure_notices": False}},
+        )
+        runner.progress_callback(
+            "subagent.complete", preview="boom", status="failed", goal="g"
+        )
+        assert captured == []
+
     @pytest.mark.parametrize("status", sorted(SUBAGENT_FAILURE_STATUSES))
     def test_failure_statuses_deliver_notice(self, monkeypatch, status):
         runner, captured = _make_runner_and_captured(monkeypatch)

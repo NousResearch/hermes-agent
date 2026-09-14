@@ -381,6 +381,15 @@ A subagent that fails — non-retryable provider error (404/400), timeout, crash
 - **Gateway platforms** (Telegram, Discord, Slack, ...): the same clean line is delivered as a standalone chat notice, **even when `tool_progress` is off** for that platform.
 - **Parent agent**: the tool result entry carries `status: "failed"` plus the full `error` text, so the model can react (retry, re-route, report).
 
+Customer-facing profiles that must keep internal orchestration out of the channel can suppress only
+the standalone gateway notice. The parent still receives the complete failed tool result and can
+recover or deliver one final response:
+
+```yaml
+delegation:
+  surface_failure_notices: false  # default: true
+```
+
 Error text is reduced to the single most informative line (the exception message, not a traceback wall) and capped in length.
 
 :::tip Diagnostic dump on zero-call timeout

@@ -171,6 +171,11 @@ class TurnRunner:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
         ctx = self._ctx
         status = kwargs.get("status")
+        if not is_truthy_value(
+            cfg_get(ctx.user_config, "delegation", "surface_failure_notices"),
+            default=True,
+        ):
+            return
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
             if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():

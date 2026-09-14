@@ -10,7 +10,8 @@ const apiMocks = vi.hoisted(() => ({
   getModelInfo: vi.fn(async () => ({
     capabilities: { supports_reasoning: false },
     model: 'test/model'
-  }))
+  })),
+  getSkills: vi.fn(async () => [])
 }))
 
 const gatewayMocks = vi.hoisted(() => {
@@ -37,7 +38,7 @@ const reloadMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/api', () => ({
-  api: { getModelInfo: apiMocks.getModelInfo },
+  api: { getModelInfo: apiMocks.getModelInfo, getSkills: apiMocks.getSkills },
   buildWsUrl: apiMocks.buildWsUrl
 }))
 vi.mock('@/lib/dashboard-auth-reload', () => ({
@@ -63,6 +64,9 @@ vi.mock('@/components/ModelReloadConfirm', () => ({
 }))
 vi.mock('@/components/ReasoningPicker', () => ({
   ReasoningPicker: () => null
+}))
+vi.mock('@/components/SkillPicker', () => ({
+  SkillPicker: () => <div>skills</div>
 }))
 vi.mock('@nous-research/ui/ui/components/button', () => ({
   Button: ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => (
@@ -159,6 +163,16 @@ afterEach(async () => {
   await act(async () => root?.unmount())
   container?.remove()
   vi.unstubAllGlobals()
+})
+
+describe('ChatSidebar skills card', () => {
+  it('renders a skills widget next to the model card', async () => {
+    const { ChatSidebar } = await import('./ChatSidebar')
+
+    await render(<ChatSidebar channel="chat-1" />)
+
+    expect(container.textContent).toMatch(/skills/i)
+  })
 })
 
 describe('ChatSidebar event socket', () => {

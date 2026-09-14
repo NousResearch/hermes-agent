@@ -386,6 +386,15 @@ gateway:
     more_untracked: "\n... و{count} أخرى"
     untracked_label: "**غير متتبَّعة:**"
     truncated_note: "\n... (مقتطع — {lines} سطرًا إجمالًا؛ استخدم /diff --stat لملخّص)"
+  mute:
+    unmuted: "🔊 أُلغي كتم المحادثة — أنا أستمع مجددًا."
+    was_not_muted: "🔊 لم تكن هذه المحادثة مكتومة."
+    status_unmuted: "🔊 هذه المحادثة غير مكتومة."
+    status_timed: "🔇 مكتومة — متبقٍ {remaining}. استخدم `/unmute` لرفع الكتم مبكرًا."
+    status_indefinite: "🔇 مكتومة إلى أجل غير مسمى. استخدم `/unmute` لرفع الكتم."
+    usage: "الاستخدام: `/mute [duration|off|status]` — مثلًا `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
+    muted_timed: "🔇 مكتومة لمدة {remaining}. سأتجاهل الرسائل في هذه المحادثة حتى ذلك الحين — أوامر الشرطة المائلة ما زالت تعمل، و`/unmute` يرفع الكتم مبكرًا."
+    muted_indefinite: "🔇 مكتومة. سأتجاهل الرسائل في هذه المحادثة حتى ترسل `/unmute` — أوامر الشرطة المائلة ما زالت تعمل."
   set_home:
     save_failed: "فشل حفظ القناة الرئيسية: {error}"
     success: "✅ ضُبطت القناة الرئيسية إلى **{name}** (المعرّف: {chat_id}).\nستُسلَّم مهام cron والرسائل عبر المنصّات هنا."

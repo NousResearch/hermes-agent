@@ -386,6 +386,15 @@ gateway:
     more_untracked: "\n……还有 {count} 个"
     untracked_label: "**未跟踪：**"
     truncated_note: "\n……（已截断——共 {lines} 行；用 /diff --stat 查看摘要）"
+  mute:
+    unmuted: "🔊 已取消静音 — 我又在听了。"
+    was_not_muted: "🔊 此聊天未被静音。"
+    status_unmuted: "🔊 此聊天当前未静音。"
+    status_timed: "🔇 已静音 — 剩余 {remaining}。发送 `/unmute` 可提前解除。"
+    status_indefinite: "🔇 已无限期静音。发送 `/unmute` 解除。"
+    usage: "用法：`/mute [duration|off|status]` — 例如 `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`。"
+    muted_timed: "🔇 已静音 {remaining}。在此之前我会忽略此聊天中的消息 — 斜杠命令仍然可用，`/unmute` 可提前解除。"
+    muted_indefinite: "🔇 已静音。在你发送 `/unmute` 之前，我会忽略此聊天中的消息 — 斜杠命令仍然可用。"
   set_home:
     save_failed: "无法保存主频道：{error}"
     success: "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"

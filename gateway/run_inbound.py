@@ -20,6 +20,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from agent.i18n import t
+from gateway.chat_mute import is_source_muted
 from gateway.config import Platform
 from gateway.inbound_reply_context import reply_pointer
 from gateway.platforms.base import EphemeralReply
@@ -1231,6 +1232,20 @@ class GatewayInboundMixin(
             _reply = await self._hm_slash_confirm_reply(event, _quick_key)
         return _reply
 
+    async def _hm_pre_turn_intercepts(
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, is_internal: bool
+    ) -> tuple[bool, Optional[str]]:
+        """``(True, reply)`` when a person's message ends here, before every turn path (authority
+        FIFO, busy steer/interrupt, idle): a pending-reply intercept answered it, or ``/mute``
+        drops it (``reply`` None). Commands pierce the mute so ``/unmute`` always works; internal
+        events skip both, so background completions are never lost."""
+        if is_internal:
+            return False, None
+        _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
+        if _reply is not None:
+            return True, _reply
+        return (not event.get_command() and is_source_muted(source)), None
+
     async def _hm_dispatch_idle_commands(
         self, event: MessageEvent, source: SessionSource, _quick_key: str
     ) -> tuple[bool, Optional[str]]:
@@ -1374,8 +1389,8 @@ class GatewayInboundMixin(
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
-        _reply = None if is_internal else await self._hm_pending_reply_intercepts(event, source, _quick_key)
-        if _reply is not None:
+        _answered, _reply = await self._hm_pre_turn_intercepts(event, source, _quick_key, is_internal)
+        if _answered:
             return _reply
 
         _owned, _authority_reply = await self._hm_authority_admission(event, source, _quick_key, is_internal)

@@ -386,6 +386,15 @@ gateway:
     more_untracked: "\n... і ще {count}"
     untracked_label: "**Невідстежувані:**"
     truncated_note: "\n... (скорочено — всього {lines} рядків; використайте /diff --stat для зведення)"
+  mute:
+    unmuted: "🔊 Звук чату увімкнено — я знову слухаю."
+    was_not_muted: "🔊 Цей чат не був заглушений."
+    status_unmuted: "🔊 Цей чат не заглушений."
+    status_timed: "🔇 Заглушено — залишилося {remaining}. `/unmute` зніме раніше."
+    status_indefinite: "🔇 Заглушено безстроково. `/unmute` зніме."
+    usage: "Використання: `/mute [duration|off|status]` — наприклад, `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
+    muted_timed: "🔇 Заглушено на {remaining}. Доти я ігноруватиму повідомлення в цьому чаті — слеш-команди працюють, `/unmute` зніме раніше."
+    muted_indefinite: "🔇 Заглушено. Я ігноруватиму повідомлення в цьому чаті, доки ви не надішлете `/unmute` — слеш-команди працюють."
   set_home:
     save_failed: "Не вдалося зберегти головний канал: {error}"
     success: "✅ Головний канал встановлено на **{name}** (ID: {chat_id}).\nCron-завдання та міжплатформні повідомлення доставлятимуться сюди."

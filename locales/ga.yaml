@@ -386,6 +386,15 @@ gateway:
     more_untracked: "\n... agus {count} eile"
     untracked_label: "**Gan rianú:**"
     truncated_note: "\n... (giorraithe — {lines} líne san iomlán; úsáid /diff --stat le haghaidh achoimre)"
+  mute:
+    unmuted: "🔊 Balbhú bainte den chomhrá — táim ag éisteacht arís."
+    was_not_muted: "🔊 Ní raibh an comhrá seo balbhaithe."
+    status_unmuted: "🔊 Níl an comhrá seo balbhaithe."
+    status_timed: "🔇 Balbhaithe — {remaining} fágtha. `/unmute` chun é a bhaint go luath."
+    status_indefinite: "🔇 Balbhaithe gan teorainn. `/unmute` chun é a bhaint."
+    usage: "Úsáid: `/mute [duration|off|status]` — m.sh. `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
+    muted_timed: "🔇 Balbhaithe ar feadh {remaining}. Déanfaidh mé neamhaird ar theachtaireachtaí sa chomhrá seo go dtí sin — oibríonn orduithe slaise fós, baineann `/unmute` é go luath."
+    muted_indefinite: "🔇 Balbhaithe. Déanfaidh mé neamhaird ar theachtaireachtaí sa chomhrá seo go dtí go seolfaidh tú `/unmute` — oibríonn orduithe slaise fós."
   set_home:
     save_failed: "Theip ar shábháil chainéil bhaile: {error}"
     success: "✅ Cainéal baile socraithe go **{name}** (ID: {chat_id}).\nSeachadfar tascanna cron agus teachtaireachtaí trasardáin anseo."

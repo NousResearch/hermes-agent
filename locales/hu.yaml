@@ -389,6 +389,15 @@ gateway:
     more_untracked: "\n... és még {count}"
     untracked_label: "**Nem követett:**"
     truncated_note: "\n... (levágva — összesen {lines} sor; összegzéshez használd a /diff --stat parancsot)"
+  mute:
+    unmuted: "🔊 Némítás feloldva — újra figyelek."
+    was_not_muted: "🔊 Ez a csevegés nem volt némítva."
+    status_unmuted: "🔊 Ez a csevegés nincs némítva."
+    status_timed: "🔇 Némítva — még {remaining}. A `/unmute` korábban feloldja."
+    status_indefinite: "🔇 Határozatlan ideig némítva. A `/unmute` feloldja."
+    usage: "Használat: `/mute [duration|off|status]` — pl. `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
+    muted_timed: "🔇 Némítva {remaining} időtartamra. Addig figyelmen kívül hagyom a csevegés üzeneteit — a perjeles parancsok továbbra is működnek, a `/unmute` korábban feloldja."
+    muted_indefinite: "🔇 Némítva. Figyelmen kívül hagyom a csevegés üzeneteit, amíg nem küldöd a `/unmute` parancsot — a perjeles parancsok továbbra is működnek."
   set_home:
     save_failed: "Nem sikerült menteni a kezdőcsatornát: {error}"
     success: "✅ Kezdőcsatorna beállítva: **{name}** (ID: {chat_id}).\nA cron-feladatok és a platformok közötti üzenetek ide érkeznek."

@@ -386,6 +386,15 @@ gateway:
     more_untracked: "\n... en nog {count}"
     untracked_label: "**Ongevolg:**"
     truncated_note: "\n... (afgekap — {lines} reëls altesaam; gebruik /diff --stat vir 'n opsomming)"
+  mute:
+    unmuted: "🔊 Klets ontdemp — ek luister weer."
+    was_not_muted: "🔊 Hierdie klets was nie gedemp nie."
+    status_unmuted: "🔊 Hierdie klets is nie gedemp nie."
+    status_timed: "🔇 Gedemp — nog {remaining}. `/unmute` om dit vroeër op te hef."
+    status_indefinite: "🔇 Onbepaald gedemp. `/unmute` om dit op te hef."
+    usage: "Gebruik: `/mute [duration|off|status]` — bv. `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
+    muted_timed: "🔇 Gedemp vir {remaining}. Ek ignoreer boodskappe in hierdie klets tot dan — skuinsstreep-opdragte werk steeds, `/unmute` hef dit vroeër op."
+    muted_indefinite: "🔇 Gedemp. Ek ignoreer boodskappe in hierdie klets totdat jy `/unmute` stuur — skuinsstreep-opdragte werk steeds."
   set_home:
     save_failed: "Kon nie tuiste-kanaal stoor nie: {error}"
     success: "✅ Tuiste-kanaal gestel op **{name}** (ID: {chat_id}).\nKron-take en kruisplatform-boodskappe sal hier afgelewer word."

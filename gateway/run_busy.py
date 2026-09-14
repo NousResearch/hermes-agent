@@ -18,6 +18,7 @@ import os
 import time
 from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
+from gateway.chat_mute import is_source_muted
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -976,6 +977,8 @@ class GatewayBusySessionMixin:
         if not (self._admit_bot_message_for_source(event.source) and self._admit_bot_chain(event)):
             return True
         event._bot_loop_admitted = True
+        if not event.internal and not event.get_command() and is_source_muted(event.source):
+            return True  # /mute: never steers, interrupts or queues behind the running turn
 
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
@@ -1066,7 +1069,7 @@ class GatewayBusySessionMixin:
     # Ordinary slash handlers shared by idle and busy dispatch.
     _PLAIN_COMMANDS = (
         "status", "context", "restart", "approve", "deny", "pause", "discard", "agents", "bg", "btw",
-        "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "help",
+        "kanban", "subgoal", "heartbeat", "busy", "yolo", "verbose", "footer", "mute", "help",
         "commands", "profile", "login", "update", "version", "autoprune",
     )
     # Dispatched only on the idle path (busy dispatch has its own allowlist).

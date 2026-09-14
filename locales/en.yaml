@@ -390,6 +390,15 @@ gateway:
     more_untracked: "\n... and {count} more"
     untracked_label: "**Untracked:**"
     truncated_note: "\n... (truncated — {lines} lines total; use /diff --stat for a summary)"
+  mute:
+    unmuted: "🔊 Chat unmuted — I'm listening again."
+    was_not_muted: "🔊 This chat wasn't muted."
+    status_unmuted: "🔊 This chat is not muted."
+    status_timed: "🔇 Muted — {remaining} remaining. `/unmute` to lift it early."
+    status_indefinite: "🔇 Muted indefinitely. `/unmute` to lift it."
+    usage: "Usage: `/mute [duration|off|status]` — e.g. `/mute`, `/mute 30m`, `/mute 2h`, `/mute off`."
+    muted_timed: "🔇 Muted for {remaining}. I'll ignore messages in this chat until then — slash commands still work, `/unmute` lifts it early."
+    muted_indefinite: "🔇 Muted. I'll ignore messages in this chat until you send `/unmute` — slash commands still work."
   set_home:
     save_failed: "Failed to save home channel: {error}"
     success: "✅ Home channel set to **{name}** (ID: {chat_id}).\nCron jobs and cross-platform messages will be delivered here."

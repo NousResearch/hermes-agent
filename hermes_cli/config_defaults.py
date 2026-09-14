@@ -169,6 +169,8 @@ DEFAULT_CONFIG = {
         # stable system block — project-wide workflow rules, e.g. "Don't run tsc/lint until I
         # approve." Cache-safe: takes effect next session.
         "coding_instructions": "",
+        # Opt-in fast-forward of a clean default branch before the session snapshot.
+        "auto_pull": False,
         # When verify-on-stop finds edits without fresh verification evidence, add guidance for
         # creative UI work (no broad tsc/lint/test before visual approval) and clean-diff
         # expectations. false = keep the evidence nudge terse.

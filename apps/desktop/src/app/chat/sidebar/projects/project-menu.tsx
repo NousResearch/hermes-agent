@@ -13,6 +13,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
@@ -29,7 +30,8 @@ import {
   openProjectRename,
   revealPath,
   setActiveProject,
-  setProjectAppearance
+  setProjectAppearance,
+  updateProject
 } from '@/store/projects'
 
 import { ProjectAppearancePicker } from './project-appearance'
@@ -173,6 +175,20 @@ export function ProjectMenu({
     scoped
   })
 
+  const autoPullItem =
+    project.isAuto || project.isNoProject ? null : (
+      <DropdownMenuCheckboxItem
+        checked={Boolean(project.auto_pull)}
+        onSelect={event => {
+          event.preventDefault()
+          void updateProject(project.id, { auto_pull: !project.auto_pull })
+        }}
+      >
+        <Codicon name="sync" size="0.875rem" />
+        <span>{p.menuAutoPull}</span>
+      </DropdownMenuCheckboxItem>
+    )
+
   // Appearance writes route through the adopt-aware helper: an auto project is
   // materialized on its first change (its id then changes), so close the picker
   // on adopt to stop a second write double-creating from a now-stale node.
@@ -244,6 +260,7 @@ export function ProjectMenu({
             <>
               {identityItems.slice(0, 1).map(item => renderActionItem(DROPDOWN_KIT, item))}
               {appearanceItem}
+              {autoPullItem}
               {identityItems.slice(1).map(item => renderActionItem(DROPDOWN_KIT, item))}
               <DropdownMenuSeparator />
             </>
@@ -326,6 +343,18 @@ export function ProjectContextMenu({
             />
           </kit.SubContent>
         </kit.Sub>
+      )}
+      {!project.isAuto && !project.isNoProject && (
+        <kit.CheckboxItem
+          checked={Boolean(project.auto_pull)}
+          onSelect={event => {
+            event.preventDefault()
+            void updateProject(project.id, { auto_pull: !project.auto_pull })
+          }}
+        >
+          <Codicon name="sync" size="0.875rem" />
+          <span>{p.menuAutoPull}</span>
+        </kit.CheckboxItem>
       )}
       {(identityItems.length > 0 || canTheme) && <kit.Separator />}
       {pathItems.map(item => renderActionItem(kit, item))}

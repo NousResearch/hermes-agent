@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS projects (
     board_slug    TEXT,
     primary_path  TEXT,
     created_at    INTEGER NOT NULL,
-    archived      INTEGER NOT NULL DEFAULT 0
+    archived      INTEGER NOT NULL DEFAULT 0,
+    auto_pull     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS project_folders (
@@ -128,6 +129,8 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
         for col in _OPTIONAL_PROJECT_COLUMNS:
             if col not in cols:
                 _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
+        if "auto_pull" not in cols:
+            _add_column_if_missing(conn, "projects", "auto_pull", "auto_pull INTEGER NOT NULL DEFAULT 0")
         _INITIALIZED_PATHS.add(resolved)
 
     return open_db(path, db_label="projects.db", foreign_keys=True, initialize=_initialize)
@@ -168,11 +171,12 @@ class Project:
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
     archived: bool = False
+    auto_pull: bool = False
     folders: List[ProjectFolder] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {k: getattr(self, k) for k in ("id", "slug", "name", *_OPTIONAL_ROW_FIELDS)}
-        return {**d, "archived": bool(self.archived), "created_at": self.created_at, "folders": [f.to_dict() for f in self.folders]}
+        return {**d, "auto_pull": bool(self.auto_pull), "archived": bool(self.archived), "created_at": self.created_at, "folders": [f.to_dict() for f in self.folders]}
 
 
 def _load_project(conn: sqlite3.Connection, row: sqlite3.Row) -> Project:
@@ -184,6 +188,7 @@ def _load_project(conn: sqlite3.Connection, row: sqlite3.Row) -> Project:
     ).fetchall()
     return Project(
         id=row["id"], slug=row["slug"], name=row["name"], created_at=row["created_at"],
+        auto_pull=bool(row["auto_pull"]) if "auto_pull" in keys else False,
         archived=bool(row["archived"]) if "archived" in keys else False,
         folders=[ProjectFolder(r["path"], r["label"], bool(r["is_primary"]), r["added_at"]) for r in folders],
         **{f: row[f] for f in _OPTIONAL_ROW_FIELDS if f in keys},
@@ -273,6 +278,7 @@ def get_project(conn: sqlite3.Connection, id_or_slug: str) -> Optional[Project]:
 def update_project(
     conn: sqlite3.Connection, project_id: str, *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, board_slug: Optional[str] = None,
+    auto_pull: Optional[bool] = None,
 ) -> bool:
     """Patch top-level project fields; only provided (non-None) fields change. ``icon``, ``color`` and
     ``board_slug`` take ``""`` to clear (store NULL) — ``None`` leaves the field untouched."""
@@ -286,6 +292,7 @@ def update_project(
     fields = [
         (col, given, stored) for col, given, stored in (
             ("name", name, name), ("description", description, description), ("icon", icon, icon or None),
+            ("auto_pull", auto_pull, int(bool(auto_pull))),
             ("color", color, color or None), ("board_slug", board_slug, board_slug or None),
         ) if given is not None
     ]

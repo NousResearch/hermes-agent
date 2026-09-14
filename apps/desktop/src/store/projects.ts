@@ -864,6 +864,7 @@ function projectInfoToTreeNode(project: ProjectInfo): SidebarProjectTree {
     color: project.color ?? null,
     icon: project.icon ?? null,
     isAuto: false,
+    auto_pull: Boolean(project.auto_pull),
     repos: [],
     sessionCount: 0,
     previewSessions: []
@@ -961,7 +962,7 @@ export async function renameProject(id: string, name: string): Promise<void> {
 // lag; only a failed write reconciles from the server.
 export async function updateProject(
   id: string,
-  patch: { name?: string; color?: null | string; icon?: null | string }
+  patch: { name?: string; color?: null | string; icon?: null | string; auto_pull?: boolean }
 ): Promise<void> {
   const snap = snapshotProjects()
 
@@ -972,7 +973,8 @@ export async function updateProject(
             ...node,
             ...(patch.name !== undefined && { label: patch.name }),
             ...(patch.color !== undefined && { color: patch.color }),
-            ...(patch.icon !== undefined && { icon: patch.icon })
+            ...(patch.icon !== undefined && { icon: patch.icon }),
+            ...(patch.auto_pull !== undefined && { auto_pull: patch.auto_pull })
           }
         : node
     )

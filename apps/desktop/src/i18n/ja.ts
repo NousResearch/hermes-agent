@@ -2244,6 +2244,7 @@ export const ja = defineLocale({
       menu: 'アクション',
       menuRename: '名前を変更…',
       menuAppearance: '外観',
+      menuAutoPull: '自動で pull',
       noColor: '色なし',
       menuAddFolder: 'フォルダを追加',
       menuSetActive: 'アクティブに設定',

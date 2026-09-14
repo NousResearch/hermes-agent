@@ -445,6 +445,8 @@ def _pool_entry_mode_and_url(provider, entry, model_cfg, effective_model, base_u
         base_url = _config_base_url_for_provider(model_cfg, provider) or base_url
     if provider in _POOL_ENTRY_SIMPLE_MODES:
         api_mode, default_url = _POOL_ENTRY_SIMPLE_MODES[provider]
+        if provider == "openai-codex":
+            base_url = get_secret_str("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or base_url
         return api_mode, base_url or (default_url() if callable(default_url) else default_url)
     if provider == "anthropic":
         return "anthropic_messages", _anthropic_cfg_base_url(model_cfg) or base_url or _ANTHROPIC_DEFAULT_BASE_URL

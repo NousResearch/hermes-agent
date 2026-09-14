@@ -86,6 +86,26 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_codex_pool_honors_base_url_override(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "get_secret_str",
+        lambda name, default="": "https://proxy.example/codex/"
+        if name == "HERMES_CODEX_BASE_URL"
+        else default,
+    )
+
+    _, base_url = rp._pool_entry_mode_and_url(
+        "openai-codex",
+        SimpleNamespace(),
+        {},
+        "gpt-5.4",
+        "https://chatgpt.com/backend-api/codex",
+    )
+
+    assert base_url == "https://proxy.example/codex"
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth

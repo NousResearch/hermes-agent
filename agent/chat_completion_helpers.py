@@ -39,6 +39,7 @@ from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
+    sanitize_outbound_kwargs,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -2011,66 +2012,13 @@ def _managed_summary_call(agent, api_request_id: str, request, callback, *, retr
     )
 
 
-def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
-    """chat.completions.create kwargs for the summary, mirroring ChatCompletionsTransport.build_kwargs()."""
-    try:
-        from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
-    except Exception:
-        _fixed_temperature_for_model = _OMIT_TEMP = None
-    raw_temp = _fixed_temperature_for_model(agent.model, agent.base_url) if _fixed_temperature_for_model is not None else None
-    temperature = None if raw_temp is _OMIT_TEMP else raw_temp
-    provider_name = (agent.provider or "").strip().lower()
-    # LM Studio uses top-level `reasoning_effort` (not extra_body.reasoning).
-    is_lmstudio = provider_name == "lmstudio" and agent._supports_reasoning_extra_body()
-    lm_reasoning_effort = agent._resolve_lmstudio_summary_reasoning_effort() if is_lmstudio else None
-
-    extra_body = {}
-    if not is_lmstudio and agent._supports_reasoning_extra_body():
-        extra_body["reasoning"] = agent.reasoning_config if agent.reasoning_config is not None else {"enabled": True, "effort": "medium"}
-    if "nousresearch" in agent._base_url_lower:
-        from agent.portal_tags import nous_portal_tags
-        extra_body["tags"] = nous_portal_tags()
-
-    summary_kwargs = {"model": agent.model, "messages": api_messages}
-    if temperature is not None:
-        summary_kwargs["temperature"] = temperature
-    if agent.max_tokens is not None:
-        summary_kwargs.update(agent._max_tokens_param(agent.max_tokens))
-    if lm_reasoning_effort is not None:
-        summary_kwargs["reasoning_effort"] = lm_reasoning_effort
-
-    # Merge the profile's canonical body even when routing is unset (e.g. required Portal tags).
-    provider_preferences = _provider_preferences_for_agent(agent)
-    profile_extra_body = {}
-    with contextlib.suppress(Exception):
-        from providers import get_provider_profile
-        provider_profile = get_provider_profile(agent.provider)
-        if provider_profile is not None:
-            profile_extra_body = provider_profile.build_extra_body(
-                session_id=getattr(agent, "session_id", None), provider_preferences=provider_preferences or None,
-                model=agent.model, base_url=agent.base_url, reasoning_config=agent.reasoning_config)
-    if profile_extra_body:
-        extra_body.update(profile_extra_body)
-
-    def _is_openrouter() -> bool:
-        return provider_name == "openrouter" or agent._is_openrouter_url()
-
-    if provider_preferences and "provider" not in profile_extra_body and _is_openrouter():
-        extra_body["provider"] = provider_preferences
-    # Pareto Code router plugin — model-gated, same shape as the main-loop emission.
-    _score = agent.openrouter_min_coding_score
-    if agent.model == "openrouter/pareto-code" and _is_openrouter() and _score is not None and _score != "":
-        with contextlib.suppress(TypeError, ValueError):
-            _ps = float(_score)
-            if 0.0 <= _ps <= 1.0:
-                extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
-    if extra_body:
-        summary_kwargs["extra_body"] = extra_body
-    return summary_kwargs
-
-
 def _summary_text(agent, response, **normalize_kwargs) -> str:
-    return (agent._get_transport().normalize_response(response, **normalize_kwargs).content or "").strip()
+    normalized = agent._get_transport().normalize_response(response, **normalize_kwargs)
+    if normalized.tool_calls:
+        # No summary path executes tool calls; log so a tool-only response that falls into the
+        # empty-summary retry is diagnosable.
+        logger.warning("Iteration summary emitted tool calls; discarding them")
+    return (normalized.content or "").strip()
 
 
 def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
@@ -2098,7 +2046,14 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
 
 
 def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
-    summary_kwargs = _iteration_summary_chat_kwargs(agent, api_messages)
+    # Same kwargs builder as the main loop so the summary keeps the cached prefix (tools,
+    # prompt_cache_key, xAI alias, Moonshot sanitization). Do not omit tools or force
+    # tool_choice="none" here: SGLang renders the prompt with tools=None in that mode and the KV
+    # prefix diverges. (cache_control breakpoint decoration is not re-applied on this path.)
+    summary_kwargs = agent._build_api_kwargs(api_messages)
+    # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
+    # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
+    sanitize_outbound_kwargs(agent, summary_kwargs)
 
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
@@ -2584,6 +2539,9 @@ class _StreamingCall(StreamingWaitMonitor):
             self.stream_attempt_state["current"] += 1
             attempt_id = int(self.stream_attempt_state["current"])
         self.provider_tool_in_flight["yes"] = False
+        # Attempt-local like provider_tool_in_flight: a tool name from a stream that died
+        # before any text must not label a later attempt's partial stub or its retry decision.
+        self.result["partial_tool_names"] = []
         return attempt_id
 
     def _cancel_current_stream_attempt(self, reason: str) -> None:
@@ -3056,6 +3014,9 @@ class _StreamingCall(StreamingWaitMonitor):
                         has_tool_use = True
                         if getattr(block, "name", None):
                             self._emit_tool_started(block.name)
+                            # Same as the chat_completions wire: a stream that dies inside the
+                            # tool args is retried (no tool has run yet) instead of stubbed.
+                            self.result["partial_tool_names"].append(block.name)
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     delta_type = getattr(delta, "type", None) if delta else None
@@ -3098,6 +3059,9 @@ class _StreamingCall(StreamingWaitMonitor):
         OpenAI primary is replaced lazily."""
         self.agent._emit_stream_drop(
             error=e, attempt=attempt + 2, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
+        if self.agent._is_provider_stream_parse_error(e):
+            from agent.anthropic_adapter import buffer_anthropic_tool_input
+            buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))
         self._cancel_current_stream_attempt(reason)
         self.clients.close_once(reason)
 
@@ -3162,7 +3126,6 @@ class _StreamingCall(StreamingWaitMonitor):
             # reset the streamed-text buffer so it isn't double-recorded; fresh accumulators.
             self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
             self._quiet(self.agent._reset_stream_delivery_tracking)
-            self.result["partial_tool_names"] = []
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")

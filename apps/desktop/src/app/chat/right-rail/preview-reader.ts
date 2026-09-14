@@ -12,8 +12,11 @@
  * directly (read_file / the conversation's artifact).
  */
 
-import { $rightRailActiveTabId } from '@/store/layout'
+import { $rightRailActiveTabId, type RightRailTabId } from '@/store/layout'
 import { $previewTabs } from '@/store/preview'
+// Runtime→stored identity translation for the durable-ownership leg below. No
+// cycle: the session-store tree never imports this right-rail leaf.
+import { storedSessionIdForRuntimeId } from '@/store/session-states'
 
 import { nudgeOverlay } from './preview-nudge'
 
@@ -49,15 +52,80 @@ type PageReader = () => Promise<PreviewPage>
  *  this crosses the gateway into model context. Page with start/count. */
 export const PREVIEW_READ_MAX_CHARS = 24_000
 
-const readers = new Map<string, PageReader>()
+const readers = new Map<RightRailTabId, PageReader>()
 
-/** Register a live preview's page reader; returns an idempotent unregister. */
-export function registerPreviewPageReader(tabId: string, reader: PageReader): () => void {
+/** Owning session for each registered reader (tabId -> sessionId). */
+const readerSessions = new Map<RightRailTabId, string>()
+
+/** Durable owner (stored session id) for each registered reader. Survives the
+ *  runtime-id rotation a restart performs; see isLivePreviewTabOwnedBySession. */
+const readerStoredSessions = new Map<RightRailTabId, string>()
+
+/** True when the given preview tab is a LIVE reader owned by `sessionId` and
+ *  still open in `$previewTabs`. This asks about ONE specific tab — the one
+ *  the mutation targets — rather than selecting an arbitrary tab owned by the
+ *  session and comparing afterwards, so authorization depends on the identity
+ *  of the preview being acted on, never on Map insertion order (#95459).
+ *
+ *  Ownership matches EITHER identity kind. A live runtime id matches the
+ *  runtime stamp exactly; across a Desktop restart (where the runtime id
+ *  rotates but the stored id does not) the tab's DURABLE owner still admits
+ *  the same conversation's new runtime id — translated here via the wiring
+ *  layer's runtime→stored map — which is #95459's restart sequence: restart →
+ *  interact with the ALREADY-open preview, no fresh openPreview re-stamp. */
+export function isLivePreviewTabOwnedBySession(tabId: RightRailTabId, sessionId: string): boolean {
+  if (!sessionId || !tabId) {
+    return false
+  }
+
+  const tab = $previewTabs.get().find(candidate => candidate.id === tabId)
+
+  if (!tab || !readers.has(tabId)) {
+    return false
+  }
+
+  if (readerSessions.get(tabId) === sessionId) {
+    return true
+  }
+
+  // Durable leg: the tab's stored owner names a CONVERSATION. A runtime id of
+  // that same conversation (this event's sessionId, translated to its stored
+  // id) owns the tab even after restart rotated the runtime id. The persisted
+  // tab stamp and the live reader binding agree by construction; check both so
+  // a tab re-registered before its persistence write lands still admits.
+  const durableOwner = readerStoredSessions.get(tabId) ?? tab.ownerStoredSessionId
+
+  if (durableOwner && storedSessionIdForRuntimeId(sessionId) === durableOwner) {
+    return true
+  }
+
+  return false
+}
+
+/** Register a live preview's page reader; returns an idempotent unregister.
+ *  The session that owns this preview is bound at registration time, in both
+ *  identity kinds when a durable (stored) owner is known. */
+export function registerPreviewPageReader(
+  tabId: RightRailTabId,
+  reader: PageReader,
+  sessionId?: string,
+  storedSessionId?: string
+): () => void {
   readers.set(tabId, reader)
+
+  if (sessionId) {
+    readerSessions.set(tabId, sessionId)
+  }
+
+  if (storedSessionId) {
+    readerStoredSessions.set(tabId, storedSessionId)
+  }
 
   return () => {
     if (readers.get(tabId) === reader) {
       readers.delete(tabId)
+      readerSessions.delete(tabId)
+      readerStoredSessions.delete(tabId)
     }
   }
 }

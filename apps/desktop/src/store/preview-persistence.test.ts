@@ -94,4 +94,86 @@ describe('persisted preview migration', () => {
 
     expect(restored?.target.previewKind).toBe('text')
   })
+
+  // #95459's own reproduction: the owner is a RUNTIME session id, minted fresh
+  // per restart (gateway/session_lifecycle.py). A persisted owner therefore
+  // names a session that no longer exists, and openPreview's immutability rule
+  // (existingOwner ?? ownerSessionId) would weld it in place forever. Only the
+  // RUNTIME id is dropped at hydration; the DURABLE owner (stored id) rides
+  // through unchanged, so the restored tab still belongs to the same
+  // conversation across the restart.
+  it('drops the persisted RUNTIME owner so a restored tab is re-stampable', () => {
+    const [restored] = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: 'url:browser-1',
+          ownerSessionId: 'runtime-before-restart',
+          target: { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' }
+        }
+      ])
+    )
+
+    expect(restored?.ownerSessionId).toBeUndefined()
+  })
+
+  it('keeps the DURABLE owner across hydration while dropping the runtime one', () => {
+    const [restored] = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: 'url:browser-1',
+          ownerSessionId: 'runtime-before-restart',
+          ownerStoredSessionId: 'stored-conversation',
+          target: { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' }
+        }
+      ])
+    )
+
+    // The runtime id is dead; the conversation identity survives the restart.
+    expect(restored?.ownerSessionId).toBeUndefined()
+    expect(restored?.ownerStoredSessionId).toBe('stored-conversation')
+  })
+
+  it('keeps the tab itself when the owner is dropped', () => {
+    const restored = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: 'url:browser-1',
+          ownerSessionId: 'runtime-before-restart',
+          target: { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' }
+        }
+      ])
+    )
+
+    expect(restored).toHaveLength(1)
+    expect(restored[0].id).toBe('url:browser-1')
+    expect(restored[0].target.url).toBe('https://example.com')
+  })
+
+  it('rejects a row whose persisted owner is not a string', () => {
+    const restored = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: 'url:browser-1',
+          ownerSessionId: 42,
+          target: { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' }
+        }
+      ])
+    )
+
+    expect(restored).toHaveLength(0)
+  })
+
+  it('rejects a row whose durable owner is not a string', () => {
+    const restored = decodePreviewTabs(
+      JSON.stringify([
+        {
+          id: 'url:browser-1',
+          ownerStoredSessionId: 42,
+          target: { kind: 'url', label: 'Browser', source: 'https://example.com', url: 'https://example.com' }
+        }
+      ])
+    )
+
+    expect(restored).toHaveLength(0)
+  })
 })

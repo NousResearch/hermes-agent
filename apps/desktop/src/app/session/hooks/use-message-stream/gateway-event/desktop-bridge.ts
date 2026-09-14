@@ -1,10 +1,11 @@
-import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
+import { isLivePreviewTabOwnedBySession, readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { writeAgentTerminalChunk } from '@/app/right-sidebar/terminal/agent-terminal-stream'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
 import { $gateway } from '@/store/gateway'
+import { $rightRailActiveTabId } from '@/store/layout'
 import { applyDesktopLayoutPreset, revealDesktopPane } from '@/store/pane-focus'
 import { recordAgentReaction } from '@/store/reactions-local'
 import { setMessages } from '@/store/session'
@@ -89,9 +90,7 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
   if (event.type === 'preview.act.request') {
     // drive_preview tool: click/type/scroll/press inside the guest page, or
     // drive the pane's history. Dynamic import keeps the injected engine off
-    // the boot path. Active session only: a background turn must never reach
-    // into the page the user is working in (desktop AGENTS.md: offer, don't
-    // hijack).
+    // the boot path.
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
@@ -108,20 +107,44 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
           text: result ? JSON.stringify(result) : ''
         })
 
-      if (isActiveEvent) {
+      // Allow preview actions when the session is active OR when that
+      // session owns the preview the user is actually LOOKING AT. Resolve
+      // the active preview tab FIRST, then ask whether that exact tab is
+      // owned by this session — never select an arbitrary owned tab and
+      // compare afterwards (that made admission depend on Map insertion
+      // order and dropped a valid owner whose owned tab wasn't the first
+      // one registered). Binding admission and effect to the same exact
+      // preview identity means a background session can only act on a
+      // preview it owns AND that is on screen (#95459).
+      const activePreviewId = $rightRailActiveTabId.get()
+
+      const previewAllowed =
+        isActiveEvent ||
+        (activePreviewId !== null && isLivePreviewTabOwnedBySession(activePreviewId, ctx.sessionId ?? ''))
+
+      if (previewAllowed) {
+        // The authorized identity rides THROUGH the async engine load: the
+        // dynamic import awaits, and a tab switch in that window must never
+        // redirect an already-authorized action onto whatever becomes active
+        // next. actOnActivePreview resolves every effect handle against
+        // exactly this tab id and fails closed if it no longer exists
+        // (#95475 review, admission/effect TOCTOU).
         void loadPreviewEngine()
           .then(run =>
-            run({
-              amount: payload?.amount,
-              key: payload?.key,
-              kind: payload?.action ?? '',
-              max: payload?.max,
-              ref: payload?.ref,
-              selector: payload?.selector,
-              submit: payload?.submit,
-              text: payload?.text,
-              to: payload?.to as PreviewActAction['to']
-            })
+            run(
+              {
+                amount: payload?.amount,
+                key: payload?.key,
+                kind: payload?.action ?? '',
+                max: payload?.max,
+                ref: payload?.ref,
+                selector: payload?.selector,
+                submit: payload?.submit,
+                text: payload?.text,
+                to: payload?.to as PreviewActAction['to']
+              },
+              { tabId: activePreviewId ?? undefined }
+            )
           )
           .then(answer, error =>
             answer({ error: error instanceof Error ? error.message : String(error), success: false })

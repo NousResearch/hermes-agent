@@ -60,6 +60,18 @@ export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 
 export interface PreviewTab {
   id: RightRailTabId
   target: PreviewTarget
+  /** Durable owner (stored session id) — survives restarts, compression and
+   *  runtime-id rotation because the stored id is stable for the life of the
+   *  conversation. The restart half of #95459: after Desktop restarts and the
+   *  gateway mints a NEW runtime id, the restored tab still remembers WHICH
+   *  conversation owns it, so that conversation's next preview.act on the
+   *  already-open tab admits without any fresh openPreview re-stamp. */
+  ownerStoredSessionId?: string
+  /** Runtime session ID that owns this tab. Set by `openPreview` when the
+   * preview is created via a routed command. Dropped at hydration so restored
+   * tabs don't carry a dead runtime id; `ownerStoredSessionId` carries the
+   * durable ownership across the restart. */
+  ownerSessionId?: string
 }
 
 const TABS_STORAGE_KEY = 'hermes.desktop.previewTabs.v2'
@@ -91,7 +103,13 @@ function isPreviewTab(value: unknown): value is PreviewTab {
 
   const r = value as Record<string, unknown>
 
-  return typeof r.id === 'string' && (r.id.startsWith('file:') || r.id.startsWith('url:')) && isPreviewTarget(r.target)
+  return (
+    typeof r.id === 'string' &&
+    (r.id.startsWith('file:') || r.id.startsWith('url:')) &&
+    isPreviewTarget(r.target) &&
+    (r.ownerSessionId === undefined || typeof r.ownerSessionId === 'string') &&
+    (r.ownerStoredSessionId === undefined || typeof r.ownerStoredSessionId === 'string')
+  )
 }
 
 function isPdfFileTarget(target: PreviewTarget): boolean {
@@ -116,15 +134,28 @@ function isPdfFileTarget(target: PreviewTarget): boolean {
 
 /** Upgrade tabs persisted by builds that classified PDFs as generic binary.
  * Without this restore-time migration, an already-open PDF keeps taking the
- * obsolete raw-binary path after Desktop itself has been upgraded. */
+ * obsolete raw-binary path after Desktop itself has been upgraded.
+ *
+ * Also drops the RUNTIME owner (`ownerSessionId`) at hydration — a persisted
+ * runtime id is dead after restart (#95459, #95475) — while KEEPING the durable
+ * owner (`ownerStoredSessionId`), which survives the restart because the stored
+ * id is stable for the life of the conversation. The restored tab therefore
+ * stays owned by the same CONVERSATION without needing any fresh
+ * openPreview re-stamp, closing #95459's restart sequence exactly as reported
+ * (restart → interact with the already-open preview). */
 export function decodePreviewTabs(raw: string): PreviewTab[] {
   const parsed = JSON.parse(raw) as unknown
 
-  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
-    isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
+  return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab => {
+    const upgraded = isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
       ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
       : tab
-  )
+    // Drop the dead runtime id; the durable owner rides through unchanged.
+    if (upgraded.ownerSessionId) {
+      return { ...upgraded, ownerSessionId: undefined }
+    }
+    return upgraded
+  })
 }
 
 export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
@@ -380,14 +411,37 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
 }
 
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
- *  its target so a stale label/path can't outlive the thing it points at. The
- *  only way anything reaches a preview. */
-export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
+ * its target so a stale label/path can't outlive the thing it points at. The
+ * only way anything reaches a preview.
+ *
+ * A routed open stamps ownership in BOTH identity kinds: the runtime id
+ * (exact live-session match) and, when the caller has translated it, the
+ * stored id (durable across restarts, compression and runtime-id rotation).
+ * Either authorizes; neither is invented for un-owned (user) tabs. The caller
+ * owns the runtime→stored translation (see use-preview-routing) so this store
+ * stays free of session-store imports. */
+export function openPreview(
+  target: PreviewTarget,
+  source: PreviewRecordSource = 'manual',
+  ownerSessionId?: string,
+  ownerStoredSessionId?: string
+) {
   const resolved = previewTargetForSource(target, source)
   const current = $previewTabs.get()
   const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
   const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: resolved }
+  const existing = index !== -1 ? current[index] : undefined
+
+  // First durable owner wins: a fresh routed open cannot steal a tab another
+  // conversation owns, mirroring the runtime-owner immutability rule below.
+  const runtimeOwner = existing?.ownerSessionId ?? ownerSessionId
+  const storedOwner = existing?.ownerStoredSessionId ?? ownerStoredSessionId
+  const tab: PreviewTab = {
+    id,
+    target: resolved,
+    ...(runtimeOwner ? { ownerSessionId: runtimeOwner } : {}),
+    ...(storedOwner ? { ownerStoredSessionId: storedOwner } : {})
+  }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)

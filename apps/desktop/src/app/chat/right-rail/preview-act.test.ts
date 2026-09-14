@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $rightRailActiveTabId } from '@/store/layout'
-import { closeRightRail, openPreview, type PreviewTarget } from '@/store/preview'
+import { closeRightRail, $previewTabs, openPreview, type PreviewTarget } from '@/store/preview'
 
 import { actOnActivePreview } from './preview-act'
 import { registerPreviewInput } from './preview-input'
@@ -312,5 +312,88 @@ describe('actOnActivePreview (drive_preview tool)', () => {
 
   it('reports history verbs with no pane to drive', async () => {
     expect((await actOnActivePreview({ kind: 'reload' })).error).toContain('open_preview')
+  })
+
+  // #95475 review, Blocker 2: authorization captures a tab id; the effect must
+  // resolve against THAT tab even if the active tab changes before the engine
+  // resolves its handles — and fail closed if the captured tab is gone.
+  it('acts on the captured tab, not whatever becomes active mid-flight', async () => {
+    // Two browser tabs: A is the one the admission layer captured; B is
+    // switched to before the effect resolves.
+    const tabs = $previewTabs.get()
+    const idA = `url:browser-captured-a-${tabs.length}` as `url:${string}`
+    const idB = `url:browser-captured-b-${tabs.length}` as `url:${string}`
+
+    $previewTabs.set([
+      ...tabs,
+      { id: idA as `url:${string}`, target: urlTarget('https://a.example') },
+      { id: idB as `url:${string}`, target: urlTarget('https://b.example') }
+    ])
+    $rightRailActiveTabId.set(idA as `url:${string}`)
+
+    const sentTo: string[] = []
+
+    cleanups.push(
+      registerPreviewScriptRunner(idA, async () => {
+        sentTo.push('A')
+        return JSON.stringify({ acted: 'clicked', success: true })
+      })
+    )
+    cleanups.push(
+      registerPreviewScriptRunner(idB, async () => {
+        sentTo.push('B')
+        return JSON.stringify({ acted: 'clicked', success: true })
+      })
+    )
+
+    // The admission layer captured A; the switch to B happens in the async
+    // window before the effect resolves its handles. The action was
+    // authorized for A, so it must run against A — never B.
+    $rightRailActiveTabId.set(idB as `url:${string}`)
+
+    await actOnActivePreview({ kind: 'click', ref: '@e1' }, { tabId: idA })
+
+    expect(sentTo).toEqual(['A'])
+  })
+
+  it('fails closed when the captured tab no longer exists', async () => {
+    const result = await actOnActivePreview({ kind: 'click', ref: '@e1' }, { tabId: 'url:gone-away' as `url:${string}` })
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('open_preview')
+  })
+
+  it('keeps the legacy no-capture path bound to the active tab', async () => {
+    // No options.tabId (an active-session event): unchanged behavior — the
+    // action resolves against the then-active tab, as it always has.
+    const tabs = $previewTabs.get()
+    const idA = `url:browser-legacy-a-${tabs.length}` as `url:${string}`
+    const idB = `url:browser-legacy-b-${tabs.length}` as `url:${string}`
+
+    $previewTabs.set([
+      ...tabs,
+      { id: idA as `url:${string}`, target: urlTarget('https://a.example') },
+      { id: idB as `url:${string}`, target: urlTarget('https://b.example') }
+    ])
+    $rightRailActiveTabId.set(idB as `url:${string}`)
+
+    const sentTo: string[] = []
+
+    cleanups.push(
+      registerPreviewScriptRunner(idA, async () => {
+        sentTo.push('A')
+        return ''
+      })
+    )
+    cleanups.push(
+      registerPreviewScriptRunner(idB, async () => {
+        sentTo.push('B')
+        return JSON.stringify({ acted: 'clicked', success: true })
+      })
+    )
+
+    await actOnActivePreview({ kind: 'click', ref: '@e1' })
+
+    expect(sentTo).toEqual(['B'])
   })
 })

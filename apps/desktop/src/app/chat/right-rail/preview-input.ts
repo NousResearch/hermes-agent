@@ -47,10 +47,15 @@ export function registerPreviewInput(tabId: string, handle: PreviewInputHandle):
 }
 
 /** The ACTIVE preview tab's input channel. Null = nothing real to drive, and
- *  the caller falls back to synthesizing events inside the page. */
-export function activePreviewInput(): PreviewInputHandle | null {
+ *  the caller falls back to synthesizing events inside the page.
+ *
+ *  An explicit `tabId` resolves THAT tab only (the admission layer's captured
+ *  identity): a tab switch between authorization and effect must never send
+ *  input into another tab's guest page. Fail-closed (null) when the captured
+ *  tab no longer exists. */
+export function activePreviewInput(tabId?: string): PreviewInputHandle | null {
   const tabs = $previewTabs.get()
-  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
+  const tab = tabId ? tabs.find(t => t.id === tabId) : tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
 
   return (tab && handles.get(tab.id)) || null
 }

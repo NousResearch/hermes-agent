@@ -35,10 +35,15 @@ export function registerPreviewNav(tabId: string, handle: PreviewNavHandle): () 
 }
 
 /** The ACTIVE preview tab's commands, for callers with no focus to key off —
- *  the agent's drive_preview, which runs while focus is in the composer. */
-export function activePreviewNav(): PreviewNavHandle | null {
+ *  the agent's drive_preview, which runs while focus is in the composer.
+ *
+ *  An explicit `tabId` resolves THAT tab only (the admission layer's captured
+ *  identity): a tab switch between authorization and effect must never
+ *  redirect an authorized action onto another tab's history. Fail-closed
+ *  (null) when the captured tab no longer exists. */
+export function activePreviewNav(tabId?: string): PreviewNavHandle | null {
   const tabs = $previewTabs.get()
-  const tab = tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
+  const tab = tabId ? tabs.find(t => t.id === tabId) : tabs.find(t => t.id === $rightRailActiveTabId.get()) ?? tabs[0]
 
   return (tab && handles.get(tab.id)) || null
 }

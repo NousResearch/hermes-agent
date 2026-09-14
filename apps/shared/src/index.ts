@@ -8,7 +8,6 @@ export {
 } from './billing-policy'
 export type {
   BillingAutoReload,
-  BillingBlock,
   BillingCardInfo,
   BillingChargeResponse,
   BillingChargeStatusResponse,
@@ -61,56 +60,7 @@ export {
 } from './data-url-read-max'
 export { compactNumber } from './format'
 export { type FuzzyMatch, fuzzyRank, fuzzyScore, fuzzyScoreMulti, type RankedItem } from './fuzzy'
-export {
-  type ApprovalRequestPayload,
-  BACKEND_EVENT_NAMES,
-  type BackendGatewayEventMap,
-  type BackendGatewayEventName,
-  type ClarifyQuestion,
-  type ClarifyRequestPayload,
-  type ClientLocalGatewayEventMap,
-  type ConnectionActor,
-  type ConnectionOperationStatus,
-  type ConnectionOperationTarget,
-  type ConnectionRequestPayload,
-  type ConnectionSettleReason,
-  type ConnectionTargetAction,
-  type ConnectionTargetKind,
-  type ConnectionTargetState,
-  type ConnectionUpdatePayload,
-  type ErrorPayload,
-  type ErrorSurface,
-  type GatewayEvent,
-  type GatewayEventMap,
-  type GatewayEventName,
-  type GatewayReadyPayload,
-  type GatewayTranscriptMessage,
-  type MessageCompletePayload,
-  type MessageInterimPayload,
-  type ModelCapabilities,
-  type ModelOptionProvider,
-  type ModelOptionsResponse,
-  type ModelPricing,
-  type NotificationShowPayload,
-  type RequestExpirePayload,
-  type SecretRequestPayload,
-  type SessionInflightTurn,
-  type SessionListItem,
-  type SessionListResponse,
-  type SessionReclaimedPayload,
-  type SessionResumeResponse,
-  type SessionUsagePayload,
-  type StatusUpdatePayload,
-  type StreamDeltaPayload,
-  type SubagentEventPayload,
-  type SubagentStatus,
-  type TodoStatePayload,
-  type ToolCompletePayload,
-  type ToolStartPayload,
-  type Usage,
-  type VaultUnlockRequestPayload,
-  type WakeDetectedPayload
-} from './gateway-events'
+export * from './gateway-events'
 export {
   applyDocumentLocale,
   type EndonymLocale,
@@ -132,6 +82,9 @@ export {
   JsonRpcRequestChannel,
   type JsonRpcRequestChannelOptions,
   type JsonRpcTransport,
+  type ServerRequest,
+  type ServerRequestHandler,
+  type ServerRequestParams,
   wireFrameText
 } from './json-rpc-channel'
 export {

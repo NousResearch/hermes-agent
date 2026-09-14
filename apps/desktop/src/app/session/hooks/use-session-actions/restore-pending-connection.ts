@@ -6,7 +6,7 @@ import {
   normalizeConnectionRequest,
   setConnectionRequest
 } from '@/store/connection-request'
-import type { SessionResumeResponse } from '@/types/hermes'
+import type { SessionResumeResult } from '@/types/hermes'
 
 export interface PendingConnectionResumeState {
   authoritativeAbsent: boolean
@@ -17,7 +17,7 @@ export interface PendingConnectionResumeState {
 /** Restore a pending connection card from a resume snapshot. A missing snapshot clears only
  *  requests that existed before the RPC started. */
 export function restorePendingConnectionFromSnapshot(
-  response: Pick<SessionResumeResponse, 'pending_connection'>,
+  response: Pick<SessionResumeResult, 'pending_connection'>,
   sessionId: string,
   resumeStartedAt: number,
   opIdAtStart?: string

@@ -2788,6 +2788,65 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_summary_uses_ordinary_tools_and_prompt_cache_key(self, agent):
+        """The terminal summary follows the ordinary request's cache lineage."""
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=""),
+            _mock_response(content="Summary"),
+        ]
+        agent.base_url = "https://api.openai.com/v1"
+        agent.provider = "openai"
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+        ordinary = agent._build_api_kwargs(
+            [{"role": "system", "content": agent._cached_system_prompt}, *messages]
+        )
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        summaries = [call.kwargs for call in agent.client.chat.completions.create.call_args_list]
+        assert result == "Summary"
+        assert len(summaries) == 2
+        assert all(summary["tools"] == ordinary["tools"] for summary in summaries)
+        assert all(summary["prompt_cache_key"] == ordinary["prompt_cache_key"] for summary in summaries)
+        assert all(summary.get("tool_choice") == ordinary.get("tool_choice") for summary in summaries)
+        assert all(summary["model"] == ordinary["model"] for summary in summaries)
+        assert all(summary["messages"][0] == ordinary["messages"][0] for summary in summaries)
+
+    def test_summary_request_scrubs_surrogates_in_tool_schema(self, agent):
+        """The summary rides the same outbound surrogate chokepoint as the main loop (#50959 class)."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        agent.tools = [{"type": "function", "function": {
+            "name": "web_search", "description": "lone surrogate \ud83d here",
+            "parameters": {"type": "object", "properties": {}},
+        }}]
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        sent = agent.client.chat.completions.create.call_args.kwargs
+        description = sent["tools"][0]["function"]["description"]
+        assert "\ud83d" not in description
+        description.encode("utf-8")  # a provider serializes this; lone surrogates raise here
+
+    def test_summary_tool_call_only_response_retries_once(self, agent, caplog):
+        """A tool-only summary is never executed: it is logged, reads as empty, and gets one retry."""
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", tool_calls=[_mock_tool_call()]),
+            _mock_response(content="Summary"),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+
+        with caplog.at_level(logging.WARNING, logger="agent.chat_completion_helpers"):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 60,
+            )
+
+        assert result == "Summary"
+        assert agent.client.chat.completions.create.call_count == 2
+        assert "emitted tool calls" in caplog.text
+
     def test_summary_request_removes_orphan_tool_result(self, agent):
         """Regression: max-iterations summary request must NOT contain
         orphan tool results (tool_call_id with no matching assistant tool_call)."""

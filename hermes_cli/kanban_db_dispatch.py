@@ -2080,13 +2080,15 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
     if workspaces_root_path in _retagged_workspace_roots:
         return
     try:
-        from hermes_state import SessionDB
+        from hermes_state_registry import acquire, release_or_close
 
-        db = SessionDB()
+        # Inside the gateway the dispatcher shares the process's registry handle; a bare
+        # SessionDB() here was one more writer connection on the same state.db (#100896).
+        db = acquire()
         try:
             db.retag_kanban_worker_sessions(workspaces_root_path)
         finally:
-            db.close()
+            release_or_close(db)
         _retagged_workspace_roots.add(workspaces_root_path)
     except Exception as exc:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)

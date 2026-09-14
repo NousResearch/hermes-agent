@@ -25,7 +25,7 @@ export function canStartWithConnections(part: ChatMessagePart): boolean {
   const output = recordOf(part.result)
 
   if (action === 'wait') {
-    return part.result === undefined || output.status === 'pending'
+    return (part.result === undefined && part.completedAt === undefined) || output.status === 'pending'
   }
 
   return (

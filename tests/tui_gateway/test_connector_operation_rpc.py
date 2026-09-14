@@ -109,12 +109,12 @@ def test_respond_drives_the_live_operation_and_emits_update(owned):
     operation = _open_op()
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
     foreign = _rpc(stranger, "connection.respond", op_id=operation.op_id,
-                   result=json.dumps({"targets": [{"name": "notion", "status": "skipped"}]}))
+                   result={"targets": [{"name": "notion", "status": "skipped"}]})
     assert foreign["error"]["code"] == 4001
     assert operation.target("notion").state == TargetState.pending
 
     reply = _rpc(owner, "connection.respond", op_id=operation.op_id,
-                 result=json.dumps({"targets": [{"name": "notion", "status": "skipped"}]}))
+                 result={"targets": [{"name": "notion", "status": "skipped"}]})
     assert "result" in reply, reply
     assert operation.target("notion").state == TargetState.skipped
     assert operation.wake.is_set()
@@ -129,7 +129,7 @@ def test_respond_cannot_claim_connected_for_a_managed_target(owned):
     operation = _open_op()
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
     reply = _rpc(owner, "connection.respond", op_id=operation.op_id,
-                 result=json.dumps({"targets": [{"name": "gmail", "status": "connected"}]}))
+                 result={"targets": [{"name": "gmail", "status": "connected"}]})
     assert reply["error"]["code"] == 4002
     assert operation.target("gmail").state == TargetState.initiated
 
@@ -137,7 +137,7 @@ def test_respond_cannot_claim_connected_for_a_managed_target(owned):
 def test_respond_continue_settles_and_emits_the_settlement_update(owned):
     owner, _, _ = owned
     operation = _open_op()
-    reply = _rpc(owner, "connection.respond", op_id=operation.op_id, result=json.dumps({"settled_by": "continue"}))
+    reply = _rpc(owner, "connection.respond", op_id=operation.op_id, result={"settled_by": "continue"})
     assert "result" in reply
     assert operation.settled and operation.settled_by.value == "continue"
     settled = [u for u in owner.events("connection.update") if u["payload"].get("settled")]
@@ -151,12 +151,6 @@ def test_pending_connection_on_resume_comes_from_the_live_registry(owned):
     assert payload["deadline_at"] == operation.deadline_at
     live.close(operation)
     assert server._pending_connection_request_payload(SID) is None
-
-
-def test_connection_update_is_in_the_event_contract():
-    from tests.tui_gateway.test_gateway_event_contract import emitted_event_names
-
-    assert "connection.update" in emitted_event_names()
 
 
 def test_panel_connect_reissues_only_a_dead_link(owned, monkeypatch):

@@ -248,7 +248,7 @@ export async function respondToConnectionRequest(request: ConnectionRequest, out
 
   await $gateway.get()?.request('connection.respond', {
     op_id: request.opId,
-    result: JSON.stringify(outcome),
+    result: outcome,
     session_id: request.sessionId
   })
 

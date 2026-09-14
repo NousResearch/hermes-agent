@@ -193,9 +193,8 @@ def _(rid, params):
     operation, error = _live_operation(rid, params, owner)
     if error:
         return error
-    raw = params.get("result", "")
     try:
-        apply_answer(operation, raw if isinstance(raw, str) else json.dumps(raw))
+        apply_answer(operation, json.dumps(params["result"]))
     except IllegalTransition as exc:
         return _connector_rpc_error(rid, 4002, "ILLEGAL_TRANSITION", str(exc))
     if not operation.settled and operation.all_resolved:

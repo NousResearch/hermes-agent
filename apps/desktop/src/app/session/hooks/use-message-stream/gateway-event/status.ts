@@ -1,5 +1,6 @@
 import { translateNow } from '@/i18n'
 import { textPart } from '@/lib/chat-messages'
+import { MEMORY_RECALL_MESSAGE_ID_PREFIX } from '@/lib/chat-messages/recall'
 import { coerceGatewayText } from '@/lib/chat-runtime'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
@@ -75,7 +76,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
           messages: [
             ...state.messages,
             {
-              id: `memory-recall-${crypto.randomUUID()}`,
+              id: `${MEMORY_RECALL_MESSAGE_ID_PREFIX}${crypto.randomUUID()}`,
               role: 'system',
               parts: [textPart(text, occurredAt)],
               timestamp: occurredAt

@@ -31,7 +31,12 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot", "yuanbao"})
+    "qqbot", "yuanbao",
+    # Stateful transcript surface, not a push channel: delivers by appending
+    # to the target session's transcript (_deliver_to_api_server_transcript),
+    # like the kanban wake lane. Needs no gateway credentials (same-process
+    # SQLite), so the credential gate must not block it.
+    "api_server"})
 
 # Platforms supporting a cron/notification home target -> env var used by gateway config.
 _HOME_TARGET_ENV_VARS = {
@@ -624,6 +629,19 @@ def _resolve_single_delivery_target(
             "_resolved_from": "explicit",  # mirror-eligible only under attach_to_session opt-in
         }
     platform_name = deliver_value
+    # Bare "api_server" is a transcript address, not a home-channel platform: the
+    # target is the ORIGIN session id (chat_id IS the session id for this
+    # surface; _deliver_to_api_server_transcript appends there). No env/home
+    # fallback exists — with no origin the target does not resolve.
+    if platform_name.lower() == "api_server":
+        if origin and str(origin.get("platform") or "").lower() == "api_server":
+            return {
+                "platform": platform_name,
+                "chat_id": str(origin["chat_id"]),
+                "thread_id": None,
+                "_resolved_from": "home",  # mirror-eligible primary conversation
+            }
+        return None
     home_provenance = None if from_broadcast else "home"
     if origin and origin.get("platform") == platform_name:
         chat_id = _get_home_target_chat_id(platform_name)
@@ -651,6 +669,79 @@ def _get_bot_chat_delivery_timeout() -> int:
         return value if value > 0 else 600
     except Exception:
         return 600
+
+
+def _deliver_to_api_server_transcript(
+    job: dict, chat_id: str, content: str
+) -> Optional[str]:
+    """Deliver job output into an api_server session's transcript.
+
+    The API server is a stateless request/response surface: there is no push
+    lane and ``send()`` is a permanent stub ("API server uses HTTP
+    request/response, not send()"), so BOTH the live-adapter and standalone
+    lanes dead-end for it. The one delivery primitive that works is the
+    transcript itself — the same visibility model gateway/wake.py documents
+    for this platform (the output is visible the next time the client polls
+    or reopens the conversation, and a later turn in that session sees it in
+    history). The target chat_id for an api_server origin IS the raw session
+    id.
+
+    Written as a user-role message with a ``[Cron delivery]`` prefix (role
+    parity with ``_maybe_mirror_cron_delivery`` — an assistant-role splice
+    after the agent's last turn breaks strict alternation on replay).
+
+    Returns None on success, or an error string for ``last_delivery_error``
+    that names the ACTUAL failure (missing session) instead of the dead
+    send() stub's message.
+    """
+    text = (content or "").strip()
+    if not text:
+        return None
+    job_label = job.get("name") or job.get("id") or "cron"
+    try:
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+    except Exception as e:
+        return f"api_server transcript delivery failed (session db): {e}"
+    try:
+        try:
+            session_row = db.get_session(chat_id)
+        except Exception as e:
+            return f"api_server transcript delivery failed (session lookup): {e}"
+        if session_row is None:
+            # Resolve compression lineage: an origin chat_id may be a rotated
+            # parent whose live tip moved on. State.db's own resolve handles it.
+            try:
+                latest = db.resolve_resume_session_id(chat_id)
+            except Exception:
+                latest = None
+            if latest and latest != chat_id:
+                chat_id = latest
+            else:
+                return (
+                    f"api_server target session {chat_id} does not exist; "
+                    "deliver to an explicit platform, or re-create the job "
+                    "from a live session"
+                )
+        try:
+            db.append_message(
+                session_id=chat_id,
+                role="user",
+                content=f"[Cron delivery: {job_label}]\n{text}",
+            )
+        except Exception as e:
+            return f"api_server transcript delivery failed (append): {e}"
+        logger.info(
+            "Job '%s': delivered to api_server session %s transcript",
+            job.get("id", "?"), chat_id,
+        )
+        return None
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def _deliver_to_bot_chat(job: dict, content: str, profile: str) -> Optional[str]:
@@ -1779,6 +1870,19 @@ def _deliver_result(
                     delivery_errors.append(bot_chat_error)
                 if receipt and receipt["status"] == "ambiguous":
                     unverified_targets.append(bot_chat_error)
+            continue
+
+        # api_server targets are transcript conversations, not push channels:
+        # send() is a permanent stub on this platform, so deliver by appending
+        # to the target session's transcript — the same visibility model the
+        # kanban wake lane uses. The output becomes visible when the client
+        # next polls history. The target chat_id for an api_server origin IS
+        # the raw session id.
+        if target["platform"] == "api_server":
+            api_err = _deliver_to_api_server_transcript(
+                job, target.get("chat_id") or "", content)
+            if api_err:
+                delivery_errors.append(api_err)
             continue
 
         t = _prepare_target_delivery(

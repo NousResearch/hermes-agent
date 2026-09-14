@@ -248,6 +248,11 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
                 "delivery target. Fix the job's `deliver` value or configure "
                 "the platform's gateway credentials."
             )
+        if platform_name.lower() == "api_server":
+            # Transcript surface, not a push channel: delivers via same-process
+            # SQLite (_deliver_to_api_server_transcript), needs no gateway
+            # credentials. Never runs the credential gate.
+            continue
         if connected is None:
             try:
                 from gateway.config import load_gateway_config

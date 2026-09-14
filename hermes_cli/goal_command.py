@@ -7,11 +7,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import re
+import threading
 from typing import Callable
 
 from hermes_cli import goals
 
 logger = logging.getLogger(__name__)
+
+_AUTO_START_LOCK_GUARD = threading.Lock()
+_AUTO_START_LOCKS: dict[str, threading.Lock] = {}
 
 
 @dataclass(frozen=True)
@@ -153,6 +158,87 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
                    "Hermes keeps working until it is, you pause/clear it, or the budget is "
                    "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.")
     return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
+
+
+def goal_objective_text(message) -> str:
+    """Extract the text portion of a normal user message for automatic goal start."""
+    if isinstance(message, list):
+        return "\n".join(
+            str(block.get("text", ""))
+            for block in message
+            if isinstance(block, dict) and block.get("text")
+        ).strip()
+    return str(message or "").strip()
+
+
+_GOAL_ACTION_PATTERNS = (
+    r"\b(?:add|analy[sz]e|audit|build|change|check|clean|compare|configure|create|debug|deploy|delete|edit|fix|generate|implement|install|investigate|migrate|modify|publish|refactor|remove|research|review|run|set up|setup|test|update|verify|write)\b",
+    r"(?:調べて|調査|作って|作成|実装|修正|直して|検証|確認して|実行|追加|変更|設定|導入|インストール|デプロイ|公開|送って|書いて|編集|比較|レビュー|削除|生成|準備|再開)",
+)
+_EXPLANATION_PREFIX = re.compile(
+    r"^(?:(?:what|why|when|where|who|which|how do i|how can i|should i|do i|does it|is it|is there|are there)\b|"
+    r"can you tell me|could you explain|please explain|tell me how|説明して|どうやって|なぜ|何ですか)",
+    flags=re.IGNORECASE,
+)
+
+
+def is_goal_candidate(message) -> bool:
+    """Return whether a normal message is an execution request.
+
+    This intentionally uses a conservative, local heuristic: automatic Goal
+    mode must not turn ordinary questions or short replies into persistent
+    work. False negatives can still use the explicit ``/goal`` command.
+    """
+    text = goal_objective_text(message)
+    if (
+        len(text) < 8
+        or text.startswith("/")
+        or text.lower().startswith("!goal")
+        or _EXPLANATION_PREFIX.match(text)
+    ):
+        return False
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in _GOAL_ACTION_PATTERNS)
+
+
+def goal_auto_start_enabled(config) -> bool:
+    """Return whether normal messages should create a goal when no goal exists."""
+    try:
+        from utils import is_truthy_value
+
+        goals_config = ((config or {}).get("goals") or {}) if isinstance(config, dict) else {}
+        return is_truthy_value(goals_config.get("auto_start"), default=False)
+    except Exception:
+        return False
+
+
+def auto_start_goal(
+    mgr: goals.GoalManager, objective: str, *, progress: Callable[[str], None] | None = None,
+) -> GoalCommandResult | None:
+    """Draft and persist a goal from a normal message when the session has no goal.
+
+    This intentionally does not enqueue the returned kickoff prompt: the original user message is
+    already the turn being processed. Returning ``None`` means the feature is disabled for this
+    session because it already has an active or paused goal.
+    """
+    objective = goal_objective_text(objective)
+    if not objective:
+        return None
+    with _AUTO_START_LOCK_GUARD:
+        session_lock = _AUTO_START_LOCKS.setdefault(mgr.session_id, threading.Lock())
+    with session_lock:
+        if mgr.has_goal():
+            return None
+        stored = goals.load_goal(mgr.session_id)
+        if stored is not None and stored.status in {"active", "paused"}:
+            return None
+        return _set(
+            mgr,
+            objective,
+            drafting=True,
+            last_user_message=objective,
+            render=_english,
+            progress=progress,
+        )
 
 
 def is_goal_control(arg: str) -> bool:

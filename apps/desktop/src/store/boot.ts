@@ -5,6 +5,14 @@ import { translateNow } from '@/i18n'
 
 export interface DesktopBootState extends DesktopBootProgress {
   visible: boolean
+  /**
+   * Renderer loaded outside the Electron shell (the dev-server URL opened in a
+   * regular browser). `window.hermesDesktop` cannot exist there, so boot fails
+   * immediately with the IPC-bridge error — a code bug looks identical to
+   * “opened http://127.0.0.1:5174 in Firefox”. The overlay reads this to show
+   * “open the desktop app” guidance instead of dead Retry/Repair buttons.
+   */
+  browserMode?: boolean
 }
 
 const INITIAL_BOOT_STATE: DesktopBootState = {
@@ -101,11 +109,12 @@ export function completeDesktopBoot(message = translateNow('boot.ready')) {
   })
 }
 
-export function failDesktopBoot(message: string) {
+export function failDesktopBoot(message: string, options?: { browserMode?: boolean }) {
   const current = $desktopBoot.get()
   $desktopBoot.set({
     ...current,
     error: message,
+    browserMode: options?.browserMode ?? false,
     message: translateNow('boot.desktopBootFailedWithMessage', message),
     phase: 'renderer.error',
     progress: clampProgress(current.progress),

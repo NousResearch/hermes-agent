@@ -252,7 +252,12 @@ export const zh = defineLocale({
       signInFailed: '登录失败',
       signInToRemoteGateway: '登录远程网关',
       signInWithProvider: provider => `使用 ${provider} 登录`,
-      identityProvider: '你的身份提供方'
+      identityProvider: '你的身份提供方',
+      browserModeTitle: '在浏览器中打开，而非桌面应用',
+      browserModeDescription:
+        '此地址只是界面。Hermes Desktop 必须在它自己的窗口中运行，桌面桥接只在其中可用。没有东西损坏——请改为打开 Hermes Desktop 应用。',
+      browserModeHint: '开发模式用“npm run dev”启动桌面应用；安装版从开始菜单 / Applications 文件夹启动。',
+      browserModeDocs: '开发者文档'
     }
   },
 

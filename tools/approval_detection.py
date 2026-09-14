@@ -182,20 +182,25 @@ def detect_hardline_command(command: str) -> tuple:
     _, malformed_grep = _grep_safe_detection_variant(_mask_quoted_newlines(command))
     if malformed_grep:
         return (True, _MALFORMED_EXEC_DESCRIPTION)
-    for command_variant in _command_detection_variants(command):
-        variant_lower = command_variant.lower()
-        masked_lower: str | None = None
-        for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
-            if quote_masked and masked_lower is None:
-                # Positionless rules see quoted prose as DATA, except under shell carriers
-                # (sh -c, eval, source) whose quoted argument is code — those scan raw. bash -c
-                # payloads also surface as their own raw variants via _execution_flag_findings.
-                masked_lower = (
-                    variant_lower if _contains_shell_carrier(command_variant)
-                    else _mask_quoted_prose(command_variant).lower()
-                )
-            if pattern_re.search(masked_lower if quote_masked else variant_lower):
-                return (True, description)
+    from tools.approval_carriers import _CommandScanLimitExceeded
+
+    try:
+        for command_variant in _command_detection_variants(command):
+            variant_lower = command_variant.lower()
+            masked_lower: str | None = None
+            for pattern_re, description, quote_masked in HARDLINE_PATTERNS_COMPILED:
+                if quote_masked and masked_lower is None:
+                    # Positionless rules see quoted prose as DATA, except under shell carriers
+                    # (sh -c, eval, source) whose quoted argument is code — those scan raw. bash -c
+                    # payloads also surface as their own raw variants via _execution_flag_findings.
+                    masked_lower = (
+                        variant_lower if _contains_shell_carrier(command_variant)
+                        else _mask_quoted_prose(command_variant).lower()
+                    )
+                if pattern_re.search(masked_lower if quote_masked else variant_lower):
+                    return (True, description)
+    except _CommandScanLimitExceeded:
+        return (True, _PARSER_LIMIT_DESCRIPTION)
     return (False, None)
 
 
@@ -530,7 +535,7 @@ _SIMPLE_SHELL_LITERAL_RE = re.compile(r"^[A-Za-z0-9_./:@%+=,-]+$")
 _ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*")
 _COMMAND_WRAPPER_WORDS = {"sudo", "env", "exec", "nohup", "setsid", "time", "command", "builtin",
                           "nice", "timeout", "stdbuf", "ionice", "chrt", "taskset", "chroot"}
-_SUDO_OPTIONS_WITH_ARG = {"-c", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
+_SUDO_OPTIONS_WITH_ARG = {"-C", "--close-from", "-g", "--group", "-h", "--host", "-p", "--prompt", "-u", "--user"}
 # Adapted from embwl0x's command-position work in #76063. Option operands are
 # data, not executable positions; option spelling remains case-sensitive.
 _COMMAND_WRAPPER_OPTIONS_WITH_ARG = {
@@ -842,30 +847,41 @@ def _interpreter_exec_flag(family: str, args: list[str]) -> str | None:
 
 def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
     """Return whether Bash ``-c`` occurs and the command string it owns.
-    Bash's O/o options consume the following argument even when they precede a later ``-c`` or
-    share its short-option bundle; the two startup-file long options own their next token.
-    Parsing those first prevents both missed payloads and false ``-c`` hits."""
+
+    ``-c`` is an invocation flag, not an option that immediately consumes the
+    next word. Shells keep parsing invocation options after it: in
+    ``sh -c -x cmd`` and ``bash -c -o nounset cmd``, ``cmd`` is the command
+    string. Parse the complete option prefix, including option operands and
+    ``--``, before selecting the first non-option word as the payload.
+    """
     index = 0
+    found_c = False
     while index < len(args):
         token = args[index]
-        if token == "--" or not token.startswith(("-", "+")):
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith(("-", "+")):
             break
         if token in _BASH_OPTIONS_WITH_ARG:
             index += 2
             continue
-        chars = token[1:]
-        # Bash option letters are case-sensitive; restricting to the documented alphabet
-        # preserves invalid controls such as `-Wc`.
-        if token.startswith("--") or not set(chars) <= _BASH_SHORT_OPTION_LETTERS:
+        if token.startswith("--"):
             index += 1
             continue
-        consumed_option_arg = int("O" in chars or "o" in chars)
-        if "c" in chars:
-            payload_index = index + 1 + consumed_option_arg
-            return True, (args[payload_index] if payload_index < len(args) else None)
-        index += 1 + consumed_option_arg
-    return False, None
 
+        chars = token[1:]
+        # Bash option letters are case-sensitive. Restricting this to its
+        # documented alphabet preserves invalid controls such as `-Wc`.
+        if not set(chars) <= _BASH_SHORT_OPTION_LETTERS:
+            index += 1
+            continue
+        found_c = found_c or (token.startswith("-") and "c" in chars)
+        consumed_option_arg = "O" in chars or "o" in chars
+        index += 1 + int(consumed_option_arg)
+
+    payload = args[index] if found_c and index < len(args) else None
+    return found_c, payload
 
 def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:
     """Return (option, program) for a read-only tool's program-running flag."""
@@ -1034,43 +1050,27 @@ def _literal_command_substitution_output(script: str) -> str | None:
     return None
 
 
-def _replace_simple_command_substitutions(word: str) -> str:
-    chars: list[str] = []
-    i = 0
-    while i < len(word):
-        opener = 2 if word.startswith("$(", i) else 1 if word[i] == "`" else 0
-        end = (_scan_dollar_paren_end if opener == 2 else _scan_backtick_end)(word, i) if opener else None
-        replacement = _literal_command_substitution_output(word[i + opener:end - 1]) if end is not None else None
-        if replacement is None:
-            replacement, end = word[i], i + 1
-        chars.append(replacement)
-        i = end
-    return "".join(chars)
-
-
-def _replace_simple_shell_expansions(word: str) -> str:
-    word = _replace_simple_command_substitutions(word)
-    word = _PARAM_REPLACEMENT_RE.sub(lambda match: match.group("replacement"), word)
-    return _PARAM_DEFAULT_RE.sub(lambda match: match.group("default"), word)
-
-
-def _strip_shell_word_syntax(word: str) -> str:
-    return "".join(
-        word[i + 1] if kind == "esc" else word[i]
-        for kind, i, _, _ in _scan_shell(word) if kind != "quote"
-    )
-
-
 def _deobfuscate_shell_word_for_detection(word: str) -> str:
-    """Approximate how shell syntax can spell a command word: collapses quoting/escaping plus
-    simple literal command substitutions in the word itself. Intentionally narrow and non-executing."""
-    for _ in range(2):
-        previous = word
-        word = _strip_shell_word_syntax(_replace_simple_shell_expansions(word))
-        if word == previous:
-            break
-    return word
+    """Approximate how shell syntax can spell a command word.
 
+    This is intentionally narrow and non-executing: it only collapses shell
+    quoting/escaping plus simple literal command substitutions that appear in
+    the command word itself.
+    """
+    from tools.approval_carriers import _replace_command_word_expansions, _shell_argv_word_for_detection
+
+    deobfuscated = word
+    for _ in range(2):
+        previous = deobfuscated
+        deobfuscated = _replace_command_word_expansions(deobfuscated)
+        if deobfuscated == previous:
+            break
+    for _ in range(2):
+        previous = deobfuscated
+        deobfuscated = _shell_argv_word_for_detection(deobfuscated)
+        if deobfuscated == previous:
+            break
+    return deobfuscated
 
 def _is_shell_comment_start(command: str, index: int) -> bool:
     return command[index] == "#" and (index == 0 or command[index - 1].isspace()
@@ -1189,12 +1189,20 @@ def _iter_shell_command_word_spans(command: str):
                 if option in queries or (wrapper == "command" and not option.startswith("--")
                                          and set(option[1:]) & {"v", "V"}):
                     break
+                if wrapper == "nice" and option in {"-n", "--adjustment"} and "=" not in deobfuscated:
+                    _, _, operand = _read_shell_word(command, pos)
+                    if not re.fullmatch(r"[+-]?\d+", operand):
+                        break
                 skip_arg = "=" not in deobfuscated and option in _COMMAND_WRAPPER_OPTIONS_WITH_ARG.get(wrapper, set())
                 continue
             if positionals:
+                if wrapper == "timeout" and not re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", deobfuscated):
+                    break
                 positionals -= 1
                 continue
             if _ENV_ASSIGNMENT_RE.fullmatch(word):
+                if wrapper == "env":
+                    options = False
                 continue
             yield (word_start, word_end, word)
             if name not in _COMMAND_WRAPPER_WORDS:
@@ -1398,6 +1406,16 @@ def _command_detection_variants(command: str):
             if fresh(variant):
                 yield variant
 
+    from tools.approval_carriers import _iter_embedded_commands
+
+    for embedded in _iter_embedded_commands(command):
+        variant = _normalize_command_for_detection(_mask_quoted_newlines(embedded))
+        if fresh(variant):
+            yield variant
+        marked = _normalize_command_for_detection(_mark_command_starts(_mask_quoted_newlines(embedded), marker=" \n"))
+        if fresh(marked):
+            yield marked
+
 
 def _is_verification_artifact_cleanup(command: str) -> bool:
     """Return whether *command* only removes one Hermes ad-hoc temp script."""
@@ -1443,14 +1461,27 @@ def detect_dangerous_command(command: str) -> tuple:
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
-    for command_variant in _command_detection_variants(command):
-        command_lower = command_variant.lower()
-        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-            if pattern_re.search(command_lower):
-                return (True, description, description)
+    from tools.approval_carriers import _CommandScanLimitExceeded
+
+    try:
+        for command_variant in _command_detection_variants(command):
+            command_lower = command_variant.lower()
+            for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+                if pattern_re.search(command_lower):
+                    return (True, description, description)
+    except _CommandScanLimitExceeded:
+        return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     normalized = _normalize_command_for_detection(command)
     for description, _ in _execution_flag_findings(normalized):
         return (True, description, description)
+    from tools.approval_carriers import _iter_embedded_commands
+
+    try:
+        for embedded in _iter_embedded_commands(command):
+            for description, _ in _execution_flag_findings(embedded):
+                return (True, description, description)
+    except _CommandScanLimitExceeded:
+        return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_shell_token_spliced_gateway_lifecycle(command):
         return (True, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION, _GATEWAY_LIFECYCLE_SPLICE_DESCRIPTION)
     return (False, None, None)

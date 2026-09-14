@@ -44,7 +44,7 @@ describe('terminalSetup helpers', () => {
         { APPDATA: 'C:/Users/me/AppData/Roaming' } as NodeJS.ProcessEnv,
         '/home/me'
       )
-    ).toBe('C:/Users/me/AppData/Roaming/Code/User')
+    ).toBe('C:\\Users\\me\\AppData\\Roaming\\Code\\User')
   })
 
   it('strips line comments from keybindings JSON', () => {
@@ -75,6 +75,26 @@ describe('terminalSetup helpers', () => {
 })
 
 describe('configureTerminalKeybindings', () => {
+  it('uses target-native separators for Windows keybindings paths', async () => {
+    const mkdir = vi.fn().mockResolvedValue(undefined)
+    const readFile = vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }))
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+
+    const result = await configureTerminalKeybindings('vscode', {
+      env: { APPDATA: 'C:/Users/me/AppData/Roaming' } as NodeJS.ProcessEnv,
+      fileOps: { mkdir, readFile, writeFile },
+      platform: 'win32'
+    })
+
+    const configDir = 'C:\\Users\\me\\AppData\\Roaming\\Code\\User'
+    const keybindingsFile = `${configDir}\\keybindings.json`
+
+    expect(result.success).toBe(true)
+    expect(mkdir).toHaveBeenCalledWith(configDir, { recursive: true })
+    expect(readFile).toHaveBeenCalledWith(keybindingsFile, 'utf8')
+    expect(writeFile).toHaveBeenCalledWith(keybindingsFile, expect.any(String), 'utf8')
+  })
+
   it('writes missing bindings into a VS Code style keybindings file', async () => {
     const mkdir = vi.fn().mockResolvedValue(undefined)
     const readFile = vi.fn().mockRejectedValue(Object.assign(new Error('missing'), { code: 'ENOENT' }))
@@ -340,7 +360,8 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readMissing }
+        fileOps: { readFile: readMissing },
+        platform: 'linux'
       })
     ).resolves.toBe(true)
 
@@ -388,7 +409,8 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readComplete }
+        fileOps: { readFile: readComplete },
+        platform: 'linux'
       })
     ).resolves.toBe(false)
   })
@@ -448,7 +470,8 @@ describe('configureTerminalKeybindings', () => {
     await expect(
       shouldPromptForTerminalSetup({
         env: { TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv,
-        fileOps: { readFile: readLegacy }
+        fileOps: { readFile: readLegacy },
+        platform: 'linux'
       })
     ).resolves.toBe(true)
   })

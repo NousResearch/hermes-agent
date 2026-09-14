@@ -20,11 +20,14 @@
 //
 //   - keyed by the EXACT ws url, so ordinary HTTP(S) traffic to the gateway,
 //     sibling paths, and unrelated sockets get nothing;
-//   - one live url per GATEWAY (its baseUrl is the owner) — registering the
-//     next mint for that gateway drops its previous one, so a stale /
-//     pre-rotation ticket url carries no authority. Replacement stops there:
-//     two Cloud agents share the legacy partition, and registering B must not
-//     cancel A's in-flight handshake, which nobody signed out;
+//   - one live url per CONSUMER (the gateway plus the caller that re-mints for
+//     that socket: the primary ws-url path per profile, a registry
+//     (connectionId, profile) pair, a descriptor build) — its next mint drops
+//     its own previous url, so a stale / pre-rotation ticket carries no
+//     authority. Replacement stops there: two Cloud agents share the legacy
+//     partition, and a shared remote serves several profiles at one baseUrl,
+//     so another gateway, profile consumer, or descriptor build must not
+//     cancel an in-flight handshake nobody signed out;
 //   - additionally time-bounded, so an upgrade that never happens expires
 //     instead of lingering for the process lifetime, and bounded in count;
 //   - dropped per partition on sign-out, since one jar backs several urls (the
@@ -124,13 +127,16 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
   }
 
   // Authorize exactly one upgrade: `wsUrl`, using `baseUrl`'s jar. Replaces the
-  // url previously registered for the SAME gateway, and nothing else.
-  const register = async (wsUrl: string, baseUrl: string) => {
+  // url previously registered by the SAME consumer of the same gateway, and
+  // nothing else. `consumer` identifies the caller that will re-mint for this
+  // socket; callers that omit it share one owner per gateway.
+  const register = async (wsUrl: string, baseUrl: string, consumer?: string) => {
     if (!wsUrl || !baseUrl) {
       return
     }
 
-    const owner = baseUrl
+    // Namespaced by baseUrl so a consumer label can never span two gateways.
+    const owner = `${baseUrl}\n${consumer ?? ''}`
     const partition = dependencies.resolvePartition(baseUrl)
     const generation = (generations.get(owner) ?? 0) + 1
     const epoch = epochs.get(partition) ?? 0

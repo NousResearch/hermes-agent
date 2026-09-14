@@ -188,6 +188,57 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, twoWs)).toBe('session=two')
   })
 
+  // A shared remote serves one socket per profile at a single baseUrl, and a
+  // descriptor build mints alongside them. The gateway alone is therefore too
+  // coarse an owner: each consumer may only retire its own previous url.
+  it('keeps several consumers of one gateway independent', async () => {
+    const { store } = createStore()
+    const primaryWs = 'wss://gateway.example/api/ws?ticket=primary'
+    const pooledWs = 'wss://gateway.example/api/ws?ticket=pooled&profile=work'
+    const descriptorWs = 'wss://gateway.example/api/ws?ticket=descriptor'
+
+    await store.register(primaryWs, GATEWAY, 'ws-url:')
+    await store.register(pooledWs, GATEWAY, 'registry:cloud:work')
+    await store.register(descriptorWs, GATEWAY, 'descriptor:settings')
+
+    expect(cookieOn(store, primaryWs)).toBe(EXPECTED)
+    expect(cookieOn(store, pooledWs)).toBe(EXPECTED)
+    expect(cookieOn(store, descriptorWs)).toBe(EXPECTED)
+  })
+
+  it('retires only the re-minting consumer\'s own previous url', async () => {
+    const { store } = createStore()
+    const pooledWs = 'wss://gateway.example/api/ws?ticket=pooled&profile=work'
+    const stale = 'wss://gateway.example/api/ws?ticket=stale'
+    const rotated = 'wss://gateway.example/api/ws?ticket=rotated'
+
+    await store.register(pooledWs, GATEWAY, 'registry:cloud:work')
+    await store.register(stale, GATEWAY, 'ws-url:')
+    await store.register(rotated, GATEWAY, 'ws-url:')
+
+    expect(cookieOn(store, stale)).toBeUndefined()
+    expect(cookieOn(store, rotated)).toBe(EXPECTED)
+    expect(cookieOn(store, pooledWs)).toBe(EXPECTED)
+
+    // Sign-out is still partition-wide, so it takes every consumer with it.
+    store.forget(GATEWAY)
+
+    expect(cookieOn(store, rotated)).toBeUndefined()
+    expect(cookieOn(store, pooledWs)).toBeUndefined()
+  })
+
+  it('never lets one consumer label span two gateways', async () => {
+    const other = 'https://other.example'
+    const otherWs = 'wss://other.example/api/ws?ticket=other'
+    const { store } = createStore({ [GATEWAY]: proxyJar, [other]: [{ name: 'session', value: 'other' }] })
+
+    await store.register(WS_URL, GATEWAY, 'ws-url:')
+    await store.register(otherWs, other, 'ws-url:')
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+    expect(cookieOn(store, otherWs)).toBe('session=other')
+  })
+
   // Two Cloud agents deliberately share the legacy jar (oauth-partition.ts), so
   // the partition is the right scope for a sign-out but NOT for replacement:
   // registering B must not cancel A's in-flight handshake.

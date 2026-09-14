@@ -8338,18 +8338,20 @@ async function freshGatewayWsUrl(profile) {
   // the wrong profile's DB. A null/empty profile resolves to the primary, so
   // legacy callers and single-profile users are unchanged.
   const connection = await ensureBackend(profile)
+  // One consumer per profile: a shared remote keeps a live socket for each.
+  const consumer = `ws-url:${String(connection.profile ?? profile ?? '')}`
 
   if (connection.authMode === 'oauth') {
     const ticket = await mintGatewayWsTicket(connection.baseUrl, connection.headers)
     const wsUrl = buildGatewayWsUrlWithTicket(connection.baseUrl, ticket)
 
-    await rememberGatewayWsAuth(wsUrl, connection)
+    await rememberGatewayWsAuth(wsUrl, connection, consumer)
 
     return wsUrl
   }
 
   // Local/token: the cached wsUrl already carries the (long-lived) token.
-  await rememberGatewayWsAuth(connection.wsUrl, connection)
+  await rememberGatewayWsAuth(connection.wsUrl, connection, consumer)
 
   return connection.wsUrl
 }
@@ -9260,11 +9262,16 @@ const gatewayWsCookieStore = createGatewayWsCookieStore({
 // static remote headers AND, for a cookie-authed gateway, the proxy session to
 // that exact url. Every mint site goes through here so no path can authorize a
 // url the others don't know about.
-async function rememberGatewayWsAuth(wsUrl, connection) {
+//
+// `consumer` names the caller that re-mints for THIS socket. It matters
+// because one baseUrl can back several live sockets -- a shared remote serves
+// a socket per profile, and a descriptor build mints alongside them -- and a
+// new mint may only retire the url its own consumer registered before.
+async function rememberGatewayWsAuth(wsUrl, connection, consumer?: string) {
   rememberRemoteWsHeaders(wsUrl, connection?.headers)
 
   if (connection?.authMode === 'oauth' && connection?.baseUrl) {
-    await gatewayWsCookieStore.register(wsUrl, connection.baseUrl)
+    await gatewayWsCookieStore.register(wsUrl, connection.baseUrl, consumer)
   }
 }
 
@@ -10124,7 +10131,7 @@ async function buildRemoteConnection(
 
     // The renderer opens this socket on defaultSession, which holds none of the
     // gateway's cookies; authorize this exact url to carry the proxy session.
-    await rememberGatewayWsAuth(wsUrl, { authMode: 'oauth', baseUrl, headers: remoteHeaders })
+    await rememberGatewayWsAuth(wsUrl, { authMode: 'oauth', baseUrl, headers: remoteHeaders }, `descriptor:${source}`)
 
     return {
       baseUrl,
@@ -15921,7 +15928,7 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   ensureBackend: ensureRegistryBackend,
   mintTicket: mintGatewayWsTicket,
   buildTicketUrl: buildGatewayWsUrlWithTicket,
-  rememberHeaders: (wsUrl, _headers, connection) => rememberGatewayWsAuth(wsUrl, connection)
+  rememberHeaders: (wsUrl, _headers, connection, consumer) => rememberGatewayWsAuth(wsUrl, connection, consumer)
 })
 
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {

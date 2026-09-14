@@ -14,11 +14,15 @@ interface RegistryGatewayWsUrlDependencies {
   mintTicket: (baseUrl: string, headers?: Record<string, string>) => Promise<string>
   buildTicketUrl: (baseUrl: string, ticket: string) => string
   // Receives the resolved connection too, so a cookie-authed gateway can bind
-  // its forwarded proxy session to this exact url (see gateway-ws-cookie.ts).
+  // its forwarded proxy session to this exact url (see gateway-ws-cookie.ts),
+  // plus the consumer key identifying THIS (connectionId, profile) socket: a
+  // shared remote serves several profiles at one baseUrl, and each re-mints
+  // only its own url.
   rememberHeaders: (
     wsUrl: string,
     headers?: Record<string, string>,
-    connection?: RegistryGatewayWsConnection
+    connection?: RegistryGatewayWsConnection,
+    consumer?: string
   ) => Promise<void> | void
 }
 
@@ -87,6 +91,9 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
   return async (payload: unknown): Promise<string> => {
     const { connectionId, profile } = payload && typeof payload === 'object' ? (payload as any) : ({} as any)
     const connection = await dependencies.ensureBackend(connectionId, profile)
+    // Stable across this pair's reconnects, distinct from every other pair and
+    // from the non-registry mint paths.
+    const consumer = `registry:${String(connectionId ?? '')}:${String(profile ?? '')}`
     let wsUrl = connection.wsUrl
 
     if (connection.authMode === 'oauth') {
@@ -96,7 +103,7 @@ export function createRegistryGatewayWsUrlHandler(dependencies: RegistryGatewayW
 
     const finalWsUrl = registryGatewayWsUrl(connection, wsUrl)
 
-    await dependencies.rememberHeaders(finalWsUrl, connection.headers, connection)
+    await dependencies.rememberHeaders(finalWsUrl, connection.headers, connection, consumer)
 
     return finalWsUrl
   }

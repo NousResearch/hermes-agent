@@ -147,6 +147,44 @@ describe('registry gateway WebSocket headers', () => {
     expectNoHeadersForNearbyUrls(store, result)
   })
 
+  // A shared remote backs one socket per (connectionId, profile) at a single
+  // baseUrl, so the cookie owner cannot be the gateway: pin that each pair
+  // reaches rememberHeaders under its own stable consumer key.
+  it('identifies each (connectionId, profile) pair with its own consumer key', async () => {
+    const connection: RegistryGatewayWsConnection = {
+      authMode: 'oauth',
+      baseUrl: 'https://gateway.example',
+      wsUrl: 'wss://gateway.example/api/ws?ticket=stale',
+      headers: accessHeaders,
+      profile: 'research',
+      sharedRemote: true
+    }
+
+    const consumers: Array<string | undefined> = []
+    const handler = createRegistryGatewayWsUrlHandler({
+      ensureBackend: vi.fn(async () => connection),
+      mintTicket: vi.fn(async () => 'fresh-ticket'),
+      buildTicketUrl: (baseUrl, ticket) => `${baseUrl.replace(/^https:/, 'wss:')}/api/ws?ticket=${ticket}`,
+      rememberHeaders: (_wsUrl, _headers, _connection, consumer) => {
+        consumers.push(consumer)
+      }
+    })
+
+    await handler({ connectionId: 'cloud-one', profile: 'research' })
+    await handler({ connectionId: 'cloud-one', profile: 'ops' })
+    await handler({ connectionId: 'cloud-two', profile: 'research' })
+    // Same pair reconnecting: the key must be stable so it retires its own url.
+    await handler({ connectionId: 'cloud-one', profile: 'research' })
+
+    expect(consumers).toEqual([
+      'registry:cloud-one:research',
+      'registry:cloud-one:ops',
+      'registry:cloud-two:research',
+      'registry:cloud-one:research'
+    ])
+    expect(new Set(consumers).size).toBe(3)
+  })
+
   // The registry path is the reconnect path, so it is where a forwarded proxy
   // session has to be bound (gateway-ws-cookie.ts). Pin that rememberHeaders
   // receives the resolved connection alongside the FINAL url, and is awaited.

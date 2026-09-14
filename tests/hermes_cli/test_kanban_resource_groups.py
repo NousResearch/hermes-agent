@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Event
 
 from hermes_cli import kanban_db as kb
@@ -113,3 +114,31 @@ def test_resource_admission_is_serialized_across_boards(all_assignees_spawnable)
             worker_resource_groups={"gpu-0": ["alpha"], "gpu-1": ["beta"]},
         )
     assert [item[0] for item in disjoint.spawned] == [beta]
+
+
+def test_resource_lock_open_failure_fails_closed(all_assignees_spawnable, monkeypatch):
+    task_id: str
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="research", assignee="alpha")
+
+    original_open = Path.open
+
+    def deny_resource_lock(path, *args, **kwargs):
+        if path.name == ".resource-dispatch.lock":
+            raise PermissionError("resource lock denied")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_resource_lock)
+    spawn_calls = []
+    with kbc.connect_closing() as conn:
+        result = kbd.dispatch_once(
+            conn,
+            spawn_fn=lambda *args, **kwargs: spawn_calls.append((args, kwargs)),
+            worker_resource_groups={"gpu-0": ["alpha"]},
+        )
+
+    assert result.skipped_locked is True
+    assert result.spawned == []
+    assert spawn_calls == []
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"

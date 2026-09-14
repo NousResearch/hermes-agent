@@ -224,10 +224,12 @@ def _resource_dispatch_lock(kanban_root: Path):
             acquired = _try_lock_nb(handle)
         except (OSError, AttributeError):
             acquired = False
-    except OSError:
-        # Match the board dispatch lock's portability fallback: platforms
-        # without a usable lock file keep dispatch functional.
-        acquired = True
+    except OSError as exc:
+        # Unlike the board-local writer lock, this lock is the only admission
+        # boundary shared by sibling boards.  Failing open would let both
+        # boards observe the resource as free and start conflicting workers.
+        _kb._log.warning("kanban resource dispatch lock unavailable at %s: %s", lock_path, exc)
+        acquired = False
         handle = None
     try:
         yield acquired

@@ -291,13 +291,10 @@ class GroupsSendPayload(Params):
     thread_id: str
 
 
-# tui_gateway/hosted_room_service.py:452 owns future payload admission; retain recursive JSON passthrough.
-GroupsSendPayloadValue = GroupsSendPayload | JsonValue
-
-
 class GroupsSendParams(RoomParams):
     event_id: str | None = None
-    payload: GroupsSendPayloadValue
+    # tui_gateway/hosted_room_service.py:452 owns future payload admission; preserve recursive JSON passthrough.
+    payload: GroupsSendPayload | JsonValue
 
 
 class GroupsSendResult(Result):
@@ -679,6 +676,7 @@ method("browser.controller.register", params=BrowserControllerRegisterParams,
 class BrowserControllerResultParams(BrowserControllerParams):
     command_id: str
     ok: bool | None = None
+    # gateway/browser_control_broker.py:392 stores arbitrary controller success or error values.
     result: JsonValue | None = None
     error: JsonValue | None = None
 

@@ -55,4 +55,41 @@ describe('statusbar external href', () => {
 
     expect(openExternal).toHaveBeenCalledWith(href)
   })
+
+  it('opens a dropdown menuItem href in the OS browser without falling back to window.open', async () => {
+    const href = 'https://hermes-agent.nousresearch.com/docs/user-guide/desktop#operator'
+
+    const item: StatusbarItem = {
+      id: 'ops-menu',
+      label: 'Ops',
+      lockedVisible: true,
+      menuItems: [{ href, id: 'ops-docs', label: 'Operator docs' }],
+      variant: 'menu'
+    }
+
+    const windowOpen = vi.spyOn(window, 'open').mockReturnValue(null)
+
+    try {
+      render(
+        <MemoryRouter>
+          <StatusbarControls items={[item]} />
+        </MemoryRouter>
+      )
+
+      const trigger = screen.getByRole('button', { name: 'Ops' })
+
+      fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+      fireEvent.click(trigger)
+
+      const menuLink = await screen.findByRole('link', { name: 'Operator docs' })
+
+      fireEvent.click(menuLink)
+
+      expect(openExternal).toHaveBeenCalledWith(href)
+      expect(windowOpen).not.toHaveBeenCalled()
+    } finally {
+      windowOpen.mockRestore()
+    }
+  })
 })

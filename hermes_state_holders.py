@@ -188,7 +188,9 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     if _IS_WINDOWS:
         return []
 
-    db_path_str = os.path.abspath(os.fspath(db_path))
+    # realpath, not abspath: psutil/libproc report the kernel-resolved pathname, so a symlinked
+    # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.
+    db_path_str = os.path.realpath(os.fspath(db_path))
     watched = {
         canonical_sqlite_path(db_path_str),
         canonical_sqlite_path(db_path_str + "-wal"),
@@ -303,7 +305,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 continue
             for opened in info.get("open_files") or ():
                 path = getattr(opened, "path", "")
-                if path and canonical_sqlite_path(path) in watched:
+                if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
                     holders.append((pid, path))
     except Exception as exc:
         logger.warning(

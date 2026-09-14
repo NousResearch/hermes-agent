@@ -56,3 +56,30 @@ def test_repair_refuses_delete_mode_db_held_open_by_another_process(delete_mode_
         holder.wait(timeout=10)
     assert report["repaired"] is False
     assert "stop the gateway" in (report["error"] or "").lower()
+
+
+def test_holder_scan_sees_through_a_symlinked_home(tmp_path):
+    """psutil/libproc report the resolved pathname; a holder opened via the real path must be found
+    when the scan is asked about the alias, or maintenance proceeds under a live writer. The Linux
+    /proc leg already compares inodes; the textual psutil leg (macOS) is the one this pins."""
+    import sqlite3
+
+    from hermes_state_holders import foreign_state_db_holders
+
+    real = tmp_path / "real-home"
+    real.mkdir()
+    alias = tmp_path / "alias-home"
+    alias.symlink_to(real, target_is_directory=True)
+    db = real / "state.db"
+    sqlite3.connect(db).execute("CREATE TABLE t(x)").connection.close()
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         f"import sqlite3, sys, time; c = sqlite3.connect({str(db)!r}); c.execute('BEGIN IMMEDIATE'); "
+         "print('held', flush=True); time.sleep(30)"],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        assert any(pid == holder.pid for pid, _ in foreign_state_db_holders(alias / "state.db"))
+    finally:
+        holder.kill()
+        holder.wait()

@@ -151,7 +151,8 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 def _session_count(state_db_path: Path):
     import sqlite3
     # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
-    conn = sqlite3.connect(f"file:{state_db_path}?mode=ro", uri=True)
+    # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
+    conn = sqlite3.connect(Path(state_db_path).resolve().as_uri() + "?mode=ro", uri=True)
     try:
         return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     finally:

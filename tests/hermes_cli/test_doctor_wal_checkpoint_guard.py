@@ -47,3 +47,20 @@ def test_doctor_checkpoint_runs_only_on_the_exclusive_repair_guard(tmp_path, mon
     assert finding.fixed == 1 and not finding.issues
     # Every writable open went through the repair connector (probe + exclusive guard); none was a bare connect.
     assert bare_connects and len(bare_connects) == len(guard_connects) >= 2
+
+
+def test_session_count_reads_a_home_with_uri_reserved_characters(tmp_path):
+    """`file:` URIs treat '?' and '#' as delimiters; a home named `profile?blue` must still count."""
+    import sqlite3
+
+    from hermes_cli.doctor_state import _session_count
+
+    home = tmp_path / "profile?blue#x"
+    home.mkdir()
+    db = home / "state.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE sessions(id TEXT)")
+    conn.execute("INSERT INTO sessions VALUES ('a'), ('b')")
+    conn.commit()
+    conn.close()
+    assert _session_count(db) == 2

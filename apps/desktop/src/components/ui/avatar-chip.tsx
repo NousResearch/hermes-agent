@@ -17,6 +17,10 @@ import { cn } from '@/lib/utils'
 export interface AvatarChipBrand {
   Icon?: ComponentType<SVGProps<SVGSVGElement>>
   color: string
+  /** Optional surface color for marks that are designed on a solid field. */
+  backgroundColor?: string
+  /** Optional mark color, used when the glyph is intentionally monochrome. */
+  glyphColor?: string
   /** Marks that are black or white by design (GitHub, Notion, Unreal) follow
    *  the surrounding text color instead of vanishing into the theme. */
   monochrome?: boolean
@@ -56,8 +60,8 @@ export const AvatarChip = forwardRef<HTMLSpanElement, AvatarChipProps>(function 
       style={
         brand
           ? {
-              backgroundColor: `color-mix(in srgb, ${brand.color} 16%, transparent)`,
-              color: brand.monochrome ? undefined : brand.color,
+              backgroundColor: brand.backgroundColor ?? `color-mix(in srgb, ${brand.color} 16%, transparent)`,
+              color: brand.glyphColor ?? (brand.monochrome ? undefined : brand.color),
               ...style
             }
           : style

@@ -201,8 +201,11 @@ class SessionAuthority:
     def _schedule(self, ref):
         live = self.sessions[ref.session_id]
         if live.task is None or live.task.done():
+            from gateway.session_task_diagnostics import drain_task_reporter
+            report = drain_task_reporter(profile_id=self.profile_id,
+                                         session_id=ref.session_id, epoch=self.epoch)
             live.task = asyncio.create_task(self._drain(ref))
-            live.task.add_done_callback(_log_drain_failure)
+            live.task.add_done_callback(report)
 
     async def admit_automation(self, adapter, event, identity):
         from gateway.session_automation import admit_automation
@@ -252,39 +255,46 @@ class SessionAuthority:
                             raise RuntimeStoreError('invalid_params')
                         await check_native_route(self.runner, row['payload'], target, available_source, adapter)
                 self._require_admission_open()
-                self.sessions.setdefault(sid, LiveSession(source, route))
-                if any(row['status'] == 'unknown' for row in rows):
+                live = self.sessions.get(sid)
+                if live is None:
+                    # Preserve read-only inspection of a preflighted native
+                    # session even when its admission must remain paused.
+                    live = self.sessions[sid] = LiveSession(source, route)
+                current = list_session_admissions(self.db, session_id=sid)
+                if any(row['status'] == 'unknown' for row in current):
                     raise RuntimeStoreError('unknown_execution')
+                if (any(row['status'] == 'started' for row in current)
+                        or live.task is not None and not live.task.done()):
+                    results[sid] = 'active'
+                    continue
+                # A paused route may retain the replaced receiving bot. Refresh
+                # only this authorized, non-active binding, not its controls or
+                # subscribers, before the existing FIFO inspects it again.
+                live.source, live.route = source, route
                 self._schedule(SessionRef(self.profile_id, sid))
                 results[sid] = 'ready'
             except RuntimeStoreError as exc:
                 results[sid] = exc.reason
         return results
 
-    async def submit(self, actor: Principal, request: Submission):
+    async def submit(self, actor: Principal, request: Submission, *, _input_custody=None):
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'surface', 'voice_context', 'interrupted'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
-        from gateway.session_ingress_media import admit_attachments
-        from gateway.session_finite import admit_finite
-        from gateway.session_surface import admit_surface
-        finite = admit_finite(request.payload)
-        payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
-                   **admit_attachments(request.payload.get('attachments'))}
-        from gateway.config import Platform
-        source = self.sessions[request.ref.session_id].source
-        if source is not None and source.platform == Platform.LOCAL and source.user_id != actor.subject:
-            # Durable server authorization, not a client payload field. The original
-            # principal remains the admission/retry identity across owner restarts.
-            payload['local_operator_v1'] = {
-                'profile_id': self.profile_id, 'session_id': request.ref.session_id,
-                'principal_id': actor.subject}
+        from hermes_state_input_custody import AcceptedInputHandle, retry_payload
+        from gateway.session_submission_payload import normalize_submission_payload
+        if isinstance(_input_custody, AcceptedInputHandle):
+            with self.db._read_ctx() as conn:
+                payload = retry_payload(conn, handle=_input_custody, principal_id=actor.subject,
+                    session_id=request.ref.session_id, request_id=request.request_id)
+        else:
+            payload = normalize_submission_payload(self, actor, request)
         row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                   session_id=request.ref.session_id, request_id=request.request_id,
-                                  payload=payload, intent=request.intent)
+                                  payload=payload, intent=request.intent, input_custody=_input_custody)
         self._publish_pending(request.ref)
         self._schedule(request.ref)
         return self._receipt(row)
@@ -517,6 +527,8 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, db=No
     """
     if db is None:
         db = getattr(runner._session_db, '_db', runner._session_db)
+    from gateway.hosted_room_input_custody import initialize_input_custody
+    initialize_input_custody(db)
     epoch = begin_runtime_epoch(db, instance_id=instance_id)
     recover_session_inputs(db, epoch=epoch)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, db=db, epoch=epoch)

@@ -73,7 +73,7 @@ def _run_prune(monkeypatch, capsys, argv_tail, candidates=None, skipped_open=0):
     ]
 
     class FakeDB:
-        def list_prune_candidates(self, **kwargs):
+        def list_prune_candidates(self, *, exclude_ledger_owned=False, report=None, **kwargs):
             seen.update(kwargs)
             return rows
 

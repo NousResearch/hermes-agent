@@ -17,7 +17,7 @@ _SETTINGS_PREFIX = 'gateway.api.settings.v1.'
 _SETTING_KEYS = ('ephemeral_system_prompt', 'requested_model', 'requested_provider',
                  'model_options', 'route', 'session_model', 'confirmed_runtime_lock',
                  'requested_runtime', 'route_source', 'room_dispatch', 'room_execution_policy',
-                 'session_history_delivery')
+                 'session_history_delivery', 'room_input_media')
 _OWNER_SCOPE_RE = re.compile(r'[0-9a-f]{64}')
 
 
@@ -54,6 +54,8 @@ def _valid_owner_scope(value):
 
 
 def check_api_settings(adapter, settings):
+    from gateway.session_peer_input import check_peer_input
+    check_peer_input(settings)
     dispatch = settings.get('room_dispatch')
     if dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
@@ -99,6 +101,8 @@ def admit_api_turn(adapter, **kwargs):
         sid = declared_api_session(authority.db, declared_key) or sid
     authority._require_admission_open()
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
+    if kwargs.get('room_input_media') is None:
+        settings.pop('room_input_media')
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):
@@ -269,6 +273,8 @@ def prepare_api_execution(authority, ref, payload):
     if data and isinstance(content, list):
         from gateway.session_api_media import restore_api_images
         content = restore_api_images(content, data.get('media') or [])
+    from gateway.session_peer_input import peer_input_content
+    content = peer_input_content(content, settings)
     return {'adapter': adapter, 'settings': settings, 'history': data['history'] if data else None,
             'content': content, 'turn_author': data.get('turn_author') if data else None}
 

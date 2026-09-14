@@ -75,7 +75,7 @@ def _open_regular(path):
 
 
 def capture_native_media(paths):
-    from gateway.platforms.base import get_inbound_media_max_bytes, validate_inbound_media_size
+    from gateway.platforms.base import get_inbound_media_max_bytes
     references = []
     limit = max(0, get_inbound_media_max_bytes())
     # ``gateway.max_inbound_media_bytes`` bounds the whole admission, not each file: with
@@ -159,14 +159,16 @@ def admission_media_references(payload):
 def _held_media_paths(conn):
     # Project only references, not potentially large inline-image/history payloads.
     rows = conn.execute("""SELECT status, json_extract(payload_json,
-            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media')
+            '$.attachments_v1.media', '$.native_text_v1.media', '$.api_turn_v1.media',
+            '$.api_turn_v1.settings.room_input_media.media')
             FROM session_admissions WHERE status!='terminal'
-            OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL""").fetchall()
+            OR json_type(payload_json, '$.api_turn_v1.media') IS NOT NULL
+            OR json_type(payload_json, '$.api_turn_v1.settings.room_input_media.media') IS NOT NULL""").fetchall()
     held = set()
     for status, encoded in rows:
-        attachments, native, api = json.loads(encoded)
-        # API images remain canonical history context after the turn completes.
-        references = list(api or ())
+        attachments, native, api, peer = json.loads(encoded)
+        # Retained API and signed peer inputs are holders, never deletion candidates.
+        references = list(api or ()) + list(peer or ())
         if status != 'terminal':
             references.extend(attachments or ())
             references.extend(native or ())
@@ -214,6 +216,7 @@ def release_admission_media(db, admission_id):
         return 0
     root = _media_root()
     def collect(conn):
+        from gateway.hosted_room_input_custody import custody_holds
         held = _held_media_paths(conn)
         identities = _held_file_identities(held, root)
         if identities is None:
@@ -222,6 +225,8 @@ def release_admission_media(db, admission_id):
         for reference in mine:
             path = Path(reference['path'])
             if reference['path'] in held or path.parent.parent != root or path.parent.name != reference['sha256']:
+                continue
+            if custody_holds(conn, db.db_path, reference):
                 continue
             try:
                 if path.parent.resolve() != path.parent or _file_identity(path) in identities:

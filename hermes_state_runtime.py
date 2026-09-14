@@ -84,7 +84,7 @@ def begin_runtime_epoch(db, *, instance_id: str) -> int:
 
 
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
-                        request_id: str, payload: dict, intent: str = 'queue') -> dict:
+                        request_id: str, payload: dict, intent: str = 'queue', input_custody=None) -> dict:
     for value in (principal_id, session_id, request_id):
         _text(value)
     if intent not in ('queue', 'steer', 'redirect'):
@@ -104,13 +104,28 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
         if old is not None:
             if old['payload_digest'] != digest:
                 raise RuntimeStoreError('admission_conflict')
+            if input_custody is not None:
+                from hermes_state_input_custody import AcceptedInputHandle, accept_prepared_input
+                if isinstance(input_custody, AcceptedInputHandle):
+                    if input_custody.admission_id != old['admission_id']:
+                        raise RuntimeStoreError('admission_conflict')
+                else:
+                    accept_prepared_input(conn, epoch=epoch, admission=old, handle=input_custody)
             return _row(old)
+        if input_custody is not None:
+            from hermes_state_input_custody import AcceptedInputHandle
+            if isinstance(input_custody, AcceptedInputHandle):
+                raise RuntimeStoreError('not_found')
         admission_id = uuid.uuid4().hex
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)
             VALUES(?,?,?,?,?,?,?,?,'queued',?)''',
             (admission_id, request_id, principal_id, session_id, json.dumps([session_id]), encoded, digest, intent, epoch))
-        return _row(_admission(conn, admission_id))
+        row = _admission(conn, admission_id)
+        if input_custody is not None:
+            from hermes_state_input_custody import accept_prepared_input
+            accept_prepared_input(conn, epoch=epoch, admission=row, handle=input_custody)
+        return _row(row)
     return db._execute_write(write)
 
 

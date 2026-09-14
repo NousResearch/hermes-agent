@@ -370,6 +370,7 @@ class _RunLaunch:
     request_profile: Any
     browser_control_principal: Any
     browser_control_transport_family: Any
+    room_persist_user_message: str | None = None
     turn_author: Optional[Dict[str, Any]] = None  # memory-attribution label only; grants nothing
     admission: Any = None
 
@@ -487,6 +488,10 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     limited = self._concurrency_limited_response()
     if limited is not None:
         return limited
+    from gateway.platforms.api_server_room_dispatch import prepare_new_room_input
+    body, input_error = await prepare_new_room_input(self, request, body, _openai_error=_openai_error)
+    if input_error is not None:
+        return input_error
     run_id = f"run_{uuid.uuid4().hex}"
     self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
@@ -538,6 +543,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         request_profile=_api_server._api_request_profile.get(),
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+        room_persist_user_message=(body.get("_room_persist_user_message") if self._room_grant_token(request) else None),
         turn_author=turn_author)
     if getattr(self.gateway_runner, 'session_authority', None) is not None:
         from gateway.session_api_turn import admit_api_turn
@@ -547,6 +553,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
                 launch.admission = admit_api_turn(self, user_message=launch.user_message,
                     conversation_history=launch.conversation_history, active_run_id=run_id,
                     run_owner_scope=self._run_owners[run_id],
+                    room_input_media=body.get("_room_input_media"),
                     turn_author=launch.turn_author,
                     history_from_session=session_history_delivery,
                     session_history_delivery='1' if session_history_delivery else '',
@@ -621,7 +628,9 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
-                task_id=effective_task_id, **author_kwargs)
+                task_id=effective_task_id, **author_kwargs,
+                **({"persist_user_message": run.room_persist_user_message}
+                   if run.room_persist_user_message is not None else {}))
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
@@ -834,23 +843,25 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     q = stream.subscribe()
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-    await response.prepare(request)
     try:
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
-            except asyncio.TimeoutError:
-                await response.write(b": keepalive\n\n")
-                continue
-            if event is None:  # run finished
-                await response.write(b": stream closed\n\n")
-                break
-            await response.write(_api_server._sse_frame(event))
-    except Exception as exc:
-        logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
+        await response.prepare(request)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    await response.write(b": keepalive\n\n")
+                    continue
+                if event is None:  # run finished
+                    await response.write(b": stream closed\n\n")
+                    break
+                await response.write(_api_server._sse_frame(event))
+        except Exception as exc:
+            logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
         stream.subscribers.discard(q)
-        if not stream.subscribers:
+        if (not stream.subscribers
+                and self._run_statuses.get(run_id, {}).get("status") in TERMINAL_STATUSES):
             _drop_run_transport(self, run_id)
     return response
 

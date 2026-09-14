@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { $gateway } from './gateway'
+import { respondToServerRequest } from './server-requests'
 
 /**
  * Pending `mcp.setup.request`s — the desktop half of the `setup_mcp` tool's
@@ -19,7 +19,7 @@ export interface McpSetupRequest {
   sessionId: string | null
 }
 
-/** The card's answer, serialized back through `mcp.setup.respond`. */
+/** The card's answer, serialized back as the `mcp.setup` request's `{value}`. */
 export interface McpSetupOutcome {
   status: 'authorized' | 'declined' | 'enabled' | 'error' | 'installed'
   server: string
@@ -104,15 +104,9 @@ export async function skipMcpSetupRequest(sessionId: string | null | undefined):
   // leave a live card the user can answer a second time.
   clearMcpSetupRequest(request.requestId, request.sessionId)
 
-  try {
-    await $gateway.get()?.request('mcp.setup.respond', {
-      request_id: request.requestId,
-      result: JSON.stringify({ server: request.server, status: 'declined' })
-    })
-  } catch {
-    // The tool times out on its own; a failed skip must never swallow the
-    // message the user is actually sending.
-  }
+  respondToServerRequest(request.requestId, {
+    value: JSON.stringify({ server: request.server, status: 'declined' })
+  })
 
   return true
 }

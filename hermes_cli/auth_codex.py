@@ -142,16 +142,28 @@ def _sync_codex_pool_entries(
         _clear_pool_entry_status(entry)
 
 
-def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: str = None) -> None:
-    """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
+def _save_codex_tokens(
+    tokens: Dict[str, str], last_refresh: str = None, label: str = None, *, write_through: bool = False,
+) -> None:
+    """Save Codex OAuth tokens to the auth store the grant was resolved FROM.
+
+    Codex refresh tokens are single-use with rotation-family reuse detection. A profile without its
+    own ``providers.openai-codex`` block reads root's grant via the fallback, so a refresh under that
+    profile must rotate ROOT's chain — singleton AND ``credential_pool`` entries — or root keeps the
+    consumed refresh token, the next process replays it and OpenAI revokes the whole family
+    (#87503). Root-only write-back: a profile copy would shadow root and disable the write-through
+    on the next refresh (#74339). Mirrors the xAI source-aware save.
+
+    Only a token REFRESH passes ``write_through=True``: a fresh login or import under a profile
+    is the profile's own grant and must not overwrite the root account it was borrowing.
+    """
     from hermes_cli.auth import (
-        _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store,
-        _save_provider_state, _utc_now_z)
+        _auth_file_path, _load_auth_store, _provider_state_transaction, _same_path,
+        _save_auth_store, _store_provider_state, _utc_now_z)
     if last_refresh is None:
         last_refresh = _utc_now_z()
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        state = _load_provider_state(auth_store, "openai-codex") or {}
+    with _provider_state_transaction("openai-codex") as (auth_store, state, source_path):
+        state = dict(state) if state else {}
         # Capture the previous singleton tokens BEFORE overwriting: the pool sync uses them to
         # tell legacy singleton-aliases (refresh) from independent ``auth add`` accounts (keep).
         previous_singleton_tokens = (
@@ -159,10 +171,15 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None, label: 
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode="chatgpt")
         if label and str(label).strip():
             state["label"] = str(label).strip()
-        _save_provider_state(auth_store, "openai-codex", state)
+        target_store, target_path, set_active = auth_store, None, True
+        if write_through and source_path is not None and not _same_path(source_path, _auth_file_path()):
+            # Root-borrowed grant: the transaction already holds root's lock, so write the rotated
+            # chain into ROOT's store (never set_active — a refresh is not a provider choice).
+            target_store, target_path, set_active = _load_auth_store(source_path), source_path, False
+        _store_provider_state(target_store, "openai-codex", state, set_active=set_active)
         _sync_codex_pool_entries(
-            auth_store, tokens, last_refresh, previous_singleton_tokens=previous_singleton_tokens)
-        _save_auth_store(auth_store)
+            target_store, tokens, last_refresh, previous_singleton_tokens=previous_singleton_tokens)
+        _save_auth_store(target_store, target_path=target_path)
 
 
 def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
@@ -379,7 +396,7 @@ def _refresh_codex_auth_tokens(tokens: Dict[str, str], timeout_seconds: float) -
     updated_tokens = {
         **tokens, "access_token": refreshed["access_token"],
         "refresh_token": refreshed["refresh_token"]}
-    _save_codex_tokens(updated_tokens)
+    _save_codex_tokens(updated_tokens, write_through=True)
     return updated_tokens
 
 

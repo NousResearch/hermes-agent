@@ -2584,6 +2584,9 @@ class _StreamingCall(StreamingWaitMonitor):
             self.stream_attempt_state["current"] += 1
             attempt_id = int(self.stream_attempt_state["current"])
         self.provider_tool_in_flight["yes"] = False
+        # Attempt-local like provider_tool_in_flight: a tool name from a stream that died
+        # before any text must not label a later attempt's partial stub or its retry decision.
+        self.result["partial_tool_names"] = []
         return attempt_id
 
     def _cancel_current_stream_attempt(self, reason: str) -> None:
@@ -3056,6 +3059,9 @@ class _StreamingCall(StreamingWaitMonitor):
                         has_tool_use = True
                         if getattr(block, "name", None):
                             self._emit_tool_started(block.name)
+                            # Same as the chat_completions wire: a stream that dies inside the
+                            # tool args is retried (no tool has run yet) instead of stubbed.
+                            self.result["partial_tool_names"].append(block.name)
                 elif event_type == "content_block_delta":
                     delta = getattr(event, "delta", None)
                     delta_type = getattr(delta, "type", None) if delta else None
@@ -3098,6 +3104,9 @@ class _StreamingCall(StreamingWaitMonitor):
         OpenAI primary is replaced lazily."""
         self.agent._emit_stream_drop(
             error=e, attempt=attempt + 2, max_attempts=max_retries + 1, mid_tool_call=mid_tool_call, diag=self.clients.diag)
+        if self.agent._is_provider_stream_parse_error(e):
+            from agent.anthropic_adapter import buffer_anthropic_tool_input
+            buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))
         self._cancel_current_stream_attempt(reason)
         self.clients.close_once(reason)
 
@@ -3162,7 +3171,6 @@ class _StreamingCall(StreamingWaitMonitor):
             # reset the streamed-text buffer so it isn't double-recorded; fresh accumulators.
             self._quiet(self.agent._fire_stream_delta, "\n\n⚠ Connection dropped mid tool-call; reconnecting…\n\n")
             self._quiet(self.agent._reset_stream_delivery_tracking)
-            self.result["partial_tool_names"] = []
             self.deltas_were_sent["yes"] = False
             self.first_delta_fired["done"] = False
             self._retry_after_drop(e, attempt, max_retries, mid_tool_call=True, reason="stream_mid_tool_retry_cleanup")

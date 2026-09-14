@@ -89,7 +89,9 @@ function ResumeLastSessionSetting() {
 
     const next = setNested(config, 'display.resume_last_session', on)
     setHermesConfigCache(next)
-    void saveHermesConfig(next)
+    // Sparse patch: PUT /api/config deep-merges, and echoing the cached
+    // snapshot would overwrite keys other surfaces changed since it loaded.
+    void saveHermesConfig(setNested({}, 'display.resume_last_session', on))
       .then(result => {
         if (!result.ok) {
           throw new Error(t.settings.config.autosaveFailed)

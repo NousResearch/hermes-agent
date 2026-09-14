@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gateway.platforms._shared import get_scoped_secret as _get_wsecret
+from gateway.platforms._shared import extra_or_secret as _extra_or_wsecret, get_scoped_secret as _get_wsecret
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 
@@ -93,10 +93,9 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         return bool(configured)
 
     def _whatsapp_free_response_chats(self) -> set[str]:
-        raw = self.config.extra.get("free_response_chats")
-        if raw is None:
-            raw = _get_wsecret("WHATSAPP_FREE_RESPONSE_CHATS", default="") or ""
-        return self._coerce_allow_list(raw)
+        """``extra.free_response_chats`` (blank = unset) else the scoped env CSV."""
+        return self._coerce_allow_list(
+            _extra_or_wsecret(self.config.extra, "free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"))
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:

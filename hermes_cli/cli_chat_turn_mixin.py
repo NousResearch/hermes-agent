@@ -35,7 +35,7 @@ class CLIChatTurnMixin:
         the concise voice-response prefix, #65827)
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
-        from tools.process_registry_notifications import SubagentNotification
+        from tools.process_registry_notifications import TimelineNotification
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
@@ -57,7 +57,7 @@ class CLIChatTurnMixin:
             return None
         message = self._chat_route_images(message, images)
 
-        if isinstance(message, str) and not isinstance(message, SubagentNotification):
+        if isinstance(message, str) and not isinstance(message, TimelineNotification):
             message, blocked = self._chat_expand_context_references(message)
             if blocked is not None:
                 return blocked
@@ -66,7 +66,7 @@ class CLIChatTurnMixin:
             message = _sanitize_surrogates(message)
 
         self._chat_stage_user_message(agent, message)
-        if isinstance(message, SubagentNotification):
+        if isinstance(message, TimelineNotification):
             message = str(message)  # UI metadata is on the staged row, never in model content.
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
@@ -207,9 +207,9 @@ class CLIChatTurnMixin:
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
             staged_user_message = stamp_message_timestamp({"role": "user", "content": message})
-            from tools.process_registry_notifications import SubagentNotification
-            if isinstance(message, SubagentNotification):
-                staged_user_message.update(content=str(message), display_kind="async_delegation_complete",
+            from tools.process_registry_notifications import TimelineNotification
+            if isinstance(message, TimelineNotification):
+                staged_user_message.update(content=str(message), display_kind=message.display_kind,
                                            display_metadata={"display_text": message.display_text})
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)

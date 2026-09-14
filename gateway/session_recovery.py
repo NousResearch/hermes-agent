@@ -53,8 +53,8 @@ class SessionRecoveryMixin:
         parts = str(session_key).split(":")
         if len(parts) < 2 or parts[0] != "agent":
             return None
-        namespace = parts[1] or "main"
-        return "default" if namespace == "main" else namespace
+        from gateway.session import profile_from_session_key_namespace
+        return profile_from_session_key_namespace(parts[1] or "main")
 
     @staticmethod
     def _active_profile_name() -> str:

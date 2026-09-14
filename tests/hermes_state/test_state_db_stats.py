@@ -4,8 +4,8 @@ Covers:
 - ``hermes_state_dbfile.collect_state_db_stats``: read-only, best-effort stats
   (page_count, freelist, WAL size, journal mode, row counts, FTS presence,
   pending v23 FTS-rebuild bookkeeping).
-- ``hermes_state_dbfile.count_db_holders``: /proc-based best-effort probe for how
-  many processes hold the DB file open (Linux only; None elsewhere/on error).
+- ``hermes_state_dbfile.count_db_holders``: best-effort probe for how many processes
+  hold the DB file open (/proc on Linux, libproc on macOS; None elsewhere/on error).
 - ``hermes_cli.doctor_state._render_state_db_stats``: formatting/threshold helper
   the doctor state.db section prints from.
 """
@@ -14,7 +14,6 @@ import hermes_state_dbfile
 import json
 import os
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -138,17 +137,26 @@ def test_collect_stats_rebuild_pending_flag(populated_db):
 # ── count_db_holders ────────────────────────────────────────────────────
 
 
-def test_count_db_holders_sees_open_connection(populated_db):
-    conn = sqlite3.connect(str(populated_db))
+def _assert_sees_own_open_connection(db_path):
+    conn = sqlite3.connect(str(db_path))
     try:
-        holders = count_db_holders(populated_db)
-        if sys.platform.startswith("linux"):
-            assert isinstance(holders, int)
-            assert holders >= 1
-        else:
-            assert holders is None
+        holders = count_db_holders(db_path)
+        assert isinstance(holders, int)
+        assert holders >= 1
     finally:
         conn.close()
+
+
+@pytest.mark.linux_only
+def test_count_db_holders_sees_open_connection_linux(populated_db):
+    _assert_sees_own_open_connection(populated_db)
+
+
+@pytest.mark.macos_only
+def test_count_db_holders_sees_open_connection_macos(populated_db):
+    # #109641: the doctor's holder count was Linux-only, so `hermes doctor` on the platform with
+    # every reporter in the deleted-WAL cluster printed no holder row at all.
+    _assert_sees_own_open_connection(populated_db)
 
 
 def test_count_db_holders_missing_path_no_raise(tmp_path):

@@ -824,15 +824,12 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
 
 
 def _live_writer_holds_db(db_path: Path) -> bool:
-    """True when a connection outside this call still holds ``db_path`` open.
+    """True when another process (or a connection outside this call) still holds ``db_path``.
 
-    Asks SQLite for what a repair needs and a live holder cannot grant: ``locking_mode=EXCLUSIVE`` then
-    ``BEGIN IMMEDIATE`` — in WAL mode that needs exclusive WAL-index locks, so any other open connection fails
-    it with SQLITE_BUSY; neither statement parses the schema, so it works on malformed DBs. Fails **open**
-    (False) on anything but a positive busy/locked signal: refusing to repair a DB nobody holds would strand
-    the self-heal path. In ``journal_mode=DELETE`` a held reader takes only SHARED and this returns False;
-    repair is then serialised only by the cross-process repairer lock. Before probing, the foreign-holder scan
-    (``hermes_state_holders``) fails closed on deleted-WAL-generation, uninspectable, or unknown holders."""
+    The foreign-holder scan (``hermes_state_holders``) is the authority: any other process with the DB or a
+    WAL sidecar open, a deleted WAL generation, or an unknown/uninspectable holder fails CLOSED. The SQLite
+    probe (``locking_mode=EXCLUSIVE`` + ``BEGIN IMMEDIATE``) is only an additional positive signal — it cannot
+    see a ``journal_mode=DELETE`` reader and cannot run on a malformed file, which is why the scan comes first."""
     import hermes_state_holders as _state_holders
     return _state_holders.live_writer_holds_db(db_path, connect_repair_durable=_connect_repair_durable)
 

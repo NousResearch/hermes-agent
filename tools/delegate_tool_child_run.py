@@ -60,9 +60,16 @@ def _with_children_lock(parent_agent: Any, op: str, child: Any) -> None:
         getattr(parent_agent._active_children, op)(child)
 
 def _attach_child(parent_agent: Any, child: Any) -> None:
-    """Register the child for parent interrupt propagation."""
+    """Register the child for parent interrupt propagation.
+
+    ``interrupt()`` fans out to a SNAPSHOT of ``_active_children``; a child attached after the stop
+    landed (a fan-out still building its siblings, a turn that has not reached its iteration check yet)
+    would otherwise start with no signal and run to completion as an orphan. Mirror a pending stop here
+    so the whole spawn tree dies with its parent."""
     if hasattr(parent_agent, "_active_children"):
         _with_children_lock(parent_agent, "append", child)
+    if getattr(parent_agent, "_interrupt_requested", False) is True:
+        _signal_child_stop(child, getattr(parent_agent, "_interrupt_message", None) or "parent agent interrupted")
 
 def _detach_child(parent_agent: Any, child: Any) -> None:
     """Remove the child from parent interrupt propagation (no-op if absent)."""

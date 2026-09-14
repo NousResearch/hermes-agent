@@ -559,7 +559,9 @@ def _build_child_goal_message(goal: str, images: List[str], child) -> Any:
     spawn — logged at warning since the caller asked for the images.
     """
     try:
-        urls = [s for s in images if _is_image_url(s)]
+        # data: URLs ride as image parts only — their base64 never goes into the text hint or a text-mode goal.
+        data_urls = [s for s in images if s.startswith("data:image/")]
+        urls = [s for s in images if _is_image_url(s) and s not in data_urls]
         paths = [s for s in images if not _is_image_url(s)]
         from agent.image_routing import build_native_content_parts, decide_image_input_mode
         cfg = None
@@ -574,7 +576,11 @@ def _build_child_goal_message(goal: str, images: List[str], child) -> Any:
             parts, skipped = build_native_content_parts(goal, paths, urls)
             if skipped:
                 logger.warning("delegate_task: skipped %d unreadable image(s) for subagent: %s", len(skipped), ", ".join(skipped[:3]))
+            if data_urls:
+                parts = (parts or [{"type": "text", "text": goal}]) + [{"type": "image_url", "image_url": {"url": u}} for u in data_urls]
             return parts if any(p.get("type") == "image_url" for p in parts) else goal
+        if data_urls:
+            logger.warning("delegate_task: %d inline data-URL image(s) dropped for a non-vision subagent", len(data_urls))
         hints: List[str] = []
         for p in paths:
             if os.path.isfile(p):

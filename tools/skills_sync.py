@@ -24,6 +24,7 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
+from agent.skill_utils import seed_essentials_enabled
 from tools.skill_usage import _read_skill_name, read_suppressed_names
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
@@ -363,10 +364,20 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[Set[Path]
 def sync_skills(quiet: bool = False) -> dict:
     """Sync bundled skills into ~/.hermes/skills/ using the manifest; returns the per-category
     result dict. Opted-out profiles seed ONLY ESSENTIAL_SKILLS (the system prompt always
-    points at ``hermes-agent``)."""
+    points at ``hermes-agent``); a home that additionally sets ``skills.seed_essentials:
+    false`` is a locked-down home and seeds nothing at all."""
     essential_only = (_hermes_home() / NO_BUNDLED_SKILLS_MARKER).exists()
-    if essential_only and not quiet:
-        print("  (profile opted out of bundled skills via .no-bundled-skills — seeding essential skills only)")
+    if essential_only and seed_essentials_enabled():
+        if not quiet:
+            print(
+                "  (profile opted out of bundled skills via .no-bundled-skills — seeding essential skills only)"
+            )
+    elif essential_only:
+        if not quiet:
+            print("  (home opted out of bundled skills and essential seeding — seeding nothing)")
+        return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
+                "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": [],
+                "shadowed_by_external": [], "skipped_opt_out": True}
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],

@@ -145,8 +145,8 @@ def _pinned_guard(name: str) -> Optional[str]:
     patches/edits stay allowed. ESSENTIAL_SKILLS are permanently pinned (the system prompt
     references them). Best-effort: an unreadable sidecar lets the delete through."""
     try:
-        from agent.skill_utils import ESSENTIAL_SKILLS
-        if name in ESSENTIAL_SKILLS:
+        from agent.skill_utils import ESSENTIAL_SKILLS, seed_essentials_enabled
+        if name in ESSENTIAL_SKILLS and seed_essentials_enabled():
             return (
                 f"Skill '{name}' is essential to Hermes (the agent's own "
                 f"operating manual referenced by the system prompt) and "

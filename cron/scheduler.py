@@ -3645,8 +3645,10 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
     claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
-    if job.get("_misfire_event") is not None:
-        claimed_job["_misfire_event"] = job["_misfire_event"]
+    for field in ("_misfire_event", "_count_catch_up_occurrence"):
+        if field in job:
+            claimed_job[field] = job[field]
+    if "_misfire_event" in claimed_job or "_count_catch_up_occurrence" in claimed_job:
         record_claimed_misfire(claimed_job)
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 

@@ -3089,10 +3089,13 @@ def _record_misfire(
 
 
 def record_claimed_misfire(job: Dict[str, Any]) -> bool:
-    """Persist a late-run audit only after the scheduler has acquired the fire claim."""
+    """Persist late-run accounting only after the scheduler acquired the fire claim."""
+    count_catch_up = bool(job.pop("_count_catch_up_occurrence", False))
     event = job.pop("_misfire_event", None)
+    if count_catch_up:
+        record_catch_up_occurrence()
     if not isinstance(event, dict) or event.get("action") != "ran":
-        return False
+        return count_catch_up
 
     def apply(jobs, _i, stored):
         stored["last_misfire"] = event
@@ -3132,7 +3135,9 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
-    record_catch_up_occurrence()
+    # The due snapshot carries this decision until the scheduler acquires the fire claim. Counting
+    # here would report catch-ups that lose the claim and never start.
+    d.job["_count_catch_up_occurrence"] = True
     return False
 
 

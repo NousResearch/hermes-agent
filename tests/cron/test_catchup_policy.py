@@ -9,7 +9,9 @@ from cron import jobs
 def _claim_and_record(due_job):
     claimed = jobs.claim_job_for_fire(due_job["id"], return_job=True)
     assert isinstance(claimed, dict)
-    claimed["_misfire_event"] = due_job["_misfire_event"]
+    for field in ("_misfire_event", "_count_catch_up_occurrence"):
+        if field in due_job:
+            claimed[field] = due_job[field]
     assert jobs.record_claimed_misfire(claimed)
 
 
@@ -117,6 +119,7 @@ def test_failed_claim_is_not_audited_and_restored_slot_records_once(tmp_path, mo
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     with jobs.use_cron_store(tmp_path / "cron"):
+        audit_path = jobs._current_cron_store().cron_dir / "misfires.jsonl"
         job = jobs.create_job(
             prompt="restore", schedule="every 1h", model="fixture", deliver="local",
             misfire_grace_seconds=0)
@@ -125,6 +128,7 @@ def test_failed_claim_is_not_audited_and_restored_slot_records_once(tmp_path, mo
         jobs.save_jobs(stored)
 
         first = jobs.get_due_jobs()[0]
+        assert jobs.get_catch_up_occurrence_count() == 0
         with monkeypatch.context() as failed_claim:
             failed_claim.setattr(scheduler, "claim_job_for_fire", lambda *args, **kwargs: False)
             failed_claim.setattr(scheduler, "finish_execution", lambda *args, **kwargs: None)
@@ -132,9 +136,11 @@ def test_failed_claim_is_not_audited_and_restored_slot_records_once(tmp_path, mo
                 dict(first, execution_id="failed"), None, None, False)
 
         assert "last_misfire" not in jobs.get_job(job["id"])
-        assert not (tmp_path / "cron" / "misfires.jsonl").exists()
+        assert jobs.get_catch_up_occurrence_count() == 0
+        assert not audit_path.exists()
 
         restored = jobs.get_due_jobs()[0]
         _claim_and_record(restored)
-        lines = (tmp_path / "cron" / "misfires.jsonl").read_text(encoding="utf-8").splitlines()
+        assert jobs.get_catch_up_occurrence_count() == 1
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
         assert len(lines) == 1

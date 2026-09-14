@@ -64,6 +64,7 @@ async def run_progress(adapter, metadata, reply_to, after_first=None):
     ctx = SimpleNamespace(
         source=SimpleNamespace(chat_id="D1"), _progress_reply_to=reply_to,
         _progress_metadata=metadata, _cleanup_progress=False, progress_queue=events,
+        tool_progress_enabled=False,  # Slack tier default: no text lane was asked for
         _run_still_current=lambda: not events.empty(), agent_holder=[None],
     )
     await TurnRunner(None, ctx)._send_native_task_card_progress(adapter)

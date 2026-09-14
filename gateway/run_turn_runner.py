@@ -408,8 +408,9 @@ class TurnRunner:
         if callable(destination_supported) and destination_supported(
             ctx.source.chat_id, reply_to=ctx._progress_reply_to, metadata=ctx._progress_metadata,
         ) is False:
-            st.publication_suppressed = True
-            return
+            self._task_card_uncardable_destination(st)
+            if st.publication_suppressed:
+                return
         if not st.native_failed:
             result = await st.adapter.send_native_task_card_progress(
                 chat_id=ctx.source.chat_id, tasks=st.visible_tasks(), title="Hermes is working",
@@ -439,24 +440,35 @@ class TurnRunner:
                 return
             st.native_failed = True
             if getattr(result, "error", None) in _CARD_DESTINATION_REFUSALS:
-                # The destination itself cannot host a card (flat DM: no thread anchor). This is
-                # a property of the chat, not a transient outage, and it repeats on every event.
-                # The text fallback exists to keep a WORKING card lane live through a transient
-                # native failure, not to turn an un-cardable chat into text bubbles; the lane
-                # goes silent for this turn whatever the configured mode.
-                st.publication_suppressed = True
-                logger.info(
-                    "Slack native task cards are unsupported for this destination "
-                    "(%s); tool progress stays off for this turn",
-                    getattr(result, "error", "unknown error"),
+                self._task_card_uncardable_destination(st, getattr(result, "error", "unknown error"))
+                if st.publication_suppressed:
+                    return
+            else:
+                logger.warning(
+                    "Slack native task-card progress failed; falling back "
+                    "to an editable text update: %s", getattr(result, "error", "unknown error"),
                 )
-                return
-            logger.warning(
-                "Slack native task-card progress failed; falling back "
-                "to an editable text update: %s", getattr(result, "error", "unknown error"),
-            )
         # Once the native rail fails, every later lifecycle event edits the same fallback message.
         await self._task_card_send_or_edit_fallback(st)
+
+    def _task_card_uncardable_destination(self, st, reason: str = "no thread anchor") -> None:
+        """The chat cannot host a card (flat DM: no thread anchor) — a property of the destination,
+        not a transient outage. The text fallback exists to keep a WORKING card lane live through a
+        transient failure, not to invent text bubbles the operator never asked for: with Slack's tier
+        default (``tool_progress: off``) the lane goes silent for the turn. An operator who WROTE
+        ``new``/``all`` asked for text progress, so the editable fallback carries it instead."""
+        if self._ctx.tool_progress_enabled:
+            st.native_failed = True
+            logger.info(
+                "Slack native task cards are unsupported for this destination (%s); "
+                "tool progress continues as an editable text update", reason,
+            )
+            return
+        st.publication_suppressed = True
+        logger.info(
+            "Slack native task cards are unsupported for this destination (%s); "
+            "tool progress stays off for this turn", reason,
+        )
 
     def _task_card_drain(self, st) -> bool:
         changed = False

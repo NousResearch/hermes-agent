@@ -1264,6 +1264,34 @@ async def test_slack_unsupported_card_destination_does_not_degrade_to_text_progr
 
 
 @pytest.mark.asyncio
+async def test_slack_explicit_all_in_unsupported_card_destination_falls_back_to_text(
+    monkeypatch, tmp_path
+):
+    # Same flat DM, but the operator WROTE ``tool_progress: all``: they asked for text progress,
+    # so an un-cardable chat carries it through the editable fallback instead of going silent.
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        DuplicateNativeToolsAgent,
+        session_id="sess-native-unsupported-dest-all",
+        config_data={"display": {"platforms": {"slack": {"tool_progress": "all"}}}},
+        platform=Platform.SLACK,
+        chat_id="D1",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=UnsupportedDestinationTaskCardAdapter,
+        user_id="U1",
+        scope_id="T1",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(adapter.native_updates) == 1
+    assert len(adapter.sent) == 1
+    assert adapter.edits
+    assert "web_search" in adapter.edits[-1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_retryable_overflow_edit_keeps_editable_bubble_identity(monkeypatch, tmp_path):
     """A transient split edit must retain can_edit and the current message ID."""
     adapter, result = await _run_with_agent(

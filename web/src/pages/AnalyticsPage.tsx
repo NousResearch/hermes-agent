@@ -88,7 +88,8 @@ function useTableSort<T>(
   return { sorted, sortKey, sortDir, toggle };
 }
 
-function SortHeader({
+// Exported for a11y regression tests (SessionRow.a11y.test.tsx).
+export function SortHeader({
   label,
   col,
   sortKey,
@@ -104,9 +105,22 @@ function SortHeader({
   className?: string;
 }) {
   const active = col === sortKey;
+  // tabIndex: iOS WebKit does not reliably synthesize a click from a tap on
+  // a non-interactive element, so the bare onClick was dead on iOS
+  // Safari/Brave (#96918). Focusability makes iOS treat the header as a
+  // control; no role="button" here — that would be invalid ARIA on a <th>.
   return (
     <th
+      tabIndex={0}
+      aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
       onClick={() => toggle(col)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle(col);
+        }
+      }}
       className={`cursor-pointer select-none ${className ?? ""}`}
     >
       <span className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 hover:bg-muted/40 transition-colors">

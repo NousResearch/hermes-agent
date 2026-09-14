@@ -4,6 +4,7 @@
 (no I/O).
 """
 
+import base64
 import os
 import posixpath
 import re
@@ -168,6 +169,11 @@ def _pattern_has_regex_newline(pattern: str) -> bool:
     return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
 
 
+def _grep_pattern_stdin(pattern: str) -> str:
+    """Encode one grep pattern without reinterpreting backslash escapes."""
+    return pattern or "\n"
+
+
 def _is_line_oriented_newline_error(error: Optional[str]) -> bool:
     """Return True for rg's hard error when multiline mode is required."""
     return bool(error) and "literal \"\\n\" is not allowed" in error and "--multiline" in error
@@ -204,7 +210,12 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     usable payload remains. ``warning`` is attached to files_only/content results."""
     stdout, limit_reason = _search_stdout_and_limit(result)
     diagnostics, payload = _split_tool_diagnostics(stdout)
-    if result.exit_code == 2 and not payload.strip():
+    # A multiline regex diagnostic contains whitespace-free '~' rulers, which
+    # look like filenames to the shared splitter. Compilation errors are fatal
+    # regardless: rg cannot have produced partial matches before compiling.
+    if result.exit_code == 2 and (
+        not payload.strip() or "rg: regex parse error:" in diagnostics.splitlines()
+    ):
         error_msg = diagnostics.strip() or result.stdout.strip() or "Search error"
         return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
     lines = [ln for ln in payload.strip().split('\n') if ln]
@@ -255,6 +266,7 @@ def _posix_roots(roots: List[str]) -> bool:
 class SearchMixin:
     """File-name and content search via rg with find/grep fallbacks. Requires
     ``_exec``, ``_has_command``, ``_expand_path``, ``_escape_shell_arg``,
+    ``_quote_shell_arg``,
     ``_escape_native_tool_arg``, ``env``, ``cwd``, ``_command_cache``,
     ``_rg_resolution_cache`` and ``_rg_modified_capability`` from the host class."""
 
@@ -386,15 +398,40 @@ class SearchMixin:
 
     def _run_rg_bounded(self, words: List[str], fetch_limit: int, timeout: int, *,
                         merge_stderr: bool = False, native_ok: bool = True,
-                        shell_prefix: str = "") -> ExecuteResult:
+                        shell_prefix: str = "", pattern: Optional[str] = None) -> ExecuteResult:
         """Run an rg command (shell-quoted words) and keep the first ``fetch_limit``
         lines: natively on a local POSIX host, else through the backend shell as
         ``<prefix><words> | head -n N``. ``native_ok=False`` keeps a form the native
- lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is shell-only."""
+        lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is
+        shell-only. ``pattern`` is data, not a shell word: native argv or stdin
+        transport preserves it without regex rewriting."""
         if native_ok and self._native_read_enabled():
+            if pattern is not None:
+                words = words + ["-e", self._quote_shell_arg(pattern)]
             return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr)
         stderr = "" if merge_stderr else " 2>/dev/null"
-        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}", timeout=timeout)
+        command = " ".join(words)
+        stdin_data = None
+        if pattern is not None:
+            if "\r" in pattern or "\n" in pattern:
+                # Pattern files split on LF and strip CRLF. Rewriting controls as
+                # regex escapes changes (?x) whitespace/comments and -F semantics.
+                # Decode only after command preprocessing. Quoted expansion does
+                # not interpret regex data as shell syntax. The trailing sentinel
+                # prevents command substitution from stripping pattern newlines.
+                if "\0" in pattern:
+                    return ExecuteResult(stdout="rg: CR/LF patterns cannot contain NUL bytes", exit_code=2)
+                stdin_data = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+                command = ('( pattern=$(base64 -d && printf .) || exit 2; '
+                           + command + ' -e "${pattern%.}"; )')
+            else:
+                stdin_data = pattern or "\n"
+                command += " -f -"
+        command = f"{command}{stderr} | head -n {fetch_limit}"
+        if stdin_data is not None:
+            # Heredoc redirection must feed the producer, not head.
+            command = "{ " + command + "; }"
+        return self._exec(shell_prefix + command, timeout=timeout, stdin_data=stdin_data)
 
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
@@ -468,7 +505,7 @@ class SearchMixin:
         """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
         out: List[str] = []
         for item in self._macos_search_exclusions(path):
-            out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
+            out.extend(["--glob", self._quote_shell_arg(f"!{item}/**")])
         return out
 
     def _path_exists_probe(self, path: str) -> str:
@@ -560,7 +597,7 @@ class SearchMixin:
         globs = []
         for dirname in sorted(SEARCH_PRUNE_DIR_NAMES):
             for prefix in ("", "**/"):
-                globs.extend(("--glob", self._escape_shell_arg(f"!{prefix}{dirname}/**")))
+                globs.extend(("--glob", self._quote_shell_arg(f"!{prefix}{dirname}/**")))
         return " ".join(globs)
 
     # (rg flags, message template) probes for a 0-match content search, in order.
@@ -585,7 +622,7 @@ class SearchMixin:
             return None
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
-        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        glob_expr = f" --glob {self._quote_shell_arg(file_glob)}" if file_glob else ""
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -596,8 +633,9 @@ class SearchMixin:
             else:
                 glob_expr_probe = glob_expr
             probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                           self._escape_shell_arg(pattern), self._escape_native_tool_arg(path)]
-            probe = self._run_rg_bounded(probe_words, 50, timeout=30)
+                           self._escape_native_tool_arg(path)]
+            probe = self._run_rg_bounded(
+                probe_words, 50, timeout=30, shell_prefix="set -o pipefail; ", pattern=pattern)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
                 p, _sep, n = line.rpartition(":")
@@ -691,7 +729,7 @@ class SearchMixin:
         protected_prune = f" {self._prune_expr(protected_paths)} -o" if protected_paths else ""
         fetch_limit = offset + limit + 1
         base = (f"find {' '.join(q_roots)}{protected_prune}{hidden_prune} -type f "
-                f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
+                f"! -name '.*' -name {self._quote_shell_arg(search_pattern)}")
         if order == "modified":
             cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"
         else:
@@ -755,11 +793,11 @@ class SearchMixin:
             scoped_common = posixpath.commonpath(absolute_roots)
             command_roots = [posixpath.relpath(root, scoped_common) for root in absolute_roots]
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**')}"
+                f"--glob {self._quote_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**')}"
                 for _r, _rel, absolute in effective_exclusions]
         else:
             exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
+                f"--glob {self._quote_shell_arg(f'!{relative}/**')}"
                 for _r, relative, _abs in effective_exclusions]
         exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
         exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
@@ -775,7 +813,7 @@ class SearchMixin:
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
-        rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
+        rg_cmd = (f"{rg} --files{sort_arg} -g {self._quote_shell_arg(glob_pattern)}"
                   f"{exclusion_args} -- {root_args}")
         result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
                                       shell_prefix=f"set -o pipefail; {cd_prefix}")
@@ -825,7 +863,9 @@ class SearchMixin:
 
     def _run_search_pipeline(self, cmd_parts: List[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
-                             line_cap: bool = False) -> SearchResult:
+                             line_cap: bool = False,
+                             stdin_data: Optional[str] = None,
+                             rg_pattern: Optional[str] = None) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
         rows report the true total (context mode also emits "--" separators, so
         grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
@@ -834,14 +874,18 @@ class SearchMixin:
         (grep): bounds giant single-line matches at the pipe layer; skipped for
         files_only/count where lines are paths/counts."""
         fetch_limit = limit + offset + (200 if context > 0 else 0)
-        if line_cap:  # grep/find pipelines: shell only, with the column cap
+        if line_cap or stdin_data is not None:
             parts = cmd_parts + ["|", "head", "-n", str(fetch_limit)]
-            if output_mode not in ("files_only", "count"):
+            if line_cap and output_mode not in ("files_only", "count"):
                 parts += ["|", "cut", "-c1-2000"]
-            result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
+            command = " ".join(parts)
+            if stdin_data is not None:
+                # Heredoc backends must attach stdin to the whole pipeline, not head.
+                command = "{ " + command + "; }"
+            result = self._exec("set -o pipefail; " + command, timeout=60, stdin_data=stdin_data)
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
-                                          shell_prefix="set -o pipefail; ")
+                                          shell_prefix="set -o pipefail; ", pattern=rg_pattern)
         return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
@@ -867,34 +911,50 @@ class SearchMixin:
             cmd_parts.extend(["-C", str(context)])
         cmd_parts.extend(self._rg_exclusion_globs(path))
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.extend(["--glob", self._quote_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        cmd_parts.append(self._escape_shell_arg(pattern))
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
         cmd_parts.append(self._escape_native_tool_arg(path))
         ml_note = (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+        return self._run_search_pipeline(
+            cmd_parts,
+            output_mode,
+            limit,
+            offset,
+            context,
+            warning=ml_note,
+            rg_pattern=pattern,
+        )
 
     def _grep_cmd(self, head: List[str], pattern: str, output_mode: str, context: int,
-                  file_glob: Optional[str] = None) -> List[str]:
+                  file_glob: Optional[str] = None,
+                  pattern_stdin: bool = False) -> List[str]:
         """``head`` + context/include/mode flags + quoted pattern (argument order is fixed)."""
         parts = list(head)
         if context > 0:
             parts.extend(["-C", str(context)])
         if file_glob:
-            parts.extend(["--include", self._escape_shell_arg(file_glob)])
+            parts.extend(["--include", self._quote_shell_arg(file_glob)])
         if output_mode in _OUTPUT_MODE_FLAGS:
             parts.append(_OUTPUT_MODE_FLAGS[output_mode])
-        parts.append(self._escape_shell_arg(pattern))
+        if pattern_stdin:
+            parts.extend(["-f", "-"])
+        else:
+            parts.append(self._quote_shell_arg(pattern))
         return parts
 
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
+        # grep pattern files cannot represent one cross-line regex. Returning
+        # a clean zero lets the existing line-oriented warning explain the
+        # limitation instead of treating each line as an OR'd pattern.
+        if _pattern_has_regex_newline(pattern):
+            return SearchResult(total_count=0)
         # grep's --exclude-dir matches BASENAMES anywhere, so it can't express "only
         # the home-level Downloads"; route pruning through find's path-scoped -prune.
         protected_paths = self._protected_prune_paths(path)
@@ -903,7 +963,14 @@ class SearchMixin:
                 pattern, path, file_glob, limit, offset, output_mode, context, protected_paths)
         # -H forces filenames; -E matches rg regex behavior; --exclude-dir='.*'
         # mirrors rg's hidden-dir default (.git/, .hub/index-cache/, ...).
-        cmd_parts = self._grep_cmd(["grep", "-rnHE", "--exclude-dir='.*'"], pattern, output_mode, context, file_glob)
+        cmd_parts = self._grep_cmd(
+            ["grep", "-rnHE", "--exclude-dir='.*'"],
+            pattern,
+            output_mode,
+            context,
+            file_glob,
+            pattern_stdin=True,
+        )
         # --exclude-dir applies to the root too, so "." would be excluded by '.*';
         # anchor relative paths at the shell's live $PWD.
         is_absolute = path.startswith(("/", "\\\\")) or bool(re.match(r"^[A-Za-z]:[\\/]", path))
@@ -915,7 +982,15 @@ class SearchMixin:
             if relative_path not in {"", "."}:
                 search_root += f"/{self._escape_shell_arg(relative_path)}"
         cmd_parts.append(search_root)
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, line_cap=True)
+        return self._run_search_pipeline(
+            cmd_parts,
+            output_mode,
+            limit,
+            offset,
+            context,
+            line_cap=True,
+            stdin_data=_grep_pattern_stdin(pattern),
+        )
 
     def _search_with_grep_pruned(self, pattern: str, path: str, file_glob: Optional[str],
                                  limit: int, offset: int, output_mode: str, context: int,
@@ -933,6 +1008,6 @@ class SearchMixin:
             "-type f",
         ]
         if file_glob:
-            find_parts.extend(["-name", self._escape_shell_arg(file_glob)])
+            find_parts.extend(["-name", self._quote_shell_arg(file_glob)])
         find_parts.extend(["-exec", *grep_parts, "{}", "+", "2>/dev/null"])
         return self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True)

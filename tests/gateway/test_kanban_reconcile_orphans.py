@@ -31,6 +31,9 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 
 
+pytestmark = pytest.mark.live_system_guard_bypass
+
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"

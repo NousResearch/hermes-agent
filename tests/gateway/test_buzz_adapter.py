@@ -3069,8 +3069,11 @@ class TestInboundMediaAuthorizationGate:
         # macOS; 4096 on Linux) so the directory can actually be created.
         parent = tmp_path
         private_parts = []
-        while len(str(parent)) < _MAX_CLI_MESSAGE_CHARS:
-            part = f"private-{len(private_parts)}-" + ("x" * 80)
+        # Keep the total path below macOS's PATH_MAX while still exceeding the
+        # user-facing error bound. Six components exceed PATH_MAX on the deep
+        # pytest temp root on macOS.
+        for index in range(5):
+            part = f"private-{index}-" + ("x" * 150)
             private_parts.append(part)
             parent = parent / part
             parent.mkdir()

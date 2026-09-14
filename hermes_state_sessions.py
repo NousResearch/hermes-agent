@@ -301,6 +301,7 @@ class SessionSessionsMixin:
         parent_session_id: str = None, cwd: str = None, profile_name: Optional[str] = None,
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
         transport_profile: Optional[str] = None,
+        started_at: Optional[float] = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
         bare row before create_session carries the real model/prompt) — the one exception is the
@@ -383,8 +384,8 @@ class SessionSessionsMixin:
                 (
                     session_id, source, user_id, session_key, chat_id, chat_type, thread_id, model,
                     json.dumps(model_config) if model_config else None, system_prompt_hash,
-                    parent_session_id, cwd, profile_name, transport_profile, git_repo_root, origin_json,
-                    display_name, time.time(),
+                    parent_session_id, cwd, profile_name, transport_profile, git_repo_root,
+                    origin_json, display_name, time.time() if started_at is None else started_at,
                 ),
             )
             if system_prompt_hash is not None:

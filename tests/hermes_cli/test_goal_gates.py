@@ -1,6 +1,7 @@
 """Tests for /goal quality gates (GoalGate, run_gate, GoalManager gate flow)."""
 
 import json
+import subprocess
 import sys
 import time
 from unittest.mock import patch
@@ -228,6 +229,49 @@ def test_changed_workspace_reruns_gate():
              patch("hermes_cli.goals.run_gate", return_value=(False, 1, "still red")) as mock_run:
             mgr.evaluate_after_turn("turn 2")
         mock_run.assert_called_once()
+
+
+def _init_git_workspace(path):
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True)
+    source = path / "source.py"
+    source.write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.py"], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-m", "baseline"], cwd=path, check=True, capture_output=True)
+    return source
+
+
+def test_content_change_with_same_git_status_reruns_failed_gate(tmp_path, monkeypatch):
+    """A modified file's contents are part of the failed-gate cache key."""
+    source = _init_git_workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    mgr = _mgr_with_goal("gate-content-change-sid")
+    mgr.add_gate("exit 1")
+    source.write_text("first failed version\n", encoding="utf-8")
+    with patch("hermes_cli.goals.judge_goal"):
+        mgr.evaluate_after_turn("turn 1")
+        source.write_text("fixed version\n", encoding="utf-8")
+        with patch("hermes_cli.goals.run_gate", return_value=(False, 1, "still red")) as mock_run:
+            mgr.evaluate_after_turn("turn 2")
+
+    mock_run.assert_called_once()
+
+
+def test_unchanged_content_reuses_failed_gate_cache(tmp_path, monkeypatch):
+    source = _init_git_workspace(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    mgr = _mgr_with_goal("gate-content-unchanged-sid")
+    mgr.add_gate("exit 1")
+    source.write_text("failed version\n", encoding="utf-8")
+    with patch("hermes_cli.goals.judge_goal"):
+        mgr.evaluate_after_turn("turn 1")
+        with patch("hermes_cli.goals.run_gate") as mock_run:
+            mgr.evaluate_after_turn("turn 2")
+
+    mock_run.assert_not_called()
 
 
 def test_gate_continuation_respects_turn_budget():

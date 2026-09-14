@@ -369,14 +369,21 @@ class GoalGate:
 
 
 def workspace_fingerprint(cwd: Optional[str] = None) -> str:
-    """sha256 of ``git rev-parse HEAD`` + ``git status --porcelain``; "" outside git (never matches,
-    so gates always re-run — a safe fallback)."""
+    """Hash Git revision, status, and tracked file contents.
+
+    Returns ``""`` outside Git (or when Git inspection fails), which deliberately
+    never matches a cached failure so gates re-run as the safe fallback.
+    """
     workdir = cwd or os.getcwd()
     try:
         outputs = []
         for argv, timeout in (
             (["git", "rev-parse", "HEAD"], 10),
             (["git", "status", "--porcelain"], 30),
+            # Porcelain reports only a path and status code.  Include the binary
+            # diff so editing a file while it remains `` M`` invalidates a failed
+            # gate cache entry.
+            (["git", "diff", "--no-ext-diff", "--binary", "HEAD"], 30),
         ):
             proc = subprocess.run(
                 argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -385,7 +392,7 @@ def workspace_fingerprint(cwd: Optional[str] = None) -> str:
             if proc.returncode != 0:
                 return ""
             outputs.append(proc.stdout)
-        blob = outputs[0].strip() + "\n" + outputs[1]
+        blob = outputs[0].strip() + "\n" + "\n".join(outputs[1:])
         return hashlib.sha256(blob.encode("utf-8", "replace")).hexdigest()
     except Exception:
         return ""

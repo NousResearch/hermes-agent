@@ -36,6 +36,9 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"}
 AZURE_FOUNDRY_STT_MODELS = OPENAI_MODELS | {"gpt-offline-whisper-1"}
+# GA data-plane version for the legacy per-deployment audio route; the v1 surface rejects audio
+# on gus-foundry (DeploymentNotFound, verified 2026-09-14). Same version as bin/transcribe_audio_dir.py.
+AZURE_FOUNDRY_STT_API_VERSION = "2024-06-01"
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
 # Providers with native handlers. Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES``

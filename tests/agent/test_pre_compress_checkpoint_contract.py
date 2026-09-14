@@ -556,3 +556,85 @@ def test_agent_init_suppresses_micro_compaction_under_checkpoint_gate():
     )
     assert assign_idx != -1
     assert suppress_idx < assign_idx
+
+
+class TestCheckpointCapabilityMismatchDiagnostics:
+    """Startup warning and actionable refusal text for a mis-armed gate."""
+
+    def _agent(self, *, checkpoint_required, manager=None):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            compression_checkpoint_required=checkpoint_required,
+            _memory_manager=manager,
+        )
+
+    def test_init_warns_when_gate_armed_without_capable_provider(self, caplog):
+        from agent.conversation_compression import warn_checkpoint_provider_mismatch
+
+        manager = MemoryManager()
+        manager.add_provider(_BaseStubProvider("holographic"))
+
+        with caplog.at_level("WARNING"):
+            warn_checkpoint_provider_mismatch(
+                self._agent(checkpoint_required=True, manager=manager)
+            )
+
+        assert "compression.checkpoint_required" in caplog.text
+        assert "holographic" in caplog.text
+        assert "blocked" in caplog.text
+
+    def test_init_warns_without_any_active_provider(self, caplog):
+        from agent.conversation_compression import warn_checkpoint_provider_mismatch
+
+        with caplog.at_level("WARNING"):
+            warn_checkpoint_provider_mismatch(
+                self._agent(checkpoint_required=True, manager=None)
+            )
+
+        assert "compression.checkpoint_required" in caplog.text
+        assert "'none'" in caplog.text
+
+    def test_init_is_silent_when_gate_off_or_provider_capable(self, caplog):
+        from agent.conversation_compression import warn_checkpoint_provider_mismatch
+
+        capable_manager = MemoryManager()
+        capable_manager.add_provider(_CheckpointProvider("durable"))
+
+        with caplog.at_level("WARNING"):
+            warn_checkpoint_provider_mismatch(
+                self._agent(checkpoint_required=False, manager=capable_manager)
+            )
+            warn_checkpoint_provider_mismatch(
+                self._agent(checkpoint_required=True, manager=capable_manager)
+            )
+
+        assert "compression.checkpoint_required" not in caplog.text
+
+    def test_capability_refusal_names_the_config_key_to_change(self):
+        from agent.conversation_compression import _pre_compress_memory_context
+
+        manager = MemoryManager()
+        manager.add_provider(_BaseStubProvider("holographic"))
+        agent = self._agent(checkpoint_required=True, manager=manager)
+
+        with pytest.raises(CompressionCheckpointUnavailable) as excinfo:
+            _pre_compress_memory_context(agent, [], checkpoint_required=True)
+
+        message = str(excinfo.value)
+        assert message.startswith("BLOCKED_MISSING_PREREQUISITE:")
+        assert "does not implement checkpoint API v" in message
+        assert "compression.checkpoint_required" in message
+        assert "disable it to restore compression" in message
+
+    def test_missing_manager_refusal_also_names_the_config_key(self):
+        from agent.conversation_compression import _pre_compress_memory_context
+
+        agent = self._agent(checkpoint_required=True, manager=None)
+
+        with pytest.raises(CompressionCheckpointUnavailable) as excinfo:
+            _pre_compress_memory_context(agent, [], checkpoint_required=True)
+
+        message = str(excinfo.value)
+        assert "no active provider implements checkpoint API v" in message
+        assert "compression.checkpoint_required" in message

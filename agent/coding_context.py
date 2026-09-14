@@ -204,10 +204,9 @@ def guarded_prompt_enabled(
     config: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Return whether the explicitly opted-in local prompt profile is allowed."""
-    agent_cfg = (config or {}).get("agent", {}) or {}
-    if not isinstance(agent_cfg, dict) or _coding_mode(config) != "focus":
+    if _coding_mode(config) != "focus":
         return False
-    raw = agent_cfg.get("guarded_prompt_mode")
+    raw = _agent_config_value(config, "guarded_prompt_mode", None, readonly=True)
     if not isinstance(raw, dict) or raw.get("enabled") is not True:
         return False
     routes = raw.get("routes")

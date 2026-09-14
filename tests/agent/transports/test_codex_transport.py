@@ -921,7 +921,7 @@ class TestCodexBuildKwargs:
 
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
 
@@ -1103,7 +1103,7 @@ class TestOpencodeReservedToolAliases:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
         names = [tc.name for tc in normalized.tool_calls]
@@ -1207,7 +1207,7 @@ class TestXaiReservedToolSearchAlias:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         # Pair the response with a real request so provenance is recorded.
         transport.build_kwargs(
@@ -1237,7 +1237,7 @@ class TestXaiReservedToolSearchAlias:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         return transport.normalize_response(response)
 

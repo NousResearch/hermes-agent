@@ -555,6 +555,56 @@ def test_chat_messages_to_responses_input_drops_foreign_id_for_codex_backend():
     assert xai_message["id"] == _FOREIGN_ITEM_ID
 
 
+def _reasoning_history(item):
+    return [
+        {"role": "assistant", "content": "done", "codex_reasoning_items": [item]},
+        {"role": "user", "content": "next"},
+    ]
+
+
+def test_reasoning_replay_requires_matching_issuer_model_on_same_endpoint():
+    # Blobs are sealed to the minting model, not just the endpoint: same endpoint + other model must drop.
+    issuer = "other:https://responses.example.com/v1"
+    normalized, _ = _normalize_codex_response(
+        SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(type="reasoning", id="rs_a", encrypted_content="model-a-blob", summary=[]),
+                SimpleNamespace(
+                    type="message", role="assistant", status="completed", id="msg_a",
+                    content=[SimpleNamespace(type="output_text", text="done")],
+                ),
+            ],
+        ),
+        issuer_kind=issuer, issuer_model="gpt-5.6-sol",
+    )
+    captured = normalized.codex_reasoning_items[0]
+    assert captured["_issuer_model"] == "gpt-5.6-sol"
+
+    same = _chat_messages_to_responses_input(
+        _reasoning_history(captured), current_issuer_kind=issuer, current_issuer_model="gpt-5.6-sol"
+    )
+    other = _chat_messages_to_responses_input(
+        _reasoning_history(captured), current_issuer_kind=issuer, current_issuer_model="gpt-5.7-sol"
+    )
+    replayed = [i for i in same if i.get("type") == "reasoning"]
+    assert [i["encrypted_content"] for i in replayed] == ["model-a-blob"]
+    assert "_issuer_model" not in replayed[0] and "_issuer_kind" not in replayed[0]
+    assert not any(i.get("type") == "reasoning" for i in other)
+
+
+def test_reasoning_replay_drops_endpoint_stamped_legacy_item_without_model():
+    # Fail closed: an endpoint-only stamp cannot prove the minting model once the request model is known.
+    issuer = "other:https://responses.example.com/v1"
+    legacy = {"type": "reasoning", "encrypted_content": "legacy-blob", "_issuer_kind": issuer}
+    items = _chat_messages_to_responses_input(
+        _reasoning_history(legacy), current_issuer_kind=issuer, current_issuer_model="gpt-5.6-sol"
+    )
+    assert not any(i.get("type") == "reasoning" for i in items)
+    # Ordinary assistant text stays replayable; only the sealed blob is withheld.
+    assert any(i.get("role") == "assistant" for i in items)
+
+
 def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
     kwargs = _preflight_codex_api_kwargs(
         {

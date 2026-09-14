@@ -100,7 +100,11 @@ def collect_turn_project_affinity(
         )
     elif any(affinity):
         return ""  # fail closed on a legacy/corrupt partial tuple
-    elif int(row.get("message_count") or 0) == 0 and row.get("cwd"):
+    elif (
+        int(row.get("message_count") or 0) == 0
+        and not row.get("parent_session_id")
+        and row.get("cwd")
+    ):
         db_path = getattr(session_db, "db_path", None)
         projects_path = Path(db_path).parent / "projects.db" if db_path else None
         if projects_path is not None and projects_path.exists():

@@ -265,3 +265,114 @@ def test_background_review_whitelist_includes_configured_extra_tools(
     assert "propose_shared_memory" in captured["review_prompt"]
 
 
+def test_background_review_extra_tools_lead_with_allowance(tmp_path, monkeypatch):
+    """When extra_tools are configured, the fork's task message must LEAD with the
+    allowance, not trail it after the blanket deny.
+
+    Reason (issue found in production, 2026-09-14): the fork's user message ended
+    '...Other tools will be denied at runtime — do not attempt them. Exception —
+    these configured tools are also allowed: X, Y.' Small/fast models anchor on
+    the deny sentence and never exercise the exception — an insight-sidecar fork
+    with insight_save whitelisted, advertised in-schema, and named in the prompt
+    still made zero attempts. Allowance-first framing keeps the deny guarantee
+    (dispatch is still whitelisted) while putting the granted tools where the
+    model's attention actually is: before the deny, not after it.
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "auxiliary:\n"
+        "  background_review:\n"
+        "    extra_tools:\n"
+        "      - insight_save\n"
+        "      - insight_recall\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import run_agent
+    from hermes_cli import config as config_module
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message, **kwargs):
+        captured["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", lambda self, *a, **k: None), \
+         patch.object(
+             run_agent.AIAgent,
+             "run_conversation",
+             _capture_run_conversation,
+         ), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=False,
+            review_skills=True,
+        )
+
+    msg = captured["review_prompt"]
+    assert "insight_save" in msg and "insight_recall" in msg
+    # Allowance must LEAD: it appears BEFORE the deny sentence, not appended after it.
+    allow_pos = msg.find("You can call skill management tools plus:")
+    deny_pos = msg.find("denied at runtime")
+    assert allow_pos != -1, f"allowance sentence missing from: {msg!r}"
+    assert deny_pos != -1, f"deny sentence missing from: {msg!r}"
+    assert allow_pos < deny_pos, (
+        "allowance must precede the deny sentence so models anchor on the grant, not the deny"
+    )
+    # No legacy trailing-exception framing anywhere in the message.
+    assert "Exception — these configured tools are also allowed" not in msg
+
+
+def test_background_review_no_extra_tools_keeps_deny_sentence(tmp_path, monkeypatch):
+    """Without extra_tools the framing must stay exactly as before — allowance-first
+    wording is reserved for the configured-exception case."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text("logging:\n  level: INFO\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    import run_agent
+    from hermes_cli import config as config_module
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
+
+    captured = {}
+
+    def _capture_run_conversation(self, *, user_message, **kwargs):
+        captured["review_prompt"] = user_message
+        return {"final_response": "Nothing to save."}
+
+    agent = _make_agent_stub(run_agent.AIAgent)
+
+    with patch.object(run_agent.AIAgent, "__init__", lambda self, *a, **k: None), \
+         patch.object(
+             run_agent.AIAgent,
+             "run_conversation",
+             _capture_run_conversation,
+         ), \
+         patch.object(run_agent.AIAgent, "shutdown_memory_provider", lambda self: None), \
+         patch.object(run_agent.AIAgent, "close", lambda self: None), \
+         patch("threading.Thread", _SyncThread):
+        agent._spawn_background_review(
+            messages_snapshot=[],
+            review_memory=False,
+            review_skills=True,
+        )
+
+    msg = captured["review_prompt"]
+    assert "You can only call skill management tools." in msg
+    assert "Other tools will be denied at runtime" in msg
+    assert "You can call skill management tools plus:" not in msg
+
+

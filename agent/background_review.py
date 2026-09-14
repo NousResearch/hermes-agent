@@ -1099,7 +1099,6 @@ def _run_review_fork(
     review_whitelist, configured_extra_tools = _review_tool_whitelist(st.review_agent, task_cfg, review_memory)
     extra_list = ", ".join(sorted(configured_extra_tools))
     deny_extra = f" Configured extra tools also allowed: {extra_list}." if configured_extra_tools else ""
-    prompt_extra = f" Exception — these configured tools are also allowed: {extra_list}." if configured_extra_tools else ""
     # Keep the deny/prompt wording in sync with the whitelist: a memory-less review must not
     # tell the model that memory is available, or it will burn iterations on denied calls.
     memory_phrase_deny = " and memory for notes (add only)" if "memory" in review_whitelist else ""
@@ -1122,9 +1121,17 @@ def _run_review_fork(
             # Routed -> digest (cache cold anyway); same model -> full snapshot (warm cache reads).
             st.review_agent.run_conversation(
                 user_message=(
-                    prompt + "\n\nYou can only call " + memory_phrase_prompt +
-                    "management tools. Other tools will be denied "
-                    "at runtime — do not attempt them." + prompt_extra
+                    prompt + "\n\n" + (
+                        # Allowance first: with extra_tools configured, lead with the grant.
+                        # Trailing the exception after the blanket deny made fast models
+                        # anchor on the deny and never exercise the whitelisted tools.
+                        "You can call skill management tools plus: " + extra_list
+                        + ". All other tools will be denied at runtime — do not attempt them."
+                    ) if configured_extra_tools else (
+                        prompt + "\n\nYou can only call " + memory_phrase_prompt +
+                        "management tools. Other tools will be denied "
+                        "at runtime — do not attempt them."
+                    )
                 ),
                 conversation_history=_digest_history(messages_snapshot) if _routed else messages_snapshot,
             )

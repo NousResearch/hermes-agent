@@ -4645,7 +4645,7 @@ def test_build_branch_agent_carries_the_parent_login(monkeypatch, tmp_path):
     def fake_init_session(sid, key, agent, history, **kwargs):
         monkeypatch.setitem(server._sessions, sid, {"session_key": key, "transport": server._stdio_transport})
 
-    monkeypatch.setattr(server, "_set_session_context", lambda key: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda key, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
     monkeypatch.setattr(server, "_init_session", fake_init_session)
     monkeypatch.setattr(server, "_transfer_db_to_agent", lambda *args: False)

@@ -497,7 +497,8 @@ class HonchoClientConfig:
         import re
 
         result = self._resolve_session_name_base(cwd=cwd, session_title=session_title,
-                                                 session_id=session_id, gateway_session_key=gateway_session_key)
+                                                 session_id=session_id, gateway_session_key=gateway_session_key,
+                                                 session_title_source=session_title_source)
         if result and self.session_ai_peer_prefix and self.ai_peer:
             ai = re.sub(r'[^a-zA-Z0-9_-]+', '-', self.ai_peer).strip('-')
             if ai:
@@ -508,6 +509,7 @@ class HonchoClientConfig:
     def _resolve_session_name_base(
         self, cwd: str | None = None, session_title: str | None = None,
         session_id: str | None = None, gateway_session_key: str | None = None,
+        session_title_source: str | None = None,
     ) -> str | None:
         """Order: gateway session key (per-chat isolation no cwd/strategy gives) -> per-session
         strategy's session_id (authoritative, so a generated title never remaps a live conversation)

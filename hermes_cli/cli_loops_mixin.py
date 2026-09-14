@@ -288,15 +288,20 @@ class CLILoopsMixin:
         with self._pending_input.mutex:
             return list(self._pending_input.queue)
 
-    def _replace_pending_input_items(self, items: list) -> None:
-        """Swap the queued prompts under the queue's own mutex so put/get bookkeeping stays consistent."""
+    def _mutate_pending_input(self, mutate) -> tuple[list, list]:
+        """Apply ``mutate(items) -> items`` to the queued prompts under the queue's own mutex,
+        so a voice/interrupt ``put`` from another thread can't slip between snapshot and
+        write-back. Returns ``(before, after)``."""
         q = self._pending_input
         with q.mutex:
+            before = list(q.queue)
+            after = list(mutate(list(before)))
             q.queue.clear()
-            q.queue.extend(items)
-            q.unfinished_tasks = len(items)
-            if items:
+            q.queue.extend(after)
+            q.unfinished_tasks = len(after)
+            if after:
                 q.not_empty.notify_all()
+        return before, after
 
     def _queue_enqueue(self, text: str) -> None:
         from cli import _cprint
@@ -318,27 +323,19 @@ class CLILoopsMixin:
 
     def _queue_clear(self, rest: str) -> None:
         from cli import _cprint
-        count = len(self._pending_input_items())
-        self._replace_pending_input_items([])
-        _cprint(f"  Cleared {count} queued prompt{'s' if count != 1 else ''}.")
-
-    def _queue_item_index(self, token: str, items: list) -> int | None:
-        from cli import _cprint
-        idx = int(token)
-        if 1 <= idx <= len(items):
-            return idx - 1
-        _cprint(f"  Queue item {idx} not found. Current size: {len(items)}")
-        return None
+        before, _ = self._mutate_pending_input(lambda items: [])
+        _cprint(f"  Cleared {len(before)} queued prompt{'s' if len(before) != 1 else ''}.")
 
     def _queue_remove(self, rest: str) -> None:
         from cli import _cprint
-        items = self._pending_input_items()
-        pos = self._queue_item_index(rest, items)
-        if pos is None:
-            return
-        removed = items.pop(pos)
-        self._replace_pending_input_items(items)
-        _cprint(f"  Removed queue item {pos + 1}: {_preview(str(removed))}")
+        idx = int(rest)
+        removed: list = []
+        before, _ = self._mutate_pending_input(
+            lambda items: (removed.append(items.pop(idx - 1)) or items) if 1 <= idx <= len(items) else items)
+        if removed:
+            _cprint(f"  Removed queue item {idx}: {_preview(str(removed[0]))}")
+        else:
+            _cprint(f"  Queue item {idx} not found. Current size: {len(before)}")
 
     def _queue_edit(self, rest: str) -> None:
         from cli import _VoiceInputMessage, _cprint
@@ -346,16 +343,22 @@ class CLILoopsMixin:
         if not new_prompt.strip():
             _cprint("  Usage: /queue edit <number> <new prompt>")
             return
-        items = self._pending_input_items()
-        pos = self._queue_item_index(idx_text, items)
-        if pos is None:
-            return
+        idx = int(idx_text)
         new_text = self._expand_paste_references(new_prompt.strip())
-        # A voice-queued item keeps its sentinel so the concise voice-response prefix
-        # still applies (#65827).
-        items[pos] = _VoiceInputMessage(new_text) if isinstance(items[pos], _VoiceInputMessage) else new_text
-        self._replace_pending_input_items(items)
-        _cprint(f"  Updated queue item {pos + 1}: {_preview(new_text)}")
+
+        def _edit(items: list) -> list:
+            if 1 <= idx <= len(items):
+                # A voice-queued item keeps its sentinel so the concise voice-response
+                # prefix still applies (#65827).
+                voice = isinstance(items[idx - 1], _VoiceInputMessage)
+                items[idx - 1] = _VoiceInputMessage(new_text) if voice else new_text
+            return items
+
+        before, after = self._mutate_pending_input(_edit)
+        if before == after:
+            _cprint(f"  Queue item {idx} not found. Current size: {len(before)}")
+        else:
+            _cprint(f"  Updated queue item {idx}: {_preview(new_text)}")
 
     def _queue_move(self, rest: str) -> None:
         from cli import _cprint
@@ -363,14 +366,18 @@ class CLILoopsMixin:
         if len(bits) != 2 or not bits[1].isdigit():
             _cprint("  Usage: /queue move <from> <to>")
             return
-        items = self._pending_input_items()
-        src = self._queue_item_index(bits[0], items)
-        dst = self._queue_item_index(bits[1], items)
-        if src is None or dst is None:
-            return
-        items.insert(dst, items.pop(src))
-        self._replace_pending_input_items(items)
-        _cprint(f"  Moved queue item {src + 1} to {dst + 1}.")
+        src, dst = int(bits[0]), int(bits[1])
+
+        def _move(items: list) -> list:
+            if 1 <= src <= len(items) and 1 <= dst <= len(items):
+                items.insert(dst - 1, items.pop(src - 1))
+            return items
+
+        before, after = self._mutate_pending_input(_move)
+        if before == after and src != dst:
+            _cprint(f"  Queue move out of range. Current size: {len(before)}")
+        else:
+            _cprint(f"  Moved queue item {src} to {dst}.")
 
     def _cmd_queue(self, cmd_original: str):
         """``/queue <prompt>`` enqueues; a leading management verb whose arguments fit

@@ -106,10 +106,17 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     return [os.path.realpath(p) + os.sep for p in paths]
 
 
+def _write_safe_root_raw() -> str:
+    """Process env, or the routed profile scope when bound (multiplex/desktop turns)."""
+    from tools.write_safe_root_scope import write_safe_root_env
+
+    return write_safe_root_env()
+
+
 def get_safe_write_roots() -> set[str]:
     """Resolved HERMES_WRITE_SAFE_ROOT paths (``os.pathsep``-separated list)."""
     roots: set[str] = set()
-    for path in filter(None, os.getenv("HERMES_WRITE_SAFE_ROOT", "").split(os.pathsep)):
+    for path in filter(None, _write_safe_root_raw().split(os.pathsep)):
         with suppress(OSError, ValueError):
             roots.add(os.path.realpath(os.path.expanduser(path)))
     return roots

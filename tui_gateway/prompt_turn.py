@@ -145,6 +145,7 @@ class _TurnScopes:
     home: Any = None  # per-turn HERMES_HOME override for a resumed remote profile
     secret: Any = None
     terminal: Any = None
+    write_safe_root: Any = None
 
 
 def _route_turn_images(agent, prompt: Any, images: list[str]) -> Any:
@@ -449,7 +450,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         scopes.home = set_hermes_home_override(profile_home)
         scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
         from tools.terminal_scope import install_profile_terminal_scope
+        from tools.write_safe_root_scope import install_profile_write_safe_root_scope
         scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+        scopes.write_safe_root = install_profile_write_safe_root_scope(Path(profile_home))
     elif _served_profile_homes:
         # Multiplex residual of #68559 / #107422: the launch profile used to run
         # unscoped and fall back to ambient os.environ. Once any secondary home
@@ -460,8 +463,10 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         # snapshot frozen at multiplex activation, never live os.environ.
         from tools.terminal_scope import install_profile_terminal_scope
         from tui_gateway.launch_terminal_policy import launch_terminal_env
+        from tools.write_safe_root_scope import install_profile_write_safe_root_scope
         scopes.terminal = install_profile_terminal_scope(
             Path(_hermes_home), env_overlay=launch_terminal_env())
+        scopes.write_safe_root = install_profile_write_safe_root_scope(Path(_hermes_home))
     # The sudo password callback is thread-local: without re-wiring here, sudo prompts
     # fall through to /dev/tty and hang the headless gateway (re-run is a no-op).
     _wire_callbacks(sid)
@@ -759,6 +764,9 @@ def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     if scopes.terminal is not None:
         from tools.terminal_scope import reset_terminal_scope
         reset_terminal_scope(scopes.terminal)
+    if scopes.write_safe_root is not None:
+        from tools.write_safe_root_scope import reset_write_safe_root_scope
+        reset_write_safe_root_scope(scopes.write_safe_root)
     _clear_session_context(scopes.session_tokens)
 
 

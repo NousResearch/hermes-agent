@@ -63,10 +63,16 @@ def _session_profile_runtime_scope(session: dict):
     # Same terminal policy the gateway binds per turn: a docker-configured profile
     # must never resolve the launch process's pinned env. Failure → refusal scope.
     from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from tools.write_safe_root_scope import (
+        install_profile_write_safe_root_scope,
+        reset_write_safe_root_scope,
+    )
     terminal_token = install_profile_terminal_scope(Path(profile_home))
+    wsr_token = install_profile_write_safe_root_scope(Path(profile_home))
     try:
         yield
     finally:
+        reset_write_safe_root_scope(wsr_token)
         reset_terminal_scope(terminal_token)
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)

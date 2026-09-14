@@ -3,7 +3,6 @@ import { type ChangeEvent, type KeyboardEvent } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { translateNow, useI18n } from '@/i18n'
-import { ExternalLink as ExternalLinkAnchor } from '@/lib/external-link'
 import { ChevronDown, ExternalLink, Loader2, Save, Trash2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
@@ -142,18 +141,20 @@ export function KeyField({
   )
 }
 
-export function CredentialDocsLink({ href }: { href: string }) {
+function CredentialDocsLink({ href }: { href: string }) {
   const { t } = useI18n()
 
   return (
-    <ExternalLinkAnchor
-      bare
+    <a
       className="inline-flex w-fit items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline-offset-4 transition-colors hover:text-foreground hover:underline"
-      href={href} native
+      href={href}
+      onClick={e => e.stopPropagation()}
+      rel="noreferrer"
+      target="_blank"
     >
       {t.settings.credentials.getKey}
       <ExternalLink className="size-3" />
-    </ExternalLinkAnchor>
+    </a>
   )
 }
 

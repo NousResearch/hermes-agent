@@ -77,5 +77,39 @@ class TestMessageIdDomain(unittest.TestCase):
         self.assertEqual(adapter._message_id_domain(), "localhost")
 
 
+class TestTransportSecurity(unittest.TestCase):
+    """platforms.email.extra.imap_security / smtp_security select the transport (#99641)."""
+
+    def _adapter(self, **extra):
+        from gateway.config import PlatformConfig
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "127.0.0.1", "EMAIL_IMAP_PORT": "1143",
+            "EMAIL_SMTP_HOST": "127.0.0.1", "EMAIL_SMTP_PORT": "1025",
+        }, clear=True):
+            from plugins.platforms.email.adapter import EmailAdapter
+
+            return EmailAdapter(PlatformConfig(enabled=True, extra=extra))
+
+    def test_starttls_builds_plain_imap_then_upgrades(self):
+        adapter = self._adapter(imap_security="starttls", imap_tls_verify=False)
+        imap = MagicMock()
+        with patch("imaplib.IMAP4", return_value=imap) as imap_cls, \
+             patch("imaplib.IMAP4_SSL") as imap_ssl_cls:
+            self.assertIs(adapter._connect_imap(), imap)
+        imap_cls.assert_called_once_with("127.0.0.1", 1143, timeout=30)
+        imap_ssl_cls.assert_not_called()
+        imap.starttls.assert_called_once()
+
+    def test_unknown_mode_falls_back_to_secure_default(self):
+        adapter = self._adapter(imap_security="bogus", smtp_security="bogus")
+        self.assertEqual(adapter._imap_security, "tls")
+        self.assertEqual(adapter._smtp_security, "starttls")  # port 1025 != 465
+        # verification stays ON unless explicitly opted out
+        self.assertTrue(adapter._imap_tls_verify)
+        self.assertTrue(adapter._smtp_tls_verify)
+
+
 if __name__ == "__main__":
     unittest.main()

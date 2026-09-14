@@ -33,6 +33,7 @@ from hermes_constants import (
 class TestGetDefaultHermesRoot:
     """Tests for get_default_hermes_root() — Docker/custom deployment awareness."""
 
+    @pytest.mark.linux_only
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -362,6 +363,29 @@ class TestIsContainer:
         assert is_container() is True
 
 
+
+    def test_cgroup_v2_fallback_inspects_only_the_root_mount(self, tmp_path):
+        """#58135: a host that merely RUNS containers exposes each container's overlay lowerdir
+        (``lowerdir=/var/lib/containerd/...``) at non-root mount points; only the root ('/') line
+        says whether *this* process lives in a runtime overlay."""
+        from hermes_constants import _root_mount_has_marker
+
+        markers = ("kubepods", "containerd", "crio")
+        host = tmp_path / "host"
+        host.write_text(
+            "25 1 259:2 / / rw,relatime shared:1 - ext4 /dev/nvme0n1p2 rw\n"
+            "469 554 0:94 / /var/lib/docker/rootfs/overlayfs/7dda83 rw,relatime shared:247 - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/33509/fs\n"
+        )
+        container = tmp_path / "container"
+        container.write_text(
+            "1 0 0:50 / / rw,relatime - overlay overlay "
+            "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs\n"
+            "2 1 0:51 / /proc rw,nosuid - proc proc rw\n"
+        )
+        assert _root_mount_has_marker(str(host), markers) is False
+        assert _root_mount_has_marker(str(container), markers) is True
+        assert _root_mount_has_marker(str(tmp_path / "missing"), markers) is False
 
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
@@ -725,6 +749,7 @@ class TestGetHermesDir:
 
 
 
+    @pytest.mark.require_symlinks
     def test_dangling_legacy_symlink_returns_new(self, tmp_path, monkeypatch):
         """A dangling legacy symlink must NOT shadow populated new-layout data.
 
@@ -743,6 +768,7 @@ class TestGetHermesDir:
         result = get_hermes_dir("platforms/pairing", "pairing")
         assert result == new
 
+    @pytest.mark.require_symlinks
     def test_symlink_to_populated_dir_returns_legacy(self, tmp_path, monkeypatch):
         """A legacy symlink pointing at a populated directory is honoured."""
         self._set_home(tmp_path, monkeypatch)

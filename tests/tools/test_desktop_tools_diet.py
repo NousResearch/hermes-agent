@@ -26,14 +26,24 @@ class TestConsolidatedToolsets(unittest.TestCase):
         self.assertEqual(proj, ["desktop_project"])
 
     def test_registry_serves_only_new_names(self):
-        from model_tools import get_tool_definitions
+        """Post-#97979 the GUI surface defers by default, so assemble with
+        the legacy everything-eager override (defer: []) — the contract
+        pinned here is the RENAME (new names only, dead names gone), not
+        the deferral policy."""
+        from unittest.mock import patch as _patch
 
-        names = {
-            t["function"]["name"]
-            for t in get_tool_definitions(
-                quiet_mode=True, enabled_toolsets=["desktop_ui", "project"]
-            )
-        }
+        from model_tools import get_tool_definitions
+        from tools.tool_search import ToolSearchConfig
+
+        legacy = ToolSearchConfig.from_raw({"enabled": "on", "defer": []})
+        with _patch("tools.tool_search.load_config_readonly", return_value=legacy), \
+             _patch("tools.tool_search.load_config", return_value=legacy):
+            names = {
+                t["function"]["name"]
+                for t in get_tool_definitions(
+                    quiet_mode=True, enabled_toolsets=["desktop_ui", "project"]
+                )
+            }
         self.assertIn("desktop_preview", names)
         self.assertIn("desktop_project", names)
         for dead in (

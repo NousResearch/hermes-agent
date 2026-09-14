@@ -22,6 +22,7 @@ import {
   buildCronJobPayload,
   cronJobHasExecutionContent,
   cronJobFormFromJob,
+  cronLastResult,
   type CronJobFormState,
 } from "@/lib/cron-job";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -1100,18 +1101,28 @@ export default function CronPage() {
           const toolsets = Array.isArray(job.enabled_toolsets)
             ? job.enabled_toolsets.filter(Boolean)
             : [];
+          const lastResult = cronLastResult(job);
 
           return (
             <Card key={jobKey}>
               <CardContent className="flex items-start gap-4 py-4">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <span className="font-medium text-sm truncate min-w-0">
                       {title}
                     </span>
                     <Badge tone={STATUS_TONE[state] ?? "secondary"}>
                       {state}
                     </Badge>
+                    {lastResult && lastResult.status !== "ok" && (
+                      <Badge
+                        tone={lastResult.tone}
+                        title={lastResult.detail ?? undefined}
+                        data-testid="cron-last-result"
+                      >
+                        {lastResult.status}
+                      </Badge>
+                    )}
                     <Badge tone="outline">{profileLabel(profile)}</Badge>
                     {deliver && deliver !== "local" && (
                       <Badge tone="outline">{deliver}</Badge>

@@ -74,7 +74,7 @@ def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
     )
     builds = []
     monkeypatch.setattr(
-        main_mod, "_build_web_ui", lambda *a, **k: builds.append(a) or True
+        "hermes_cli.main_web_build._build_web_ui", lambda *a, **k: builds.append(a) or True
     )
 
     with pytest.raises(SystemExit) as exc:
@@ -122,7 +122,7 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
         (dist / "index.html").write_text("<html></html>", encoding="utf-8")
         return True
 
-    monkeypatch.setattr(main_mod, "_build_web_ui", fake_build)
+    monkeypatch.setattr("hermes_cli.main_web_build._build_web_ui", fake_build)
 
     main_mod.cmd_dashboard(_args(skip_build=True))
 

@@ -16,8 +16,10 @@ import {
   rankSkillCommands,
   rememberDesktopCommandsCatalog,
   resolveDesktopCommand,
-  slashCompletionGroup
+  slashCompletionGroup,
+  TS_ONLY_NO_DESKTOP_SURFACE
 } from './desktop-slash-commands'
+import desktopSlashRegistry from './desktop-slash-registry.json'
 
 function registryCatalog(
   modes: Record<string, DesktopSlashArgumentMode | null>,
@@ -171,12 +173,25 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/pets')).toBe(false)
   })
 
+  it('does not run /login on desktop before the catalog is loaded', () => {
+    rememberDesktopCommandsCatalog(undefined)
+    expect(isDesktopSlashCommand('/login')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/login')).toBe('/login is managed from the desktop sidebar.')
+  })
+
   it('routes /wake through the desktop wake action instead of the slash worker', () => {
     expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
     expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')
     expect(isDesktopSlashSuggestion('/wake')).toBe(true)
     expect(isDesktopSlashCommand('/wake')).toBe(true)
     expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
+  })
+
+  it('routes /stop through the desktop action that cancels the active turn', () => {
+    expect(resolveDesktopCommand('/stop')?.surface).toEqual({ kind: 'action', action: 'stop' })
+    expect(isDesktopSlashSuggestion('/stop')).toBe(true)
+    expect(isDesktopSlashCommand('/stop')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/stop')).toBeNull()
   })
 
   it('treats /browser as an executable action command (local-gateway connect)', () => {
@@ -226,15 +241,15 @@ describe('desktop slash command curation', () => {
   })
 
   it('keeps commands with richer CLI semantics on the slash worker', () => {
-    for (const name of ['/agents', '/steer', '/stop', '/usage']) {
+    for (const name of ['/agents', '/steer', '/usage']) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
   })
 
   it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
     const execNames = [
       '/bg',
-      '/btw',
       '/debug',
       '/goal',
       '/personality',
@@ -249,6 +264,13 @@ describe('desktop slash command curation', () => {
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
   })
 
   it('distinguishes free prose from finite slash option lists', () => {
@@ -449,5 +471,36 @@ describe('rankSkillCommands', () => {
     })
 
     expect(ranked.map(row => row.text)).toEqual(['/sessions', '/research'])
+  })
+})
+
+describe('registry-derived block-list (contract with hermes_cli/commands.py)', () => {
+  beforeEach(() => rememberDesktopCommandsCatalog(undefined))
+
+  it('marks every registry row with a reason unavailable offline, without a hand-typed copy', () => {
+    for (const [name, reason] of Object.entries(desktopSlashRegistry)) {
+      if (reason === 'hidden') {
+        continue
+      }
+
+      const spec = resolveDesktopCommand(name)
+
+      // A desktop-owned action (e.g. /model picker) may override the registry.
+      if (spec?.surface.kind === 'unavailable') {
+        expect(spec.surface.reason).toBe(reason)
+      }
+
+      expect(isDesktopSlashSuggestion(name)).toBe(false)
+    }
+  })
+
+  it('keeps the TS-only list disjoint from the registry dump', () => {
+    for (const names of Object.values(TS_ONLY_NO_DESKTOP_SURFACE)) {
+      for (const name of names) {
+        expect(name in desktopSlashRegistry, `${name} is in the Python registry — drop the TS row`).toBe(false)
+        expect(isDesktopSlashSuggestion(name)).toBe(false)
+        expect(isDesktopSlashCommand(name)).toBe(false)
+      }
+    }
   })
 })

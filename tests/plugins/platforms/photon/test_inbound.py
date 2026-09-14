@@ -1,7 +1,7 @@
 """Inbound dispatch + dedup tests for PhotonAdapter.
 
 These bypass the loopback HTTP stream — they call ``_dispatch_inbound`` /
-``_on_inbound_line`` / ``_is_duplicate`` directly, exercising the
+``_on_inbound_line`` / ``_dedup`` directly, exercising the
 sidecar-event parsing without spawning the Node sidecar or binding ports.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
@@ -152,10 +152,10 @@ async def test_on_inbound_line_dispatches_and_dedups(
 
 def test_is_duplicate_window(monkeypatch: pytest.MonkeyPatch) -> None:
     adapter = _make_adapter(monkeypatch)
-    assert adapter._is_duplicate("id-1") is False
-    assert adapter._is_duplicate("id-1") is True
-    assert adapter._is_duplicate("id-2") is False
-    assert adapter._is_duplicate("id-1") is True  # still dup
+    assert adapter._dedup.is_duplicate("id-1") is False
+    assert adapter._dedup.is_duplicate("id-1") is True
+    assert adapter._dedup.is_duplicate("id-2") is False
+    assert adapter._dedup.is_duplicate("id-1") is True  # still dup
 
 
 def test_check_requirements_without_node(monkeypatch: pytest.MonkeyPatch) -> None:

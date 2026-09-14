@@ -57,6 +57,26 @@ function applyChangedMessages(
     return false
   }
 
+  // The incremental fast path is only valid for IN-PLACE content updates on
+  // an unchanged order. A same-length structural change — an insert paired
+  // with a delete, a reorder, or a duplicated id in either export — must
+  // fall back to the full rebuild: diffing per item below would leave the
+  // repository tree in the OLD order while the store advertises the NEW one,
+  // so the runtime keeps rendering a stale thread (and a duplicated id
+  // renders the same turn twice) that only a rebuild can heal.
+  for (let index = 0; index < incoming.length; index += 1) {
+    if (existing[index]?.message.id !== incoming[index]?.message.id) {
+      return false
+    }
+  }
+
+  const existingIds = new Set(existing.map(item => item.message.id))
+  const incomingIds = new Set(incoming.map(item => item.message.id))
+
+  if (existingIds.size !== existing.length || incomingIds.size !== incoming.length) {
+    return false
+  }
+
   const existingById = new Map(existing.map(item => [item.message.id, item]))
 
   for (const item of incoming) {
@@ -109,7 +129,19 @@ export function syncRepositoryIncrementally(
     }
   }
 
+  // Rebuild with per-id dedup: the repository tree can only hold ONE node
+  // per id, and linking the same id twice (a duplicated store export)
+  // self-parents the node and hangs getMessages in an infinite prev-walk.
+  // Keep the first occurrence — the later copy carries the same id, so it
+  // is the row we already added.
+  const seenIncoming = new Set<string>()
+
   for (const { message, parentId } of incoming) {
+    if (seenIncoming.has(message.id)) {
+      continue
+    }
+
+    seenIncoming.add(message.id)
     repository.addOrUpdateMessage(parentId, message)
   }
 

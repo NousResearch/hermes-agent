@@ -1,7 +1,6 @@
 import { mergeTranslations, type TranslationOverride } from '@hermes/shared/i18n'
 
-import { en } from './en'
-import type { Translations } from './types'
+import { en, type Translations } from './en'
 
 export type TranslationOverrides = TranslationOverride<Translations>
 

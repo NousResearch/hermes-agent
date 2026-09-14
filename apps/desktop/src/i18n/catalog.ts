@@ -1,8 +1,8 @@
 import { ar } from './ar'
-import { en } from './en'
+import { en, type Translations } from './en'
 import { ja } from './ja'
+import type { Locale } from './languages'
 import { ru } from './ru'
-import type { Locale, Translations } from './types'
 import { zh } from './zh'
 import { zhHant } from './zh-hant'
 

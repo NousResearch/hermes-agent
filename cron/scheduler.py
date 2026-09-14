@@ -3204,7 +3204,7 @@ def _run_one_job_body(
     delivery_attempted = False
     delivery_error = None
 
-    _scope_token = None
+    _fire_scope_tokens = None
     _terminal_scope_token = None
     try:
         # Commit a finite one-shot's dispatch BEFORE its side effect so a tick dying mid-run cannot
@@ -3230,7 +3230,7 @@ def _run_one_job_body(
 
         # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
         # resolve credentials, so the scope must span delivery too (reset in the outer finally).
-        _scope_token = _install_fire_secret_scope()
+        _fire_scope_tokens = _install_fire_secret_scope()
         # Same for terminal policy (gateway/run.py _profile_runtime_scope): else the ticker reads
         # process-global TERMINAL_* env a concurrent profile pinned. Resolution failure installs a
         # refusal scope — terminal execution raises instead of using the launch process's policy.
@@ -3402,8 +3402,8 @@ def _run_one_job_body(
     finally:
         # Function-level on purpose: must scope delivery, deferred teardown, claim-loss handling and
         # bookkeeping — not just run_job. Do not move into the run block's finally.
-        if _scope_token is not None:
-            _reset_fire_secret_scope(_scope_token)
+        if _fire_scope_tokens is not None:
+            _reset_fire_secret_scope(_fire_scope_tokens)
         if _terminal_scope_token is not None:
             from tools.terminal_scope import reset_terminal_scope
 
@@ -3521,16 +3521,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
         str(ack_path),
     ]
 
-    from agent.secret_scope import (
-        build_profile_secret_scope,
-        is_multiplex_active,
-        reset_multiplex_context,
-        reset_secret_scope,
-        set_multiplex_context,
-        set_secret_scope,
-    )
+    from agent.secret_scope import is_multiplex_active
     from cron.scheduler_provider import routed_profile_fire
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
@@ -3585,9 +3577,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
         raise
 
     profile_home = _get_hermes_home().resolve()
-    hydrate_profile_secret_sources(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
-    context_token = set_multiplex_context(True) if multiplex_active and not is_multiplex_active() else None
+    # Same hydrate -> scope -> (routed) multiplex-context install the in-process fire uses, for exactly
+    # the env build; the helper's reset order keeps the context from outliving its scope.
+    fire_scope_tokens = _install_fire_secret_scope()
     try:
         # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
         # import, and strip_launch_profile_env leaves managed keys in place.
@@ -3597,9 +3589,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
             extra={"HERMES_HOME": str(profile_home)},
         ))
     finally:
-        if context_token is not None:
-            reset_multiplex_context(context_token)
-        reset_secret_scope(secret_token)
+        _reset_fire_secret_scope(fire_scope_tokens)
     worker_env = systemd_user_bus_env(worker_env)
     # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
     # the other two), and an inherited presence var makes every env-fallback consumer in the

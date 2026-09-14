@@ -347,8 +347,7 @@ def execute_job_for_event(
     """Fire an existing cron job in response to an external event.
 
     Public entry point for event-driven triggers (the webhook adapter's
-    ``cron_job`` routes — inspired by ChatGPT Work's webhook-triggered
-    scheduled tasks, Aug 25 2026). Resolves ``job_ref`` (ID or name) and
+    ``cron_job`` routes). Resolves ``job_ref`` (ID or name) and
     fires it through the exact same claimed-run body a manual
     ``cronjob(action='run')`` uses, so at-most-once claiming, in-flight
     dedupe, delivery, and ``[SILENT]`` handling stay identical across the

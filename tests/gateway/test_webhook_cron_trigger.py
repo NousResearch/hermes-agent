@@ -1,7 +1,6 @@
 """Tests for the webhook adapter's ``cron_job`` route mode.
 
-``cron_job`` routes turn an existing cron job into an event-triggered task
-(inspired by ChatGPT Work's webhook-triggered scheduled tasks, Aug 2026):
+``cron_job`` routes turn an existing cron job into an event-triggered task:
 an inbound webhook event fires the referenced job through the same
 claimed-run body a manual ``cronjob(action='run')`` uses, instead of
 starting a fresh webhook agent session.

@@ -400,7 +400,6 @@ hermes webhook subscribe antenna-matches \
 
 在路由上设置 `cron_job`，即可在事件到达时触发一个**已有的 cron 任务**——无需按固定周期轮询，也不会启动新的 webhook agent 会话。这让任何定时任务都能变成事件驱动的任务：把原有的定时计划保留为兜底扫描（或设为低频），让 webhook 在事情真正发生的那一刻立即触发它。
 
-灵感来自 ChatGPT Work 的 webhook 触发定时任务（2026 年 8 月）：定时任务可以响应新的 Gmail 邮件、Slack 频道消息或 GitHub PR 变化，而不是靠定时检查。
 
 工作原理：
 

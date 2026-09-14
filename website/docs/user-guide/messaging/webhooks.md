@@ -402,8 +402,6 @@ hermes webhook subscribe antenna-matches \
 
 Set `cron_job` on a route to fire an **existing cron job** whenever an event arrives — instead of polling on a fixed cadence or starting a fresh webhook agent session. This turns any scheduled job into an event-driven task: keep the schedule as a fallback sweep (or make it a rarely-firing one) and let the webhook fire it the moment something actually changes.
 
-Inspired by ChatGPT Work's webhook-triggered scheduled tasks (August 2026), which let a scheduled task respond to new Gmail messages, Slack channel activity, or GitHub pull request changes instead of checking on a timer.
-
 How it works:
 
 1. The event passes the same HMAC auth, rate limiting, `events`/`filters`/`script` filtering, and idempotency as any other route.

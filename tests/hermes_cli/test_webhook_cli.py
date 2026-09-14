@@ -99,7 +99,7 @@ class TestSubscribe:
 
 
 class TestCronJobSubscribe:
-    """--cron-job: event-triggered cron jobs (ChatGPT Work-inspired)."""
+    """--cron-job: event-triggered cron jobs."""
 
     def test_valid_job_ref_stored_as_id(self, monkeypatch):
         # resolve_job_ref is imported inside _cmd_subscribe from cron.jobs

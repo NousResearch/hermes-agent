@@ -27,7 +27,7 @@ import textwrap
 
 import pytest
 
-from tools.code_execution_tool import (
+from tools.code_execution_env import (
     _SECRET_SUBSTRINGS,
     _WINDOWS_ESSENTIAL_ENV_VARS,
     _scrub_child_env,
@@ -191,10 +191,11 @@ class TestScrubChildEnvPassthroughInteraction:
         assert "OPENAI_API_KEY" not in scrubbed
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32",
-    reason="Winsock-specific regression — only meaningful on Windows",
-)
+# ``windows_only`` rather than ``skipif(sys.platform != "win32")``: the
+# dedicated Windows CI job selects its files by grepping for the marker, so a
+# bare skipif is invisible to it — the file is never imported there and these
+# tests run on no host at all.
+@pytest.mark.windows_only
 class TestWindowsSocketSmokeTest:
     """Integration-ish smoke test: spawn a child Python with a scrubbed
     env and confirm it can create an AF_INET socket.  This is the
@@ -479,10 +480,7 @@ class TestSandboxWritesUtf8:
         finally:
             os.unlink(tmp_path)
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="cp1252 default-encoding regression is Windows-specific",
-    )
+    @pytest.mark.windows_only
     def test_windows_default_encoding_would_have_failed(self):
         """Negative control: prove that on Windows, writing the stub
         *without* ``encoding="utf-8"`` would corrupt the file.  If this
@@ -564,10 +562,10 @@ class TestChildStdioIsUtf8:
     so LLM scripts can print non-ASCII without crashing on Windows."""
 
     def test_popen_env_sets_pythonioencoding_utf8(self):
-        """Source-level check: the Popen call site must set
+        """Source-level check: the child env builder must set
         PYTHONIOENCODING=utf-8 in child_env."""
-        import tools.code_execution_tool as cet
-        src = open(cet.__file__, encoding="utf-8").read()
+        import tools.code_execution_env as cee
+        src = open(cee.__file__, encoding="utf-8").read()
         assert 'child_env["PYTHONIOENCODING"] = "utf-8"' in src, (
             "PYTHONIOENCODING=utf-8 missing from child env — Windows "
             "scripts that print non-ASCII will crash with "
@@ -616,10 +614,7 @@ class TestChildStdioIsUtf8:
         assert "\u2192" in decoded, f"arrow missing from output: {decoded!r}"
         assert "\U0001f680" in decoded, f"emoji missing from output: {decoded!r}"
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="cp1252 stdout default is Windows-specific",
-    )
+    @pytest.mark.windows_only
     def test_windows_child_without_utf8_env_would_fail(self):
         """Negative control: spawn a Python child *without* our env
         overrides and prove that on Windows, printing non-ASCII fails.

@@ -15,6 +15,7 @@
 param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
+    [switch]$SkipComputerUse,
     [string]$Branch = "main",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
     # who need reproducible installs (desktop installer pinning, CI, release
@@ -42,6 +43,15 @@ param(
     [switch]$ProtocolVersion,
     [switch]$NonInteractive,
     [switch]$Json,
+
+    # Print the paths this install would use, as JSON, and exit without
+    # touching anything. The first question on any "installer says a path
+    # doesn't exist" report is which paths it actually resolved -- especially
+    # on profiles Windows exposes through an 8.3 alias, where what the user
+    # sees in Explorer and what the installer receives differ.
+    #
+    #   powershell -File install.ps1 -ShowResolvedPaths
+    [switch]$ShowResolvedPaths,
 
     # --- Ensure mode (dep_ensure.py entry point) ---
     [string]$Ensure = "",
@@ -97,45 +107,276 @@ try {
 # ============================================================================
 # 8.3 short-path normalization
 # ============================================================================
-# When the Windows user-profile folder name contains a space (e.g.
-# "First Last"), Windows generates an 8.3 short alias for it (e.g. FIRST~1.LAS)
-# and may expose %TEMP%/%TMP% in that short form:
+# Windows generates an 8.3 short alias for a user-profile folder whose name
+# contains a space ("First Last" -> FIRST~1.LAS), a dot ("Stone.ZEN8" ->
+# STONE~1.ZEN), or an accented character ("Ruben" spelled with an acute e ->
+# RUBN~1). It can then expose %TEMP%, %TMP%, %LOCALAPPDATA%, %APPDATA% and
+# %USERPROFILE% -- plus everything derived from them, including the default
+# HERMES_HOME and InstallDir -- in that short form:
 #   C:\Users\FIRST~1.LAS\AppData\Local\Temp
-# PowerShell's FileSystem provider mishandles the "~1.ext" component when such a
-# path is handed to a provider cmdlet like `Tee-Object -FilePath` /
-# `Out-File -FilePath`, throwing:
-#   "An object at the specified path C:\Users\FIRST~1.LAS does not exist."
-# Every Node/Electron build+install stage streams its log to %TEMP% via
-# Tee-Object, so they all abort with that error, while the Python/uv stages --
-# which never write a side log to %TEMP% through a provider cmdlet -- complete
-# fine. Expanding %TEMP%/%TMP% back to their long form once, up front, lets
-# every downstream cmdlet (and child process) see a path the provider can
-# resolve. (GH: Windows desktop installer fails at Node/Electron stages.)
+#
+# PowerShell's FileSystem provider mishandles the aliased component when such a
+# path reaches a provider cmdlet (`Tee-Object -FilePath`, `Out-File`,
+# `New-Item`, `Test-Path`), throwing "An object at the specified path
+# C:\Users\FIRST~1.LAS does not exist" -- localized on non-English hosts.
+# Every Node/Electron stage streams its build log to %TEMP% via Tee-Object and
+# the desktop stage probes the binary it produced under the profile-derived
+# InstallDir, so the bootstrap aborts even though the artifact built fine.
+# The Python/uv stages, which never hand a %TEMP% path to a provider cmdlet,
+# sail through -- which is why the failure looks Node-specific.
+#
+# Expanding every profile-rooted path back to long form once, up front, lets
+# every downstream cmdlet and child process see something the provider can
+# resolve. Three resolvers, tried in order, because no single one covers every
+# host:
+#
+#   1. kernel32!GetLongPathNameW -- expands any 8.3 component regardless of
+#      locale, including the accented-username aliases the COM resolver misses.
+#   2. Scripting.FileSystemObject -- fallback for hosts where P/Invoke is
+#      blocked.
+#   3. Profile-root substitution -- when the volume has 8.3 generation disabled
+#      or the alias is stale, neither resolver can expand the name because it
+#      no longer maps to anything on disk. The aliased component is always the
+#      profile folder itself (everything below it was created long), so swap in
+#      a profile root we can prove is long and reattach the tail.
+#
+# All three degrade to returning the input untouched, so a host where none of
+# them apply -- including non-Windows -- behaves exactly as it did before.
 
-function ConvertTo-LongPath {
+$script:LongProfileRoot = $null
+
+function Write-PathDiag {
+    # Diagnostics for this block go to stderr, never stdout: the stage protocol
+    # hands drivers a single line of JSON on stdout and a stray note would break
+    # anything parsing it.
+    #
+    # Suppressed entirely under -ShowResolvedPaths, which is a machine-readable
+    # query: Windows PowerShell 5.1 wraps any native-command stderr in a
+    # NativeCommandError and folds it back into the caller's own stream, so a
+    # child writing here at all is enough to corrupt a 5.1 caller's capture.
+    # The JSON already carries everything these lines say.
+    #
+    # [Console]::Error.WriteLine specifically -- verified reaching a caller on a
+    # windows-latest runner. $host.UI.WriteErrorLine was tried and silently
+    # produced nothing there under a non-interactive host.
+    param([string]$Message)
+    if ($ShowResolvedPaths) { return }
+    [Console]::Error.WriteLine("[hermes] $Message")
+}
+
+function Get-LongProfileRoot {
+    # The user's profile directory in long form, or '' when every source we
+    # can reach is itself aliased. Cached: this runs per env var.
+    if ($null -ne $script:LongProfileRoot) { return $script:LongProfileRoot }
+    $script:LongProfileRoot = ''
+
+    # %USERPROFILE% first: it is what the rest of the install derives from, and
+    # on a host handing us aliased paths the .NET known-folder lookup tends to
+    # be aliased in exactly the same way. Then the HOMEDRIVE/HOMEPATH pair, then
+    # the profile's parent (C:\Users never carries an alias) plus %USERNAME%,
+    # which stays the long account name even when every path is short.
+    $envProfile = [Environment]::GetEnvironmentVariable('USERPROFILE')
+    $shellProfile = [Environment]::GetFolderPath('UserProfile')
+    $candidates = @($envProfile, $shellProfile, "$env:HOMEDRIVE$env:HOMEPATH")
+    foreach ($anchor in @($envProfile, $shellProfile)) {
+        if ($anchor -and $env:USERNAME) {
+            $parent = Split-Path -Parent $anchor.TrimEnd('\', '/')
+            if ($parent) { $candidates += (Join-Path $parent $env:USERNAME) }
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        # Trailing separators make Split-Path -Parent return the directory
+        # itself, which would silently break the ancestry check downstream.
+        $candidate = $candidate.TrimEnd('\', '/')
+        if (-not $candidate) { continue }
+        if ($candidate -match '~\d') { continue }
+        try {
+            if (Test-Path -LiteralPath $candidate -PathType Container) {
+                $script:LongProfileRoot = $candidate
+                break
+            }
+        } catch {
+            # Unreadable candidate (denied, malformed): try the next one.
+        }
+    }
+
+    # Say which root we landed on. When someone reports "still broken" this is
+    # the first thing worth knowing, and it costs one line on the rare path
+    # where an alias actually showed up.
+    if ($script:LongProfileRoot) {
+        Write-PathDiag "long profile root: $script:LongProfileRoot"
+    } else {
+        Write-PathDiag "no long profile root found; 8.3 paths left as-is (tried: $($candidates -join ', '))"
+    }
+    return $script:LongProfileRoot
+}
+
+function Expand-ShortProfileRoot {
+    # Rebuild $Path onto a known-long profile root when its aliased component
+    # is the profile folder. Returns $Path unchanged when it isn't, so a custom
+    # TEMP on another volume (D:\SHORT~1\Temp) is never rewritten.
     param([string]$Path)
-    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
-    # Only 8.3 short names carry a tilde+digit ("~1"); skip the COM round-trip
-    # for ordinary long paths.
-    if ($Path -notmatch '~\d') { return $Path }
-    try {
-        $fso = New-Object -ComObject Scripting.FileSystemObject
-        if ($fso.FolderExists($Path)) { return $fso.GetFolder($Path).Path }
-        if ($fso.FileExists($Path))   { return $fso.GetFile($Path).Path }
-    } catch {
-        # COM unavailable / locked-down host: fall back to the original path.
+
+    $longRoot = Get-LongProfileRoot
+    if (-not $longRoot) { return $Path }
+    $longRootParent = Split-Path -Parent $longRoot
+    if (-not $longRootParent) { return $Path }
+
+    $node = $Path
+    $tail = ''
+    while ($node -and ($node -match '~\d')) {
+        $leaf = Split-Path -Leaf $node
+        $parent = Split-Path -Parent $node
+        if (-not $parent) { return $Path }
+        if ($leaf -match '~\d') {
+            # Candidate profile folder. Only substitute when it sits in the
+            # same directory as the real profile (both C:\Users).
+            if ($parent -ne $longRootParent) { return $Path }
+            if ($tail) { return (Join-Path $longRoot $tail) }
+            return $longRoot
+        }
+        $tail = if ($tail) { Join-Path $leaf $tail } else { $leaf }
+        $node = $parent
     }
     return $Path
 }
 
-foreach ($tmpVar in @('TEMP', 'TMP')) {
-    $current = [Environment]::GetEnvironmentVariable($tmpVar)
-    if ($current) {
+function ConvertTo-LongPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    # Only 8.3 short names carry a tilde+digit ("~1"); skip every resolver for
+    # ordinary long paths, which is the overwhelmingly common case.
+    if ($Path -notmatch '~\d') {
+        $script:LastResolver = 'skipped-long-path'
+        return $Path
+    }
+
+    # 1. kernel32. Compiled on first use only, so a normal profile never pays
+    #    the Add-Type cost (this file is re-entered once per install stage).
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'HermesInstall.LongPath').Type) {
+            Add-Type -Namespace 'HermesInstall' -Name 'LongPath' -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern int GetLongPathNameW(string lpszShortPath, System.Text.StringBuilder lpszLongPath, int cchBuffer);
+'@
+        }
+        $buffer = New-Object System.Text.StringBuilder 4096
+        $length = [HermesInstall.LongPath]::GetLongPathNameW($Path, $buffer, $buffer.Capacity)
+        if ($length -gt $buffer.Capacity) {
+            $buffer = New-Object System.Text.StringBuilder $length
+            $length = [HermesInstall.LongPath]::GetLongPathNameW($Path, $buffer, $buffer.Capacity)
+        }
+        if ($length -gt 0) {
+            $expanded = $buffer.ToString()
+            if ($expanded -and $expanded -notmatch '~\d') {
+                $script:LastResolver = 'kernel32'
+                return $expanded
+            }
+        }
+    } catch {
+        # Not Windows, or P/Invoke denied by policy: try the next resolver.
+    }
+
+    # 2. COM. Validate the result the same way the kernel32 branch does: this
+    # resolver can report success and still hand back a path that carries the
+    # alias (observed on a windows-latest runner, where it "resolved"
+    # C:\Users\FIRST~1.LAS\... to itself). Accepting that silently is what let a
+    # short path reach the provider cmdlets in the first place, so an
+    # unexpanded result counts as failure and falls through.
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        $resolved = $null
+        if ($fso.FolderExists($Path))   { $resolved = $fso.GetFolder($Path).Path }
+        elseif ($fso.FileExists($Path)) { $resolved = $fso.GetFile($Path).Path }
+        if ($resolved -and $resolved -notmatch '~\d') {
+            $script:LastResolver = 'com'
+            return $resolved
+        }
+    } catch {
+        # COM unavailable / locked-down host: try the next resolver.
+    }
+
+    # 3. The alias resolves to nothing. Rebuild from a long profile root.
+    $rebuilt = Expand-ShortProfileRoot $Path
+    $script:LastResolver = if ($rebuilt -ne $Path) { 'profile-root' } else { 'none' }
+    return $rebuilt
+}
+
+function Set-LongProfileEnvVars {
+    # Normalize every profile-rooted variable the install reads, not just
+    # %TEMP%: the desktop stage derives InstallDir from %LOCALAPPDATA%, and a
+    # short root there fails the post-build probe after a successful build.
+    # Returns $true when anything was rewritten.
+    $rewrote = $false
+    $script:NormalizedPathRewrites = @{}
+    foreach ($name in @('TEMP', 'TMP', 'LOCALAPPDATA', 'APPDATA', 'USERPROFILE')) {
+        $current = [Environment]::GetEnvironmentVariable($name)
+        if (-not $current) { continue }
         $expanded = ConvertTo-LongPath $current
         if ($expanded -and $expanded -ne $current) {
-            Set-Item -Path "Env:$tmpVar" -Value $expanded
+            Set-Item -Path "Env:$name" -Value $expanded
+            $rewrote = $true
+            $script:NormalizedPathRewrites[$name] = $expanded
+            # Rewriting a profile path is rare and corrective; say so. Every
+            # report of this bug class arrived as a bare "does not exist" with
+            # no hint that a short alias was involved. stderr, so the stage
+            # protocol's stdout JSON stays parseable.
+            Write-PathDiag "expanded 8.3 short path in %$name%: $current -> $expanded"
         }
     }
+    return $rewrote
+}
+
+# ConvertTo-LongPath only assigns $script:LastResolver when a ~\d short path
+# actually needs expansion, so an ordinary long profile leaves it unset -- and
+# the ResolvedPathReport below reads it unconditionally, which is fatal under
+# Set-StrictMode before any stage starts. 'none' is the resolver's own value
+# for "nothing ran".
+$script:LastResolver = 'none'
+$script:NormalizedProfilePaths = Set-LongProfileEnvVars
+
+# Re-derive the install paths now that the env vars behind their defaults are
+# long. An explicitly passed -HermesHome / -InstallDir is normalized in place
+# rather than replaced, so a caller's choice is never overwritten by a default.
+# $PSBoundParameters is only meaningful at script scope, so this stays inline.
+if ($PSBoundParameters.ContainsKey('HermesHome')) {
+    $HermesHome = ConvertTo-LongPath $HermesHome
+} else {
+    $HermesHome = ConvertTo-LongPath $(
+        if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }
+    )
+}
+if ($PSBoundParameters.ContainsKey('InstallDir')) {
+    $InstallDir = ConvertTo-LongPath $InstallDir
+} else {
+    $InstallDir = ConvertTo-LongPath $(
+        if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
+    )
+}
+if ($script:NormalizedProfilePaths) {
+    # Which paths the install actually settled on. Absent from every report of
+    # this bug class, and the whole question once a short alias is in play.
+    Write-PathDiag "resolved install paths: HermesHome=$HermesHome InstallDir=$InstallDir"
+}
+
+# Captured here, where the values are final, and emitted from the entry-point
+# dispatch at the bottom (alongside -ProtocolVersion / -Manifest) so
+# -ShowResolvedPaths exits before any stage runs.
+#
+# The report goes to STDOUT as JSON: on Windows a child's stderr does not
+# reliably reach a parent process -- three separate capture mechanisms each came
+# back empty on a windows-latest runner while stdout arrived intact -- and the
+# first question on any "installer says a path doesn't exist" report is which
+# paths it actually resolved.
+$script:ResolvedPathReport = @{
+    long_profile_root = (Get-LongProfileRoot)
+    normalized        = $script:NormalizedPathRewrites
+    resolver          = $script:LastResolver
+    temp              = $env:TEMP
+    hermes_home       = $HermesHome
+    install_dir       = $InstallDir
 }
 
 # ============================================================================
@@ -146,18 +387,18 @@ $RepoUrlSsh = "git@github.com:NousResearch/hermes-agent.git"
 $RepoUrlHttps = "https://github.com/NousResearch/hermes-agent.git"
 $PythonVersion = "3.11"
 # Minor versions the installer accepts when the requested $PythonVersion isn't
-# available, in preference order.  uv discovers both uv-managed and system
-# interpreters, so this list also matches a pre-existing system Python.  Single
-# source of truth shared by Test-Python's fallback and Resolve-AvailablePythonVersion.
+# available, in preference order. Only checkout-private uv-managed interpreters
+# are eligible. Single source of truth shared by Test-Python's fallback and
+# Resolve-AvailablePythonVersion.
 $PythonFallbackVersions = @("3.12", "3.13", "3.10")
+$PythonFindTimeoutMs = 30000
 $NodeVersion = "22"
 # The npm range the root package.json pins in `engines.npm`.  A constant rather
 # than a manifest read like the POSIX side does: Test-Node runs BEFORE the repo
 # is cloned, so there is usually no package.json on disk yet (and none at all
-# when install.ps1 is piped straight from the web).  Get-NpmRange prefers the
-# manifest whenever it does exist, so a drifted constant self-corrects on any
-# run against an existing checkout.
-$NpmRange = ">=12.0.0"
+# when install.ps1 is piped straight from the web). Keep this fallback in sync
+# with package.json; Get-NpmRange prefers the manifest once a checkout exists.
+$NpmRange = "<11.10.0 || >=11.17.0"
 
 # Stage-protocol version.  Bumped only for genuinely breaking changes to the
 # manifest schema, stage-name set semantics, or stdout JSON shape.  Adding a
@@ -322,6 +563,62 @@ function Show-NpmCertHint {
     return $true
 }
 
+function Write-NpmDebugLogTail {
+    # On failure npm prints only a terse summary to stdout/stderr; the real
+    # evidence (postinstall script stderr like Electron's install.js, network
+    # traces, EBUSY retries) lives in npm's own debug log under
+    # <npm-cache>\_logs\<timestamp>-debug-0.log. The bootstrap installer's
+    # streaming sink only captures what WE emit, so on any npm failure this
+    # helper locates that debug log and replays its tail into our output
+    # stream -- making the bootstrap log a self-contained diagnosis instead
+    # of "exit 1, details in a file on a VM nobody can reach".
+    param(
+        [string]$NpmOutput,
+        [int]$TailLines = 200
+    )
+    $logPath = $null
+    # Preferred: npm names the exact file in its failure summary.
+    if ($NpmOutput -and $NpmOutput -match "A complete log of this run can be found in:\s*(?<path>[^\r\n]+)") {
+        $candidate = $Matches['path'].Trim()
+        if (Test-Path -LiteralPath $candidate) { $logPath = $candidate }
+    }
+    # Fallback (covers --silent runs, truncated output): newest debug log in
+    # npm's cache _logs directory.
+    if (-not $logPath) {
+        try {
+            $npm = Resolve-NpmCmd
+            if ($npm) {
+                $prevEAPLocal = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                $cacheDir = (& $npm config get cache 2>$null | Select-Object -Last 1)
+                $ErrorActionPreference = $prevEAPLocal
+                if ($cacheDir) {
+                    $logsDir = Join-Path ("$cacheDir").Trim() "_logs"
+                    if (Test-Path -LiteralPath $logsDir) {
+                        $newest = Get-ChildItem -LiteralPath $logsDir -Filter "*-debug-*.log" -ErrorAction SilentlyContinue |
+                            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                        if ($newest) { $logPath = $newest.FullName }
+                    }
+                }
+            }
+        } catch { }
+    }
+    if (-not $logPath) {
+        Write-Warn "npm debug log could not be located -- no further npm detail available"
+        return
+    }
+    $tail = $null
+    try {
+        $tail = Get-Content -LiteralPath $logPath -Tail $TailLines -ErrorAction Stop
+    } catch {
+        Write-Warn "Could not read npm debug log ${logPath}: $($_.Exception.Message)"
+        return
+    }
+    Write-Warn "---- npm debug log: last $TailLines lines of $logPath ----"
+    foreach ($line in $tail) { Write-Host "    $line" -ForegroundColor DarkGray }
+    Write-Warn "---- end npm debug log ----"
+}
+
 # --- Ensure-mode helpers ---
 
 function Resolve-NpmCmd {
@@ -366,14 +663,21 @@ function Write-BrowserEnv {
 }
 
 function Install-AgentBrowser {
-    param([switch]$SkipChromium)
     $npm = Resolve-NpmCmd
     if (-not $npm) {
         Write-Err "npm not found -- install Node.js first"
         throw "npm not found"
     }
 
-    Write-Info "Installing agent-browser via npm -g --prefix..."
+    # agent-browser itself is intentionally NOT installed here (#43564 /
+    # PR #44772 review): it resolves lazily via `npx agent-browser` instead,
+    # which every consumer (tools/browser_tool.py, `hermes update`'s npx
+    # cache warm) already goes through. Eagerly npm-installing a second,
+    # separately version-pinned copy here -- only reachable via this
+    # explicit -Ensure browser fallback in the first place -- was redundant
+    # complexity and an extra credential/supply-chain surface for a path
+    # npx already covers.
+    Write-Info "Installing camofox browser server..."
     $prefixDir = Join-Path $HermesHome "node"
     if (-not (Test-Path $prefixDir)) {
         New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
@@ -381,7 +685,7 @@ function Install-AgentBrowser {
     $npmLog = [System.IO.Path]::GetTempFileName()
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
     $npmExit = $LASTEXITCODE
     $ErrorActionPreference = $prevEAP
     if ($npmExit -ne 0) {
@@ -389,34 +693,17 @@ function Install-AgentBrowser {
         Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
         Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
         Show-NpmCertHint $npmDetail | Out-Null
+        # This install runs with --silent, so $npmDetail is often near-empty;
+        # npm's debug log is the only place the real error survives.
+        Write-NpmDebugLogTail -NpmOutput $npmDetail
         throw "npm install failed"
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
 
-    if (-not $SkipChromium) {
-        $sysBrowser = Find-SystemBrowser
-        if ($sysBrowser) {
-            Write-BrowserEnv -BrowserPath $sysBrowser
-            Write-Info "Explicit browser override set -- skipping bundled Chromium download"
-        } else {
-            $abExe = Join-Path $prefixDir "agent-browser.cmd"
-            if (Test-Path $abExe) {
-                Write-Info "Installing Chromium via agent-browser install..."
-                $abLog = [System.IO.Path]::GetTempFileName()
-                $prevEAP = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                & $abExe install 2>&1 | Tee-Object -FilePath $abLog | Out-Null
-                $abExit = $LASTEXITCODE
-                $ErrorActionPreference = $prevEAP
-                if ($abExit -ne 0) {
-                    $abDetail = Get-Content $abLog -Raw -ErrorAction SilentlyContinue
-                    Write-Warn "Chromium install failed (exit $abExit): $abDetail"
-                }
-                Remove-Item $abLog -Force -ErrorAction SilentlyContinue
-            } else {
-                Write-Warn "agent-browser.cmd not found at $abExe"
-            }
-        }
+    $sysBrowser = Find-SystemBrowser
+    if ($sysBrowser) {
+        Write-BrowserEnv -BrowserPath $sysBrowser
+        Write-Info "Explicit browser override set -- Chromium download will be skipped when agent-browser installs on demand"
     }
     Write-Success "Agent-browser ready"
 }
@@ -482,7 +769,65 @@ function Install-Uv {
         # than a bare `powershell`, which isn't guaranteed to be on PATH under
         # PowerShell 7 / pwsh-only setups.
         $psHostExe = Get-PowerShellHostExe
-        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Out-Null
+
+        # Rungs 1 + 2: run the uv installer -- astral.sh first, then the
+        # byte-identical copy published on GitHub releases.  Corporate
+        # proxies and AV products frequently block astral.sh while
+        # github.com is reachable (issue #69216), so a second source turns
+        # a hard failure into a working install.  Capture the installer
+        # output (Tee-Object) instead of discarding it: when every source
+        # fails, the real error (download blocked, AV quarantine,
+        # permissions) must reach the user instead of only the generic
+        # "installed but not found" message.
+        $installerOutput = @()
+        $astralOut = @()
+        & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
+        $installerOutput += "--- uv installer source: astral.sh ---"
+        $installerOutput += @($astralOut | ForEach-Object { "$_" })
+        if (Test-Path $managedUv) {
+            Write-Info "uv installer succeeded via astral.sh"
+        } else {
+            Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
+            $ghOut = @()
+            & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
+            $installerOutput += "--- uv installer source: GitHub releases ---"
+            $installerOutput += @($ghOut | ForEach-Object { "$_" })
+            if (Test-Path $managedUv) {
+                Write-Info "uv installer succeeded via GitHub releases"
+            }
+        }
+
+        # Rung 3: salvage an existing uv.exe.  When the installer cannot run
+        # at all (network fully blocked) but a working uv already exists --
+        # on PATH, or at ~/.local/bin (the astral default location when
+        # UV_INSTALL_DIR was ignored by an older installer) -- copy it into
+        # the managed location so the managed-first invariant holds
+        # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
+        if (-not (Test-Path $managedUv)) {
+            $existingUv = $null
+            $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($uvOnPath -and $uvOnPath.Source -and (Test-Path $uvOnPath.Source)) {
+                $existingUv = $uvOnPath.Source
+            }
+            if (-not $existingUv) {
+                $defaultUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
+                if (Test-Path $defaultUv) { $existingUv = $defaultUv }
+            }
+            if ($existingUv) {
+                Write-Info "Salvaging existing uv from $existingUv"
+                try {
+                    Copy-Item $existingUv $managedUv -Force
+                    # Verify the salvaged binary actually runs before
+                    # trusting it as the managed uv.
+                    $null = & $managedUv --version
+                } catch {
+                    Write-Info "Existing uv at $existingUv could not be salvaged: $_"
+                    Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
@@ -493,6 +838,10 @@ function Install-Uv {
         }
 
         Write-Err "uv installed but not found at $managedUv"
+        if ($installerOutput.Count -gt 0) {
+            Write-Info "uv installer output (last 15 lines):"
+            $installerOutput | Select-Object -Last 15 | ForEach-Object { Write-Info "  $_" }
+        }
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
     } catch {
@@ -585,14 +934,93 @@ function Get-NpmRange {
     return $NpmRange
 }
 
-# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange.
-#
-# The nodejs.org zip ships whatever npm that Node major bundles -- Node 26.5.1
-# bundles npm 11.17.0, one minor below the root package.json's own
-# `engines.npm` floor of >=12.  The repo .npmrc sets `engine-strict=true`, so
-# that is fatal rather than a warning and a brand-new install dies at the first
-# `npm ci` with EBADENGINE.  Provision the right npm here instead of reacting
-# to the failure later.
+# Convert the numeric core of an npm version or range operand into a stable
+# three-component System.Version. npm reports semantic versions, but the
+# installer only needs the numeric core for the comparator ranges authored in
+# package.json (for example, <11.10.0 || >=11.17.0).
+function ConvertTo-NpmVersion {
+    param([string]$Version)
+
+    if (-not $Version) { return $null }
+
+    $core = ($Version.Trim() -replace '^v', '' -replace '-.*$', '')
+    $parts = @($core -split '\.')
+    if ($parts.Count -lt 1 -or $parts.Count -gt 3) { return $null }
+    foreach ($part in $parts) {
+        if ($part -notmatch '^\d+$') { return $null }
+    }
+    while ($parts.Count -lt 3) { $parts += '0' }
+
+    try {
+        return [version]($parts -join '.')
+    } catch {
+        return $null
+    }
+}
+
+# Evaluate the comparator-only npm ranges used by the root manifest and the
+# pre-clone fallback. Alternatives are separated with || and each alternative
+# may contain one or more whitespace-separated <, <=, >, or >= comparators.
+# Unknown range syntax fails closed so an incompatible system npm cannot reach
+# npm ci and fail later with EBADENGINE.
+function Test-NpmVersionOk {
+    param(
+        [string]$Version,
+        [string]$Range = (Get-NpmRange)
+    )
+
+    $actual = ConvertTo-NpmVersion $Version
+    if (-not $actual -or -not $Range) { return $false }
+
+    foreach ($alternative in @($Range -split '\s*\|\|\s*')) {
+        $clause = $alternative.Trim()
+        if (-not $clause) { continue }
+
+        $comparators = [regex]::Matches(
+            $clause,
+            '(?:^|\s)(<=|>=|<|>)\s*(\d+(?:\.\d+){0,2})(?=\s|$)'
+        )
+        if ($comparators.Count -eq 0) { continue }
+
+        $remainder = [regex]::Replace(
+            $clause,
+            '(?:^|\s)(?:<=|>=|<|>)\s*\d+(?:\.\d+){0,2}(?=\s|$)',
+            ''
+        ).Trim()
+        if ($remainder) { continue }
+
+        $matchesClause = $true
+        foreach ($comparator in $comparators) {
+            $target = ConvertTo-NpmVersion $comparator.Groups[2].Value
+            if (-not $target) {
+                $matchesClause = $false
+                break
+            }
+
+            $matchesComparator = switch ($comparator.Groups[1].Value) {
+                '<'  { $actual -lt $target }
+                '<=' { $actual -le $target }
+                '>'  { $actual -gt $target }
+                '>=' { $actual -ge $target }
+                default { $false }
+            }
+            if (-not $matchesComparator) {
+                $matchesClause = $false
+                break
+            }
+        }
+
+        if ($matchesClause) { return $true }
+    }
+
+    return $false
+}
+
+# Upgrade the Hermes-managed Node tree's bundled npm into $NpmRange when
+# needed. Managed Node trees survive updates, so their bundled npm can drift
+# outside a newer root package.json engine range. The repo .npmrc sets
+# `engine-strict=true`, making that mismatch fatal at the first `npm ci`.
+# Provision the right npm here instead of reacting to EBADENGINE later.
 #
 # Three details are load-bearing, mirroring _nb_ensure_bundled_npm_range in
 # scripts/lib/node-bootstrap.sh and upgrade_managed_npm in
@@ -614,16 +1042,19 @@ function Update-ManagedNpm {
     $range = Get-NpmRange
 
     # Skip the network round-trip when the bundled npm already satisfies the
-    # range.  Only the ">=N" shape we actually author is parsed; anything more
-    # exotic falls through to letting npm itself decide.
-    if ($range -match '^>=(\d+)') {
-        $want = [int]$Matches[1]
-        try {
-            $have = (& $npmCmd --version 2>$null)
-            if ($have -match '^(\d+)') {
-                if ([int]$Matches[1] -ge $want) { return $true }
-            }
-        } catch { }
+    # same range used by the system-Node acceptance gate.
+    try {
+        $have = (& $npmCmd --version 2>$null | Select-Object -First 1)
+        if ($have -and (Test-NpmVersionOk $have $range)) { return $true }
+    } catch { }
+
+    # In-app updates run while the desktop app's Node processes are alive.
+    # The managed npm lives inside the very tree they execute from, so an
+    # in-place upgrade would hit WinError 5 (Access denied) on npm.cmd
+    # (#80926).  Defer; the next update with the app closed retries.
+    if (Test-ManagedNodeInUse $NodeDir) {
+        Write-Warn "Hermes-managed Node.js is in use by a running app; skipping the bundled npm upgrade (applies on a later update with the app closed)."
+        return $false
     }
 
     Write-Info "Upgrading bundled npm to satisfy $range ..."
@@ -662,6 +1093,29 @@ function Update-ManagedNpm {
 
     Write-Success "npm $(& $npmCmd --version 2>$null) installed"
     return $true
+}
+
+function Test-ManagedNodeInUse {
+    param([string]$NodeDir)
+    # Windows locks files that running processes execute from.  During an
+    # in-app update the desktop app's Node processes may hold the managed
+    # tree open, and rewriting it then fails with WinError 5 (Access denied)
+    # on npm.cmd (#80926).  Cheap pre-check used to skip destructive steps;
+    # the rename/move itself remains the authoritative guard.
+    #
+    # Check the executable path AND the command line: a cmd.exe wrapper
+    # running npm.cmd from the tree reports its own exe (cmd.exe lives in
+    # System32) while the tree path appears only in the command line.
+    # Win32_Process.CommandLine is available on Windows PowerShell 5.1 and
+    # 7+ (the Get-Process .CommandLine ETS property is 7.4+ only), and a
+    # single CIM query beats a per-process property access loop.
+    return @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.ExecutablePath -like "$NodeDir\*") -or
+                ($_.CommandLine -like "*$NodeDir*")
+            }
+    ).Count -gt 0
 }
 
 # Re-discover uv without re-installing it.  Cross-process stage drivers
@@ -711,39 +1165,97 @@ function Resolve-UvCmd {
     throw "uv is not installed. Run install.ps1 -Stage uv first."
 }
 
+function Initialize-ManagedPythonEnvironment {
+    # Python used by Hermes belongs to the checkout, never to another
+    # application or a user-level uv configuration. Keep this aligned with
+    # hermes_cli.managed_uv.managed_python_env(), which owns the update path.
+    foreach ($name in @(
+        "CONDA_DEFAULT_ENV", "CONDA_PREFIX", "UV_PROJECT_ENVIRONMENT",
+        "UV_NO_MANAGED_PYTHON", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
+        "UV_SYSTEM_PYTHON", "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"
+    )) {
+        Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue
+    }
+
+    $managedRoot = Join-Path $InstallDir ".hermes-runtime\python"
+    New-Item -ItemType Directory -Force -Path $managedRoot | Out-Null
+    $env:UV_MANAGED_PYTHON = "1"
+    $env:UV_NO_CONFIG = "1"
+    $env:UV_PYTHON_INSTALL_BIN = "0"
+    $env:UV_PYTHON_INSTALL_DIR = $managedRoot
+    $env:UV_PYTHON_INSTALL_REGISTRY = "0"
+    return [System.IO.Path]::GetFullPath($managedRoot)
+}
+
 function Resolve-AvailablePythonVersion {
-    # Return the first Python minor version uv can actually find, preferring the
-    # requested $PythonVersion and then $PythonFallbackVersions.  Returns $null
-    # when none are available.
+    # Return the path and minor version of the first Hermes-managed interpreter
+    # uv can find, preferring the requested version and then fallback minors.
+    # System and application-owned interpreters are deliberately ineligible.
     #
-    # This is the cross-process-safe counterpart to Test-Python's in-memory
-    # ``$script:PythonVersion = $fallbackVer`` mutation.  Under Hermes-Setup.exe
-    # each ``-Stage NAME`` runs in a *fresh* powershell.exe, so the fallback the
-    # ``python`` stage settled on (e.g. 3.12 when 3.11 is absent) does NOT
-    # survive into the ``venv`` stage's process -- there $PythonVersion is back
-    # at its "3.11" default.  Consumers re-resolve here instead of trusting that
-    # default, which is exactly the propagation gap behind issue #50769.
+    # Under Hermes-Setup.exe each stage runs in a fresh powershell.exe. The
+    # venv stage therefore re-resolves both version and provenance rather than
+    # relying on state selected by the earlier Python stage (#50769).
+    [string]$managedRoot = Initialize-ManagedPythonEnvironment
+    $managedPrefix = $managedRoot.TrimEnd('\') + '\'
     $candidates = @($PythonVersion) + $PythonFallbackVersions
     $seen = @{}
     foreach ($ver in $candidates) {
         if (-not $ver -or $seen.ContainsKey($ver)) { continue }
         $seen[$ver] = $true
+        $process = $null
         try {
-            $found = & $UvCmd python find $ver 2>$null
-            if ($found) { return $ver }
-        } catch { }
+            # PowerShell 5.1 can lose a nested native command's stdout when
+            # this installer itself is redirected by the desktop bootstrapper.
+            # Capture uv directly through ProcessStartInfo instead of relying
+            # on the native-command pipeline for the interpreter path.
+            $process = New-Object System.Diagnostics.Process
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = $UvCmd
+            $startInfo.Arguments = "python find $ver --managed-python --no-config"
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) { continue }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit($PythonFindTimeoutMs)) {
+                try { $process.Kill() } catch { }
+                $process.WaitForExit()
+                throw "uv python find $ver timed out after $PythonFindTimeoutMs ms"
+            }
+            $stdout = $stdoutTask.Result
+            $stderrTask.Result | Out-Null
+            if ($process.ExitCode -ne 0) { continue }
+            [string]$foundPath = ($stdout.Trim() -split "`r?`n") | Select-Object -Last 1
+            if ($foundPath) {
+                $absolute = [System.IO.Path]::GetFullPath($foundPath)
+                if ($absolute.StartsWith($managedPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return [PSCustomObject]@{
+                        Path = $absolute
+                        Version = $ver
+                    }
+                }
+            }
+        } catch {
+            throw "Failed to resolve Hermes-managed Python $ver`: $_"
+        } finally {
+            if ($process) { $process.Dispose() }
+        }
     }
     return $null
 }
 
 function Test-Python {
+    Initialize-ManagedPythonEnvironment | Out-Null
     Write-Info "Checking Python $PythonVersion..."
-    
-    # Let uv find or install Python
+
+    # Only a checkout-private uv-managed interpreter satisfies this stage.
     try {
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
+        $resolvedPython = Resolve-AvailablePythonVersion
+        if ($resolvedPython) {
+            $ver = & $resolvedPython.Path --version 2>$null
             Write-Success "Python found: $ver"
             return $true
         }
@@ -766,15 +1278,15 @@ function Test-Python {
         # semantics or stderr noise.  This fix was previously landed as
         # commit ec1714e71 and then lost in a release squash; reapplied here.
         $ErrorActionPreference = "Continue"
-        $uvOutput = & $UvCmd python install $PythonVersion 2>&1
+        $uvOutput = & $UvCmd python install $PythonVersion --no-bin --no-registry --no-config 2>&1
         $uvExitCode = $LASTEXITCODE
         $ErrorActionPreference = $prevEAP
 
         # Check if Python is now available (more reliable than exit code
         # since uv may return non-zero due to "already installed" etc.)
-        $pythonPath = & $UvCmd python find $PythonVersion 2>$null
-        if ($pythonPath) {
-            $ver = & $pythonPath --version 2>$null
+        $resolvedPython = Resolve-AvailablePythonVersion
+        if ($resolvedPython) {
+            $ver = & $resolvedPython.Path --version 2>$null
             Write-Success "Python installed: $ver"
             return $true
         }
@@ -790,60 +1302,29 @@ function Test-Python {
         Write-Warn "uv python install error: $_"
     }
 
-    # Fallback: check if ANY Python 3.10+ is already available on the system
-    Write-Info "Trying to find any existing Python 3.10+..."
+    # Preserve the established minor-version fallback contract, but provision
+    # every fallback into the same private store instead of borrowing a system
+    # interpreter. This path is reached only when the preferred install failed.
     foreach ($fallbackVer in $PythonFallbackVersions) {
         try {
-            $pythonPath = & $UvCmd python find $fallbackVer 2>$null
-            if ($pythonPath) {
-                $ver = & $pythonPath --version 2>$null
-                Write-Success "Found fallback: $ver"
-                $script:PythonVersion = $fallbackVer
+            Write-Info "Trying managed Python fallback $fallbackVer..."
+            $previousFallbackEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & $UvCmd python install $fallbackVer --no-bin --no-registry --no-config 2>&1 | Out-Null
+            $ErrorActionPreference = $previousFallbackEAP
+            $resolvedPython = Resolve-AvailablePythonVersion
+            if ($resolvedPython) {
+                $ver = & $resolvedPython.Path --version 2>$null
+                Write-Success "Python fallback installed: $ver"
                 return $true
             }
-        } catch { }
-    }
-
-    # Fallback: try system python -- but skip the Microsoft Store stub.
-    # On Windows, %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe is a 0-byte
-    # reparse-point stub that prints "Python was not found; run without
-    # arguments to install from the Microsoft Store..." to stdout and exits
-    # non-zero.  Get-Command finds it; invoking it produces a confusing error
-    # that the user sees as our installer crashing.
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        $isStoreStub = $false
-        try {
-            $pythonSource = $pythonCmd.Source
-            if ($pythonSource -and $pythonSource -like "*\WindowsApps\*") {
-                $isStoreStub = $true
-            } else {
-                # Even outside WindowsApps, a 0-byte file is the stub
-                $item = Get-Item $pythonSource -ErrorAction SilentlyContinue
-                if ($item -and $item.Length -eq 0) { $isStoreStub = $true }
-            }
-        } catch { }
-
-        if (-not $isStoreStub) {
-            try {
-                $prevEAP2 = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                $sysVer = & python --version 2>&1
-                $ErrorActionPreference = $prevEAP2
-                if ($sysVer -match "Python 3\.(1[0-9]|[1-9][0-9])") {
-                    Write-Success "Using system Python: $sysVer"
-                    return $true
-                }
-            } catch {
-                if ($prevEAP2) { $ErrorActionPreference = $prevEAP2 }
-            }
+        } catch {
+            if ($previousFallbackEAP) { $ErrorActionPreference = $previousFallbackEAP }
         }
     }
 
     Write-Err "Failed to install Python $PythonVersion"
-    Write-Info "Install Python 3.11 manually, then re-run this script:"
-    Write-Info "  https://www.python.org/downloads/"
-    Write-Info "  Or: winget install Python.Python.3.11"
+    Write-Info "Check network access to uv's managed Python downloads, then retry."
     return $false
 }
 
@@ -1190,35 +1671,73 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
-# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
-# (`engines.node`). Keep this in sync with the root package.json: looser lets an
-# install reach a `npm ci` that dies with EBADENGINE, stricter replaces a working
-# user toolchain for nothing. Returns $true when a `node --version` string
-# clears that floor.
+# The dependency tree supports Node 22.22+, 24.11+, and 26+. nanoid 6 excludes
+# Node 23 and 25 while its >=26 arm accepts later releases, and @babel/* 8.x
+# requires ^22.18.0 || >=24.11.0 -- so accepting 23/25 or an early Node 24
+# only defers the failure to `npm ci` under engine-strict. Keep this in sync
+# with the root package.json.
 function Test-NodeVersionOk {
     param([string]$Version)
+    if ($Version -match '-') { return $false }
     try {
-        $v = [version]($Version -replace '^v', '' -replace '-.*$', '')
+        $v = [version]($Version -replace '^v', '')
     } catch {
         return $false
     }
     if ($v.Major -eq 22) { return ($v.Minor -ge 22) }
-    return ($v.Major -gt 22)
+    if ($v.Major -eq 24) { return ($v.Minor -ge 11) }
+    return ($v.Major -ge 26)
+}
+
+# Accept a system Node only when its companion npm also satisfies the same
+# range used to provision the Hermes-managed tree. Keeping this probe separate
+# lets the initial PATH check and the post-winget check share one authority.
+function Test-SystemNodeReady {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) { return $false }
+
+    $version = node --version
+    if (Test-NodeVersionOk $version) {
+        Ensure-NodeExeOnPath | Out-Null
+    } else {
+        Write-Warn "Node.js $version is unsupported (Hermes requires Node 22.22+, 24.11+, or 26+)"
+        return $false
+    }
+
+    $npmRange = Get-NpmRange
+    $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    }
+
+    $npmVersion = $null
+    if ($npmCmd) {
+        try {
+            $npmVersion = (& $npmCmd --version 2>$null | Select-Object -First 1)
+        } catch { }
+    }
+
+    if ($npmVersion -and (Test-NpmVersionOk $npmVersion $npmRange)) {
+        Write-Success "Node.js $version with npm $npmVersion found"
+        return $true
+    }
+
+    if ($npmVersion) {
+        Write-Warn "Node.js $version uses npm $npmVersion, which does not satisfy Hermes requirement $npmRange"
+    } else {
+        Write-Warn "Node.js $version was found, but npm is missing or could not report its version"
+    }
+    return $false
 }
 
 function Test-Node {
     Write-Info "Checking Node.js (for browser tools)..."
 
-    if (Get-Command node -ErrorAction SilentlyContinue) {
-        $version = node --version
-        if (Test-NodeVersionOk $version) {
-            Ensure-NodeExeOnPath | Out-Null
-            Write-Success "Node.js $version found"
-            $script:HasNode = $true
-            return $true
-        }
-        Write-Warn "Node.js $version is too old (Hermes requires Node >=26)"
+    if (Test-SystemNodeReady) {
+        $script:HasNode = $true
+        return $true
     }
+
+    Write-Info "Using a Hermes-managed Node.js installation instead..."
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     $managedNode = "$HermesHome\node\node.exe"
@@ -1264,8 +1783,77 @@ function Test-Node {
 
             $extractedDir = Get-ChildItem $tmpDir -Directory | Select-Object -First 1
             if ($extractedDir) {
-                if (Test-Path "$HermesHome\node") { Remove-Item -Recurse -Force "$HermesHome\node" }
-                Move-Item $extractedDir.FullName "$HermesHome\node"
+                # Rename-swap instead of delete-then-move: the live tree is
+                # never removed before its replacement is fully extracted.
+                # Windows permits renaming a tree with running executables,
+                # but if a process holds it without FILE_SHARE_DELETE the
+                # rename fails with WinError 5 -- that refusal means the tree
+                # is in use, so defer instead of forcing the write (#80926).
+                # Best-effort sweep of staging/backup litter from interrupted
+                # runs; locked files simply stay for the next attempt.  Only
+                # dirs older than 10 minutes are removed so a concurrent
+                # heal's in-flight swap is never disturbed.
+                Get-ChildItem "$HermesHome" -Directory -Filter "node.old-*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                Get-ChildItem "$HermesHome" -Directory -Filter "node.new-*" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.LastWriteTime -lt (Get-Date).AddMinutes(-10) } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+                $stamp = [Guid]::NewGuid().ToString("N")
+                $staged = "$HermesHome\node.new-$stamp"
+                $backup = "$HermesHome\node.old-$stamp"
+                # Stage to a sibling directory so the final swap is a
+                # same-volume rename (atomic), not a cross-volume Move-Item
+                # (copy+delete, non-atomic -- a partial copy would leave a
+                # broken tree).  Move from $env:TEMP here, rename below.
+                try {
+                    Move-Item $extractedDir.FullName $staged -ErrorAction Stop
+                } catch {
+                    Write-Warn "Failed to stage the new Node.js tree; aborting the Node upgrade."
+                    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                    Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                    return $false
+                }
+                if (Test-Path "$HermesHome\node") {
+                    try {
+                        Rename-Item "$HermesHome\node" $backup -ErrorAction Stop
+                    } catch {
+                        Write-Warn "Hermes-managed Node.js is in use by a running app; deferring its upgrade. Close the app and re-run the update."
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                    # A rename preserves LastWriteTime, so a backup renamed
+                    # from a long-lived tree would instantly look older than
+                    # the litter-sweep cutoff to a concurrent heal.  Touch it
+                    # (best-effort) so the in-flight backup is never swept.
+                    try {
+                        (Get-Item $backup).LastWriteTime = Get-Date
+                    } catch { }
+                    try {
+                        Rename-Item $staged "$HermesHome\node" -ErrorAction Stop
+                    } catch {
+                        # Restore the live tree before bailing.  The swap is a
+                        # same-volume rename, so a failure leaves no partial
+                        # target to clear.
+                        Rename-Item $backup "$HermesHome\node" -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                    Remove-Item -Recurse -Force $backup -ErrorAction SilentlyContinue
+                } else {
+                    try {
+                        Rename-Item $staged "$HermesHome\node" -ErrorAction Stop
+                    } catch {
+                        Remove-Item -Recurse -Force $staged -ErrorAction SilentlyContinue
+                        Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+                        Remove-Item -Force $tmpZip -ErrorAction SilentlyContinue
+                        return $false
+                    }
+                }
 
                 # Session PATH so the rest of this run sees node/npm.
                 $env:Path = "$HermesHome\node;$env:Path"
@@ -1324,9 +1912,7 @@ function Test-Node {
             $ErrorActionPreference = $prevEAP
             # Refresh PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-            if (Get-Command node -ErrorAction SilentlyContinue) {
-                $version = node --version
-                Write-Success "Node.js $version installed via winget"
+            if (Test-SystemNodeReady) {
                 $script:HasNode = $true
                 return $true
             }
@@ -1976,13 +2562,12 @@ function Install-Venv {
     # fresh process -- $PythonVersion is back at its "3.11" default.  Trusting it
     # here made `uv venv venv --python 3.11` fail with exit 2 on machines without
     # 3.11 even though the `python` stage reported success (issue #50769).
-    $resolved = Resolve-AvailablePythonVersion
-    if ($resolved -and $resolved -ne $PythonVersion) {
-        Write-Info "Python $PythonVersion not available; using detected Python $resolved"
-        $script:PythonVersion = $resolved
+    $resolvedPython = Resolve-AvailablePythonVersion
+    if (-not $resolvedPython) {
+        throw "Hermes-managed Python is unavailable. Run install.ps1 -Stage python first."
     }
 
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
+    Write-Info "Creating virtual environment with Python $($resolvedPython.Version)..."
     
     Push-Location $InstallDir
 
@@ -1990,22 +2575,26 @@ function Install-Venv {
     # exits. Populated only with tasks that were ENABLED before we touched
     # them, so a task the user deliberately disabled is never re-armed.
     $gatewayTasksDisabled = @()
+    $venvHadExistingVenv = $false
+    $venvBackupName = $null
+    $venvParked = $false
     try {
-    if (Test-Path "venv") {
+    if (Test-Path -LiteralPath "venv") {
+        $venvHadExistingVenv = $true
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
         # speedups.pyd) are loaded as DLLs by any running hermes process.
         # Windows denies deletion of loaded DLLs, so every process running out
-        # of this venv must be stopped before removing it -- otherwise
-        # Remove-Item fails with "Access to the path '...' is denied" and the
-        # whole install/update aborts at this stage.
+        # of this venv must be stopped before retiring it. This keeps cleanup
+        # from accumulating locked stale trees and avoids carrying a live
+        # gateway into the replacement venv.
         if ($env:OS -eq "Windows_NT") {
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
             # Disarm the respawner FIRST: the gateway autostart Scheduled Task
             # relaunches a killed gateway within seconds, and losing that race
             # re-locks the venv's .pyd files between our kill sweep and
-            # Remove-Item (the July 2026 _brotlicffi.pyd incident). schtasks
+            # venv parking/cleanup (the July 2026 _brotlicffi.pyd incident). schtasks
             # /End stops a running task instance; /Change /DISABLE stops it
             # from re-firing mid-install. (The Startup-folder .vbs fallback is
             # NOT touched: it only fires at logon, so it cannot respawn a
@@ -2034,9 +2623,12 @@ function Install-Venv {
             # `pythonw.exe -m hermes_cli.main gateway run` straight out of
             # venv\Scripts\, so its image name is python/pythonw, not hermes.exe.
             # That process holds the venv's .pyd files open and re-triggers the
-            # access-denied failure. Stop anything whose executable lives under
-            # this venv, matched by path prefix so the image name does not matter
-            # and a global/system python outside the venv is never touched.
+            # access-denied failure. Select only roots whose executable lives
+            # under this venv, then stop each root's whole process tree. Some
+            # Hermes children re-exec through .hermes-runtime, so killing only
+            # the selected venv process can leave its child holding the install
+            # open. The path-prefix check still keeps unrelated Python processes
+            # outside this venv untouched.
             #
             # The gateway autostart task registers with /RL LIMITED as the current
             # user (see hermes_cli/gateway_windows.py), so the installer always
@@ -2048,7 +2640,7 @@ function Install-Venv {
             #
             # The sweep is a bounded LOOP, not single-shot: supervised processes
             # (the Desktop app's backend, a watchdog-managed gateway) respawn in
-            # the window between one kill pass and the delete. Each pass re-
+            # the window between one kill pass and venv parking. Each pass re-
             # enumerates; three consecutive clean passes (or the attempt cap)
             # ends the loop.
             $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir "venv")).TrimEnd('\') + '\'
@@ -2060,8 +2652,9 @@ function Install-Venv {
                         Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase) } |
                         ForEach-Object {
                             $found++
-                            Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
-                            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                            $treePid = [string]$_.ProcessId
+                            Write-Info "  stopping process tree at PID $treePid ($($_.Name)) running from venv"
+                            & taskkill /F /T /PID $treePid 2>$null | Out-Null
                         }
                 } catch {
                     Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"
@@ -2071,57 +2664,89 @@ function Install-Venv {
                 Start-Sleep -Milliseconds 400
             }
         }
-        # Rename-then-delete: on Windows a directory RENAME succeeds even while
-        # files inside it are mapped as DLLs (only in-place delete/replace of
-        # the mapped file is denied, and only same-volume renames are atomic
-        # moves). Moving the old venv aside means `uv venv` can create a fresh
-        # one immediately even if some straggler still holds a .pyd from the
-        # old tree; the renamed dir is deleted best-effort (now, and by the
-        # cleanup pass below on the NEXT install if a handle outlives this one).
-        $staleName = "venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
-        $renamed = $false
+        # Move the old venv aside before creating its replacement. A directory
+        # rename is atomic on the same volume and does not require deleting
+        # files mapped as DLLs. NEVER fall back to deleting the live venv
+        # (#83149): Remove-Item -Recurse can delete most of site-packages and
+        # then fail on one locked .pyd, leaving a gutted venv with no usable
+        # interpreter and no rollback source. Abort with the previous install
+        # intact so the user can close holders and retry.
+        $venvBackupName = "venv.stale.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
         try {
-            Rename-Item -Path "venv" -NewName $staleName -ErrorAction Stop
-            $renamed = $true
+            Rename-Item -LiteralPath "venv" -NewName $venvBackupName -ErrorAction Stop
+            $venvParked = $true
         } catch {
-            Write-Warn "Could not rename venv aside ($($_.Exception.Message)); falling back to in-place delete"
+            $renameErr = $_.Exception.Message
+            throw (
+                "Could not move the existing venv aside ($renameErr). " +
+                "A process still has the install directory open (often a non-Hermes " +
+                "python.exe that resolved into this venv via PATH). Close those " +
+                "processes and retry - the previous install was left intact."
+            )
         }
-        if ($renamed) {
-            Remove-Item -Recurse -Force $staleName -ErrorAction SilentlyContinue
-            if (Test-Path $staleName) {
-                Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
-            }
-        } else {
-            Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
-            # A killed process can take a moment to release its file handles, so a
-            # first Remove-Item may still hit a locked .pyd. Retry once after a short
-            # pause before giving up and letting the stage fail loudly.
-            if (Test-Path "venv") {
-                Start-Sleep -Seconds 2
-                Remove-Item -Recurse -Force "venv"
-            }
+    }
+    
+    # Pass the already-validated private interpreter path and prohibit uv from
+    # resolving or downloading a different Python during venv creation. Use
+    # ProcessStartInfo because the desktop bootstrapper redirects this script;
+    # Windows PowerShell 5.1 can otherwise lose nested native output/exit state.
+    $venvProcess = New-Object System.Diagnostics.Process
+    try {
+        $venvStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $venvStartInfo.FileName = $UvCmd
+        $venvStartInfo.Arguments = "venv venv --python `"$($resolvedPython.Path)`" --managed-python --no-python-downloads --no-config"
+        $venvStartInfo.WorkingDirectory = $InstallDir
+        $venvStartInfo.UseShellExecute = $false
+        $venvStartInfo.CreateNoWindow = $true
+        $venvStartInfo.RedirectStandardOutput = $true
+        $venvStartInfo.RedirectStandardError = $true
+        $venvProcess.StartInfo = $venvStartInfo
+        if (-not $venvProcess.Start()) {
+            throw "Failed to start uv while creating the virtual environment"
         }
+        $venvStdoutTask = $venvProcess.StandardOutput.ReadToEndAsync()
+        $venvStderrTask = $venvProcess.StandardError.ReadToEndAsync()
+        $venvProcess.WaitForExit()
+        $venvStdout = $venvStdoutTask.Result
+        $venvStderr = $venvStderrTask.Result
+        $venvExitCode = $venvProcess.ExitCode
+        if ($venvStdout) { Write-Host $venvStdout.TrimEnd() }
+        if ($venvStderr) { Write-Host $venvStderr.TrimEnd() }
+    } finally {
+        $venvProcess.Dispose()
+    }
+    # Fail fast so the stage cannot report ok=true when uv failed.
+    if ($venvExitCode -ne 0) {
+        throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
+    }
+
+    # uv can return success without leaving the interpreter expected by the
+    # installer (for example after an interrupted filesystem operation). Treat
+    # that as a failed transaction so the previous venv can be restored.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $venvPythonExe -PathType Leaf)) {
+        throw "uv reported success but venv interpreter is missing at $venvPythonExe"
+    }
+
+    # The replacement has a working interpreter, but the transaction is only
+    # committed after Install-Dependencies' baseline-import gate passes -- the
+    # bootstrap runs the stages as separate processes, and every dependency
+    # tier (or the import validation) can still fail after this stage
+    # succeeds. Record the parked backup so the dependency stage can restore
+    # it on failure and commit its cleanup only after validation (#83149).
+    if ($venvParked) {
+        Set-Content -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Value $venvBackupName -Encoding ascii
+        Write-Info "Previous venv parked at $venvBackupName until the dependency install is verified"
     }
 
     # Clean up parked venvs from previous installs whose handles have since
     # been released. Best-effort -- a still-held tree just stays for next time.
-    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
-        Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
-    }
-    
-    # uv creates the venv and pins the Python version in one step.  uv emits
-    # normal progress such as "Using CPython ..." on stderr; under Windows
-    # PowerShell 5.1 with EAP=Stop that stderr is a NativeCommandError unless
-    # we temporarily relax EAP and trust $LASTEXITCODE for real failures.
-    Invoke-NativeWithRelaxedErrorAction { & $UvCmd venv venv --python $PythonVersion }
-    # Relaxing EAP above means a *genuine* uv-venv failure (exit != 0) no longer
-    # aborts on its own. Capture $LASTEXITCODE immediately and fail fast, so the
-    # `venv` stage can't falsely report success (and Invoke-Stage can't emit
-    # ok=true) when the venv was never created.
-    $venvExitCode = $LASTEXITCODE
-    if ($venvExitCode -ne 0) {
-        throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
-    }
+    # The backup parked THIS run is excluded: it is the rollback source until
+    # Install-Dependencies commits the transaction.
+    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -ne $venvBackupName } | ForEach-Object {
+            Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
+        }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
@@ -2130,10 +2755,43 @@ function Install-Venv {
     # -- building Rust transitives that have no wheel for that version from
     # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
     # just created forces every subsequent uv command onto it.
-    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
-    if (Test-Path $venvPythonExe) {
-        $env:UV_PYTHON = $venvPythonExe
-    }
+    $env:UV_PYTHON = $venvPythonExe
+    } catch {
+        $originalError = $_
+        $rollbackError = $null
+
+        if ($venvParked -and $venvBackupName -and (Test-Path -LiteralPath $venvBackupName)) {
+            try {
+                if (Test-Path -LiteralPath "venv") {
+                    $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+                    Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
+                    Write-Warn "Failed replacement parked at $failedVenvName"
+                }
+                Rename-Item -LiteralPath $venvBackupName -NewName "venv" -ErrorAction Stop
+                Write-Warn "Restored previous virtual environment after failed recreate"
+            } catch {
+                $rollbackError = $_.Exception.Message
+            }
+
+            if ($rollbackError) {
+                throw "Virtual environment recreate failed: $($originalError.Exception.Message). Rollback failed: $rollbackError. Previous venv remains at $venvBackupName."
+            }
+        } elseif (-not $venvHadExistingVenv -and (Test-Path -LiteralPath "venv")) {
+            # Preserve a partial first install too. This branch must not touch a
+            # pre-existing venv whose move-aside failed above.
+            try {
+                $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+                Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
+                Write-Warn "Partial virtual environment parked at $failedVenvName"
+            } catch {
+                $rollbackError = $_.Exception.Message
+            }
+            if ($rollbackError) {
+                throw "Virtual environment creation failed: $($originalError.Exception.Message). Could not park partial venv: $rollbackError"
+            }
+        }
+
+        throw $originalError
     } finally {
         Pop-Location
         # Re-arm the gateway autostart tasks disabled during the venv teardown
@@ -2151,7 +2809,56 @@ function Install-Venv {
         }
     }
 
-    Write-Success "Virtual environment ready (Python $PythonVersion)"
+    Write-Success "Virtual environment ready (Python $($resolvedPython.Version))"
+}
+
+function Get-PendingVenvBackup {
+    # Rollback source recorded by Install-Venv (#83149). Returns the parked
+    # directory name, or $null when there is nothing to roll back to. A marker
+    # pointing at a directory that no longer exists is stale -- drop it.
+    $markerPath = Join-Path $InstallDir "venv.pending-backup"
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $null }
+    $name = (Get-Content -LiteralPath $markerPath -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($name) { $name = $name.Trim() }
+    if (-not $name -or -not (Test-Path -LiteralPath (Join-Path $InstallDir $name))) {
+        Remove-Item -LiteralPath $markerPath -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+    return $name
+}
+
+function Complete-VenvTransaction {
+    # Commit: dependency install + baseline imports passed, so the previous
+    # venv is no longer needed as a rollback source. Best-effort delete; a
+    # tree still held open just stays parked for the next install's sweep.
+    $backupName = Get-PendingVenvBackup
+    if (-not $backupName) { return }
+    $backupPath = Join-Path $InstallDir $backupName
+    Remove-Item -LiteralPath $backupPath -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $backupPath) {
+        Write-Warn "Old venv parked at $backupName (a process still holds files in it); it will be cleaned up on the next install"
+    }
+    Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
+}
+
+function Restore-VenvBackup {
+    # Rollback: the dependency stage failed after Install-Venv replaced the
+    # venv. Park the unusable replacement and restore the previous working
+    # venv so Hermes (and the venv-blocker probe) stay usable (#83149).
+    $backupName = Get-PendingVenvBackup
+    if (-not $backupName) { return }
+    try {
+        if (Test-Path -LiteralPath (Join-Path $InstallDir "venv")) {
+            $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+            Rename-Item -LiteralPath (Join-Path $InstallDir "venv") -NewName $failedVenvName -ErrorAction Stop
+            Write-Warn "Failed replacement parked at $failedVenvName"
+        }
+        Rename-Item -LiteralPath (Join-Path $InstallDir $backupName) -NewName "venv" -ErrorAction Stop
+        Remove-Item -LiteralPath (Join-Path $InstallDir "venv.pending-backup") -Force -ErrorAction SilentlyContinue
+        Write-Warn "Restored previous virtual environment after failed dependency install"
+    } catch {
+        Write-Warn "Could not restore previous venv (still parked at $backupName): $($_.Exception.Message)"
+    }
 }
 
 function Install-Dependencies {
@@ -2188,6 +2895,12 @@ function Install-Dependencies {
     # without any hash verification -- they exist to keep installs working
     # when the lockfile is stale, missing, or out-of-sync with the
     # current extras spec, NOT because they're equivalent in posture.
+    #
+    # Everything through the baseline-import gate runs inside the venv
+    # transaction opened by Install-Venv (#83149): on any failure the parked
+    # previous venv is restored before the error propagates, and the parked
+    # tree is deleted only after the imports prove the replacement usable.
+    try {
     if (Test-Path "uv.lock") {
         Write-Info "Trying tier: hash-verified (uv.lock) ..."
         # Critical flag choice: `--extra all`, NOT `--all-extras`.
@@ -2304,7 +3017,7 @@ except Exception:
     if (-not $NoVenv) {
         $venvPython = "$InstallDir\venv\Scripts\python.exe"
         if (-not (Test-Path $venvPython)) {
-            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, close Hermes processes and preserve existing venv directories before retrying. Do not delete venv in place."
         }
         # Relax EAP=Stop while running the import probe.  Python writes
         # deprecation warnings and import-system info to stderr; under
@@ -2320,13 +3033,26 @@ except Exception:
         if ($importExitCode -ne 0) {
             $sibling = "$InstallDir\.venv"
             $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
             } else {
                 "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
             }
             throw "Baseline imports failed in $InstallDir\venv (dotenv/openai/rich/prompt_toolkit). The install completed but dependencies are not in the venv. $hint"
         }
         Write-Success "Baseline imports verified in venv"
+    }
+
+    # Commit the venv transaction: the dependency install completed and the
+    # baseline imports passed, so the previous venv is no longer needed as a
+    # rollback source (#83149).
+    Complete-VenvTransaction
+    } catch {
+        # Dependency install or import validation failed: restore the previous
+        # working venv (parked by Install-Venv) before surfacing the error, so
+        # a failed update leaves Hermes and its blocker probe usable.
+        Restore-VenvBackup
+        Pop-Location
+        throw
     }
 
     if (-not $NoVenv) {
@@ -2415,18 +3141,96 @@ print(','.join(scripts))
     Write-Success "All dependencies installed"
 }
 
+function Install-HermesCommandLaunchers {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Root,
+        [Parameter(Mandatory=$true)] [string]$Destination
+    )
+
+    # Expose ONLY the hermes launchers on PATH -- never the whole
+    # venv\Scripts directory, which contains python.exe / pip.exe and
+    # silently hijacks the `python` command in every terminal (#83797).
+    # Requiring hermes.exe before creating the destination keeps the PATH
+    # stage from reporting success with an unusable command (PR #92092).
+    $scriptsDir = Join-Path $Root "venv\Scripts"
+    $requiredSource = Join-Path $scriptsDir "hermes.exe"
+    if (-not (Test-Path -LiteralPath $requiredSource -PathType Leaf)) {
+        throw "Cannot set up the hermes command: required launcher not found: $requiredSource"
+    }
+
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+
+    # Launcher form depends on the venv (keep in lockstep with
+    # hermes_cli/_install_repair.py): a normal venv's exe trampoline
+    # embeds an absolute interpreter path and survives copying; a
+    # relocatable venv's trampoline (managed_uv rebuilds use
+    # --relocatable) resolves relative to its own location, and a copy
+    # dies with 'uv trampoline failed to canonicalize script path' --
+    # those get a .cmd delegator invoking the in-venv exe instead.
+    $pyvenvCfg = Join-Path $Root "venv\pyvenv.cfg"
+    $venvRelocatable = $false
+    if (Test-Path -LiteralPath $pyvenvCfg) {
+        $venvRelocatable = [bool](Select-String -Path $pyvenvCfg -Pattern '^\s*relocatable\s*=\s*true\s*$' -Quiet)
+    }
+    foreach ($launcher in @("hermes", "hermes-acp")) {
+        $src = Join-Path $scriptsDir "$launcher.exe"
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }
+        if ($venvRelocatable) {
+            Remove-Item (Join-Path $Destination "$launcher.exe") -Force -ErrorAction SilentlyContinue
+            Set-Content -Path (Join-Path $Destination "$launcher.cmd") -Value "@echo off`r`n`"$src`" %*" -Encoding Ascii
+        } else {
+            Remove-Item (Join-Path $Destination "$launcher.cmd") -Force -ErrorAction SilentlyContinue
+            Copy-Item -Force -LiteralPath $src -Destination (Join-Path $Destination "$launcher.exe")
+        }
+    }
+
+    # Verify either staged form before the caller mutates PATH.
+    $requiredExe = Join-Path $Destination "hermes.exe"
+    $requiredCmd = Join-Path $Destination "hermes.cmd"
+    if (-not ((Test-Path -LiteralPath $requiredExe -PathType Leaf) -or
+              (Test-Path -LiteralPath $requiredCmd -PathType Leaf))) {
+        throw "Cannot set up the hermes command: launcher was not installed: $requiredExe"
+    }
+    return $Destination
+}
+
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
     if ($NoVenv) {
         $hermesBin = "$InstallDir"
     } else {
-        $hermesBin = "$InstallDir\venv\Scripts"
+        # $HermesHome\bin is the managed binary dir (shared with the managed
+        # uv), OUTSIDE the git checkout: `hermes update`'s autostash
+        # (git stash push --include-untracked) deletes untracked files from
+        # the working tree, which silently removed the launchers an earlier
+        # installer staged under hermes-agent\bin. No git operation can ever
+        # touch this dir. Staging and verification live in
+        # Install-HermesCommandLaunchers, which throws BEFORE any PATH
+        # mutation when the launchers cannot be staged.
+        $hermesBin = "$HermesHome\bin"
+        Install-HermesCommandLaunchers -Root $InstallDir -Destination $hermesBin | Out-Null
     }
     
-    # Add the venv Scripts dir to user PATH so hermes is globally available
-    # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
+
+    # Migrate older layouts off the user PATH:
+    #   venv\Scripts     -- shadowed the user's python (#83797)
+    #   hermes-agent\bin -- lived inside the git checkout, where the update
+    #                       autostash could sweep the launchers off disk
+    # The hermes-agent\bin FILES are left in place on purpose: editor/ACP
+    # configs that captured absolute launcher paths keep working, and the
+    # dir is git-ignored so it cannot dirty the checkout.
+    if (-not $NoVenv) {
+        $legacyEntries = @("$InstallDir\venv\Scripts", "$InstallDir\bin")
+        $items = @(($currentPath -split ';') | Where-Object { $_ })
+        $cleaned = @($items | Where-Object { $legacyEntries -notcontains $_ })
+        if ($cleaned.Count -ne $items.Count) {
+            $currentPath = $cleaned -join ";"
+            [Environment]::SetEnvironmentVariable("Path", $currentPath, "User")
+            Write-Info "Removed legacy launcher entries from user PATH (kept hermes via $hermesBin)"
+        }
+    }
     
     if ($currentPath -notlike "*$hermesBin*") {
         [Environment]::SetEnvironmentVariable(
@@ -2589,7 +3393,7 @@ function Copy-ConfigTemplates {
         # upgrades the old comment-only scaffold to this text on next run, so
         # drift is self-healing, but keep them in sync to avoid first-run churn.
         $soulContent = @"
-You are Hermes Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and direct. You assist users with a wide range of tasks including answering questions, writing and editing code, analyzing information, creative work, and executing actions via your tools. You communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.
+You are Hermes Agent, built by Nous Research. Be direct: match the length of your reply to the weight of the ask -- a one-line question gets a one-line answer, and finished work gets a short report of what changed, what's verified, and what's left, never a replay of the process. No filler ("Great question," "I'd be happy to"), no restating the request back, no re-summarizing what you already said, no narrating tool calls the user can see. Plain claims over adjectives; when unsure, say so plainly. Agree because it's right, not because the user said it. Depth is earned -- give it when the user asks for detail, teaches, or the stakes demand it, not by default.
 "@
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
@@ -2680,54 +3484,103 @@ function Install-NodeDeps {
         }
     }
 
-    # Helper: run "npm install" in a given directory and surface the real
-    # error when it fails.  Returns $true on success.
+    # Wall-clock ceiling for each npm / Playwright invocation in this stage.
+    # scripts/install.sh has time-boxed the same work with
+    # ``run_with_timeout "$NODE_DEPS_TIMEOUT"`` (600s default) since #39219;
+    # Windows never got the guard, so a stalled registry fetch or a wedged
+    # Chromium extraction (#76222, #84614) froze the installer forever -- one
+    # user left it running 12+ hours overnight.  Same env override as bash
+    # for very slow links.
+    $nodeDepsTimeoutSec = 600
+    if ($env:NODE_DEPS_TIMEOUT -match '^\d+$') {
+        $nodeDepsTimeoutSec = [int]$env:NODE_DEPS_TIMEOUT
+    }
+
+    # Helper: run a native command with a hard wall-clock timeout while
+    # still streaming its output live.  Returns the exit code, or 124 on
+    # timeout (the same convention as coreutils ``timeout`` and bash's
+    # run_with_timeout).
     #
-    # Implementation note: ``Start-Process -FilePath npm.cmd`` fails with
+    # Launcher notes: ``Start-Process -FilePath npm.cmd`` fails with
     # ``%1 is not a valid Win32 application`` on some PowerShell versions
     # because Start-Process bypasses cmd.exe / PATHEXT and expects a real
-    # PE file.  The invocation-operator ``& $npmExe`` routes through the
-    # PowerShell command pipeline which DOES honour .cmd batch shims, so
-    # it works uniformly for npm.cmd, npx.cmd, and bare .exe files.
+    # PE file -- so route through cmd.exe, which IS a real PE, honours .cmd
+    # batch shims, and performs the stdout+stderr merge into the log file
+    # natively.  The parent then tails the log into the console each poll
+    # tick, preserving the live progress that makes a 3-minute download
+    # distinguishable from a hang (the whole reason _Run-NpmInstall streams
+    # output in the first place).  ``Wait-Job -Timeout`` was rejected: jobs
+    # swallow live output, and Stop-Job leaves the npm child running.
+    # taskkill /T kills the real process tree.  Works on Windows PowerShell
+    # 5.1 -- no pwsh-only primitives.
+    function _Invoke-NativeWithTimeout(
+        [string]$exePath, [string]$argLine, [string]$workDir,
+        [string]$logPath, [int]$timeoutSec
+    ) {
+        $cmdLine = "/d /s /c "" ""$exePath"" $argLine > ""$logPath"" 2>&1 """
+        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList $cmdLine `
+            -WorkingDirectory $workDir -NoNewWindow -PassThru
+        $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
+        $shown = 0
+        function _Drain-NewLines([string]$path, [ref]$count) {
+            $lines = @(Get-Content $path -ErrorAction SilentlyContinue)
+            if ($lines.Count -gt $count.Value) {
+                $lines[$count.Value..($lines.Count - 1)] | ForEach-Object {
+                    Write-Host "    $_" -ForegroundColor DarkGray
+                }
+                $count.Value = $lines.Count
+            }
+        }
+        while (-not $proc.HasExited) {
+            if ([DateTime]::UtcNow -gt $deadline) {
+                & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
+                return 124
+            }
+            Start-Sleep -Milliseconds 750
+            _Drain-NewLines $logPath ([ref]$shown)
+        }
+        _Drain-NewLines $logPath ([ref]$shown)
+        return $proc.ExitCode
+    }
+
+    # Helper: run "npm install" in a given directory and surface the real
+    # error when it fails.  Returns $true on success.
     function _Run-NpmInstall([string]$label, [string]$installDir, [string]$logPath, [string]$npmPath) {
         Push-Location $installDir
         # Capture EAP outside the try block so the catch's restore call always
         # has a meaningful value (see Install-Uv for the full rationale).
         $prevEAP = $ErrorActionPreference
         try {
-            # Stream npm's output to BOTH the console and the log file via
-            # Tee-Object.  Previously this called ``& npm install --silent
-            # *> $logPath`` which redirected every stream to disk and left
-            # the user staring at a frozen "Installing..." line for the
-            # duration of the install.  On a fresh VM that's 1-3 minutes
-            # of total silence, indistinguishable from a hang.
+            # The helper streams npm's output to BOTH the console and the log
+            # file, so the user watches real progress instead of a frozen
+            # "Installing..." line (on a fresh VM the install is 1-3 minutes;
+            # total silence is indistinguishable from a hang) -- and the
+            # wall-clock ceiling turns a genuinely stalled install (#76222
+            # class) into a diagnosable failure instead of an overnight freeze.
             #
-            # Tee writes the live output to stdout AND $logPath; we still
-            # capture the exit code afterwards and surface diagnostics
-            # on failure.  Note: 2>&1 merges npm's stderr into the success
-            # stream first because Tee-Object only sees the success
-            # stream of the pipeline.  ForEach-Object { "$_" } coerces
-            # each item to a string so PowerShell's NativeCommandError
-            # formatter doesn't wrap stderr lines as alarming red blocks
-            # (cosmetic polish; the underlying text is unchanged).
-            #
-            # Relax EAP around the npm invocation: with EAP=Stop (set at
-            # the top of this script), PowerShell wraps stderr lines from
-            # native commands captured via 2>&1 as ErrorRecord objects and
-            # throws on the first one -- even though npm exited 0.  This
-            # is the same issue Test-Python and Install-Uv work around
-            # for uv's stderr-emitting installer.  Check success via
-            # $LASTEXITCODE, which is reliable regardless of stderr noise.
+            # Relax EAP around the invocation: with EAP=Stop (set at the top
+            # of this script), PowerShell can wrap stray stderr from the
+            # launcher plumbing as ErrorRecord objects and throw even though
+            # npm exited 0.  This is the same issue Test-Python and Install-Uv
+            # work around for uv's stderr-emitting installer.  Check success
+            # via the returned exit code, which is reliable regardless of
+            # stderr noise.
             $ErrorActionPreference = "Continue"
-            & $npmPath install --silent 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logPath
-            $code = $LASTEXITCODE
+            $code = _Invoke-NativeWithTimeout $npmPath "install --silent" `
+                $installDir $logPath $nodeDepsTimeoutSec
             $ErrorActionPreference = $prevEAP
             if ($code -eq 0) {
                 Write-Success "$label dependencies installed"
                 Remove-Item -Force $logPath -ErrorAction SilentlyContinue
                 return $true
             }
-            Write-Warn "$label npm install failed -- exit code $code"
+            if ($code -eq 124) {
+                Write-Warn "$label npm install timed out after $([math]::Round($nodeDepsTimeoutSec / 60)) minutes -- a stalled download, wedged extraction, or file lock is the usual cause."
+                Write-Info "  Re-run the installer to retry (completed stages are skipped)."
+                Write-Info "  Slow connection? Raise the ceiling: set NODE_DEPS_TIMEOUT to seconds (default 600)."
+            } else {
+                Write-Warn "$label npm install failed -- exit code $code"
+            }
             if (Test-Path $logPath) {
                 $errText = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue)
                 if ($errText) {
@@ -2738,6 +3591,7 @@ function Install-NodeDeps {
                     }
                     Write-Info "  Full log: $logPath"
                     Show-NpmCertHint $errText | Out-Null
+                    Write-NpmDebugLogTail -NpmOutput $errText
                 }
             }
             Write-Info "Run manually later: cd `"$installDir`"; npm install"
@@ -2806,27 +3660,32 @@ function Install-NodeDeps {
                     #
                     # Relax EAP around the playwright invocation: playwright
                     # emits a "Chromium downloaded to ..." success banner to
-                    # stderr after a successful install.  Under EAP=Stop, the
-                    # 2>&1 merge wraps those stderr lines as ErrorRecord
-                    # objects and throws -- causing this catch block to fire
-                    # with a mangled banner as the error message even though
-                    # the install actually succeeded.  Check $LASTEXITCODE
-                    # instead, which is the reliable signal.
+                    # stderr after a successful install.  The launcher merges
+                    # stderr into the log natively, but keep EAP relaxed so
+                    # stray plumbing stderr can't fire the catch block with a
+                    # mangled banner even though the install succeeded.  Check
+                    # the returned exit code instead, which is the reliable
+                    # signal.
                     #
-                    # The ForEach-Object { "$_" } coercion BEFORE Tee-Object
-                    # is a cosmetic polish: with bare 2>&1, PowerShell still
-                    # renders stderr lines through its NativeCommandError
-                    # formatter (the red "npx.cmd : ..." block).  Coercing
-                    # each pipeline item to a string strips that wrapper so
-                    # the user sees clean playwright output instead of the
-                    # alarming-looking error formatting.
+                    # The wall-clock ceiling is the #76222 / #84614 fix: the
+                    # Chromium download reaches 100% and the extraction wedges
+                    # (or the registry fetch stalls), and without a bound the
+                    # installer sits on this line forever.  bash has carried
+                    # the same 600s guard via run_playwright_install since
+                    # #39219.
                     $ErrorActionPreference = "Continue"
-                    & $npxExe --yes playwright install chromium 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $pwLog
-                    $pwCode = $LASTEXITCODE
+                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--yes playwright install chromium" `
+                        $InstallDir $pwLog $nodeDepsTimeoutSec
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"
                         Remove-Item -Force $pwLog -ErrorAction SilentlyContinue
+                    } elseif ($pwCode -eq 124) {
+                        Write-Warn "Playwright Chromium install timed out after $([math]::Round($nodeDepsTimeoutSec / 60)) minutes."
+                        Write-Warn "This usually means a stalled download or a wedged archive extraction (a locked previous browser version can also cause it)."
+                        Write-Warn "Browser tools will not work until Chromium is installed."
+                        if (Test-Path $pwLog) { Write-Info "  Partial log: $pwLog" }
+                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
                     } else {
                         Write-Warn "Playwright Chromium install failed -- exit code $pwCode"
                         Write-Warn "Browser tools will not work until Chromium is installed."
@@ -2860,6 +3719,160 @@ function Install-NodeDeps {
         Write-Info "Installing TUI dependencies..."
         $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
         [void](_Run-NpmInstall "TUI" $tuiDir $tuiLog $npmExe)
+    }
+
+    Install-BrowserUseCli
+    Install-CuaDriver
+}
+
+# The Browser Use CLI is the default browser backend when it is runnable
+# (tools/browser_use_cli.py). Provision it at install time so fresh installs
+# don't silently fall back to the built-in browser tools. Best-effort: any
+# failure is non-fatal (browser_exec can still run via uvx, and `hermes tools`
+# can install it later).
+function Install-BrowserUseCli {
+    if (-not $script:UvCmd) { Resolve-UvCmd }
+    if (-not $script:UvCmd) {
+        Write-Info "Skipping Browser Use CLI install (uv unavailable)"
+        return
+    }
+    $managedBin = Join-Path $HermesHome "bin"
+    $managedBu = Join-Path $managedBin "browser-use.exe"
+    # MANAGED-FIRST: only Hermes' managed copy short-circuits. A browser-use
+    # on the user's PATH is a side install -- resolution prefers the managed
+    # copy, so it must be provisioned regardless.
+    if (Test-Path $managedBu) {
+        Write-Success "Browser Use CLI already installed"
+        return
+    }
+
+    Write-Info "Installing Browser Use CLI (default browser backend)..."
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # UV_TOOL_BIN_DIR keeps the binary inside Hermes' managed bin dir,
+        # where the browser tool resolves it -- no reliance on the user PATH.
+        $env:UV_TOOL_BIN_DIR = $managedBin
+        $env:UV_NO_CONFIG = "1"
+        & $script:UvCmd tool install browser-use 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Browser Use CLI installed"
+        } else {
+            Write-Warn "Browser Use CLI install failed (exit $LASTEXITCODE) -- browser automation falls back to built-in tools."
+            Write-Info "Install later with: uv tool install browser-use  (or via 'hermes tools')"
+        }
+    } catch {
+        Write-Warn "Browser Use CLI install failed: $_"
+    } finally {
+        $ErrorActionPreference = $prevEAP
+        Remove-Item Env:\UV_TOOL_BIN_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:\UV_NO_CONFIG -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-CuaDriverRuntimeContract {
+    param([Parameter(Mandatory = $true)][string]$DriverPath)
+
+    try {
+        $versionOutput = (& $DriverPath --version 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            return $false
+        }
+        $versionMatch = [regex]::Match($versionOutput, '(\d+\.\d+\.\d+)')
+        if (-not $versionMatch.Success) {
+            return $false
+        }
+        if ([version]($versionMatch.Groups[1].Value) -lt [version]'0.20.0') {
+            return $false
+        }
+
+        $manifestOutput = (& $DriverPath manifest 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $manifestOutput) {
+            return $false
+        }
+        $manifest = $manifestOutput | ConvertFrom-Json
+        if (-not $manifest.mcp_invocation.args) {
+            return $false
+        }
+
+        $required = @{
+            mcp = @('--socket', '--grant')
+            serve = @(
+                '--socket', '--permission-mode', '--capability-manifest',
+                '--approve-capability-manifest', '--embedded'
+            )
+            stop = @('--socket')
+        }
+        foreach ($commandName in $required.Keys) {
+            $command = $manifest.subcommands | Where-Object { $_.name -eq $commandName }
+            if (-not $command) {
+                return $false
+            }
+            $argNames = @($command.args | ForEach-Object { $_.name })
+            foreach ($requiredArg in $required[$commandName]) {
+                if ($requiredArg -notin $argNames) {
+                    return $false
+                }
+            }
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# cua-driver powers the computer_use toolset (background desktop control).
+# Provision it at install time so enabling the tool later -- via `hermes
+# tools`, the dashboard, or the desktop app -- is a config flip, not a
+# surprise multi-minute binary fetch. Best-effort and non-fatal: the enable
+# paths still lazy-install via install_cua_driver() (hermes_cli/tools_config)
+# when this step was skipped or failed.
+function Install-CuaDriver {
+    if ($SkipComputerUse) {
+        Write-Info "Skipping Computer Use (cua-driver) install (-SkipComputerUse)"
+        return
+    }
+    $existingCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+    if ($existingCuaDriver) {
+        if (Test-CuaDriverRuntimeContract -DriverPath $existingCuaDriver.Source) {
+            Write-Success "Computer Use driver (cua-driver) already installed and compatible"
+            return
+        }
+        Write-Warn "Existing cua-driver is old or incomplete; repairing it"
+    }
+
+    Write-Info "Installing Computer Use driver (cua-driver)..."
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # Same upstream installer `hermes computer-use install` runs. Bounded
+        # via a background job: the upstream installer serializes with its own
+        # lock (600s stale window), so the ceiling sits above that -- matching
+        # Hermes' _CUA_INSTALLER_TIMEOUT (660s).
+        $job = Start-Job -ScriptBlock {
+            Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1" | Invoke-Expression
+        }
+        if (Wait-Job $job -Timeout 660) {
+            Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            $installedCuaDriver = Get-Command cua-driver -ErrorAction SilentlyContinue
+            if ($installedCuaDriver -and (Test-CuaDriverRuntimeContract -DriverPath $installedCuaDriver.Source)) {
+                Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
+            } else {
+                Write-Warn "Computer Use driver install did not produce a compatible runtime -- repair it before enabling the tool."
+                Write-Info "Install later with: hermes computer-use install"
+            }
+        } else {
+            Stop-Job $job -ErrorAction SilentlyContinue
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            Write-Warn "Computer Use driver install timed out -- it will install on demand when you enable the tool."
+            Write-Info "Install later with: hermes computer-use install"
+        }
+    } catch {
+        Write-Warn "Computer Use driver install failed: $_"
+        Write-Info "Install later with: hermes computer-use install"
+    } finally {
+        $ErrorActionPreference = $prevEAP
     }
 }
 
@@ -3029,8 +4042,8 @@ function Install-Desktop {
 
     # Always re-resolve Node here. Stages run in separate PowerShell processes,
     # so $script:HasNode from Stage-Node isn't visible; more importantly Test-Node
-    # enforces the build floor (Node >=26) and prepends the Hermes-managed
-    # Node to PATH, so the build never runs on a too-old system Node -- the cause
+    # enforces the supported Node lines and prepends the Hermes-managed Node to
+    # PATH, so the build never runs on an unsupported system Node -- the cause
     # of the opaque "Build desktop app ... exit code 1" failure (Vite crashes on
     # old Node).
     Test-Node | Out-Null
@@ -3109,6 +4122,10 @@ function Install-Desktop {
                 Try-RestoreElectronDist -InstallDir $InstallDir | Out-Null
             } else {
                 Show-NpmCertHint ($npmOut -join "`n") | Out-Null
+                # Replay npm's own debug log into our stream: the terse
+                # summary above rarely contains the postinstall stderr
+                # (e.g. Electron's install.js) that explains the failure.
+                Write-NpmDebugLogTail -NpmOutput ($npmOut -join "`n")
                 throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
             }
         } else {
@@ -3230,10 +4247,14 @@ function Install-Desktop {
                 foreach ($line in $snippet -split "`n") { Write-Host "    $line" -ForegroundColor DarkGray }
                 Write-Info "  Full log: $buildLog"
             }
+            # `npm run pack` failures (lifecycle script exits) also land in
+            # npm's debug log; replay it so the bootstrap log carries the
+            # full evidence even when $buildLog's tail cuts off the cause.
+            Write-NpmDebugLogTail -NpmOutput $errText
             throw "apps/desktop build failed (exit $code)"
         }
         Write-Success "Desktop app built"
-        Remove-Item -Force $buildLog -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $buildLog -Force -ErrorAction SilentlyContinue
     } catch {
         if ($prevEAP) { $ErrorActionPreference = $prevEAP }
         Pop-Location
@@ -3712,11 +4733,15 @@ function Write-Completion {
 # or arrange to provide answers another way."
 $InstallStages = @(
     @{ Name = "uv";               Title = "Installing uv package manager";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Uv" }
-    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
     @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
     @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
     @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+    # Managed Python lives under $InstallDir\.hermes-runtime, so the checkout
+    # must exist before this stage creates that directory. Otherwise the later
+    # repository stage treats the runtime-only directory as a broken checkout,
+    # parks it, and leaves Stage-Venv with no managed interpreter.
+    @{ Name = "python";           Title = "Verifying Python $PythonVersion";      Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Python" }
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }
@@ -3936,6 +4961,13 @@ function Main {
 # iex` PowerShell session, and so failures in stage-driver mode produce a
 # structured JSON error frame instead of a bare exception.
 
+# Dot-sourcing loads the installer's real functions for isolated behavioral
+# tests without running an install. Normal script and `irm | iex` entry points
+# are unchanged.
+if ($MyInvocation.InvocationName -eq ".") {
+    return
+}
+
 try {
     if ($Ensure -ne "") {
         if ($PSBoundParameters.ContainsKey("Stage")) {
@@ -3952,6 +4984,11 @@ try {
 
     if ($ProtocolVersion) {
         Write-Output $InstallStageProtocolVersion
+        exit 0
+    }
+
+    if ($ShowResolvedPaths) {
+        $script:ResolvedPathReport | ConvertTo-Json -Depth 5 -Compress | Write-Output
         exit 0
     }
 

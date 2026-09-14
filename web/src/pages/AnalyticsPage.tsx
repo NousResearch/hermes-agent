@@ -182,7 +182,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 className="flex-1 min-w-0 group relative flex flex-col justify-end"
                 style={{ height: CHART_HEIGHT_PX }}
               >
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
+                <div className="absolute bottom-full start-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
                   <div className="font-mondwest normal-case bg-card border border-border px-2.5 py-1.5 text-xs text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>
@@ -254,10 +254,10 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-start py-2 pe-4 font-medium" />
+                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 ps-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -266,18 +266,18 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     key={d.day}
                     className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
                   >
-                  <td className="py-2 pr-4 font-medium">
+                  <td className="py-2 pe-4 font-medium">
                       {formatDate(d.day)}
                     </td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">
+                  <td className="text-end py-2 px-4 text-muted-foreground">
                       {d.sessions}
                     </td>
-                  <td className="text-right py-2 px-4">
+                  <td className="text-end py-2 px-4">
                     <span style={{ color: "var(--series-input-token)" }}>
                         {formatTokens(d.input_tokens)}
                       </span>
                   </td>
-                  <td className="text-right py-2 pl-4">
+                  <td className="text-end py-2 ps-4">
                     <span style={{ color: "var(--series-output-token)" }}>
                         {formatTokens(d.output_tokens)}
                       </span>
@@ -313,9 +313,9 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-start py-2 pe-4 font-medium" />
+                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 ps-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -324,13 +324,13 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                   key={m.model}
                   className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
                 >
-                  <td className="py-2 pr-4">
+                  <td className="py-2 pe-4">
                     <span className="font-mono-ui text-xs">{m.model}</span>
                   </td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">
+                  <td className="text-end py-2 px-4 text-muted-foreground">
                     {m.sessions}
                   </td>
-                  <td className="text-right py-2 pl-4">
+                  <td className="text-end py-2 ps-4">
                     <span style={{ color: "var(--series-input-token)" }}>
                       {formatTokens(m.input_tokens)}
                     </span>
@@ -368,11 +368,11 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.skill} col="skill" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.analytics.loads} col="view_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.edits} col="manage_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.total} col="total_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.lastUsed} col="last_used_at" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label={t.analytics.skill} col="skill" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-start py-2 pe-4 font-medium" />
+                <SortHeader label={t.analytics.loads} col="view_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.edits} col="manage_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.total} col="total_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 px-4 font-medium" />
+                <SortHeader label={t.analytics.lastUsed} col="last_used_at" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-end py-2 ps-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -381,17 +381,17 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
                   key={skill.skill}
                   className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
                 >
-                  <td className="py-2 pr-4">
+                  <td className="py-2 pe-4">
                     <span className="font-mono-ui text-xs">{skill.skill}</span>
                   </td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">
+                  <td className="text-end py-2 px-4 text-muted-foreground">
                     {skill.view_count}
                   </td>
-                  <td className="text-right py-2 px-4 text-muted-foreground">
+                  <td className="text-end py-2 px-4 text-muted-foreground">
                     {skill.manage_count}
                   </td>
-                  <td className="text-right py-2 px-4">{skill.total_count}</td>
-                  <td className="text-right py-2 pl-4 text-muted-foreground">
+                  <td className="text-end py-2 px-4">{skill.total_count}</td>
+                  <td className="text-end py-2 ps-4 text-muted-foreground">
                     {skill.last_used_at ? timeAgo(skill.last_used_at) : "—"}
                   </td>
                 </tr>

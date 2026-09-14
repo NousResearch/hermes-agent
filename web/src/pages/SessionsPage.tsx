@@ -456,7 +456,7 @@ function MessageList({
   return (
     <div
       ref={containerRef}
-      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2"
+      className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pe-2"
     >
       {messages.map((msg, i) => (
         <MessageBubble key={i} msg={msg} highlight={highlight} />
@@ -527,7 +527,7 @@ function SessionRow({
   const actionButtons = (
     <>
       <Badge tone="outline" className="text-xs">
-        <SourceIcon className={`mr-1 h-3 w-3 ${sourceInfo.color}`} />
+        <SourceIcon className={`me-1 h-3 w-3 ${sourceInfo.color}`} />
         {session.source ? sourceLabel(session.source) : "local"}
       </Badge>
 
@@ -697,7 +697,7 @@ function SessionRow({
                 )}
                 {session.is_active && (
                   <Badge tone="success" className="shrink-0 text-xs">
-                    <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                    <span className="me-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                     {t.common.live}
                   </Badge>
                 )}
@@ -1860,7 +1860,7 @@ export default function SessionsPage() {
 
               {sourceMenuOpen && (
                 <div
-                  className="absolute left-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
+                  className="absolute start-0 top-full z-30 mt-1 w-[18rem] max-w-[calc(100vw-2rem)] border border-border bg-background-base shadow-lg"
                 >
                   <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
                     <span className="min-w-0 truncate text-xs text-muted-foreground">
@@ -1904,7 +1904,7 @@ export default function SessionsPage() {
                             />
                             <button
                               type="button"
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs"
+                              className="flex min-w-0 flex-1 items-center gap-2 text-start text-xs"
                               onClick={() => toggleSourceFilter(source)}
                             >
                               <SourceIcon className={`h-3.5 w-3.5 shrink-0 ${sourceColor}`} />
@@ -1940,21 +1940,21 @@ export default function SessionsPage() {
             {showList && (
               <div className="relative min-w-0 w-full sm:w-auto sm:min-w-[12rem] sm:max-w-md sm:flex-1">
                 {searching ? (
-                  <Spinner className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
+                  <Spinner className="absolute start-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
                 ) : (
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                  <Search className="absolute start-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 )}
                 <Input
                   placeholder={t.sessions.searchPlaceholder}
                   value={search}
                   onChange={(e) => updateSearch(e.target.value)}
-                  className="h-8 py-0 pr-7 pl-8 text-xs leading-none"
+                  className="h-8 py-0 pe-7 ps-8 text-xs leading-none"
                 />
                 {search && (
                   <Button
                     ghost
                     size="xs"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    className="absolute end-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                     onClick={() => updateSearch("")}
                     aria-label={t.common.clear}
                   >
@@ -2184,7 +2184,7 @@ export default function SessionsPage() {
                       tone="outline"
                       className="shrink-0 self-start text-xs sm:self-center"
                     >
-                      <Database className="mr-1 h-3 w-3" />
+                      <Database className="me-1 h-3 w-3" />
                       {s.source ? sourceLabel(s.source) : "local"}
                     </Badge>
                   </div>

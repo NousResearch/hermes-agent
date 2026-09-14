@@ -3010,12 +3010,21 @@ def _iter_httpx_pool_objects(http_client: Any):
 
 
 def _connection_candidates(conn: Any):
-    """Walk nested ``_connection`` wrappers (proxy tunnel → HTTP11/2)."""
+    """Walk nested wrappers: proxy tunnels (``_connection``) plus httpx/httpcore
+    stream envelopes (``_stream``/``_httpcore_stream``: BoundSyncStream →
+    ResponseStream → connection byte stream → HTTP11/2 connection)."""
     seen: set[int] = set()
-    while conn is not None and id(conn) not in seen:
-        seen.add(id(conn))
-        yield conn
-        conn = getattr(conn, "_connection", None)
+    stack = [conn]
+    while stack:
+        obj = stack.pop()
+        if obj is None or id(obj) in seen:
+            continue
+        seen.add(id(obj))
+        yield obj
+        for attr in ("_connection", "_stream", "_httpcore_stream"):
+            nxt = getattr(obj, attr, None)
+            if nxt is not None and id(nxt) not in seen:
+                stack.append(nxt)
 
 
 def _socket_from_stream(stream: Any):

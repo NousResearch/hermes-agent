@@ -1007,6 +1007,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
     # narrow and deduplicate Discord gateway replays.
     _TTS_REACTION_EMOJIS = frozenset({"🔈", "🔊"})
     _TTS_REACTION_MAX_DEDUP_KEYS = 256
+    _TTS_REACTION_MAX_ATTEMPTS = 6
+    _TTS_REACTION_RETRY_DELAY_SECONDS = 10
 
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
     VOICE_TIMEOUT = 300
@@ -2846,34 +2848,54 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         content = re.sub(r"(?m)^\s*\[\[(?:audio_as_voice|as_document)\]\]\s*$", "", content)
         return re.sub(r"(?m)^\s*MEDIA:\S+\s*$", "", content).strip()
 
+    async def _attempt_tts_reaction_delivery(
+        self, *, chat_id: str, spoken_text: str, reply_to: str
+    ) -> None:
+        """Synthesize and send one TTS reaction attempt, cleaning up any output."""
+        from tools.tts_tool import text_to_speech_tool
+
+        raw = await asyncio.to_thread(
+            text_to_speech_tool, text=spoken_text,
+            output_path=build_auto_tts_output_path(self.platform),
+        )
+        result = json.loads(raw)
+        paths = [str(path) for path in (result.get("file_paths") or [result.get("file_path")])
+                 if path and os.path.isfile(str(path))]
+        if not result.get("success") or not paths:
+            raise RuntimeError(result.get("error", "no attachable audio output"))
+        for path in paths:
+            try:
+                await self.send_voice(chat_id=chat_id, audio_path=path, reply_to=reply_to)
+            finally:
+                with suppress(OSError):
+                    os.remove(path)
+
     async def _send_tts_reaction_audio(self, *, chat_id: str, text: str, reply_to: str) -> None:
-        try:
-            from tools.tts_tool import check_tts_requirements, text_to_speech_tool
-            if not check_tts_requirements():
-                logger.warning("[%s] Reaction TTS requested but no TTS provider is available", self.name)
+        from tools.tts_tool import check_tts_requirements
+
+        if not check_tts_requirements():
+            logger.warning("[%s] Reaction TTS requested but no TTS provider is available", self.name)
+            return
+        spoken_text = self.prepare_tts_text(text)
+        if not spoken_text:
+            return
+        for attempt in range(1, self._TTS_REACTION_MAX_ATTEMPTS + 1):
+            try:
+                await self._attempt_tts_reaction_delivery(
+                    chat_id=chat_id, spoken_text=spoken_text, reply_to=reply_to,
+                )
                 return
-            spoken_text = self.prepare_tts_text(text)
-            if not spoken_text:
-                return
-            raw = await asyncio.to_thread(
-                text_to_speech_tool, text=spoken_text,
-                output_path=build_auto_tts_output_path(self.platform),
-            )
-            result = json.loads(raw)
-            paths = [str(path) for path in (result.get("file_paths") or [result.get("file_path")])
-                     if path and os.path.isfile(str(path))]
-            if not result.get("success") or not paths:
-                raise RuntimeError(result.get("error", "no attachable audio output"))
-            for path in paths:
-                try:
-                    await self.send_voice(chat_id=chat_id, audio_path=path, reply_to=reply_to)
-                finally:
-                    with suppress(OSError):
-                        os.remove(path)
-        except Exception:
-            logger.warning("[%s] Reaction TTS failed", self.name, exc_info=True)
-            await self.send(chat_id, "🎙️ Audio generation failed before delivery. You can react again to retry.",
-                            reply_to=reply_to, metadata={"non_conversational": True})
+            except Exception:
+                logger.warning(
+                    "[%s] Reaction TTS attempt %s/%s failed",
+                    self.name, attempt, self._TTS_REACTION_MAX_ATTEMPTS, exc_info=True,
+                )
+                if attempt < self._TTS_REACTION_MAX_ATTEMPTS:
+                    await asyncio.sleep(self._TTS_REACTION_RETRY_DELAY_SECONDS)
+        await self.send(
+            chat_id, "🎙️ Audio generation failed after 6 attempts. Please try again later.",
+            reply_to=reply_to, metadata={"non_conversational": True},
+        )
 
     async def _on_tts_reaction(self, payload: Any) -> bool:
         """Read a reacted-to bot message aloud for an authorized user, once per reaction."""

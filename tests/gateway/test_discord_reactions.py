@@ -171,3 +171,23 @@ def test_speaker_reaction_strips_transport_only_media_directives(adapter):
     ) == "Visible text"
 
 
+@pytest.mark.asyncio
+async def test_speaker_reaction_retries_tts_six_times_before_one_failure_notice(adapter, monkeypatch):
+    """Transient TTS faults wait ten seconds and retry without making the user re-react."""
+    attempt = AsyncMock(side_effect=[RuntimeError("provider unavailable")] * 6)
+    sleep = AsyncMock()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="failure"))
+    monkeypatch.setattr("tools.tts_tool.check_tts_requirements", lambda: True)
+    monkeypatch.setattr(adapter, "_attempt_tts_reaction_delivery", attempt, raising=False)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    await adapter._send_tts_reaction_audio(chat_id="123", text="Visible reply", reply_to="88")
+
+    assert attempt.await_count == 6
+    assert sleep.await_args_list == [((10,),)] * 5
+    adapter.send.assert_awaited_once_with(
+        "123", "🎙️ Audio generation failed after 6 attempts. Please try again later.",
+        reply_to="88", metadata={"non_conversational": True},
+    )
+
+

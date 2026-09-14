@@ -76,4 +76,61 @@ class TestApplyIPv4Preference:
         assert calls[-1] == socket.AF_INET6, "Explicit AF_INET6 should pass through"
 
 
+class TestEaiAgainFallback:
+    """Tests for the gateway's AI_ADDRCONFIG fallback."""
+
+    def setup_method(self):
+        self._original = socket.getaddrinfo
+
+    def teardown_method(self):
+        socket.getaddrinfo = self._original
+
+    def test_retries_eai_again_without_addrconfig(self):
+        from hermes_constants import apply_getaddrinfo_eai_again_fallback
+
+        calls = []
+        expected = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+
+        def degraded_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            calls.append((host, port, family, type, proto, flags))
+            if flags & socket.AI_ADDRCONFIG:
+                raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+            return expected
+
+        socket.getaddrinfo = degraded_getaddrinfo
+        apply_getaddrinfo_eai_again_fallback()
+
+        result = socket.getaddrinfo(
+            "gateway.test", 443, socket.AF_UNSPEC, socket.SOCK_STREAM, 6,
+            socket.AI_ADDRCONFIG | socket.AI_CANONNAME)
+
+        assert result == expected
+        assert calls == [
+            ("gateway.test", 443, socket.AF_UNSPEC, socket.SOCK_STREAM, 6,
+             socket.AI_ADDRCONFIG | socket.AI_CANONNAME),
+            ("gateway.test", 443, socket.AF_UNSPEC, socket.SOCK_STREAM, 6,
+             socket.AI_CANONNAME),
+        ]
+
+    def test_does_not_retry_other_resolution_failures(self):
+        from hermes_constants import apply_getaddrinfo_eai_again_fallback
+
+        calls = []
+
+        def missing_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            calls.append(flags)
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+        socket.getaddrinfo = missing_getaddrinfo
+        apply_getaddrinfo_eai_again_fallback()
+
+        try:
+            socket.getaddrinfo("missing.test", 443, flags=socket.AI_ADDRCONFIG)
+        except socket.gaierror as exc:
+            assert exc.errno == socket.EAI_NONAME
+        else:
+            raise AssertionError("EAI_NONAME must propagate")
+        assert calls == [socket.AI_ADDRCONFIG]
+
+
 

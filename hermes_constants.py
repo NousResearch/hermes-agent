@@ -1126,6 +1126,33 @@ def get_env_path() -> Path:
     return get_hermes_home() / ".env"
 
 
+def apply_getaddrinfo_eai_again_fallback() -> None:
+    """Retry ``AI_ADDRCONFIG`` EAI_AGAIN failures without the address-config probe.
+
+    glibc performs its interface check before NSS when ``AI_ADDRCONFIG`` is set.  If that
+    process-local check degrades, even names in ``/etc/hosts`` fail immediately.  aiohttp sets
+    the flag on every lookup; retrying without only that hint reaches NSS while preserving the
+    requested family, socket type, protocol, and all other flags.
+    """
+    import socket
+
+    if getattr(socket.getaddrinfo, "_hermes_eai_again_fallback", False):
+        return
+    original_getaddrinfo = socket.getaddrinfo
+    addrconfig = getattr(socket, "AI_ADDRCONFIG", 0)
+
+    def _getaddrinfo_with_fallback(host, port, family=0, type=0, proto=0, flags=0):
+        try:
+            return original_getaddrinfo(host, port, family, type, proto, flags)
+        except socket.gaierror as exc:
+            if not addrconfig or exc.errno != socket.EAI_AGAIN or not flags & addrconfig:
+                raise
+            return original_getaddrinfo(host, port, family, type, proto, flags & ~addrconfig)
+
+    _getaddrinfo_with_fallback._hermes_eai_again_fallback = True  # type: ignore[attr-defined]
+    socket.getaddrinfo = _getaddrinfo_with_fallback  # type: ignore[assignment]
+
+
 def apply_ipv4_preference(force: bool = False) -> None:
     """Monkey-patch ``socket.getaddrinfo`` to prefer IPv4 when *force* is True.
 

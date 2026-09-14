@@ -2042,9 +2042,10 @@ if _config_path.exists():
             "your current config.yaml. Run `hermes doctor` to investigate.",
             file=sys.stderr)
 
-# IPv4 preference must apply before any HTTP clients are created.
+# Resolver workarounds and IPv4 preference must apply before any HTTP clients are created.
 try:
-    from hermes_constants import apply_ipv4_preference
+    from hermes_constants import apply_getaddrinfo_eai_again_fallback, apply_ipv4_preference
+    apply_getaddrinfo_eai_again_fallback()
     _network_cfg = _cfg.get("network", {})
     if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
         apply_ipv4_preference(force=True)

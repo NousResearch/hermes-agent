@@ -46,7 +46,7 @@ import {
 } from '@/store/review'
 import { $currentCwd } from '@/store/session'
 
-import { pickRevealLabel } from '../file-actions'
+import { attachFileAsContext, pickRevealLabel } from '../file-actions'
 
 import {
   buildReviewFlatList,
@@ -521,6 +521,8 @@ function ReviewFileContextMenu({
             {m.copyRelativePath}
           </ContextMenuItem>
         )}
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => attachFileAsContext(dragPath, false, cwd)}>{t.common.addAsContext}</ContextMenuItem>
         {shouldOfferRemoteFileDownload(false) && (
           <>
             <ContextMenuSeparator />

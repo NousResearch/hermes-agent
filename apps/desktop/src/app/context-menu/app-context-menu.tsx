@@ -630,7 +630,19 @@ export function AppContextMenu() {
       // `mergeProps(slotProps, childProps)` so the child's `data-slot` wins
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
-      if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
+      // A DISABLED trigger does not own the gesture: Radix will not open it
+      // and does not preventDefault, so deferring here would leave the click
+      // with no menu at all. Radix stamps `data-disabled` on the trigger
+      // element (Slot-merged with `asChild`), so an enabled trigger defers
+      // and a disabled one falls through to the app menu / skip-attr rules —
+      // the surfaces that mount-but-deactivate a custom menu (message
+      // context menus that only arm when text is selected) keep the exact
+      // right-click behavior they had before mounting it.
+      const ownedTrigger = element?.closest(
+        `[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`
+      )
+
+      if (ownedTrigger && !ownedTrigger.matches('[data-disabled]')) {
         return
       }
 

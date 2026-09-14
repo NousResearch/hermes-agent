@@ -153,8 +153,16 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           .filter(Boolean)
           .join('\n')
 
+        const textAttachmentBlocks = present
+          .filter(a => a.kind === 'text' && a.textContent)
+          .map(a => {
+            const quoted = a.textContent!.split('\n').map(line => `> ${line}`).join('\n')
+            return `> Referenced from earlier in the conversation:\n${quoted}`
+          })
+          .join('\n\n')
+
         return (
-          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          [textAttachmentBlocks, contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
           (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }

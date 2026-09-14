@@ -78,3 +78,22 @@ def test_ingest_accepts_native_producer_rows_without_losing_error_or_task_identi
     assert all(record.observed_at.endswith("+00:00") for record in records)
     batch_records = [record for record in records if record.task.input.startswith("repair batch")]
     assert len({record.task.task_id for record in batch_records}) == 2
+
+
+def test_ingest_assigns_distinct_repeatable_ids_to_trace_less_runner_errors(tmp_path):
+    source = tmp_path / "fix_results" / "errors.jsonl"
+    source.parent.mkdir()
+    rows = (
+        {"completed": False, "error": "sandbox setup failed", "conversations": []},
+        {"completed": False, "error": "sandbox cleanup failed", "conversations": []},
+    )
+    source.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    first = PathologyArchive(tmp_path / "first.jsonl")
+    second = PathologyArchive(tmp_path / "second.jsonl")
+    assert first.ingest_fix_results(tmp_path / "fix_results", harness_version="factory-v1") == 2
+    assert second.ingest_fix_results(tmp_path / "fix_results", harness_version="factory-v1") == 2
+
+    first_ids = [record.task.task_id for record in first]
+    assert len(set(first_ids)) == 2
+    assert first_ids == [record.task.task_id for record in second]

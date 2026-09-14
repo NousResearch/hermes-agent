@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any
 from urllib.request import Request, urlopen
@@ -14,8 +15,10 @@ class BatteryScore:
     cost: float
 
     def __post_init__(self) -> None:
-        if self.cost < 0:
-            raise ValueError("battery score cost must be non-negative")
+        if type(self.passed) is not bool:
+            raise ValueError("battery score passed must be a boolean")
+        if isinstance(self.cost, bool) or not isinstance(self.cost, (int, float)) or not math.isfinite(self.cost) or self.cost < 0:
+            raise ValueError("battery score cost must be a finite non-negative number")
 
 
 class SealedBatteryClient:
@@ -42,6 +45,6 @@ class SealedBatteryClient:
             raw: Any = json.load(response)
         if not isinstance(raw, dict) or set(raw) != {"passed", "cost"}:
             raise ValueError("sealed scorer response must contain only passed and cost")
-        if not isinstance(raw["passed"], bool) or not isinstance(raw["cost"], (int, float)):
+        if type(raw["passed"]) is not bool or isinstance(raw["cost"], bool) or not isinstance(raw["cost"], (int, float)):
             raise ValueError("sealed scorer returned invalid passed/cost values")
         return BatteryScore(raw["passed"], float(raw["cost"]))

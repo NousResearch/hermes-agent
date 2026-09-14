@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from evolver.battery import BatteryScore
 from evolver.calibration import CalibrationCase, CalibrationPolicy, calibrate
 from evolver.gates import ActivationEvidence, CreditPolicy, PairedScore, ValidityEvidence, evaluate_credit
@@ -78,3 +80,25 @@ def test_credit_gate_charges_candidate_cost_for_newly_solved_tasks():
     assert decision.metrics["cost_ratio_all_pairs"] == 1_000_000.0
     assert decision.passed is False
     assert decision.reason == "candidate exceeded the pre-registered cost bound"
+
+
+@pytest.mark.parametrize(
+    ("passed", "cost"),
+    ((1, 1.0), (True, True), (True, float("nan")), (True, float("inf")), (True, -1.0)),
+)
+def test_battery_score_rejects_malformed_evidence(passed, cost):
+    with pytest.raises(ValueError):
+        BatteryScore(passed, cost)
+
+
+def test_calibration_rejects_malformed_battery_score():
+    raw = {
+        "case_id": "bad-evidence",
+        "label": "known_bad",
+        "validity": {"schema_valid": True, "tests_passed": True, "policy_compliant": True},
+        "activation": {"replayed_trace_ids": [], "activated_trace_ids": []},
+        "scores": [{"task_id": "sealed-1", "baseline": {"passed": False, "cost": 1.0}, "candidate": {"passed": True, "cost": float("nan")}}],
+    }
+
+    with pytest.raises(ValueError):
+        CalibrationCase.from_dict(raw)

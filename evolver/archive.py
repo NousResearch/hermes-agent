@@ -181,6 +181,7 @@ def record_from_fix_result(
     harness_version: str | None = None,
     failure_class: str | None = None,
     source: str | None = None,
+    source_identity: str | None = None,
 ) -> PathologyRecord | None:
     """Convert a mini_swe_runner/batch_runner record; successful runs are ignored."""
 
@@ -193,11 +194,15 @@ def record_from_fix_result(
     if not prompt:
         human = next((turn for turn in trajectory if turn.get("from") in {"human", "user"}), None)
         prompt = human.get("value") or human.get("content") if human else None
-    if not prompt and failure == "runner_error":
+    task_input_unavailable = not prompt and failure == "runner_error"
+    if task_input_unavailable:
         prompt = "[task unavailable: runner failed before trajectory capture]"
     prompt = _require_text(prompt, "task input")
     resolved_harness = str(harness_version or metadata.get("harness_version") or metadata.get("model") or "unknown")
-    fallback_task_id = f"task-{_stable_hex({'harness_version': resolved_harness, 'input': prompt}, 12)}"
+    fallback_identity: Any = source_identity if task_input_unavailable and source_identity else prompt
+    if task_input_unavailable and source_identity is None:
+        fallback_identity = trajectory
+    fallback_task_id = f"task-{_stable_hex({'harness_version': resolved_harness, 'input': fallback_identity}, 12)}"
     resolved_task_id = str(task_id or result.get("task_id") or fallback_task_id)
     trace_id = _stable_hex({"task_id": resolved_task_id, "trajectory": trajectory}, 32)
     spans: list[Span] = []
@@ -264,10 +269,16 @@ class PathologyArchive:
         for path in paths:
             with path.open(encoding="utf-8") as handle:
                 rows = [json.loads(line) for line in handle if line.strip()] if path.suffix == ".jsonl" else [json.load(handle)]
-            for row in rows:
+            source_namespace = path.name if root.is_file() else path.relative_to(root).as_posix()
+            for row_number, row in enumerate(rows, 1):
                 if not isinstance(row, Mapping):
                     raise ValueError(f"fix result must be a JSON object: {path}")
-                record = record_from_fix_result(row, harness_version=harness_version, source=str(path))
+                record = record_from_fix_result(
+                    row,
+                    harness_version=harness_version,
+                    source=str(path),
+                    source_identity=f"{source_namespace}:{row_number}",
+                )
                 if record is not None:
                     self.append(record)
                     written += 1

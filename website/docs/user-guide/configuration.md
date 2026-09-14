@@ -421,7 +421,38 @@ User-declared volumes use `HOST:TARGET` or `HOST:TARGET:ro`. They are writable u
 
 Commands execute in Linux, not on the macOS host. Host paths such as `/Users/name/project` and host-only tools are not directly available unless you explicitly mount them. The initial backend is one container per Hermes task; multi-container Compose-style services are not supported.
 
+The live container belongs to the Hermes process that created it. Hermes keeps
+an attached input pipe open to a bash keepalive. After startup, if the owner
+exits (including SIGKILL), the pipe closes and the keepalive exits. Apple
+Container then automatically stops and removes the container without waiting
+for Hermes to restart. Normal cleanup also retains explicit stop/delete
+fallbacks.
+
+`container_persistent: true` preserves the host-backed `/workspace` and `/root`
+directories, not running guest processes. Custom images must provide `bash`
+on PATH; Hermes overrides the image entrypoint to implement this lifetime
+contract. This does not remove historical orphan containers or leftover host
+credential-staging directories. Runtime-service failures may still require
+operator recovery.
+
 `terminal.apple_container_extra_args` passes additional `container run` flags verbatim immediately before the image. Use `["--network", "none"]` to disable network access or add extra `--tmpfs` mounts. Every entry must be a string without control characters. Use this escape hatch carefully: flags that conflict with Hermes' generated read-only, resource, or mount options can weaken the sandbox.
+
+Lifecycle controls are reserved: extra arguments cannot replace the container
+name or entrypoint, request detached or TTY operation, or insert an option
+terminator (`--`). Reserved-looking tokens are rejected even when used as
+another flag's value. For nonempty extras, Hermes checks option/flag boundaries
+against the installed CLI's `container run --experimental-dump-help` metadata
+before creating a container. Unknown options, missing or empty values,
+positional image/command tokens, and bare `-` are rejected. Supply option
+values as separate entries or explicit nonempty single-short/long `=value` forms, such as
+`["-c", "1"]`, `["-c=1"]`, or `["-v=/tmp:/mnt"]`; joined-short forms like
+`-c1` and `-v/tmp:/mnt` are rejected. Short boolean flags may precede a final
+value-taking option only with a separate value, such as `["-iv", "/tmp:/mnt"]`.
+Clustered `=value` forms such as `-iv=/tmp:/mnt` and `-ic=1` are rejected.
+Use `--option=-value` for dash-leading values. Unavailable or unsupported
+metadata fails validation closed; remove the extras or use a CLI with
+supported metadata. Network, resource, and mount options remain available;
+invalid runtime values still fail startup and trigger cleanup.
 
 Environment overrides are `TERMINAL_APPLE_CONTAINER_IMAGE`, `TERMINAL_APPLE_CONTAINER_VOLUMES`, and `TERMINAL_APPLE_CONTAINER_EXTRA_ARGS` (the two list-valued settings use JSON arrays). Shared `TERMINAL_CONTAINER_CPU`, `TERMINAL_CONTAINER_MEMORY`, `TERMINAL_CONTAINER_PERSISTENT`, and `TERMINAL_TIMEOUT` overrides also apply.
 

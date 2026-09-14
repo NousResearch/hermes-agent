@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import urllib.parse
 from typing import Optional
 
@@ -132,11 +133,32 @@ def resolve_public_url() -> str:
 
 # --- dashboard.native_redirect_schemes --------------------------------------
 
+# RFC 3986 §3.1 scheme syntax: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+_SCHEME_SYNTAX_RE = re.compile(r"^[a-z][a-z0-9+.-]*$")
+
+# Web, script, and file-handler schemes that must never be reachable as a native
+# custom-scheme redirect target, even via operator misconfiguration — RFC 8252 §7.1's
+# private-use custom-scheme contract is specifically NOT these. Loopback HTTP is (and
+# stays) governed solely by ``_validate_loopback_redirect_uri``, never this allowlist.
+_RESERVED_NATIVE_SCHEMES = frozenset({
+    "http", "https", "javascript", "vbscript", "data", "file", "ftp", "ftps",
+    "ws", "wss", "blob", "about", "chrome", "chrome-extension", "moz-extension",
+    "resource", "view-source", "intent",
+})
+
+
 def native_redirect_schemes() -> list:
     """Allowlisted custom URL schemes (``dashboard.native_redirect_schemes``) for the native
     RFC 8252 redirect, lower-cased. Empty by default: loopback-only behaviour is unchanged
-    when the operator has not opted in."""
+    when the operator has not opted in. Entries that are not syntactically valid URI schemes,
+    or that name a reserved web/script/file-handler scheme, are dropped here — the single
+    place this allowlist is read — so a misconfiguration can never turn the public
+    authorize route into a web or dangerous-scheme open redirect."""
     raw = _load_dashboard_section().get("native_redirect_schemes", [])
     if not isinstance(raw, list):
         return []
-    return [s.strip().lower() for s in raw if isinstance(s, str) and s.strip()]
+    cleaned = (s.strip().lower() for s in raw if isinstance(s, str) and s.strip())
+    return [
+        s for s in cleaned
+        if _SCHEME_SYNTAX_RE.match(s) and s not in _RESERVED_NATIVE_SCHEMES
+    ]

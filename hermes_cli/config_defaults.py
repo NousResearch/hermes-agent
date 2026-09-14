@@ -968,7 +968,10 @@ DEFAULT_CONFIG = {
         # "<scheme>://oauth" or "<scheme>://oauth/callback" (no query/fragment); a reverse-DNS
         # private-use scheme (e.g. "com.example.myapp") is recommended so it can't collide with a
         # scheme another installed app registered, but the allowlist itself is the security
-        # boundary — being listed here is what's trusted, not the scheme's shape.
+        # boundary for which private-use scheme is trusted. It is not, however, a way to bless a
+        # web/script/file-handler scheme: "http", "https", "javascript", "file", and other
+        # reserved/dangerous schemes are rejected even if listed here — see
+        # ``dashboard_auth.prefix.native_redirect_schemes()``.
         "native_redirect_schemes": [],
         # Username/password gate (dashboard_auth/basic plugin, no OAuth IDP). Active when username
         # plus password_hash (preferred) or password (hashed in-memory) are set; empty username =

@@ -334,6 +334,114 @@ def test_native_authorize_loopback_unaffected_by_configured_schemes(gated_client
     assert "code=stub_code" in r.headers["location"]
 
 
+# ---------------------------------------------------------------------------
+# Reserved/dangerous scheme rejection (native_redirect_schemes safety net) —
+# gaoanze888's review on PR #109467: the allowlist must never be able to bless
+# a web/script/file-handler scheme, even via operator misconfiguration.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "scheme", ["http", "https", "javascript", "vbscript", "file", "data", "ftp", "intent"],
+)
+def test_native_authorize_rejects_reserved_scheme_even_if_allowlisted(
+    gated_client, monkeypatch, scheme,
+):
+    """A reserved web/script/file-handler scheme configured into
+    ``dashboard.native_redirect_schemes`` must still be rejected — the allowlist is a
+    boundary for private-use custom schemes, not a way to bless a dangerous one."""
+    _set_native_redirect_schemes(monkeypatch, [scheme, "com.stephenthorn.herald"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, f"{scheme}://oauth"),
+    )
+    assert r.status_code == 400, r.text
+    # The scheme's own redirect is refused, but the co-configured legitimate scheme still works.
+    r2 = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "com.stephenthorn.herald://oauth"),
+    )
+    assert r2.status_code == 302, r2.text
+
+
+def test_native_authorize_rejects_reserved_scheme_uppercase_in_config(gated_client, monkeypatch):
+    """Case must not let a reserved scheme sneak past: an operator writing ``HTTPS`` (or any
+    other casing) into config.yaml is still rejected, matching the lower-cased comparison
+    used for the redirect_uri's own scheme."""
+    _set_native_redirect_schemes(monkeypatch, ["HTTPS", "JavaScript"])
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "https://oauth"),
+    )
+    assert r.status_code == 400, r.text
+    r2 = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "javascript://oauth"),
+    )
+    assert r2.status_code == 400, r2.text
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "com example",  # embedded space
+        "com.example://not-allowed",  # scheme entry accidentally includes a URI, not just a scheme
+        "1com.example",  # RFC 3986 schemes must start with a letter
+        "com_example",  # underscore is not a valid scheme character
+        "",  # blank after stripping — already covered by the truthiness filter, kept for clarity
+    ],
+)
+def test_native_redirect_schemes_drops_malformed_entries(monkeypatch, malformed):
+    """``native_redirect_schemes()`` — the single place the allowlist is read — drops entries
+    that are not syntactically valid RFC 3986 schemes, so a typo'd config value can never
+    become a live allowlist entry the route trusts."""
+    from hermes_cli.dashboard_auth import prefix
+
+    _set_native_redirect_schemes(monkeypatch, [malformed, "com.stephenthorn.herald"])
+    assert prefix.native_redirect_schemes() == ["com.stephenthorn.herald"]
+
+
+def test_native_redirect_schemes_canonicalizes_case(monkeypatch):
+    """Config entries are lower-cased once, centrally, so ``routes.py``'s membership check
+    never has to re-normalize casing itself."""
+    from hermes_cli.dashboard_auth import prefix
+
+    _set_native_redirect_schemes(monkeypatch, ["Com.StephenThorn.Herald"])
+    assert prefix.native_redirect_schemes() == ["com.stephenthorn.herald"]
+
+
+def test_native_redirect_schemes_realistic_config_file_rejects_reserved_scheme(
+    gated_client, tmp_path, monkeypatch,
+):
+    """End-to-end against an actual config.yaml on disk (not a stubbed ``load_config``): an
+    operator who pastes a reserved scheme into their real config file is still refused."""
+    from hermes_cli.config import load_config
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "dashboard:\n"
+        "  native_redirect_schemes:\n"
+        "    - https\n"
+        "    - com.stephenthorn.herald\n"
+    )
+    monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
+
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "https://oauth"),
+    )
+    assert r.status_code == 400, r.text
+
+    r2 = gated_client.get(
+        "/auth/native/authorize",
+        params=_custom_scheme_params(challenge, "com.stephenthorn.herald://oauth"),
+    )
+    assert r2.status_code == 302, r2.text
+
+
 def test_native_custom_scheme_full_roundtrip(gated_client, monkeypatch):
     """authorize -> callback -> loopback-equivalent app redirect -> token exchange, using an
     allowlisted custom scheme end to end."""

@@ -499,6 +499,19 @@ function Invoke-NativeWithRelaxedErrorAction {
         $ErrorActionPreference = $prevEAP
     }
 }
+
+function Test-UvIllegalInstructionExitCode {
+    param($ExitCode)
+
+    if ($null -eq $ExitCode) { return $false }
+    try {
+        $numericExitCode = [long]$ExitCode
+        return $numericExitCode -eq -1073741795 -or $numericExitCode -eq 3221225501
+    } catch {
+        return $false
+    }
+}
+
 function Discard-LockfileChurn {
     param([string]$Repo = $InstallDir)
 
@@ -2901,6 +2914,7 @@ function Install-Dependencies {
     # previous venv is restored before the error propagates, and the parked
     # tree is deleted only after the imports prove the replacement usable.
     try {
+    $usePipFallback = $false
     if (Test-Path "uv.lock") {
         Write-Info "Trying tier: hash-verified (uv.lock) ..."
         # Critical flag choice: `--extra all`, NOT `--all-extras`.
@@ -2918,13 +2932,23 @@ function Install-Dependencies {
         # in the wrong directory and imports fail with ModuleNotFoundError.
         # (Mirrors the same flag in scripts/install.sh::install_deps.)
         $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
-        Invoke-NativeWithRelaxedErrorAction { & $UvCmd sync --extra all --locked }
-        if ($LASTEXITCODE -eq 0) {
+        $script:DependencyExitCode = $null
+        Invoke-NativeWithRelaxedErrorAction {
+            & $UvCmd sync --extra all --locked
+            $script:DependencyExitCode = $LASTEXITCODE
+        }
+        $uvExitCode = $script:DependencyExitCode
+        if ($uvExitCode -eq 0) {
             Write-Success "Main package installed (hash-verified via uv.lock)"
             $script:InstalledTier = "hash-verified (uv.lock)"
             # Skip the rest of the tiered cascade -- we already have a
             # complete, hash-verified install.
             $skipPipFallback = $true
+        } elseif (Test-UvIllegalInstructionExitCode $uvExitCode) {
+            Write-Warn "uv.exe exited with EXCEPTION_ILLEGAL_INSTRUCTION (0xC000001D). Switching to pip fallback."
+            Write-Warn "The pip fallback resolves packages without uv.lock hash verification."
+            $usePipFallback = $true
+            $skipPipFallback = $false
         } else {
             Write-Warn "uv.lock sync failed (lockfile may be stale), falling back to PyPI resolve..."
             $skipPipFallback = $false
@@ -2990,21 +3014,76 @@ except Exception:
         @{ Name = "core only (no extras)"; Spec = "." }
     )
     $installed = $skipPipFallback
-    if (-not $skipPipFallback) {
+    if (-not $skipPipFallback -and -not $usePipFallback) {
         foreach ($tier in $installTiers) {
-        Write-Info "Trying tier: $($tier.Name) ..."
-        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install -e $tier.Spec }
-        if ($LASTEXITCODE -eq 0) {
-            Write-Success "Main package installed ($($tier.Name))"
-            $script:InstalledTier = $tier.Name
-            $installed = $true
-            break
+            Write-Info "Trying tier: $($tier.Name) ..."
+            $script:DependencyExitCode = $null
+            Invoke-NativeWithRelaxedErrorAction {
+                & $UvCmd pip install -e $tier.Spec
+                $script:DependencyExitCode = $LASTEXITCODE
+            }
+            $uvExitCode = $script:DependencyExitCode
+            if ($uvExitCode -eq 0) {
+                Write-Success "Main package installed ($($tier.Name))"
+                $script:InstalledTier = $tier.Name
+                $installed = $true
+                break
+            }
+            if (Test-UvIllegalInstructionExitCode $uvExitCode) {
+                Write-Warn "uv.exe exited with EXCEPTION_ILLEGAL_INSTRUCTION (0xC000001D). Switching to pip fallback."
+                Write-Warn "The pip fallback resolves packages without uv.lock hash verification."
+                $usePipFallback = $true
+                break
+            }
+            Write-Warn "Tier '$($tier.Name)' failed (exit $uvExitCode). Trying next tier..."
         }
-        Write-Warn "Tier '$($tier.Name)' failed (exit $LASTEXITCODE). Trying next tier..."
+    }
+
+    if ($usePipFallback) {
+        if ($NoVenv) {
+            throw "uv.exe is incompatible with this CPU, and pip fallback requires the managed venv. Re-run without -NoVenv."
+        }
+
+        $pipPython = "$InstallDir\venv\Scripts\python.exe"
+        if (-not (Test-Path $pipPython)) {
+            throw "uv.exe is incompatible with this CPU, and pip fallback could not find $pipPython."
+        }
+
+        $script:DependencyExitCode = $null
+        Invoke-NativeWithRelaxedErrorAction {
+            & $pipPython -m pip --version
+            $script:DependencyExitCode = $LASTEXITCODE
+        }
+        if ($script:DependencyExitCode -ne 0) {
+            Write-Info "Bootstrapping pip into venv for uv recovery..."
+            $script:DependencyExitCode = $null
+            Invoke-NativeWithRelaxedErrorAction {
+                & $pipPython -m ensurepip --upgrade
+                $script:DependencyExitCode = $LASTEXITCODE
+            }
+            if ($script:DependencyExitCode -ne 0) {
+                throw "uv.exe is incompatible with this CPU and ensurepip failed (exit $($script:DependencyExitCode))."
+            }
+        }
+
+        foreach ($tier in $installTiers) {
+            Write-Info "Trying pip fallback tier: $($tier.Name) ..."
+            Invoke-NativeWithRelaxedErrorAction {
+                & $pipPython -m pip install --disable-pip-version-check --no-input -e $tier.Spec
+                $script:DependencyExitCode = $LASTEXITCODE
+            }
+            $pipExitCode = $script:DependencyExitCode
+            if ($pipExitCode -eq 0) {
+                Write-Success "Main package installed via pip fallback ($($tier.Name))"
+                $script:InstalledTier = "pip fallback ($($tier.Name))"
+                $installed = $true
+                break
+            }
+            Write-Warn "pip fallback tier '$($tier.Name)' failed (exit $pipExitCode). Trying next tier..."
         }
     }
     if (-not $installed) {
-        throw "Failed to install hermes-agent package even with no extras. Inspect the uv pip install output above."
+        throw "Failed to install hermes-agent package even with no extras. Inspect the dependency install output above."
     }
 
     # Baseline-import gate. Even if a tier reported success above, the
@@ -3079,8 +3158,18 @@ print(','.join(scripts))
                 if ($missing.Count -gt 0) {
                     Write-Warn "Console entry point(s) missing: $($missing -join ', ')"
                     Write-Info "Reinstalling entry points..."
-                    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
-                    Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install --reinstall -e . }
+                    if ($usePipFallback) {
+                        Invoke-NativeWithRelaxedErrorAction {
+                            & $pythonExe -m pip install --disable-pip-version-check --no-input --reinstall -e .
+                            $script:DependencyExitCode = $LASTEXITCODE
+                        }
+                    } else {
+                        $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+                        Invoke-NativeWithRelaxedErrorAction {
+                            & $UvCmd pip install --reinstall -e .
+                            $script:DependencyExitCode = $LASTEXITCODE
+                        }
+                    }
                     $stillMissing = @()
                     foreach ($name in $expected) {
                         $exe = Join-Path $scriptsDir "$name.exe"
@@ -3124,11 +3213,23 @@ print(','.join(scripts))
         if (-not $webOk) {
             Write-Warn "fastapi/uvicorn not importable -- `hermes dashboard` will not work."
             Write-Info "Attempting targeted install of [web] extra as last resort..."
-            & $UvCmd pip install -e ".[web]"
-            if ($LASTEXITCODE -eq 0) {
+            if ($usePipFallback) {
+                Invoke-NativeWithRelaxedErrorAction {
+                    & $pythonExe -m pip install --disable-pip-version-check --no-input -e ".[web]"
+                    $script:DependencyExitCode = $LASTEXITCODE
+                }
+                $webInstallExitCode = $script:DependencyExitCode
+            } else {
+                Invoke-NativeWithRelaxedErrorAction {
+                    & $UvCmd pip install -e ".[web]"
+                    $script:DependencyExitCode = $LASTEXITCODE
+                }
+                $webInstallExitCode = $script:DependencyExitCode
+            }
+            if ($webInstallExitCode -eq 0) {
                 Write-Success "[web] extra installed; `hermes dashboard` should now work."
             } else {
-                Write-Warn "Could not install [web] extra. Run manually: uv pip install --python `"$pythonExe`" `"fastapi>=0.104,<1`" `"uvicorn[standard]>=0.24,<1`""
+                Write-Warn "Could not install [web] extra. Run manually: `"$pythonExe`" -m pip install -e `".[web]`""
             }
         }
         if (-not $webServerSyntaxOk) {

@@ -859,5 +859,26 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         self.assertEqual(_read_tracker["t"]["dedup"], {})
 
 
+# ---------------------------------------------------------------------------
+# Denylist runs before document extraction
+# ---------------------------------------------------------------------------
+
+class TestDenylistBeforeExtraction(unittest.TestCase):
+    """A document inside a read-denied dir must hit the denylist, not the
+    extractor - extraction can still leak bytes through a parse error or
+    partial render."""
+
+    def test_document_inside_mcp_tokens_dir_is_denied(self):
+        with tempfile.TemporaryDirectory() as td:
+            tokens_dir = os.path.join(td, "mcp-tokens")
+            os.makedirs(tokens_dir)
+            doc = os.path.join(tokens_dir, "report.docx")
+            with open(doc, "wb") as fh:
+                fh.write(b"not a real docx")
+            with patch.dict(os.environ, {"HERMES_HOME": td}):
+                result = json.loads(read_file_tool(doc, task_id="deny_extract"))
+            self.assertIn("cannot be read directly", result.get("error", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

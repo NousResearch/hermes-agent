@@ -15,11 +15,30 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 def _reload_config_modules() -> None:
     """Force-reload config modules after git pull: the updater is the PRE-pull process, so the
     cached modules hold OLD code and ``check_config_version()`` would report "up to date" despite a
-    pulled migration. ``_subprocess_compat`` / ``dashboard_procs`` reload too so the later dashboard
+    pulled migration.
+
+    ``hermes_cli.config``'s module-level ``hermes_cli`` import surface reloads BEFORE ``config``
+    itself — with its own ordering constraints: ``colors``/``secret_prompt`` before ``cli_output``
+    (which imports from both), ``route_identity`` before ``config_providers`` (which imports from
+    it, even though ``config`` no longer imports ``route_identity`` directly). ``importlib.reload``
+    re-executes the module's imports, but ``from X import Y`` resolves against the *cached* ``X``
+    — so reloading a freshly-pulled ``config`` against a stale cached dependency asks the old
+    module for new symbols and dies with ``ImportError``. That is exactly the #90535 failure:
+    ``d0132b582`` added ``from hermes_cli.cli_output import line_input`` to ``config.py``, and the
+    pre-pull updater process aborted its gateway auto-restart with "cannot import name
+    'line_input'" because the cached ``cli_output`` predated the symbol.
+
+    ``_subprocess_compat`` / ``dashboard_procs`` reload too so the later dashboard
     cleanup sees symbols the update added."""
     import importlib
     importlib.invalidate_caches()
+    # Dependency order matters: modules imported BY hermes_cli.config (directly,
+    # or transitively via cli_output/config_providers) must reload first, or
+    # config's re-executed imports resolve against stale cached objects (#90535).
     for mod_name in (
+        "hermes_cli.colors", "hermes_cli.secret_prompt", "hermes_cli.cli_output",
+        "hermes_cli.route_identity", "hermes_cli.default_soul", "hermes_cli.personality",
+        "hermes_cli.managed_scope", "hermes_cli.config_providers",
         "hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations",
         "hermes_cli._subprocess_compat", "hermes_cli.dashboard_procs"):
         mod = sys.modules.get(mod_name)

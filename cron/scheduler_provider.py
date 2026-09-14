@@ -133,9 +133,9 @@ class CronScheduler(ABC):
 
     def recover_interrupted(self) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
-        from cron.executions import recover_interrupted_executions
+        from cron.scheduler import _recover_interrupted_executions_with_alerts
 
-        return recover_interrupted_executions()
+        return _recover_interrupted_executions_with_alerts()
 
     @property
     def supports_force_fire(self) -> bool:

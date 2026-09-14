@@ -45,9 +45,18 @@ def _normalize_server_trust(value: Any) -> str:
 
 
 def _annotation_read_only_hint(mcp_tool: Any) -> bool:
-    """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable."""
+    """True only when annotations (SDK object or cache dict) carry ``readOnlyHint is True``; unknown = write-capable.
+
+    mcp 2.0 renamed ``ToolAnnotations.readOnlyHint`` to ``read_only_hint`` (camelCase survives only as a
+    serialization alias, which pydantic does not apply to attribute access), so a bare camelCase getattr
+    returns None on 2.x and every honestly-annotated read tool fails closed as write-capable — the
+    untrusted gate then asks before reads too, training the user to click through it. Read both names.
+    """
     annotations = getattr(mcp_tool, "annotations", None)
-    hint = annotations.get("readOnlyHint") if isinstance(annotations, dict) else getattr(annotations, "readOnlyHint", None)
+    if isinstance(annotations, dict):
+        hint = annotations.get("readOnlyHint", annotations.get("read_only_hint"))
+    else:
+        hint = mcp_field(annotations, "read_only_hint", "readOnlyHint") if annotations is not None else None
     return hint is True
 
 

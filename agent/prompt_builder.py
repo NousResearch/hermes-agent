@@ -27,6 +27,7 @@ from agent.skill_utils import (
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
+from tools.threat_patterns import first_threat_location as _first_threat_location
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write
 
@@ -89,6 +90,19 @@ def _scan_context_content(content: str, filename: str) -> str:
         content = content[1:]
     findings = _scan_for_threats(content, scope="context")
     if findings:
+        location = _first_threat_location(content, scope="context")
+        # The matched text goes to the local log only: the block marker replaces the file in
+        # the system prompt, and quoting attacker-controlled text there would re-inject it.
+        if location:
+            _, line_no, matched = location
+            logger.warning(
+                "Context file %s blocked: %s (first hit at line %d: %r)",
+                filename, ", ".join(findings), line_no, matched[:100],
+            )
+            return (
+                f"[BLOCKED: {filename} contained potential prompt injection "
+                f"({', '.join(findings)}; first hit at line {line_no}). Content not loaded.]"
+            )
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
     return content

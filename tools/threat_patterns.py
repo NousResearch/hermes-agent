@@ -130,6 +130,37 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     return findings
 
 
+def first_threat_location(content: str, scope: str = "context") -> Optional[Tuple[str, int, str]]:
+    """Earliest matched threat as ``(pattern_id, 1-based line number, matched text)``, or None.
+
+    Companion to :func:`scan_for_threats` for whole-file block messages: the caller drops the
+    entire file, so the line number is the only way for a user to find the trigger without
+    re-running the scan by hand. Line numbers refer to the NFKC-normalised text, which keeps
+    the line structure of practical context files (compatibility folding is line-preserving).
+    Raises ValueError on an unknown scope."""
+    if not content:
+        return None
+    if (patterns := _COMPILED.get(scope)) is None:
+        raise ValueError(f"first_threat_location: unknown scope {scope!r}")
+    content = content[:MAX_SCAN_CHARS]
+    # Invisible codepoints are located on the RAW content: NFKC may strip them.
+    invisible_positions = [content.find(ch) for ch in set(content) & INVISIBLE_CHARS]
+    best: Optional[Tuple[int, str, str]] = None  # (offset, pattern_id, matched text)
+    if invisible_positions:
+        start = min(invisible_positions)
+        best = (start, f"invisible_unicode_U+{ord(content[start]):04X}", repr(content[start]))
+    # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
+    normalised = unicodedata.normalize("NFKC", content)
+    for compiled, pid in patterns:
+        m = compiled.search(normalised)
+        if m and (best is None or m.start() < best[0]):
+            best = (m.start(), pid, m.group(0))
+    if best is None:
+        return None
+    line = normalised.count("\n", 0, best[0]) + 1
+    return best[1], line, best[2]
+
+
 def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
     """User-facing error for the first threat found, or None (block-on-first-hit paths)."""
     findings = scan_for_threats(content, scope=scope)
@@ -144,4 +175,10 @@ def first_threat_message(content: str, scope: str = "strict") -> Optional[str]:
             f"injection or exfiltration payloads.")
 
 
-__all__ = ["INVISIBLE_CHARS", "MAX_SCAN_CHARS", "scan_for_threats", "first_threat_message"]
+__all__ = [
+    "INVISIBLE_CHARS",
+    "MAX_SCAN_CHARS",
+    "scan_for_threats",
+    "first_threat_location",
+    "first_threat_message",
+]

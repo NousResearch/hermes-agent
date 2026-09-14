@@ -175,11 +175,17 @@ All context files are scanned for potential prompt injection before being includ
 - **Secret file access**: `cat .env`, `cat credentials`
 - **Invisible characters**: zero-width spaces, bidirectional overrides, word joiners
 
-If any threat pattern is detected, the file is blocked:
+If any threat pattern is detected, the file is blocked and the block marker (and the log warning) name the first matching line, so the offending rule can be found in one look:
 
 ```
-[BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection). Content not loaded.]
+[BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection; first hit at line 69). Content not loaded.]
 ```
+
+A blocked file is dropped **in full**, even when the hit is only quoting an attack phrase — for example, a rules file that forbids "ignore previous instructions" by naming it. A regex cannot tell a quoted example from a payload, and strict is the right default. To work around a false positive without weakening the scan:
+
+- Keep a personal **`.hermes.md`** (or `HERMES.md`) next to the blocked file: it takes precedence over `AGENTS.md` in the same directory and is the reliable escape hatch (see the priority order above).
+- Use a gitignored **`AGENTS.override.md`** for personal, per-directory overrides of a committed `AGENTS.md`.
+- Run the session with **`--ignore-rules`** to skip project context files entirely.
 
 :::warning
 This scanner protects against common injection patterns, but it's not a substitute for reviewing context files in shared repositories. Always validate AGENTS.md content in projects you didn't author.

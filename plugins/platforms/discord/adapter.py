@@ -26,6 +26,7 @@ import time
 import traceback
 from collections import defaultdict
 from contextlib import suppress
+from types import SimpleNamespace
 from typing import Callable, Dict, List, Optional, Any, Tuple
 from urllib.parse import quote, urljoin
 
@@ -257,9 +258,7 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import (
-    MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets,
-)
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from gateway.platforms.helpers import cancel_task
 from utils import atomic_json_write, env_float
 from gateway.platforms.base import (
@@ -2863,7 +2862,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if self._is_forum_parent(channel):
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery)
-            formatted = self.format_message(content)
+            rendered = self._render_message(content)
+            formatted = rendered.content
+            embed = self._embed_for_status_fields(rendered.fields)
             chunks = self._cap_split_chunks(
                 self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
             )
@@ -2875,7 +2876,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(content=chunk, reference=chunk_reference)
+                    send_kwargs = {"content": chunk, "reference": chunk_reference}
+                    if i == 0 and embed is not None:
+                        send_kwargs["embed"] = embed
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     if chunk_reference is not None and self._is_reply_reference_rejected(e):
                         logger.warning(
@@ -4135,10 +4139,38 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             print(f"[{self.name}] Updated DISCORD_ALLOWED_USERS with {resolved_count} resolved ID(s)")
 
     def format_message(self, content: str) -> str:
-        """Format for Discord: GFM tables become bullet lists (Discord doesn't render pipe tables)."""
-        if not content:
-            return content
-        return convert_table_to_bullets(content)
+        """Format GFM tables for Discord while leaving other Markdown intact."""
+        return self._render_message(content).content
+
+    @staticmethod
+    def _render_message(content: str):
+        """Return Discord-safe text and optional short status fields."""
+        try:
+            try:
+                from .markdown_renderer import render_discord_markdown
+            except ImportError:  # Plugin modules may be loaded from their directory.
+                from markdown_renderer import render_discord_markdown
+            rendered = render_discord_markdown(content)
+        except Exception as exc:
+            logger.debug("[Discord] Markdown table conversion unavailable; using original text: %s", exc)
+            return SimpleNamespace(content=content, fields=[])
+        if rendered.fields:
+            logger.debug("[Discord] Rendered %d status field(s) from Markdown table(s)", len(rendered.fields))
+        return rendered
+
+    @staticmethod
+    def _embed_for_status_fields(fields: list[tuple[str, str]]):
+        """Build an optional embed without making formatting a delivery dependency."""
+        if not fields:
+            return None
+        try:
+            embed = discord.Embed()
+            for name, value in fields[:25]:
+                embed.add_field(name=name[:256], value=value[:1024], inline=True)
+            return embed
+        except Exception as exc:
+            logger.debug("[Discord] Status embed unavailable; sending pseudo-table only: %s", exc)
+            return None
 
     async def _defer_unless_expired(self, interaction: discord.Interaction, warn_fmt: str, *warn_args) -> bool:
         """Ephemeral defer(); False (after a warning) when the interaction token already expired

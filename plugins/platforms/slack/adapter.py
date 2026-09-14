@@ -4289,8 +4289,8 @@ class SlackAdapter(BasePlatformAdapter):
             return None
         if await self._drop_bot_sender(event):
             return None
-        # Edits were normalized above so an @mention added by edit can wake the bot once,
-        # which also means their subtype is gone by the time this check runs.
+        # Edits were normalized above so an @mention added by edit can wake the bot once;
+        # the normalized event retains the edited message's own subtype.
         # Housekeeping subtypes (joins/leaves, topic/name/purpose changes, convert_to_private/
         # public, pins, deletions, file comments...) are not a person speaking, so they must
         # not start a turn in free-response channels (#110778). Allowlist rather than denylist
@@ -4299,8 +4299,13 @@ class SlackAdapter(BasePlatformAdapter):
         # ``file_shared`` fallback synthesizes exactly this subtype. ``thread_broadcast``
         # passes: a human sharing a threaded reply into the channel carries user/text.
         # ``me_message`` passes: ``/me`` is a person speaking.
+        # ``bot_message`` already passed allow_bots above; document_mention is an
+        # explicit app mention from a Slack canvas, not a lifecycle notification.
         subtype = event.get("subtype")
-        if subtype not in (None, "", "file_share", "thread_broadcast", "me_message"):
+        if subtype not in (
+            None, "", "file_share", "thread_broadcast", "me_message",
+            "bot_message", "document_mention",
+        ):
             logger.debug(
                 "[Slack] Dropping non-conversational message subtype=%s in channel %s",
                 subtype, channel_id)

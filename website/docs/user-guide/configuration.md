@@ -1457,6 +1457,7 @@ auxiliary:
     api_key: ""
     timeout: 30
     language: ""
+    # max_words: 8                # Optional hard word cap for derived AND LLM titles; unset/0 = legacy
 
   # Skills hub — skill matching and search
   skills_hub:

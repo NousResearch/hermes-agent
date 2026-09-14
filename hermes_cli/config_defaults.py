@@ -723,6 +723,12 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",
             "language": "",
+            # Optional hard cap on title length in words for BOTH the instant derived title and the
+            # LLM title. Positive integer (>= 1), enforced at word boundaries once the LLM returns.
+            # Unset (0 or absent) keeps legacy behavior: derived titles cap at MAX_DERIVED_TITLE_CHARS,
+            # LLM titles keep the answer-shaped-output guard only. Invalid values (<=0, non-numeric)
+            # fall back to unset.
+            "max_words": 0,
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),

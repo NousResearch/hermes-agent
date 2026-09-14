@@ -979,7 +979,13 @@ export function useGatewayBoot({
       }
     }
 
-    const onFocus = () => void reconnectNow()
+    // Debounce focus-triggered reconnect (500ms) to avoid rapid blur/focus cycles
+    // causing black blink + focus loss from React subtree remounts
+    let focusReconnectTimer: ReturnType<typeof setTimeout>
+    const onFocus = () => {
+      clearTimeout(focusReconnectTimer)
+      focusReconnectTimer = setTimeout(() => void reconnectNow(), 500)
+    }
 
     window.addEventListener('online', onOnline)
     document.addEventListener('visibilitychange', onVisible)

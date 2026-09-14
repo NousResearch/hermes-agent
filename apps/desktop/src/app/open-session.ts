@@ -171,7 +171,18 @@ export function openSession(
   // otherwise load it into main. From a full page (artifacts, skills, …) a
   // `'main'` hit still has to route back: fronting the workspace tab alone
   // leaves the page showing.
-  if (focusedSessionNeedsRoute(focusOpenSession(storedSessionId, workspaceScope), $workspaceIsPage.get())) {
+  //
+  // For 'in-place' intent (sidebar click/Enter), ALWAYS navigate to main when
+  // the session isn't already the main session. This ensures sidebar clicks
+  // reliably load the conversation into the main chat column instead of just
+  // fronting a side tile (which feels like a dead click).
+  // Exception: if already 'main' AND not on a page, no navigation needed.
+  const focused = focusOpenSession(storedSessionId, workspaceScope)
+  const shouldNavigateToMain = intent === 'in-place'
+    ? focused !== 'main' || $workspaceIsPage.get()  // sidebar click: load into main unless already main AND not on a page
+    : focusedSessionNeedsRoute(focused, $workspaceIsPage.get()) // other intents: existing logic
+
+  if (shouldNavigateToMain) {
     navigate(sessionRoute(storedSessionId))
   }
 }

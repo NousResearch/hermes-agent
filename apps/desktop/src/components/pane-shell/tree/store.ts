@@ -912,15 +912,64 @@ export function paneRootSide(paneId: string): null | TreeSide {
   return index < mainIndices[0] ? 'left' : index > mainIndices[mainIndices.length - 1] ? 'right' : null
 }
 
+/** Collect all pane IDs on a given root-row side (left/right). */
+export function getPanesOnSide(tree: LayoutNode, side: 'left' | 'right'): string[] {
+  const row = tree.type === 'split' && tree.orientation === 'row' ? tree : null
+  if (!row) {
+    return []
+  }
+
+  const panes = registry.getArea('panes')
+  const mainIndices = row.children.flatMap((child, i) =>
+    allPaneIds(child).some(
+      id =>
+        id === 'workspace' ||
+        (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
+    )
+      ? [i]
+      : []
+  )
+
+  if (mainIndices.length === 0) {
+    return []
+  }
+
+  const sideIndices = side === 'left'
+    ? row.children.slice(0, mainIndices[0])
+    : row.children.slice(mainIndices[mainIndices.length - 1] + 1)
+
+  return sideIndices.flatMap(allPaneIds)
+}
+
 /** The closer-less Close: dismiss the pane (removed + remembered; reveal
  *  intent or a layout reset un-dismisses). */
 export function dismissTreePane(paneId: string) {
   const tree = $layoutTree.get()
 
-  if (tree) {
-    setDismissed(paneId, true)
-    rememberPaneShare(tree, paneId)
-    commit(removePane(tree, paneId))
+  if (!tree) {
+    return
+  }
+
+  const group = findGroupOfPane(tree, paneId)
+  const isLastInGroup = group && group.panes.length === 1
+
+  setDismissed(paneId, true)
+  rememberPaneShare(tree, paneId)
+  const next = removePane(tree, paneId)
+
+  // Prevent empty-group zone collapse: if the group would be empty,
+  // keep it minimized instead of removing the zone entirely
+  if (isLastInGroup && group && next) {
+    const minimizedNext = setGroupMinimized(next, group.id, true)
+
+    if (minimizedNext !== next) {
+      commit(minimizedNext)
+      return
+    }
+  }
+
+  if (next) {
+    commit(next)
   }
 }
 
@@ -1189,13 +1238,40 @@ export const $narrowViewport = atom(Boolean(narrowQuery?.matches))
 
 narrowQuery?.addEventListener('change', event => $narrowViewport.set(event.matches))
 
-/** The titlebar flip toggle (⌘\): mirror the whole layout left↔right. */
+/** The titlebar flip toggle (⌘\\): mirror the whole layout left↔right. */
 export function mirrorLayoutTree() {
   const tree = $layoutTree.get()
 
-  if (tree) {
-    commit(mirrorTreeHorizontal(tree))
+  if (!tree) {
+    return
   }
+
+  // Capture which logical panes are on each side BEFORE mirroring
+  // so we can migrate collapse state to follow CONTENT, not position
+  const leftPaneIds = getPanesOnSide(tree, 'left')
+  const rightPaneIds = getPanesOnSide(tree, 'right')
+
+  commit(mirrorTreeHorizontal(tree))
+
+  // Migrate collapse state to follow the content that moved
+  const collapsed = $collapsedTreeSides.get()
+
+  if (collapsed.size === 0) {
+    return
+  }
+
+  const nextCollapsed = new Set<TreeSide>()
+
+  // Content that WAS on left is now on right, and vice versa
+  if (collapsed.has('left') && rightPaneIds.length > 0) {
+    nextCollapsed.add('right')
+  }
+
+  if (collapsed.has('right') && leftPaneIds.length > 0) {
+    nextCollapsed.add('left')
+  }
+
+  $collapsedTreeSides.set(nextCollapsed)
 }
 
 export interface DropHint {
@@ -1645,6 +1721,12 @@ export function applyTree(tree: LayoutNode, presetId: string) {
     if (data?.revealOnPreset) {
       paneOpeners[paneId]?.()
     }
+  }
+
+  // Reopen collapsed sides so preset panes are actually visible.
+  // This makes "Layout Editor → Default → Done" fully recover the UI.
+  for (const side of Object.keys(sideOpeners) as TreeSide[]) {
+    sideOpeners[side]?.(true)
   }
 }
 

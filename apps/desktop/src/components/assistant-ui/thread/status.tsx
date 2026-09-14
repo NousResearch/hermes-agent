@@ -9,6 +9,7 @@ import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
 import { OrbView, useOrbThinking } from '@/components/orb/OrbView'
+import { useOrbState } from '@/components/orb/use-orb-state'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { StatusPulse } from '@/components/ui/status-pulse'
@@ -223,8 +224,11 @@ function useStatusHint(compacting: boolean, drafting: DraftingTool | null, provi
 // Thinking dot for the status rows: the liquid-glass orb when the user opted
 // into the orb animation (Settings → Appearance), otherwise the standard
 // pulse dot. The orb degrades to a Loader on its own when WebGPU is missing.
+// The orb renders the thread's live OrbState — thinking, streaming,
+// tool-running, waiting-input, … — not just a generic spinner.
 const ThinkingDot: FC = () => {
   const { enabled, params } = useOrbThinking()
+  const orbState = useOrbState()
 
   if (!enabled) {
     return (
@@ -236,7 +240,38 @@ const ThinkingDot: FC = () => {
     )
   }
 
-  return <OrbView aria-hidden="true" className="inline-block size-4" fallbackType="original-thinking" params={params} />
+  return (
+    <OrbView
+      aria-hidden="true"
+      className="inline-block size-4"
+      fallbackType="original-thinking"
+      params={params}
+      state={orbState}
+    />
+  )
+}
+
+/**
+ * Error-state orb for the failed-turn error row. A leaf so the error header
+ * doesn't subscribe to orb state itself — it renders nothing when the user
+ * hasn't opted into the orb.
+ */
+export const ErrorStateOrb: FC = () => {
+  const { enabled, params } = useOrbThinking()
+
+  if (!enabled) {
+    return null
+  }
+
+  return (
+    <OrbView
+      aria-hidden="true"
+      className="mt-0.5 size-4 shrink-0"
+      fallbackType="original-thinking"
+      params={params}
+      state="error"
+    />
+  )
 }
 
 export const CenteredThreadSpinner: FC = () => {

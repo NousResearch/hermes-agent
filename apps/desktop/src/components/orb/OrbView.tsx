@@ -7,10 +7,17 @@ import { $orbEnabled, $orbParams } from '@/store/orb'
 
 import { type OrbParams } from './orb-params'
 import { createOrbRenderer, isOrbWebGpuSupported } from './orb-renderer'
+import { orbParamsForState, type OrbState } from './orb-state'
 
 interface OrbViewProps extends Omit<ComponentProps<'div'>, 'children'> {
   /** Render params — the built-in default or a parsed configurator URL. */
   params: OrbParams
+  /**
+   * Assistant state driving the orb's appearance. The user's params stay the
+   * base; the state applies its visual deltas (speed / intensity / glow tint).
+   * Defaults to `thinking` — the pre-state behavior.
+   */
+  state?: OrbState
   /** Loader shown while WebGPU is unavailable or the renderer fails. */
   fallbackType?: LoaderType
   label?: string
@@ -32,10 +39,19 @@ export function useOrbThinking(): { enabled: boolean; params: OrbParams } {
  * gracefully: without WebGPU — or when the renderer errors — it renders the
  * standard `Loader` instead of a broken canvas.
  */
-export function OrbView({ params, fallbackType = 'original-thinking', label, className, ...rest }: OrbViewProps) {
+export function OrbView({
+  params,
+  state = 'thinking',
+  fallbackType = 'original-thinking',
+  label,
+  className,
+  ...rest
+}: OrbViewProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const paramsRef = useRef(params)
   paramsRef.current = params
+  const stateRef = useRef(state)
+  stateRef.current = state
   const [failed, setFailed] = useState(() => !isOrbWebGpuSupported())
 
   useEffect(() => {
@@ -47,7 +63,8 @@ export function OrbView({ params, fallbackType = 'original-thinking', label, cla
 
     return createOrbRenderer({
       canvas,
-      getParams: () => paramsRef.current,
+      // Read live so a state change retargets the orb without remounting.
+      getParams: () => orbParamsForState(stateRef.current, paramsRef.current),
       onError: () => setFailed(true)
     })
   }, [failed])

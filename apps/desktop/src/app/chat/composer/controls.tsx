@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 
+import { OrbStateJewel } from '@/components/orb/OrbStateJewel'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
@@ -109,6 +110,11 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+      {/* Persistent assistant-state orb: the thread's thinking dot only exists
+          while a turn is visibly working, so the terminal/paused states
+          (error, complete, idle, waiting for user) live here. Null unless the
+          user opted into the orb. */}
+      {minimal ? null : <OrbStateJewel />}
       {minimal ? null : (
         <>
           {hideModelPill ? null : (

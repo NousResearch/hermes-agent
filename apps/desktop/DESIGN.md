@@ -254,6 +254,24 @@ so glass and message-bubble transparency do not reveal scrolling text.
 
 ## Chat, tools & boot surfaces
 
+- **Thinking orb states** — when the user opts into the orb animation
+  (Settings → Appearance → Thinking Orb), the orb replaces the thinking
+  indicators and renders the assistant's live `OrbState`
+  (`src/components/orb/orb-state.ts`): the thread's thinking dot
+  (`ThinkingDot`), the failed-turn error row, and the persistent composer
+  jewel (the only home for the terminal/paused states) all read the same
+  resolver, so they can never disagree. The mapping is speed / intensity /
+  glow-rim tint on top of the user's own orb (built-in or BYO configurator
+  URL) — a state never swaps the style preset or body colors:
+  - `thinking` — base orb, full motion · `streaming` — faster, brighter ·
+    `tool-running` — brisk, cyan rim · `tool-result` — bright settle pulse,
+    motion eased · `waiting-input` — slow, amber rim · `model-loading` —
+    dimmed, unhurried · `compacting` — slow, violet rim · `error` — slow, red
+    rim · `cancelled` — dimmed gray, nearly still · `complete` — brief green
+    settle flash, then `idle` (slow breathing, reduced size).
+  The orb stays decorative (`aria-hidden`); the status rows already narrate
+  the state to assistive tech.
+
 - The transcript and composer are built on `@assistant-ui/react`. Extend the
   existing components under `src/components/assistant-ui` and
   `src/app/chat/composer`; do not fork a second markdown, message, tool-call, or

@@ -7,6 +7,12 @@ pushes every transition to the session as ``connection.update``.
 
 import contextvars
 
+from .contracts.config_free_tier_control import (
+    ConnectorsConnectParams,
+    ConnectorsConnectResult,
+    ConnectorsListParams,
+    ConnectorsListResult,
+)
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -16,6 +22,7 @@ _connector_rpc_origin: contextvars.ContextVar[tuple | None] = contextvars.Contex
 
 
 def _capture_connector_rpc_owner(params):
+    # This runs before the method wrapper validates the raw request frame.
     sid = params.get("session_id")
     _, owner = _current_session_steer_authority(sid if isinstance(sid, str) else "")
     _connector_rpc_origin.set((owner, owner.get("profile_home") if owner is not None else None))
@@ -31,10 +38,13 @@ def _connector_owner_matches(sid, owner, profile_home):
             and owner.get("profile_home") == profile_home)
 
 
+
+
+
 def _owned_session(rid, params):
     """(owner, None) for a session this transport owns; (None, error reply) otherwise."""
-    sid = params.get("session_id")
-    if not isinstance(sid, str) or not sid.strip():
+    sid = params.session_id
+    if not sid.strip():
         return None, _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "session_id required")
     _, owner = _current_session_steer_authority(sid)
     origin = _connector_rpc_origin.get()
@@ -42,6 +52,7 @@ def _owned_session(rid, params):
             or origin is not None and (origin[0] is not owner or origin[1] != owner.get("profile_home"))):
         return None, _connector_rpc_error(rid, 4001, "NOT_OWNER", "session not found or not owned by this transport")
     if _session_uses_compute_host(owner):
+
         return None, _connector_rpc_error(rid, 5033, "UNSUPPORTED_RUNTIME", "Connectors must be managed on the session's compute host.")
     return owner, None
 
@@ -50,21 +61,18 @@ def _connector_rpc(rid, params, action):
     owner, error = _owned_session(rid, params)
     if error:
         return error
-    sid = params["session_id"]
-    allowed = {"session_id"} if action == "status" else {"session_id", "connectors", "reconnect"}
-    # ``profile`` is routing metadata, never authorization.
-    allowed.add("profile")
-    if set(params) - allowed:
-        return _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "unsupported connector parameters")
+    sid = params.session_id
     args = {"action": action}
     if action != "status":
         import re
-        slugs = params.get("connectors")
-        if (not isinstance(slugs, list) or not slugs
-                or any(not isinstance(slug, str) or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", slug) is None for slug in slugs)
-                or not isinstance(params.get("reconnect", False), bool)):
-            return _connector_rpc_error(rid, 4000, "INVALID_PARAMS", "connectors must be nonempty slugs; reconnect must be boolean")
-        args.update(action="reconnect" if params.get("reconnect", False) else "connect", connectors=slugs)
+
+        if not params.connectors or any(
+            re.fullmatch(r"[a-z0-9][a-z0-9_-]*", connector) is None
+            for connector in params.connectors
+        ):
+            return _connector_rpc_error(
+                rid, 4000, "INVALID_PARAMS", "connectors must be nonempty slugs")
+        args.update(action="reconnect" if params.reconnect else "connect", connectors=params.connectors)
     profile_home = owner.get("profile_home")
     runtime_token = _current_runtime_session_record.set(owner)
     try:
@@ -98,7 +106,7 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
     if ("manage_connections" not in model_tools._select_tool_names(enabled, disabled, quiet_mode=True)
             or not connectors_available()):
         if args["action"] == "status":
-            return _ok(rid, {"available": False, "connectors": []})
+            return ConnectorsListResult(available=False, connectors=[])
         return _connector_rpc_error(rid, 4031, "CONNECTORS_UNAVAILABLE", "Connectors are not available in this session.")
     if not _connector_owner_matches(sid, owner, profile_home):
         return _connector_rpc_error(rid, 4001, "NOT_OWNER", "session ownership changed")
@@ -114,13 +122,14 @@ def _dispatch_connector_rpc(rid, sid, owner, profile_home, args):
     data = json.loads(raw) if isinstance(raw, str) else raw
     if not isinstance(data, dict) or "error" in data:
         return _connector_rpc_error(rid, 5034, "CONNECTOR_REQUEST_FAILED", "Connector request failed or was refused by policy.")
+
     if args["action"] == "status":
         if not isinstance(data.get("connectors"), list) or any(not isinstance(row, dict) for row in data["connectors"]):
             return _connector_rpc_error(rid, 5034, "INVALID_CONNECTOR_RESPONSE", "Connector service returned an invalid response.")
-        return _ok(rid, {"available": True, "connectors": connector_ui_payload(data["connectors"])})
+        return ConnectorsListResult(available=True, connectors=connector_ui_payload(data["connectors"]))
     if not isinstance(data.get("targets"), list):
         return _connector_rpc_error(rid, 5034, "INVALID_CONNECTOR_RESPONSE", "Connector service returned no authorization results.")
-    return _ok(rid, connector_ui_payload(data))
+    return ConnectorsConnectResult(**connector_ui_payload(data))
 
 
 def _reissue(rid, operation, args):
@@ -156,12 +165,16 @@ def _live_operation(rid, params, owner):
 
 
 @method("connectors.list")
-def _(rid, params):
+
+def _(rid, params: ConnectorsListParams) -> ConnectorsListResult | dict:
+    """Return connector catalog + connection state for one owned session."""
     return _connector_rpc(rid, params, "status")
 
 
 @method("connectors.connect")
-def _(rid, params):
+
+def _(rid, params: ConnectorsConnectParams) -> ConnectorsConnectResult | dict:
+    """Start or re-initiate authorization for named connectors."""
     return _connector_rpc(rid, params, "connect")
 
 

@@ -2,6 +2,16 @@
 (method_ctx.bind_module) and reference them bare. ``config.set`` lives in methods_config_set.
 """
 
+from .contracts.common import ProfileParams
+from .contracts.config_free_tier_control import (
+    ConfigGetParams,
+    ConfigGetResult,
+    DiagnosticsShareNousParams,
+    DiagnosticsShareNousResult,
+    SetupRuntimeCheckParams,
+    SetupRuntimeCheckResult,
+    SetupStatusResult,
+)
 from .method_ctx import HandlerRegistry, bind_module
 
 from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
@@ -136,8 +146,8 @@ def _cfg_get_provider(params):
             "providers": list_available_providers()}
 
 
-def _cfg_get_project(params):
-    raw = str(params.get("cwd", "") or (_load_cfg().get("terminal") or {}).get("cwd", "") or "").strip()
+def _cfg_get_project(params: ConfigGetParams):
+    raw = str(params.cwd or (_load_cfg().get("terminal") or {}).get("cwd", "") or "").strip()
     cwd = _completion_cwd({"cwd": raw} if raw else {})
     return {"cwd": cwd, "branch": git_probe.branch(cwd)}
 
@@ -148,9 +158,9 @@ def _cfg_get_personality(params):
     return {"value": active_personality_name(_load_cfg()) or "none"}
 
 
-def _cfg_get_reasoning(params):
+def _cfg_get_reasoning(params: ConfigGetParams):
     cfg = _load_cfg()
-    session = _sessions.get(params.get("session_id", "")) or {}
+    session = _sessions.get(params.session_id) or {}
     reasoning_config = session.get("create_reasoning_override")
     if session and not isinstance(reasoning_config, dict):
         reasoning_config = getattr(session.get("agent"), "reasoning_config", None)
@@ -165,10 +175,10 @@ def _cfg_get_reasoning(params):
     return {"value": effort, "display": display}
 
 
-def _cfg_get_fast(params):
+def _cfg_get_fast(params: ConfigGetParams):
     # `config.set fast` is session-scoped: prefer the session's live/pinned value over the
     # global key (a pre-build session keeps its pin in create_service_tier_override).
-    session = _sessions.get(params.get("session_id", "")) or {}
+    session = _sessions.get(params.session_id) or {}
     agent = session.get("agent")
     tier = (getattr(agent, "service_tier", None) if agent is not None
             else session.get("create_service_tier_override"))
@@ -227,13 +237,13 @@ _CONFIG_GET_ERR = {"provider": 5013, "approval_mode": 5001, "approvals.mode": 50
 
 @method("config.get")
 @_profile_scoped
-def _(rid, params: dict) -> dict:
-    key = params.get("key", "")
+def _(rid, params: ConfigGetParams) -> ConfigGetResult | dict:
+    key = params.key
     getter = _CONFIG_GETTERS.get(key)
     if getter is None:
         return _err(rid, 4002, f"unknown config key: {key}")
     try:
-        return _ok(rid, getter(params))
+        return ConfigGetResult(**getter(params))
     except Exception as e:
         if key not in _CONFIG_GET_ERR:
             raise
@@ -242,31 +252,35 @@ def _(rid, params: dict) -> dict:
 
 # ── setup readiness
 
-def _readiness_check(rid, params, probe):
+
+
+def _readiness_check(rid, params, probe, result_type):
     """Shared shell of setup.status / setup.runtime_check. ``probe(profile, scoped)`` runs inside the
     optional ``profile`` param's HERMES_HOME + ``.env`` secret scope (ContextVars: concurrent checks
     stay isolated); ``scoped`` is the ``{"profile": ...}`` payload stamp (``{}`` for the launch
     profile). An unknown profile answers ``ok=False`` (never a JSON-RPC error, never a quiet answer
     for the launch profile instead)."""
-    profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
+    profile = str(params.profile or "").strip()
     home = None
     if profile:
         from hermes_cli import profiles as profiles_mod
         if not profiles_mod.profile_exists(profile):
-            return _ok(rid, {"ok": False, "profile": params.get("profile"),
-                             "error": f"Profile '{profile}' does not exist on this backend."})
+            return result_type(ok=False, profile=params.profile,
+                               error=f"Profile '{profile}' does not exist on this backend.")
         home = _profile_home(profile)
+
     # ``profile_home=None`` is the launch profile: once this process multiplexes its probe must
     # run under its own frozen secret scope too (``_profile_runtime_scope_tokens`` binds nothing in
     # a single-profile process), or the first profile-scoped read inside the resolver
     # (``HERMES_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
     with _session_profile_runtime_scope({"profile_home": str(home) if home is not None else None}):
-        payload = probe(profile, {"profile": profile} if profile else {})
-    return _ok(rid, payload)
+        return result_type(**probe(profile, {"profile": profile} if profile else {}))
+
+
 
 
 @method("setup.status")
-def _(rid, params: dict) -> dict:
+def _(rid, params: ProfileParams) -> SetupStatusResult | dict:
     """Loose provider check; ``profile`` (optional) scopes it to that profile's home.
 
     For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
@@ -287,14 +301,16 @@ def _(rid, params: dict) -> dict:
             # the sentence, and whether / when a retry can succeed (``free_tier.provision``).
             return {"provider_configured": record.provider_configured, "ready": True,
                     "free_tier": record.free_tier, "other_providers": record.other_providers,
+
                     "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
-        return _readiness_check(rid, params, probe)
+        return _readiness_check(rid, params, probe, SetupStatusResult)
     except Exception as e:
         return _err(rid, 5016, str(e))
 
 
 @method("setup.runtime_check")
-def _(rid, params: dict) -> dict:
+
+def _(rid, params: SetupRuntimeCheckParams) -> SetupRuntimeCheckResult | dict:
     """Readiness probe for the session a client is about to open (setup.status is True if ANY
     provider auth state is discoverable): ok=False + the auth error when the model can't be served,
     so UIs surface onboarding before a doomed prompt. Without ``provider`` it runs the SAME
@@ -308,7 +324,7 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.auth import has_usable_secret
         from hermes_cli.main import _has_any_provider_configured
-        requested = str(params.get("provider") or "").strip() or None
+        requested = str(params.provider or "").strip() or None
 
         def probe(profile, scoped):
             if requested:
@@ -338,9 +354,9 @@ def _(rid, params: dict) -> dict:
                     "source": runtime.get("source"),
                     "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
-        return _readiness_check(rid, params, probe)
+        return _readiness_check(rid, params, probe, SetupRuntimeCheckResult)
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        return SetupRuntimeCheckResult(ok=False, error=str(e))
 
 
 def _safe_client_label(label: str) -> str:
@@ -352,7 +368,7 @@ def _safe_client_label(label: str) -> str:
 
 
 @method("diagnostics.share_nous")
-def _(rid, params: dict) -> dict:
+def _(rid, params: DiagnosticsShareNousParams) -> DiagnosticsShareNousResult | dict:
     """Upload a redacted debug bundle to Nous-internal diagnostics storage — same collection +
     force-redaction pipeline as ``hermes debug share --nous``; redaction is NOT client-controllable
     and consent lives with the CALLER (privacy notice first). Structured ``ok``/``error`` envelope so
@@ -361,18 +377,17 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.debug import _redact_log_text, build_nous_bundle, collect_share_bundle
         from hermes_cli.diagnostics_upload import share_to_nous
-        log_lines = params.get("log_lines")
-        if not isinstance(log_lines, int) or not (10 <= log_lines <= 2000):
+        log_lines = params.log_lines
+        if log_lines is None or not (10 <= log_lines <= 2000):
             log_lines = 200
         bundle = collect_share_bundle(log_lines=log_lines, redact=True)
         # Client text goes through the SAME upload-safe redactor as backend logs (force secret
         # redaction + email masking), never the weaker bare secret pass.
-        error_context = params.get("error_context")
-        if isinstance(error_context, str) and error_context.strip():
+        error_context = params.error_context
+        if error_context and error_context.strip():
             bundle["error-context.txt"] = _redact_log_text(error_context.strip()[:8_000])
         # Bounded: at most 4 files, 512KB each, sanitized labels — not an arbitrary upload surface.
-        extra_files = params.get("extra_files")
-        for label, text in list(extra_files.items())[:4] if isinstance(extra_files, dict) else ():
+        for label, text in list((params.extra_files or {}).items())[:4]:
             safe_label = _safe_client_label(label) if isinstance(label, str) else ""
             if safe_label and isinstance(text, str) and text.strip():
                 bundle[f"client/{safe_label}"] = _redact_log_text(text[:524_288])
@@ -380,11 +395,12 @@ def _(rid, params: dict) -> dict:
         view_url = res.get("viewUrl") or res.get("view_url")
         upload_id = res.get("id")
         if not view_url and not upload_id:  # an upload the user can't reference is useless to support
-            return _ok(rid, {"ok": False, "error": "upload succeeded but returned no view URL or id"})
-        return _ok(rid, {"ok": True, "view_url": view_url, "upload_id": upload_id,
-                         "expires_at": res.get("expiresAt") or res.get("expires_at")})
+            return DiagnosticsShareNousResult(ok=False, error="upload succeeded but returned no view URL or id")
+        return DiagnosticsShareNousResult(
+            ok=True, view_url=view_url, upload_id=upload_id,
+            expires_at=res.get("expiresAt") or res.get("expires_at"))
     except Exception as e:
-        return _ok(rid, {"ok": False, "error": str(e)})
+        return DiagnosticsShareNousResult(ok=False, error=str(e))
 
 
 def register(server) -> None:

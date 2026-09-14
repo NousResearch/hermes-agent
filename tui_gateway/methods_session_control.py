@@ -14,6 +14,17 @@ import json
 import logging
 import time
 
+from .contracts.config_free_tier_control import (
+    SessionControlArgs,
+    SessionControlDispatch,
+    SessionControlParams,
+    SessionControlReadParams,
+    SessionControlReadResult,
+    SessionControlResult,
+    SessionControlSnapshot,
+)
+from .contracts.events import SessionControlUpdatePayload
+from .contracts.tools_commands import CommandDispatchParams
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -226,14 +237,15 @@ def _publish_session_control_snapshot(sid: str, session: dict | None, *, only_if
             control = _snapshot_control(session_key)
         if only_if_present and not control["revision"]:
             return
-        _emit("session.control.update", sid, {"control": control})
+        _emit("session.control.update", sid, SessionControlUpdatePayload(
+            control=SessionControlSnapshot(**control)))
     except Exception:
         logger.debug("session.control.update publish failed for %s", sid, exc_info=True)
 
 
 @method("session.control.read")
 @_profile_scoped
-def _(rid, params: dict) -> dict:
+def _(rid, params: SessionControlReadParams) -> SessionControlReadResult | dict:
     """Return the current stable control snapshot for a live session."""
     session, err = _sess_nowait(params, rid)
     if err:
@@ -242,7 +254,7 @@ def _(rid, params: dict) -> dict:
     if not session_key:
         return _err(rid, 4001, "session has no stored key")
     try:
-        return _ok(rid, {"control": _snapshot_control(session_key)})
+        return SessionControlReadResult(control=SessionControlSnapshot(**_snapshot_control(session_key)))
     except Exception as exc:
         logger.debug("session.control.read failed: %s", exc, exc_info=True)
         return _err(rid, 5031, f"session.control.read failed: {exc}")
@@ -250,23 +262,17 @@ def _(rid, params: dict) -> dict:
 
 @method("session.control")
 @_profile_scoped
-def _(rid, params: dict) -> dict:
+def _(rid, params: SessionControlParams) -> SessionControlResult | dict:
     """Run one allowlisted control action and emit its exact resulting snapshot."""
-    raw_action = params.get("action")
-    if not isinstance(raw_action, str) or not (action := raw_action.strip()):
+    action = params.action.strip()
+    if not action:
         return _err(rid, 4004, "action is required")
     if action.startswith("goal.gate"):
         return _err(rid, 4004, "gate actions are not allowed through session.control")
     if action not in _VALID_ACTIONS:
         return _err(rid, 4004, f"unknown action: {action}")
 
-    if "args" in params:
-        args = params["args"]
-        if not isinstance(args, dict):
-            return _err(rid, 4004, "args must be an object")
-    else:
-        args = {}
-    validated, validation_error = _validate_action_args(rid, action, args)
+    validated, validation_error = _validate_action_args(rid, action, params.args)
     if validation_error:
         return validation_error
 
@@ -280,7 +286,7 @@ def _(rid, params: dict) -> dict:
     try:
         if action in _ACTION_COMMAND_MAP:
             name, arg = _ACTION_COMMAND_MAP[action]
-            action_result = _dispatch_command(rid, session_id=params.get("session_id") or "", name=name, arg=arg)
+            action_result = _dispatch_command(rid, session_id=params.session_id, name=name, arg=arg)
         else:
             action_result = _execute_manager_action(session_key, action, validated)
     except (RuntimeError, ValueError, IndexError) as exc:
@@ -290,7 +296,7 @@ def _(rid, params: dict) -> dict:
         return action_result
 
     try:
-        control = _snapshot_control(session_key)
+        control = SessionControlSnapshot(**_snapshot_control(session_key))
     except Exception as exc:
         logger.debug("session.control snapshot after %s failed: %s", action, exc, exc_info=True)
         return _err(rid, 5031, f"session.control snapshot failed: {exc}")
@@ -298,21 +304,22 @@ def _(rid, params: dict) -> dict:
     # command.dispatch already published the update for goal/loop actions; manager actions publish here.
     if action not in _ACTION_COMMAND_MAP:
         try:
-            _emit("session.control.update", params.get("session_id") or "", {"control": control})
+            _emit("session.control.update", params.session_id,
+                  SessionControlUpdatePayload(control=control))
         except Exception as exc:
             logger.debug("session.control.update emit failed (best-effort): %s", exc, exc_info=True)
-    return _ok(rid, {"control": control, "dispatch": _dispatch_envelope(action_result)})
+    return SessionControlResult(control=control, dispatch=SessionControlDispatch(**_dispatch_envelope(action_result)))
 
 
-def _validate_action_args(rid, action: str, args: dict):
+def _validate_action_args(rid, action: str, args: SessionControlArgs | None):
     """Validate the only actions with input before any manager is constructed."""
     if action == "subgoal.add":
-        text = args.get("text")
-        if not isinstance(text, str) or not (text := text.strip()):
+        text = args.text if args is not None else None
+        if not text or not (text := text.strip()):
             return None, _err(rid, 4004, "subgoal text is required")
         return {"text": text}, None
     if action == "subgoal.remove":
-        index = args.get("index")
+        index = args.index if args is not None else None
         if type(index) is not int:
             return None, _err(rid, 4004, "subgoal index must be an integer")
         if index < 1:
@@ -323,14 +330,15 @@ def _validate_action_args(rid, action: str, args: dict):
 
 def _dispatch_command(rid, *, session_id: str, name: str, arg: str) -> dict:
     """Delegate a fixed intent to the existing TUI command dispatcher."""
-    handler = _methods.get("command.dispatch")
-    if handler is None:
-        return _err(rid, 5031, "command.dispatch unavailable")
     try:
-        return handler(rid, {"session_id": session_id, "name": name, "arg": arg})
+        response = invoke("command.dispatch", CommandDispatchParams(
+            session_id=session_id, name=name, arg=arg))
     except Exception as exc:
         logger.debug("command.dispatch %s %s failed: %s", name, arg, exc, exc_info=True)
         return _err(rid, 5031, f"dispatch failed: {exc}")
+    if isinstance(response, dict):
+        return response
+    return {"result": response.model_dump(mode="json")}
 
 
 def _execute_manager_action(session_key: str, action: str, args: dict) -> dict:

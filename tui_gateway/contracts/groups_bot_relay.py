@@ -52,6 +52,14 @@ class RoomActor(Result):
     connection_id: str | None = None
 
 
+class RoomActorInput(Params):
+    kind: Literal["user", "member", "gateway", "system"]
+    id: str
+    display_name: str | None = None
+    profile: str | None = None
+    connection_id: str | None = None
+
+
 class RoomEvent(Result):
     """``gateway/hosted_rooms.py::_event_from_row``."""
 
@@ -65,6 +73,21 @@ class RoomEvent(Result):
     payload: JsonValue
     created_at: float
     idempotent: bool = False
+
+
+class RoomEventInput(Params):
+    room_id: str
+    seq: int
+    event_id: str
+    kind: str
+    actor: RoomActorInput
+    authority_epoch: int | None = None
+    payload: JsonValue
+    created_at: float
+    idempotent: bool = False
+
+    def as_mapping(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json")
 
 
 class Room(Result):
@@ -114,6 +137,9 @@ class RoomMemberInput(Params):
     display_name: str | None = None
     target: RoomMemberInputTargetLocal | RoomMemberInputTargetPeer | None = None
 
+    def as_mapping(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json")
+
 
 class RoomParams(ProfileParams):
     """Any method addressed at one hosted room."""
@@ -161,6 +187,26 @@ class RoomLinkCatalog(Result):
     execution_policy: RoomExecutionPolicy
     catalog_digest: str
     endpoint: RoomLinkEndpoint | None = None
+
+    def as_mapping(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json")
+
+
+class RoomLinkCatalogInput(Params):
+    """Inbound RoomLink catalog; it becomes a gateway peer catalog before probing."""
+
+    installation_id: str
+    protocol_versions: list[int]
+    link_modes: list[str]
+    persistent_process: bool
+    text: bool
+    attachments: bool
+    execution_policy: RoomExecutionPolicy
+    catalog_digest: str
+    endpoint: RoomLinkEndpoint | None = None
+
+    def as_mapping(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json")
 
 
 class RoomLinkEnabled(Result):
@@ -328,13 +374,44 @@ class GroupsLogParams(RoomParams):
 
 
 class GroupsLogResult(Result):
-    """``gateway/hosted_rooms.py::read_events`` page — also ``groups.replicate.page``."""
+    """``gateway/hosted_rooms.py::read_events`` page."""
 
     events: list[RoomEvent]
     cursor: int
     latest_seq: int
     has_more: bool
     authority: RoomAuthority
+
+
+class GroupsLogInput(Params):
+    """Inbound replay page from a peer before replica persistence."""
+
+    events: list[RoomEventInput]
+    cursor: int
+    latest_seq: int
+    has_more: bool
+    authority: RoomAuthority
+
+    def as_mapping(self) -> dict[str, JsonValue]:
+        return self.model_dump(mode="json")
+
+
+class GroupsReplicateParams(RoomParams):
+    room_name: str
+    members: list[JsonValue]
+    page: GroupsLogInput
+
+
+class GroupsReplicateResult(Result):
+    room_id: str
+    stored_seq: int
+    ingested: int
+    authority: RoomAuthority
+    caught_up: bool
+
+
+method("groups.replicate", params=GroupsReplicateParams, result=GroupsReplicateResult,
+       doc="Persist one authority-stamped replay page into the local replica store; idempotent.")
 
 
 method("groups.log", params=GroupsLogParams, result=GroupsLogResult,
@@ -420,25 +497,6 @@ method("groups.retry", params=GroupsRetryParams, result=GroupsRetryResult,
 
 
 # ── replication / authority takeover ──────────────────────────────────────────────────────────
-
-
-class GroupsReplicateParams(RoomParams):
-    room_name: str
-    # gateway/hosted_room_replicas.py:150 persists raw replica rosters, including pre-Discussion legacy rows.
-    members: list[JsonValue]
-    page: GroupsLogResult
-
-
-class GroupsReplicateResult(Result):
-    room_id: str
-    stored_seq: int
-    ingested: int
-    authority: RoomAuthority
-    caught_up: bool
-
-
-method("groups.replicate", params=GroupsReplicateParams, result=GroupsReplicateResult,
-       doc="Persist one authority-stamped replay page into the local replica store; idempotent.")
 
 
 class GroupsReplicaStateParams(RoomParams):
@@ -538,7 +596,7 @@ class GroupsPeerRegisterParams(RoomParams):
     target_url: str
     target_profile: str
     grant: str
-    catalog: RoomLinkCatalog
+    catalog: RoomLinkCatalogInput
     cancellation_scope_id: str | None = None
     trace_id: str | None = None
 

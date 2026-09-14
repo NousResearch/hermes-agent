@@ -150,8 +150,36 @@ describe('share-code', () => {
   })
 
   it('rejects garbage with a ShareCodeError', () => {
-    expect(() => decodeShareCode('not a real code !!!')).toThrow(ShareCodeError)
+    expect(() => decodeShareCode('HMV1-not-a-real-code')).toThrow(ShareCodeError)
     expect(() => decodeShareCode('')).toThrow(ShareCodeError)
+  })
+
+  it('round-trips provider memory sources (v4)', () => {
+    const g = sampleGraph()
+
+    g.nodes[0].kind = 'memory'
+    g.nodes[0].memorySource = 'honcho'
+    g.nodes[1].kind = 'memory'
+    g.nodes[1].memorySource = 'profile'
+
+    const out = decodeShareCode(encodeShareCode(g))
+
+    expect(out.nodes[0].memorySource).toBe('honcho')
+    expect(out.nodes[1].memorySource).toBe('profile')
+  })
+
+  it('decodes a legacy v3 code (no provider sources)', () => {
+    // Generated with the pre-provider VERSION=3 codec: skill 'skill-a' (devops)
+    // + memory nodes sourced 'memory' and 'profile', one edge.
+    const V3 =
+      'HMLA66ZO7hyciiP4_3VoTxcfMXZmTk5uok8Kall-QXFUo4Kuam5-UWVCmmJySU8ELaMo0JBUX5aZk4qWJSNgUVmAaNCIyODIoObAYPDn3pGFgA'
+
+    const g = decodeShareCode(V3)
+
+    expect(g.nodes).toHaveLength(3)
+    expect(g.nodes.map(n => n.kind).sort()).toEqual(['memory', 'memory', 'skill'])
+    expect(g.nodes.map(n => n.memorySource ?? '').sort()).toEqual(['', 'memory', 'profile'])
+    expect(g.edges).toHaveLength(1)
   })
 
   it('rejects a corrupted (bit-flipped) code', () => {

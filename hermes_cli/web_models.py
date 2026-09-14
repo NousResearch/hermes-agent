@@ -207,6 +207,17 @@ class LearningNodeRef(BaseModel):
     id: str
     profile: Optional[str] = None
 
+class LearningNodeCrossInsert(BaseModel):
+    id: str
+    source_profile: str
+    target_profile: str
+
+
+class ProviderSessionMaterialize(BaseModel):
+    session_id: str
+    profile: Optional[str] = None
+
+
 class LearningNodeEdit(BaseModel):
     id: str
     content: str

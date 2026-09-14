@@ -6240,6 +6240,36 @@ def _restart_all(system: bool) -> None:
         _service_call(kind, "start", system)
 
 
+def _wait_for_supervised_gateway_replacement(
+    old_pid: int, timeout: float | None = None, *, poll_interval: float = 0.5
+) -> int | None:
+    """Poll the pidfile until the supervisor's replacement gateway registers a fresh PID.
+
+    A graceful SIGUSR1 exit only proves the old process left — an unloaded, broken, or
+    stopped-retrying supervisor leaves the gateway down. Custom-supervisor counterpart of
+    ``_wait_for_launchd_service_pid``: the label is invisible to launchctl queries, so
+    identity comes from ``get_running_pid``'s lock+PID liveness verification and freshness
+    from ``!= old_pid``. Returns the fresh PID, or None once ``timeout`` passes.
+    """
+    from gateway.status import get_running_pid
+
+    if timeout is None:
+        timeout = SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT
+    deadline = time.monotonic() + max(timeout, 0.5)
+    while True:
+        pid = get_running_pid()
+        if pid is not None and pid > 0 and pid != old_pid:
+            return pid
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_interval)
+
+
+# A custom KeepAlive supervisor keeps its own respawn interval (launchd's is ~once per 10s,
+# per LAUNCHD_SUPERVISION_VERIFY_TIMEOUT); 15s matches _wait_for_launchd_service_pid's budget.
+SUPERVISED_REPLACEMENT_VERIFY_TIMEOUT = 15.0
+
+
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     system = getattr(args, "system", False)
@@ -6302,11 +6332,29 @@ def _cmd_restart(args):
         print(f"→ Restarting externally-supervised gateway (PID {supervised_pid}) — "
               f"draining in-flight runs (up to {wait_budget:.0f}s)...")
         if _graceful_restart_via_sigusr1(supervised_pid, wait_budget):
-            print()
-            print("✓ Gateway exited for its supervisor to relaunch it")
-            print("  (a KeepAlive supervisor revives it within its respawn interval)")
-            return
-        print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — falling back to stop/restart")
+            # A clean exit doesn't prove supervision — the marker lives in argv, not in a
+            # loaded job. launchd_restart verifies a replacement PID for the same reason:
+            # a broken/unloaded supervisor must surface as a failed restart, never a
+            # success printed over a dead gateway.
+            replacement_pid = _wait_for_supervised_gateway_replacement(supervised_pid)
+            if replacement_pid is not None:
+                print()
+                print(f"✓ Gateway relaunched by its supervisor (PID {replacement_pid})")
+                return
+            print("⚠ Supervisor did not relaunch the gateway after its graceful exit")
+        else:
+            print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s")
+        # The supervisor stays the sole restart owner: falling through to stop + foreground
+        # run would SIGTERM a KeepAlive-armed process and stamp this CLI's PID, so every
+        # supervisor respawn then refuses with "Gateway already running" (#110637) — the
+        # exact wedge this handback exists to prevent. Fail loudly and leave ownership be.
+        _print_lines(
+            "",
+            "✗ Not stopping or foreground-running a supervisor-owned gateway.",
+            "  Check the supervisor (it may be unloaded, wedged, or stopped retrying),",
+            "  then rerun once it is healthy: hermes gateway restart",
+        )
+        sys.exit(1)
 
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")

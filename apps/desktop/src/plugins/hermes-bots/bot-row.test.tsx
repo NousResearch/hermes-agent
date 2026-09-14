@@ -60,7 +60,7 @@ vi.mock('./roster-actions', () => ({ openRosterBot }))
 const noop = () => undefined
 
 function renderRow(bot: RosterRow) {
-  render(<BotRow bot={bot} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+  render(<BotRow bot={bot} onClear={noop} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
 
   return screen.getByRole('button')
 }
@@ -80,7 +80,15 @@ describe('group-turn presence', () => {
     const { container } = render(
       <>
         {[local, remote].map(bot => (
-          <BotRow bot={bot} key={bot.connectionId} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />
+          <BotRow
+            bot={bot}
+            key={bot.connectionId}
+            onClear={noop}
+            onDelete={noop}
+            onEdit={noop}
+            onGroup={noop}
+            onNewSection={noop}
+          />
         ))}
       </>
     )
@@ -164,6 +172,19 @@ describe('the menu opens the same forever-chat a row click does', () => {
     fireEvent.click(await screen.findByText('Open Bot Chat'))
 
     expect(openRosterBot.mock.calls).toEqual([[bot]])
+  })
+})
+
+describe('the clear-chat menu action', () => {
+  it('hands the selected bot to the pane confirmation instead of clearing immediately', async () => {
+    const bot = { name: 'alpha' } as RosterRow
+    const onClear = vi.fn()
+
+    render(<BotRow bot={bot} onClear={onClear} onDelete={noop} onEdit={noop} onGroup={noop} onNewSection={noop} />)
+    fireEvent.contextMenu(screen.getByRole('button'))
+    fireEvent.click(await screen.findByText('Clear chat…'))
+
+    expect(onClear).toHaveBeenCalledWith(bot)
   })
 })
 

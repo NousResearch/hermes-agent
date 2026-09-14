@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Related investigations: fangliquanflq (#95528) identified the early PRM binding
+# check; aviyashchin (#100551) demonstrated metadata alias adaptation. This uses
+# explicit trust and discovery-bound registration rather than global slash equality.
 class HermesProviderMixin:
     """Token-endpoint fixes layered over the SDK's ``OAuthClientProvider`` (must precede it in
     the MRO; subclasses set ``_hermes_logger`` to keep their own logger name).
@@ -40,41 +43,63 @@ class HermesProviderMixin:
         # only (see _apply_trusted_issuer_compat). Empty for almost every server.
         self._hermes_trusted_issuers = tuple(trusted_issuers or ())
 
+    async def async_auth_flow(self, request):
+        inner = super().async_auth_flow(request)
+        try:
+            outgoing = await inner.__anext__()
+            while True:
+                incoming = yield outgoing
+                await self._apply_trusted_issuer_compat(outgoing, incoming)
+                outgoing = await inner.asend(incoming)
+        except StopAsyncIteration:
+            return
+        finally:
+            await inner.aclose()
+
+    async def _validate_resource_match(self, prm):
+        await super()._validate_resource_match(prm)
+        # Keep the discovery identity separate from the ASM issuer. The SDK checks
+        # persisted credentials immediately after this hook, before fetching ASM.
+        self._hermes_discovery_issuer = str(prm.authorization_servers[0])
+
+    def _validate_discovered_metadata(self, metadata, expected):
+        from mcp.client.auth.utils import validate_metadata_issuer
+        actual = str(metadata.issuer)
+        if expected is not None:
+            validate_metadata_issuer(
+                metadata, actual if actual in self._hermes_trusted_issuers else expected)
+        # A trusted alias is not permission to move an existing registration to a
+        # different issuer on the same discovery endpoint.
+        prior = self.context.oauth_metadata
+        if prior is None:
+            from tools.mcp_oauth import HermesTokenStorage
+            if isinstance(self.context.storage, HermesTokenStorage):
+                prior = self.context.storage.load_oauth_metadata()
+        info = self.context.client_info
+        if (prior is not None and info is not None and info.issuer == expected
+                and str(prior.issuer) != actual):
+            validate_metadata_issuer(metadata, str(prior.issuer))
+
     async def _apply_trusted_issuer_compat(self, discovery_request: Any, response: Any) -> None:
-        """Reconcile a provider-documented authorization-server ``issuer`` mismatch.
+        """Validate typed ASM from an exact SDK discovery candidate before adaptation.
 
-        Some providers (NetSuite is the shipped example) serve RFC 8414 metadata whose
-        ``issuer`` is a fixed vendor value regardless of the account-specific discovery
-        host — NetSuite always advertises ``https://system.netsuite.com`` while discovery
-        runs against ``https://<accountId>.suitetalk.api.netsuite.com/`` (Oracle, "OAuth 2.0
-        Token Structure": "The value of the iss parameter is https://system.netsuite.com").
-        The SDK's SEP-2468 validator correctly compares those strings exactly, so the flow
-        otherwise dies at discovery time with "Authorization server metadata issuer mismatch".
-
-        When (and only when) the mismatched issuer is explicitly listed in this server's
-        ``oauth.trusted_issuers``, adopt the metadata issuer as ``auth_server_url`` so the
-        SDK's own validator then passes on real equality. Guards keep this narrow:
-        the discovery request must target the expected authorization-server host on a
-        well-known metadata path, the response must be HTTP 200, and the payload issuer
-        must exactly match a configured trusted issuer. Everything else — resource
-        validation, callback ``iss`` checks, token handling — is untouched, and every
-        unlisted mismatch still reaches the SDK's strict validator unchanged.
+        Explicit trusted issuers permit a metadata alias, not a different discovery
+        origin. The SDK still validates PRM resources and callback ``iss`` itself.
+        Registrations retain the PRM identity so its early credential check remains
+        strict on the next cycle. Older alias-bound registrations are not migrated:
+        without their discovery identity, re-registration is safer than guessing.
         """
         trusted = getattr(self, "_hermes_trusted_issuers", ())
         expected = getattr(self.context, "auth_server_url", None)
         if not trusted or not expected:
             return
-        from urllib.parse import urlsplit
+        from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls
         try:
-            request_url = urlsplit(str(discovery_request.url))
-            expected_host = urlsplit(str(expected)).hostname
-        except (AttributeError, ValueError):
-            return
-        if not expected_host or request_url.hostname != expected_host:
-            return
-        path = request_url.path or ""
-        if not (path.startswith("/.well-known/oauth-authorization-server")
-                or path.startswith("/.well-known/openid-configuration")):
+            candidates = build_oauth_authorization_server_metadata_discovery_urls(
+                str(expected), self.context.server_url)
+            if str(discovery_request.url) not in candidates:
+                return
+        except (AttributeError, TypeError, ValueError):
             return
         if getattr(response, "status_code", None) != 200:
             return
@@ -83,7 +108,15 @@ class HermesProviderMixin:
             payload = json.loads(await response.aread())
         except (AttributeError, TypeError, ValueError):
             return
-        issuer = payload.get("issuer") if isinstance(payload, dict) else None
+        from mcp.shared.auth import OAuthMetadata
+        from pydantic import ValidationError
+        try:
+            metadata = OAuthMetadata.model_validate(payload)
+        except ValidationError:
+            # Leave malformed candidates to the SDK so OIDC fallback still runs.
+            return
+        self._validate_discovered_metadata(metadata, str(expected))
+        issuer = str(metadata.issuer)
         if not isinstance(issuer, str) or issuer == str(expected) or issuer not in trusted:
             return
         self._hermes_logger.info(
@@ -93,6 +126,18 @@ class HermesProviderMixin:
 
     async def _perform_authorization(self):
         info = self.context.client_info
+        discovery = getattr(self, "_hermes_discovery_issuer", None)
+        if (discovery is not None and info is not None
+                and info.issuer in self._hermes_trusted_issuers):
+            # Bind to the PRM discovery identity, not its trusted metadata alias:
+            # next cycle's SDK credentials_match_issuer runs BEFORE ASM discovery.
+            from tools.mcp_oauth import HermesTokenStorage
+            if isinstance(self.context.storage, HermesTokenStorage) and self.context.oauth_metadata is not None:
+                # Legacy providers do not have the manager's metadata persistence.
+                # Retain the alias alongside the discovery-bound registration.
+                self.context.storage.save_oauth_metadata(self.context.oauth_metadata)
+            info.issuer = discovery
+            await self.context.storage.set_client_info(info)
         grants = getattr(info, "grant_types", None) or []
         if (getattr(self, "_hermes_oauth_flow", "browser") == "device"
                 or ("urn:ietf:params:oauth:grant-type:device_code" in grants and "authorization_code" not in grants)):

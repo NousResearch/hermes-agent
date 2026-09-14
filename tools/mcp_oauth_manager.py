@@ -90,8 +90,12 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 logger.debug("MCP OAuth '%s': restored metadata from disk (token_endpoint=%s)",
                              self._hermes_server_name, meta.token_endpoint)
         if tokens is not None and self.context.oauth_metadata is None:
+            from mcp.client.auth import OAuthFlowError
             try:
                 await self._prefetch_oauth_metadata()
+            except OAuthFlowError:
+                self._initialized = False
+                raise
             except Exception as exc:  # pragma: no cover — the SDK's 401-branch discovery runs next request
                 self._log_nonfatal("pre-flight metadata discovery", exc)
 
@@ -121,9 +125,17 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 resp = await _send(client, url, "PRM")
                 prm = await handle_protected_resource_response(resp) if resp is not None else None
                 if prm:
+                    await self._validate_resource_match(prm)
                     self.context.protected_resource_metadata = prm
                     if prm.authorization_servers:
                         self.context.auth_server_url = str(prm.authorization_servers[0])
+                        from mcp.client.auth.utils import credentials_match_issuer
+                        if (self.context.client_info is not None
+                                and not credentials_match_issuer(
+                                    self.context.client_info, self.context.auth_server_url,
+                                    self.context.client_metadata_url)):
+                            from mcp.client.auth import OAuthFlowError
+                            raise OAuthFlowError("Authorization server changed; refusing cached credentials")
                     break
             # ASM discovery against auth_server_url (server_url fallback for legacy providers).
             for url in build_oauth_authorization_server_metadata_discovery_urls(self.context.auth_server_url, server_url):
@@ -134,6 +146,15 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 if not ok:
                     break
                 if asm:
+                    self._validate_discovered_metadata(asm, self.context.auth_server_url)
+                    from mcp.client.auth.utils import credentials_match_issuer
+                    if (self.context.client_info is not None
+                            and not credentials_match_issuer(
+                                self.context.client_info,
+                                self.context.auth_server_url or str(asm.issuer),
+                                self.context.client_metadata_url)):
+                        from mcp.client.auth import OAuthFlowError
+                        raise OAuthFlowError("Authorization server changed; refusing cached credentials")
                     self.context.oauth_metadata = asm
                     storage = self._hermes_storage()  # persist now so a later cold-load skips discovery
                     if storage is not None:
@@ -141,6 +162,14 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     logger.debug("MCP OAuth '%s': pre-flight ASM discovered token_endpoint=%s",
                                  self._hermes_server_name, asm.token_endpoint)
                     break
+
+    async def _refresh_token(self):
+        # Never let failed cold discovery send stored secrets to the SDK's
+        # resource-origin /token fallback: no metadata means no verified endpoint.
+        if self.context.oauth_metadata is None or not self.context.oauth_metadata.token_endpoint:
+            from mcp.client.auth import OAuthFlowError
+            raise OAuthFlowError("Cannot refresh without a verified token endpoint")
+        return await super()._refresh_token()
 
     def _persist_oauth_metadata_if_changed(self) -> None:
         """Save metadata the SDK discovered lazily (401 branch); no-op when absent/unchanged."""
@@ -246,10 +275,6 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 # Sniff the response for a dead-client-registration signal before handing it back to the SDK
                 # (best-effort, GH#36767).
                 await self._maybe_flag_poisoned_client(incoming)
-                # Provider-documented issuer mismatches (oauth.trusted_issuers, e.g. NetSuite):
-                # normalize auth_server_url BEFORE the SDK's strict SEP-2468 validator sees the
-                # metadata, so validation then passes on real equality (HermesProviderMixin).
-                await self._apply_trusted_issuer_compat(outgoing, incoming)
                 outgoing = await inner.asend(incoming)
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch

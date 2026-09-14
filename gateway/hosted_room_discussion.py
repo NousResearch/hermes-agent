@@ -196,11 +196,15 @@ def _all_failure_reasons() -> frozenset[str]:
     return ALL_REASONS
 
 
-def validate_user_payload(value: Any) -> dict[str, Any]:
+def validate_user_payload(value: Any, *, member_ids: Iterable[str] | None = None) -> dict[str, Any]:
     """Validate and normalize the exact ``message.user`` Discussion payload."""
     payload = _exact_fields(value, label="user payload", required=_USER_PAYLOAD_FIELDS, optional={"attachments"})
     normalized: dict[str, Any] = {"thread_id": _identifier(payload["thread_id"], label="thread_id")}
     if "attachments" in payload:
+        if member_ids is not None:
+            frozen = tuple(_identifier(member, label="attachment member_id") for member in member_ids)
+            if not frozen or len(set(frozen)) != len(frozen):
+                raise DiscussionValidationError("attachment member ids must be a non-empty frozen set")
         normalized["attachments"] = _message_manifest(payload["attachments"])
     text = payload["text"]
     if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_USER_TEXT_BYTES:

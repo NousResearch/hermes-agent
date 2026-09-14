@@ -23,6 +23,8 @@ def bound_attachment_payloads(
     if not attachments:
         return []
     manifest = validate_bound_task_manifest(attachments)
+    from gateway.session_ingress_media import validate_media_batch_size
+    validate_media_batch_size(item["size"] for item in manifest)
     if store is None:
         raise ValueError("Group Chat attachment storage is unavailable")
     result = []

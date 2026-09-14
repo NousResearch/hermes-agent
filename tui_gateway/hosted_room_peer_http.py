@@ -706,6 +706,7 @@ class PeerRunsHTTPClient:
             raise PeerRunsHTTPError("peer returned a non-object attachment response")
         return payload
 
+
     def discard_attachments(
         self,
         *,
@@ -726,6 +727,7 @@ class PeerRunsHTTPClient:
             room_grant=self._require_room_grant(grant),
             reject_redirects=True,
         )
+
 
     def stage_attachments(
         self,
@@ -807,3 +809,4 @@ class PeerRunsHTTPClient:
             "manifest_digest": digest,
             "count": len(manifest),
         }
+

@@ -46,6 +46,28 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 
 For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection.
 
+### Descendant process scope
+
+A task assignment belongs to the dispatcher worker, not to every program it starts.
+Hermes subprocess helpers carry a non-owner fence into shells, execution kernels,
+cron deliveries, hooks, language servers, and ordinary stdio MCP servers. Later
+children remain fenced even when a script removes the inherited task ID: CLI and
+tool mutations are rejected, rather than treating that script as an orchestrator.
+Board/database routing and workspace paths are retained. Descendants can read an
+existing board without running schema migrations; its owner must initialize it.
+
+The dispatcher explicitly grants a newly assigned worker its own scope. The managed
+Hermes-tools MCP endpoint can likewise act for its supervising worker, while the
+executor's ordinary shell children remain fenced. Workers may only perform lifecycle
+handoffs and attach files to their assigned task; `unblock` remains orchestrator-only.
+Cross-task comments and follow-up task creation retain their existing behavior.
+
+Integration authors spawning code should use
+`agent.delegation_context.delegated_child_subprocess_env` at the actual spawn, after
+merging environment overrides. It preserves the caller's credential/profile policy.
+This is cooperative runtime scoping, **not OS confinement**: it does not prevent
+arbitrary code from deliberately erasing lineage metadata or opening SQLite directly.
+
 ### 3. A lifecycle terminator
 
 Every claim must end in exactly one of:

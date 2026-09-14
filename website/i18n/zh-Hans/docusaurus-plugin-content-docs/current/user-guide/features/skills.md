@@ -26,13 +26,13 @@ Skills 是 agent 在需要时可以加载的按需知识文档。它们遵循**�
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
 /github-pr-workflow create a PR for the auth refactor
-/plan design a rollout for migrating our auth provider
+/songsee analyze the frequency spread of this mix
 
 # 只输入 skill 名称即可加载它，并让 agent 询问你的需求：
 /excalidraw
 ```
 
-捆绑的 `plan` skill 是一个很好的示例。运行 `/plan [request]` 会加载该 skill 的指令，告知 Hermes 在需要时检查上下文、编写 markdown 实现计划而非直接执行任务，并将结果保存在相对于当前工作区/后端工作目录的 `.hermes/plans/` 下。
+（计划模式的工作方式相同，但现在是内置命令：`/plan [request]` 告知 Hermes 在需要时检查上下文、编写 markdown 实现计划而非直接执行任务，并将结果保存在相对于当前工作区/后端工作目录的 `.hermes/plans/` 下。）
 
 你也可以通过自然对话与 skills 交互：
 

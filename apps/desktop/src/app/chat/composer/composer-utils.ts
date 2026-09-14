@@ -1,4 +1,5 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
+import type { ConnectionState } from '@hermes/shared'
 
 import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import type { ComposerAttachment } from '@/store/composer'
@@ -22,6 +23,24 @@ export const COMPOSER_STACK_BREAKPOINT_PX = 320
 // chevron frees is spent keeping the row single for another stretch.
 export const COMPOSER_COMPACT_PILL_PX = 560
 
+// The ladder keeps going below the stack breakpoint — a pane can be far
+// narrower than even the stacked controls row. Both rungs are budgeted
+// against that row's real cost: menu ~24 + surface padding 16 + the cluster
+// (~190; ~218 mid-turn with the queue button).
+//
+// At 260 the three voice toggles fold into the one menu HUD mode already
+// uses, clearing the mid-turn worst case with margin. Each stage sits clear
+// of the floor below it rather than arriving the instant the previous one
+// gives out — the mistake COMPOSER_COMPACT_PILL_PX documents.
+export const COMPOSER_FOLD_VOICE_PX = 260
+
+// Type and send, nothing else. A pane can be dragged to MIN_PANE_PX (80), and
+// even with voice folded the row still costs ~150, so the last rung drops the
+// pill AND the voice menu. Both stay reachable — the model by hotkey and the
+// full picker, dictation from any wider pane — and Send fits with room to
+// spare at any width the layout tree allows (~74 all-in).
+export const COMPOSER_MINIMAL_PX = 180
+
 // A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
 // vertical padding). Anything taller means the text wrapped to a second line,
 // which is when the composer should expand to the stacked layout.
@@ -33,6 +52,18 @@ export const COMPOSER_FADE_BACKGROUND =
 // Quiet period after the last keystroke before persisting the draft;
 // unmount/pagehide flushes bypass it.
 export const DRAFT_PERSIST_DEBOUNCE_MS = 400
+
+/**
+ * Keep a reconnecting draft editable so transient gateway dials cannot blur
+ * the editor and discard the user's caret. Submission still reads the
+ * independent `disabled` prop, so non-open states cannot send.
+ *
+ * An `open` state paired with `disabled=true` is a transient disagreement
+ * between the connection atoms; fail closed until they converge.
+ */
+export function shouldDisableComposerInput(disabled: boolean, gatewayState: ConnectionState): boolean {
+  return disabled && gatewayState === 'open'
+}
 
 export const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
@@ -68,6 +99,50 @@ export const slashArgStage = (query: string) => query.includes(' ')
 
 /** The `/command` token of a slash query (`personality x` → `/personality`). */
 export const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
+
+/** Typed `/` query or completion text without the leading slash. */
+export const slashCompletionToken = (value: string) => value.replace(/^\//, '').trimEnd().toLowerCase()
+
+/**
+ * Which row Space/Enter should take. Tab always uses the highlight; this is
+ * the "still suggesting, don't steal what I typed" pick.
+ *
+ * `/com` + a highlighted `/compress` still completes. `/review` while
+ * `/compress` is the leftover highlight does not. An exact list match wins
+ * so a fully typed command isn't replaced by a longer/fuzzier neighbour.
+ */
+export function implicitSlashAcceptIndex(
+  query: string,
+  itemTexts: readonly string[],
+  activeIndex: number,
+  activeExplicit: boolean
+): number | null {
+  const typed = slashCompletionToken(query)
+
+  if (!typed) {
+    return null
+  }
+
+  if (activeExplicit && itemTexts[activeIndex] != null) {
+    return activeIndex
+  }
+
+  const exact = itemTexts.findIndex(text => slashCompletionToken(text) === typed)
+
+  if (exact >= 0) {
+    return exact
+  }
+
+  const active = itemTexts[activeIndex]
+
+  if (active != null && slashCompletionToken(active).startsWith(typed)) {
+    return activeIndex
+  }
+
+  const prefixHits = itemTexts.flatMap((text, index) => (slashCompletionToken(text).startsWith(typed) ? [index] : []))
+
+  return prefixHits.length === 1 ? prefixHits[0] : null
+}
 
 export interface TriggerAcceptInput {
   /** The user moved the highlight themselves (arrow keys) rather than

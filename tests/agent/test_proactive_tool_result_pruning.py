@@ -130,7 +130,12 @@ def test_rearms_only_after_reclaimed_token_runway():
         _tool_msg("call_9", "ok"),
     ]
     assert sum(map(_estimate_msg_budget_tokens, grown)) < rearm_tokens
-    blocked, n2 = c.prune_tool_results_only(grown, current_tokens=1_000_000)
+    # Below the full-compression threshold, where the runway is pure
+    # prompt-cache hysteresis. (Above it the runway is bypassed on the
+    # provider-billed reading instead — see
+    # tests/agent/test_proactive_prune_rearm_threshold.py, #101889.)
+    _under_threshold = c.threshold_tokens - 1
+    blocked, n2 = c.prune_tool_results_only(grown, current_tokens=_under_threshold)
     assert n2 == 0
     assert blocked is grown
     assert len(_tool_by_id(blocked, "call_6")["content"]) == 9000
@@ -139,7 +144,7 @@ def test_rearms_only_after_reclaimed_token_runway():
     missing = rearm_tokens - sum(map(_estimate_msg_budget_tokens, grown))
     regrown = grown + [{"role": "user", "content": "x" * (missing * 4)}]
     assert sum(map(_estimate_msg_budget_tokens, regrown)) >= rearm_tokens
-    rearmed, n3 = c.prune_tool_results_only(regrown, current_tokens=1_000_000)
+    rearmed, n3 = c.prune_tool_results_only(regrown, current_tokens=_under_threshold)
     assert n3 >= 2
     assert rearmed is not regrown
 

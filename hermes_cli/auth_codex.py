@@ -444,10 +444,18 @@ def resolve_codex_runtime_credentials(
             # reset early (banked reset redeemed, plan upgraded): ``last_error_reset_at`` can be
             # days in the future while the account is already usable again.
             stale_token = _stripped(pool_rate_limit.get("access_token"))
-            if stale_token and _probe_codex_quota_restored(
-                stale_token, base_url=pool_rate_limit.get("base_url")):
-                logger.info("Codex quota restored upstream — clearing stale pool cooldown(s).")
-                clear_codex_pool_quota_cooldowns()
+            from agent.codex_pool_recovery import observe_token, recover
+            try:
+                observed = observe_token(stale_token, entry_id=pool_rate_limit.get("id")) if stale_token else None
+                restored = observed is not None and _probe_codex_quota_restored(
+                    observed.row["access_token"], base_url=observed.row.get("base_url"),
+                    reuse_positive=False) is True
+                recovered = recover(observed, proof="quota") if restored and observed is not None else None
+            except (OSError, TimeoutError):
+                logger.warning("Codex pool-only quota recovery not persisted")
+                recovered = None
+            if recovered is not None:
+                logger.info("Codex quota restored upstream — reconciled observed pool entry.")
                 pool_token = _pool_codex_access_token()
                 if pool_token:
                     return _codex_runtime_result(
@@ -518,7 +526,8 @@ def _codex_usage_probe_url(base_url: Optional[str]) -> str:
 
 def _probe_codex_quota_restored(
     access_token: Any, *, base_url: Optional[str] = None,
-    min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS) -> Optional[bool]:
+    min_interval_seconds: float = CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS,
+    reuse_positive: bool = True) -> Optional[bool]:
     """Ask the Codex usage endpoint whether this account's quota is usable again.
 
     Probes are throttled per access token (module-local cache) so the hot selection path can fire
@@ -535,7 +544,9 @@ def _probe_codex_quota_restored(
     with _codex_quota_probe_lock:
         cached = _codex_quota_probe_cache.get(cache_key)
         if cached is not None and (now - cached[0]) < min_interval_seconds:
-            return cached[1]
+            # A success predating this caller's observation cannot clear a new
+            # failure. Keep the throttle, but report indeterminate instead.
+            return None if cached[1] is True and not reuse_positive else cached[1]
         # Reserve the slot immediately so concurrent selectors don't stampede the endpoint.
         _codex_quota_probe_cache[cache_key] = (now, None)
     result: Optional[bool] = None
@@ -623,6 +634,7 @@ def _codex_pool_rate_limit_status() -> Optional[Dict[str, Any]]:
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
             if reset_at is None or reset_at > now:
                 return {
+                    "id": entry.get("id"),
                     "label": entry.get("label"), "last_refresh": entry.get("last_refresh"),
                     "reset_at": reset_at, "reason": entry.get("last_error_reason"),
                     "message": entry.get("last_error_message"), "access_token": token.strip(),

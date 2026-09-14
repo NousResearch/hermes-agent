@@ -586,7 +586,7 @@ class CLITuiMixin:
             panel.blank()
         return panel.close()
 
-    def _render_scroll_list_panel(self, state, title, hint, labels, *, min_width, max_width, indent):
+    def _render_scroll_list_panel(self, state, title, hint, labels, *, min_width, max_width, indent, warning=""):
         """Titled panel with a hint row and a scrolling selectable list (model picker, palette).
 
         The panel renders into a Window with no max height, so the visible slice is limited to
@@ -596,6 +596,7 @@ class CLITuiMixin:
         from cli import HermesCLI, _panel_box_width, _wrap_panel_text
         box_width = _panel_box_width(title, [hint] + labels, min_width=min_width, max_width=max_width)
         inner_text_width = max(8, box_width - 6)
+        warning_lines = _wrap_panel_text(warning, inner_text_width) if warning else []
         selected = state.get("selected", 0)
         try:
             from prompt_toolkit.application import get_app
@@ -603,12 +604,15 @@ class CLITuiMixin:
         except Exception:
             term_rows = _term_rows()
         scroll_offset, visible = HermesCLI._compute_model_picker_viewport(
-            selected, state.get("_scroll_offset", 0), len(labels), term_rows)
+            selected, state.get("_scroll_offset", 0), len(labels), term_rows,
+            panel_chrome=6 + len(warning_lines))
         state["_scroll_offset"] = scroll_offset
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.blank()
         panel.row('class:clarify-hint', hint)
+        for line in warning_lines:
+            panel.row('class:clarify-hint', line)
         panel.blank()
         for idx in range(scroll_offset, min(scroll_offset + visible, len(labels))):
             style = 'class:clarify-selected' if idx == selected else 'class:clarify-choice'
@@ -622,10 +626,14 @@ class CLITuiMixin:
         state = self._model_picker_state
         if not state:
             return []
+        warning = ""
         if state.get("stage", "provider") == "provider":
             title = "⚙ Model Picker — Select Provider"
             choices = []
             _providers = state.get("providers")
+            selected = state.get("selected", 0)
+            if isinstance(_providers, list) and 0 <= selected < len(_providers):
+                warning = _providers[selected].get("warning", "")
             for p in _providers if isinstance(_providers, list) else []:
                 count = p.get("total_models", len(p.get("models", [])))
                 label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
@@ -650,6 +658,7 @@ class CLITuiMixin:
             hint = "Applies with the model switch (same scope) — Enter to choose"
         else:
             provider_data = state.get("provider_data") or {}
+            warning = provider_data.get("warning", "")
             model_list = state.get("model_list") or []
             title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
             # Fuzzy filter narrows the concrete list; selection still resolves to a real entry via
@@ -664,11 +673,11 @@ class CLITuiMixin:
                     f"Filter: {_query}▏  ({len(model_labels)}/{len(model_list)} match "
                     "— type to narrow, Backspace to clear)")
             elif model_list:
-                hint = f"Select a model ({len(model_list)} available) — type to filter"
+                hint = f"Select a model ({len(model_list)} listed) — type to filter"
             else:
                 hint = "No models listed for this provider. Use Back or Cancel."
         return self._render_scroll_list_panel(
-            state, title, hint, choices, min_width=46, max_width=84, indent='  ')
+            state, title, hint, choices, min_width=46, max_width=84, indent='  ', warning=warning)
 
     def _get_command_palette_display_fragments(self):
         state = self._command_palette_state

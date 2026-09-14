@@ -93,6 +93,52 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+describe('recorded credential limits', () => {
+  it.each(['unknown', 'free', 'paid'] as const)(
+    'preserves independent Nous %s entitlement despite a pool warning',
+    async tier => {
+      const warning =
+        'Credential pool has a recorded limit; remote availability not checked. Recorded reset: 2100-01-01.'
+      const unavailable = tier === 'unknown' ? ['free-model', 'paid-model'] : tier === 'free' ? ['paid-model'] : []
+      const provider = {
+        slug: 'nous',
+        name: 'Nous',
+        models: ['free-model', 'paid-model'],
+        authenticated: true,
+        warning,
+        unavailable_models: unavailable,
+        free_tier: tier === 'free',
+        free_tier_pending: tier === 'unknown'
+      }
+      vi.mocked(requestModelOptions).mockResolvedValue({ providers: [provider] })
+      const onSelect = vi.fn()
+      renderPicker({ onSelect })
+      await screen.findByText('paid-model')
+      expect(screen.getByText(warning)).toBeTruthy()
+      for (const model of ['free-model', 'paid-model']) {
+        const item = screen.getByText(model).closest('[cmdk-item]')!
+        expect(item.getAttribute('aria-disabled') === 'true').toBe(unavailable.includes(model))
+        if (unavailable.includes(model)) fireEvent.click(item)
+      }
+      expect(onSelect).not.toHaveBeenCalled()
+    }
+  )
+
+  it('keeps the catalog visible with its recorded-state warning, not a login prompt', async () => {
+    const warning =
+      'Credential pool has a recorded limit; remote availability and model scope not checked. Recorded reset: 2100-01-01T00:00:00+00:00.'
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        { slug: 'openai-codex', name: 'OpenAI Codex', models: ['gpt-5.3-codex'], authenticated: true, warning }
+      ]
+    })
+    renderPicker()
+    expect(await screen.findByText('gpt-5.3-codex')).toBeTruthy()
+    expect(screen.getByText(warning)).toBeTruthy()
+    expect(screen.getByText('gpt-5.3-codex').closest('[cmdk-item]')?.getAttribute('aria-disabled')).not.toBe('true')
+  })
+})
+
 describe('ModelPickerDialog download rows', () => {
   it('shows an in-flight download as a disabled progress row in the Local group', async () => {
     $localRuntimeJobs.set([DOWNLOAD_JOB])

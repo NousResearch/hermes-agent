@@ -682,6 +682,9 @@ class _PickerBuild:
             "slug": slug, "name": name, "is_current": is_current, "is_user_defined": False,
             "models": _cap_models(model_ids, self.max_models, slug if uncapped_ok else ""),
             "total_models": len(model_ids), "source": source}
+        if self.for_picker:
+            from hermes_cli.picker_state import recorded_pool_state
+            row.update(recorded_pool_state(slug))
         if slug == "nous":
             # Free-tier identity: one row "Nous · free tier" / nous/welcome, or no row when
             # nous.guest is off. Still marks the slug seen so a later lap cannot re-emit it.
@@ -741,10 +744,16 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
     """Section 1: models.dev-mapped providers with api_key auth."""
     from hermes_cli.model_switch import _declared_model_ids
     from agent.models_dev import get_provider_info
+    from hermes_cli.picker_state import recorded_pool_state
     for hermes_id, mdev_id, pconfig, env_vars in _iter_builtin_candidates(data, b.excluded, b.seen_slugs):
-        if not (_any_env(env_vars) or _raw_pool_usable(hermes_id)):
+        if not (_any_env(env_vars) or (b.for_picker and recorded_pool_state(hermes_id))
+                or _raw_pool_usable(hermes_id)):
             continue
-        model_ids = _live_or_curated_ids(hermes_id, b.curated)
+        if b.for_picker and recorded_pool_state(hermes_id).get("warning"):
+            from hermes_cli.picker_state import recorded_catalog_models
+            model_ids = recorded_catalog_models(hermes_id, b.curated.get(hermes_id, []))
+        else:
+            model_ids = _live_or_curated_ids(hermes_id, b.curated)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
         # emit it later because this row owns the slug.
         configured = user_providers.get(hermes_id) if isinstance(user_providers, dict) else None
@@ -759,6 +768,10 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
 def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> bool:
     """Section-2 credential ladder: env/SDK, external-process executable, auth store, pool,
     anthropic's external credential files."""
+    if b.for_picker:
+        from hermes_cli.picker_state import recorded_pool_state
+        if recorded_pool_state(hermes_slug):
+            return True
     if overlay.keyless:
         return True  # served anonymously (opencode-free)
     if overlay.auth_type == "aws_sdk":
@@ -786,14 +799,7 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> 
         try:
             if _credential_pool_is_usable(hermes_slug):
                 has_creds = True
-            elif b.for_picker:
-                # Show providers whose pool is entirely in cooldown: limits are per-model for
-                # many providers, so another model may work.
-                try:
-                    from agent.credential_pool import load_pool
-                    has_creds = load_pool(hermes_slug).has_credentials()
-                except Exception:
-                    pass
+
         except Exception as exc:
             logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
     if not has_creds and hermes_slug == "anthropic":
@@ -824,7 +830,10 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict) -> None:
             continue
         if not _overlay_has_creds(b, pid, hermes_slug, overlay):
             continue
-        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+        from hermes_cli.picker_state import recorded_pool_state, recorded_catalog_models
+        if b.for_picker and recorded_pool_state(hermes_slug).get("warning"):
+            model_ids = recorded_catalog_models(hermes_slug, b.curated.get(hermes_slug, []))
+        elif hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
             # Live OAuth-backed discovery so Pro-only Codex slugs not in the static catalog
             # appear; falls back to curated when unreachable.
             from hermes_cli.models import cached_provider_model_ids
@@ -863,11 +872,15 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             sib_vars = set(sib.api_key_env_vars) if sib else set()
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
-        has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
+        from hermes_cli.picker_state import recorded_pool_state
+        has_creds = has_creds or (b.for_picker and recorded_pool_state(cp.slug)) or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
             _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
         if not has_creds:
             continue
-        if _is_aws_sdk(cp_config):
+        if b.for_picker and recorded_pool_state(cp.slug).get("warning"):
+            from hermes_cli.picker_state import recorded_catalog_models
+            model_ids = recorded_catalog_models(cp.slug, b.curated.get(cp.slug, []))
+        elif _is_aws_sdk(cp_config):
             model_ids = _aws_live_or_curated_ids(cp.slug, b.curated)
         else:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False)

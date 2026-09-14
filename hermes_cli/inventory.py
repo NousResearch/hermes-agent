@@ -189,7 +189,7 @@ def build_model_options_payload(
     payload = build_models_payload(
         ctx, explicit_only=bool(explicit_only), include_unconfigured=bool(include_unconfigured),
         picker_hints=True, canonical_order=True, pricing=True, pricing_cache_only=not refresh,
-        capabilities=True, featured=True,
+        capabilities=True, featured=True, for_picker=True,
         refresh=refresh, probe_custom_providers=refresh, probe_current_custom_provider=not refresh,
     )
     if not refresh:
@@ -241,11 +241,12 @@ def format_aux_picker_entries(
         total = row.get("total_models") or len(row.get("models") or [])
         model_hint = f" — {total} models" if total else ""
         marker = "  ← current" if slug.lower() == current_slug and current_slug and not has_base_url else ""
-        entries.append((slug, f"{name}{model_hint}{marker}", list(row.get("models") or [])))
+        warning = f" — {row['warning']}" if row.get("warning") else ""
+        entries.append((slug, f"{name}{model_hint}{marker}{warning}", list(row.get("models") or [])))
     return entries
 
 
-def _reasoning_catalog_reader(slug: str):
+def _reasoning_catalog_reader(slug: str, *, recorded_warning: bool = False):
     """Per-model reasoning-capability reader for aggregators that publish one. Cache-only — the picker
     must never block on HTTP; a cold cache warms in the background and reports no restriction until then."""
     try:
@@ -257,6 +258,11 @@ def _reasoning_catalog_reader(slug: str):
         )
     except Exception:
         return None
+
+    if slug == "nous" and recorded_warning:
+        # Even disk hydration names its catalog through runtime credentials, which
+        # can refresh OAuth. Newly visible unavailable rows may only peek memory.
+        return lambda model: nous_model_reasoning_capabilities(model, memory_only=True)
 
     readers = {
         "nous": (warm_nous_reasoning_caps_async, nous_model_reasoning_capabilities),
@@ -284,7 +290,9 @@ def _apply_capabilities(rows: list[dict]) -> None:
     for row in rows:
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
-        read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
+        read_reasoning_catalog = _reasoning_catalog_reader(
+            slug.lower(), recorded_warning=bool(
+                row.get("availability_source") == "recorded_pool" and row.get("warning")))
 
         for model in row.get("models") or []:
             reasoning = True
@@ -408,13 +416,17 @@ def _append_unconfigured_rows(
     if config.yaml still points at it but credentials are gone, keep a row carrying the saved model so
     GUI pickers don't silently snap to another provider."""
     from hermes_cli.models import CANONICAL_PROVIDERS, _model_requires_account_discovery
+    from hermes_cli.config import is_provider_enabled
 
     seen = {r["slug"].lower() for r in rows}
+    excluded = {str(p).strip().lower() for p in (ctx.excluded_providers or [])}
+    disabled = {str(p).strip().lower() for p, cfg in ctx.user_providers.items()
+                if isinstance(cfg, dict) and not is_provider_enabled(cfg)}
     cur = (ctx.current_provider or "").lower()
     cur_model = str(ctx.current_model or "").strip()
     extras: list[dict] = []
     for entry in CANONICAL_PROVIDERS:
-        if entry.slug.lower() in seen:
+        if entry.slug.lower() in seen | excluded | disabled:
             continue
         if current_only and entry.slug.lower() != cur:
             continue
@@ -594,6 +606,14 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
     for row in rows:
         slug = str(row.get("slug", "")).lower()
         models = row.get("models") or []
+        recorded_warning = row.get("availability_source") == "recorded_pool" and row.get("warning")
+        row_cached_only = cached_only or bool(recorded_warning)
+        if recorded_warning and slug != "nous":
+            # Cooldown rows must not initiate I/O, including during prewarm/refresh.
+            # Nous still needs its independent, cache-only entitlement gate below.
+            row["pricing"] = {}
+            row["pricing_pending"] = True
+            continue
         if not models:
             continue
         if row.get("free_tier_row"):
@@ -601,12 +621,12 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             # it would lock the only row a free-tier install can select.
             continue
         try:
-            pricing_kwargs = {"cached_only": True} if cached_only else {}
+            pricing_kwargs = {"cached_only": True} if row_cached_only else {}
             raw_pricing = get_pricing_for_provider(slug, **pricing_kwargs) or {}
         except Exception:
             raw_pricing = {}
         cached_nous_tier: Optional[bool] = None
-        if slug == "nous" and cached_only:
+        if slug == "nous" and row_cached_only:
             cached_nous_tier = get_cached_nous_free_tier()
             if cached_nous_tier is None:
                 # Entitlement unknown: stay nonblocking but fail closed until the prewarm has populated
@@ -656,7 +676,7 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
         if slug == "nous":
             try:
                 if nous_free_tier is None:
-                    nous_free_tier = (cached_nous_tier if cached_only
+                    nous_free_tier = (cached_nous_tier if row_cached_only
                                       else check_nous_free_tier(force_fresh=force_fresh_nous_tier))
                 row["free_tier"] = bool(nous_free_tier)
                 row["unavailable_models"] = (

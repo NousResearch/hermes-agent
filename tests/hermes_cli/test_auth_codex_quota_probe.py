@@ -240,8 +240,8 @@ def test_resolver_recovers_when_probe_confirms_reset(tmp_path, monkeypatch):
 
     store = json.loads((hermes_home / "auth.json").read_text())
     entry = store["credential_pool"]["openai-codex"][0]
-    assert entry["last_status"] is None
-    assert entry["last_error_reset_at"] is None
+    assert entry.get("last_status") in (None, "ok")
+    assert entry.get("last_error_reset_at") is None
 
 
 

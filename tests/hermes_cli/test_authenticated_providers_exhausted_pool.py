@@ -37,7 +37,8 @@ def _patch_opencode_pool(monkeypatch, *, available: bool):
             "version": 1,
             "providers": {},
             "active_provider": None,
-            "credential_pool": {"opencode-go": {"entries": [{"id": "x"}]}},
+            "credential_pool": {"opencode-go": [{"id": "x", "access_token": "synthetic",
+                "last_status": "ok" if available else "exhausted"}]},
         },
     )
     monkeypatch.setattr(

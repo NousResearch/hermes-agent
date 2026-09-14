@@ -1,0 +1,51 @@
+{
+  "base": "de2d6a1b93508463c31434c1ae067e204af81238",
+  "cases": {
+    "False-False-False": {
+      "catalog_write": 12,
+      "httpx": 28,
+      "urllib_opener": 9,
+      "urlopen": 6
+    },
+    "False-False-True": {
+      "catalog_write": 4,
+      "httpx": 14,
+      "urllib_opener": 4,
+      "urlopen": 4
+    },
+    "False-True-False": {
+      "urlopen": 2
+    },
+    "False-True-True": {
+      "catalog_write": 4,
+      "httpx": 14,
+      "urllib_opener": 4,
+      "urlopen": 4
+    },
+    "True-False-False": {
+      "atomic_auth_write": 4,
+      "catalog_write": 12,
+      "httpx": 28,
+      "urllib_opener": 8,
+      "urlopen": 6
+    },
+    "True-False-True": {
+      "atomic_auth_write": 2,
+      "catalog_write": 4,
+      "httpx": 14,
+      "urllib_opener": 4,
+      "urlopen": 4
+    },
+    "True-True-False": {
+      "atomic_auth_write": 4,
+      "urlopen": 2
+    },
+    "True-True-True": {
+      "atomic_auth_write": 2,
+      "catalog_write": 4,
+      "httpx": 14,
+      "urllib_opener": 4,
+      "urlopen": 4
+    }
+  }
+}

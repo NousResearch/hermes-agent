@@ -4,6 +4,7 @@ Short tokens (< 18 chars) are fully masked; longer ones keep the first 6 and
 last 4 characters for debuggability.
 """
 
+import copy
 import logging
 import os
 import re
@@ -1215,8 +1216,23 @@ def _reset_plugin_redaction_patterns() -> None:
         _rebuild_prefix_matcher()
 
 
+# Keep traceback newlines, but remove terminal controls and other line separators.
+_LOG_UNSAFE_CHARS = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+_EXC_UNSAFE_CHARS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f\x85\u2028\u2029]")
+_TS_LINE_START = re.compile(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}")
+
+
 class RedactingFormatter(logging.Formatter):
-    """Log formatter that redacts secrets from all log messages."""
+    """Redact secrets and prevent message text from forging log records."""
 
     def format(self, record: logging.LogRecord) -> str:
-        return redact_sensitive_text(super().format(record))
+        # Other handlers must receive the original message and exception cache.
+        safe_record = copy.copy(record)
+        safe_record.msg = _LOG_UNSAFE_CHARS.sub(" ", redact_sensitive_text(record.getMessage()))
+        safe_record.args = None
+        formatted = redact_sensitive_text(super().format(safe_record))
+        first, *rest = _EXC_UNSAFE_CHARS.sub(" ", formatted).split("\n")
+        # hermes logs recognizes timestamp-prefixed physical lines as records.
+        return "\n".join([first, *(
+            " " + line if _TS_LINE_START.match(line) else line for line in rest
+        )])

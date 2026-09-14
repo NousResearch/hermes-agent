@@ -24,7 +24,12 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
-import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
+import {
+  SCAFFOLD_GLYPH_CLASS,
+  SCAFFOLD_LABEL_CLASS,
+  SCAFFOLD_META_CLASS,
+  ScaffoldRow
+} from '@/components/chat/scaffold-row'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -36,9 +41,10 @@ import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { connectorCalls } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
-import { normalize } from '@/lib/text'
+import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { recordPreviewArtifact } from '@/store/preview-status'
@@ -84,7 +90,7 @@ const SEARCH_HIT_TITLE_CLASS =
 const TOOL_HEADER_SUBTITLE_CLASS =
   'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)'
 
-const TOOL_HEADER_GLYPH_WRAP_CLASS = 'grid size-3.5 shrink-0 place-items-center self-center'
+const TOOL_HEADER_GLYPH_WRAP_CLASS = cn(SCAFFOLD_GLYPH_CLASS, 'self-center')
 
 // Glass-style section label that sits above any pre/JSON/output block.
 // Lowercase tracking + tiny size so it reads as a quiet field label rather
@@ -250,7 +256,7 @@ function leadingStatus(isPending: boolean, status: ToolStatus): ToolStatus | und
     return 'running'
   }
 
-  return status === 'success' ? undefined : status
+  return status === 'success' || status === 'notice' ? undefined : status
 }
 
 function SearchResultsList({ hits }: { hits: SearchResultRow[] }) {
@@ -426,16 +432,11 @@ function ToolEntry({ part }: ToolEntryProps) {
       .map(chunk => chunk.trim())
       .filter(Boolean)
 
+    // The subtitle is not rendered in the header; keep its explanation here.
     const [summary = '', ...rest] = chunks
-    const subtitleNorm = normalize(view.subtitle)
-    const summaryDuplicatesSubtitle = summary && summary.toLowerCase() === subtitleNorm
-
-    if (summaryDuplicatesSubtitle) {
-      return { body: rest.join('\n\n').trim(), summary: '' }
-    }
 
     return { body: rest.join('\n\n').trim(), summary }
-  }, [view.detail, view.status, view.subtitle])
+  }, [view.detail, view.status])
 
   // `looksRedundant` normalizes the FULL (uncapped) detail payload — a
   // read_file / terminal result can be huge. Memoize on the view fields so it
@@ -448,6 +449,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     !view.inlineDiff &&
     (Boolean(view.stdout || view.stderr) ||
       (view.status === 'error' && Boolean(detailSections.summary || detailSections.body)) ||
+      (view.status === 'notice' && Boolean(view.detail)) ||
       (view.status !== 'error' && Boolean(view.detail) && !detailMatchesTitle && !detailMatchesSubtitle))
 
   const renderDetailAsCode =
@@ -642,7 +644,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                   {detailSections.body && (
                     <pre
                       className={cn(
-                        'max-h-56 overflow-auto whitespace-pre-wrap wrap-anywhere font-mono text-[0.7rem] leading-[1.55] text-destructive/90',
+                        'max-h-56 overflow-auto whitespace-pre-wrap wrap-anywhere font-mono text-[0.7rem] leading-[1.55] text-(--ui-text-secondary)',
                         detailSections.summary && 'mt-1.5'
                       )}
                     >
@@ -994,7 +996,13 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
   const toolNameKey = useAuiState(state =>
     state.message.parts
       .slice(Math.max(0, startIndex), endIndex + 1)
-      .map(part => (part.type === 'tool-call' ? part.toolName : ''))
+      .map(part =>
+        part.type === 'tool-call'
+          ? isOnboardingEnabled() && connectorCalls(part.toolName, part.args).length
+            ? 'manage_connections'
+            : part.toolName
+          : ''
+      )
       .join('\u0000')
   )
 

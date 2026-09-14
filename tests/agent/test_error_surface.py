@@ -51,6 +51,21 @@ def test_result_auth_reasons_map_to_auth_layer():
     assert surface["retryable"] is False
 
 
+def test_auth_surface_names_oauth_vs_api_key_recovery():
+    """The desktop's one-click fix differs by credential kind: an OAuth provider
+    (Accounts tab) needs a re-login, an API-key provider a new key. The descriptor
+    carries the kind + display label so the client never guesses from the slug."""
+    oauth = build_error_surface_from_result(_failed_result("auth"), provider="nous")
+    assert oauth["auth_kind"] == "oauth"
+    assert oauth["provider_label"] == "Nous Portal"
+
+    key = build_error_surface_from_result(_failed_result("auth"), provider="openrouter")
+    assert key["auth_kind"] == "api_key"
+
+    # Non-auth layers never carry the field (clients gate the button on it).
+    assert "auth_kind" not in build_error_surface_from_result(_failed_result("rate_limit"), provider="nous")
+
+
 def test_result_billing_block_wins():
     surface = build_error_surface_from_result(
         _failed_result("rate_limit", billing_block={"provider": "nous"})
@@ -177,6 +192,25 @@ def test_exception_with_status_code_routes_through_classifier():
     # 429 → rate_limit → provider layer via the real classifier.
     assert surface["layer"] == LAYER_PROVIDER
     assert surface["code"] in ("rate_limit", "upstream_rate_limit")
+
+
+def test_anthropic_usage_limit_routes_to_billing_recovery():
+    class FakeAPIError(Exception):
+        status_code = 429
+
+    surface = build_error_surface_from_exception(
+        FakeAPIError("usage limit reached"),
+        provider="anthropic",
+        model="claude-opus-5",
+    )
+
+    assert surface == {
+        "layer": LAYER_BILLING,
+        "code": "billing",
+        "retryable": False,
+        "provider": "anthropic",
+        "model": "claude-opus-5",
+    }
 
 
 def test_exception_auth_status_routes_to_auth_layer():

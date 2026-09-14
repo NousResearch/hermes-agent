@@ -94,7 +94,7 @@ You don't need to rebuild your setup from scratch. Restore a full backup with `h
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)
-- **Node.js v22** (for browser automation and WhatsApp bridge)
+- **Node.js v26** (for browser automation and WhatsApp bridge; existing system Node 22.22+, 24.11+, or 26+ is used as-is)
 - **ripgrep** (fast file search)
 - **ffmpeg** (audio format conversion for TTS)
 
@@ -170,6 +170,26 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 | Missing config after update | Run `hermes config check` then `hermes config migrate` |
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
+
+### Symlinked home directories and external storage
+
+Hermes supports a symlinked `HERMES_HOME` and symlinked home subdirectories,
+including `hooks`, `skills`, `sessions`, and `logs`. During home initialization,
+existing directory links are preserved, and permissions on linked directories
+(and descendants such as `logs/curator`) are left to their owner.
+
+If a link target is missing, inaccessible, or not a directory, initialization
+stops with a storage error naming the path and link target. Hermes does **not**
+replace the link or create its missing target: doing so could write data onto
+the local disk while an external or NAS volume is unmounted. Check the reported
+link, restore the mount or correct its target, and verify access permissions
+before retrying. For a deliberately new dotfiles target, create it yourself only
+after confirming the intended storage is available.
+
+`hermes doctor` reports these failures as storage problems, not invalid YAML.
+Keep your existing `config.yaml`; running `hermes setup` is not the repair for an
+unavailable directory. This is a directory-availability check, not a mount monitor:
+an existing directory cannot establish that the intended volume is mounted.
 
 ## Install method auto-detection
 

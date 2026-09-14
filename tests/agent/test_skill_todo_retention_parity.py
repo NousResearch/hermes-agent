@@ -269,6 +269,25 @@ class TestNoticeStripLifecycle:
         assert stripped == "real user words"
         assert _PRUNED_SKILL_RELOAD_NOTICE_HEADER not in stripped
 
+    def test_strip_removes_snapshot_from_list_content(self):
+        content = [
+            {
+                "type": "text",
+                "text": (
+                    "real user words\n\n"
+                    + TODO_INJECTION_HEADER
+                    + "\n- [ ] t1. old task (pending)\n\n"
+                    + _PRUNED_SKILL_RELOAD_NOTICE_HEADER
+                    + "\nreload skill_view(name='old-skill') first."
+                ),
+            },
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+        ]
+        stripped = _strip_stale_todo_snapshot(content)
+        assert len(stripped) == 2
+        assert stripped[0] == {"type": "text", "text": "real user words"}
+        assert stripped[1] == {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+
     def test_repeated_boundaries_keep_single_notice(self, tmp_path):
         """Second compaction with a tail already carrying snapshot+notice
         refreshes in place instead of stacking duplicates (#26981 parity)."""

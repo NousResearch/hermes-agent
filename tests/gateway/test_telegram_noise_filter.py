@@ -222,10 +222,8 @@ def test_chat_gateways_redact_secret_in_non_error_body(platform):
 
     assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
     assert "sk-ABCDEF" not in sanitized
-    # The secret body is gone — assert the invariant, not the specific mask
-    # marker. The outbound redactor delegates to redact_sensitive_text (#23810),
-    # which masks as `***`/partial; the local pattern fallback uses `[REDACTED]`.
-    assert "***" in sanitized or "[REDACTED]" in sanitized
+    # redact_for_egress masks a prefix token through _mask_token: `***` or a head...tail stub.
+    assert "***" in sanitized
     # Non-secret prose is preserved — redaction is surgical, not a wholesale
     # rewrite, on bodies that are not provider-error envelopes.
     assert "here is the example request you asked for" in sanitized

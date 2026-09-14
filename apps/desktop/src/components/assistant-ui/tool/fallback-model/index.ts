@@ -1,3 +1,5 @@
+import { stripAnsi } from '@hermes/shared/ansi'
+
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
@@ -6,6 +8,7 @@ import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-clas
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 import {
+  browserExecStepLabel,
   compactPreview,
   contextValue,
   formatDurationSeconds,
@@ -347,6 +350,7 @@ const DEFAULT_COUNT_NOUN_BY_TOOL: Record<string, string> = {
   search_files: 'result',
   session_search_recall: 'result',
   todo: 'todo',
+  todo_list: 'todo',
   web_search: 'result'
 }
 
@@ -658,10 +662,6 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
     return extractedError || (typeof part.result === 'string' && part.result.trim()) || 'Tool returned an error.'
   }
 
-  if (typeof result.error === 'string' && result.error.trim()) {
-    return result.error.trim()
-  }
-
   if (extractedError) {
     return extractedError
   }
@@ -670,7 +670,7 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
     return firstStringField(result, ['message', 'reason', 'detail']) || 'Tool returned success=false.'
   }
 
-  if (typeof result.status === 'string' && /\b(error|failed|failure)\b/i.test(result.status)) {
+  if (typeof result.status === 'string' && /^(error|failed|failure|fatal|exception)$/i.test(result.status.trim())) {
     return firstStringField(result, ['message', 'reason', 'detail']) || `Tool returned status "${result.status}".`
   }
 
@@ -704,8 +704,21 @@ function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): Tool
     return 'success'
   }
 
-  if (!toolErrorText(part, resultRecord)) {
+  const error = toolErrorText(part, resultRecord)
+
+  if (!error) {
     return 'success'
+  }
+
+  // A guessed read path missing is routine exploration, not a broken tool.
+  // Keep the explanation available without a destructive alarm. Writes and
+  // permission failures deliberately do not take this path.
+  if (part.toolName === 'read_file' && /^File not found:/i.test(error)) {
+    return 'notice'
+  }
+
+  if (part.toolName === 'terminal' && error === 'Command failed with exit code 1.') {
+    return 'notice'
   }
 
   // A rejected memory write is a budget negotiation, not a failure: the store
@@ -764,10 +777,6 @@ function toolImageUrl(args: Record<string, unknown>, result: Record<string, unkn
   const isRemoteImage = /^https?:\/\//i.test(candidate) && /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(candidate)
 
   return isDataImage || isRemoteImage ? candidate : ''
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
 }
 
 export function stripInlineDiffChrome(value: string): string {
@@ -1380,6 +1389,19 @@ function dynamicTitle(
           compactPreview(summarizeShellCommand(command), 160)
         )
       )
+    }
+  }
+
+  if (part.toolName === 'browser_exec') {
+    // The browser_exec schema asks the model to open `code` with a one-line
+    // `# …` comment describing the step in plain language; the CLI/TUI
+    // already surface it (agent/display.py). Mirror that here so desktop
+    // rows read "Searching Amazon for paper towels" instead of the generic
+    // "Browser Exec".
+    const label = browserExecStepLabel(firstStringField(args, ['code']))
+
+    if (label) {
+      return { title: label }
     }
   }
 

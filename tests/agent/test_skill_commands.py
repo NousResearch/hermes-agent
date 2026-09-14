@@ -10,6 +10,7 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    find_triggered_skill_command,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -52,11 +53,98 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
 
 class TestScanSkillCommands:
 
+    def test_reads_frontmatter_triggers(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "market-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [market, EUR/USD, market]\n"
+                ),
+            )
+            result = scan_skill_commands()
 
+        assert result["/market-watch"]["triggers"] == ["market", "EUR/USD"]
 
+    def test_finds_triggered_skill_by_word_boundary(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "market-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [market]\n"
+                ),
+            )
+            scan_skill_commands()
+            matched = find_triggered_skill_command("What is the market doing today?")
+            not_matched = find_triggered_skill_command("This supermarket is busy.")
 
+        assert matched is not None
+        assert matched[0] == "/market-watch"
+        assert matched[2] == "market"
+        assert not_matched is None
 
+    def test_finds_triggered_skill_with_punctuation_phrase(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "fx-watch",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    triggers: [EUR/USD]\n"
+                ),
+            )
+            scan_skill_commands()
+            matched = find_triggered_skill_command("What is happening with EUR/USD today?")
 
+        assert matched is not None
+        assert matched[0] == "/fx-watch"
+        assert matched[2] == "EUR/USD"
+
+    @pytest.mark.parametrize(("left", "right", "message", "winner"), [
+        (("longer-name", "market"), ("fx", "EUR/USD"), "market EUR/USD", "/fx"),
+        (("longer-name", "market"), ("fx", "market"), "market", "/longer-name"),
+        (("aa", "market"), ("zz", "market"), "market", "/zz"),
+        (("aa", "market outlook"), ("zz", "market"), "MARKET\n  outlook", "/aa"),
+    ])
+    def test_trigger_selection_is_specific_and_order_independent(self, tmp_path, left, right, message, winner):
+        import agent.skill_commands as sc_mod
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            for name, trigger in (left, right):
+                _make_skill(tmp_path, name, frontmatter_extra=f"metadata:\n  hermes:\n    triggers: ['{trigger}']\n")
+            commands = scan_skill_commands()
+            for ordered in (commands, dict(reversed(list(commands.items())))):
+                with patch.object(sc_mod, "get_skill_commands", return_value=ordered):
+                    matched = find_triggered_skill_command(message)
+                    assert matched is not None
+                    assert matched[0] == winner
+
+    @pytest.mark.parametrize("skills_cfg", [{"auto_triggers": False}, {"auto_triggers": 0}])
+    def test_trigger_matching_respects_operator_opt_out(self, tmp_path, skills_cfg):
+        import agent.skill_commands as sc_mod
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "market-watch", frontmatter_extra="metadata:\n  hermes:\n    triggers: [market]\n")
+            scan_skill_commands()
+            with patch.object(sc_mod, "_load_skills_config", return_value=skills_cfg):
+                assert find_triggered_skill_command("What is the market doing today?") is None
+
+    def test_trigger_matching_defaults_to_enabled(self, tmp_path):
+        import agent.skill_commands as sc_mod
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "market-watch", frontmatter_extra="metadata:\n  hermes:\n    triggers: [market]\n")
+            scan_skill_commands()
+            with patch.object(sc_mod, "_load_skills_config", return_value={}):
+                matched = find_triggered_skill_command("What is the market doing today?")
+                assert matched is not None
+                assert matched[0] == "/market-watch"
 
     def test_loads_skill_invocation_from_symlinked_skill_dir(self, tmp_path):
         """Slash commands should load skills symlinked under the local skills dir."""

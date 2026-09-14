@@ -170,6 +170,7 @@ metadata:
   hermes:
     tags: [python, automation]
     category: devops
+    triggers: ["my workflow"]        # Optional: classic CLI phrase activation
     fallback_for_toolsets: [web]    # Optional — conditional activation (see below)
     requires_toolsets: [terminal]   # Optional — conditional activation (see below)
     config:                          # Optional — config.yaml settings
@@ -194,6 +195,46 @@ Trigger conditions for this skill.
 ## Verification
 How to confirm it worked.
 ```
+
+### Automatic triggers (classic CLI)
+
+A skill can opt into deterministic loading from ordinary messages with
+`metadata.hermes.triggers` in its `SKILL.md` frontmatter:
+
+```yaml
+metadata:
+  hermes:
+    triggers: [market, "EUR/USD", "market outlook"]
+```
+
+In the **classic CLI**, `What is happening with EUR/USD today?` loads that
+skill before the agent runs, without a slash command. The CLI prints an
+`Auto-loading skill` notice. This trigger routing does **not** apply to the
+Ink TUI, Desktop, messaging gateway, or ACP; their normal explicit skill
+invocation and agent-selected loading remain unchanged.
+
+Triggers are literal, case-insensitive phrases, not regular expressions or
+semantic matching. Words must have boundaries: `market` matches `market!`
+but not `supermarket`. Punctuation is literal (`EUR/USD` keeps its slash),
+and whitespace between phrase words can vary. Blank triggers are ignored
+and case-insensitive duplicates are removed.
+
+Only one skill is selected per turn: the longest matching trigger wins.
+Ties prefer the longer skill name, then the lexicographically greatest slash
+command key. Only skills registered in the current skill-command scan are
+eligible, so its disabled-skill, platform, environment, and collision filters
+still apply. Messages starting with `/`, empty input, and multimodal
+content-part lists are not trigger-matched.
+
+Use specific phrases to avoid accidental activation. Omit `triggers` (or set
+it to `[]`) to leave a skill without deterministic auto-loading. Operators
+can disable all trigger matching with `skills.auto_triggers: false` in
+config.yaml; explicit `/skill` loads keep working. After editing
+frontmatter, run `/reload-skills` or start a new session to refresh the scan.
+A matching turn goes through the existing skill invocation loader; it does
+not change the system prompt or rewrite earlier messages. The original user
+input remains the durable transcript value. If the selected skill cannot be
+loaded, the original message is sent without trigger expansion.
 
 ### Platform-Specific Skills
 

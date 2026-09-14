@@ -67,6 +67,9 @@ gateway:
     always_singular:       "✅ Parancs jóváhagyva (minta véglegesen jóváhagyva). Az ügynök folytatja..."
     always_plural:         "✅ Parancsok jóváhagyva (minta véglegesen jóváhagyva) ({count} parancs). Az ügynök folytatja..."
 
+  auto_reset:
+    notice:                "◐ A munkamenet leállás után visszaállt. A beszélgetés előzményei törölve.\nHasználd a /resume parancsot egy korábbi munkamenet böngészéséhez és visszaállításához.\n"
+
   background:
     usage:                 "Használat: /bg <prompt>\nPélda: /bg Foglald össze a mai legjobb HN sztorikat\n\nKülön munkamenetben futtatja a promptot. Folytathatod a beszélgetést — az eredmény itt jelenik meg, amint elkészül."
     started:               "🔄 Háttérfeladat elindítva: \"{preview}\"\nFeladatazonosító: {task_id}\nFolytathatod a beszélgetést — az eredmények itt jelennek meg, amint elkészülnek."
@@ -304,6 +307,14 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_enabled:           "A checkpointok nincsenek engedélyezve, így nincs munkamenet-alapvonal.\nEngedélyezd a config.yaml-ban:\n```\ncheckpoints:\n  enabled: true\n```\nA sima /diff továbbra is működik — közvetlenül a gitet használja."
     no_changes:            "Nincs változás."
     failed:                "{error}"
+  session_info:
+    model:                 "◆ Modell: `{model}`"
+    provider:              "◆ Szolgáltató: {provider}"
+    context:               "◆ Kontextus: {context} token ({source})"
+    endpoint:              "◆ Végpont: {endpoint}"
+    ctx_source_config:     "config"
+    ctx_source_default:    "alapértelmezett - felülírható a model.context_length beállítással a configban"
+    ctx_source_detected:   "észlelt"
 
   set_home:
     save_failed:           "Nem sikerült menteni a kezdőcsatornát: {error}"

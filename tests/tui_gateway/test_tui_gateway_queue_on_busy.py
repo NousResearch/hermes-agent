@@ -71,7 +71,7 @@ def test_busy_interrupt_mode_redirects_active_turn(monkeypatch):
 
     resp = server._handle_busy_submit("r1", "sid", session, "redirect", "ws-1")
 
-    assert resp["result"]["status"] == "redirected"
+    assert resp.status == "redirected"
     assert seen == ["redirect"]
     # Appended, not overwritten: the original prompt must stay recoverable.
     assert session["inflight_turn"]["user"] == "original request"
@@ -115,7 +115,7 @@ def test_successful_redirect_drops_queued_duplicate_of_inflight_user(monkeypatch
         "r1", "sid", session, "what about the pricing instead?", "ws-1"
     )
 
-    assert resp["result"]["status"] == "redirected"
+    assert resp.status == "redirected"
     # Self-duplicates of the live original must be gone.
     assert session.get("queued_prompt") == {
         "text": "unrelated later task",
@@ -145,7 +145,7 @@ def test_successful_redirect_preserves_unrelated_queued_followups(monkeypatch):
 
     resp = server._handle_busy_submit("r1", "sid", session, "correction Q", "ws-1")
 
-    assert resp["result"]["status"] == "redirected"
+    assert resp.status == "redirected"
     assert session.get("queued_prompt") == {
         "text": "run this after",
         "transport": "ws-1",
@@ -250,7 +250,7 @@ def test_hard_interrupt_queue_path_scrubs_stale_inflight_self_duplicate(monkeypa
 
     resp = server._handle_busy_submit("r1", "sid", session, "Q", "ws-1")
 
-    assert resp["result"]["status"] == "queued"
+    assert resp.status == "queued"
     assert session.get("queued_prompt") == {"text": "Q", "transport": "ws-1"}
     assert not session.get("queued_prompts")
     # Interrupt is async-threaded; policy still enqueued Q after scrubbing P.
@@ -277,7 +277,7 @@ def test_redirect_then_drain_does_not_re_fire_original_p(monkeypatch):
     session["queued_prompt"] = {"text": "P", "transport": "ws-1"}
 
     resp = server._handle_busy_submit("r1", "sid", session, "Q", "ws-1")
-    assert resp["result"]["status"] == "redirected"
+    assert resp.status == "redirected"
     assert session.get("queued_prompt") is None
 
     # Turn settles (running cleared in finally) — drain must be a no-op.
@@ -363,7 +363,7 @@ def test_busy_interrupt_mode_ignores_completed_background_delegation(monkeypatch
         with ad._records_lock:
             ad._records.clear()
 
-    assert resp["result"]["status"] == "queued"
+    assert resp.status == "queued"
     assert calls["interrupt"] == 1
     assert session["queued_prompt"]["text"] == "continue"
 
@@ -377,7 +377,7 @@ def test_busy_steer_mode_injects_when_accepted(monkeypatch):
 
     resp = server._handle_busy_submit("r1", "sid", session, "nudge", "ws-1")
 
-    assert resp["result"]["status"] == "steered"
+    assert resp.status == "steered"
     assert session.get("queued_prompt") is None
 
 
@@ -400,7 +400,7 @@ def test_busy_steer_fallthrough_queues_without_interrupting(monkeypatch):
 
     resp = server._handle_busy_submit("r1", "sid", session, "follow-up", "ws-1")
 
-    assert resp["result"]["status"] == "queued"
+    assert resp.status == "queued"
     assert session["queued_prompt"]["text"] == "follow-up"
     # _interrupt_busy_session runs on a worker thread — give it a beat.
     assert not interrupted.wait(0.2), "steer-mode fall-through must not hard-interrupt"
@@ -417,7 +417,7 @@ def test_busy_steer_exception_falls_back_to_queue_without_interrupting(monkeypat
 
     resp = server._handle_busy_submit("r1", "sid", session, "still here?", "ws-1")
 
-    assert resp["result"]["status"] == "queued"
+    assert resp.status == "queued"
     assert session["queued_prompt"]["text"] == "still here?"
     assert not interrupted.wait(0.2), "steer failure must not escalate to interrupt"
 
@@ -439,7 +439,7 @@ def test_busy_steer_mode_multimodal_payload_queues_without_interrupting(monkeypa
 
     resp = server._handle_busy_submit("r1", "sid", session, rich, "ws-1")
 
-    assert resp["result"]["status"] == "queued"
+    assert resp.status == "queued"
     assert steered == []
     assert session["queued_prompt"]["text"] == rich
     assert not interrupted.wait(0.2), "multimodal steer fall-through must not interrupt"
@@ -481,9 +481,9 @@ def test_busy_steer_burst_mix_preserves_accepted_steers_and_queue(monkeypatch):
     agent.accept = False  # third message loses the steer race
     r3 = server._handle_busy_submit("r3", "sid", session, "third note", "ws-1")
 
-    assert r1["result"]["status"] == "steered"
-    assert r2["result"]["status"] == "steered"
-    assert r3["result"]["status"] == "queued"
+    assert r1.status == "steered"
+    assert r2.status == "steered"
+    assert r3.status == "queued"
     # No hard interrupt fired for the fall-through message...
     assert not agent.interrupted.wait(0.2), "burst fall-through must not hard-interrupt"
     # ...so earlier steers are preserved, distinct, in order.
@@ -503,7 +503,7 @@ def test_busy_steer_fallthrough_burst_drains_all_texts_fifo(monkeypatch):
     session = _session(agent=agent, running=True)
     for text in ("msg A", "msg B", "msg C"):
         resp = server._handle_busy_submit("r", "sid", session, text, "ws-1")
-        assert resp["result"]["status"] == "queued"
+        assert resp.status == "queued"
     assert not interrupted.wait(0.2), "queue fall-through burst must not interrupt"
 
     dispatched = []
@@ -555,7 +555,7 @@ def test_busy_interrupt_mode_queues_multimodal_payload_instead_of_redirect(monke
 
     resp = server._handle_busy_submit("r1", "sid", session, rich, "ws-1")
 
-    assert resp["result"]["status"] == "queued"
+    assert resp.status == "queued"
     assert seen == []
     assert session["queued_prompt"]["text"] == rich
 
@@ -665,7 +665,7 @@ def test_drain_compute_host_forwards_queued_image_paths(monkeypatch):
         lambda rid, sid, session, text, **kwargs: captured.update(
             rid=rid, sid=sid, text=text, image_paths=kwargs.get("image_paths")
         )
-        or {"result": {"status": "started"}},
+        or server.PromptSubmitResult(status="streaming"),
     )
     session = _session(
         queued_prompt={"text": "inspect", "image_paths": ["/tmp/b.png"], "transport": "ws-9"}

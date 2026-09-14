@@ -1,4 +1,4 @@
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
+import { isGatewayReauthRequired, resolveGatewayWsUrl, type RpcMethods } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
@@ -121,7 +121,12 @@ export function useGatewayRequest() {
   }, [])
 
   const requestGateway = useCallback(
-    async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number, signal?: AbortSignal) => {
+    async <M extends keyof RpcMethods>(
+      method: M,
+      params: RpcMethods[M]['params'],
+      timeoutMs?: number,
+      signal?: AbortSignal
+    ): Promise<RpcMethods[M]['result']> => {
       const gateway = gatewayRef.current
 
       if (!gateway) {
@@ -129,7 +134,7 @@ export function useGatewayRequest() {
       }
 
       try {
-        return await gateway.request<T>(method, params, timeoutMs, signal)
+        return await gateway.request(method, params, timeoutMs, signal)
       } catch (error) {
         if (!isGatewayTransportError(error)) {
           throw error
@@ -154,7 +159,7 @@ export function useGatewayRequest() {
           throw error
         }
 
-        return recovered.request<T>(method, params, timeoutMs, signal)
+        return recovered.request(method, params, timeoutMs, signal)
       }
     },
     [ensureGatewayOpen]

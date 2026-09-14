@@ -1,7 +1,8 @@
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { $gateway } from '@/store/gateway'
 import { $activeSessionId, setYoloActive } from '@/store/session'
 
-export type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type GatewayRequester = GatewayRequest
 
 /**
  * Toggle per-session YOLO (approval bypass) via gateway `config.set` — the same
@@ -13,13 +14,13 @@ export async function setSessionYolo(
   sessionId: string,
   enabled: boolean
 ): Promise<boolean> {
-  const result = await requestGateway<{ value?: string }>('config.set', {
+  const result = await requestGateway('config.set', {
     key: 'yolo',
     session_id: sessionId,
     value: enabled ? '1' : '0'
   })
 
-  const active = result?.value === '1'
+  const active = result.value === '1'
 
   setYoloActive(active)
 
@@ -34,13 +35,13 @@ export async function setSessionYolo(
  * Shift+clicking the status-bar zap.
  */
 export async function setGlobalYolo(requestGateway: GatewayRequester, enabled: boolean): Promise<boolean> {
-  const result = await requestGateway<{ value?: string }>('config.set', {
+  const result = await requestGateway('config.set', {
     key: 'yolo',
     scope: 'global',
     value: enabled ? '1' : '0'
   })
 
-  const active = result?.value === '1'
+  const active = result.value === '1'
 
   setYoloActive(active)
 

@@ -1,11 +1,11 @@
 import { forceRedraw, useInput } from '@hermes/ink'
+import type { VoiceRecordResult } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
-import type { ConfigSetResponse, VoiceRecordResponse } from '../gatewayTypes.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -118,7 +118,7 @@ export function shouldFallThroughForScroll(key: {
 }
 
 export function applyVoiceRecordResponse(
-  response: null | VoiceRecordResponse,
+  response: null | VoiceRecordResult,
   starting: boolean,
   voice: Pick<InputHandlerContext['voice'], 'setProcessing' | 'setRecording'>,
   sys: (text: string) => void
@@ -359,7 +359,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     gateway
-      .rpc<VoiceRecordResponse>('voice.record', { action, session_id: getUiState().sid })
+      .rpc('voice.record', { action, session_id: getUiState().sid })
       .then(r => applyVoiceRecordResponse(r, starting, voice, actions.sys))
       .catch((e: Error) => {
         // Revert optimistic UI on failure.
@@ -723,7 +723,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       // gateway.rpc swallows errors with its own sys() message and resolves to null,
       // so we only speak when it came back with a real shape. null = rpc already spoke.
-      return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
+      return void gateway.rpc('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
         if (r?.value === '1') {
           return actions.sys('yolo on')
         }

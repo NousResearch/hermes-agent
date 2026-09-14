@@ -1,4 +1,5 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
+import type { AgentPluginRow } from '@hermes/shared/gateway-events'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
@@ -12,27 +13,6 @@ const VISIBLE = 12
 const MIN_WIDTH = 44
 const MAX_WIDTH = 96
 
-interface PluginRow {
-  description?: string
-  name: string
-  source?: string
-  status?: string
-  version?: string
-}
-
-interface PluginsListResponse {
-  bundled_count?: number
-  plugins?: PluginRow[]
-  user_count?: number
-}
-
-interface PluginsToggleResponse {
-  name?: string
-  ok?: boolean
-  plugin?: PluginRow
-  unchanged?: boolean
-}
-
 type Scope = 'all' | 'user'
 
 const GLYPH: Record<string, string> = {
@@ -41,7 +21,7 @@ const GLYPH: Record<string, string> = {
 }
 
 export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
-  const [rows, setRows] = useState<PluginRow[]>([])
+  const [rows, setRows] = useState<AgentPluginRow[]>([])
   const [bundledCount, setBundledCount] = useState(0)
   const [userCount, setUserCount] = useState(0)
   const [idx, setIdx] = useState(0)
@@ -56,11 +36,11 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   const load = () => {
-    gw.request<PluginsListResponse>('plugins.manage', { action: 'list' })
+    gw.request('plugins.manage', { action: 'list' })
       .then(r => {
-        setRows(r?.plugins ?? [])
-        setUserCount(Number(r?.user_count ?? 0))
-        setBundledCount(Number(r?.bundled_count ?? 0))
+        setRows(r.plugins ?? [])
+        setUserCount(r.user_count ?? 0)
+        setBundledCount(r.bundled_count ?? 0)
         setErr('')
         setLoading(false)
       })
@@ -81,7 +61,7 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
 
   useOverlayKeys({ disabled: busy, onClose })
 
-  const toggle = (row: PluginRow) => {
+  const toggle = (row: AgentPluginRow) => {
     if (busy || !row) {
       return
     }
@@ -90,10 +70,12 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
     setBusy(true)
     setErr('')
 
-    gw.request<PluginsToggleResponse>('plugins.manage', { action: 'toggle', enable, name: row.name })
+    gw.request('plugins.manage', { action: 'toggle', enable, name: row.name })
       .then(r => {
-        if (r?.plugin) {
-          setRows(prev => prev.map(p => (p.name === r.plugin!.name ? r.plugin! : p)))
+        const updated = r.plugin
+
+        if (updated) {
+          setRows(prev => prev.map(p => (p.name === updated.name ? updated : p)))
         } else {
           load()
         }

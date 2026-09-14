@@ -7,13 +7,20 @@
  */
 
 import { host } from '@hermes/plugin-sdk'
+import type {
+  ClarifyParams,
+  OpenRequestEntry,
+  PendingApproval,
+  RpcMethods,
+  TranscriptMessage
+} from '@hermes/plugin-sdk'
 
 import { recordGroupActivity } from './group-activity'
 import { $groupChats, $groupClarify, appendGroupChatEntry, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { followGroupChat, groupMemberKey, groupSessionOwner } from './group-membership'
 import { botConnectionRoute, requestForBot } from './routing'
-import type { Attachment, GroupMember, GroupPrompt, GroupPromptQuestion, ProfileRoute } from './types'
+import type { Attachment, GroupMember, GroupPrompt, ProfileRoute } from './types'
 
 /** "(pass)" (loosely: pass / (pass) / pass.) or empty = the member stayed silent. */
 export function isGroupPassText(text: unknown) {
@@ -26,15 +33,6 @@ export function isGroupPassText(text: unknown) {
   return /^\(?\s*pass\s*\)?\.?$/i.test(trimmed)
 }
 
-/** One transcript entry in a `session.resume` snapshot, as the turn harvester
- *  reads it — the session's own message shape, not the plugin's GroupMessage.
- *  `content` is a plain string on most providers and a part array on the rest. */
-interface GroupTurnTranscriptMessage {
-  content?: string | Array<string | { text?: string }>
-  role?: string
-  text?: string
-}
-
 /** #94376: pick the reply a finished turn should surface among the messages
  *  appended since `before`. Scans newest-first and prefers the last
  *  substantive (non-pass) assistant answer over a trailing pass — a Codex
@@ -43,7 +41,7 @@ interface GroupTurnTranscriptMessage {
  *  When only pass text exists in range, returns the newest (last
  *  chronological) one rather than the oldest. Returns null only when no
  *  assistant message appears in that range. */
-function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: number): null | string {
+function pickGroupTurnReply(messages: readonly TranscriptMessage[], before: number): null | string {
   let passText: null | string = null
 
   for (let i = messages.length - 1; i >= before; i--) {
@@ -53,14 +51,7 @@ function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: numb
       continue
     }
 
-    const text =
-      typeof msg.content === 'string'
-        ? msg.content
-        : Array.isArray(msg.content)
-          ? msg.content.map(p => (typeof p === 'string' ? p : p?.text || '')).join('')
-          : msg?.text || ''
-
-    const replyText = String(text).trim()
+    const replyText = (msg.text || '').trim()
 
     if (isGroupPassText(replyText)) {
       if (passText === null) {
@@ -76,39 +67,21 @@ function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: numb
   return passText
 }
 
-/** A clarify question blocking inside a member's session, as `session.resume`
- *  reports it. Older backends omit the field entirely. */
-interface GroupPendingClarify {
-  choices?: string[]
-  multi_select?: unknown
-  question?: unknown
-  questions?: GroupPromptQuestion[]
-  request_id?: string
-}
+/** A member's hidden per-group session as `session.resume` reports it — the
+ *  transcript, the liveness flags, and the prompts blocking inside it. */
+type GroupSessionSnapshot = RpcMethods['session.resume']['result']
 
-/** A command approval blocking inside a member's session, same wire as the
- *  1:1 approval card. */
-interface GroupPendingApproval {
-  choices?: string[]
-  command?: unknown
-  description?: unknown
-  request_id?: string
-}
+/** One still-open server→client request in the snapshot, once its `method`
+ *  has identified the payload: a clarify question for the human. */
+type GroupClarifyRequest = Omit<OpenRequestEntry, 'params'> & { params: ClarifyParams }
 
-/** The `session.resume` fields the room engine reads off a member's hidden
- *  per-group session. */
-interface GroupSessionSnapshot {
-  inflight?: boolean
-  message_count?: number
-  messages?: GroupTurnTranscriptMessage[]
-  /** Still-open server→client requests (`server_requests.open_requests`); the
-   *  member's blocking clarify question lives here as `{ id, method: 'clarify', params }`. */
-  open_requests?: { id: string; method: string; params: Record<string, unknown> }[]
-  pending_approval?: GroupPendingApproval
-  running?: boolean
-  session_id?: string
-  session_key?: string
-}
+/** The clarify request blocking inside a member's session, carried in the
+ *  snapshot's `open_requests`, plus the id the answer RPCs key on. */
+type GroupPendingClarify = ClarifyParams & { request_id: string }
+
+/** The identity half of a mirrored prompt; the kind-specific half is built
+ *  per prompt kind below. */
+type GroupPromptBase = Pick<GroupPrompt, 'at' | 'group' | 'member' | 'memberKey' | 'requestId' | 'sessionId'>
 
 /** A member's per-group session, resolved for one turn. */
 interface GroupMemberSessionHandle {
@@ -116,6 +89,12 @@ interface GroupMemberSessionHandle {
   runtime: null | string
   /** Durable id persisted in `room.sessions`; `true` is the legacy sentinel. */
   stored?: null | string | true
+}
+
+/** Only a real id can address a resume — `true` is the legacy "there is a
+ *  session but its durable id was never captured" sentinel. */
+function storedSessionId(stored: GroupMemberSessionHandle['stored'] | string | true): null | string {
+  return typeof stored === 'string' ? stored : null
 }
 
 /** Ensure the member's per-group session exists and return a LIVE runtime
@@ -156,24 +135,20 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
       }
 
       try {
-        const res = (await requestForBot(member, 'session.resume', {
+        const res = await requestForBot(member, 'session.resume', {
           session_id: target,
           profile: member.name,
           omit_messages: true
-        })) as GroupSessionSnapshot
+        })
 
         if (!binding.isLive()) {
           return { runtime: null }
         }
 
-        if (res?.session_id) {
-          // TODO(bot-mode-types): `known` is `room.sessions[key]`, which the
-          // domain model types `string | true` — and the `target === true` skip
-          // above shows the legacy `true` sentinel is expected here. A backend
-          // that answers the title resume without a `session_key` therefore
-          // stores `true` back into room.sessions and hands `true` on as the
-          // durable id, which later rides into `session_id` on the recovery
-          // resume and on session.interrupt. Typed as-written.
+        if (res.session_id) {
+          // A backend that answers the title resume without a `session_key`
+          // leaves the legacy `true` sentinel in room.sessions; storedSessionId
+          // keeps that sentinel out of every later resume.
           const stored = res.session_key || known
 
           if (stored) {
@@ -211,7 +186,7 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
       return { runtime: null }
     }
 
-    const created = (await requestForBot(member, 'session.create', {
+    const created = await requestForBot(member, 'session.create', {
       profile: member.name,
       title,
       // Room member sessions are plumbing — always hidden from the sidebar.
@@ -222,13 +197,13 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
       // the server's hidden + "Group: " title fallback then covers legacy.
       room_plumbing: true,
       follow_profile_config: true
-    })) as { session_id?: string; stored_session_id?: string }
+    })
 
     if (!binding.isLive()) {
       return { runtime: null }
     }
 
-    const stored = created?.stored_session_id || null
+    const stored = created.stored_session_id || null
 
     if (stored) {
       updateGroupChat(group, (r: GroupChatRoom) => {
@@ -246,7 +221,7 @@ export async function ensureGroupChatSession(group: string, member: GroupMember)
     }
 
     return {
-      runtime: created?.session_id || null,
+      runtime: created.session_id,
       stored
     }
   } finally {
@@ -406,17 +381,19 @@ async function submitGroupTurnPrompt(
       throw error
     }
 
-    const res = (await requestForBot(member, 'session.resume', {
-      session_id: stored,
-      profile: member.name,
-      omit_messages: true
-    })) as GroupSessionSnapshot
+    const target = storedSessionId(stored)
 
-    const fresh = res?.session_id
-
-    if (!fresh) {
+    if (!target) {
       throw error
     }
+
+    const res = await requestForBot(member, 'session.resume', {
+      session_id: target,
+      profile: member.name,
+      omit_messages: true
+    })
+
+    const fresh = res.session_id
 
     await requestForBot(member, 'prompt.submit', {
       session_id: fresh,
@@ -434,6 +411,46 @@ async function submitGroupTurnPrompt(
 // reached the room (db's Aug 2026 report).
 const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 
+/** The room card's view of a blocking clarify. A batch carries `questions`
+ *  and the card answers them one wire call each, mirroring the 1:1 contract;
+ *  a single question is the card's only row. */
+function groupClarifyPrompt(base: GroupPromptBase, clarify: GroupPendingClarify): GroupPrompt {
+  if (clarify.kind === 'batch') {
+    return {
+      ...base,
+      kind: 'clarify',
+      question: '',
+      choices: [],
+      multiSelect: false,
+      questions: clarify.questions
+    }
+  }
+
+  return {
+    ...base,
+    kind: 'clarify',
+    question: clarify.question,
+    choices: clarify.choices || [],
+    multiSelect: clarify.multi_select,
+    questions: null
+  }
+}
+
+/** The room card's view of a blocking command approval. */
+function groupApprovalPrompt(base: GroupPromptBase, approval: PendingApproval | null): GroupPrompt {
+  return {
+    ...base,
+    kind: 'approval',
+    question: approval?.description || '',
+    command: approval?.command || '',
+    // The server precomputes the choice set from allow_permanent
+    // (once/session/always/deny); fall back to the minimal pair.
+    choices: approval?.choices?.length ? approval.choices : ['once', 'deny'],
+    multiSelect: false,
+    questions: null
+  }
+}
+
 /** Mirror a member's pending prompt — clarify question OR command approval —
  *  from its resume snapshot into the room store, keyed
  *  `${group}::${memberKey}` (#90694). Returns true while a prompt is
@@ -446,23 +463,18 @@ const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 export function syncGroupClarify(group: string, member: GroupMember, state: GroupSessionSnapshot | null): boolean {
   const key = `${group}::${groupMemberKey(member)}`
 
-  const openClarify = Array.isArray(state?.open_requests)
-    ? state.open_requests.find(entry => entry?.method === 'clarify' && typeof entry.id === 'string' && entry.id)
-    : null
+  // SAFETY: the entry's own `method` says its params are the clarify
+  // request's; the contract types every open request's params as opaque JSON.
+  const openClarify = (state?.open_requests || []).find(entry => entry.method === 'clarify' && entry.id) as
+    | GroupClarifyRequest
+    | undefined
 
   const clarify: GroupPendingClarify | null = openClarify
-    ? { ...(openClarify.params as GroupPendingClarify), request_id: openClarify.id }
+    ? { ...openClarify.params, request_id: openClarify.id }
     : null
 
-  // The `!requestId` bail below is what makes the approval branch reachable,
-  // so an approval read there is never the null arm of this ternary — a fact
-  // control-flow analysis can't carry across the two separate locals.
-  const approval = (
-    state && typeof state.pending_approval === 'object' ? state.pending_approval : null
-  ) as GroupPendingApproval
-
-  const pending = clarify || approval
-  const requestId = pending?.request_id || null
+  const approval = state?.pending_approval || null
+  const requestId = clarify?.request_id || approval?.request_id || null
   const all = $groupClarify.get()
   const current = all[key]
 
@@ -485,7 +497,7 @@ export function syncGroupClarify(group: string, member: GroupMember, state: Grou
     return true
   }
 
-  const base = {
+  const base: GroupPromptBase = {
     requestId,
     group,
     member: member.name,
@@ -498,31 +510,7 @@ export function syncGroupClarify(group: string, member: GroupMember, state: Grou
 
   $groupClarify.set({
     ...all,
-    [key]: clarify
-      ? {
-          ...base,
-          kind: 'clarify',
-          question: typeof clarify.question === 'string' ? clarify.question : '',
-          choices: Array.isArray(clarify.choices) ? clarify.choices.filter(c => typeof c === 'string' && c) : [],
-          multiSelect: Boolean(clarify.multi_select),
-          // Batch clarifies carry `questions`; the room card answers them
-          // one wire call per question, mirroring the 1:1 batch contract.
-          questions: Array.isArray(clarify.questions) ? clarify.questions : null
-        }
-      : {
-          ...base,
-          kind: 'approval',
-          question: typeof approval.description === 'string' ? approval.description : '',
-          command: typeof approval.command === 'string' ? approval.command : '',
-          // The server precomputes the choice set from allow_permanent
-          // (once/session/always/deny); fall back to the minimal pair.
-          choices:
-            Array.isArray(approval.choices) && approval.choices.length
-              ? approval.choices.filter(c => typeof c === 'string' && c)
-              : ['once', 'deny'],
-          multiSelect: false,
-          questions: null
-        }
+    [key]: clarify ? groupClarifyPrompt(base, clarify) : groupApprovalPrompt(base, approval)
   })
 
   return true
@@ -619,19 +607,19 @@ export async function answerGroupClarify(
   try {
     if (entry.kind === 'approval') {
       await requestForBot(member, 'approval.respond', {
-        session_id: entry.sessionId || undefined,
+        session_id: entry.sessionId || '',
         request_id: entry.requestId,
         choice: typeof answers === 'string' && answers ? answers : 'deny'
       })
     } else if (entry.questions && entry.questions.length) {
+      // The batch card keys its answer bag by the wire's own question ids.
+      const bag = typeof answers === 'string' ? undefined : answers
+
       for (const question of entry.questions) {
-        // Question ids are opaque on the wire (`GroupPrompt.questions` types
-        // them `unknown`); the batch card keys its answer bag by exactly them.
-        const qid = (question?.qid ?? question?.id) as string
         await requestForBot(member, 'clarify.lock', {
           request_id: entry.requestId,
-          question_id: qid,
-          answer: (answers as Record<string, string>)?.[qid] ?? ''
+          question_id: question.qid,
+          answer: bag?.[question.qid] ?? ''
         })
       }
     } else {
@@ -807,10 +795,10 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     let state: GroupSessionSnapshot | null = null
 
     try {
-      state = (await requestForBot(member, 'session.resume', {
-        session_id: stored || liveRuntime,
+      state = await requestForBot(member, 'session.resume', {
+        session_id: storedSessionId(stored) || liveRuntime,
         profile: member.name
-      })) as GroupSessionSnapshot
+      })
     } catch {
       continue
     }
@@ -819,12 +807,10 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
       return null
     }
 
-    if (state?.session_id) {
-      runtimeIds.add(state.session_id)
-    }
+    runtimeIds.add(state.session_id)
 
-    const messages = Array.isArray(state?.messages) ? state.messages : []
-    const busy = Boolean(state?.inflight || state?.running)
+    const messages = state.messages
+    const busy = Boolean(state.inflight || state.running)
     // A clarify blocking inside the member's session is a question for the
     // HUMAN (#90694) — mirror it into the room store so a card renders, and
     // hold the turn open: the member isn't stalling, it's waiting on us.
@@ -902,16 +888,13 @@ async function prepareGroupTurnBaseline(
   const runtimeIds = new Set<string>([runtime])
 
   try {
-    const pre = (await requestForBot(member, 'session.resume', {
-      session_id: stored || runtime,
+    const pre = await requestForBot(member, 'session.resume', {
+      session_id: storedSessionId(stored) || runtime,
       profile: member.name
-    })) as GroupSessionSnapshot
+    })
 
-    before = Array.isArray(pre?.messages) ? pre.messages.length : pre?.message_count || 0
-
-    if (pre?.session_id) {
-      runtimeIds.add(pre.session_id)
-    }
+    before = pre.messages.length || pre.message_count
+    runtimeIds.add(pre.session_id)
   } catch {
     /* lazy session — zero messages */
   }
@@ -1006,14 +989,14 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
       return
     }
 
-    let state: GroupSessionSnapshot | null = null
+    let state: GroupSessionSnapshot
 
     try {
-      const stored = room.sessions?.[memberKey]
-      state = (await requestForBot(member, 'session.resume', {
+      const stored = storedSessionId(room.sessions?.[memberKey])
+      state = await requestForBot(member, 'session.resume', {
         session_id: stored || `Group: ${room.roomId || group}`,
         profile: member.name
-      })) as GroupSessionSnapshot
+      })
     } catch {
       return // source unreachable — leave the marker for the next boundary
     }
@@ -1025,7 +1008,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
     // Pending prompts are authoritative even while the session is running.
     const awaitingUser = syncGroupClarify(group, member, state)
 
-    if (state?.inflight || state?.running || awaitingUser) {
+    if (state.inflight || state.running || awaitingUser) {
       return
     }
 
@@ -1040,7 +1023,7 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
 
       return r
     })
-    const messages = Array.isArray(state?.messages) ? state.messages : []
+    const messages = state.messages
 
     if (messages.length <= strandedBefore) {
       return

@@ -173,10 +173,14 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   // opens at once, and the update frame then paints the row as waiting. A refused re-mint is a click
   // that changed nothing, so it gets a toast; the row stays as it was.
   const reissue = async (target: ConnectionTarget): Promise<void> => {
+    if (!request.sessionId) {
+      return
+    }
+
     setReissuing(current => new Set(current).add(target.name))
 
     try {
-      const reply = await requestGatewayForAgent<ToolCallMessagePartProps['result']>(
+      const reply = await requestGatewayForAgent(
         owner.connectionId,
         owner.profile,
         'connectors.connect',
@@ -188,9 +192,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
         45000
       )
 
-      const rows = recordOf(reply).targets
-      const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === target.name) : undefined
-      const url = connectorAuthorizationUrl(minted?.connect_url)
+      const url = connectorAuthorizationUrl(reply.targets.find(row => row.name === target.name)?.connect_url)
 
       if (url) {
         void window.hermesDesktop?.openExternal?.(url)

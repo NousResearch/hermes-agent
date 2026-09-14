@@ -61,6 +61,9 @@ class FakeHermesGateway {
 
   on() {}
   off() {}
+  onAnyServerRequest() {
+    return () => {}
+  }
   addEventListener() {}
   removeEventListener() {}
 }

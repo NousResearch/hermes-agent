@@ -36,6 +36,7 @@ vi.mock('@/hermes', () => ({
     request = vi.fn(async (method: string, params: Record<string, unknown>) => ({ method, params }))
     close = vi.fn()
     onEvent = vi.fn(() => () => {})
+    onAnyServerRequest = vi.fn(() => () => {})
     onState = vi.fn(() => () => {})
 
     constructor() {

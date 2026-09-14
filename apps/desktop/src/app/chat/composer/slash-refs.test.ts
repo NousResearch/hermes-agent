@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { commandsCatalogResult } from '@/test/contract'
 
 import { slashCommandMatches } from './slash-refs'
 
@@ -9,9 +10,9 @@ const commands = (text: string, options?: Parameters<typeof slashCommandMatches>
 
 describe('slashCommandMatches', () => {
   beforeEach(() => {
-    rememberDesktopCommandsCatalog({
+    rememberDesktopCommandsCatalog(commandsCatalogResult({
       commands: { '/goal': { argument_mode: 'mixed', desktop: null } }
-    })
+    }))
   })
 
   afterEach(() => {

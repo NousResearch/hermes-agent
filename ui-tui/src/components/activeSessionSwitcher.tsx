@@ -1,16 +1,10 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
-import type { SessionListResult, SessionListRow } from '@hermes/shared/gateway-events'
+import type { SessionActiveItem, SessionCloseResult, SessionListRow } from '@hermes/shared/gateway-events'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { sessionScopedModelArg } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  SessionActiveItem,
-  SessionActiveListResponse,
-  SessionCloseResponse,
-  SessionDeleteResponse
-} from '../gatewayTypes.js'
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { ModelPicker } from './modelPicker.js'
@@ -350,22 +344,20 @@ export function ActiveSessionSwitcher({
         // wipe the live-session list: live sessions still render and the
         // resumable history degrades on its own.
         const [liveRes, histRes] = await Promise.allSettled([
-          gw.request<SessionActiveListResponse>('session.active_list', {
+          gw.request('session.active_list', {
             current_session_id: currentSessionId
           }),
-          includeHistory ? gw.request<SessionListResult>('session.list', { limit: 200 }) : Promise.resolve(null)
+          includeHistory ? gw.request('session.list', { limit: 200 }) : Promise.resolve(null)
         ])
 
-        const r = liveRes.status === 'fulfilled' ? asRpcResult<SessionActiveListResponse>(liveRes.value) : null
-
-        if (!r) {
-          setErr('invalid response: session.active_list')
+        if (liveRes.status !== 'fulfilled') {
+          setErr('could not load live sessions')
           setLoading(false)
 
           return []
         }
 
-        const next = r.sessions ?? []
+        const next = liveRes.value.sessions
 
         // Surface a garbled/failed session.list rather than silently blanking
         // the resumable section; keep the last good raw history so a transient
@@ -374,13 +366,7 @@ export function ActiveSessionSwitcher({
 
         if (includeHistory) {
           if (histRes.status === 'fulfilled') {
-            const parsedHist = asRpcResult<SessionListResult>(histRes.value)
-
-            if (parsedHist) {
-              rawHistoryRef.current = parsedHist.sessions ?? []
-            } else {
-              histError = 'invalid response: session.list'
-            }
+            rawHistoryRef.current = histRes.value?.sessions ?? []
           } else {
             histError = 'could not load resumable sessions'
           }
@@ -474,7 +460,7 @@ export function ActiveSessionSwitcher({
 
     try {
       const result = await onClose(target.id)
-      const closed = Boolean(result?.closed ?? result?.ok)
+      const closed = Boolean(result?.closed)
 
       if (!closed) {
         setErr('session was already closed')
@@ -508,11 +494,9 @@ export function ActiveSessionSwitcher({
       }
 
       setDeleting(true)
-      gw.request<SessionDeleteResponse>('session.delete', { session_id: target.id })
-        .then(raw => {
-          const r = asRpcResult<SessionDeleteResponse>(raw)
-
-          if (!r || r.deleted !== target.id) {
+      gw.request('session.delete', { session_id: target.id })
+        .then(r => {
+          if (r.deleted !== target.id) {
             setErr('invalid response: session.delete')
             setDeleting(false)
 
@@ -907,7 +891,7 @@ interface ActiveSessionSwitcherProps {
   gw: GatewayClient
   maxWidth?: number
   onCancel: () => void
-  onClose: (id: string) => Promise<null | SessionCloseResponse>
+  onClose: (id: string) => Promise<null | SessionCloseResult>
   onNew: () => void
   onNewPrompt: (prompt: string, modelArg?: string) => void
   onResume: (id: string) => void

@@ -11,12 +11,69 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
-from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionParams, SubagentStatus
-from .config_free_tier_control import ModelOptionProvider
+from .base import Params, Result, WireEnum
+from .common import SessionParams
 from .registry import method
+
+
+# The final enum belongs in common.py; local while common/events are migrated in parallel.
+class SubagentSnapshotStatus(WireEnum):
+    queued = "queued"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+    error = "error"
+    timeout = "timeout"
+    interrupted = "interrupted"
+
+
+class SavedKeyModelPricing(Result):
+    """``hermes_cli/inventory.py::_apply_pricing`` formatted provider-model pricing."""
+
+    input: str
+    output: str
+    cache: str | None = None
+    free: bool
+    discount_percent: int | None = None
+    was_input: str | None = None
+    was_output: str | None = None
+
+
+class SavedKeyModelCapabilities(Result):
+    """``hermes_cli/inventory.py::_apply_capabilities`` per-model capability row."""
+
+    fast: bool
+    reasoning: bool
+    can_disable_reasoning: bool | None = None
+
+
+class SavedKeyProvider(Result):
+    """``methods_complete.py`` snapshot after saving a provider API key."""
+
+    slug: str
+    name: str
+    models: list[str]
+    total_models: int | None = None
+    is_current: bool | None = None
+    is_user_defined: bool | None = None
+    source: str | None = None
+    aliases: list[str] | None = None
+    api_url: str | None = None
+    auth_type: str | None = None
+    authenticated: bool | None = None
+    key_env: str | None = None
+    warning: str | None = None
+    featured_models: list[str] | None = None
+    capabilities: dict[str, SavedKeyModelCapabilities] | None = None
+    pricing: dict[str, SavedKeyModelPricing] | None = None
+    pricing_pending: bool | None = None
+    free_tier: bool | None = None
+    free_tier_pending: bool | None = None
+    free_tier_row: bool | None = None
+    unavailable_models: list[str] | None = None
+
 
 # ── completions / paste / model keys (methods_complete) ───────────────────────────────────────
 
@@ -25,20 +82,20 @@ class CompletionItem(Result):
     """One popover row; ``kind`` rides only on slash completions (command vs skill)."""
 
     text: str
-    display: str = ""
-    meta: str = ""
+    display: str
+    meta: str
     kind: str | None = None
 
 
 class CompletionItemsResult(Result):
-    items: list[CompletionItem] = Field(default_factory=list)
+    items: list[CompletionItem]
 
 
-class CompletePathParams(ProfileParams):
+class CompletePathParams(Params):
     """``word`` is the token under the cursor (``@`` prefix = context reference); ``cwd`` /
     ``session_id`` pick the directory the listing resolves against."""
 
-    word: str | None = None
+    word: str = ""
     cwd: str | None = None
     session_id: str | None = None
 
@@ -48,13 +105,13 @@ method("complete.path", params=CompletePathParams, result=CompletionItemsResult,
 
 
 class CompleteSlashParams(Params):
-    text: str | None = None
+    text: str = ""
 
 
 class CompleteSlashResult(Result):
     """``replace_from`` is the column the accepted item replaces from."""
 
-    items: list[CompletionItem] = Field(default_factory=list)
+    items: list[CompletionItem]
     replace_from: int | None = None
 
 
@@ -63,7 +120,7 @@ method("complete.slash", params=CompleteSlashParams, result=CompleteSlashResult,
 
 
 class PasteCollapseParams(Params):
-    text: str | None = None
+    text: str = ""
 
 
 class PasteCollapseResult(Result):
@@ -79,11 +136,11 @@ method("paste.collapse", params=PasteCollapseParams, result=PasteCollapseResult,
 class ModelSaveKeyParams(Params):
     slug: str
     api_key: str
-    session_id: str | None = None
+    session_id: str = ""
 
 
 class ModelSaveKeyResult(Result):
-    provider: ModelOptionProvider
+    provider: SavedKeyProvider
 
 
 method("model.save_key", params=ModelSaveKeyParams, result=ModelSaveKeyResult,
@@ -92,7 +149,6 @@ method("model.save_key", params=ModelSaveKeyParams, result=ModelSaveKeyResult,
 
 class ModelDisconnectParams(Params):
     slug: str
-    session_id: str | None = None
 
 
 class ModelDisconnectResult(Result):
@@ -112,20 +168,20 @@ class ProfileSessionPreview(Result):
     """Newest human-facing session of a profile (``_latest_profile_session_rows``)."""
 
     id: str
-    title: str = ""
-    preview: str = ""
-    started_at: float | int = 0
-    last_active: float | int = 0
-    message_count: int = 0
+    title: str
+    preview: str
+    started_at: float
+    last_active: float
+    message_count: int
 
 
 class ProfileWorkerSession(Result):
     """Newest kanban/tool worker row, so rosters can show a profile as working."""
 
     id: str
-    source: str = ""
-    title: str = ""
-    last_active: float | int = 0
+    source: str
+    title: str
+    last_active: float
 
 
 class ProfileCanonicalSession(Result):
@@ -133,12 +189,12 @@ class ProfileCanonicalSession(Result):
 
     id: str
     resolved_id: str
-    root_title: str = ""
-    title: str = ""
-    preview: str = ""
-    started_at: float | int = 0
-    last_active: float | int = 0
-    message_count: int = 0
+    root_title: str
+    title: str
+    preview: str
+    started_at: float
+    last_active: float
+    message_count: int
 
 
 class ProfileRow(Result):
@@ -146,68 +202,69 @@ class ProfileRow(Result):
 
     name: str
     path: str
-    is_default: bool = False
-    model: str | None = None
-    provider: str | None = None
-    description: str = ""
-    display_name: str = ""
-    skill_count: int = 0
+    is_default: bool
+    model: str | None
+    provider: str | None
+    description: str
+    display_name: str
+    skill_count: int
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None
-    ui_meta_revisions: dict[str, int] = Field(default_factory=dict)
+    ui_meta_revisions: dict[str, int]
+    # Client-owned opaque blob from methods_profiles._profile_ui_meta_fields.
     ui_meta: dict[str, JsonValue] | None = None
-    has_avatar: bool = False
+    has_avatar: bool
 
 
-class ProfilesListParams(ProfileParams):
-    include_sessions: bool | str | None = None
+class ProfilesListParams(Params):
+    include_sessions: bool | str = True
 
 
 class ProfilesListResult(Result):
     """``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself."""
 
-    profiles: list[ProfileRow] = Field(default_factory=list)
-    bot_mode_protocol: bool = True
+    profiles: list[ProfileRow]
+    bot_mode_protocol: bool
 
 
 method("profiles.list", params=ProfilesListParams, result=ProfilesListResult,
        doc="Roster of profiles with previews so a client paints without N follow-up calls.")
 
 
-class ProfilesCreateParams(ProfileParams):
+class ProfilesCreateParams(Params):
     """``clone_from`` omitted = fresh profile + bundled skills; ``mirror_credentials`` defaults on
     so a headless bot has a provider."""
 
     name: str
     description: str | None = None
     clone_from: str | None = None
-    clone_all: bool | str | None = None
-    clone_channels: bool | str | None = None
-    no_skills: bool | str | None = None
-    no_alias: bool | str | None = None
+    clone_all: bool | str = False
+    clone_channels: bool | str = False
+    no_skills: bool | str = False
+    no_alias: bool | str = False
     soul: str | None = None
     model: str | None = None
     provider: str | None = None
-    share_auth: bool | str | None = None
-    mirror_credentials: bool | str | None = None
+    share_auth: bool | str = False
+    mirror_credentials: bool | str = True
 
 
 class ProfileMirrored(Result):
     """What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``."""
 
-    env: bool = False
-    auth: bool | Literal["shared"] = False
-    model_inherited: bool = False
-    voice: bool = False
+    env: bool
+    auth: bool | Literal["shared"]
+    model_inherited: bool
+    voice: bool
 
 
 class ProfilesCreateResult(Result):
-    ok: bool = True
+    ok: bool
     name: str
     path: str
-    soul_written: bool = False
-    model_set: bool = False
+    soul_written: bool
+    model_set: bool
     mirrored: ProfileMirrored
 
 
@@ -215,66 +272,68 @@ method("profiles.create", params=ProfilesCreateParams, result=ProfilesCreateResu
        doc="Create a profile (ws twin of POST /api/profiles), mirroring launch credentials by default.")
 
 
-class ProfileNameParams(ProfileParams):
-    name: str | None = None
+class ProfileNameParams(Params):
+    name: str
 
 
 class CapabilityEntry(Result):
     name: str
-    enabled: bool = True
+    enabled: bool
 
 
 class ToolsetEntry(CapabilityEntry):
-    label: str = ""
-    description: str = ""
-    tool_count: int = 0
+    label: str
+    description: str
+    tool_count: int
 
 
 class McpServerEntry(CapabilityEntry):
-    transport: str = "stdio"
+    transport: str
 
 
 class ProfileModelPin(Result):
-    provider: str = ""
-    default: str = ""
+    provider: str
+    default: str
 
 
 class ProfilesDescribeResult(Result):
     """Editor snapshot; ``toolsets_pinned`` says whether ``tools.enabled_toolsets`` is explicit."""
 
     name: str
-    description: str = ""
-    soul: str = ""
+    description: str
+    soul: str
     model: ProfileModelPin
-    skills: list[CapabilityEntry] = Field(default_factory=list)
-    toolsets: list[ToolsetEntry] = Field(default_factory=list)
-    toolsets_pinned: bool = False
-    mcp_servers: list[McpServerEntry] = Field(default_factory=list)
+    skills: list[CapabilityEntry]
+    toolsets: list[ToolsetEntry]
+    toolsets_pinned: bool
+    mcp_servers: list[McpServerEntry]
 
 
 method("profiles.describe", params=ProfileNameParams, result=ProfilesDescribeResult,
        doc="Everything the profile editor shows: soul, model pin, skills, toolsets, MCP servers.")
 
 
-class ProfilesConfigureParams(ProfileParams):
+class ProfilesConfigureParams(Params):
     """Sections are independent; ``ui_meta_expected_revisions`` is a per-key compare-and-swap."""
 
     name: str | None = None
+    # Client-owned opaque blob merged by methods_profiles._configure_ui_meta.
     ui_meta: dict[str, JsonValue] | None = None
     ui_meta_expected_revisions: dict[str, int] | None = None
     soul: str | None = None
     description: str | None = None
     model: str | None = None
     provider: str | None = None
-    confirm_expensive_model: bool | str | None = None
+    confirm_expensive_model: bool | str = False
     disabled_skills: list[str] | None = None
     enabled_toolsets: list[str] | None = None
     enabled_mcp_servers: list[str] | None = None
 
 
 class UiMetaConflict(Result):
-    expected: JsonValue = None
-    actual: int = 0
+    # A missing requested revision is reported as null by _configure_ui_meta.
+    expected: int | None
+    actual: int
 
 
 class ProfilesConfigureApplied(Result):
@@ -304,29 +363,18 @@ method("profiles.configure", params=ProfilesConfigureParams, result=ProfilesConf
        doc="Editor Save: apply any subset of a profile's sections and report each one.")
 
 
-class ProfilesSetAssetParams(ProfileParams):
+class ProfilesSetAssetParams(Params):
     """``data`` is a data URL or bare base64 (PNG/JPEG/WebP, sniffed); ``clear`` deletes instead."""
 
-    name: str | None = None
-    asset: str | None = None
+    name: str
+    asset: str = "avatar"
     data: str | None = None
-    clear: bool | str | None = None
+    clear: bool | str = False
 
 
-class ProfilesSetAssetResult(Result):
-    ok: bool = True
-    asset: str
-    size: int = 0
-    removed: int | None = None
-
-
-method("profiles.set_asset", params=ProfilesSetAssetParams, result=ProfilesSetAssetResult,
-       doc="Store or clear a profile asset (avatar) atomically.")
-
-
-class ProfilesGetAssetParams(ProfileParams):
-    name: str | None = None
-    asset: str | None = None
+class ProfilesGetAssetParams(Params):
+    name: str
+    asset: str = "avatar"
 
 
 class ProfilesGetAssetResult(Result):
@@ -342,6 +390,17 @@ method("profiles.get_asset", params=ProfilesGetAssetParams, result=ProfilesGetAs
        doc="A profile asset as a data URL.")
 
 
+class ProfilesSetAssetResult(Result):
+    ok: bool
+    asset: str
+    size: int
+    removed: int | None = None
+
+
+method("profiles.set_asset", params=ProfilesSetAssetParams, result=ProfilesSetAssetResult,
+       doc="Store or clear a profile asset (avatar) atomically.")
+
+
 class OnboardingAnswers(Params):
     """``tui_gateway/onboarding_personalization.py`` — the facts agreed during onboarding."""
 
@@ -350,20 +409,18 @@ class OnboardingAnswers(Params):
     theme: str | None = None
     accent: str | None = None
     layout: str | None = None
-    focus: list[str] | None = None
-    connectors: list[str] | None = None
-    # The onboarding store may carry extra UI-only keys; the writer ignores unknown ones.
-    model_config = Params.model_config | {"extra": "allow"}
+    focus: list[str] = Field(default_factory=list)
+    connectors: list[str] = Field(default_factory=list)
 
 
-class ProfilesRememberOnboardingParams(ProfileParams):
-    answers: OnboardingAnswers | None = None
+class ProfilesRememberOnboardingParams(Params):
+    answers: OnboardingAnswers
 
 
 class ProfilesRememberOnboardingResult(Result):
-    saved: bool = True
-    profile: str = "default"
-    target: str = "user"
+    saved: bool
+    profile: str
+    target: str
 
 
 method("profiles.remember_onboarding", params=ProfilesRememberOnboardingParams,
@@ -386,8 +443,8 @@ class VaultItem(Result):
     id: str
     kind: str
     label: str
-    origin: str | None = None
-    created_at: str = ""
+    origin: str | None
+    created_at: str
     identifier: str | None = None
     identifier_type: str | None = None
     has_otp: bool | None = None
@@ -395,10 +452,10 @@ class VaultItem(Result):
 
 
 class VaultListResult(Result):
-    items: list[VaultItem] = Field(default_factory=list)
+    items: list[VaultItem]
 
 
-method("vault.list", params=ProfileParams, result=VaultListResult,
+method("vault.list", params=Params, result=VaultListResult,
        doc="Metadata-only listing across the local vault and every unlocked password manager.")
 
 
@@ -412,16 +469,16 @@ class VaultSource(Result):
 
 
 class VaultSourcesResult(Result):
-    sources: list[VaultSource] = Field(default_factory=list)
+    sources: list[VaultSource]
 
 
-method("vault.sources", params=ProfileParams, result=VaultSourcesResult,
+method("vault.sources", params=Params, result=VaultSourcesResult,
        doc="Status of every login source (local vault + detected password managers).")
 
 
-class VaultSourceSetParams(ProfileParams):
-    name: str | None = None
-    enabled: bool | None = None
+class VaultSourceSetParams(Params):
+    name: str
+    enabled: bool
 
 
 class VaultSourceSetResult(Result):
@@ -433,41 +490,41 @@ method("vault.source.set", params=VaultSourceSetParams, result=VaultSourceSetRes
        doc="Enable or disable an external password manager (disabling also locks it).")
 
 
-class VaultUnlockParams(ProfileParams):
+class VaultUnlockParams(Params):
     """The master password is consumed by the manager CLI and never stored or logged."""
 
-    name: str | None = None
-    password: str | None = None
+    name: str
+    password: str
 
 
 class VaultUnlockResult(Result):
     name: str
-    unlocked: bool = True
+    unlocked: bool
 
 
 method("vault.unlock", params=VaultUnlockParams, result=VaultUnlockResult,
        doc="Unlock a password manager for this session with its master password.")
 
 
-class VaultLockParams(ProfileParams):
+class VaultLockParams(Params):
     name: str | None = None
 
 
 class VaultLockResult(Result):
-    locked: bool = True
+    locked: bool
 
 
 method("vault.lock", params=VaultLockParams, result=VaultLockResult,
        doc="Forget a manager's session token (every manager when no name is given).")
 
 
-class VaultAddParams(ProfileParams):
+class VaultAddParams(Params):
     """``secret`` goes straight into the encrypted store; the result carries only the new id."""
 
-    kind: VaultKind | None = None
-    label: str | None = None
+    kind: VaultKind
+    label: str
     origin: str | None = None
-    secret: dict[str, JsonValue] | None = None
+    secret: dict[str, str]
 
 
 class VaultAddResult(Result):
@@ -478,8 +535,8 @@ method("vault.add", params=VaultAddParams, result=VaultAddResult,
        doc="Add a login / payment / address item to the local vault.")
 
 
-class VaultRemoveParams(ProfileParams):
-    id: str | None = None
+class VaultRemoveParams(Params):
+    id: str
 
 
 class VaultRemoveResult(Result):
@@ -505,26 +562,26 @@ class ForeignSessionRow(Result):
     id: str
     source: ForeignSource
     label: str
-    title: str = ""
-    cwd: str | None = None
+    title: str
+    cwd: str | None
     mtime: float
-    turn_count: int = 0
-    excerpt: str = ""
+    turn_count: int
+    excerpt: str
 
 
-class SessionForeignListParams(ProfileParams):
+class SessionForeignListParams(Params):
     source: ForeignSource | None = None
-    offset: int | None = None
-    limit: int | None = None
+    offset: int = 0
+    limit: int = 25
 
 
 class SessionForeignListResult(Result):
     """``unreadable`` counts logs on this page that failed to parse."""
 
-    sessions: list[ForeignSessionRow] = Field(default_factory=list)
-    next_offset: int | None = None
+    sessions: list[ForeignSessionRow]
+    next_offset: int | None
     host: str
-    unreadable: int = 0
+    unreadable: int
 
 
 method("session.foreign.list", params=SessionForeignListParams, result=SessionForeignListResult,
@@ -536,18 +593,18 @@ class ForeignTurn(Result):
     content: str
 
 
-class SessionForeignIdParams(ProfileParams):
-    id: str | None = None
+class SessionForeignIdParams(Params):
+    id: str
 
 
 class SessionForeignPreviewResult(Result):
     """Bounded to the last 40 turns / 8000 chars each; ``already_imported`` is the local id."""
 
-    messages: list[ForeignTurn] = Field(default_factory=list)
-    total: int = 0
-    truncated: bool = False
-    already_imported: str | None = None
-    cwd: str | None = None
+    messages: list[ForeignTurn]
+    total: int
+    truncated: bool
+    already_imported: str | None
+    cwd: str | None
 
 
 method("session.foreign.preview", params=SessionForeignIdParams, result=SessionForeignPreviewResult,
@@ -556,7 +613,7 @@ method("session.foreign.preview", params=SessionForeignIdParams, result=SessionF
 
 class SessionForeignImportResult(Result):
     session_id: str
-    already_imported: bool = False
+    already_imported: bool
 
 
 method("session.foreign.import", params=SessionForeignIdParams, result=SessionForeignImportResult,
@@ -570,23 +627,36 @@ class SubagentSnapshot(Result):
     """``methods_subagents._SUBAGENT_SNAPSHOT_FIELDS`` projection of one live child record."""
 
     subagent_id: str
-    parent_id: str | None = None
-    depth: int | None = None
-    goal: str | None = None
-    delegation_id: str | None = None
-    model: str | None = None
-    started_at: float | None = None
-    status: SubagentStatus | None = None
-    tool_count: int | None = None
-    last_tool: str | None = None
-    accepting_steer: bool | None = None
+    parent_id: str | None
+    depth: int
+    goal: str
+    delegation_id: str | None
+    model: str | None
+    started_at: float
+    status: SubagentSnapshotStatus
+    tool_count: int
+    last_tool: str | None
+    accepting_steer: bool
+
+
+class SubagentDelegationSnapshot(Result):
+    """Reserved async-delegation row; methods_subagents currently emits no rows."""
+
+    delegation_id: str
+    goal: str
+    role: str
+    model: str | None
+    status: str
+    dispatched_at: float
+    completed_at: float | None
+    subagent_ids: list[str]
 
 
 class SubagentListResult(Result):
     """``delegations`` is reserved for async delegation records and is currently always empty."""
 
-    subagents: list[SubagentSnapshot] = Field(default_factory=list)
-    delegations: list[dict[str, JsonValue]] = Field(default_factory=list)
+    subagents: list[SubagentSnapshot]
+    delegations: list[SubagentDelegationSnapshot]
 
 
 method("subagent.list", params=SessionParams, result=SubagentListResult,
@@ -610,9 +680,9 @@ class SubagentTailResult(Result):
     """``available`` is false while the child has no live transcript yet (or it was cleaned up)."""
 
     subagent_id: str
-    available: bool = False
-    text: str = ""
-    truncated: bool = False
+    available: bool
+    text: str
+    truncated: bool
 
 
 method("subagent.tail", params=SubagentIdParams, result=SubagentTailResult,

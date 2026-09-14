@@ -1,3 +1,4 @@
+import type { RpcMethods } from '@hermes/shared'
 /**
  * The window's ONE session-scoped RPC dispatcher, factored out of the contrib
  * wiring controller so the exact production routing (not a re-implementation)
@@ -35,6 +36,7 @@ import type { MutableRefObject } from 'react'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { ClientSessionState } from '@/app/types'
+import { type GatewayRequest, paramsSessionId } from '@/lib/gateway-rpc'
 import { isSessionGoneForBackgroundPolling } from '@/store/runtime-gone'
 import { getSessionOwnerHint, knownSessionOwner, ownerLookupSessionRows, requestSessionResume } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
@@ -43,12 +45,7 @@ import { $focusedStoredSessionId, sessionTileOwnerRoute, storedSessionIdForRunti
 
 import { findStoredIdForRuntimeId, resolveRoutingSessionId, resolveSessionRpcOwner } from './wiring-routing'
 
-export type AmbientGatewayRequest = <T>(
-  method: string,
-  params?: Record<string, unknown>,
-  timeoutMs?: number,
-  signal?: AbortSignal
-) => Promise<T>
+export type AmbientGatewayRequest = GatewayRequest
 
 export interface SessionRpcDispatcherDeps {
   ambientRequest: AmbientGatewayRequest
@@ -60,8 +57,13 @@ export interface SessionRpcDispatcherDeps {
 export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): AmbientGatewayRequest {
   const { ambientRequest, runtimeIdByStoredSessionIdRef, selectedStoredSessionIdRef, sessionStateByRuntimeIdRef } = deps
 
-  return async <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => {
-    const paramSessionId = typeof params?.session_id === 'string' && params.session_id ? params.session_id : undefined
+  return async <M extends keyof RpcMethods>(
+    method: M,
+    params: RpcMethods[M]['params'],
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ): Promise<RpcMethods[M]['result']> => {
+    const paramSessionId = paramsSessionId(params) || undefined
 
     const routingSessionId = resolveRoutingSessionId({
       focusedStoredSessionId: $focusedStoredSessionId.get(),
@@ -99,7 +101,7 @@ export function createSessionRpcDispatcher(deps: SessionRpcDispatcherDeps): Ambi
     assertSessionOwnerResolved(owner, { method, sessionId: paramSessionId ? routingSessionId : null })
 
     try {
-      return await requestForSessionProfile<T>(owner, ambientRequest, method, params ?? {}, timeoutMs, signal)
+      return await requestForSessionProfile(owner, ambientRequest, method, params, timeoutMs, signal)
     } catch (error) {
       // A missed session.reclaimed leaves later RPCs answering 4001 against a
       // still-resumable stored row. Prompt actions already retry their own

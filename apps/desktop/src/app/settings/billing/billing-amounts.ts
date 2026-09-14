@@ -1,7 +1,7 @@
-import type { BillingStateResponse } from './types'
+import type { BillingStateResult } from './types'
 import { EMPTY_BILLING_VALUE } from './use-billing-state'
 
-export function clampAmount(raw: string, billing: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>): string {
+export function clampAmount(raw: string, billing: Pick<BillingStateResult, 'max_usd' | 'min_usd'>): string {
   const amount = parseAmount(raw)
 
   if (amount == null) {
@@ -49,7 +49,7 @@ export function initialAutoReloadAmount(...candidates: Array<null | string | und
 export function validateAutoReloadInputs(
   thresholdRaw: string,
   reloadToRaw: string,
-  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
+  bounds: Pick<BillingStateResult, 'max_usd' | 'min_usd'>
 ): { error?: string; values?: { reloadTo: string; threshold: string } } {
   const threshold = validateBillingAmount('Threshold', thresholdRaw, bounds)
 
@@ -78,7 +78,7 @@ export function validateAutoReloadInputs(
 export function validateBillingAmount(
   label: string,
   raw: string,
-  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
+  bounds: Pick<BillingStateResult, 'max_usd' | 'min_usd'>
 ): { amount?: number; error?: string } {
   const cleaned = raw.trim().replace(/^\$/, '').trim()
 

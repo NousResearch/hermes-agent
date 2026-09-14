@@ -22,15 +22,11 @@ describe('toBatteryInfo', () => {
     expect(toBatteryInfo({ available: true, category: 'warn', percent: 43.4, plugged: false })?.percent).toBe(43)
   })
 
-  it('coerces a missing/invalid percent to null', () => {
-    expect(toBatteryInfo({ available: true, category: 'dim' })?.percent).toBeNull()
+  it('keeps a null percent null', () => {
+    expect(toBatteryInfo({ available: true, category: 'dim', percent: null, plugged: null })?.percent).toBeNull()
   })
 
-  it('falls back to the dim category for an unknown value', () => {
-    expect(toBatteryInfo({ available: true, category: 'purple', percent: 50, plugged: false })?.category).toBe('dim')
-  })
-
-  it('treats a non-boolean plugged as unknown (null)', () => {
-    expect(toBatteryInfo({ available: false, category: 'dim', percent: null })?.plugged).toBeNull()
+  it('keeps an unknown plugged state null', () => {
+    expect(toBatteryInfo({ available: false, category: 'dim', percent: null, plugged: null })?.plugged).toBeNull()
   })
 })

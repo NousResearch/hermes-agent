@@ -6,6 +6,7 @@ import { useAgentRoster } from '../app/agentRoster.js'
 import {
   $delegationState,
   $overlaySectionsOpen,
+  applyDelegationPaused,
   applyDelegationStatus,
   toggleOverlaySection
 } from '../app/delegationStore.js'
@@ -13,8 +14,6 @@ import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
 import { $uiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
-import { asRpcResult } from '../lib/rpc.js'
 import { statusGlyph as agentStatusGlyph } from '../lib/subagentGlyph.js'
 import {
   buildSubagentTree,
@@ -676,10 +675,10 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     // A control acknowledgement or newer hydration must win over this request.
     const initial = $delegationState.get()
     let active = true
-    gw.request<DelegationStatusResponse>('delegation.status', {})
+    gw.request('delegation.status', {})
       .then(r => {
         if (active && $delegationState.get() === initial) {
-          applyDelegationStatus(asRpcResult<DelegationStatusResponse>(r))
+          applyDelegationStatus(r)
         }
       })
       .catch(() => {})
@@ -705,16 +704,12 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     }
   }
 
-  const interrupt = (id: string) =>
-    gw.request<SubagentInterruptResponse>('subagent.interrupt', { session_id: sid, subagent_id: id })
+  const interrupt = (id: string) => gw.request('subagent.interrupt', { session_id: sid ?? '', subagent_id: id })
 
   const killOne = (id: string) =>
     guardLive(() => {
       interrupt(id)
-        .then(raw => {
-          const r = asRpcResult<SubagentInterruptResponse>(raw)
-          setFlash(r?.found ? `killing ${id}` : `not found: ${id}`)
-        })
+        .then(r => setFlash(r.found ? `killing ${id}` : `not found: ${id}`))
         .catch(() => setFlash(`kill failed: ${id}`))
     })
 
@@ -727,11 +722,10 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
 
   const togglePause = () =>
     guardLive(() => {
-      gw.request<DelegationPauseResponse>('delegation.pause', { paused: !delegation.paused })
-        .then(raw => {
-          const r = asRpcResult<DelegationPauseResponse>(raw)
-          applyDelegationStatus({ paused: r?.paused })
-          setFlash(r?.paused ? 'spawning paused' : 'spawning resumed')
+      gw.request('delegation.pause', { paused: !delegation.paused })
+        .then(r => {
+          applyDelegationPaused(r.paused)
+          setFlash(r.paused ? 'spawning paused' : 'spawning resumed')
         })
         .catch(() => setFlash('pause failed'))
     })

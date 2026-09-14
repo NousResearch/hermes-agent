@@ -33,6 +33,7 @@ vi.mock('@/hermes', () => ({
     }
     request = async (): Promise<unknown> => ({})
     onEvent = vi.fn(() => () => {})
+    onAnyServerRequest = vi.fn(() => () => {})
     onState = vi.fn(() => () => {})
   }
 }))

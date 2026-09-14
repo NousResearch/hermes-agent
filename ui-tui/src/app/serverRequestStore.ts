@@ -1,13 +1,18 @@
+import type { ServerRequestMap } from '@hermes/shared/gateway-events'
 import type { ServerRequest } from '@hermes/shared/json-rpc-channel'
+
+/** Any generated server-request reply. Cards answer by id (the overlay state keeps
+ *  only that), so the stored request — not the caller — decides what its method accepts. */
+export type ServerRequestResult = ServerRequestMap[keyof ServerRequestMap]['result']
 
 // Live server→client requests (clarify, approval, sudo, …) keyed by request
 // id. Overlay state keeps only the id; answering resolves the stored request
 // so a re-delivered (`open_requests`) request with the same id reuses the
 // same card. Module-level, like the overlay store: the gateway client and
 // the Ink handlers share one instance per process.
-const open = new Map<string, ServerRequest>()
+const open = new Map<string, ServerRequest<keyof ServerRequestMap>>()
 
-export function rememberServerRequest(request: ServerRequest): void {
+export function rememberServerRequest<M extends keyof ServerRequestMap>(request: ServerRequest<M>): void {
   open.set(request.id, request)
 }
 
@@ -16,7 +21,7 @@ export function forgetServerRequest(id: string): void {
 }
 
 /** Answer request `id` and forget it. False when nothing is open under that id (expired / already answered). */
-export function respondToServerRequest(id: string, result: Record<string, unknown>): boolean {
+export function respondToServerRequest(id: string, result: ServerRequestResult): boolean {
   const request = open.get(id)
 
   if (!request) {

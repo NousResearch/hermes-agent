@@ -202,7 +202,9 @@ class ComputeHost:
                 return
             from tui_gateway import server_requests
             if isinstance(params.get("lock"), dict):
-                response = server._methods["clarify.lock"](request_id, params["lock"])
+                from tui_gateway.contracts.prompt_voice import ClarifyLockParams
+                result = server.invoke("clarify.lock", ClarifyLockParams(**params["lock"]))
+                response = {"jsonrpc": "2.0", "id": request_id, "result": result.model_dump(mode="json")}
             else:
                 response_frame = params.get("frame") if isinstance(params.get("frame"), dict) else params
                 resolved = server_requests.resolve_response(response_frame)
@@ -423,16 +425,15 @@ class ComputeHost:
         route_name = str(frame.get("route_name") or "")
         command = str(frame.get("command") or "")
         if route_name in {"session.save", "session.compress"}:
-            params = {"session_id": sid}
-            if route_name == "session.compress":
-                focus_topic = command.removeprefix("/compress").strip()
-                if focus_topic:
-                    params["focus_topic"] = focus_topic
-            response = server._methods[route_name](frame.get("request_id"), params)
-            if "error" in response:
-                failure = _CONTROL_FAILURES[route_name]
-                return {"error": str(response["error"].get("message") or failure)}
-            ack = {"result": response.get("result") or {}}
+            from tui_gateway.contracts.sessions import SessionCompressParams, SessionSaveParams
+
+            params = (SessionCompressParams(
+                session_id=sid, focus_topic=command.removeprefix("/compress").strip() or None)
+                if route_name == "session.compress" else SessionSaveParams(session_id=sid))
+            result = server.invoke(route_name, params)
+            if isinstance(result, dict):
+                return {"error": _CONTROL_FAILURES[route_name]}
+            ack = {"result": result.model_dump(mode="json")}
             if route_name == "session.save":
                 return ack
             with session["history_lock"]:

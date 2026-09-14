@@ -1,6 +1,8 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { sessionResumeResult } from '@/test/contract'
+
 import { refreshBackgroundProcesses, resetBackgroundPollingGuard } from './composer-status'
 import { $gateway } from './gateway'
 import {
@@ -188,14 +190,22 @@ describe('gone-latch classifier and rebind seam', () => {
     markSessionGone('rt-dead')
     markSessionGone('rt-other')
 
-    resetBackgroundPollingGuardAfterRebind('process.list', { session_id: 'rt-dead' }, { session_id: 'rt-dead' })
+    resetBackgroundPollingGuardAfterRebind('process.list', { session_id: 'rt-dead' }, { processes: [] })
     expect(isSessionGone('rt-dead')).toBe(true)
 
-    resetBackgroundPollingGuardAfterRebind('session.resume', { session_id: 'stored-1' }, { session_id: 'rt-dead' })
+    resetBackgroundPollingGuardAfterRebind(
+      'session.resume',
+      { session_id: 'stored-1' },
+      sessionResumeResult({ session_id: 'rt-dead' })
+    )
     expect(isSessionGone('rt-dead')).toBe(false)
     expect(isSessionGone('rt-other')).toBe(true)
 
-    resetBackgroundPollingGuardAfterRebind('session.activate', { session_id: 'rt-other' }, undefined)
+    resetBackgroundPollingGuardAfterRebind(
+      'session.activate',
+      { session_id: 'rt-other' },
+      sessionResumeResult({ session_id: 'rt-other' })
+    )
     expect(isSessionGone('rt-other')).toBe(false)
   })
 
@@ -226,7 +236,11 @@ describe('gone-latch classifier and rebind seam', () => {
     expect(markRuntimeGone('rt-4')).toBe(false)
 
     // ...but a rebind of STORED proves it alive, so the next reap heals again.
-    resetBackgroundPollingGuardAfterRebind('session.resume', { session_id: STORED }, { session_id: 'rt-5' })
+    resetBackgroundPollingGuardAfterRebind(
+      'session.resume',
+      { session_id: STORED },
+      sessionResumeResult({ session_id: 'rt-5' })
+    )
 
     $sessionStates.set({ 'rt-5': cachedState(STORED) })
     $sessionTiles.set([tile(STORED, 'rt-5')])

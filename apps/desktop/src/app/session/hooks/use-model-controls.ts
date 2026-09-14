@@ -1,4 +1,4 @@
-import type { ModelOptionsResult } from '@hermes/shared'
+import type { ConfigSetResult, ModelOptionsResult } from '@hermes/shared'
 import { type QueryClient } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
 
@@ -6,8 +6,9 @@ import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
-import { modelOptionsQueryKey } from '@/lib/model-options'
+import { modelOptionsQueryKey, optimisticProvider } from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -27,14 +28,10 @@ interface ModelControlsOptions {
   cacheOwnerConnectionId?: string
   cacheProfile?: string
   queryClient: QueryClient
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }
 
-interface ModelSwitchResponse {
-  confirm_message?: string
-  confirm_required?: boolean
-  deferred?: boolean
-}
+type ModelSwitchResponse = ConfigSetResult
 
 export function useModelControls({
   cacheOwnerConnectionId,
@@ -67,7 +64,7 @@ export function useModelControls({
         const providers = prev?.providers?.length
           ? prev.providers
           : provider && model
-            ? [{ models: [model], name: provider, slug: provider }]
+            ? [optimisticProvider(provider, model)]
             : []
 
         return { ...prev, provider, model, providers }
@@ -258,7 +255,7 @@ export function useModelControls({
       const scope = touchesPrimary && !isSessionOnlyPreset ? '' : ' --session'
 
       const requestSwitch = (confirmExpensiveModel = false) =>
-        requestGateway<ModelSwitchResponse>('config.set', {
+        requestGateway('config.set', {
           session_id: liveSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider}${scope}`,
@@ -288,7 +285,7 @@ export function useModelControls({
           // logic per surface.
           surfaceModelSwitchConfirm({
             confirmLabel: t.common.confirm,
-            confirmMessage: result.confirm_message,
+            confirmMessage: result.confirm_message ?? undefined,
             failureMessage: copy.modelSwitchFailed,
             finish: finishSwitch,
             // Staleness guard — the warning can linger while the user picks

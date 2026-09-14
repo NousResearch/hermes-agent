@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 
 import { $gatewayState } from '@/store/session'
 import { knownOwnerForSession, requestForOwnedSession } from '@/store/session-states'
-import { $subagentsBySession, reconcileSubagentSnapshot, type SubagentPayload } from '@/store/subagents'
+import { $subagentsBySession, reconcileSubagentSnapshot } from '@/store/subagents'
 
 export const rejectUnownedSubagentRequest = async <T>(): Promise<T> => {
   throw new Error('Subagent owner unavailable')
@@ -31,7 +31,7 @@ export function useSubagentSnapshot(sessionId: string | null) {
       const owner = JSON.stringify(knownOwnerForSession(sessionId))
 
       try {
-        const snapshot = await requestForOwnedSession<{ subagents: SubagentPayload[] }>(
+        const snapshot = await requestForOwnedSession(
           sessionId,
           rejectUnownedSubagentRequest,
           'subagent.list',

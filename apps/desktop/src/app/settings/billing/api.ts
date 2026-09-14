@@ -1,16 +1,21 @@
+import type { RpcMethods } from '@hermes/shared'
 import { createContext, useContext, useMemo } from 'react'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 
 import type {
-  BillingChargeResponse,
-  BillingChargeStatusResponse,
+  BillingAutoReloadResult,
+  BillingChargeResult,
+  BillingChargeStatusResult,
   BillingErrorPayload,
-  BillingMutationResponse,
   BillingRefusalCode,
-  BillingStateResponse,
-  SubscriptionPreviewResponse,
-  SubscriptionStateResponse
+  BillingStateResult,
+  BillingStepUpResult,
+  SubscriptionChangeResult,
+  SubscriptionPreviewResult,
+  SubscriptionResumeResult,
+  SubscriptionStateResult
 } from './types'
 
 export type BillingErrorKind = BillingRefusalCode
@@ -29,7 +34,7 @@ export interface BillingRefusal {
 
 export type BillingResult<T> = { data: T; ok: true } | { ok: false; refusal: BillingRefusal }
 
-export type BillingChargeResult = BillingResult<BillingChargeResponse> & { idempotencyKey: string }
+export type ChargeCallResult = BillingResult<BillingChargeResult> & { idempotencyKey: string }
 
 export interface UpdateAutoReloadInput {
   enabled: boolean
@@ -37,26 +42,21 @@ export interface UpdateAutoReloadInput {
   threshold_usd?: string
 }
 
-export type BillingRequestGateway = <T>(
-  method: string,
-  params?: Record<string, unknown>,
-  timeoutMs?: number,
-  signal?: AbortSignal
-) => Promise<T>
+export type BillingRequestGateway = GatewayRequest
 
 export interface BillingApi {
-  charge: (amountUsd: string, idempotencyKey?: string) => Promise<BillingChargeResult>
-  chargeStatus: (chargeId: string) => Promise<BillingResult<BillingChargeStatusResponse>>
-  fetchBillingState: () => Promise<BillingResult<BillingStateResponse>>
-  fetchSubscriptionState: () => Promise<BillingResult<SubscriptionStateResponse>>
+  charge: (amountUsd: string, idempotencyKey?: string) => Promise<ChargeCallResult>
+  chargeStatus: (chargeId: string) => Promise<BillingResult<BillingChargeStatusResult>>
+  fetchBillingState: () => Promise<BillingResult<BillingStateResult>>
+  fetchSubscriptionState: () => Promise<BillingResult<SubscriptionStateResult>>
   /** Chargeless quote for a plan change (POST /subscription/preview). */
-  previewSubscriptionChange: (tierId: string) => Promise<BillingResult<SubscriptionPreviewResponse>>
+  previewSubscriptionChange: (tierId: string) => Promise<BillingResult<SubscriptionPreviewResult>>
   /** Clear a scheduled downgrade / cancellation — the undo (DELETE pending-change). */
-  resumeSubscription: () => Promise<BillingResult<BillingMutationResponse>>
+  resumeSubscription: () => Promise<BillingResult<SubscriptionResumeResult>>
   /** Schedule a chargeless downgrade at period end (PUT pending-change). */
-  scheduleSubscriptionChange: (tierId: string) => Promise<BillingResult<BillingMutationResponse>>
-  stepUp: (sessionId?: string) => Promise<BillingResult<BillingMutationResponse>>
-  updateAutoReload: (input: UpdateAutoReloadInput) => Promise<BillingResult<BillingMutationResponse>>
+  scheduleSubscriptionChange: (tierId: string) => Promise<BillingResult<SubscriptionChangeResult>>
+  stepUp: (sessionId?: string) => Promise<BillingResult<BillingStepUpResult>>
+  updateAutoReload: (input: UpdateAutoReloadInput) => Promise<BillingResult<BillingAutoReloadResult>>
 }
 
 interface RefusalRecord {
@@ -131,13 +131,13 @@ const normalizeRpcResult = <T>(response: T): BillingResult<T> => {
   return { data: response, ok: true }
 }
 
-const callBilling = async <T>(
+const callBilling = async <M extends keyof RpcMethods>(
   requestGateway: BillingRequestGateway,
-  method: string,
-  params: Record<string, unknown> = {}
-): Promise<BillingResult<T>> => {
+  method: M,
+  params: RpcMethods[M]['params']
+): Promise<BillingResult<RpcMethods[M]['result']>> => {
   try {
-    return normalizeRpcResult(await requestGateway<T>(method, params))
+    return normalizeRpcResult(await requestGateway(method, params))
   } catch (error) {
     return { ok: false, refusal: normalizeThrown(error) }
   }
@@ -145,7 +145,7 @@ const callBilling = async <T>(
 
 export const createBillingApi = (requestGateway: BillingRequestGateway): BillingApi => ({
   charge: async (amountUsd, idempotencyKey = crypto.randomUUID()) => {
-    const result = await callBilling<BillingChargeResponse>(requestGateway, 'billing.charge', {
+    const result = await callBilling(requestGateway, 'billing.charge', {
       amount_usd: amountUsd,
       idempotency_key: idempotencyKey
     })
@@ -153,24 +153,24 @@ export const createBillingApi = (requestGateway: BillingRequestGateway): Billing
     return { ...result, idempotencyKey }
   },
   chargeStatus: chargeId =>
-    callBilling<BillingChargeStatusResponse>(requestGateway, 'billing.charge_status', { charge_id: chargeId }),
-  fetchBillingState: () => callBilling<BillingStateResponse>(requestGateway, 'billing.state'),
-  fetchSubscriptionState: () => callBilling<SubscriptionStateResponse>(requestGateway, 'subscription.state'),
+    callBilling(requestGateway, 'billing.charge_status', { charge_id: chargeId }),
+  fetchBillingState: () => callBilling(requestGateway, 'billing.state', {}),
+  fetchSubscriptionState: () => callBilling(requestGateway, 'subscription.state', {}),
   previewSubscriptionChange: tierId =>
-    callBilling<SubscriptionPreviewResponse>(requestGateway, 'subscription.preview', {
+    callBilling(requestGateway, 'subscription.preview', {
       subscription_type_id: tierId
     }),
-  resumeSubscription: () => callBilling<BillingMutationResponse>(requestGateway, 'subscription.resume', {}),
+  resumeSubscription: () => callBilling(requestGateway, 'subscription.resume', {}),
   scheduleSubscriptionChange: tierId =>
-    callBilling<BillingMutationResponse>(requestGateway, 'subscription.change', {
+    callBilling(requestGateway, 'subscription.change', {
       subscription_type_id: tierId
     }),
   stepUp: sessionId =>
-    callBilling<BillingMutationResponse>(requestGateway, 'billing.step_up', {
+    callBilling(requestGateway, 'billing.step_up', {
       ...(sessionId !== undefined ? { session_id: sessionId } : {})
     }),
   updateAutoReload: input =>
-    callBilling<BillingMutationResponse>(requestGateway, 'billing.auto_reload', {
+    callBilling(requestGateway, 'billing.auto_reload', {
       enabled: input.enabled,
       ...(input.threshold_usd !== undefined ? { threshold: input.threshold_usd } : {}),
       ...(input.reload_to_usd !== undefined ? { top_up_amount: input.reload_to_usd } : {})

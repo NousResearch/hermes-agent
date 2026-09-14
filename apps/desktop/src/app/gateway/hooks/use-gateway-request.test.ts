@@ -33,6 +33,7 @@ vi.mock('@/hermes', async importOriginal => {
         handler('closed')
       }
     })
+    onAnyServerRequest = vi.fn(() => () => undefined)
     onEvent = vi.fn(() => () => undefined)
     onState = vi.fn((handler: (state: string) => void) => {
       this.stateHandlers.add(handler)
@@ -190,7 +191,7 @@ async function expectSecondaryRecoveryFailure(
 
   vi.useFakeTimers()
 
-  const retry = request('session.resume').then(
+  const retry = request('session.resume', { session_id: 'rt-1' }).then(
     () => undefined,
     error => error
   )
@@ -262,11 +263,11 @@ describe('useGatewayRequest', () => {
     const { result } = renderHook(() => useGatewayRequest())
 
     await act(async () => {
-      await expect(result.current.requestGateway('prompt.submit', { text: 'first' })).resolves.toEqual({ turn: 1 })
+      await expect(result.current.requestGateway('prompt.submit', { session_id: 'rt-1', text: 'first' })).resolves.toEqual({ turn: 1 })
     })
     gateway.connectionState = 'closed'
     await act(async () => {
-      await expect(result.current.requestGateway('prompt.submit', { text: 'second' })).resolves.toEqual({ turn: 2 })
+      await expect(result.current.requestGateway('prompt.submit', { session_id: 'rt-1', text: 'second' })).resolves.toEqual({ turn: 2 })
     })
 
     expect(desktop.getConnectionFor).toHaveBeenCalledTimes(2)
@@ -285,7 +286,7 @@ describe('useGatewayRequest', () => {
 
     const { result } = renderHook(() => useGatewayRequest())
 
-    await expect(result.current.requestGateway('session.resume')).rejects.toBe(failure)
+    await expect(result.current.requestGateway('session.resume', { session_id: 'rt-1' })).rejects.toBe(failure)
     expect(desktop.getConnectionFor).toHaveBeenCalledTimes(1)
     expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledTimes(1)
     expect(gateway.connect).toHaveBeenCalledTimes(1)
@@ -350,7 +351,7 @@ describe('useGatewayRequest', () => {
     const { result } = renderHook(() => useGatewayRequest())
 
     await act(async () => {
-      await expect(result.current.requestGateway('session.resume')).resolves.toEqual({ recovered: true })
+      await expect(result.current.requestGateway('session.resume', { session_id: 'rt-1' })).resolves.toEqual({ recovered: true })
     })
 
     expect(desktop.getConnection).toHaveBeenCalledWith('default')
@@ -380,7 +381,7 @@ describe('useGatewayRequest', () => {
 
     const { result } = renderHook(() => useGatewayRequest())
 
-    const pending = expect(result.current.requestGateway('some.method')).rejects.toThrow('connection closed')
+    const pending = expect(result.current.requestGateway('session.resume', { session_id: 'rt-1' })).rejects.toThrow('connection closed')
 
     // Advance past the internal reconnect-attempt timeout (20s) — the stalled
     // getConnection() await must reject so the reconnect gives up and the

@@ -36,6 +36,7 @@ import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
 import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
@@ -200,9 +201,9 @@ function TileChat({
     return tileOwnerRoute(tiles, rows, storedSessionId)
   }, [cronRows, messagingRows, sessionRows, storedSessionId, tiles])
 
-  const requestTileGateway = useCallback(
-    <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>
-      requestForSessionProfile<T>(ownerRoute, requestGateway, method, params, timeoutMs, signal),
+  const requestTileGateway = useCallback<GatewayRequest>(
+    (method, params, timeoutMs, signal) =>
+      requestForSessionProfile(ownerRoute, requestGateway, method, params, timeoutMs, signal),
     [ownerRoute, requestGateway]
   )
 

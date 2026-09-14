@@ -46,6 +46,7 @@ import {
   shouldRetryEventsClose
 } from '@/lib/events-reconnect'
 import { titleFromSessionInfoPayload } from '@/lib/chat-title'
+import type { RpcMethods } from '@hermes/shared'
 
 import { cn } from '@/lib/utils'
 import { AlertCircle, ChevronDown, RefreshCw } from 'lucide-react'
@@ -91,7 +92,7 @@ interface ChatSidebarProps {
  * can be tested without reading component source text. See
  * ``chat-sidebar-session-params.test.ts``.
  */
-export function sidecarSessionCreateParams(profile?: string): Record<string, unknown> {
+export function sidecarSessionCreateParams(profile?: string): RpcMethods['session.create']['params'] {
   return {
     close_on_disconnect: true,
     source: 'tool',
@@ -211,7 +212,7 @@ export function ChatSidebar({
         }
         // close_on_disconnect: the gateway reaps this sidecar session (and its
         // slash_worker subprocess) when the WS drops, instead of leaking it.
-        return gw.request<{ session_id: string }>('session.create', sidecarSessionCreateParams(profile))
+        return gw.request('session.create', sidecarSessionCreateParams(profile))
       })
       .catch((e: Error) => {
         if (!cancelled) {

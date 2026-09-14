@@ -145,7 +145,7 @@ describe('GatewayClient websocket attach mode', () => {
 
     gw.start()
     const gatewaySocket = FakeWebSocket.instances[0]!
-    const req = gw.request<{ ok: boolean }>('session.create', { cols: 80 })
+    const req = gw.request('session.create', { cols: 80 })
 
     expect(gatewaySocket.sent).toHaveLength(0)
     gatewaySocket.open()

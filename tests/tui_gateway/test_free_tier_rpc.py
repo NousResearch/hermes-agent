@@ -68,7 +68,7 @@ def test_billing_state_answers_the_free_tier_locally(guest, monkeypatch):
     res = _call("billing.state")
     assert res["ok"] is True and res["logged_in"] is False
     assert res["free_tier"] is True and res["free_tier_model"] == "nous/welcome"
-    assert res["usage"] == {"available": False}
+    assert res["usage"]["available"] is False and res["usage"]["ok"] is None
 
     _set_guest_off(monkeypatch)
     monkeypatch.setattr(bv, "build_billing_state", lambda *a, **kw: bv.BillingState(logged_in=False))
@@ -104,9 +104,9 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
         return store["providers"]["nous"]
 
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", fake_provision)
-    assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
+    assert _call("free_tier.provision") == {"has_guest": True, "enabled": True, "error": None}
     assert calls == [{"explicit": True}]
-    assert _call("free_tier.provision") == {"has_guest": True, "enabled": True}
+    assert _call("free_tier.provision") == {"has_guest": True, "enabled": True, "error": None}
     assert len(calls) == 1                       # idempotent: an identity exists, nothing is minted
 
     def refused(**kw):
@@ -120,4 +120,4 @@ def test_provision_sets_the_free_tier_up_through_the_lifecycle_primitive(tmp_pat
 
     _set_guest_off(monkeypatch)
     monkeypatch.setattr(anon_auth, "ensure_portal_identity", lambda **kw: (_ for _ in ()).throw(AssertionError("must not run")))
-    assert _call("free_tier.provision") == {"has_guest": False, "enabled": False}
+    assert _call("free_tier.provision") == {"has_guest": False, "enabled": False, "error": None}

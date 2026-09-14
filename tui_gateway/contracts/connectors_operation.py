@@ -12,7 +12,6 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import Params, Payload, Result, WireEnum
-from .common import ProfileParams
 from .registry import event, method
 
 
@@ -107,6 +106,9 @@ class ConnectionUpdatePayload(ConnectionOperationStatus, Payload):
     """``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/
     ``actor``) or the settlement (none of those), with the full snapshot."""
 
+    # ``from_`` must leave as ``from``: the generated TypeScript names the alias.
+    model_config = Payload.model_config | {"serialize_by_alias": True}
+
     target: str | None = None
     from_: ConnectionTargetState | None = Field(default=None, alias="from")  # ``from`` is a keyword
     to: ConnectionTargetState | None = None
@@ -117,7 +119,7 @@ event("connection.update", ConnectionUpdatePayload,
       doc="One transition or the settlement of an open connection operation.")
 
 
-class ConnectionOperationParams(ProfileParams):
+class ConnectionOperationParams(Params):
     session_id: str
     op_id: str
 
@@ -130,8 +132,6 @@ class ConnectionAnswerTarget(Params):
     """One row's answer from the card. ``status`` is what the card observed for that row
     (``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the
     older spelling of the same field and one of the two is present."""
-
-    model_config = Params.model_config | {"extra": "allow"}
 
     name: str
     status: str | None = None

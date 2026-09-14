@@ -1,7 +1,9 @@
+import type { SessionUsageResult } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { sessionCommands } from '../app/slash/commands/session.js'
-import type { SessionUsageResponse } from '../gatewayTypes.js'
+import { ZERO } from '../domain/usage.js'
+import type { PanelSection } from '../types.js'
 
 const usageCommand = sessionCommands.find(cmd => cmd.name === 'usage')!
 
@@ -41,13 +43,17 @@ const buildCtx = (results: Record<string, unknown>) => {
   return { ctx, panel, run, sys }
 }
 
-const baseUsage = (overrides: Partial<SessionUsageResponse> = {}): SessionUsageResponse =>
-  ({ calls: 0, input: 0, output: 0, total: 0, ...overrides }) as SessionUsageResponse
+const baseUsage = (overrides: Partial<SessionUsageResult> = {}): SessionUsageResult => ({
+  ...ZERO,
+  credits_lines: null,
+  ...overrides
+})
 
 const printed = (sys: ReturnType<typeof vi.fn>) => sys.mock.calls.map(c => c[0]).join('\n')
 
 const balancePanel = (panel: ReturnType<typeof vi.fn>) => {
-  const sections = panel.mock.calls.find(c => c[0] === 'Balance')?.[1] as { text?: string }[] | undefined
+  // SAFETY: the spy records this command's own panel(title, PanelSection[]) call.
+  const sections = panel.mock.calls.find(c => c[0] === 'Nous balance')?.[1] as PanelSection[] | undefined
 
   return (sections ?? []).map(s => s.text ?? '').join('\n')
 }
@@ -69,56 +75,15 @@ describe('/usage slash command', () => {
     expect(printed(withBalance.sys)).toContain(USAGE_CTA)
   })
 
-  it('renders the dollar two-bar model (no "credits" wording) when available', async () => {
+  it('renders the Nous balance lines the gateway sends with the counters', async () => {
     const { panel, run } = buildCtx({
-      'session.usage': baseUsage({
-        usage: {
-          available: true,
-          status: 'healthy',
-          plan_name: 'Plus',
-          renews_display: 'Jul 1, 2026',
-          total_spendable_display: '$26.00',
-          has_topup: true,
-          plan_bar: {
-            kind: 'plan',
-            remaining_display: '$14.00',
-            total_display: '$20.00',
-            spent_display: '$6.00',
-            pct_used: 30,
-            fill_fraction: 0.7
-          },
-          topup_bar: {
-            kind: 'topup',
-            remaining_display: '$12.00',
-            total_display: '$12.00',
-            spent_display: '$0.00',
-            pct_used: null,
-            fill_fraction: 1
-          }
-        }
-      })
+      'session.usage': baseUsage({ calls: 3, credits_lines: ['$26.00 remaining', 'renews Jul 1, 2026'] })
     })
 
     await run('')
 
     const body = balancePanel(panel)
-    expect(body).toContain('Plus')
-    expect(body).toContain('$14.00 left of $20.00')
-    expect(body).toContain('30% used')
-    expect(body).toContain('top-up')
-    expect(body).toContain('$12.00')
-    expect(body.toLowerCase()).not.toContain('credits')
-  })
-
-  it('shows the free-models upsell for a free account', async () => {
-    const { panel, run } = buildCtx({
-      'session.usage': baseUsage({ usage: { available: true, status: 'free', plan_name: null } })
-    })
-
-    await run('')
-
-    const body = balancePanel(panel)
-    expect(body).toContain('free models only')
-    expect(body).toContain('/subscription')
+    expect(body).toContain('$26.00 remaining')
+    expect(body).toContain('renews Jul 1, 2026')
   })
 })

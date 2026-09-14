@@ -79,25 +79,16 @@ export function probeImagen() {
   }
 
   imagenProbeInflight = host
-    .request<{ available?: boolean }>('image.generate', {
+    .request('image.generate', {
       probe: true
     })
-    .then(res => $imagenAvailable.set(Boolean(res?.available)))
+    .then(res => $imagenAvailable.set(res.available))
     .catch(() => $imagenAvailable.set(false))
     .finally(() => {
       imagenProbeInflight = null
     })
 
   return imagenProbeInflight
-}
-
-/** `image.generate`'s reply. `image_data` is a data URL (works over remote
- *  gateways); `image` is the raw backend URL fallback. */
-export interface GeneratedImage {
-  error?: string
-  image?: string
-  image_data?: string
-  success?: boolean
 }
 
 export async function generateAvatarImage(
@@ -107,20 +98,20 @@ export async function generateAvatarImage(
 ): Promise<string | undefined> {
   const who = [title || bot, description].filter(Boolean).join(' — ')
 
-  const res = await host.request<GeneratedImage>('image.generate', {
+  const res = await host.request('image.generate', {
     prompt:
       `Cute minimal robot avatar for an AI agent named "${who}". ` +
       'Friendly simple mascot face, bold flat vector style, solid color background, centered, no text.',
     aspect_ratio: 'square'
   })
 
-  if (!res?.success) {
-    throw new Error(res?.error || 'generation failed')
+  if (!res.success) {
+    throw new Error(res.error || 'generation failed')
   }
 
   // image_data (data URL) works over local AND remote gateways; the raw
   // backend URL is the fallback when the gateway couldn't inline it.
-  return res.image_data || res.image
+  return res.image_data || res.image || undefined
 }
 
 /** The roster backfill draws the live SVG at 160x160. Pets are 96x104

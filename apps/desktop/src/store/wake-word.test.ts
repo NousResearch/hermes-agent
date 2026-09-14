@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { wakeStartResult, wakeStatusResult, wakeStopResult } from '@/test/contract'
+
 import {
   $wakeWord,
   applyWakeStartResult,
@@ -23,7 +25,7 @@ beforeEach(() => {
 
 describe('applyWakeStatus', () => {
   it('syncs availability, listening and phrase from wake.status', () => {
-    applyWakeStatus({
+    applyWakeStatus(wakeStatusResult({
       available: true,
       hint: '',
       listening: true,
@@ -31,7 +33,7 @@ describe('applyWakeStatus', () => {
       owner_surface: 'gui',
       phrase: 'hey hermes',
       provider: 'openwakeword'
-    })
+    }))
 
     expect($wakeWord.get()).toMatchObject({
       available: true,
@@ -42,7 +44,7 @@ describe('applyWakeStatus', () => {
   })
 
   it('tracks unavailability and carries the hint for the tooltip', () => {
-    applyWakeStatus({ available: false, hint: 'pip install openwakeword', listening: false, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: false, hint: 'pip install openwakeword', listening: false, phrase: 'hey hermes' }))
 
     const state = $wakeWord.get()
     expect(state.available).toBe(false)
@@ -51,13 +53,13 @@ describe('applyWakeStatus', () => {
   })
 
   it('keeps the dead-mic hint visible while listening (audio_silent)', () => {
-    applyWakeStatus({
+    applyWakeStatus(wakeStatusResult({
       audio_silent: true,
       available: true,
       hint: 'Microphone delivers only silence — grant mic access',
       listening: true,
       phrase: 'hey hermes'
-    })
+    }))
 
     const state = $wakeWord.get()
     expect(state.listening).toBe(true)
@@ -67,7 +69,7 @@ describe('applyWakeStatus', () => {
 
 describe('toggleWakeWord', () => {
   it('starts via wake.start with surface gui when off, and flips to listening', async () => {
-    applyWakeStatus({ available: true, listening: false, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, listening: false, phrase: 'hey hermes' }))
 
     const request = requester(method => {
       expect(method).toBe('wake.start')
@@ -82,7 +84,7 @@ describe('toggleWakeWord', () => {
   })
 
   it('stops via wake.stop when listening', async () => {
-    applyWakeStatus({ available: true, listening: true, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, listening: true, phrase: 'hey hermes' }))
 
     const request = requester(method => {
       expect(method).toBe('wake.stop')
@@ -97,7 +99,7 @@ describe('toggleWakeWord', () => {
   })
 
   it('does NOT flip state on {started:false, reason} and surfaces the reason', async () => {
-    applyWakeStatus({ available: true, listening: false, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, listening: false, phrase: 'hey hermes' }))
 
     await toggleWakeWord(requester(() => ({ owner_surface: 'tui', reason: 'owned', started: false })))
 
@@ -108,7 +110,7 @@ describe('toggleWakeWord', () => {
   })
 
   it('marks the feature unavailable when start refuses with reason unavailable', async () => {
-    applyWakeStatus({ available: true, listening: false, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, listening: false, phrase: 'hey hermes' }))
 
     await toggleWakeWord(requester(() => ({ hint: 'Set PORCUPINE_ACCESS_KEY', reason: 'unavailable', started: false })))
 
@@ -119,7 +121,7 @@ describe('toggleWakeWord', () => {
   })
 
   it('stays off and keeps the error as the notice when the RPC throws', async () => {
-    applyWakeStatus({ available: true, listening: false, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, listening: false, phrase: 'hey hermes' }))
 
     await toggleWakeWord(
       requester(() => {
@@ -135,7 +137,7 @@ describe('toggleWakeWord', () => {
   })
 
   it('ignores clicks while a toggle is already in flight', async () => {
-    applyWakeStatus({ available: true, listening: false, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, listening: false, phrase: 'hey hermes' }))
 
     let resolveStart: (value: unknown) => void = () => undefined
 
@@ -236,9 +238,9 @@ describe('armWakeWord (gateway-ready auto-arm)', () => {
 
 describe('applyWakeStopResult', () => {
   it('lands on off even when the backend says not_owner', () => {
-    applyWakeStatus({ available: true, listening: true, phrase: 'hey hermes' })
+    applyWakeStatus(wakeStatusResult({ available: true, listening: true, phrase: 'hey hermes' }))
 
-    applyWakeStopResult({ reason: 'not_owner', stopped: false })
+    applyWakeStopResult(wakeStopResult({ reason: 'not_owner', stopped: false }))
 
     const state = $wakeWord.get()
     expect(state.listening).toBe(false)
@@ -248,7 +250,7 @@ describe('applyWakeStopResult', () => {
 
 describe('applyWakeStartResult', () => {
   it('adopts the backend phrase when the listener starts', () => {
-    applyWakeStartResult({ phrase: 'computer', provider: 'porcupine', started: true })
+    applyWakeStartResult(wakeStartResult({ phrase: 'computer', provider: 'porcupine', started: true }))
 
     expect($wakeWord.get()).toMatchObject({ available: true, listening: true, phrase: 'computer' })
   })

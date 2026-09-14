@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { commandsCatalogResult } from '@/test/contract'
+
 import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
@@ -38,7 +40,7 @@ function registryCatalog(
     canon[alias] = target
   }
 
-  return { commands, canon }
+  return commandsCatalogResult({ commands, canon })
 }
 
 const REGISTRY_CATALOG = registryCatalog(
@@ -300,7 +302,7 @@ describe('desktop slash command curation', () => {
   })
 
   it('filters built-in catalog noise but keeps skill / quick-command extensions', () => {
-    const filtered = filterDesktopCommandsCatalog({
+    const filtered = filterDesktopCommandsCatalog(commandsCatalogResult({
       categories: [
         {
           name: 'Session',
@@ -320,7 +322,7 @@ describe('desktop slash command curation', () => {
         ['/ship-it', 'Run release checklist']
       ],
       skill_count: 2
-    })
+    }))
 
     expect(filtered.categories).toEqual([
       { name: 'Session', pairs: [['/new', 'Start a new desktop chat']] },
@@ -337,7 +339,7 @@ describe('desktop slash command curation', () => {
   })
 
   it('recomputes skill_count to reflect only extensions surfaced on desktop', () => {
-    const filtered = filterDesktopCommandsCatalog({
+    const filtered = filterDesktopCommandsCatalog(commandsCatalogResult({
       pairs: [
         ['/new', 'Start a new session'],
         ['/clear', 'Clear terminal screen'],
@@ -345,7 +347,7 @@ describe('desktop slash command curation', () => {
         ['/ship-it', 'Run release checklist']
       ],
       skill_count: 12
-    })
+    }))
 
     expect(filtered.pairs?.map(([cmd]) => cmd)).toEqual(['/new', '/gif-search', '/ship-it'])
     expect(filtered.skill_count).toBe(2)

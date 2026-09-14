@@ -8,6 +8,8 @@ import os
 
 from hermes_constants import INDICATOR_STYLES
 
+from .contracts.common import SessionLiveInfo
+from .contracts.config_free_tier_control import ConfigSetParams, ConfigSetResult
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -34,7 +36,7 @@ def _write_display_sections(*, sections=None, drop_sections=(), **display_fields
 def _emit_session_info(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is not None:
-        _emit("session.info", sid, _session_info(agent, session))
+        _emit("session.info", sid, SessionLiveInfo(**_session_info(agent, session)))
 
 
 def _emit_all_session_info() -> None:
@@ -52,7 +54,7 @@ def _raw_word(value) -> str:
 
 
 def _kv(rid, key, value, **extra):
-    return _ok(rid, {"key": key, "value": value, **extra})
+    return {"key": key, "value": value, **extra}
 
 
 def _cfgset_await_agent(session, rid):
@@ -108,10 +110,10 @@ def _set_model(rid, params, key, value, session):
     """Live/deferred model switch; see _apply_model_switch and _apply_pending_model_switch."""
     if not value:
         return _err(rid, 4002, "model value required")
-    confirmed = bool(params.get("confirm_expensive_model", False))
+    confirmed = bool(params.confirm_expensive_model)
     if session:
         from hermes_cli.model_switch import parse_model_switch_args
-        sid = params.get("session_id", "")
+        sid = params.session_id or ""
         parsed_flags = parse_model_switch_args(value)
         if session.get("running"):
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)
@@ -198,7 +200,7 @@ def _set_fast(rid, params, key, value, session):
                              if k not in ("service_tier", "speed")}
         agent.request_overrides = {**current_overrides, **(overrides or {})}
         _persist_live_session_runtime(session)
-        _emit_session_info(params.get("session_id", ""), session)
+        _emit_session_info(params.session_id or "", session)
     return _kv(rid, key, nv)
 
 
@@ -260,7 +262,7 @@ def _set_approval_mode(rid, params, key, value, session):
 def _set_yolo(rid, params, key, value, session):
     # scope="session" (default; Shift+Tab) toggles ONLY this session's flag; scope="global"
     # (Shift+click the zap) flips persistent approvals.mode between "off" and "manual".
-    scope = _word(params.get("scope") or "session")
+    scope = _word(params.scope or "session")
     from tools.approval import disable_session_yolo, enable_session_yolo, is_session_yolo_enabled
     raw = _word(value)
     if scope == "global":
@@ -274,7 +276,7 @@ def _set_yolo(rid, params, key, value, session):
         skey = session["session_key"]
         enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
         (enable_session_yolo if enable else disable_session_yolo)(skey)
-        _emit_session_info(params.get("session_id", ""), session)
+        _emit_session_info(params.session_id or "", session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))
         if enable:
@@ -297,7 +299,7 @@ _REASONING_DISPLAY_WORDS = (
 def _set_reasoning(rid, params, key, value, session):
     from hermes_constants import parse_reasoning_effort
     arg = _word(value)
-    scope = _word(params.get("scope"))
+    scope = _word(params.scope)
     for words, reported, fields, thinking, show in _REASONING_DISPLAY_WORDS:
         if arg in words:
             _write_display_sections(sections={"thinking": thinking}, **fields)
@@ -321,7 +323,7 @@ def _set_reasoning(rid, params, key, value, session):
     if session and session.get("agent") is not None:
         session["agent"].reasoning_config = parsed
         _persist_live_session_runtime(session)
-        _emit_session_info(params.get("session_id", ""), session)
+        _emit_session_info(params.session_id or "", session)
     return _kv(rid, key, arg)
 
 
@@ -432,7 +434,7 @@ def _set_personality(rid, params, key, value, session):
     # Persists via hermes_cli.personality (single owner), never the user-owned system prompt.
     from hermes_cli.personality import persist_personality
     persist_personality(pname)
-    history_reset, info = _apply_personality_to_session(params.get("session_id", ""), session, new_prompt, pname)
+    history_reset, info = _apply_personality_to_session(params.session_id or "", session, new_prompt, pname)
     return _kv(rid, key, str(value or "none"), history_reset=history_reset,
                **({"info": info} if info is not None else {}))
 
@@ -468,9 +470,9 @@ _CONFIG_SETTERS = {
 
 @method("config.set")
 @_profile_scoped
-def _(rid, params: dict) -> dict:
-    key, value = params.get("key", ""), params.get("value", "")
-    session = _sessions.get(params.get("session_id", ""))
+def _(rid, params: ConfigSetParams) -> ConfigSetResult | dict:
+    key, value = params.key, params.value
+    session = _sessions.get(params.session_id or "")
     handler = _CONFIG_SETTERS.get(key)
     if handler is None and key.startswith("details_mode."):
         handler = _set_details_section
@@ -478,7 +480,10 @@ def _(rid, params: dict) -> dict:
         handler = _set_display_toggle
     if handler is None:
         return _err(rid, 4002, f"unknown config key: {key}")
-    return handler(rid, params, key, value, session)
+    result = handler(rid, params, key, value, session)
+    if "error" in result:
+        return result
+    return ConfigSetResult(**result)
 
 
 def register(server) -> None:

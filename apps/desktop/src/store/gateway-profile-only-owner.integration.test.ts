@@ -32,6 +32,7 @@ vi.mock('@/hermes', async importActual => ({
       this.connectionState = 'closed'
     }
 
+    onAnyServerRequest = vi.fn(() => () => {})
     onEvent = (
       handler: (event: { payload?: Record<string, unknown>; session_id?: string; type: string }) => void
     ): (() => void) => {
@@ -167,7 +168,7 @@ describe('profile-only secondary approval ownership', () => {
   it('rejects unproven profiles and retires only transient local ownership, never durable exact routes', async () => {
     recordSessionEventScope({ profile: 'research', session_id: 'rt-unproven' })
     expect(knownOwnerForSession('rt-unproven')).toBeUndefined()
-    await expect(requestForOwnedSession('rt-unproven', vi.fn() as never, 'approval.respond', {})).rejects.toSatisfy(
+    await expect(requestForOwnedSession('rt-unproven', vi.fn() as never, 'approval.respond', { session_id: 'rt-unproven' })).rejects.toSatisfy(
       isSessionOwnerResolutionError
     )
 
@@ -186,7 +187,7 @@ describe('profile-only secondary approval ownership', () => {
     expect(knownOwnerForSession('rt-remote')).toEqual(exact)
     const getConnection = window.hermesDesktop!.getConnection
     vi.mocked(getConnection).mockClear()
-    await expect(requestForOwnedSession('rt-retired', vi.fn() as never, 'approval.respond', {})).rejects.toSatisfy(
+    await expect(requestForOwnedSession('rt-retired', vi.fn() as never, 'approval.respond', { session_id: 'rt-retired' })).rejects.toSatisfy(
       isSessionOwnerResolutionError
     )
     expect(getConnection).not.toHaveBeenCalled()

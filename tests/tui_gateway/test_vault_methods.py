@@ -88,18 +88,28 @@ def test_add_validation_errors_are_clean(home):
     assert "origin is required" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
+    # A missing / unknown field is rejected by the contract (4000) before the handler runs; an
+    # empty-but-present secret still reaches the handler's own 5095 check.
     err = _error(srv._methods["vault.add"](2, {"kind": "login", "label": "x"}))
-    assert err["code"] == 5095
-    assert "secret payload is required" in err["message"]
+    assert err["code"] == 4000
+    assert err["data"][0]["loc"][-1] == "secret"
 
     err = _error(
         srv._methods["vault.add"](
             3, {"kind": "wat", "label": "x", "secret": {"password": "s3cret-pw-9000"}}
         )
     )
-    assert err["code"] == 5095
-    assert "unknown vault kind" in err["message"]
+    assert err["code"] == 4000
+    assert err["data"][0]["loc"][-1] == "kind"
     assert "s3cret-pw-9000" not in json.dumps(err)
+
+    err = _error(
+        srv._methods["vault.add"](
+            4, {"kind": "login", "label": "x", "origin": "https://example.com", "secret": {}}
+        )
+    )
+    assert err["code"] == 5095
+    assert "secret payload is required" in err["message"]
 
 
 def test_remove_is_idempotent(home):
@@ -111,4 +121,5 @@ def test_remove_is_idempotent(home):
 
 def test_remove_requires_id(home):
     err = _error(srv._methods["vault.remove"](1, {}))
-    assert err["code"] == 5095
+    assert err["code"] == 4000
+    assert err["data"][0]["loc"][-1] == "id"

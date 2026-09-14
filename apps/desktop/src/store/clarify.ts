@@ -1,29 +1,28 @@
+import type { ClarifyBatch, ClarifySingle, ClarifyQuestion as WireClarifyQuestion } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
 
-export interface ClarifyQuestion {
-  /** Server-generated wire id (q0..qN) — clarify.respond keys answers by it. */
-  qid: string
-  question: string
-  choices: string[] | null
-  multiSelect: boolean
-}
+/** One batch question as the wire sends it (`qid` keys `clarify.lock`), minus the transport tag. */
+export type ClarifyQuestion = Omit<WireClarifyQuestion, 'profile'>
 
-export interface ClarifyRequest {
+interface ParkedClarify {
   requestId: string
-  question: string
-  choices: string[] | null
-  multiSelect: boolean
   /** Local receipt time (Unix seconds), used to reject stale resume cleanup. */
   receivedAt?: number
   sessionId: string | null
-  /** Batch (multi-question) clarify: present instead of question/choices. */
-  questions?: ClarifyQuestion[]
-  /** Answers already locked server-side (reconnect replay): qid → answer. */
-  lockedAnswers?: Record<string, string>
 }
+
+export interface ClarifySingleRequest extends ParkedClarify, Pick<ClarifySingle, 'choices' | 'kind' | 'multi_select' | 'question'> {}
+
+export interface ClarifyBatchRequest extends ParkedClarify, Pick<ClarifyBatch, 'kind'> {
+  questions: ClarifyQuestion[]
+  /** Answers already locked server-side (reconnect replay): qid → answer. */
+  lockedAnswers: ClarifyBatch['answers']
+}
+
+export type ClarifyRequest = ClarifyBatchRequest | ClarifySingleRequest
 
 /**
  * The backend labels the agent's recommended option by appending this to the
@@ -37,75 +36,16 @@ export const bareChoice = (choice: string): string =>
   choice.endsWith(RECOMMENDED_LABEL) ? choice.slice(0, -RECOMMENDED_LABEL.length).trim() : choice
 
 /**
- * Validate and normalize a choices array.
- *
- * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
- * and returns an empty array when nothing usable survives — the caller then
- * falls back to a free-text answer instead of dead buttons.
+ * The choices the card can render as buttons: non-blank, single-line, ≤ 200
+ * chars. Null when nothing usable survives — the card falls back to a
+ * free-text answer instead of dead buttons.
  */
-export function normalizeChoices(choices: unknown): string[] {
-  if (!Array.isArray(choices)) {
-    return []
-  }
-
-  return choices.filter(
-    (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
+export function displayChoices(choices: string[] | null): string[] | null {
+  const usable = (choices ?? []).filter(
+    choice => choice.trim().length > 0 && bareChoice(choice).length <= 200 && !choice.includes('\n')
   )
-}
 
-/**
- * Structured warning for a clarify payload that arrived with choices but had
- * them all normalized away — keeps the remaining #69122 "no selectable choices"
- * triggers diagnosable in the field without dead constant fields.
- */
-export function warnDroppedChoices(source: 'gateway' | 'tool_args', question: string, rawChoices: unknown): void {
-  console.warn('[clarify] choices dropped after normalization', {
-    choices_count: Array.isArray(rawChoices) ? rawChoices.length : 0,
-    question_length: question.length,
-    source
-  })
-}
-
-/**
- * Validate and normalize a batch clarify payload's `questions` array.
- *
- * Keeps entries with a non-blank string `qid` and `question`; per-question
- * choices go through `normalizeChoices` (all-blank → open-ended) and
- * multi_select is only honored alongside surviving choices. Returns an empty
- * array when nothing usable remains — the caller treats that as "not a
- * batch" instead of rendering an unanswerable form.
- */
-export function normalizeQuestions(questions: unknown): ClarifyQuestion[] {
-  if (!Array.isArray(questions)) {
-    return []
-  }
-
-  const normalized: ClarifyQuestion[] = []
-
-  for (const entry of questions) {
-    if (typeof entry !== 'object' || entry === null) {
-      continue
-    }
-
-    const row = entry as Record<string, unknown>
-    const qid = typeof row.qid === 'string' ? row.qid.trim() : ''
-    const question = typeof row.question === 'string' ? row.question.trim() : ''
-
-    if (!qid || !question) {
-      continue
-    }
-
-    const choices = normalizeChoices(row.choices)
-
-    normalized.push({
-      choices: choices.length > 0 ? choices : null,
-      multiSelect: row.multi_select === true && choices.length > 0,
-      qid,
-      question
-    })
-  }
-
-  return normalized
+  return usable.length > 0 ? usable : null
 }
 
 // Pending clarify requests keyed by the runtime session id that raised them.
@@ -201,7 +141,7 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
   // leave a live card the user can answer a second time.
   clearClarifyRequest(request.requestId, request.sessionId)
 
-  respondToServerRequest(request.requestId, { answer: '' })
+  respondToServerRequest('clarify', request.requestId, { answer: '' })
 
   return true
 }

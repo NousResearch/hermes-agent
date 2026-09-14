@@ -52,7 +52,7 @@ describe('useMessageStream moa.progress / moa.phase surfacing', () => {
 
     emit('message.start')
     emit('moa.progress', { label: 'model-a', refs_done: 1, refs_total: 1 })
-    emit('moa.phase', { phase: 'reference', refs_done: 1, refs_total: 1 })
+    emit('moa.phase', { aggregator: null, phase: 'reference', refs_done: 1, refs_total: 1 })
     expect(stream.reasoningText()).not.toContain('aggregating')
 
     emit('moa.phase', { aggregator: 'agg-model', phase: 'aggregator', refs_done: 1, refs_total: 1 })
@@ -64,7 +64,7 @@ describe('useMessageStream moa.progress / moa.phase surfacing', () => {
 
     emit('message.start')
     emit('moa.progress', { label: 'model-a', refs_done: 1, refs_total: 1 })
-    emit('moa.phase', { phase: 'aggregator', refs_done: 1, refs_total: 1 })
+    emit('moa.phase', { aggregator: null, phase: 'aggregator', refs_done: 1, refs_total: 1 })
     emit('moa.reference', { count: 1, index: 1, label: 'model-a', text: 'advice-a' })
 
     const text = stream.reasoningText()

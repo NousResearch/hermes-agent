@@ -1,4 +1,5 @@
 import { Box, NoSelect, ScrollBox, type ScrollBoxHandle, Text, useInput, useStdout } from '@hermes/ink'
+import type { JsonValue, LearningBucketRow, LearningFramesResult, LearningNodeRow } from '@hermes/shared/gateway-events'
 import { useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
@@ -10,56 +11,11 @@ import type { Theme } from '../theme.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { OverlayScrollbar } from './overlayScrollbar.js'
 
-interface MutationResult {
-  message: string
-  ok: boolean
-}
-
-interface NodeDetail extends MutationResult {
-  content?: string
-  kind?: string
-}
-
 // A run is [text, styleKey, alpha?, hexOverride?] from learning_graph_render.py.
 type Run = [string, string, number?, (string | null)?]
 
-interface LegendItem {
-  color?: string
-  glyph: string
-  label: string
-  style?: string
-}
-
-interface BucketNode {
-  body?: string
-  fullLabel?: string
-  glyph: string
-  id: string
-  label: string
-  meta: string
-  style: string
-}
-
-interface BucketRow {
-  category?: string | null
-  color?: string | null
-  date: string
-  index: number
-  label: string
-  memories: number
-  nodes: BucketNode[]
-  skills: number
-}
-
-interface FramesResponse {
-  axis: { end: string; start: string }
-  buckets?: BucketRow[]
-  categories?: LegendItem[]
-  count: number
-  frames: { grid: Run[][] }[]
-  legend: LegendItem[]
-  summary: string[]
-}
+// SAFETY: the contract types a chart row as opaque JSON; learning_graph_render.py emits these runs.
+const chartRuns = (row: JsonValue[]): Run[] => row as Run[]
 
 interface JourneyProps {
   gw: GatewayClient
@@ -70,8 +26,8 @@ interface JourneyProps {
 // Flattened timeline tree: each slice header is preceded by a blank gap row
 // (except the first) and followed by its chronological items.
 type TreeRow =
-  | { bucket: BucketRow; kind: 'node'; last: boolean; node: BucketNode }
-  | { bucket: BucketRow; kind: 'slice' }
+  | { bucket: LearningBucketRow; kind: 'node'; last: boolean; node: LearningNodeRow }
+  | { bucket: LearningBucketRow; kind: 'slice' }
   | { kind: 'gap' }
 
 type Cell = { color?: string; text: string }
@@ -80,7 +36,7 @@ const MAX_CHART_ROWS = 8
 
 const rowText = (row: Run[]) => row.map(run => run[0]).join('')
 
-const buildTree = (buckets: BucketRow[]): TreeRow[] => {
+const buildTree = (buckets: LearningBucketRow[]): TreeRow[] => {
   const out: TreeRow[] = []
 
   buckets.forEach((bucket, b) => {
@@ -142,7 +98,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
   const palette = deriveStarmapPalette(t.color.primary, t.color.text)
 
-  const [data, setData] = useState<FramesResponse | null>(null)
+  const [data, setData] = useState<LearningFramesResult | null>(null)
   const [err, setErr] = useState('')
   const [cursor, setCursor] = useState(0)
   const [mode, setMode] = useState<'item' | 'timeline'>('timeline')
@@ -160,7 +116,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     setData(null)
     setErr('')
 
-    gw.request<FramesResponse>('learning.frames', { cols, frames: 2, rows: chartRows })
+    gw.request('learning.frames', { cols, frames: 2, rows: chartRows })
       .then(r => {
         if (!alive) {
           return
@@ -190,9 +146,9 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     }
 
     setBusy(true)
-    gw.request<MutationResult>('learning.delete', { id: node.id })
+    gw.request('learning.delete', { id: node.id })
       .then(res => {
-        setNotice(res.message)
+        setNotice(res.message ?? '')
 
         if (res.ok) {
           setMode('timeline')
@@ -216,7 +172,7 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
     setBusy(true)
 
     try {
-      const detail = await gw.request<NodeDetail>('learning.detail', { id: node.id })
+      const detail = await gw.request('learning.detail', { id: node.id })
 
       if (!detail.ok || detail.content == null) {
         return setNotice(detail.message || 'cannot edit')
@@ -228,8 +184,8 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
         return setNotice('no changes')
       }
 
-      const res = await gw.request<MutationResult>('learning.edit', { content: edited, id: node.id })
-      setNotice(res.message)
+      const res = await gw.request('learning.edit', { content: edited, id: node.id })
+      setNotice(res.message ?? '')
 
       if (res.ok) {
         setReloadKey(k => k + 1)
@@ -446,7 +402,11 @@ export function Journey({ gw, onClose, t }: JourneyProps) {
 
   // ── Timeline: static chart overview + a chronological slice/item tree ──
   const axisGap = Math.max(1, cols - 2 - data.axis.start.length - data.axis.end.length)
-  const dataGrid = data.frames.at(-1)?.grid.filter(r => !rowText(r).trimStart().startsWith('trajectory')) ?? []
+
+  const dataGrid = (data.frames.at(-1)?.grid ?? [])
+    .map(chartRuns)
+    .filter(r => !rowText(r).trimStart().startsWith('trajectory'))
+
   const chartGrid = dataGrid.slice(-MAX_CHART_ROWS)
   const listH = Math.max(3, rows - chartGrid.length - (data.categories?.length ? 11 : 10))
   const start = windowStart(cursor, tree.length, listH)

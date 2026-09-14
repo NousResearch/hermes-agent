@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import * as gateway from '@/store/gateway'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
+import { subagentEvent } from '@/store/subagents.test-util'
 
 import { SubagentSection } from './subagent-section'
 
@@ -26,7 +27,10 @@ afterEach(() => {
 it('sends steer and stop to the child parent owner, never the active gateway or child transcript', async () => {
   const request = vi.spyOn(gateway, 'requestGatewayForAgent').mockResolvedValue({ status: 'queued', found: true })
   setSessionOwnerHint('parent', { connectionId: 'remote-owner', profile: 'research' })
-  upsertSubagent('parent', { subagent_id: 'worker', child_session_id: 'child-transcript', goal: 'Owned work' })
+  upsertSubagent(
+    'parent',
+    subagentEvent({ subagent_id: 'worker', child_session_id: 'child-transcript', goal: 'Owned work' })
+  )
   render(<SubagentSection sessionId="parent" />)
   fireEvent.click(screen.getByRole('button', { name: /1 Subagent/ }))
   fireEvent.click(screen.getByRole('button', { name: /Owned work/ }))
@@ -52,7 +56,7 @@ it('sends steer and stop to the child parent owner, never the active gateway or 
 
 it('keeps rejected steer text and does not retarget when the owner is unknown', async () => {
   const request = vi.spyOn(gateway, 'requestGatewayForAgent').mockResolvedValue({ status: 'rejected' })
-  upsertSubagent('unknown', { subagent_id: 'worker', goal: 'Unbound work' })
+  upsertSubagent('unknown', subagentEvent({ subagent_id: 'worker', goal: 'Unbound work' }))
   render(<SubagentSection sessionId="unknown" />)
   fireEvent.click(screen.getByRole('button', { name: /1 Subagent/ }))
   fireEvent.click(screen.getByRole('button', { name: /Unbound work/ }))

@@ -1,8 +1,18 @@
+import type { BackendGatewayEventMap, BackendGatewayEventName, SubagentSnapshot, SubagentStatus } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { capitalize } from '@/lib/text'
 
-export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+/** The six `subagent.*` notifications, straight off the generated event map. */
+export type SubagentEventName = Extract<BackendGatewayEventName, `subagent.${string}`>
+
+/** Every `subagent.*` frame carries the same generated payload. */
+export type SubagentPayload = BackendGatewayEventMap[SubagentEventName]
+
+/** `delegate.*` tags the tool-result fallback rows synthesized when a gateway
+ *  relays no native `subagent.*` events. */
+export type SubagentSource = 'delegate.complete' | 'delegate.running' | SubagentEventName
+
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
 export interface SubagentStreamEntry {
@@ -28,7 +38,6 @@ export interface SubagentProgress {
   startedAt: number
   updatedAt: number
   durationSeconds?: number
-  costUsd?: number
   inputTokens?: number
   outputTokens?: number
   toolCount?: number
@@ -44,42 +53,24 @@ export interface SubagentNode extends SubagentProgress {
   children: SubagentNode[]
 }
 
-export type SubagentPayload = Record<string, unknown>
-
-const TERMINAL: ReadonlySet<SubagentStatus> = new Set(['completed', 'failed', 'interrupted'])
+/** The backend's terminal set (`tools/delegate_tool_child_run.py`). */
+const TERMINAL: ReadonlySet<SubagentStatus> = new Set(['completed', 'error', 'failed', 'interrupted', 'timeout'])
+const ACTIVE: ReadonlySet<SubagentStatus> = new Set(['queued', 'running'])
+const TERMINAL_SOURCES: ReadonlySet<SubagentSource> = new Set(['delegate.complete', 'subagent.complete'])
 const MAX_STREAM = 24
 const PREVIEW_MAX = 220
 const TOOL_PREVIEW_MAX = 96
 
 export const $subagentsBySession = atom<Record<string, SubagentProgress[]>>({})
 
-const isStr = (v: unknown): v is string => typeof v === 'string'
-const str = (v: unknown) => (isStr(v) ? v : '')
-const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
-const strList = (v: unknown) => (Array.isArray(v) ? v.filter(isStr) : [])
+export const isSubagentActive = (status: SubagentStatus) => ACTIVE.has(status)
 
-const asStatus = (v: unknown, terminalEvent = false): SubagentStatus => {
-  if (v === 'completed' || v === 'failed' || v === 'interrupted') {
-    return v
-  }
+// A completion frame is terminal by definition: an emitter that still reports
+// queued/running (or reports nothing) must not leave the row spinning forever.
+const statusOf = (payload: SubagentPayload, prev: SubagentProgress | undefined, source?: SubagentSource) => {
+  const wire = payload.status ?? prev?.status ?? 'running'
 
-  if (v === 'timeout' || v === 'error') {
-    return 'failed'
-  }
-
-  if (v === 'cancelled' || v === 'canceled') {
-    return 'interrupted'
-  }
-
-  // Fail closed on completion: a subagent.complete event is terminal by
-  // definition, so an unrecognized (or still-active 'queued'/'running')
-  // status must render as a failure rather than leave a dead row spinning
-  // as 'running' forever. Live events keep the lenient fallback.
-  if (terminalEvent) {
-    return 'failed'
-  }
-
-  return v === 'queued' ? v : 'running'
+  return source && TERMINAL_SOURCES.has(source) && !TERMINAL.has(wire) ? 'failed' : wire
 }
 
 const compact = (text: string, max = PREVIEW_MAX) => {
@@ -100,25 +91,7 @@ const formatTool = (name: string, preview = '') => {
   return snippet ? `${toolLabel(name)}("${snippet}")` : toolLabel(name)
 }
 
-interface TailEntry {
-  isError?: boolean
-  preview?: string
-  tool?: string
-}
-
-const asTail = (v: unknown): TailEntry[] =>
-  Array.isArray(v)
-    ? v
-        .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
-        .map(item => ({
-          isError: item.is_error === true,
-          preview: str(item.preview) || undefined,
-          tool: str(item.tool) || undefined
-        }))
-    : []
-
-const idOf = (p: SubagentPayload) =>
-  str(p.subagent_id) || `${str(p.parent_id) || 'root'}:${num(p.task_index) ?? 0}:${str(p.goal)}`
+const idOf = (p: SubagentPayload) => p.subagent_id || `${p.parent_id || 'root'}:${p.task_index}:${p.goal}`
 
 const appendStream = (stream: SubagentStreamEntry[], entry: SubagentStreamEntry) => {
   const last = stream.at(-1)
@@ -133,115 +106,159 @@ const appendStream = (stream: SubagentStreamEntry[], entry: SubagentStreamEntry)
 // The backend sends no summary on a hard child timeout (only a preview like
 // "Timed out after 612.3s" + duration_seconds). Synthesize it so the terminal
 // row explains why it failed instead of rendering as a bare failure.
-const timeoutSummary = (payload: SubagentPayload): string => {
-  const seconds = num(payload.duration_seconds)
-
-  return str(payload.status) === 'timeout' ? `Timed out after ${seconds ?? '?'}s` : ''
-}
+const timeoutSummary = (payload: SubagentPayload) =>
+  payload.status === 'timeout' ? `Timed out after ${payload.duration_seconds ?? '?'}s` : ''
 
 function streamFromPayload(
   payload: SubagentPayload,
   status: SubagentStatus,
-  eventType: string,
+  source: SubagentSource | undefined,
   at: number
 ): SubagentStreamEntry[] {
   const out: SubagentStreamEntry[] = []
-  const tool = str(payload.tool_name)
-  const preview = str(payload.tool_preview) || str(payload.text)
-  const text = compact(str(payload.text) || preview)
+  const preview = payload.tool_preview || payload.text || ''
+  const text = compact(payload.text || preview)
 
-  for (const tail of asTail(payload.output_tail)) {
-    const line = tail.tool ? formatTool(tail.tool, tail.preview ?? '') : compact(tail.preview ?? '')
+  for (const tail of payload.output_tail ?? []) {
+    const line = tail.tool ? formatTool(tail.tool, tail.preview) : compact(tail.preview)
 
     if (line) {
-      out.push({ at, isError: tail.isError, kind: tail.tool ? 'tool' : 'progress', text: line })
+      out.push({ at, isError: tail.is_error, kind: tail.tool ? 'tool' : 'progress', text: line })
     }
   }
 
-  if (tool) {
-    out.push({ at, isError: !!payload.error, kind: 'tool', text: formatTool(tool, preview) })
+  if (payload.tool_name) {
+    out.push({ at, kind: 'tool', text: formatTool(payload.tool_name, preview) })
   }
 
-  if (eventType === 'subagent.progress' && text) {
-    out.push({ at, isError: !!payload.error, kind: 'progress', text })
+  if (source === 'subagent.progress' && text) {
+    out.push({ at, kind: 'progress', text })
   }
 
-  if (eventType === 'subagent.thinking' && text) {
+  if (source === 'subagent.thinking' && text) {
     out.push({ at, kind: 'thinking', text })
   }
 
-  const summary = compact(str(payload.summary) || str(payload.text) || timeoutSummary(payload))
+  const summary = compact(payload.summary || payload.text || timeoutSummary(payload))
 
   if (TERMINAL.has(status) && summary) {
-    out.push({ at, isError: status === 'failed', kind: 'summary', text: summary })
+    out.push({ at, isError: status !== 'completed', kind: 'summary', text: summary })
   }
 
   return out
 }
 
-function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined, eventType = ''): SubagentProgress {
+/** First non-empty text, so a frame that omits a field keeps the previous row's value. */
+const firstText = (...values: (null | string | undefined)[]) => values.find((value): value is string => Boolean(value))
+
+/** First present number (0 counts), so a frame that omits a field keeps the previous row's value. */
+const firstNumber = (...values: (null | number | undefined)[]) =>
+  values.find((value): value is number => value !== null && value !== undefined)
+
+/** A frame's list wins only when it says something; an empty list keeps the previous row's. */
+const carryList = (next: null | string[] | undefined, prev: string[]) => (next?.length ? next : prev)
+
+/** The row a first frame lands on: every carry-over below reads it as if a previous row existed. */
+const blankProgress = (id: string, at: number): SubagentProgress => ({
+  id,
+  parentId: null,
+  goal: '',
+  status: 'queued',
+  taskCount: 1,
+  taskIndex: 0,
+  startedAt: at,
+  updatedAt: at,
+  filesRead: [],
+  filesWritten: [],
+  stream: []
+})
+
+// Key order is load-bearing: reconcileSubagentSnapshot compares projections by
+// JSON, so the roster projection below must list the same fields in order.
+function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined, source?: SubagentSource) {
   const at = Date.now()
-  const status = asStatus(payload.status, eventType === 'subagent.complete')
-  const tool = str(payload.tool_name)
-  const stream = streamFromPayload(payload, status, eventType, at).reduce(appendStream, prev?.stream ?? [])
-  const filesRead = strList(payload.files_read)
-  const filesWritten = strList(payload.files_written)
+  const status = statusOf(payload, prev, source)
+  const base = prev ?? blankProgress(idOf(payload), at)
+  const stream = streamFromPayload(payload, status, source, at).reduce(appendStream, base.stream)
 
   return {
-    id: prev?.id ?? idOf(payload),
-    parentId: str(payload.parent_id) || prev?.parentId || null,
-    goal: str(payload.goal) || prev?.goal || 'Subagent',
-    sessionId: str(payload.child_session_id) || prev?.sessionId,
-    delegationId: str(payload.delegation_id) || prev?.delegationId,
-    model: str(payload.model) || prev?.model,
+    id: base.id,
+    parentId: firstText(payload.parent_id, base.parentId) ?? null,
+    goal: firstText(payload.goal, base.goal) ?? 'Subagent',
+    sessionId: firstText(payload.child_session_id, base.sessionId),
+    delegationId: firstText(payload.delegation_id, base.delegationId),
+    model: firstText(payload.model, base.model),
     status,
-    taskCount: num(payload.task_count) ?? prev?.taskCount ?? 1,
-    taskIndex: num(payload.task_index) ?? prev?.taskIndex ?? 0,
-    startedAt: prev?.startedAt ?? at,
+    taskCount: payload.task_count,
+    taskIndex: payload.task_index,
+    startedAt: base.startedAt,
     updatedAt: at,
-    durationSeconds: num(payload.duration_seconds) ?? prev?.durationSeconds,
-    costUsd: num(payload.cost_usd) ?? prev?.costUsd,
-    inputTokens: num(payload.input_tokens) ?? prev?.inputTokens,
-    outputTokens: num(payload.output_tokens) ?? prev?.outputTokens,
-    toolCount: num(payload.tool_count) ?? prev?.toolCount,
-    filesRead: filesRead.length ? filesRead : (prev?.filesRead ?? []),
-    filesWritten: filesWritten.length ? filesWritten : (prev?.filesWritten ?? []),
+    durationSeconds: firstNumber(payload.duration_seconds, base.durationSeconds),
+    inputTokens: firstNumber(payload.input_tokens, base.inputTokens),
+    outputTokens: firstNumber(payload.output_tokens, base.outputTokens),
+    toolCount: firstNumber(payload.tool_count, base.toolCount),
+    filesRead: carryList(payload.files_read, base.filesRead),
+    filesWritten: carryList(payload.files_written, base.filesWritten),
     stream,
-    summary: str(payload.summary) || timeoutSummary(payload) || prev?.summary || undefined,
-    currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool
-  }
+    summary: firstText(payload.summary, timeoutSummary(payload), base.summary),
+    currentTool: TERMINAL.has(status) ? undefined : firstText(payload.tool_name, base.currentTool)
+  } satisfies SubagentProgress
+}
+
+/** A roster row records the last tool a child ran, not a live call, and carries
+ *  no stream of its own — seed cold activity only. */
+function fromRosterRow(row: SubagentSnapshot, prev: SubagentProgress | undefined) {
+  const startedAt = firstNumber(row.started_at ? row.started_at * 1000 : null, prev?.startedAt) ?? Date.now()
+  const base = prev ?? blankProgress(row.subagent_id, startedAt)
+
+  const seeded: SubagentStreamEntry[] = row.last_tool
+    ? [{ at: base.updatedAt, kind: 'tool', text: formatTool(row.last_tool) }]
+    : []
+
+  return {
+    id: row.subagent_id,
+    parentId: firstText(row.parent_id, base.parentId) ?? null,
+    goal: firstText(row.goal, base.goal) ?? 'Subagent',
+    sessionId: base.sessionId,
+    delegationId: firstText(row.delegation_id, base.delegationId),
+    model: firstText(row.model, base.model),
+    status: row.status,
+    taskCount: base.taskCount,
+    taskIndex: base.taskIndex,
+    startedAt,
+    updatedAt: base.updatedAt,
+    durationSeconds: base.durationSeconds,
+    inputTokens: base.inputTokens,
+    outputTokens: base.outputTokens,
+    toolCount: firstNumber(row.tool_count, base.toolCount),
+    filesRead: base.filesRead,
+    filesWritten: base.filesWritten,
+    stream: base.stream.length ? base.stream : seeded,
+    summary: base.summary,
+    currentTool: TERMINAL.has(row.status) ? undefined : base.currentTool
+  } satisfies SubagentProgress
 }
 
 /** Reconcile a scoped, race-checked snapshot without replacing stream history. */
-export function reconcileSubagentSnapshot(sid: string, children: SubagentPayload[]) {
+export function reconcileSubagentSnapshot(sid: string, children: readonly SubagentSnapshot[]) {
   const map = $subagentsBySession.get()
   const previous = map[sid] ?? []
-  const ids = new Set(children.map(p => str(p.subagent_id)).filter(Boolean))
+  const ids = new Set(children.map(row => row.subagent_id))
   const next = previous.filter(item => TERMINAL.has(item.status) || ids.has(item.id))
 
-  for (const payload of children) {
-    const id = str(payload.subagent_id)
-
-    if (!id) {
+  for (const row of children) {
+    if (!row.subagent_id) {
       continue
     }
 
-    const index = next.findIndex(item => item.id === id)
+    const index = next.findIndex(item => item.id === row.subagent_id)
     const prev = next[index]
 
     if (prev && TERMINAL.has(prev.status)) {
       continue
     }
 
-    const projected = toProgress(payload, prev)
-    projected.startedAt = (num(payload.started_at) ?? 0) * 1000 || prev?.startedAt || projected.startedAt
-    projected.updatedAt = prev?.updatedAt ?? projected.startedAt
-
-    // A roster records the last tool, not a currently executing call. Seed cold
-    // activity only; a repeated snapshot must not append over newer live text.
-    if (!projected.stream.length && str(payload.last_tool)) {
-      projected.stream = [{ at: projected.updatedAt, kind: 'tool', text: formatTool(str(payload.last_tool)) }]
-    }
+    const projected = fromRosterRow(row, prev)
 
     if (index < 0) {
       next.push(projected)
@@ -286,7 +303,7 @@ export function pruneFinishedSessionSubagents(sid: string) {
     return
   }
 
-  const next = list.filter(item => item.status === 'running' || item.status === 'queued')
+  const next = list.filter(item => isSubagentActive(item.status))
 
   if (next.length === list.length) {
     return
@@ -312,7 +329,7 @@ export function pruneDelegateFallbackSubagents(sid: string) {
   $subagentsBySession.set({ ...map, [sid]: next })
 }
 
-export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, eventType?: string) {
+export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, source?: SubagentSource) {
   const map = $subagentsBySession.get()
   const list = map[sid] ?? []
   const id = idOf(payload)
@@ -328,7 +345,7 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
     return
   }
 
-  const next = toProgress(payload, prev, eventType)
+  const next = toProgress(payload, prev, source)
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
   $subagentsBySession.set({ ...map, [sid]: nextList })
@@ -363,10 +380,12 @@ export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentN
 }
 
 export const activeSubagentCount = (items: readonly SubagentProgress[]) =>
-  items.filter(item => item.status === 'queued' || item.status === 'running').length
+  items.filter(item => isSubagentActive(item.status)).length
 
+/** Every terminal status that is not a clean completion — `error` and `timeout`
+ *  are failures the backend reports under their own names. */
 export const failedSubagentCount = (items: readonly SubagentProgress[]) =>
-  items.filter(item => item.status === 'failed' || item.status === 'interrupted').length
+  items.filter(item => TERMINAL.has(item.status) && item.status !== 'completed').length
 
 /** Flatten every session's subagents — the scope the Spawn-tree panel and the
  *  status-bar indicator must agree on. */

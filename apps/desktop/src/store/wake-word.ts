@@ -1,5 +1,7 @@
+import type { WakeStartResult, WakeStatusResult, WakeStopResult } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { type ClientWakeCaptureHandle, startClientWakeCapture } from '@/lib/wake-client-capture'
 import { $gateway } from '@/store/gateway'
 
@@ -43,7 +45,9 @@ export function stopClientCapture(): void {
   clientCapture = null
 }
 
-async function maybeStartClientCapture(result: WakeStartResponse | null | undefined): Promise<void> {
+async function maybeStartClientCapture(
+  result: null | Pick<WakeStartResult, 'capture' | 'frame_length' | 'started'> | undefined
+): Promise<void> {
   stopClientCapture()
 
   if (!result?.started) {
@@ -58,7 +62,7 @@ async function maybeStartClientCapture(result: WakeStartResponse | null | undefi
 
   try {
     clientCapture = await startClientWakeCapture({
-      frameLength: result.frame_length,
+      frameLength: result.frame_length ?? undefined,
       request: gatewayRequester
     })
   } catch (error) {
@@ -79,75 +83,27 @@ async function maybeStartClientCapture(result: WakeStartResponse | null | undefi
   }
 }
 
-export interface WakeStatusResponse {
-  /** Armed but the selected backend input delivers only silence. */
-  audio_silent?: boolean
-  available?: boolean
-  /** local | client | auto — where PCM is captured. */
-  capture?: string
-  configured_surface?: string
-  /** Config truth (wake_word.enabled) — drives post-voice re-arm. */
-  enabled?: boolean
-  frame_length?: number
-  hint?: string
-  input_device?: WakeInputDeviceStatus
-  listening?: boolean
-  local_input_available?: boolean
-  owned_by_caller?: boolean
-  owner_surface?: string | null
-  phrase?: string
-  provider?: string
-  sample_rate?: number
-}
 
-export interface WakeStartResponse {
-  capture?: string
-  enabled_persisted?: boolean
-  frame_length?: number
-  hint?: string
-  owner_surface?: string | null
-  phrase?: string
-  provider?: string
-  reason?: string
-  sample_rate?: number
-  started?: boolean
-}
 
-export interface WakeStopResponse {
-  disabled_persisted?: boolean
-  reason?: string | null
-  stopped?: boolean
-}
 
-export interface WakeInputDeviceStatus {
-  default_samplerate?: number
-  error?: string
-  hostapi?: string
-  hostapi_index?: number
-  max_input_channels?: number
-  name?: string
-  selector?: number | string | null
-}
 
 /** Minimal requester shape — satisfied by both `useGatewayRequest`'s
  *  `requestGateway` and the `$gateway` instance wrapper below. */
-export type WakeRequester = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type WakeRequester = GatewayRequest
 
 // First-use wake.start lazy-installs the detection engine (onnxruntime is a
 // large wheel) — that legitimately takes minutes. The default 30s WS timeout
 // fired mid-install, leaving a dead button that went blue on its own later.
 const WAKE_START_TIMEOUT_MS = 180_000
 
-const gatewayRequester: WakeRequester = async <T>(method: string, params: Record<string, unknown> = {}) => {
+const gatewayRequester: WakeRequester = (method, params) => {
   const gateway = $gateway.get()
 
   if (!gateway) {
     throw new Error('Hermes gateway unavailable')
   }
 
-  return method === 'wake.start'
-    ? gateway.request<T>(method, params, WAKE_START_TIMEOUT_MS)
-    : gateway.request<T>(method, params)
+  return method === 'wake.start' ? gateway.request(method, params, WAKE_START_TIMEOUT_MS) : gateway.request(method, params)
 }
 
 // Friendly text for the gateway's wake refusal codes (mirrors the TUI's
@@ -161,7 +117,7 @@ const REASON_TEXT: Record<string, string> = {
   unavailable: 'unavailable'
 }
 
-const noticeFrom = (result: { hint?: string; reason?: string | null } | null | undefined): string => {
+const noticeFrom = (result: { hint?: null | string; reason?: null | string } | null | undefined): string => {
   const hint = result?.hint?.trim()
 
   if (hint) {
@@ -174,7 +130,7 @@ const noticeFrom = (result: { hint?: string; reason?: string | null } | null | u
 }
 
 /** Sync the atom from a `wake.status` payload (mount / gateway-ready). */
-export function applyWakeStatus(status: WakeStatusResponse | null | undefined): void {
+export function applyWakeStatus(status: WakeStatusResult | null | undefined): void {
   const current = $wakeWord.get()
   const listening = Boolean(status?.listening)
   // "Armed but deaf" keeps its input-device hint visible in the tooltip even
@@ -193,7 +149,7 @@ export function applyWakeStatus(status: WakeStatusResponse | null | undefined): 
 
 /** Sync the atom from a `wake.start` response. A `{started:false, reason}`
  *  refusal keeps the toggle off and surfaces the reason as the tooltip. */
-export function applyWakeStartResult(result: WakeStartResponse | null | undefined): void {
+export function applyWakeStartResult(result: WakeStartResult | null | undefined): void {
   const current = $wakeWord.get()
 
   if (result?.started) {
@@ -228,7 +184,7 @@ export function applyWakeStartResult(result: WakeStartResponse | null | undefine
 
 /** Sync the atom from a `wake.stop` response. `{stopped:false, reason:'not_owner'}`
  *  still means WE are not listening, so the toggle lands on off either way. */
-export function applyWakeStopResult(result: WakeStopResponse | null | undefined): void {
+export function applyWakeStopResult(result: WakeStopResult | null | undefined): void {
   const current = $wakeWord.get()
 
   stopClientCapture()
@@ -250,7 +206,7 @@ export function applyWakeStopResult(result: WakeStopResponse | null | undefined)
  */
 export async function armWakeWord(request: WakeRequester = gatewayRequester): Promise<void> {
   try {
-    const status = await request<WakeStatusResponse>('wake.status', {
+    const status = await request('wake.status', {
       client_capture: true,
       surface: 'gui'
     })
@@ -263,18 +219,14 @@ export async function armWakeWord(request: WakeRequester = gatewayRequester): Pr
         const mode = (status.capture || '').toLowerCase()
 
         if (mode === 'client' || mode === 'remote' || mode === 'external') {
-          void maybeStartClientCapture({
-            started: true,
-            capture: 'client',
-            frame_length: status.frame_length ?? 1280
-          })
+          void maybeStartClientCapture({ capture: 'client', frame_length: status.frame_length, started: true })
         }
       }
 
       return
     }
 
-    const result = await request<WakeStartResponse>('wake.start', {
+    const result = await request('wake.start', {
       surface: 'gui',
       client_capture: true
     })
@@ -303,13 +255,13 @@ export async function toggleWakeWord(request: WakeRequester = gatewayRequester):
 
   try {
     if (state.listening) {
-      applyWakeStopResult(await request<WakeStopResponse>('wake.stop', { persist: true }))
+      applyWakeStopResult(await request('wake.stop', { persist: true }))
     } else {
       // persist: true — a deliberate click is consent, so the backend flips
       // wake_word.enabled in config.yaml (on/off) and the choice sticks for
       // future sessions. Auto-arm (armWakeWord) never passes it.
       applyWakeStartResult(
-        await request<WakeStartResponse>('wake.start', {
+        await request('wake.start', {
           persist: true,
           surface: 'gui',
           client_capture: true
@@ -349,7 +301,7 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const status = await request<WakeStatusResponse>('wake.status', {
+      const status = await request('wake.status', {
         client_capture: true,
         surface: 'gui'
       })
@@ -368,17 +320,13 @@ export async function resumeWakeAfterVoice(request: WakeRequester = gatewayReque
         const mode = (status.capture || '').toLowerCase()
 
         if (mode === 'client' || mode === 'remote' || mode === 'external') {
-          void maybeStartClientCapture({
-            started: true,
-            capture: 'client',
-            frame_length: status.frame_length ?? 1280
-          })
+          void maybeStartClientCapture({ capture: 'client', frame_length: status.frame_length, started: true })
         }
 
         return
       }
 
-      const started = await request<WakeStartResponse>('wake.start', {
+      const started = await request('wake.start', {
         surface: 'gui',
         client_capture: true
       })

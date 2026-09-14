@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useSessionView } from '@/app/chat/session-view'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
@@ -32,7 +33,7 @@ export interface ModelMenuHostProps {
   ownerConnectionId?: string
   onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
   profile?: string
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }
 
 /**

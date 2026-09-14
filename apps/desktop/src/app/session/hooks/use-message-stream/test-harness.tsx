@@ -1,4 +1,4 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent, ServerRequestMap } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import { useEffect, useRef } from 'react'
@@ -20,7 +20,11 @@ export interface MessageStreamHarness {
   handleEvent: (event: GatewayEvent) => void
   /** Feed a server→client request (clarify, approval, …) into the mounted hook;
    *  returns the `respond` spy so a test can assert the answer frame. */
-  handleRequest: (method: string, params: Record<string, unknown>, id?: string) => ReturnType<typeof vi.fn>
+  handleRequest: <M extends keyof ServerRequestMap>(
+    method: M,
+    params: ServerRequestMap[M]['params'],
+    id?: string
+  ) => ReturnType<typeof vi.fn>
   /** Push streaming assistant text, bypassing the event envelope. For the specs
    *  about flush scheduling rather than about a particular event. */
   appendDelta: (sessionId: string, delta: string) => void
@@ -52,7 +56,7 @@ export function renderMessageStream(
   { states = new Map<string, ClientSessionState>(), ...overrides }: MessageStreamHarnessOptions = {}
 ): MessageStreamHarness {
   let dispatch: ((event: GatewayEvent) => void) | null = null
-  let dispatchRequest: ((request: ScopedServerRequest) => boolean) | null = null
+  let dispatchRequest: (<M extends keyof ServerRequestMap>(request: ScopedServerRequest<M>) => void) | null = null
   let appendDelta: ((sessionId: string, delta: string) => void) | null = null
   let latest: ClientSessionState | null = null
 
@@ -99,14 +103,28 @@ export function renderMessageStream(
 
       dispatch(event)
     },
-    handleRequest: (method, params, id = `srq-${method}`) => {
+    handleRequest: <M extends keyof ServerRequestMap>(
+      method: M,
+      params: ServerRequestMap[M]['params'],
+      id = `srq-${method}`
+    ) => {
       const respond = vi.fn()
 
       if (!dispatchRequest) {
         throw new Error('renderMessageStream: the hook never mounted')
       }
 
-      dispatchRequest({ fail: vi.fn(), id, method, params, profile: 'default', respond })
+      const request: ScopedServerRequest<M> = {
+        fail: vi.fn(),
+        id,
+        method,
+        params,
+        profile: 'default',
+        respond,
+        sessionId: params.session_id
+      }
+
+      dispatchRequest(request)
 
       return respond
     },

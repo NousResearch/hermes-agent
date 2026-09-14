@@ -1,5 +1,7 @@
+import type { AgentPluginRow } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { notifyError } from '@/store/notifications'
 
 /**
@@ -15,40 +17,14 @@ import { notifyError } from '@/store/notifications'
  * (local spawn, SSH, URL+token) because it rides the session's own transport.
  */
 
-export interface AgentPluginRow {
-  name: string
-  /** Canonical registry key (e.g. `image_gen/fal`) — absent on legacy backends. */
-  key?: string
-  version: string
-  description: string
-  /** 'bundled' | 'user' | 'git' | 'project' | 'entrypoint' */
-  source: string
-  status: 'enabled' | 'disabled' | 'not enabled'
-  /** Agent Plugins v1 package (portable skills/MCP format) vs native Hermes. */
-  portable?: boolean
-  /** Curated-catalog provenance (from the install sidecar), when present. */
-  catalog_name?: string
-  catalog_tier?: string
-  installed_sha?: string
-  /** Current catalog pin for this entry (backend-computed). */
-  catalog_sha?: string
-  /** Installed SHA differs from the catalog pin — an update is available. */
-  update_available?: boolean
-  /** Full commit SHA a `--ref` install is pinned to (custom sources; refuses `update`). */
-  pinned_sha?: string
-  /** The package folder also ships `desktop/plugin.js` (unified agent+desktop package). */
-  has_desktop_half?: boolean
-  /** Absolute install dir on the backend (informational). */
-  install_dir?: string
-}
+export type { AgentPluginRow }
 
 /** A `--ref` pin is a full 40-hex commit SHA; branches and tags are refused server-side. */
 export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
-/** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type { GatewayRequest }
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
@@ -105,7 +81,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
     }
 
     try {
-      const result = await request<{ plugins?: AgentPluginRow[] }>(
+      const result = await request(
         'plugins.manage',
         withProfile({ action: 'list' }, scope)
       )
@@ -152,7 +128,7 @@ export async function toggleAgentPlugin(
   $agentPluginBusy.set(key)
 
   try {
-    const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
+    const result = await request(
       'plugins.manage',
       withProfile(
         {
@@ -210,13 +186,7 @@ export async function installAgentPlugin(
   }
 ): Promise<AgentPluginInstallResult> {
   try {
-    const result = await request<{
-      ok?: boolean
-      plugin_name?: string
-      warnings?: string[]
-      missing_env?: string[]
-      error?: string
-    }>(
+    const result = await request(
       'plugins.manage',
       withProfile(
         {
@@ -231,15 +201,15 @@ export async function installAgentPlugin(
       )
     )
 
-    if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed' }
+    if (!result.ok) {
+      return { ok: false, error: 'Install failed' }
     }
 
     return {
       ok: true,
-      pluginName: result.plugin_name,
-      warnings: result.warnings,
-      missingEnv: result.missing_env
+      pluginName: result.plugin_name ?? undefined,
+      warnings: result.warnings ?? undefined,
+      missingEnv: result.missing_env ?? undefined
     }
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) }
@@ -258,7 +228,7 @@ export async function updateAgentPlugin(
   $agentPluginBusy.set(name)
 
   try {
-    const result = await request<{ ok?: boolean; unchanged?: boolean }>(
+    const result = await request(
       'plugins.manage',
       withProfile({ action: 'update', name }, profile)
     )

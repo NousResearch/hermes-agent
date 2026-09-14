@@ -5,6 +5,7 @@ rebound onto server.py's globals at install time (method_ctx.bind_module)."""
 from __future__ import annotations
 
 from .method_ctx import HandlerRegistry, bind_module
+from .contracts.events import ChangeSignalPayload, PetChangedPayload, SkinPayload
 
 _registry = HandlerRegistry()
 
@@ -79,7 +80,7 @@ def _broadcast_skin_if_changed() -> None:
         if sig == _last_skin_sig:
             return
         _last_skin_sig = sig
-        _broadcast_global_event("skin.changed", resolve_skin())
+        _broadcast_global_event("skin.changed", SkinPayload.model_validate(resolve_skin()))
 
 
 def _active_pet():
@@ -103,16 +104,15 @@ def _pet_sig() -> tuple:
     return ("off",)
 
 
-def _pet_changed_payload() -> dict:
+def _pet_changed_payload() -> PetChangedPayload:
     """``pet.info.meta``-shaped payload so the renderer can decide whether to refetch sprites."""
     try:
         if active := _active_pet():
             pet, scale = active
-            return {"enabled": True, "slug": pet.slug, "displayName": pet.display_name,
-                    "scale": scale, "spritesheetRevision": _pet_sheet_revision(pet.spritesheet)}
+            return PetChangedPayload(enabled=True, slug=pet.slug, displayName=pet.display_name, scale=scale, spritesheetRevision=_pet_sheet_revision(pet.spritesheet))
     except Exception:  # noqa: BLE001 - cosmetic, never break the watcher
         pass
-    return {"enabled": False}
+    return PetChangedPayload(enabled=False)
 
 
 def _sessions_sig():
@@ -176,12 +176,12 @@ def _bot_relay_outbox_sig():
 # persists platform connect/disconnect/health (the Messaging page's status signal).
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
-    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), lambda: {}),
-    "sessions.changed": (0.5, _sessions_sig, lambda: {}),
-    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), lambda: {}),
-    "pairing.changed": (2.0, _pairing_sig, lambda: {}),
+    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), ChangeSignalPayload),
+    "sessions.changed": (0.5, _sessions_sig, ChangeSignalPayload),
+    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), ChangeSignalPayload),
+    "pairing.changed": (2.0, _pairing_sig, ChangeSignalPayload),
     # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
-    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, lambda: {})}
+    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, ChangeSignalPayload)}
 
 # state.db moves on every append of a streaming turn and gateway_state.json on
 # in-flight bookkeeping; the floor coalesces bursts to one broadcast per window,

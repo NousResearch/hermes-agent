@@ -1,5 +1,7 @@
+import type { SubagentStatus } from '@hermes/shared'
+
 import { firstStringField, normalize } from '@/lib/text'
-import type { SubagentProgress, SubagentStatus } from '@/store/subagents'
+import type { SubagentProgress } from '@/store/subagents'
 
 import { numberValue, parseMaybeObject } from './fallback-model'
 
@@ -146,10 +148,10 @@ export function mergeDelegateRows(
   const prefix = toolCallId ? `delegate-tool:${toolCallId}:` : ''
   const byId = rows.map((_row, index) => (prefix ? claim(c => c.id === `${prefix}${index}`) : undefined))
   const byGoal = rows.map((row, index) => byId[index] ?? claim(c => normalize(c.goal) === normalize(row.goal)))
-  const sameShape = rows.length === live.length
+  const sameCount = rows.length === live.length
 
   return rows.map((row, index) => {
-    const matched = byGoal[index] ?? (sameShape ? claim(c => c.taskIndex === index) : undefined)
+    const matched = byGoal[index] ?? (sameCount ? claim(c => c.taskIndex === index) : undefined)
 
     return matched ? fromSubagent(matched, row.id, row.goal) : row
   })

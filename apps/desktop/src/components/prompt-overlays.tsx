@@ -77,7 +77,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value })
+        respondToServerRequest('sudo', request.requestId, { value })
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -177,7 +177,7 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value: secret })
+        respondToServerRequest('secret', request.requestId, { value: secret })
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -280,7 +280,7 @@ function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
       try {
         // The response frame goes back over the socket the request arrived on — the
         // backend that raised the prompt, never whatever gateway is foreground.
-        respondToServerRequest(request.requestId, { value: password })
+        respondToServerRequest('vault.unlock_prompt', request.requestId, { value: password })
         triggerHaptic('submit')
         clearVaultUnlockRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -375,7 +375,7 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value: login })
+        respondToServerRequest('vault.save_login', request.requestId, { value: login })
         triggerHaptic('submit')
         clearVaultSaveLoginRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -487,7 +487,7 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        respondToServerRequest(request.requestId, { value })
+        respondToServerRequest('vault.code', request.requestId, { value })
         triggerHaptic('submit')
         clearVaultCodeRequest(request.sessionId, request.requestId)
       } catch (error) {

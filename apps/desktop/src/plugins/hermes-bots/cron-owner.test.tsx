@@ -13,6 +13,8 @@ import { queryClient } from '@hermes/plugin-sdk'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { cronJobRow } from './cron-test-utils'
+
 const { request } = vi.hoisted(() => ({ request: vi.fn(async () => ({})) }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
@@ -54,7 +56,7 @@ describe('a row mutation addresses the owner that rendered it', () => {
   it('scopes the pause RPC and the eviction to that owner', async () => {
     render(
       <RoutineRow
-        job={{ enabled: true, job_id: 'digest', name: '[bot:ops] Digest', schedule: 'every 1h' }}
+        job={cronJobRow({ enabled: true, job_id: 'digest', name: '[bot:ops] Digest', schedule: 'every 1h' })}
         onOpen={() => undefined}
         owner={{ name: 'ops' }}
       />

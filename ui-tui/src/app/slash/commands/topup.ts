@@ -1,37 +1,42 @@
+import type { BillingChargeStatusResponse } from '@hermes/shared/billing'
 import { driveChargeSettlement, type SettlementOutcome } from '@hermes/shared/charge-settlement'
+import type { BillingChargeStatusResult, BillingStateResult, JsonValue } from '@hermes/shared/gateway-events'
 
-import type {
-  BillingChargeResponse,
-  BillingChargeStatusResponse,
-  BillingErrorPayload,
-  BillingMutationResponse,
-  BillingStateResponse
-} from '../../../gatewayTypes.js'
 import { openExternalUrl } from '../../../lib/openExternalUrl.js'
-import type { BillingChargeOutcome, BillingOverlayCtx } from '../../interfaces.js'
+import type { BillingChargeOutcome, BillingEnvelope, BillingOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
+
+// `@hermes/shared`'s settlement driver still takes the hand-written envelope, which
+// spells "absent" as undefined where the contract spells it null. See shared_diffs.
+const settlementStatus = (r: BillingChargeStatusResult): BillingChargeStatusResponse => ({
+  amount_usd: r.amount_usd === null ? null : String(r.amount_usd),
+  error: r.error ?? undefined,
+  message: r.message ?? undefined,
+  ok: r.ok,
+  portal_url: r.portal_url,
+  reason: r.reason,
+  retry_after: r.retry_after,
+  settled_at: r.settled_at,
+  status: r.status ?? undefined
+})
 
 const UNCONFIRMED_CHARGE_MESSAGE =
   '🟡 Your last charge’s outcome is unconfirmed — check your balance/history before retrying.'
 
 type Sys = (text: string) => void
 
+/** The portal's raw error body; `billing_view.py:37` forwards it and only these keys are read. */
+interface BillingErrorExtras {
+  isDefaultCeiling?: boolean
+  remainingUsd?: string
+}
+
+// SAFETY: `payload` is provider-defined JSON; both fields below are optional and only rendered.
+const billingErrorExtras = (payload: JsonValue | null): BillingErrorExtras => (payload as BillingErrorExtras) ?? {}
+
 /** Map a typed billing error envelope to user-facing copy + portal funnel. */
-const renderBillingError = (
-  sys: Sys,
-  ctx: SlashRunCtx,
-  env: {
-    actor?: string
-    code?: string
-    error?: string
-    message?: string
-    payload?: BillingErrorPayload
-    portal_url?: string | null
-    recovery?: string
-    retry_after?: number | null
-  }
-): void => {
+const renderBillingError = (sys: Sys, ctx: SlashRunCtx, env: BillingEnvelope): void => {
   const portal = env.portal_url
 
   switch (env.error) {
@@ -118,7 +123,7 @@ const renderBillingError = (
       break
     case 'monthly_cap_exceeded': {
       // Surface the remaining headroom the server attaches (parity with the CLI).
-      const remaining = env.payload?.remainingUsd
+      const remaining = billingErrorExtras(env.payload).remainingUsd
       sys(
         remaining != null
           ? `🔴 Monthly spend cap reached — $${remaining} headroom left.`
@@ -168,12 +173,16 @@ const renderBillingError = (
  */
 const requestRemoteSpending = (ctx: SlashRunCtx): Promise<boolean> =>
   ctx.gateway
-    .rpc<BillingMutationResponse>('billing.step_up', { session_id: ctx.sid ?? undefined })
+    .rpc('billing.step_up', { session_id: ctx.sid ?? undefined })
     .then(r => !!(r && r.ok && r.granted))
     .catch(() => false)
 
 /** Poll a charge to a terminal state (settled/failed/timeout). Non-blocking. */
 const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: string | null): void => {
+  // The driver hands back the narrowed envelope; keep the generated result the poll
+  // last read so the error copy still sees actor / code / recovery.
+  let lastStatus: BillingChargeStatusResult | null = null
+
   const renderOutcome = (outcome: SettlementOutcome): void => {
     switch (outcome.kind) {
       case 'settled':
@@ -192,8 +201,8 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
         return
 
       case 'ambiguous':
-        if (outcome.status) {
-          renderBillingError(sys, ctx, outcome.status)
+        if (lastStatus) {
+          renderBillingError(sys, ctx, lastStatus)
           sys(UNCONFIRMED_CHARGE_MESSAGE)
 
           return
@@ -228,7 +237,7 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
 
   void driveChargeSettlement({
     fetchStatus: async () => {
-      const status = await ctx.gateway.rpc<BillingChargeStatusResponse>('billing.charge_status', {
+      const status = await ctx.gateway.rpc('billing.charge_status', {
         charge_id: chargeId
       })
 
@@ -236,7 +245,9 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
         throw new Error('billing.charge_status returned no response')
       }
 
-      return status
+      lastStatus = status
+
+      return settlementStatus(status)
     },
     isCancelled: () => ctx.stale(),
     now: () => Date.now(),
@@ -248,7 +259,7 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: st
       return
     }
 
-    ctx.guarded<SettlementOutcome>(renderOutcome)(outcome)
+    ctx.guarded(renderOutcome)(outcome)
   })
 }
 
@@ -285,7 +296,7 @@ const renderChargeFailed = (sys: Sys, reason?: string | null, portalUrl?: string
 }
 
 /** Validate a custom amount against state bounds + 2dp, mirroring the server. */
-const validateAmount = (raw: string, s: BillingStateResponse): { amount?: string; error?: string } => {
+const validateAmount = (raw: string, s: BillingStateResult): { amount?: string; error?: string } => {
   const cleaned = raw.trim().replace(/^\$/, '').trim()
 
   if (!cleaned || !/^\d+(\.\d{1,2})?$/.test(cleaned)) {
@@ -314,10 +325,10 @@ const validateAmount = (raw: string, s: BillingStateResponse): { amount?: string
  * and emit transcript lines.  Keeps ALL RPC + error-mapping logic here
  * (single source of truth) — the overlay only renders + routes keys.
  */
-const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): BillingOverlayCtx => ({
+const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResult): BillingOverlayCtx => ({
   applyAutoReload: (enabled, threshold, topUp) =>
     ctx.gateway
-      .rpc<BillingMutationResponse>('billing.auto_reload', {
+      .rpc('billing.auto_reload', {
         enabled,
         ...(threshold != null ? { threshold } : {}),
         ...(topUp != null ? { top_up_amount: topUp } : {})
@@ -342,7 +353,7 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): B
     sys('💳 Charge submitted — confirming settlement…')
 
     return ctx.gateway
-      .rpc<BillingChargeResponse>('billing.charge', {
+      .rpc('billing.charge', {
         amount_usd: amount,
         ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {})
       })
@@ -380,7 +391,7 @@ const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): B
   },
   refreshState: () =>
     ctx.gateway
-      .rpc<BillingStateResponse>('billing.state', {})
+      .rpc('billing.state', {})
       .then(r => (r?.ok ? r : null))
       .catch(() => null),
   sys,
@@ -397,9 +408,9 @@ export const topupCommands: SlashCommand[] = [
       const sys: Sys = ctx.transcript.sys
 
       ctx.gateway
-        .rpc<BillingStateResponse>('billing.state', {})
+        .rpc('billing.state', {})
         .then(
-          ctx.guarded<BillingStateResponse>(s => {
+          ctx.guarded(s => {
             if (!s.logged_in) {
               sys('💳 Not logged into Nous Portal — run /portal to log in, then /topup.')
 

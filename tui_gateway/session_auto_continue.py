@@ -55,6 +55,7 @@ def _auto_continue_note(prompt: str) -> str:
 
 
 def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> dict | None:
+    from tui_gateway.contracts.events import StatusUpdatePayload
     """Kick off a continuation turn for a crash-interrupted session (session.resume cold paths). Returns a descriptor
     for the resume payload when scheduled, else None. The turn runs on a background thread after the deferred agent
     build via _run_prompt_submit, so the client that just resumed streams it."""
@@ -109,7 +110,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
         try:
-            _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
+            _emit("status.update", sid, StatusUpdatePayload(kind="process", text="Resuming interrupted turn…"))
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
         except Exception as exc:
@@ -221,10 +222,12 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
 
 
-def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str, status: str) -> dict | None:
+def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str,
+                       status: PromptSubmitStatus) -> PromptSubmitResult | None:
     """Apply ``agent.<method>(plain_text)`` (steer/redirect); on acceptance record the correction, scrub stale
     self-duplicates so the live turn's original text is not re-fired after settle, and return the ``status`` reply.
     None → caller falls through to the queue path."""
+    from tui_gateway.contracts.prompt_voice import PromptSubmitResult
     try:
         if not getattr(agent, method)(plain_text):
             return None
@@ -234,15 +237,16 @@ def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: 
         _record_inflight_correction(session, plain_text)
         _drop_queued_duplicates_of_inflight_user(session)
         session["last_active"] = time.time()
-    return _ok(rid, {"status": status})
+    return PromptSubmitResult(status=status)
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
-                        turn_author: dict | None = None) -> dict | None:
+                        turn_author: dict | None = None) -> PromptSubmitResult | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
     after" message must NEVER become a live correction."""
+    from tui_gateway.contracts.prompt_voice import PromptSubmitResult, PromptSubmitStatus
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
     with session["history_lock"]:
@@ -258,7 +262,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         supported = {
             "steer": hasattr(agent, "steer"),
             "interrupt": getattr(agent, "_supports_active_turn_redirect", False) is True and hasattr(agent, "redirect")}
-        method, status = {"steer": ("steer", "steered"), "interrupt": ("redirect", "redirected")}.get(mode, (None, None))
+        method, status = {"steer": ("steer", PromptSubmitStatus.steered),
+                          "interrupt": ("redirect", PromptSubmitStatus.redirected)}.get(mode, (None, None))
         if (method and supported[mode]
                 and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status)) is not None):
             return resp
@@ -280,10 +285,11 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # pending steer buffer — silently destroying the earlier messages of the burst. See #86134.
     if mode == "interrupt" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
-    return _ok(rid, {"status": "queued"})
+    return PromptSubmitResult(status=PromptSubmitStatus.queued)
 
 
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
+    from tui_gateway.contracts.events import ErrorPayload
     """Fire a queued next-turn prompt if one is waiting and the session is idle. True when dispatched: the caller
     skips lower-priority follow-ups this cycle (the user's message wins)."""
     with session["history_lock"]:
@@ -318,11 +324,11 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     try:
         if not use_compute_host:
             _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
-        elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
+        elif isinstance(resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs), dict):
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)
-            _emit("error", sid, {"message": str((resp.get("error") or {}).get("message") or "queued prompt failed")})
+            _emit("error", sid, ErrorPayload(message=str((resp.get("error") or {}).get("message") or "queued prompt failed")))
             dispatch_failed = True
     except Exception as exc:
         _notif_log_failure("queued prompt dispatch failed", exc)
@@ -365,6 +371,7 @@ def _inflight_snapshot(session: dict) -> dict | None:
 
 def _emit_terminal_turn_error(
     sid: str, session: dict, error: Any, error_surface: Optional[dict] = None, *, retire_marker: bool = True) -> None:
+    from tui_gateway.contracts.events import MessageCompletePayload
     """Close a failed turn with the same ``status: "error"`` ``message.complete`` frame as the returned-error path,
     retaining the turn so a client that missed the frame recovers it from ``session.resume``'s ``inflight``.
     ``error_surface`` ({layer, code, retryable}) is classified from an exception if absent."""
@@ -388,7 +395,7 @@ def _emit_terminal_turn_error(
                **({"partial": True} if partial else {}), **({"rendered": rendered} if rendered else {})}
     if retire_marker:
         _retire_turn_marker(session)
-    _emit("message.complete", sid, payload)
+    _emit("message.complete", sid, MessageCompletePayload(**payload))
 
 
 def _restore_agent_history_after_turn_error(session: dict, agent) -> bool:

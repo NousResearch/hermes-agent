@@ -1,6 +1,7 @@
 import { type MutableRefObject, useCallback } from 'react'
 
 import { useI18n } from '@/i18n'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $currentCwd,
@@ -14,7 +15,7 @@ import type { SessionRuntimeInfo } from '@/types/hermes'
 interface CwdActionsOptions {
   activeSessionIdRef: MutableRefObject<string | null>
   onSessionRuntimeInfo?: (info: Pick<SessionRuntimeInfo, 'branch' | 'cwd'>) => void
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }
 
 export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, requestGateway }: CwdActionsOptions) {
@@ -30,7 +31,7 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
       }
 
       try {
-        const info = await requestGateway<{ branch?: string; cwd?: string }>('config.get', {
+        const info = await requestGateway('config.get', {
           key: 'project',
           cwd: target
         })
@@ -64,7 +65,7 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
         const workspaceGeneration = setNewChatWorkspaceTarget(trimmed)
 
         try {
-          const info = await requestGateway<{ branch?: string; cwd?: string }>('config.get', {
+          const info = await requestGateway('config.get', {
             key: 'project',
             cwd: trimmed
           })
@@ -91,7 +92,7 @@ export function useCwdActions({ activeSessionIdRef, onSessionRuntimeInfo, reques
       }
 
       try {
-        const info = await requestGateway<SessionRuntimeInfo>('session.cwd.set', {
+        const info = await requestGateway('session.cwd.set', {
           session_id: sessionId,
           cwd: trimmed
         })

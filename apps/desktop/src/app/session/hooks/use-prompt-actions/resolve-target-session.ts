@@ -101,7 +101,7 @@ export async function resolveTargetSessionId(deps: ResolveTargetSessionDeps): Pr
       const resumed = await singleFlightSessionResume(storedTarget, async () => {
         const profile = await resolveSessionProfile(storedTarget)
 
-        return requestGateway<{ session_id?: string }>('session.resume', {
+        return requestGateway('session.resume', {
           session_id: storedTarget,
           source: 'desktop',
           ...(profile ? { profile } : {})

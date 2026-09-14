@@ -46,7 +46,7 @@ import { sessionTileOwnerRoute } from '@/store/session-states'
 export { sessionMatchesStoredId }
 import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
+import type { SessionCreateResult, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -1268,7 +1268,7 @@ export function selectBranchMessages(
 }
 
 export function upsertOptimisticSession(
-  created: SessionCreateResponse,
+  created: OptimisticSessionSource,
   id: string,
   title: string | null = null,
   preview: string | null = null,
@@ -1299,7 +1299,7 @@ export function upsertOptimisticSession(
  * the same id shadows it; the first send replaces it outright.
  */
 export function upsertUnlistedSessionOwner(
-  created: SessionCreateResponse,
+  created: SessionCreateResult,
   id: string,
   owner?: null | SessionProfileRoute
 ) {
@@ -1314,8 +1314,15 @@ function setSessionOwnerHintForStub(id: string, owner?: null | SessionProfileRou
   }
 }
 
+/** The `session.create` fields the optimistic row reads; a tile seeds it before any create returns. */
+interface OptimisticSessionSource
+  extends Partial<Pick<SessionCreateResult, 'message_count' | 'messages' | 'stored_session_id'>> {
+  info?: SessionRuntimeInfo
+  session_id: string
+}
+
 function buildOptimisticSession(
-  created: SessionCreateResponse,
+  created: OptimisticSessionSource,
   id: string,
   title: string | null = null,
   preview: string | null = null,

@@ -25,6 +25,8 @@ Handlers are rebound onto server.py's globals at install time (see
 method_ctx.py) and may reference server module globals (``_ok``, ``_err``).
 """
 
+from __future__ import annotations
+
 from .method_ctx import HandlerRegistry
 
 _registry = HandlerRegistry()
@@ -33,9 +35,9 @@ _registry = HandlerRegistry()
 def method(name: str):
     """``@method(name)`` with ``params.profile`` bound (home + secret scope) around the handler."""
     def deco(fn):
-        def scoped(rid, params: dict) -> dict:
+        def scoped(rid, params):
             try:
-                home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+                home = _profile_home(params.profile)
             except FileNotFoundError as e:
                 return _err(rid, 5095, str(e))
             if home is None:
@@ -51,7 +53,7 @@ def method(name: str):
 
 
 @method("vault.list")
-def _(rid, params: dict) -> dict:
+def _(rid, params: Params) -> VaultListResult | dict:
     """Metadata-only listing across every enabled backend (local + unlocked password managers).
     Each item carries ``backend``; locked managers contribute nothing (see vault.sources)."""
     try:
@@ -62,13 +64,14 @@ def _(rid, params: dict) -> dict:
             if backend.needs_unlock and not backend.is_unlocked():
                 continue
             items.extend({**meta.to_dict(), "backend": backend.name} for meta in backend.list_items())
-        return _ok(rid, {"items": items})
+        from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultListResult
+        return VaultListResult(items=items)
     except Exception as e:
         return _err(rid, 5095, str(e))
 
 
 @method("vault.sources")
-def _(rid, params: dict) -> dict:
+def _(rid, params: Params) -> VaultSourcesResult | dict:
     """Status of every login source: {name, display_name, enabled, needs_unlock, unlocked, installed}."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.base import external_backend_classes, is_installed
@@ -81,20 +84,21 @@ def _(rid, params: dict) -> dict:
         rows.append({"name": cls.name, "display_name": cls.display_name, "enabled": live is not None,
                      "needs_unlock": True, "unlocked": bool(live and live.is_unlocked()),
                      "installed": is_installed(cls.name)})
-    return _ok(rid, {"sources": rows})
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultSourcesResult
+    return VaultSourcesResult(sources=rows)
 
 
 @method("vault.source.set")
-def _(rid, params: dict) -> dict:
+def _(rid, params: VaultSourceSetParams) -> VaultSourceSetResult | dict:
     """Enable/disable an external manager: writes ``vault.<name>.enabled`` and locks it when disabling."""
     from agent.vault_backends.base import external_backend_classes
     from agent.vault_backends.unlock import lock
     from hermes_cli.config import load_config, save_config
 
-    name = str(params.get("name") or "")
+    name = params.name
     if name not in {cls.name for cls in external_backend_classes()}:
         return _err(rid, 5095, f"unknown vault source: {name}")
-    enabled = bool(params.get("enabled"))
+    enabled = params.enabled
     cfg = load_config()
     section = cfg.setdefault("vault", {}).setdefault(name, {})
     if enabled:
@@ -104,16 +108,17 @@ def _(rid, params: dict) -> dict:
     if not enabled:
         lock(name)
     save_config(cfg)
-    return _ok(rid, {"name": name, "enabled": enabled})
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultSourceSetResult
+    return VaultSourceSetResult(name=name, enabled=enabled)
 
 
 @method("vault.unlock")
-def _(rid, params: dict) -> dict:
+def _(rid, params: VaultUnlockParams) -> VaultUnlockResult | dict:
     """Unlock a manager with the master password typed in the Settings dialog (consumed by the CLI on stdin)."""
     from agent.vault_backends import enabled_backends
 
-    name = str(params.get("name") or "")
-    password = str(params.get("password") or "")
+    name = params.name
+    password = params.password
     backend = next((b for b in enabled_backends() if b.name == name and b.needs_unlock), None)
     if backend is None:
         return _err(rid, 5095, f"{name} is not an enabled password manager")
@@ -125,21 +130,23 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5095, str(e).replace(password, "[REDACTED]"))
     finally:
         del password
-    return _ok(rid, {"name": name, "unlocked": True})
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultUnlockResult
+    return VaultUnlockResult(name=name, unlocked=True)
 
 
 @method("vault.lock")
-def _(rid, params: dict) -> dict:
+def _(rid, params: VaultLockParams) -> VaultLockResult | dict:
     """Forget a manager's session token (or every one when ``name`` is omitted)."""
     from agent.vault_backends.unlock import lock
 
-    name = params.get("name")
-    lock(str(name) if name else None)
-    return _ok(rid, {"locked": True})
+    name = params.name
+    lock(name)
+    from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultLockResult
+    return VaultLockResult(locked=True)
 
 
 @method("vault.add")
-def _(rid, params: dict) -> dict:
+def _(rid, params: VaultAddParams) -> VaultAddResult | dict:
     """Add a vault item. ``secret`` values go straight into the encrypted store.
 
     Params: ``kind`` (login|payment|address), ``label``, ``origin?``,
@@ -152,17 +159,18 @@ def _(rid, params: dict) -> dict:
         scrub_secret_from_text,
     )
 
-    secret = params.get("secret")
+    secret = params.secret
     if not isinstance(secret, dict) or not secret:
         return _err(rid, 5095, "secret payload is required")
     try:
         meta = get_vault_store().add_item(
-            kind=str(params.get("kind") or ""),
-            label=str(params.get("label") or ""),
-            origin=(str(params.get("origin")) if params.get("origin") else None),
+            kind=params.kind.value,
+            label=params.label,
+            origin=params.origin,
             secret=secret,
         )
-        return _ok(rid, {"id": meta.id})
+        from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultAddResult
+        return VaultAddResult(id=meta.id)
     except VaultError as e:
         # VaultError messages are metadata-safe by contract, but scrub anyway.
         return _err(rid, 5095, scrub_secret_from_text(str(e), secret))
@@ -171,15 +179,16 @@ def _(rid, params: dict) -> dict:
 
 
 @method("vault.remove")
-def _(rid, params: dict) -> dict:
+def _(rid, params: VaultRemoveParams) -> VaultRemoveResult | dict:
     """Remove a vault item by id. Result: ``{removed: bool}``."""
     try:
         from agent.vault_store import get_vault_store
 
-        item_id = str(params.get("id") or "")
+        item_id = params.id
         if not item_id:
             return _err(rid, 5095, "id is required")
-        return _ok(rid, {"removed": get_vault_store().remove_item(item_id)})
+        from tui_gateway.contracts.profiles_vault_complete_foreign_subagents import VaultRemoveResult
+        return VaultRemoveResult(removed=get_vault_store().remove_item(item_id))
     except Exception as e:
         return _err(rid, 5095, str(e))
 

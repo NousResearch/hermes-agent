@@ -1,3 +1,4 @@
+import type { SessionActiveListResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -321,16 +322,8 @@ const SESSIONS_LIST_TICK_GAP_MS = 10_000
 // list reconciliation.
 const TYPING_BURST_QUIET_MS = 1_500
 
-interface LiveSessionStatusItem {
-  id?: string
-  last_active?: number
-  session_key?: string
-  status?: 'idle' | 'starting' | 'waiting' | 'working'
-}
 
-interface LiveSessionStatusResponse {
-  sessions?: LiveSessionStatusItem[]
-}
+type LiveSessionStatusResponse = SessionActiveListResult
 
 // Runtime ids this poll has seen live, per gateway profile. A profile only
 // ever reaps what its OWN snapshot previously reported: background profiles are
@@ -648,7 +641,7 @@ export function useBackgroundSync({
     const cwd = $currentCwd.get().trim()
 
     if (!$activeSessionId.get() && cwd && !/^(\/|[A-Za-z]:[\\/])/.test(cwd)) {
-      void requestGateway<{ cwd?: string }>('config.get', { key: 'project', cwd })
+      void requestGateway('config.get', { key: 'project', cwd })
         .then(info => {
           if (info.cwd && !$activeSessionId.get()) {
             setCurrentCwd(info.cwd)
@@ -699,7 +692,7 @@ export function useBackgroundSync({
       inFlight = true
 
       try {
-        const response = await requestGateway<LiveSessionStatusResponse>('session.active_list', {})
+        const response = await requestGateway('session.active_list', {})
 
         if (!cancelled) {
           rehydrateLiveSessionStatuses(response, Date.now(), activeGatewayProfile)

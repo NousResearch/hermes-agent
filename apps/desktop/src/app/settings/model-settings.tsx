@@ -29,6 +29,7 @@ import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { optimisticProvider, providerCapabilities } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -126,7 +127,7 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
   { key: 'curator' }
 ]
 
-const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
+const NO_PROVIDERS: readonly ModelOptionProvider[] = [optimisticProvider('', '', '—')]
 
 // Radix <Select> renders a blank trigger when `value` matches no <SelectItem>.
 // A custom model (e.g. one added via config that isn't in the provider's
@@ -550,7 +551,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   const mainCaps = useMemo(() => {
     const row = providers.find(provider => provider.slug === mainModel?.provider)
 
-    return mainModel ? row?.capabilities?.[mainModel.model] : undefined
+    return mainModel ? providerCapabilities(row, mainModel.model) : undefined
   }, [providers, mainModel])
 
   const reasoningSupported = mainCaps?.reasoning ?? true

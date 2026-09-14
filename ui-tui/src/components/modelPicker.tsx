@@ -1,6 +1,6 @@
 import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { fuzzyRank } from '@hermes/shared/fuzzy'
-import type { ModelOptionProvider, ModelOptionsResult } from '@hermes/shared/gateway-events'
+import type { ModelOptionProvider, SavedKeyProvider } from '@hermes/shared/gateway-events'
 import { modelSearchText } from '@hermes/shared/model-search-text'
 import { REASONING_EFFORTS } from '@hermes/shared/reasoning-effort'
 import { useEffect, useMemo, useState } from 'react'
@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { providerDisplayNames } from '../domain/providers.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { OverlayHint, useOverlayKeys, windowItems } from './overlayControls.js'
@@ -30,10 +30,34 @@ export const REASONING_PICKER_ROWS: ReadonlyArray<{ label: string; value: string
   { label: 'Keep current effort', value: '' }
 ]
 
+/** `model.save_key` answers the provider row in its own (looser) variant; merge back
+ *  the fields the picker renders so the catalog row keeps the rest of the catalog. */
+const mergeSavedKeyProvider = (row: ModelOptionProvider, saved: SavedKeyProvider): ModelOptionProvider => ({
+  ...row,
+  aliases: saved.aliases,
+  api_url: saved.api_url,
+  authenticated: saved.authenticated,
+  featured_models: saved.featured_models,
+  free_tier: saved.free_tier,
+  key_env: saved.key_env,
+  models: saved.models,
+  name: saved.name,
+  unavailable_models: saved.unavailable_models,
+  warning: saved.warning
+})
+
+/** Per-model capability flags; the contract carries them as provider-defined JSON. */
+interface ModelCapabilities {
+  reasoning?: boolean
+}
+
 /** False only when the catalog says the picked model has no reasoning control;
  *  unknown capabilities keep the step (a no-op dial beats hiding a real one). */
 export function pickerOffersReasoning(provider: ModelOptionProvider | undefined, model: string): boolean {
-  return provider?.capabilities?.[model]?.reasoning !== false
+  // SAFETY: `capabilities` is a provider-keyed JSON map; only the optional `reasoning` flag is read.
+  const capabilities = provider?.capabilities as null | Record<string, ModelCapabilities | undefined> | undefined
+
+  return capabilities?.[model]?.reasoning !== false
 }
 
 /** The `/model` argument the picker emits: model + provider + scope, plus
@@ -98,7 +122,7 @@ export function ModelPicker({
   const width = clampOverlayWidth(preferredWidth, maxWidth)
 
   useEffect(() => {
-    gw.request<ModelOptionsResult>('model.options', {
+    gw.request('model.options', {
       ...(sessionId ? { session_id: sessionId } : {}),
       ...(initialRefresh ? { refresh: true } : {}),
       // The TUI picker shows the full provider universe with setup
@@ -107,19 +131,10 @@ export function ModelPicker({
       // desktop chat pickers (#56974).
       include_unconfigured: true
     })
-      .then(raw => {
-        const r = asRpcResult<ModelOptionsResult>(raw)
-
-        if (!r) {
-          setErr('invalid response: model.options')
-          setLoading(false)
-
-          return
-        }
-
-        const next = r.providers ?? []
+      .then(r => {
+        const next = r.providers
         setProviders(next)
-        setCurrentModel(String(r.model ?? ''))
+        setCurrentModel(r.model)
         setProviderIdx(
           Math.max(
             0,
@@ -249,23 +264,14 @@ export function ModelPicker({
 
         setKeySaving(true)
         setKeyError('')
-        gw.request<{ provider?: ModelOptionProvider }>('model.save_key', {
+        gw.request('model.save_key', {
           slug: provider?.slug,
           api_key: keyInput.trim(),
           ...(sessionId ? { session_id: sessionId } : {})
         })
-          .then(raw => {
-            const r = asRpcResult<{ provider?: ModelOptionProvider }>(raw)
-
-            if (!r?.provider) {
-              setKeyError('failed to save key')
-              setKeySaving(false)
-
-              return
-            }
-
+          .then(r => {
             // Update the provider in our list with fresh data
-            setProviders(prev => prev.map(p => (p.slug === r.provider!.slug ? r.provider! : p)))
+            setProviders(prev => prev.map(p => (p.slug === r.provider.slug ? mergeSavedKeyProvider(p, r.provider) : p)))
             setKeyInput('')
             setKeySaving(false)
             setStage('model')
@@ -309,14 +315,12 @@ export function ModelPicker({
         }
 
         setKeySaving(true)
-        gw.request<{ disconnected?: boolean }>('model.disconnect', {
+        gw.request('model.disconnect', {
           slug: provider.slug,
           ...(sessionId ? { session_id: sessionId } : {})
         })
-          .then(raw => {
-            const r = asRpcResult<{ disconnected?: boolean }>(raw)
-
-            if (r?.disconnected) {
+          .then(r => {
+            if (r.disconnected) {
               // Mark provider as unauthenticated in local state
               setProviders(prev =>
                 prev.map(p =>

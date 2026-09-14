@@ -12,7 +12,7 @@ import {
   todosForHydration
 } from './todos'
 
-const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
+const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, parent: null, status })
 
 describe('setSessionTodos finished-list auto-clear', () => {
   beforeEach(() => {

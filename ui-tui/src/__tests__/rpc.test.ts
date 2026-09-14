@@ -1,19 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
-
-describe('asRpcResult', () => {
-  it('keeps plain object payloads', () => {
-    expect(asRpcResult({ ok: true, value: 'x' })).toEqual({ ok: true, value: 'x' })
-  })
-
-  it('rejects missing or non-object payloads', () => {
-    expect(asRpcResult(undefined)).toBeNull()
-    expect(asRpcResult(null)).toBeNull()
-    expect(asRpcResult('oops')).toBeNull()
-    expect(asRpcResult(['bad'])).toBeNull()
-  })
-})
+import { rpcErrorMessage } from '../lib/rpc.js'
 
 describe('rpcErrorMessage', () => {
   it('prefers Error messages', () => {

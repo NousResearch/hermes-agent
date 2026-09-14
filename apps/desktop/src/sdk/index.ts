@@ -18,6 +18,7 @@
  *  - `ui.*` — the design language, so plugin UI looks native by default.
  */
 
+import type { JsonValue, RpcMethods } from '@hermes/shared'
 import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
@@ -51,7 +52,8 @@ import {
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
-  requestGatewayForProfile,
+  requestGatewayForAgentUntyped,
+  requestGatewayForProfileUntyped,
   retainGatewayForAgent,
   retainGatewayForRelay,
   retireLocalProfileGateways
@@ -232,12 +234,59 @@ const $busyBySession = computed($sessionStates, states => {
 
 const $viewport = atom<ViewportRect>(readViewport())
 
-async function requestPluginProfile<T>(
+/* eslint-disable no-redeclare -- overload signatures; the rule predates TS */
+/** Gateway JSON-RPC on the LIVE socket of the active profile. Typed overload
+ *  first; the string overload is the third-party plugin door, which rides
+ *  `requestUntyped` because a published plugin's method name is not in
+ *  `RpcMethods` at compile time. Lazy: resolves the socket per call. */
+async function pluginRequest<M extends keyof RpcMethods>(
+  method: M,
+  params: RpcMethods[M]['params'],
+  timeoutMs?: number
+): Promise<RpcMethods[M]['result']>
+async function pluginRequest(method: string, params?: Record<string, JsonValue>, timeoutMs?: number): Promise<JsonValue>
+async function pluginRequest(
+  method: string,
+  params: Record<string, JsonValue> = {},
+  timeoutMs?: number
+): Promise<JsonValue> {
+  const gateway = $gateway.get()
+
+  if (!gateway) {
+    throw new Error('Hermes gateway unavailable')
+  }
+
+  // SAFETY: plugin boundary. A published plugin's method name is not in RpcMethods at compile time;
+  // the frame is identical to the typed path and the backend validates it.
+  return timeoutMs === undefined
+    ? gateway.requestUntyped(method, params)
+    : gateway.requestUntyped(method, params, timeoutMs)
+}
+/* eslint-enable no-redeclare */
+
+/* eslint-disable no-redeclare -- overload signatures; the rule predates TS */
+/** Gateway JSON-RPC through a credential-free route descriptor. The typed
+ *  overload is the whole contract; the string overload is the third-party
+ *  plugin door — a published plugin's method name is not in `RpcMethods` at
+ *  compile time, and both overloads put the identical frame on the wire. */
+async function requestPluginProfile<M extends keyof RpcMethods>(
+  route: PluginProfileRoute | string,
+  method: M,
+  params: RpcMethods[M]['params'],
+  timeoutMs?: number
+): Promise<RpcMethods[M]['result']>
+async function requestPluginProfile(
   route: PluginProfileRoute | string,
   method: string,
-  params: Record<string, unknown>,
+  params?: Record<string, JsonValue>,
   timeoutMs?: number
-): Promise<T> {
+): Promise<JsonValue>
+async function requestPluginProfile(
+  route: PluginProfileRoute | string,
+  method: string,
+  params: Record<string, JsonValue> = {},
+  timeoutMs?: number
+): Promise<JsonValue> {
   if (typeof route !== 'string') {
     if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
@@ -245,16 +294,16 @@ async function requestPluginProfile<T>(
 
     // Omit the bound entirely when unset so callers stay on the pool default.
     return timeoutMs === undefined
-      ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
-      : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
+      ? requestGatewayForAgentUntyped(route.connectionId, route.profile, method, params)
+      : requestGatewayForAgentUntyped(route.connectionId, route.profile, method, params, timeoutMs)
   }
 
   const getAgentRoster = window.hermesDesktop?.getAgentRoster
 
   if (!getAgentRoster) {
     return timeoutMs === undefined
-      ? requestGatewayForProfile<T>(route, method, params)
-      : requestGatewayForProfile<T>(route, method, params, timeoutMs)
+      ? requestGatewayForProfileUntyped(route, method, params)
+      : requestGatewayForProfileUntyped(route, method, params, timeoutMs)
   }
 
   const roster = await getAgentRoster()
@@ -267,14 +316,15 @@ async function requestPluginProfile<T>(
   // descriptor because an undialed/unreachable source may expose the same name.
   if (soleLocalSource) {
     return timeoutMs === undefined
-      ? requestGatewayForProfile<T>(profile, method, params)
-      : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
+      ? requestGatewayForProfileUntyped(profile, method, params)
+      : requestGatewayForProfileUntyped(profile, method, params, timeoutMs)
   }
 
   throw new Error(
     `Profile "${profile}" requires a route descriptor from host.profileRoutes(); profile-only routing is limited to legacy/local profiles.`
   )
 }
+/* eslint-enable no-redeclare */
 
 /** Re-read Electron's current registry before retrying an exact-owner wake.
  *  A route that was removed or replaced while the first hydration wait ran is
@@ -646,7 +696,7 @@ export const host = {
     const profile = capabilityScoped(options.profile)
 
     if (options.catalogPreset) {
-      const added = await requestGatewayForAgent<{ ok?: boolean; error?: string }>(
+      const added = await requestGatewayForAgent(
         profile.connectionId ?? null,
         profile.profile || 'default',
         'mcp.servers.add',
@@ -654,7 +704,7 @@ export const host = {
       )
 
       if (!added.ok) {
-        throw new Error(added.error || 'Could not add server')
+        throw new Error(`Could not add server ${added.name}`)
       }
     }
 
@@ -1322,12 +1372,7 @@ export const host = {
    *  method whose backend contract is minutes long, such as `bot_relay.deliver`,
    *  otherwise dies at 30s and reports an unclassified failure). Leave it unset
    *  to keep the default. */
-  requestProfile: async <T>(
-    route: PluginProfileRoute | string,
-    method: string,
-    params: Record<string, unknown> = {},
-    timeoutMs?: number
-  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
+  requestProfile: requestPluginProfile,
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a
@@ -1423,15 +1468,7 @@ export const host = {
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
    *  the app itself uses. Lazy: resolves the LIVE socket per call. */
-  request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
-    const gateway = $gateway.get()
-
-    if (!gateway) {
-      throw new Error('Hermes gateway unavailable')
-    }
-
-    return gateway.request<T>(method, params)
-  },
+  request: pluginRequest,
 
   /** The LIVE gateway instance for the active profile (null before the first
    *  socket opens). Most plugins want `host.request`; this exists for SDK
@@ -1776,6 +1813,30 @@ export { retintTheme, themeHue } from '@/themes/retint'
 export type { DesktopTheme, DesktopThemeColors } from '@/themes/types'
 export { THEMES_AREA } from '@/themes/user-themes'
 export type { StatusResponse } from '@/types/hermes'
+/** THE generated gateway contract, as plugins consume it: `RpcMethods` types
+ *  every `host.request` / `host.requestProfile` call, and the payload types
+ *  name what each method answers. Plugins never reach past the SDK for these. */
+export type {
+  ClarifyParams,
+  ClarifyQuestion,
+  CronJobRow,
+  CronManageResult,
+  JsonValue,
+  ModelOptionsResult,
+  OpenRequestEntry,
+  PendingApproval,
+  PetGalleryEntry,
+  ProfileRow,
+  ProfilesConfigureParams,
+  ProfilesConfigureResult,
+  RelayAgentRow,
+  RelayEnvelope,
+  RpcMethods,
+  SessionLiveInfo,
+  SessionResumeResult,
+  SkillHubHit,
+  TranscriptMessage
+} from '@hermes/shared'
 /** Public SDK name for the shared gateway wire event; kept stable for plugins. */
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes

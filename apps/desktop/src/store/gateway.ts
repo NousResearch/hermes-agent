@@ -1,10 +1,14 @@
 import {
+  type AnyServerRequest,
   type ConnectionState,
   type GatewayEvent,
+  type JsonValue,
   reconnectBackoffDelayMs,
   registryBackendScopeKey,
   resolveGatewayWsUrl,
-  type ServerRequest
+  type RpcMethods,
+  type ServerRequest,
+  type ServerRequestMap
 } from '@hermes/shared'
 import { atom } from 'nanostores'
 
@@ -275,17 +279,21 @@ export function emitLocalGatewayEvent(event: GatewayEvent): void {
   g.config?.onEvent(event)
 }
 
-/** A server→client request tagged with the registry source it arrived from (like `GatewayEvent.profile`). */
-export interface ScopedServerRequest extends ServerRequest {
-  connectionId?: string
-  profile: string
-}
+/** A server→client request tagged with the registry source it arrived from (like `GatewayEvent.profile`).
+ *  Distributive over the method, so a `request.method` check narrows params and `respond` together. */
+export type ScopedServerRequest<M extends keyof ServerRequestMap = keyof ServerRequestMap> = {
+  [K in M]: ServerRequest<K> & { connectionId?: string; profile: string }
+}[M]
+
+const scopeServerRequest = (
+  request: AnyServerRequest,
+  profile: string,
+  connectionId: null | string
+): ScopedServerRequest => ({ ...request, ...(connectionId ? { connectionId } : {}), profile })
 
 /** Fan a primary-socket server request into the registry handler with the active source tags. */
-export function dispatchPrimaryServerRequest(request: ServerRequest, profile: string): void {
-  const connectionId = g.config?.activeConnectionId?.() ?? null
-
-  g.config?.onServerRequest?.({ ...request, ...(connectionId ? { connectionId } : {}), profile })
+export function dispatchPrimaryServerRequest(request: AnyServerRequest, profile: string): void {
+  g.config?.onServerRequest?.(scopeServerRequest(request, profile, g.config.activeConnectionId?.() ?? null))
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
@@ -393,21 +401,47 @@ async function isAttachedSharedRemote(
   }
 }
 
-async function requestOnPrimaryGateway<T>(
-  method: string,
-  params: Record<string, unknown>,
-  timeoutMs?: number,
-  signal?: AbortSignal
-): Promise<T> {
+/** One RPC bound late to the socket the router picks; `scopeProfile` is the profile param a shared socket needs. */
+type GatewayCall<R> = (gateway: HermesGateway, scopeProfile: null | string) => Promise<R>
+
+const typedCall =
+  <M extends keyof RpcMethods>(
+    method: M,
+    params: RpcMethods[M]['params'],
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ): GatewayCall<RpcMethods[M]['result']> =>
+  (gateway, scopeProfile) => {
+    const routed = scopeProfile ? { ...params, profile: scopeProfile } : params
+
+    // Same arity contract as session-request-router: only pass the deadline
+    // args a caller set, so a plain routed RPC keeps its two-argument call shape.
+    return timeoutMs === undefined && signal === undefined
+      ? gateway.request(method, routed)
+      : gateway.request(method, routed, timeoutMs, signal)
+  }
+
+// Plugins are third-party code; their method names are not in the generated contract.
+const untypedCall =
+  (method: string, params: Record<string, JsonValue>, timeoutMs?: number, signal?: AbortSignal): GatewayCall<JsonValue> =>
+  (gateway, scopeProfile) => {
+    const routed = scopeProfile ? { ...params, profile: scopeProfile } : params
+
+    // SAFETY: plugin boundary. A third-party plugin's method name is not in RpcMethods; only
+    // sdk/index.ts (host.requestProfile) reaches this pool router with such a name.
+    return timeoutMs === undefined && signal === undefined
+      ? gateway.requestUntyped(method, routed)
+      : gateway.requestUntyped(method, routed, timeoutMs, signal)
+  }
+
+async function callPrimaryGateway<R>(call: GatewayCall<R>, scopeProfile: string): Promise<R> {
   const gateway = g.primaryGateway
 
   if (!gateway || !isOpen(gateway)) {
     throw new Error('Hermes gateway unavailable')
   }
 
-  return timeoutMs === undefined && signal === undefined
-    ? gateway.request<T>(method, params)
-    : gateway.request<T>(method, params, timeoutMs, signal)
+  return call(gateway, scopeProfile)
 }
 
 export function isActivePrimary(): boolean {
@@ -842,10 +876,9 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
   })
-  entry.offRequest =
-    gateway.onRequest?.(request => {
-      g.config?.onServerRequest?.({ ...request, ...(connectionId ? { connectionId } : {}), profile })
-    }) ?? (() => {})
+  entry.offRequest = gateway.onAnyServerRequest(request => {
+    g.config?.onServerRequest?.(scopeServerRequest(request, profile, connectionId))
+  })
   entry.offState = gateway.onState(state => {
     reportGatewayState(scope, state)
 
@@ -981,18 +1014,7 @@ async function gatewayForProfile(
   return { gateway: entry.gateway, key, release, scopeProfile: false }
 }
 
-/**
- * Send a gateway RPC through a named Desktop profile without foregrounding it.
- * Global-remote routes share the primary socket and need an explicit profile
- * param; dedicated pooled backends are already scoped by their descriptor.
- */
-export async function requestGatewayForProfile<T>(
-  profile: string,
-  method: string,
-  params: Record<string, unknown> = {},
-  timeoutMs?: number,
-  signal?: AbortSignal
-): Promise<T> {
+async function callGatewayForProfile<R>(profile: string, call: GatewayCall<R>): Promise<R> {
   const route = await gatewayForProfile(profile, true)
 
   try {
@@ -1000,17 +1022,36 @@ export async function requestGatewayForProfile<T>(
       throw new Error(`Hermes gateway unavailable for profile "${route.key}"`)
     }
 
-    const routedParams = route.scopeProfile ? { ...params, profile: route.key } : params
-
-    // Same arity contract as the ambient path in session-request-router: only
-    // pass the deadline args through when the caller set them, so a plain
-    // profile-routed RPC keeps its two-argument call shape.
-    return await (timeoutMs === undefined && signal === undefined
-      ? route.gateway.request<T>(method, routedParams)
-      : route.gateway.request<T>(method, routedParams, timeoutMs, signal))
+    return await call(route.gateway, route.scopeProfile ? route.key : null)
   } finally {
     route.release()
   }
+}
+
+/**
+ * Send a gateway RPC through a named Desktop profile without foregrounding it.
+ * Global-remote routes share the primary socket and need an explicit profile
+ * param; dedicated pooled backends are already scoped by their descriptor.
+ */
+export function requestGatewayForProfile<M extends keyof RpcMethods>(
+  profile: string,
+  method: M,
+  params: RpcMethods[M]['params'],
+  timeoutMs?: number,
+  signal?: AbortSignal
+): Promise<RpcMethods[M]['result']> {
+  return callGatewayForProfile(profile, typedCall(method, params, timeoutMs, signal))
+}
+
+/** `requestGatewayForProfile` for the plugin SDK boundary, where the method name is not in the contract. */
+export function requestGatewayForProfileUntyped(
+  profile: string,
+  method: string,
+  params: Record<string, JsonValue>,
+  timeoutMs?: number,
+  signal?: AbortSignal
+): Promise<JsonValue> {
+  return callGatewayForProfile(profile, untypedCall(method, params, timeoutMs, signal))
 }
 
 /**
@@ -1019,19 +1060,12 @@ export async function requestGatewayForProfile<T>(
  * sources from sharing a socket. Only null/empty ids retain the v1 profile
  * resolver; explicit `local` is a registry source and must use getConnectionFor.
  */
-export async function requestGatewayForAgent<T>(
-  connectionId: null | string,
-  profile: string,
-  method: string,
-  params: Record<string, unknown> = {},
-  timeoutMs?: number,
-  signal?: AbortSignal
-): Promise<T> {
+async function callGatewayForAgent<R>(connectionId: null | string, profile: string, call: GatewayCall<R>): Promise<R> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+    return callGatewayForProfile(key, call)
   }
 
   // A primary remote selected from the connection registry carries its source
@@ -1043,11 +1077,11 @@ export async function requestGatewayForAgent<T>(
   // Require both owner identities to agree before collapsing the route; a
   // different source or profile must retain its isolated secondary.
   if (isPrimaryRegistryRoute(connectionId, key)) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+    return callGatewayForProfile(key, call)
   }
 
   if (await isAttachedSharedRemote(connectionId, key)) {
-    return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
+    return callPrimaryGateway(call, key)
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
@@ -1073,9 +1107,7 @@ export async function requestGatewayForAgent<T>(
       await openSecondary(entry)
     }
 
-    return await (timeoutMs === undefined && signal === undefined
-      ? entry.gateway.request<T>(method, params)
-      : entry.gateway.request<T>(method, params, timeoutMs, signal))
+    return await call(entry.gateway, null)
   } finally {
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)
 
@@ -1094,6 +1126,30 @@ export async function requestGatewayForAgent<T>(
       }
     }
   }
+}
+
+/** Send a gateway RPC through one registry source without activating it (see `callGatewayForAgent`). */
+export function requestGatewayForAgent<M extends keyof RpcMethods>(
+  connectionId: null | string,
+  profile: string,
+  method: M,
+  params: RpcMethods[M]['params'],
+  timeoutMs?: number,
+  signal?: AbortSignal
+): Promise<RpcMethods[M]['result']> {
+  return callGatewayForAgent(connectionId, profile, typedCall(method, params, timeoutMs, signal))
+}
+
+/** `requestGatewayForAgent` for the plugin SDK boundary, where the method name is not in the contract. */
+export function requestGatewayForAgentUntyped(
+  connectionId: null | string,
+  profile: string,
+  method: string,
+  params: Record<string, JsonValue>,
+  timeoutMs?: number,
+  signal?: AbortSignal
+): Promise<JsonValue> {
+  return callGatewayForAgent(connectionId, profile, untypedCall(method, params, timeoutMs, signal))
 }
 
 // ── Bot-relay socket retention (#93594) ─────────────────────────────────────

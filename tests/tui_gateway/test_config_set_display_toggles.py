@@ -28,12 +28,14 @@ def _set(key, value):
 @pytest.mark.parametrize("key", sorted(server._DISPLAY_TOGGLE_KEYS))
 def test_a_mirrored_switch_reaches_the_config_file(config_home, key):
     """Both directions land on disk, where the tools' check_fn reads them."""
-    assert _set(key, "false")["result"] == {"key": key, "value": False}
+    off = _set(key, "false")["result"]
+    assert (off["key"], off["value"]) == (key, False)
 
     section, name = key.split(".")
     assert yaml.safe_load(config_home.read_text())[section][name] is False
 
-    assert _set(key, "true")["result"] == {"key": key, "value": True}
+    on = _set(key, "true")["result"]
+    assert (on["key"], on["value"]) == (key, True)
     assert yaml.safe_load(config_home.read_text())[section][name] is True
 
 

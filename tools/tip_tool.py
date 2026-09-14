@@ -6,6 +6,7 @@ reply. Lives in ``desktop_ui`` and withdraws itself when the user turns tips off
 import json
 
 from tools import desktop_ui
+from tui_gateway.contracts.events import TipShowPayload
 from tools.registry import registry, tool_error
 
 SIDES = ("top", "right", "bottom", "left")
@@ -22,8 +23,7 @@ def tip_tool(text: str, selector: str, title: str = "", side: str = "") -> str:
                           "what's on screen and prefer a target reporting stable: true.")
     if side and side not in SIDES:
         return tool_error(f"side must be one of: {', '.join(SIDES)}.")
-    payload = {"selector": selector, "text": text,
-               **{k: v for k, v in (("title", title), ("side", side)) if v}}
+    payload = TipShowPayload(selector=selector, text=text, title=title or None, side=side or None)
     try:
         ok = desktop_ui.emit("tip.show", payload)
     except Exception as exc:

@@ -1,3 +1,4 @@
+import type { ProcessEntry } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
 import { translateNow } from '@/i18n'
@@ -288,13 +289,7 @@ const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
 }
 
 // `tui_gateway` process.list entry (tools/process_registry.list_sessions + output_tail).
-interface GatewayProcessEntry {
-  command?: string
-  exit_code?: number
-  output_tail?: string
-  session_id?: string
-  status?: string
-}
+type GatewayProcessEntry = ProcessEntry
 
 const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
   const exited = proc.status === 'exited'
@@ -402,7 +397,7 @@ export async function refreshBackgroundProcesses(sid: string): Promise<void> {
   }
 
   try {
-    const result = await requestForOwnedSession<{ processes?: GatewayProcessEntry[] }>(
+    const result = await requestForOwnedSession(
       sid,
       ambientRequestFor(gateway),
       'process.list',

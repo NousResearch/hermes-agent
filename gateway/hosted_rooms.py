@@ -570,14 +570,19 @@ def _prune_disbanded_rooms_locked(
     if now is not None:
         candidates.update(_room_ids(
             conn, """SELECT room_id FROM hosted_rooms
-                     WHERE disbanded_at IS NOT NULL AND disbanded_at<=?""", (now - DISBANDED_ROOM_RETENTION_SECONDS,)))
+                     WHERE room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
+                       AND disbanded_at IS NOT NULL AND disbanded_at<=?""", (now - DISBANDED_ROOM_RETENTION_SECONDS,)))
     candidates.update(_room_ids(
-        conn, """SELECT room_id FROM hosted_rooms WHERE disbanded_at IS NOT NULL
+        conn, """SELECT room_id FROM hosted_rooms
+                WHERE room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
+                  AND disbanded_at IS NOT NULL
                 ORDER BY disbanded_at DESC, room_id ASC LIMIT -1 OFFSET ?""", (MAX_DISBANDED_ROOM_TOMBSTONES,)))
     if max_gateway_event_bytes is not None:
         retained_bytes = _gateway_event_bytes(conn)
         if retained_bytes > max_gateway_event_bytes:
-            for row in conn.execute("""SELECT room_id, event_bytes FROM hosted_rooms WHERE disbanded_at IS NOT NULL
+            for row in conn.execute("""SELECT room_id, event_bytes FROM hosted_rooms
+                    WHERE room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
+                      AND disbanded_at IS NOT NULL
                     ORDER BY disbanded_at ASC, room_id ASC"""
             ).fetchall():
                 candidates.add(str(row["room_id"]))
@@ -588,12 +593,15 @@ def _prune_disbanded_rooms_locked(
         return 0
     placeholders = ",".join("?" for _ in candidates)
     room_ids = tuple(sorted(candidates))
-    conn.execute(_RETIRE_FROM_ROOMS.format(where=f"room_id IN ({placeholders}) AND disbanded_at IS NOT NULL"), room_ids)
+    eligible = (f"room_id IN ({placeholders}) AND disbanded_at IS NOT NULL "
+                "AND room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)")
+    conn.execute(_RETIRE_FROM_ROOMS.format(where=eligible), room_ids)
     for table in _DEPENDENT_TABLES:
         if table_exists(conn, table):
-            conn.execute(f"DELETE FROM {table} WHERE room_id IN ({placeholders})", room_ids)
-    conn.execute(f"DELETE FROM hosted_rooms WHERE room_id IN ({placeholders})", room_ids)
-    return len(room_ids)
+            conn.execute(
+                f"DELETE FROM {table} WHERE room_id IN (SELECT room_id FROM hosted_rooms WHERE {eligible})", room_ids)
+    deleted = conn.execute(f"DELETE FROM hosted_rooms WHERE {eligible}", room_ids)
+    return max(0, int(deleted.rowcount))
 
 
 def prune_disbanded_rooms(db_path: DbPath, *, now: float | None = None) -> int:

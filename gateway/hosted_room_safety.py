@@ -426,7 +426,8 @@ def _compact_over_budget_replicas_locked(conn: sqlite3.Connection) -> int:
     for row in rows:
         if replica_bytes <= replica_budget:
             break
-        if row["quarantine_reason"] is not None:
+        if (row["quarantine_reason"] is not None
+                or _quarantine_reason_locked(conn, str(row["room_id"])) is not None):
             continue
         room_id = str(row["room_id"])
         conn.execute(
@@ -517,7 +518,8 @@ def _prune_disbanded_replicas_locked(
             for row in conn.execute(
                 """SELECT room_id FROM hosted_room_replicas
                      WHERE disbanded_at IS NOT NULL AND disbanded_at<=?
-                       AND last_seq=latest_seq AND quarantine_reason IS NULL""",
+                       AND last_seq=latest_seq AND quarantine_reason IS NULL
+                       AND room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)""",
                 (cutoff,),
             ).fetchall()
         )
@@ -532,6 +534,7 @@ def _prune_disbanded_replicas_locked(
                 """SELECT room_id, event_bytes FROM hosted_room_replicas
                      WHERE disbanded_at IS NOT NULL AND last_seq=latest_seq
                        AND quarantine_reason IS NULL
+                       AND room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
                      ORDER BY disbanded_at ASC, room_id ASC"""
             ).fetchall():
                 candidates.add(str(row["room_id"]))
@@ -547,6 +550,7 @@ def _prune_disbanded_replicas_locked(
                 """SELECT room_id FROM hosted_room_replicas
                      WHERE disbanded_at IS NOT NULL AND last_seq=latest_seq
                        AND quarantine_reason IS NULL
+                       AND room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
                      ORDER BY disbanded_at ASC, room_id ASC"""
             ).fetchall():
                 candidates.add(str(row["room_id"]))
@@ -557,14 +561,16 @@ def _prune_disbanded_replicas_locked(
         return 0
     placeholders = ",".join("?" for _ in candidates)
     room_ids = tuple(sorted(candidates))
+    eligible = (f"room_id IN ({placeholders}) AND disbanded_at IS NOT NULL "
+                "AND last_seq=latest_seq AND quarantine_reason IS NULL "
+                "AND room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)")
     conn.execute(
-        f"DELETE FROM hosted_room_replica_events WHERE room_id IN ({placeholders})",
+        f"""DELETE FROM hosted_room_replica_events WHERE room_id IN (
+                SELECT room_id FROM hosted_room_replicas WHERE {eligible})""",
         room_ids,
     )
     deleted = conn.execute(
-        f"""DELETE FROM hosted_room_replicas
-             WHERE room_id IN ({placeholders}) AND disbanded_at IS NOT NULL
-               AND last_seq=latest_seq AND quarantine_reason IS NULL""",
+        f"DELETE FROM hosted_room_replicas WHERE {eligible}",
         room_ids,
     )
     return max(0, int(deleted.rowcount))

@@ -294,6 +294,7 @@ export interface Translations {
       tryRecordingAgain: string
       unavailable: string
       liveEnded: string
+      liveEndedIdle: string
       liveError: string
       liveDelegationFailed: string
       liveUnavailable: (reason: string) => string

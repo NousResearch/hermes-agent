@@ -244,6 +244,7 @@ export const zh = defineLocale({
       tryRecordingAgain: '请再录一次。',
       unavailable: '语音不可用',
       liveEnded: '实时语音会话已结束',
+      liveEndedIdle: '因一段时间无人说话已挂断，以免继续按分钟计费。',
       liveError: '实时语音',
       liveDelegationFailed: '无法将请求交给 Hermes',
       liveUnavailable: reason => `GPT-Live 语音聊天不可用：${reason}。已改用语音转文字。`

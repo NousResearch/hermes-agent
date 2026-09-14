@@ -21,12 +21,16 @@ import { hermesApi } from '@/hermes'
 
 export type VoiceChatMode = 'chained' | 'gpt-live'
 
+/** Quiet seconds before Desktop hangs up a GPT-Live call. 0 disables. */
+export const DEFAULT_IDLE_HANGUP_SECONDS = 300
+
 export interface VoiceLiveStatus {
   mode: VoiceChatMode
   available: boolean
   reason: null | string
   model: string
   voice: string
+  idleHangupSeconds: number
 }
 
 export interface LiveHistoryMessage {
@@ -72,11 +76,43 @@ export interface VoiceLiveHandlers {
 
 const CLOSE_TIMEOUT_MS = 15_000
 const ICE_GATHER_TIMEOUT_MS = 10_000
+const IDLE_CHECK_MS = 1_000
 // Vendor cap: 500 tokens per append. ~4 chars/token, keep headroom.
 const APPEND_CHAR_LIMIT = 1_400
 // How much conversation the backend receives per delegation.
 const CONTEXT_WINDOW_MS = 5 * 60_000
 const CONTEXT_MAX_FRAGMENTS = 80
+
+export function parseIdleHangupSeconds(raw: unknown): number {
+  if (raw === 0 || raw === '0') {
+    return 0
+  }
+
+  const value = typeof raw === 'number' ? raw : Number(raw)
+
+  if (!Number.isFinite(value)) {
+    return DEFAULT_IDLE_HANGUP_SECONDS
+  }
+
+  return Math.max(0, Math.floor(value))
+}
+
+/** Hang up a forgotten GPT-Live call. Paused while Hermes is still working. */
+export function shouldIdleHangupLiveVoice(input: {
+  delegationInFlight: boolean
+  idleHangupSeconds: number
+  quietSeconds: number
+}): boolean {
+  if (!Number.isFinite(input.idleHangupSeconds) || input.idleHangupSeconds <= 0) {
+    return false
+  }
+
+  if (input.delegationInFlight) {
+    return false
+  }
+
+  return input.quietSeconds >= input.idleHangupSeconds
+}
 
 export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
   try {
@@ -91,6 +127,10 @@ export async function fetchVoiceLiveStatus(): Promise<null | VoiceLiveStatus> {
 
     return {
       available: Boolean(response.available),
+      idleHangupSeconds: parseIdleHangupSeconds(
+        (response as VoiceLiveStatus & { idle_hangup_seconds?: number }).idle_hangup_seconds ??
+          response.idleHangupSeconds
+      ),
       mode: response.mode === 'gpt-live' ? 'gpt-live' : 'chained',
       model: response.model,
       reason: response.reason ?? null,
@@ -225,12 +265,17 @@ export class VoiceLiveSession {
   private analyser: null | AnalyserNode = null
   private audioContext: null | AudioContext = null
   private lastSpeaking = false
+  private lastActivityMs = Date.now()
+  private idleTimer: null | number = null
   sessionId: null | string = null
   /** The delegation currently being answered by Hermes; late results for an
    *  older id are dropped by the conversation hook. */
   activeDelegationId: null | string = null
 
-  constructor(private readonly handlers: VoiceLiveHandlers) {
+  constructor(
+    private readonly handlers: VoiceLiveHandlers,
+    private readonly idleHangupSeconds = DEFAULT_IDLE_HANGUP_SECONDS
+  ) {
     this.audio = new Audio()
     this.audio.autoplay = true
   }
@@ -334,6 +379,47 @@ export class VoiceLiveSession {
 
     this.sessionId = response.session?.id ?? null
     await connection.setRemoteDescription({ sdp: response.transport.sdp, type: 'answer' })
+    this.armIdleWatch()
+  }
+
+  /** Keep the idle clock in sync with the Hermes turn the hook owns. */
+  markDelegation(id: null | string): void {
+    this.activeDelegationId = id
+    this.touchActivity()
+  }
+
+  private touchActivity(): void {
+    this.lastActivityMs = Date.now()
+  }
+
+  private armIdleWatch(): void {
+    if (this.idleTimer || this.idleHangupSeconds <= 0) {
+      return
+    }
+
+    this.touchActivity()
+    this.idleTimer = window.setInterval(() => this.tickIdle(), IDLE_CHECK_MS)
+  }
+
+  private tickIdle(): void {
+    if (this.finalized) {
+      return
+    }
+
+    if (
+      shouldIdleHangupLiveVoice({
+        delegationInFlight: Boolean(this.activeDelegationId),
+        idleHangupSeconds: this.idleHangupSeconds,
+        quietSeconds: (Date.now() - this.lastActivityMs) / 1000
+      })
+    ) {
+      this.hangUpIdle()
+    }
+  }
+
+  private hangUpIdle(): void {
+    this.send({ type: 'session.close' })
+    this.finish('idle_timeout', null)
   }
 
   private armSpeakingProbe(stream: MediaStream): void {
@@ -359,6 +445,10 @@ export class VoiceLiveSession {
         const loud = peak > 6
         quietFrames = loud ? 0 : quietFrames + 1
         const speaking = loud || quietFrames < 4
+
+        if (loud) {
+          this.touchActivity()
+        }
 
         if (speaking !== this.lastSpeaking) {
           this.lastSpeaking = speaking
@@ -401,6 +491,7 @@ export class VoiceLiveSession {
           this.transcript.splice(0, this.transcript.length - 1_500)
         }
 
+        this.touchActivity()
         this.handlers.onTranscript?.(fragment)
 
         return
@@ -411,6 +502,7 @@ export class VoiceLiveSession {
 
         if (id) {
           this.activeDelegationId = id
+          this.touchActivity()
           this.handlers.onDelegation(id, this.contextWindow())
         }
 
@@ -445,6 +537,7 @@ export class VoiceLiveSession {
     const text = content.replace(/\s+/g, ' ').trim().slice(0, APPEND_CHAR_LIMIT)
 
     if (text) {
+      this.touchActivity()
       this.send({
         content: text,
         delegation_id: delegationId,
@@ -456,7 +549,13 @@ export class VoiceLiveSession {
 
   /** A result the voice should say aloud (paraphrased). */
   speak(delegationId: null | string, content: string): void {
-    for (const chunk of chunkForCommentary(content)) {
+    const chunks = chunkForCommentary(content)
+
+    if (chunks.length > 0) {
+      this.touchActivity()
+    }
+
+    for (const chunk of chunks) {
       this.send({
         content: chunk,
         delegation_id: delegationId,
@@ -516,6 +615,11 @@ export class VoiceLiveSession {
     if (this.closeTimer) {
       window.clearTimeout(this.closeTimer)
       this.closeTimer = null
+    }
+
+    if (this.idleTimer) {
+      window.clearInterval(this.idleTimer)
+      this.idleTimer = null
     }
 
     if (this.speakingProbe) {

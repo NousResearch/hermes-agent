@@ -1135,6 +1135,9 @@ DEFAULT_CONFIG = {
             "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
             # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
             "instructions": "",
+            # Hang up a forgotten GPT-Live WebRTC session after this many seconds of
+            # user/assistant silence. 0 disables. Timer pauses while Hermes is working.
+            "idle_hangup_seconds": 300,
             # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
         },
         "record_key": "ctrl+b",

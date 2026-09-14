@@ -469,6 +469,11 @@ class ProcessSession:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
+    # Set the instant a kill is requested, before the signal is sent. The
+    # reader thread can observe the dead process and finish the session before
+    # kill_process() gets to stamp completion_reason, so this is the reliable
+    # "this did not end on its own" marker for completion consumers.
+    _kill_requested: bool = field(default=False, repr=False)
 
     def append_output(self, text: str) -> None:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
@@ -1363,7 +1368,67 @@ class ProcessRegistry(ProcessCheckpointMixin):
             }
             _redact_process_result(notification)
             self.completion_queue.put(notification)
+        # Record evidence AFTER the notification is queued: delivery is
+        # user-facing and latency-sensitive, while evidence is advisory, and
+        # this does synchronous SQLite I/O on the reader thread.
+        if was_running:
+            self._record_verification_evidence(session)
         session._completion_event.set()
+
+    def _record_verification_evidence(self, session: ProcessSession) -> None:
+        """Record a finished background command as verification evidence.
+
+        The foreground terminal path records evidence inline once the command
+        returns. A background spawn returns immediately with a synthetic
+        ``exit_code: 0`` and never reaches that code, so before this hook a
+        test suite too slow for the foreground timeout — i.e. exactly the
+        suites that must run in the background — could never record evidence
+        at all. ``verification_status()`` then stayed ``stale`` forever and the
+        verify-on-stop nudge replayed an older foreground run indefinitely.
+
+        This runs on the single completion convergence point, under the
+        ``was_running`` guard, so every exit route (reader thread, PTY reader,
+        kill, reconcile) records exactly once and a re-entrant
+        ``_move_to_finished`` cannot double-insert.
+
+        Only genuinely finished runs are eligible. A killed or lost process
+        proves nothing about the tree, so it is skipped rather than recorded
+        with its (possibly zero) exit code. ``_kill_requested`` is checked in
+        addition to ``completion_reason`` because a kill races the reader
+        thread: the process dies from the signal and the reader can publish it
+        as "exited" before kill_process() stamps "killed".
+        """
+        if session._kill_requested:
+            return
+        if session.completion_reason not in ("exited", "already_exited"):
+            return
+        if session.exit_code is None:
+            return
+        try:
+            from agent.verification_evidence import record_terminal_result
+            from tools.ansi_strip import strip_ansi
+
+            record_terminal_result(
+                command=session.command,
+                cwd=session.cwd,
+                # Mirror the foreground path's identity fallback so evidence
+                # lands under the key verification_status() later reads.
+                session_id=(
+                    session.parent_session_id
+                    or session.session_key
+                    or session.task_id
+                    or "default"
+                ),
+                exit_code=int(session.exit_code),
+                output=strip_ansi(session.output_buffer or ""),
+            )
+        except Exception:
+            # Evidence is advisory; never let it disturb process bookkeeping.
+            logger.debug(
+                "verification evidence recording failed for %s",
+                session.id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
@@ -1835,6 +1900,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 self._completion_consumed.add(session_id)
             return result
         try:
+            # Mark the kill intent BEFORE signalling. The reader thread wakes as
+            # soon as the process dies and calls _move_to_finished() itself; if it
+            # wins that race it sees the default completion_reason and publishes
+            # the kill as a clean "exited" with the shell's own status. Recording
+            # the intent up front makes the outcome deterministic for every
+            # completion consumer (notifications, and verification evidence, which
+            # must never bank a killed run as a real test result).
+            with session._lock:
+                session._kill_requested = True
             early = self._signal_kill(session, session_id, consume_output)
             if early is not None:
                 return early

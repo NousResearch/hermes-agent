@@ -612,6 +612,121 @@ class SessionCompressionMixin:
             "SELECT holder FROM compression_locks WHERE session_id = ? AND expires_at >= ?", (session_id, time.time()))
         return None if row is None else row[0]
 
+    _COMPACTION_EVENT_KINDS = frozenset({"start", "end"})
+    _COMPACTION_EVENT_PAYLOAD_BYTES = 8 * 1024
+    _COMPACTION_EVENT_PATIENCE_S = 2.0
+
+    @staticmethod
+    def _cap_compaction_payload(payload: Dict[str, Any]) -> str:
+        """Content-free payload JSON capped at 8 KiB with a ``truncated`` marker."""
+        try:
+            raw = json.dumps(payload if isinstance(payload, dict) else {}, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            raw = "{}"
+        if len(raw.encode("utf-8")) <= SessionCompressionMixin._COMPACTION_EVENT_PAYLOAD_BYTES:
+            return raw
+        try:
+            slim = {
+                "truncated": True,
+                "session_id": payload.get("session_id"),
+                "attempt_id": payload.get("attempt_id"),
+                "commit_status": payload.get("commit_status"),
+                "failure_class": payload.get("failure_class"),
+            }
+            raw = json.dumps(slim, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError, AttributeError):
+            raw = '{"truncated":true}'
+        return raw
+
+    def record_compaction_event(
+        self, session_id: str, attempt_id: str, kind: str, payload: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Append one compaction audit row; best-effort, never raises.
+
+        Returns True when the row landed, False otherwise (missing ids,
+        unknown kind, or any store error). Audit writes use a short patience
+        so they can never delay or abort a compaction.
+        """
+        if not session_id or not attempt_id or kind not in self._COMPACTION_EVENT_KINDS:
+            return False
+        body = dict(payload) if isinstance(payload, dict) else {}
+        body.setdefault("session_id", session_id)
+        body.setdefault("attempt_id", attempt_id)
+        encoded = self._cap_compaction_payload(body)
+        try:
+            self._execute_write(
+                lambda conn: conn.execute(
+                    "INSERT INTO compaction_events (session_id, attempt_id, kind, created_at, payload_json)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (session_id, attempt_id, kind, time.time(), encoded),
+                ),
+                patience_s=self._COMPACTION_EVENT_PATIENCE_S,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("record_compaction_event(%s) failed: %s", session_id, exc)
+            return False
+
+    def find_orphaned_compaction_starts(self, session_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """``start`` rows with no matching ``end`` (same session + attempt).
+
+        A crash mid-compaction leaves exactly this shape; clean runs always
+        pair. Optional per-session scoping for resume diagnostics.
+        """
+        sql = (
+            "SELECT s.session_id, s.attempt_id, s.created_at, s.payload_json"
+            " FROM compaction_events s"
+            " WHERE s.kind = 'start' AND NOT EXISTS ("
+            "SELECT 1 FROM compaction_events e WHERE e.kind = 'end'"
+            " AND e.session_id = s.session_id AND e.attempt_id = s.attempt_id)"
+        )
+        params: Tuple[Any, ...] = ()
+        if session_id:
+            sql += " AND s.session_id = ?"
+            params = (session_id,)
+        sql += " ORDER BY s.created_at ASC"
+        try:
+            rows = self._read_all(sql, params)
+        except Exception as exc:
+            logger.warning("find_orphaned_compaction_starts failed: %s", exc)
+            return []
+        out = []
+        for row in rows or []:
+            try:
+                payload = json.loads(row[3] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            out.append({
+                "session_id": row[0], "attempt_id": row[1], "started_at": row[2], "payload": payload,
+            })
+        return out
+
+    def get_compaction_events(self, session_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        """Newest-first audit rows for one session (reader surface for resume/doctor)."""
+        if not session_id:
+            return []
+        try:
+            bound = max(1, min(int(limit), 1000))
+        except (TypeError, ValueError):
+            bound = 100
+        try:
+            rows = self._read_all(
+                "SELECT attempt_id, kind, created_at, payload_json FROM compaction_events"
+                " WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                (session_id, bound),
+            )
+        except Exception as exc:
+            logger.warning("get_compaction_events(%s) failed: %s", session_id, exc)
+            return []
+        out = []
+        for row in rows or []:
+            try:
+                payload = json.loads(row[3] or "{}")
+            except (TypeError, ValueError):
+                payload = {}
+            out.append({"attempt_id": row[0], "kind": row[1], "created_at": row[2], "payload": payload})
+        return out
+
     def finalize_orphaned_compression_sessions(self) -> int:
         """Mark orphaned compression continuations (parent ended by compression; child has
         messages, no end_reason/ended_at, api_call_count=0, older than 7 days) as

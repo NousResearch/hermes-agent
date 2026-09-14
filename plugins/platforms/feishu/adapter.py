@@ -123,6 +123,12 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
+# ``::followup{p1="..." p2="..."}`` is a desktop-UI directive that renders as
+# clickable suggestion chips there. Feishu/Lark has no such renderer, so the raw
+# directive reaches the chat as literal noise at the end of every reply -- and on
+# a cron-delivered report nobody can act on the suggestions anyway. Strip it on
+# the way out; inbound content is untouched.
+_FOLLOWUP_DIRECTIVE_RE = re.compile(r"(?ms)^[ \t]*::followup\{.*?\}[ \t]*$\n?")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # --- Media type sets and upload constants ---
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -1885,7 +1891,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
-        return content.strip()
+        return _FOLLOWUP_DIRECTIVE_RE.sub("", content).strip()
 
     # --- Inbound event handlers ---
     def _on_message_event(self, data: Any) -> None:

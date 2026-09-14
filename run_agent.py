@@ -109,7 +109,7 @@ from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import ApiErrorSummaryMixin
+from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSummaryMixin
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -485,7 +485,7 @@ class AIAgent(
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
         return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
                 and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and "expected ident at line" in str(error).strip().lower())
+                and any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")

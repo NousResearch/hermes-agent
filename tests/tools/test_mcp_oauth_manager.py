@@ -743,3 +743,108 @@ async def test_refresh_400_recovery_never_logs_token_material(
     assert "refresh-secret" not in caplog.text
     assert "rotated-refresh-secret" not in caplog.text
     assert "rotated-access-secret" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Refresh fence: one refresh generation is consumed by exactly one holder
+# ---------------------------------------------------------------------------
+
+
+def _fenced_provider(tmp_path, monkeypatch, endpoint):
+    """A real provider holding an EXPIRED (A1, R1) pair, ready to refresh.
+
+    The SDK only refreshes when ``can_refresh_token()`` sees client_info, and
+    ``_store_tokens`` reads ``oauth_metadata.issuer``: both need real models.
+    """
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata
+
+    provider = _provider_with_token_endpoint(tmp_path, {}, endpoint, monkeypatch)
+    provider.context.oauth_metadata = OAuthMetadata(
+        issuer="https://idp.example.com",
+        authorization_endpoint="https://idp.example.com/authorize",
+        token_endpoint=endpoint,
+    )
+    provider.context.client_info = OAuthClientInformationFull.model_validate(
+        {"client_id": "client-id", "redirect_uris": ["http://localhost/cb"]}
+    )
+    provider.context.current_tokens = _token("A1", "R1")
+    provider.context.token_expiry_time = time.time() - 10
+    return provider
+
+
+async def _drive_flow(provider, responder):
+    """Pump the auth flow the way httpx does: one asend(response) per yielded request.
+
+    Yields to the event loop before answering so a concurrent flow gets to
+    contend for the fence while this one is "on the wire".
+    """
+    import httpx2
+
+    gen = provider.async_auth_flow(httpx2.Request("GET", "https://mcp.example.com/mcp"))
+    out = await gen.asend(None)
+    while True:
+        await asyncio.sleep(0)
+        try:
+            out = await gen.asend(responder(out))
+        except StopAsyncIteration:
+            return
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_presents_single_use_token_exactly_once(tmp_path, monkeypatch):
+    """Two providers on one token store: R1 is POSTed once, both end on the rotated pair."""
+    from urllib.parse import parse_qs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    a = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    b = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    assert a is not b
+    await a.context.storage.set_tokens(_token("A1", "R1"))
+
+    presented = []
+
+    def responder(request):
+        if request.method != "POST":
+            return _fake_response(200, str(request.url), b"{}")
+        refresh = parse_qs(request.content.decode())["refresh_token"][0]
+        presented.append(refresh)
+        if presented == ["R1"]:
+            body = json.dumps(_token("A2", "R2").model_dump(mode="json", exclude_none=True)).encode()
+            return _fake_response(200, endpoint, body)
+        # A single-use provider rejects any second presentation.
+        return _fake_response(400, endpoint, b'{"error":"invalid_grant"}')
+
+    await asyncio.gather(_drive_flow(a, responder), _drive_flow(b, responder))
+
+    assert presented == ["R1"], presented
+    assert (a.context.current_tokens.access_token, a.context.current_tokens.refresh_token) == ("A2", "R2")
+    assert (b.context.current_tokens.access_token, b.context.current_tokens.refresh_token) == ("A2", "R2")
+    assert a._hermes_fence is None and b._hermes_fence is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_fails_closed_while_a_peer_holds_the_fence(tmp_path, monkeypatch):
+    """A fence held elsewhere past the deadline aborts the refresh: no POST, tokens kept."""
+    import functools
+
+    import tools.mcp_oauth as mcp_oauth
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    await provider.context.storage.set_tokens(_token("A1", "R1"))
+    monkeypatch.setattr(
+        mcp_oauth, "_refresh_fence", functools.partial(mcp_oauth._refresh_fence, timeout=0.2)
+    )
+
+    sent = []
+
+    async with mcp_oauth._refresh_fence(provider.context.storage._tokens_path()):
+        with pytest.raises(mcp_oauth.RefreshFenceTimeout):
+            await _drive_flow(provider, sent.append)
+
+    assert sent == []
+    assert provider.context.current_tokens.refresh_token == "R1"
+    assert (await provider.context.storage.get_tokens()).refresh_token == "R1"
+    assert provider._hermes_fence is None

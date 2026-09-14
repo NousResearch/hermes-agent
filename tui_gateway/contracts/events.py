@@ -2,15 +2,8 @@
 
 One ``Payload`` model per event name, registered with ``event(...)``; ``request.cancel`` lives in
 ``server_requests.py`` next to the requests it withdraws. Each model's docstring names the Python
-emitter it was typed from — that emitter is the source of truth, the hand-written TS in
-``apps/shared/src/gateway-events.ts`` was only the map. Fields the emitter always sets are required;
-anything conditional is ``X | None = None``.
-
-A handful of payloads stay ``extra="allow"`` on purpose: their closed shape is owned by another
-module (the skin engine, the pet store, the goal/loop/heartbeat state files, the free-tier bootstrap
-record) or they are watcher signals whose payload is ``{}`` today and may grow. Everything else is
-closed, so a drifted emitter fails the suite (``registry.check_payload`` raises under
-``HERMES_TEST_ISOLATION``).
+emitter it was typed from. Fields the emitter always sets are required; fields it conditionally omits
+use ``X | None = None`` so serialization writes a wire ``null``.
 """
 
 from __future__ import annotations
@@ -19,12 +12,6 @@ from .base import JsonValue, Payload, WireEnum
 from .common import MessageReaction, SessionLiveInfo, SubagentStatus, Usage
 from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
-
-
-class OpenPayload(Payload):
-    """A payload whose known keys are typed but whose closed set is owned elsewhere."""
-
-    model_config = Payload.model_config | {"extra": "allow"}
 
 
 # ── gateway lifecycle ─────────────────────────────────────────────────────────────────────────
@@ -59,7 +46,7 @@ event("skin.changed", SkinPayload,
       doc="The active skin moved (name switch or live colour edit); repaint from this palette.")
 
 
-class SetupReadyPayload(OpenPayload):
+class SetupReadyPayload(Payload):
     """``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``."""
 
     provider_configured: bool
@@ -200,10 +187,26 @@ class MessageCompletePayload(Payload):
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")
 
 
-class StatusUpdatePayload(Payload):
-    """``server._status_update`` and the direct emitters (goal / loop / heartbeat / process)."""
+class StatusUpdateKind(WireEnum):
+    """Kinds written by ``server._status_update`` and direct emitters."""
 
-    kind: str
+    status = "status"
+    lifecycle = "lifecycle"
+    compacting = "compacting"
+    compacted = "compacted"
+    goal = "goal"
+    loop = "loop"
+    process = "process"
+    heartbeat = "heartbeat"
+    ready = "ready"
+    compressing = "compressing"
+    warn = "warn"
+
+
+class StatusUpdatePayload(Payload):
+    """``server._status_update`` and the direct emitters."""
+
+    kind: StatusUpdateKind
     text: str
 
 
@@ -251,13 +254,12 @@ event("review.summary", ReviewSummaryPayload, doc="Background review of the last
 
 
 class ToolStartPayload(Payload):
-    """``tool_progress._on_tool_start`` (+ ``agent_callbacks._mirror_subagent_to_child`` rows with
-    ``preview`` and empty ``args``). ``todos``/``revision`` are NOT set by the emitter; kept optional
-    because tool.start rows may pass through connector redaction unchanged."""
+    """``tool_progress._on_tool_start`` and ``agent_callbacks._mirror_subagent_to_child``."""
 
     tool_id: str
     name: str
     context: str | None = None
+    # WHY arbitrary tool schemas own their argument shapes.
     args: dict[str, JsonValue] | None = None
     args_text: str | None = None
     preview: str | None = None
@@ -266,18 +268,36 @@ class ToolStartPayload(Payload):
 event("tool.start", ToolStartPayload, doc="A tool call began (stable id + full args).")
 
 
+class TodoStatus(WireEnum):
+    pending = "pending"
+    in_progress = "in_progress"
+    completed = "completed"
+    cancelled = "cancelled"
+
+
+class TodoItem(Payload):
+    """One normalized row from ``tool_progress._normalize_todo_state``."""
+
+    id: str
+    content: str
+    status: TodoStatus
+    parent: str | None = None
+
+
 class ToolCompletePayload(Payload):
-    """``tool_progress._on_tool_complete``; ``todos``/``revision`` merged in for the todo tools."""
+    """``tool_progress._on_tool_complete``; todo tools add a normalized snapshot."""
 
     tool_id: str
     name: str
-    args: dict[str, JsonValue] | None = None  # mirrored child rows / room relays omit it
+    # WHY arbitrary tool schemas own their argument shapes.
+    args: dict[str, JsonValue] | None = None
     duration_s: float | None = None
-    result: JsonValue = None
+    # The producer writes either a parsed tool JSON value or its original JSON string.
+    result: JsonValue | None = None
     summary: str | None = None
     result_text: str | None = None
     inline_diff: str | None = None
-    todos: list[JsonValue] | None = None
+    todos: list[TodoItem] | None = None
     revision: int | None = None
 
 
@@ -293,12 +313,17 @@ class ToolGeneratingPayload(Payload):
 event("tool.generating", ToolGeneratingPayload, doc="The model is emitting a tool call's arguments.")
 
 
+class ToolOutputRiskLevel(WireEnum):
+    low = "low"
+    high = "high"
+
+
 class ToolOutputRiskPayload(Payload):
     """``tool_progress._progress_output_risk``."""
 
     tool_id: str
     name: str
-    risk: str
+    risk: ToolOutputRiskLevel
     findings: list[str]
     redacted: bool
 
@@ -309,7 +334,7 @@ event("tool.output_risk", ToolOutputRiskPayload, doc="Tool output was classified
 class TodoUpdatedPayload(Payload):
     """``tool_progress._normalize_todo_state`` — full task snapshot."""
 
-    todos: list[JsonValue]
+    todos: list[TodoItem]
     revision: int
 
 
@@ -377,12 +402,18 @@ class SessionResumeProgressPayload(Payload):
 event("session.resume_progress", SessionResumeProgressPayload, doc="Deferred resume hydration progress.")
 
 
+class SessionReclaimReason(WireEnum):
+    idle_timeout = "idle_timeout"
+    lru_evict = "lru_evict"
+    ws_orphan_reap = "ws_orphan_reap"
+
+
 class SessionReclaimedPayload(Payload):
     """``session_lifecycle._announce_session_reclaimed`` (broadcast)."""
 
     session_id: str
     stored_session_id: str
-    reason: str  # idle_timeout | lru_evict | ws_orphan_reap
+    reason: SessionReclaimReason
 
 
 event("session.reclaimed", SessionReclaimedPayload, doc="The backend reclaimed a live session out from under its clients.")
@@ -436,12 +467,17 @@ event("btw.complete", BtwCompletePayload, doc="A /btw side question was answered
 event("preview.restart.complete", PreviewRestartCompletePayload, doc="The hidden preview-restart agent finished.")
 
 
+class PreviewRestartProgressLevel(WireEnum):
+    info = "info"
+    error = "error"
+
+
 class PreviewRestartProgressPayload(Payload):
     """``methods_prompt`` restart body + ``agent_callbacks._preview_restart_callbacks``."""
 
     task_id: str
     text: str
-    level: str | None = None
+    level: PreviewRestartProgressLevel | None = None
 
 
 event("preview.restart.progress", PreviewRestartProgressPayload, doc="Progress line from the preview-restart agent.")
@@ -646,10 +682,16 @@ event("browser.controller.cancel", BrowserControllerCancelPayload, doc="Withdraw
 event("voice.interrupted", None, doc="Barge-in: the spoken interjection interrupted the turn; no payload.")
 
 
-class VoiceStatusPayload(Payload):
-    """``methods_voice._vr_on_status``; states come from the recorder (idle / listening / transcribing …)."""
+class VoiceStatus(WireEnum):
+    idle = "idle"
+    listening = "listening"
+    transcribing = "transcribing"
 
-    state: str
+
+class VoiceStatusPayload(Payload):
+    """``hermes_cli.voice`` invokes ``methods_voice._vr_on_status`` with these states."""
+
+    state: VoiceStatus
 
 
 class VoiceTranscriptPayload(Payload):
@@ -731,13 +773,14 @@ __all__ = [
     "ChangeSignalPayload", "ErrorPayload", "ErrorSurface", "GatewayReadyPayload", "LayoutApplyPayload",
     "MessageCompletePayload", "MessageInterimPayload", "MessageReaction", "MessageReactionPayload",
     "MoaAggregatingPayload", "MoaPhasePayload", "MoaProgressPayload", "MoaReferencePayload", "NoticePayload",
-    "NotificationClearPayload", "NotificationKind", "NotificationLevel", "NotificationShowPayload", "OpenPayload",
+    "NotificationClearPayload", "NotificationKind", "NotificationLevel", "NotificationShowPayload",
     "PaneRevealPayload", "PetChangedPayload", "PetGenerateProgressPayload", "PetHatchProgressPayload",
-    "PreviewClosePayload", "PreviewOpenPayload", "PreviewRestartCompletePayload", "PreviewRestartProgressPayload",
-    "ReactionPayload", "ResumePhaseStatus", "ReviewSummaryPayload", "SessionControlSnapshot",
-    "SessionControlUpdatePayload", "SessionReclaimedPayload", "SessionResumeProgressPayload", "SessionTitlePayload",
+    "PreviewClosePayload", "PreviewOpenPayload", "PreviewRestartCompletePayload", "PreviewRestartProgressLevel",
+    "PreviewRestartProgressPayload", "ReactionPayload", "ResumePhaseStatus", "ReviewSummaryPayload", "SessionControlSnapshot",
+    "SessionControlUpdatePayload", "SessionReclaimReason", "SessionReclaimedPayload", "SessionResumeProgressPayload", "SessionTitlePayload",
     "SessionUsagePayload", "SetupReadyPayload", "SkinPayload", "StatusUpdatePayload", "StreamDeltaPayload",
     "SubagentEventPayload", "SubagentOutputTailEntry", "TerminalClosePayload", "TerminalOutputPayload",
-    "TipShowPayload", "TodoUpdatedPayload", "ToolCompletePayload", "ToolGeneratingPayload", "ToolOutputRiskPayload",
-    "ToolStartPayload", "TurnStatus", "VoiceStatusPayload", "VoiceTranscriptPayload", "WakeDetectedPayload",
+    "StatusUpdateKind", "TipShowPayload", "TodoItem", "TodoStatus", "TodoUpdatedPayload", "ToolCompletePayload",
+    "ToolGeneratingPayload", "ToolOutputRiskLevel", "ToolOutputRiskPayload", "ToolStartPayload", "TurnStatus",
+    "VoiceStatus", "VoiceStatusPayload", "VoiceTranscriptPayload", "WakeDetectedPayload",
 ]

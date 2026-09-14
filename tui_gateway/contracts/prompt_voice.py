@@ -207,7 +207,7 @@ method("input.detect_drop", params=InputDetectDropParams, result=InputDetectDrop
 
 
 class SideAgentParams(SessionParams):
-    text: str | None = None  # methods_prompt.py:969 reads an omitted side-agent prompt as None
+    text: str = ""  # methods_prompt.py:969 defaults a missing side-agent prompt
 
 
 class TaskIdResult(Result):
@@ -379,7 +379,7 @@ method("voice.record", params=VoiceRecordParams, result=VoiceRecordResult,
 
 
 class VoiceTtsParams(Params):
-    text: str | None = None  # methods_voice.py:767 reads an omitted text as None
+    text: str = ""  # methods_voice.py:767 defaults a missing text before rejecting it
     profile: str | None = None
 
 

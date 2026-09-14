@@ -106,14 +106,12 @@ Validated receipts are normalized into the task's `completion_proof` field and a
 `completion_evidence_recorded` event, so `show`, tools, and the dashboard do not need
 to re-derive evidence from prose or closing-run metadata.
 
-An evidence-contract card without a valid receipt remains in flight. When a human
-intentionally accepts that risk, the dashboard's explicit unproven-completion action
-completes it and records the
-auditable `card_closed_without_proof` event. The override cannot be combined with a
-receipt and is not available through the worker tool or CLI. Existing cards and
-`local-only` contracts remain permissive for backwards
-compatibility; proof is an opt-in task policy rather than a heuristic applied by a
-monitoring agent after completion.
+An evidence-contract card without a valid receipt remains in flight. There is no
+unproven-completion override because the CLI, worker, and plugin HTTP routes do not
+provide an authority boundary that can prove a human approved the bypass. Existing
+cards and `local-only` contracts remain permissive for backwards compatibility; proof
+is an opt-in task policy rather than a heuristic applied by a monitoring agent after
+completion.
 
 ## Kanban vs. `delegate_task`
 

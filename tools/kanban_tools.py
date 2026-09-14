@@ -574,7 +574,7 @@ def _handle_complete(args: dict, **kw) -> str:
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
     proof = _coerce_str_list(args.get("proof"), "proof", "typed evidence values", strip=True)
     _check("accept_unproven" not in args,
-           "accept_unproven is restricted to human CLI/dashboard completion")
+           "accept_unproven is not supported; evidence-contract tasks require proof")
     if artifacts:
         metadata = _merge_artifacts(metadata, artifacts)
     _check(summary or result, "provide at least one of: summary (preferred), result")

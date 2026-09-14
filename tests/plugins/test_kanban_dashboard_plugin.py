@@ -248,26 +248,6 @@ def test_patch_done_maps_completion_evidence_errors_to_400(client, proof):
         assert task.status != "done"
 
 
-def test_dashboard_can_audit_human_unproven_completion(client):
-    with kbc.connect_closing() as conn:
-        task_id = kb.create_task(conn, title="evidence gated", completion_contract="evidence")
-
-    response = client.patch(
-        f"/api/plugins/kanban/tasks/{task_id}",
-        json={"status": "done", "accept_unproven": True},
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["task"]["status"] == "done"
-    with kbc.connect_closing() as conn:
-        events = [event for event in kb.list_events(conn, task_id)
-                  if event.kind == "card_closed_without_proof"]
-        assert events[-1].payload == {
-            "completion_contract": "evidence",
-            "explicit_override": True,
-        }
-
-
 def test_patch_review_lifecycle_preserves_handoff_and_reopens(client):
     secret = "ghp_" + "D" * 40
     task = client.post(

@@ -2541,7 +2541,6 @@ def complete_task(
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, proof: Optional[Iterable[str]] = None,
-    accept_unproven: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2550,9 +2549,8 @@ def complete_task(
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
     ``proof`` accepts typed ``TYPE:VALUE`` records. Cards created with the
-    ``evidence`` completion contract require at least one valid record unless
-    ``accept_unproven`` is explicit; both paths are persisted on the task/event
-    log. ``created_cards`` are verified first — a phantom id raises
+    ``evidence`` completion contract require at least one valid record, persisted
+    on the task and event log. ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
     """
@@ -2564,8 +2562,7 @@ def complete_task(
         prepare_completion_evidence, settle_completion_evidence,
     )
     prepared_proof = prepare_completion_evidence(
-        conn, task, proof, accept_unproven=accept_unproven,
-        max_path_bytes=KANBAN_ATTACHMENT_MAX_BYTES,
+        conn, task, proof, max_path_bytes=KANBAN_ATTACHMENT_MAX_BYTES,
     )
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
@@ -2589,9 +2586,7 @@ def complete_task(
         task = get_task(conn, task_id)
         if task is None:
             return False
-        normalized_proof, unproven_override = settle_completion_evidence(
-            conn, task, prepared_proof,
-        )
+        normalized_proof = settle_completion_evidence(conn, task, prepared_proof)
         prior_status = _task_status(conn, task_id)
         sql = """
                 UPDATE tasks
@@ -2625,10 +2620,7 @@ def complete_task(
             metadata=metadata,
         )
         # Never-claimed task: synthesize a run so the handoff fields survive.
-        if run_id is None and (
-            summary or metadata or result or normalized_proof or unproven_override
-            or prior_status == "review"
-        ):
+        if run_id is None and (summary or metadata or result or normalized_proof or prior_status == "review"):
             synth_summary, synth_metadata = handoff_summary, metadata
             if prior_status == "review" and not synth_summary and not synth_metadata:
                 synth_summary = _REVIEW_APPROVED_NOTE
@@ -2641,12 +2633,7 @@ def complete_task(
                 conn, task_id, "completion_evidence_recorded",
                 {"proof": normalized_proof}, run_id=run_id,
             )
-        elif unproven_override:
-            _append_event(
-                conn, task_id, "card_closed_without_proof",
-                {"completion_contract": task.completion_contract, "explicit_override": True},
-                run_id=run_id,
-            )
+
         event_summary = handoff_summary
         if prior_status == "review" and not event_summary:
             event_summary = _REVIEW_APPROVED_NOTE

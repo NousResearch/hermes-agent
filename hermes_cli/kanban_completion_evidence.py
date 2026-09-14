@@ -17,43 +17,37 @@ class CompletionEvidenceError(ValueError):
 
 
 def prepare_completion_evidence(
-    conn, task, proof: Iterable[str] | None, *, accept_unproven: bool = False,
-    max_path_bytes: int,
-) -> tuple[list[str], list[dict], bool, int]:
+    conn, task, proof: Iterable[str] | None, *, max_path_bytes: int,
+) -> tuple[list[str], list[dict], int]:
     """Capture typed proof for mandatory revalidation at settlement.
 
     Relative ``path:`` values resolve against the task's persisted workspace.
-    The ``evidence`` contract requires at least one record unless the caller uses
-    the explicit, auditable override. Other contracts remain backwards compatible
-    but may still attach validated evidence.
+    The ``evidence`` contract requires at least one record. Other contracts remain
+    backwards compatible but may still attach validated evidence.
     """
     values = list(proof or ())
-    if accept_unproven and values:
-        raise CompletionEvidenceError("accept_unproven cannot be combined with proof")
-    if accept_unproven and task.completion_contract != EVIDENCE_CONTRACT:
-        raise CompletionEvidenceError("accept_unproven is only valid for the evidence completion contract")
     if not values:
-        if task.completion_contract == EVIDENCE_CONTRACT and not accept_unproven:
+        if task.completion_contract == EVIDENCE_CONTRACT:
             raise CompletionEvidenceError(
                 "completion requires proof; pass one or more typed values "
-                f"({_EVIDENCE_TYPES}) or explicitly accept an unproven completion"
+                f"({_EVIDENCE_TYPES})"
             )
-        return values, [], accept_unproven, max_path_bytes
+        return values, [], max_path_bytes
 
-    return values, _validate_values(conn, task, values, max_path_bytes), False, max_path_bytes
+    return values, _validate_values(conn, task, values, max_path_bytes), max_path_bytes
 
 
 def settle_completion_evidence(
-    conn, task, prepared: tuple[list[str], list[dict], bool, int],
-) -> tuple[list[dict], bool]:
+    conn, task, prepared: tuple[list[str], list[dict], int],
+) -> list[dict]:
     """Revalidate a prepared receipt under the terminal write transaction."""
-    values, prior_records, accept_unproven, max_path_bytes = prepared
-    _, records, settled_override, _ = prepare_completion_evidence(
-        conn, task, values, accept_unproven=accept_unproven, max_path_bytes=max_path_bytes,
+    values, prior_records, max_path_bytes = prepared
+    _, records, _ = prepare_completion_evidence(
+        conn, task, values, max_path_bytes=max_path_bytes,
     )
-    if records != prior_records or settled_override != accept_unproven:
+    if records != prior_records:
         raise CompletionEvidenceError("completion evidence changed before settlement")
-    return records, settled_override
+    return records
 
 
 def _validate_values(conn, task, values: list[str], max_path_bytes: int) -> list[dict]:

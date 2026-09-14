@@ -53,7 +53,7 @@ export function VoiceProviderFields({
 }) {
   const { t } = useI18n()
   const keys = useMemo(() => voiceProviderKeys(section, providerKey), [section, providerKey])
-  const { data: loadedConfig } = useHermesConfigRecord(profile)
+  const { data: loadedConfig, writeScope } = useHermesConfigRecord(profile)
   // Parents pass `profile` as a fresh object literal each render; keying the
   // writer and the autosave effect on its identity would re-arm the 550ms
   // timer on every unrelated re-render. Key on the scope string instead
@@ -97,11 +97,12 @@ export function VoiceProviderFields({
     }
 
     const timeout = window.setTimeout(() => {
-      void saveHermesConfigRecord(diffConfig(baseline ?? {}, config), profile)
+      void saveHermesConfigRecord(diffConfig(baseline ?? {}, config), writeScope ?? profile)
         .then(() => {
           setBaseline(config)
           writeConfigCache(config)
         })
+
         .catch(err => notifyError(err, t.settings.config.autosaveFailed))
     }, 550)
 

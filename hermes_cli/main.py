@@ -715,6 +715,7 @@ from hermes_cli.main_provider_setup import (
     _is_profile_api_key_provider,
     _named_custom_provider_map,
     _offer_reasoning_after_pick,
+    _provider_picker_identity,
     _prompt_main_reasoning_effort,
     _prompt_provider_choice,
     _remove_custom_provider,
@@ -1978,6 +1979,9 @@ def select_provider_and_model(args=None):
     # User-defined custom providers from config.yaml: key → {name, base_url, api_key}
     _custom_provider_map = _named_custom_provider_map(config)
     active = _resolve_active_provider(config, model_cfg, effective_provider, _custom_provider_map)
+    current_provider = str(config_provider or "").strip()
+    current_base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
+    current_route = _provider_picker_identity(active)
 
     from hermes_cli.models import _PROVIDER_LABELS
 
@@ -2030,9 +2034,15 @@ def select_provider_and_model(args=None):
     ):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
-    # Every flow persists through _save_model_choice; a changed model.default means a pick
-    # landed, so offer its reasoning effort here once instead of inside each flow.
-    _offer_reasoning_after_pick(current_model)
+    # Every flow persists through _save_model_choice. A changed route means a pick landed, so
+    # offer its reasoning effort here once instead of inside each flow.
+    _offer_reasoning_after_pick(
+        current_model,
+        current_provider,
+        current_base_url,
+        current_route,
+        _provider_picker_identity(selected_provider),
+    )
 
     # Post-switch cleanup: switching to a named provider (anything except
     # "custom") leaves a stale OPENAI_BASE_URL in ~/.hermes/.env that poisons

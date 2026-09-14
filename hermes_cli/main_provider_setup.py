@@ -620,18 +620,48 @@ def _prompt_reasoning_effort_selection(efforts, current_effort="", *, default_la
     return tail_values[idx - n]
 
 
-def _offer_reasoning_after_pick(model_before: str) -> None:
-    """Post-flow effort step for ``select_provider_and_model``: when a flow saved a different
-    ``model.default`` (every flow persists through ``_save_model_choice``), offer the effort for
-    the new model + provider. A flow that made no change (cancel, "No change.") never prompts."""
+def _offer_reasoning_after_pick(
+    model_before: str,
+    provider_before: str,
+    base_url_before: str,
+    route_before: str,
+    selected_route: str,
+) -> None:
+    """Offer reasoning after a flow changes the model or provider route."""
     from hermes_cli.config import load_config
     model_cfg = load_config().get("model")
     if not isinstance(model_cfg, dict):
         return
     model = str(model_cfg.get("default") or "").strip()
-    if not model or model == model_before:
-        return  # same model re-picked or nothing saved: the "Reasoning effort" row covers that
-    _prompt_main_reasoning_effort(model, str(model_cfg.get("provider") or ""))
+    provider = str(model_cfg.get("provider") or "").strip()
+    base_url = str(model_cfg.get("base_url") or "").strip()
+    if not model or (
+        model == model_before
+        and provider == provider_before
+        and base_url == base_url_before
+    ):
+        return  # the flow made no persisted model-route change
+    persisted_route = _provider_picker_identity(provider)
+    capability_route = (
+        selected_route
+        if persisted_route == "custom" and selected_route.startswith("custom:")
+        else persisted_route or selected_route
+    )
+    same_custom_endpoint = (
+        capability_route != "custom"
+        or base_url.rstrip("/") == base_url_before.rstrip("/")
+    )
+    if model == model_before and capability_route == route_before and same_custom_endpoint:
+        return  # same route re-picked: the "Reasoning effort" row covers that
+    _prompt_main_reasoning_effort(model, capability_route)
+
+
+def _provider_picker_identity(provider: str | None) -> str:
+    """Canonical provider identity used by the model picker."""
+    from hermes_cli.models import _PROVIDER_ALIASES
+
+    normalized = str(provider or "").strip().lower()
+    return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
 def _prompt_main_reasoning_effort(model: str, provider: str) -> None:

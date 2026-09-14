@@ -81,6 +81,34 @@ def _runtime_cwd(func: str, *args: Any) -> None:
         pass
 
 
+# Sentinel for the runtime-cwd token slot: distinguishes "agent.runtime_cwd was unavailable
+# at bind time" (never attempt a reset) from "bound a real Token" (SRL-4543 upstream review).
+_CWD_TOKEN_UNAVAILABLE: Any = object()
+
+
+def _set_runtime_cwd(cwd: str) -> Any:
+    """Best-effort call of ``agent.runtime_cwd.set_session_cwd``; returns the ``Token`` so the
+    matching ``clear_session_vars`` can restore (not stomp) an outer nested scope's cwd, or
+    ``_CWD_TOKEN_UNAVAILABLE`` if the module import/call itself failed."""
+    try:
+        from agent import runtime_cwd
+        return runtime_cwd.set_session_cwd(cwd)
+    except Exception:
+        return _CWD_TOKEN_UNAVAILABLE
+
+
+def _restore_runtime_cwd(token: Any) -> None:
+    """Unwind the runtime cwd via its token (SRL-4543 upstream review, andrexibiza): restores
+    the outer scope's cwd on a nested clear instead of always stomping to ``""``."""
+    if token is _CWD_TOKEN_UNAVAILABLE:
+        return
+    try:
+        from agent import runtime_cwd
+        runtime_cwd.restore_or_clear_session_cwd(token)
+    except Exception:
+        pass
+
+
 def set_current_session_id(session_id: str) -> None:
     """Synchronize ``HERMES_SESSION_ID`` across ContextVar and ``os.environ`` (tools read it
     with an os.environ fallback).  Delegated subagent children (built in the parent process)
@@ -143,7 +171,11 @@ def set_session_vars(
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
-    _runtime_cwd("set_session_cwd", cwd)
+    # SRL-4543 upstream review (andrexibiza): the cwd token is captured and returned in the
+    # SAME tokens list so clear_session_vars can restore (not stomp) a nested outer scope's
+    # cwd — see _restore_runtime_cwd. Always the LAST slot; clear_session_vars slices it off
+    # by position, never by counting _SESSION_VARS-derived length against it.
+    tokens.append(_set_runtime_cwd(cwd))
     return tokens
 
 
@@ -176,8 +208,9 @@ def clear_session_vars(tokens: list) -> None:
     top-level baseline is ``_UNSET`` too — but for the opposite reason: a cleared context has
     declared nothing, and an undeclared capability FAILS CLOSED (#98619).
 
-    ``tokens`` MUST have exactly ``len(_SESSION_VARS) + 2`` entries (the shape
-    ``set_session_vars`` always returns) — SRL-4543 Gate B rodada 1 (Kimi): a plain
+    ``tokens`` MUST have exactly ``len(_SESSION_VARS) + 3`` entries (the shape
+    ``set_session_vars`` always returns: the identity vars, async/history-delivery, then the
+    runtime-cwd token last) — SRL-4543 Gate B rodada 1 (Kimi): a plain
     ``zip(_SESSION_VARS, tokens)`` silently truncates on a shorter/malformed list, leaving every
     ContextVar past the truncation point (INCLUDING identity vars — ``HERMES_SESSION_USER_ID``,
     ``HERMES_SESSION_KEY``, ``HERMES_BROWSER_CONTROL_PRINCIPAL``) holding the PREVIOUS turn's
@@ -185,9 +218,19 @@ def clear_session_vars(tokens: list) -> None:
     reset by explicit index over the full ``_SESSION_VARS`` + async/history-delivery set — never
     positional ``zip`` against the caller-supplied ``tokens`` — before any mismatch is reported,
     so the reset happens unconditionally and a malformed ``tokens`` degrades to "loud error", not
-    "silent leak"."""
+    "silent leak".
+
+    SRL-4543 upstream review (andrexibiza): a genuinely malformed non-empty ``tokens`` (e.g. a
+    truncated capture from a NESTED bind, where ``token.old_value`` is a real outer value, not
+    ``Token.MISSING``/``_UNSET``) must be validated for shape BEFORE any token is applied — an
+    earlier version of this function raised only AFTER the loop, by which point
+    ``_restore_or_baseline`` had already restored real outer identity/session values from the
+    tokens that WERE present, silently granting that stale authority before the exception ever
+    surfaced (and ``tui_gateway``'s ``_clear_session_context`` swallows cleanup exceptions, so
+    nothing downstream ever saw it). A malformed non-empty ``tokens`` therefore resets
+    EVERYTHING to baseline first (never applies a single real token), THEN raises."""
     all_vars = _SESSION_VARS + (_SESSION_ASYNC_DELIVERY, _SESSION_HISTORY_DELIVERY)
-    expected = len(all_vars)
+    expected = len(all_vars) + 1  # +1 for the runtime-cwd token, always the last slot.
     # SRL-4543 Gate B rodada 2 (Kimi): ``tokens`` can arrive as ``None`` (an admission that
     # raised before `set_session_vars` returned, or a caller that never admitted). `len(None)`
     # raises TypeError BEFORE any reset runs, leaving every identity ContextVar holding the
@@ -197,7 +240,6 @@ def clear_session_vars(tokens: list) -> None:
     # relied on the old TypeError as a signal (grep confirms none do; both real call sites
     # in gateway/run.py and gateway/platforms/api_server.py always pass their own
     # set_session_vars() tokens) still see the reset happen and can observe the log line.
-    safe_tokens = tokens if tokens else []
     if not tokens:
         logger.warning(
             "clear_session_vars: tokens was %r (falsy) -- resetting every ContextVar to its "
@@ -205,23 +247,27 @@ def clear_session_vars(tokens: list) -> None:
             "set_session_vars() call failed before returning tokens; investigate the caller.",
             tokens,
         )
-    for i, var in enumerate(all_vars):
-        baseline = "" if i < len(_SESSION_VARS) else _UNSET
-        if i < len(safe_tokens):
-            _restore_or_baseline(var, safe_tokens[i], baseline)
-        else:
-            var.set(baseline)
-    _runtime_cwd("clear_session_cwd")
-    # A falsy tokens (None/[]) is the documented "nothing to unwind" case above -- already
-    # logged and reset -- not a malformed-list bug. Only a genuinely non-empty-but-short list
-    # (a real truncated capture) is worth raising ValueError for.
-    if tokens and len(safe_tokens) != expected:
+        for i, var in enumerate(all_vars):
+            var.set("" if i < len(_SESSION_VARS) else _UNSET)
+        _restore_runtime_cwd(None)
+        return
+    # A genuinely non-empty but malformed (wrong-length) tokens list: validate the SHAPE
+    # before touching a single ContextVar, so a truncated nested capture can never restore
+    # real outer identity/session values ahead of the error being raised (see docstring).
+    if len(tokens) != expected:
+        for i, var in enumerate(all_vars):
+            var.set("" if i < len(_SESSION_VARS) else _UNSET)
+        _restore_runtime_cwd(None)
         raise ValueError(
-            f"clear_session_vars: tokens length mismatch \u2014 got {len(safe_tokens)}, expected "
+            f"clear_session_vars: tokens length mismatch \u2014 got {len(tokens)}, expected "
             f"{expected} (the shape set_session_vars always returns). All ContextVars were "
             f"still reset to their safe baseline before this error was raised; this exception "
             f"only flags that the caller's tokens list was malformed, e.g. from a truncated "
             f"capture or an exception swallowed mid-admission.")
+    for i, var in enumerate(all_vars):
+        baseline = "" if i < len(_SESSION_VARS) else _UNSET
+        _restore_or_baseline(var, tokens[i], baseline)
+    _restore_runtime_cwd(tokens[-1])
 
 
 def reset_session_vars() -> None:

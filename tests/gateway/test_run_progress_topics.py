@@ -3381,6 +3381,85 @@ async def test_full_split_survives_two_parent_cancellations_without_retry(monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("edit_path", ["rollover", "fallback"])
+@pytest.mark.parametrize("state", ["current", "replacement", "interrupted"])
+async def test_full_entry_rechecks_owner_after_suspended_edit(edit_path, state):
+    from queue import Queue
+
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    class SuspendedEditAdapter(FullReceiptProgressAdapter):
+        multipart = False
+        block_at = "edit"
+
+        async def edit_message(self, chat_id, message_id, content):
+            result = await super().edit_message(chat_id, message_id, content)
+            if edit_path == "fallback":
+                return SendResult(success=False, retryable=False, error="editing unavailable")
+            return result
+
+    adapter = SuspendedEditAdapter()
+    owner = _make_runner(adapter)
+    key = "suspended-full-edit"
+    generation = owner._begin_session_run_generation(key)
+    agent = SimpleNamespace(is_interrupted=False)
+    ctx = TurnContext(
+        source=SessionSource(platform=adapter.platform, chat_id="chat"),
+        _run_still_current=lambda: owner._is_session_run_current(key, generation),
+        agent_holder=[agent], progress_mode="full", tool_progress_enabled=True,
+        progress_queue=Queue(), _cleanup_progress=True,
+    )
+    turn = TurnRunner(owner, ctx)
+    entries = []
+    for name, question in (("prefix_tool", "already acknowledged"), ("next_tool", "complete new arguments")):
+        turn.progress_callback("tool.started", name, "short", {"question": question})
+        marker, entry = ctx.progress_queue.get_nowait()
+        assert marker == "__full__"
+        entries.append(entry)
+    prefix, entry = entries
+    st = turn._progress_edit_state(adapter)
+    combined = prefix + "\n" + entry
+    st._PROGRESS_TEXT_LIMIT = (
+        max(map(st._progress_len_fn, entries)) if edit_path == "rollover"
+        else st._progress_len_fn(combined)
+    )
+    assert turn._split_full_entry(st, entry) == [entry]
+    await turn._send_full_progress_entry(st, prefix)
+    acknowledged = adapter.receipts[0].message_id
+    assert ctx._cleanup_msg_ids == [acknowledged]
+
+    pending = asyncio.create_task(turn._send_full_progress_entry(st, entry))
+    try:
+        await asyncio.wait_for(adapter.blocked.wait(), 1)
+        assert adapter.send_attempts == [prefix]
+        if state == "replacement":
+            owner._begin_session_run_generation(key)
+        elif state == "interrupted":
+            agent.is_interrupted = True
+        # The native shield must settle this exact edit, even if its caller is cancelled twice.
+        for _ in range(2):
+            pending.cancel()
+            await asyncio.sleep(0)
+            assert not pending.done()
+        adapter.release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, 2)
+    finally:
+        adapter.release.set()
+        await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), 2)
+
+    assert [edit["message_id"] for edit in adapter.edits] == [acknowledged]
+    assert [edit["content"] for edit in adapter.edits] == [prefix if edit_path == "rollover" else combined]
+    assert adapter.send_attempts == ([prefix, entry] if state == "current" else [prefix])
+    ids = [receipt.message_id for receipt in adapter.receipts]
+    assert ctx._cleanup_msg_ids == ids
+    assert ids[0] == acknowledged and len(ids) == len(set(ids))
+    if state != "current":
+        assert ids == [acknowledged]
+
+
+@pytest.mark.asyncio
 async def test_log_mode_real_turn_remains_chat_silent(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch, tmp_path, FullTerminalArgsAgent, session_id="native-log-control",

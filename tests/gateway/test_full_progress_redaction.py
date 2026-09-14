@@ -96,6 +96,40 @@ def test_full_cli_credentials_preserve_shell_structure(monkeypatch, credential, 
     assert args == original
 
 
+@pytest.mark.parametrize(
+    "flag, separator, secret",
+    [
+        ("--auth-token", " ", "cedar731"),
+        ("--auth-token", "=", "maple842"),
+        ("--database-password", " ", "birch953"),
+        ("--database-password", "=", "willow164"),
+    ],
+    ids=["auth-token-space", "auth-token-equals", "database-password-space",
+         "database-password-equals"],
+)
+def test_full_compound_cli_credentials_before_enqueue(monkeypatch, flag, separator, secret):
+    import agent.redact as redact
+
+    monkeypatch.setattr(redact, "_redact_enabled", lambda: False)
+    monkeypatch.setattr(redact, "_VAULT_REDACTION_VALUES", {})
+    controls = (
+        " --user alice --username alice:visible --user-agent alice:visible"
+        " --password-policy strict --password-file ./fixture.txt"
+        " --token-count 4 --tokenizer local --api-key-file ./public.json"
+        " --jwt-decoder local --bearer-format compact;"
+        " tool --password ; echo still-visible"
+    )
+    prefix = f"client {flag}{separator}"
+    args = {"command": prefix + secret + controls, "workdir": "/tmp/visible"}
+    original = deepcopy(args)
+
+    safe = _enqueue_args(args)
+
+    assert args == original
+    assert safe == {"command": prefix + "***" + controls, "workdir": "/tmp/visible"}
+    assert secret not in json.dumps(safe)
+
+
 def test_full_masks_cli_values_exposed_by_native_assignment_scanning(monkeypatch):
     import agent.redact as redact
 

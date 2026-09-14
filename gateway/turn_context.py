@@ -34,6 +34,7 @@ class TurnContext:
     _LONG_TOOL_THRESHOLD_S: float = 30.0
     _cleanup_progress: bool = False
     _cleanup_msg_ids: List[str] = field(default_factory=list)
+    _terminal_progress_msg_ids: set[str] = field(default_factory=set)
     _progress_metadata: Optional[dict] = None
     _progress_reply_to: Optional[Any] = None
     message: Optional[str] = None  # the only rebindable field
@@ -63,6 +64,13 @@ class TurnContext:
     log_mode_enabled: bool = False
     interim_assistant_messages_enabled: bool = False
     needs_progress_queue: bool = False
+    defer_terminal_lifecycle_progress: bool = False
+    _defer_progress_completion: bool = False
+    _close_progress_ingress: Optional[Callable] = None
+    _complete_lifecycle_progress: Optional[Callable] = None
+    # Own the queued descendant until the ancestor has finished every await.
+    _descendant_progress_completion: Optional[Callable] = None
+    _enqueue_lifecycle_progress: Optional[Callable] = None
     AIAgent: Any = None
     resolve_display_setting: Any = None
     result_holder: list = field(default_factory=lambda: [None])

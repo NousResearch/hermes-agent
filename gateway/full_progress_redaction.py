@@ -233,7 +233,9 @@ def _is_full_progress_cli_secret_flag(flag: str, value: str) -> bool:
     return (
         normalized in _FULL_PROGRESS_EXACT_SECRET_KEYS
         or normalized in _FULL_PROGRESS_SECRET_KEY_PARTS
-        or normalized in {"oauth2_bearer", "cookie"}
+        or normalized in {
+            "oauth2_bearer", "cookie", "auth_token", "database_password",
+        }
     )
 
 

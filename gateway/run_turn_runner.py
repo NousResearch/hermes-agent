@@ -27,7 +27,8 @@ from gateway.full_progress_redaction import (
     _redact_full_progress_string,
 )
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.relay.egress import declined_send
 from gateway.turn_context import TurnContext
 from hermes_cli.config import cfg_get
 from utils import is_truthy_value
@@ -100,6 +101,60 @@ class TurnRunner:
     def __init__(self, runner: "GatewayRunner", ctx: TurnContext) -> None:
         self._runner = runner
         self._ctx = ctx
+        self._progress_ingress_lock = threading.RLock()
+        self._progress_ingress_open = True
+        self._progress_started = asyncio.Event()
+        self._progress_task = None
+        self._progress_close_task = None
+
+    @staticmethod
+    def lifecycle_progress_enabled(adapter, source, grouping, native_cards=False) -> bool:
+        from gateway.run import _gateway_surface_passes_raw_text
+        return bool(
+            adapter is not None and grouping != "separate" and not native_cards
+            and not _gateway_surface_passes_raw_text(source.platform)
+            and getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+            and getattr(type(adapter), "edit_message", None) not in (None, BasePlatformAdapter.edit_message)
+        )
+
+    def close_progress_ingress(self) -> None:
+        with self._progress_ingress_lock:
+            self._progress_ingress_open = False
+
+    def enqueue_lifecycle_progress(self, raw) -> None:
+        with self._progress_ingress_lock:
+            if self._progress_ingress_open and self._ctx.progress_queue is not None:
+                self._ctx.progress_queue.put(raw)
+
+    async def complete_lifecycle_progress(self, terminal_text=None) -> bool | SendResult:
+        if self._progress_close_task is None:
+            self._progress_close_task = asyncio.create_task(self._close_lifecycle_progress(terminal_text))
+        result, cancelled = await _await_exact_task_through_cancellation(self._progress_close_task)
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _close_lifecycle_progress(self, terminal_text) -> bool | SendResult:
+        task = self._progress_task
+        ack = None
+        try:
+            if task is not None and not task.done():
+                await self._progress_started.wait()
+                if terminal_text and not task.done():
+                    ack = asyncio.get_running_loop().create_future()
+                    self._ctx.progress_queue.put(("__terminal__", terminal_text, ack))
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(asyncio.shield(ack), 5.0)
+        finally:
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await _await_exact_task_through_cancellation(task)
+            self._drain_progress_queue()
+            if ack is not None and not ack.done():
+                ack.set_result(False)
+        result = ack.result() if ack is not None and not ack.cancelled() else False
+        return result if declined_send(result) else result is True
 
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -126,7 +181,22 @@ class TurnRunner:
         q = self._ctx.progress_queue
         with suppress(Exception):
             while not q.empty():
-                q.get_nowait()
+                self._resolve_raw_progress_ack(q.get_nowait(), False)
+
+    @staticmethod
+    def _is_lifecycle_marker(raw) -> bool:
+        return isinstance(raw, tuple) and bool(raw) and raw[0] in {
+            "__append__", "__upsert__", "__terminal__", "__flush__",
+        }
+
+    @staticmethod
+    def _resolve_raw_progress_ack(raw, delivered) -> None:
+        if isinstance(raw, tuple) and raw and raw[0] in {"__terminal__", "__flush__"}:
+            ack = raw[-1]
+            if isinstance(ack, asyncio.Future) and not ack.done():
+                # Preserve the adapter's refusal through the cached completion:
+                # a missing acknowledgement alone permits the ordinary final.
+                ack.set_result(delivered if declined_send(delivered) else delivered is True)
 
     def _track_progress_result(self, result) -> None:
         """Remember a delivered progress/status message id for end-of-turn cleanup."""
@@ -145,6 +215,11 @@ class TurnRunner:
 
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
+        with self._progress_ingress_lock:
+            if self._progress_ingress_open:
+                return self._progress_callback_open(event_type, tool_name, preview, args, **kwargs)
+
+    def _progress_callback_open(self, event_type, tool_name=None, preview=None, args=None, **kwargs):
         ctx = self._ctx
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
@@ -558,6 +633,16 @@ class TurnRunner:
 
     # ── editable progress bubbles (progress-queue drain) ────────────────────────────────────
 
+    class _LifecycleLine(str):
+        key: Optional[str]
+        terminal: bool
+
+        def __new__(cls, text, key=None, terminal=False):
+            line = super().__new__(cls, text)
+            line.key = key
+            line.terminal = terminal
+            return line
+
     @dataclasses.dataclass
     class _ProgressEditState:
         """Mutable editable-bubble state shared by ``send_progress_messages`` and its helpers."""
@@ -615,7 +700,16 @@ class TurnRunner:
         """Partition progress lines into platform-sized editable bubbles."""
         groups: list[list] = []
         current: list = []
+        ordered, segment = [], []
         for line in lines:
+            if getattr(line, "terminal", False):
+                ordered.extend(sorted(segment, key=lambda item: getattr(item, "key", None) is not None))
+                segment = []
+                ordered.append(line)
+            else:
+                segment.append(line)
+        ordered.extend(sorted(segment, key=lambda item: getattr(item, "key", None) is not None))
+        for line in ordered:
             candidate = current + [line]
             if current and st._progress_len_fn(self._progress_text(candidate)) > st._PROGRESS_TEXT_LIMIT:
                 groups.append(current)
@@ -677,12 +771,23 @@ class TurnRunner:
         ids = (*native_ids, *getattr(result, "continuation_message_ids", ()), getattr(result, "message_id", None))
         return tuple(dict.fromkeys(str(mid) for mid in ids if mid is not None))
 
-    def _track_full_progress_result(self, result) -> None:
+    def _track_full_progress_result(self, result, *, terminal=False) -> None:
         """Own every proven native ID, including IDs returned on partial failure."""
         ctx = self._ctx
+        ids = self._full_progress_result_ids(result)
+        if terminal:
+            raw = getattr(result, "raw_response", None)
+            raw = raw if isinstance(raw, dict) else {}
+            # A failed edit's primary ID can be only its attempted target.
+            # Explicit multipart receipts still prove delivery on failure;
+            # native partial_overflow also acknowledges its primary ID.
+            proven_ids = ids if (getattr(result, "success", False) or raw.get("partial_overflow")) else (
+                *raw.get("message_ids", ()), *getattr(result, "continuation_message_ids", ()),
+            )
+            ctx._terminal_progress_msg_ids.update(str(mid) for mid in proven_ids if mid is not None)
         if not ctx._cleanup_progress:
             return
-        for message_id in self._full_progress_result_ids(result):
+        for message_id in ids:
             if message_id not in ctx._cleanup_msg_ids:
                 ctx._cleanup_msg_ids.append(message_id)
 
@@ -707,14 +812,14 @@ class TurnRunner:
             entry = entry[best:]
         return chunks
 
-    async def _send_full_progress_text(self, st, text):
+    async def _send_full_progress_text(self, st, text, *, terminal=False):
         ctx = self._ctx
         result = await st.adapter.send(
             chat_id=ctx.source.chat_id, content=text,
             reply_to=ctx._progress_reply_to,
             metadata={**(ctx._progress_metadata or {}), "_interim_send": True},
         )
-        self._track_full_progress_result(result)
+        self._track_full_progress_result(result, terminal=terminal)
         return result
 
     async def _finalize_full_progress(self, st):
@@ -724,7 +829,9 @@ class TurnRunner:
                 result = await self._edit_progress_message(
                     st, st.progress_msg_id, self._progress_text(st.progress_lines),
                 )
-                self._track_full_progress_result(result)
+                self._track_full_progress_result(
+                    result, terminal=any(getattr(line, "terminal", False) for line in st.progress_lines),
+                )
                 if not result.success:
                     st.can_edit = False
         finally:
@@ -732,56 +839,117 @@ class TurnRunner:
             # never evidence that a duplicate send would be safe.
             self._reset_progress_bubble(st)
 
+    async def _deliver_keyed_progress_overflow(self, st, groups) -> bool | SendResult:
+        for index, group in enumerate(groups):
+            if not self._ctx._run_still_current() or self._agent_interrupted():
+                self._reset_progress_bubble(st)
+                return False
+            text = self._progress_text(group)
+            terminal = any(getattr(line, "terminal", False) for line in group)
+            if index == 0 and st.progress_msg_id is not None:
+                result = await self._edit_progress_message(st, st.progress_msg_id, text)
+                self._track_full_progress_result(result, terminal=terminal)
+            else:
+                result = await self._send_full_progress_text(st, text, terminal=terminal)
+            if not getattr(result, "success", False):
+                self._reset_progress_bubble(st)
+                return result if declined_send(result) else False
+            ids = self._full_progress_result_ids(result)
+            st.progress_msg_id = result.message_id if len(ids) == 1 else None
+            st.progress_lines = group if st.progress_msg_id else []
+        return True
+
     async def _deliver_full_progress_entry(self, st, entry):
         """Deliver one full entry once, confined to the native progress owner."""
         if not self._ctx._run_still_current() or self._agent_interrupted():
-            return
+            return False
+        terminal = getattr(entry, "terminal", False)
         chunks = self._split_full_entry(st, entry)
         if len(chunks) > 1:
             await self._finalize_full_progress(st)
+            delivered = True
             for chunk in chunks:
                 if not self._ctx._run_still_current() or self._agent_interrupted():
+                    delivered = False
                     break
-                result = await self._send_full_progress_text(st, chunk)
+                result = await self._send_full_progress_text(st, chunk, terminal=terminal)
                 if not result.success:
                     # Native partial receipts have IDs but no exact delivered
                     # source range. Own those IDs and stop; never replay guesses.
+                    delivered = result if declined_send(result) else False
                     break
             self._reset_progress_bubble(st)
-            return
+            return delivered
 
+        groups = self._split_progress_groups(st, st.progress_lines + [entry])
+        if len(groups) > 1 and any(getattr(line, "key", None) is not None for line in st.progress_lines):
+            return await self._deliver_keyed_progress_overflow(st, groups)
         combined = self._progress_text(st.progress_lines + [entry])
         if st.progress_lines and st._progress_len_fn(combined) > st._PROGRESS_TEXT_LIMIT:
             await self._finalize_full_progress(st)
             combined = entry
         if st.can_edit and st.progress_msg_id is not None:
             result = await self._edit_progress_message(st, st.progress_msg_id, combined)
-            self._track_full_progress_result(result)
+            self._track_full_progress_result(
+                result, terminal=terminal or any(getattr(line, "terminal", False) for line in st.progress_lines),
+            )
             multipart = (bool(getattr(result, "continuation_message_ids", ()))
                          or len(self._full_progress_result_ids(result)) > 1)
             if result.success and not multipart:
                 st.progress_lines.append(entry)
-                return
+                return True
             self._reset_progress_bubble(st)
+            if declined_send(result):
+                return result
             if result.success or multipart:
                 # A split result's primary ID never represents the whole entry.
-                return
+                return bool(result.success)
             st.can_edit = False
             if getattr(result, "retryable", False):
-                return
+                return False
             # Only the new entry needs a fallback, never the acknowledged prefix.
-        result = await self._send_full_progress_text(st, entry)
+        # Either awaited edit above may have outlived this run.
+        if not self._ctx._run_still_current() or self._agent_interrupted():
+            return False
+        result = await self._send_full_progress_text(st, entry, terminal=terminal)
         if (st.can_edit and result.success and result.message_id
                 and not getattr(result, "continuation_message_ids", ())
                 and len(self._full_progress_result_ids(result)) == 1):
             st.progress_msg_id, st.progress_lines = result.message_id, [entry]
         else:
             self._reset_progress_bubble(st)
+        return result if declined_send(result) else bool(getattr(result, "success", False))
+
+    async def _deliver_lifecycle_progress(self, st, raw) -> bool | SendResult:
+        delivered = False
+        try:
+            if not self._ctx._run_still_current() or self._agent_interrupted():
+                return False
+            if raw[0] == "__flush__":
+                if self._ctx.progress_mode == "full" or not st.progress_lines:
+                    delivered = True
+                elif st.can_edit and st.progress_msg_id:
+                    result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                    self._track_full_progress_result(
+                        result, terminal=any(getattr(line, "terminal", False) for line in st.progress_lines),
+                    )
+                    delivered = result if declined_send(result) else bool(getattr(result, "success", False))
+            else:
+                entry = self._progress_absorb(st, raw)
+                st.progress_lines.pop()
+                delivered = await self._deliver_full_progress_entry(st, entry)
+            if not declined_send(delivered):
+                delivered = delivered and self._ctx._run_still_current() and not self._agent_interrupted()
+            return delivered
+        finally:
+            self._resolve_raw_progress_ack(raw, delivered)
 
     async def _send_full_progress_entry(self, st, entry):
         # One child owns the whole delivery operation. Repeated cancellation of
         # the queue consumer cannot orphan or recreate its in-flight sends.
-        child = asyncio.create_task(self._deliver_full_progress_entry(st, entry))
+        operation = (self._deliver_lifecycle_progress(st, entry) if self._is_lifecycle_marker(entry)
+                     else self._deliver_full_progress_entry(st, entry))
+        child = asyncio.create_task(operation)
         _, cancelled = await _await_exact_task_through_cancellation(child)
         if cancelled:
             raise asyncio.CancelledError
@@ -798,12 +966,20 @@ class TurnRunner:
 
     def _progress_absorb(self, st, raw) -> Any:
         """Fold a queue item into the bubble buffer; returns the line to render this tick."""
-        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+        if self._is_lifecycle_marker(raw):
+            key = str(raw[1]) if raw[0] == "__upsert__" else None
+            if key is not None:
+                st.progress_lines = [line for line in st.progress_lines if getattr(line, "key", None) != key]
+            text = raw[2] if key is not None else raw[1]
+            raw = self._LifecycleLine(str(text), key, raw[0] == "__terminal__")
+        elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
             _, base_msg, count = raw
-            if not st.progress_lines:
+            index = next((i for i in range(len(st.progress_lines) - 1, -1, -1)
+                          if not isinstance(st.progress_lines[i], self._LifecycleLine)), None)
+            if index is None:
                 return base_msg
-            st.progress_lines[-1] = f"{base_msg} (×{count + 1})"
-            return st.progress_lines[-1]
+            st.progress_lines[index] = f"{base_msg} (×{count + 1})"
+            return st.progress_lines[index]
         st.progress_lines.append(raw)
         return raw
 
@@ -812,15 +988,23 @@ class TurnRunner:
             return  # Full entries are acknowledged before their buffer is retained.
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             with suppress(Exception):
-                await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                result = await self._edit_progress_message(st, st.progress_msg_id, self._progress_text(st.progress_lines))
+                self._track_full_progress_result(
+                    result, terminal=any(getattr(line, "terminal", False) for line in st.progress_lines),
+                )
 
     async def _drain_progress_on_cancel(self, st) -> None:
         ctx = self._ctx
         with suppress(Exception):
             while not ctx.progress_queue.empty():
                 raw = ctx.progress_queue.get_nowait()
-                if self._is_full_marker(raw):
-                    child = asyncio.create_task(self._deliver_full_progress_entry(st, raw[1]))
+                if not ctx._run_still_current() or self._agent_interrupted():
+                    self._resolve_raw_progress_ack(raw, False)
+                    continue
+                if self._is_lifecycle_marker(raw) or self._is_full_marker(raw):
+                    operation = (self._deliver_lifecycle_progress(st, raw) if self._is_lifecycle_marker(raw)
+                                 else self._deliver_full_progress_entry(st, raw[1]))
+                    child = asyncio.create_task(operation)
                     await _await_exact_task_through_cancellation(child)
                 elif self._is_reset_marker(raw):
                     # Content-bubble marker during drain: close the current progress bubble
@@ -834,7 +1018,9 @@ class TurnRunner:
         # Final edit with all remaining tools (only if editing works)
         if st.can_edit and st.progress_lines and st.progress_msg_id:
             await self._roll_progress_overflow_if_needed(st)
-        await self._flush_progress_edit(st)
+        if ctx._run_still_current() and not self._agent_interrupted():
+            await self._flush_progress_edit(st)
+        self._drain_progress_queue()
 
     async def _progress_restore_typing(self, st) -> None:
         ctx = self._ctx
@@ -868,9 +1054,11 @@ class TurnRunner:
         return True
 
     async def send_progress_messages(self):
+        self._progress_started.set()
         ctx = self._ctx
         adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
         if not adapter:
+            self._drain_progress_queue()
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
             await self._send_native_task_card_progress(adapter)
@@ -894,7 +1082,11 @@ class TurnRunner:
                 # Drain silently when interrupted: events queued in the window between tool parse
                 # and interrupt processing should not render as bubbles.
                 if self._agent_interrupted():
+                    self._resolve_raw_progress_ack(raw, False)
                     await asyncio.sleep(0)
+                    continue
+                if self._is_lifecycle_marker(raw):
+                    await self._send_full_progress_entry(st, raw)
                     continue
                 if self._is_reset_marker(raw):
                     self._reset_progress_bubble(st)
@@ -921,8 +1113,6 @@ class TurnRunner:
                 try:
                     await asyncio.sleep(0.3)
                 except asyncio.CancelledError:
-                    if ctx.progress_mode != "full":
-                        raise
                     await self._drain_progress_on_cancel(st)
                     return
             except asyncio.CancelledError:
@@ -964,6 +1154,11 @@ class TurnRunner:
     # mispair concurrent calls to the same tool.
     def native_tool_start_callback(self, call_id, tool_name, args):
         """Queue an ID-correlated native progress start from the agent thread."""
+        with self._progress_ingress_lock:
+            if self._progress_ingress_open:
+                return self._native_tool_start_open(call_id, tool_name, args)
+
+    def _native_tool_start_open(self, call_id, tool_name, args):
         if not self._native_card_gate():
             return
         from agent.display import build_tool_preview
@@ -975,6 +1170,11 @@ class TurnRunner:
 
     def native_tool_complete_callback(self, call_id, tool_name, args, result):
         """Queue the matching native completion using the real tool-call ID."""
+        with self._progress_ingress_lock:
+            if self._progress_ingress_open:
+                return self._native_tool_complete_open(call_id, tool_name, args, result)
+
+    def _native_tool_complete_open(self, call_id, tool_name, args, result):
         if not self._native_card_gate():
             return
         from agent.display import _detect_tool_failure
@@ -1056,6 +1256,11 @@ class TurnRunner:
             logger.debug("Failed to attach session title callback", exc_info=True)
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
+        with self._progress_ingress_lock:
+            if self._progress_ingress_open:
+                return self._status_callback_open(event_type, message)
+
+    def _status_callback_open(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
         ctx = self._ctx
         if not self._status_live():
@@ -1067,6 +1272,12 @@ class TurnRunner:
                 ctx.source.platform.value if ctx.source.platform else "unknown", event_type,
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
+            return
+        from gateway.run import _COMPRESSION_PROGRESS_STATUS_RE
+        if (ctx.progress_queue is not None
+                and self.lifecycle_progress_enabled(ctx._status_adapter, ctx.source, ctx.progress_grouping, ctx._native_slack_task_cards)
+                and _COMPRESSION_PROGRESS_STATUS_RE.search(prepared)):
+            ctx.progress_queue.put(("__append__", prepared))
             return
         fut = self._schedule(
             _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),

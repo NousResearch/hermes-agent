@@ -21,16 +21,41 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 _INSTALL_DEFINING_FILES = "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "uv.lock"
 
 
+def _rev_parse(git_cmd, cwd, rev: str) -> str | None:
+    """Resolve *rev* to a commit SHA, or None when it does not resolve."""
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+            cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    out = result.stdout.strip()
+    return out if result.returncode == 0 and out else None
+
+
 def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool:
     """True when the pulled commits cannot have invalidated the editable install: ``uv pip install
     -e .`` always rewrites console-script shims (Windows: ``hermes.exe`` quarantine, ``os error 32``
     on a lost race), so skip it when only non-install files changed. Safe because the editable
-    finder uses a *static* module list. Fails closed: no pre-pull SHA or failed diff -> False."""
+    finder uses a *static* module list. Fails closed: no pre-pull SHA or failed diff -> False.
+
+    ``pre_pull_sha == HEAD`` means a possible HAND-RESOLVED MERGE, not "nothing changed": the
+    updater captures the pre-pull SHA at the start of the run, a conflicting pull aborts and asks
+    the user to resolve it by hand, and the user re-runs -- so on that run HEAD already contains
+    the merge and ``pre_pull_sha..HEAD`` is empty *by construction*. Comparing a commit with
+    itself proves nothing, so ask what the merge brought in instead: HEAD's first-parent diff is
+    the pulled side.
+    """
     if not pre_pull_sha:
         return False
+    diff_base = pre_pull_sha
+    if pre_pull_sha == _rev_parse(git_cmd, cwd, "HEAD"):
+        diff_base = f"{pre_pull_sha}^"
+        if _rev_parse(git_cmd, cwd, diff_base) is None:
+            return False  # no parent to diff against: install rather than skip unproven
     try:
         result = subprocess.run(
-            git_cmd + ["diff", "--name-only", f"{pre_pull_sha}..HEAD", "--"] + list(_INSTALL_DEFINING_FILES),
+            git_cmd + ["diff", "--name-only", f"{diff_base}..HEAD", "--"] + list(_INSTALL_DEFINING_FILES),
             cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except OSError:
         return False

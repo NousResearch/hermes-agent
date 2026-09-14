@@ -1037,32 +1037,34 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         # otherwise a multi-profile fleet triggers the wrong task.
         if sys.platform == "win32":
             try:
-                from pathlib import Path as _Path
-                from hermes_cli.config import get_hermes_home as _get_home
                 from hermes_cli.profiles import _argv_profile_selectors, get_profile_dir
                 _selected = list(_argv_profile_selectors(list(cmd)))
-                if _selected:
-                    # ``default`` maps to the root home; an invalid name raises here, which
-                    # skips the task route (the bare name would hash into a bogus task).
-                    _task_home = str(get_profile_dir(_selected[-1]).resolve())
-                else:
-                    _task_home = str(_Path(_get_home()).resolve())
+                # No selector in run_argv means the DEFAULT profile -- never the watcher's own
+                # inherited HERMES_HOME (an updater run under ``-p beta`` would otherwise fire
+                # beta's task for the default relaunch). ``default`` maps to the root home; an
+                # invalid name raises here, which skips the task route (the bare name would hash
+                # into a bogus task).
+                _task_home = str(get_profile_dir(_selected[-1] if _selected else "default").resolve())
                 from hermes_cli import gateway_windows as _gw  # type: ignore
                 # Snapshot -> /Run -> poll for a NEW pid in that profile's home; None when the
-                # profile has no registered task (fall through to the direct spawn below).
+                # profile has no registered task or /Run itself failed (fall through to the direct
+                # spawn below).
                 _task_pids = _gw._spawn_via_scheduled_task(home=_task_home)
                 # A task that fired but produced no ready pid still owns the spawn: a direct
                 # Popen beside its (possibly still booting) child would race for the port.
                 _started_via_task = _task_pids is not None
-                if _task_pids == [] and _stdio_fh is not None:
-                    _stdio_fh.write(b"[watcher] task fired but no new gateway became ready\\n")
             except Exception as _e:
                 try:
                     if _stdio_fh is not None:
                         _stdio_fh.write(("[watcher] task route failed: " + str(_e) + "\\n").encode("utf-8", "replace"))
-                except Exception:
+                except OSError:
                     pass
-                _started_via_task = False
+            # Diagnostic only: a failed write must not flip the spawn decision above.
+            if _started_via_task and _task_pids == [] and _stdio_fh is not None:
+                try:
+                    _stdio_fh.write(b"[watcher] task fired but no new gateway became ready\\n")
+                except OSError:
+                    pass
         # The Scheduled Task spawned the gateway; skip the direct Popen below
         # (which would race with the task-spawned process and re-enter the
         # parent-job trap). Close the stdio sidecar we opened earlier, then
@@ -2029,7 +2031,6 @@ def _profile_name_from_home(home: Path, default: Path) -> str | None:
     return None
 
 
-
 def _native_service_homes() -> set[Path]:
     """This process's native default home plus, when root under sudo, the invoking user's (see
     ``_profile_suffix`` for why sudo matters)."""
@@ -2092,7 +2093,6 @@ def _profile_suffix(home: str | Path | None = None) -> str:
     from hermes_constants import get_default_hermes_root
     h = Path(home).resolve() if home else get_hermes_home().resolve()
     if h in _native_service_homes() or h == _bare_unit_pinned_home():
-
         return ""
     name = _profile_name_from_home(h, get_default_hermes_root().resolve())
     return name or hashlib.sha256(str(h).encode()).hexdigest()[:8]

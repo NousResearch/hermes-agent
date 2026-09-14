@@ -31,6 +31,7 @@ export interface ModelMenuHostProps {
   gateway?: HermesGateway
   ownerConnectionId?: string
   onSelectModel: (selection: ModelSelection) => Promise<boolean> | void
+  onUseProfileDefault?: () => Promise<void> | void
   profile?: string
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
@@ -190,5 +191,5 @@ export function useModelMenuController({
     }
   }
 
-  return { activeSessionId, controller, defaultEffort, modelOptions }
+  return { activeSessionId, controller, defaultEffort, modelOptions, touchesPrimary }
 }

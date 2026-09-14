@@ -5,7 +5,7 @@ import { normalizeExternalUrl } from '@/lib/external-link'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
 import { isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
-import { toolResultRecord } from '@/lib/tool-result-metadata'
+import { envelopeErrorText, toolResultRecord } from '@/lib/tool-result-metadata'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
 import { skillActivityTitle } from '../skill-activity'
@@ -662,7 +662,12 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
   const extractedError = extractToolErrorMessage(part.result)
 
   if (part.isError) {
-    return extractedError || (typeof part.result === 'string' && part.result.trim()) || 'Tool returned an error.'
+    return (
+      extractedError ||
+      envelopeErrorText(part.toolResultMetadata) ||
+      (typeof part.result === 'string' && part.result.trim()) ||
+      'Tool returned an error.'
+    )
   }
 
   if (extractedError) {
@@ -696,8 +701,12 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
 }
 
 function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): ToolStatus {
-  if (part.result === undefined) {
-    return part.completedAt === undefined ? 'running' : part.isError ? 'error' : 'warning'
+  if (part.result === undefined && part.completedAt === undefined) {
+    return 'running'
+  }
+
+  if (part.result === undefined && !part.isError) {
+    return 'warning'
   }
 
   // Explicit success wins over isError / nested-error heuristics. Memory writes

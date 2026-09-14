@@ -32,3 +32,10 @@ export function toolResultRecord(source: ToolResultSource): Record<string, unkno
   // Authoritative result fields win over fallible/abbreviated display hints.
   return { ...source.toolResultMetadata, ...record }
 }
+
+/** The event's own account of a failure, for calls whose result carries none. */
+export function envelopeErrorText(metadata: ToolResultMetadata | undefined): string {
+  const text = typeof metadata?.error === 'string' ? metadata.error : metadata?.message
+
+  return text?.trim() ?? ''
+}

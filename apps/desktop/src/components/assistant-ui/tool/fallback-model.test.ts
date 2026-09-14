@@ -117,6 +117,38 @@ describe('buildToolView error confidence', () => {
   })
 })
 
+describe('buildToolView envelope errors', () => {
+  it('shows the event error when the result carries no explanation', () => {
+    const view = buildToolView(
+      part({
+        isError: true,
+        result: 'partial output',
+        toolName: 'terminal',
+        toolResultMetadata: { error: 'killed by signal 9' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('error')
+    expect(view.subtitle).toBe('killed by signal 9')
+  })
+
+  it('keeps an envelope-only read miss on the notice tier', () => {
+    const view = buildToolView(
+      part({
+        isError: true,
+        result: undefined,
+        completedAt: 5,
+        toolName: 'read_file',
+        toolResultMetadata: { error: 'File not found: /repo/missing.ts' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('notice')
+  })
+})
+
 describe('buildToolView browser_exec step label', () => {
   const bexec = (code: string) =>
     buildToolView(part({ args: { code }, result: undefined, toolName: 'browser_exec' }), '')

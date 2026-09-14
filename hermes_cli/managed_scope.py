@@ -13,9 +13,20 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import yaml
+
+
+def file_signature(st: "os.stat_result") -> Tuple[int, int, int, int]:
+    """Stat signature for cache invalidation: ``(st_mtime_ns, st_size, st_ino, st_ctime_ns)``.
+
+    ``mtime_ns`` + ``size`` alone miss replacements that preserve both (``cp -p``,
+    ``rsync -t``, timestamp-pinning scripts, sync clients). ``st_ino`` changes on an
+    atomic replace (fresh inode); ``st_ctime_ns`` cannot be backdated via ``os.utime``,
+    catching writers that pin mtime. macOS and Linux both expose these fields.
+    """
+    return (st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +70,7 @@ def invalidate_managed_cache() -> None:
 
 
 def _cached_read(path: Path, cache: Dict[str, tuple], parse):
-    """Shared (mtime_ns, size)-keyed read; returns a deepcopy of the parsed value.
+    """Shared stat-signature-keyed read; returns a deepcopy of the parsed value.
 
     ``None`` when the file is absent or fails to parse (fail-open). A parse failure is logged
     LOUDLY — the admin needs to know their policy isn't applied — but never raises, so a malformed
@@ -69,12 +80,12 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
         st = path.stat()
     except OSError:
         return None  # absent
-    key = (st.st_mtime_ns, st.st_size)
+    key = file_signature(st)
     path_key = str(path)
     with _CACHE_LOCK:
         hit = cache.get(path_key)
-        if hit is not None and hit[:2] == key:
-            return copy.deepcopy(hit[2])
+        if hit is not None and hit[:len(key)] == key:
+            return copy.deepcopy(hit[len(key)])
     try:
         parsed = parse(path)
     except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD

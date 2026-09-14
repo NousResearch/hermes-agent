@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.run_shutdown import _log_suppressed
+from hermes_cli.managed_scope import file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,12 @@ _PROFILE_SIGNATURE_FILES = ("config.yaml", ".env")
 
 
 def profile_serve_signature(home: "Path") -> tuple:
-    """Cheap change detector for a served profile's credentials/config: (mtime_ns, size) per file."""
+    """Cheap change detector for a served profile's credentials/config: file signature per file."""
     sig = []
     for name in _PROFILE_SIGNATURE_FILES:
         try:
             st = os.stat(Path(home) / name)
-            sig.append((st.st_mtime_ns, st.st_size))
+            sig.append(file_signature(st))
         except OSError:
             sig.append(None)
     return tuple(sig)
@@ -220,7 +221,7 @@ def _mcp_config_reconciler(runner=None):
     """Housekeeping chore keeping live MCP servers in step with ``mcp_servers`` on disk: an entry
     the user removed (or disabled) after boot must stop — a parked one otherwise self-probes every
     ``_PARKED_RETRY_INTERVAL`` for the life of the process. One ``stat`` per profile per tick; the
-    reconcile runs when ``config.yaml``'s (mtime, size) changed, and again on the next tick while a
+    reconcile runs when ``config.yaml``'s signature changed, and again on the next tick while a
     dropped server was still mid-connect (``pending``) and could not be torn down yet. Interactive
     OAuth is suppressed — this runs on a housekeeping thread nobody is watching."""
     from hermes_cli.config import get_config_path
@@ -230,9 +231,9 @@ def _mcp_config_reconciler(runner=None):
     def _sig(path) -> tuple:
         try:
             st = os.stat(path)
-            return (st.st_mtime_ns, st.st_size)
+            return file_signature(st)
         except OSError:
-            return (None, None)
+            return (None, None, None, None)
 
     def _reconcile_current(label: str) -> None:
         from tools.mcp_oauth import suppress_interactive_oauth

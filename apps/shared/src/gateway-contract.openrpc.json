@@ -24503,6 +24503,7 @@
         "description": "The refreshed ``session.info`` view (full agent view, or the lazy shape).",
         "properties": {
           "model": {
+            "default": "",
             "title": "Model",
             "type": "string"
           },
@@ -24728,11 +24729,6 @@
             "title": "Lazy"
           }
         },
-        "required": [
-          "model",
-          "tools",
-          "skills"
-        ],
         "title": "SessionCwdSetResult",
         "type": "object"
       },
@@ -25357,6 +25353,7 @@
         "description": "``tui_gateway/server.py::_session_info`` \u2014 the ``session.info`` event and the ``info`` field of\n``session.create`` / ``session.resume`` / ``session.activate`` results.",
         "properties": {
           "model": {
+            "default": "",
             "title": "Model",
             "type": "string"
           },
@@ -25582,11 +25579,6 @@
             "title": "Lazy"
           }
         },
-        "required": [
-          "model",
-          "tools",
-          "skills"
-        ],
         "title": "SessionLiveInfo",
         "type": "object"
       },

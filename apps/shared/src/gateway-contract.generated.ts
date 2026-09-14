@@ -515,15 +515,15 @@ export interface ConfigSetResult {
 }
 /** ``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of ``session.create`` / ``session.resume`` / ``session.activate`` results. */
 export interface SessionLiveInfo {
-  model: string
+  model?: string
   provider?: string
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
   approval_mode?: string
-  tools: Record<string, string[]>
-  skills: Record<string, string[]>
+  tools?: Record<string, string[]>
+  skills?: Record<string, string[]>
   cwd?: string
   branch?: string | null
   project?: ProjectRef | null
@@ -2615,15 +2615,15 @@ export interface SessionCwdSetParams {
 }
 /** The refreshed ``session.info`` view (full agent view, or the lazy shape). */
 export interface SessionCwdSetResult {
-  model: string
+  model?: string
   provider?: string
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
   yolo?: boolean
   approval_mode?: string
-  tools: Record<string, string[]>
-  skills: Record<string, string[]>
+  tools?: Record<string, string[]>
+  skills?: Record<string, string[]>
   cwd?: string
   branch?: string | null
   project?: ProjectRef | null

@@ -62,15 +62,15 @@ class SessionLiveInfo(OpenModel):
     """``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of
     ``session.create`` / ``session.resume`` / ``session.activate`` results."""
 
-    model: str
+    model: str = ""
     provider: str = ""
     reasoning_effort: str = ""
     service_tier: str = ""
     fast: bool = False
     yolo: bool = False
     approval_mode: str = "manual"
-    tools: dict[str, list[str]]
-    skills: dict[str, list[str]]
+    tools: dict[str, list[str]] = Field(default_factory=dict)
+    skills: dict[str, list[str]] = Field(default_factory=dict)
     cwd: str = ""
     branch: str | None = None
     project: ProjectRef | None = None

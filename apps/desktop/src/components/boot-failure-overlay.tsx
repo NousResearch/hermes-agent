@@ -16,6 +16,7 @@ import {
   ChevronLeft,
   ExternalLink,
   FileText,
+  Globe,
   Loader2,
   LogIn,
   RefreshCw,
@@ -367,6 +368,35 @@ export function BootFailureOverlay() {
   const dismiss = () => setDismissedError(boot.error)
 
   const copy = t.boot.failure
+
+  // Renderer loaded in a plain browser (dev-server URL opened outside the
+  // Electron shell): window.hermesDesktop doesn't exist there, so every
+  // recovery action would be a silent no-op — Retry/Repair reload a page that
+  // can never boot, and logs can't open. Swap the whole card for "open the
+  // desktop app" guidance instead.
+  if (boot.browserMode) {
+    return (
+      <div
+        className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
+        // Masks the whole app on boot failure — must stay filled under window
+        // glass. Contract: `[data-glass-opaque]` in styles.css.
+        data-glass-opaque=""
+      >
+        <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+          <div className="flex items-start gap-3 px-5 py-4">
+            <Globe className="mt-0.5" size="1.25rem" />
+            <div>
+              <h2 className="text-[0.9375rem] font-semibold tracking-tight">{copy.browserModeTitle}</h2>
+              <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">{copy.browserModeDescription}</p>
+            </div>
+          </div>
+          <div className="grid gap-2 p-5 pt-0">
+            <p className="text-xs text-muted-foreground">{copy.browserModeHint}</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // SSH failures keep their own gloss; every other local failure is classified
   // into one plain sentence, raw output collapsed underneath (desktop-05).

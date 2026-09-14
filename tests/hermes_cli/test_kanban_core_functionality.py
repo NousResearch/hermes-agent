@@ -2255,3 +2255,156 @@ def test_respawn_guard_identity_mismatch_does_not_block_genuine_match_does(
             proc.wait(timeout=5)
 
 
+def test_respawn_guard_cross_host_takeover_lifecycle_unblocks_and_respawns(
+    kanban_home, all_assignees_spawnable,
+):
+    """(PR 109491 review, remaining blocker) Full lifecycle in order:
+
+    1. A run closes unclean (``crashed``) on a DIFFERENT host, in the
+       REVIEW lane -- the guard holds fail-closed
+       (``prev_worker_cross_host_unknown``): this host cannot verify the
+       remote pid's liveness.
+    2. The hold survives ``_PREV_WORKER_ALIVE_ESCALATE_AFTER`` consecutive
+       dispatch ticks and escalates (``last_failure_error`` stamped; the
+       review lane can't be moved to ``blocked`` by ``block_task``, so the
+       card stays ``review`` -- see
+       ``test_respawn_guard_prev_worker_alive_escalation_bound_holds_in_review_lane``).
+    3. A bare ``reopen-review`` (no takeover) is the CONTROL proving the
+       reviewer's exact complaint: it restores the card to ``ready`` but
+       does NOT retire the guard's evidence, so the very next tick would
+       hold and eventually re-escalate again.
+    4. A human instead runs ``hermes kanban reopen-review --takeover`` (via
+       ``run_slash``, the real CLI path). This durably retires the
+       cross-host guard's evidence for that specific closed run.
+    5. The very next dispatch tick spawns the card -- it does NOT see
+       ``prev_worker_cross_host_unknown`` again and does NOT re-escalate.
+
+    (The READY lane's own escalation incidentally synthesizes a fresh
+    ``blocked`` run with no prev-worker metadata, which happens to become
+    the new "latest ended run" the guard reads next -- masking the original
+    evidence as a side effect of ``block_task``, not a deliberate retirement.
+    The REVIEW lane cannot do that (``block_task`` never touches a
+    ``review`` row), so it is the faithful reproduction of the reviewer's
+    complaint and the case ``--takeover`` exists for.)
+    """
+    import hermes_cli.config as cfgmod
+
+    def _dispatch_once_review(conn):
+        return kbd.dispatch_once(
+            conn, spawn_fn=lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("must not spawn while cross-host guarded"),
+            ),
+        )
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="cross-host-review-takeover", assignee="reviewer")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        _end_run_as_reclaimed_into_review(conn, tid, outcome="crashed")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps({"prev_worker_pid": 424242, "prev_worker_host": "otherbox"}), run_id),
+            )
+        assert kb.get_task(conn, tid).status == "review"
+
+        # Step 1: the cross-host hold is in effect in the review lane.
+        assert kbd.check_respawn_guard(conn, tid, lane="review") == "prev_worker_cross_host_unknown"
+
+        # Step 2: drive it to escalation, same shape as the existing
+        # review-lane escalation-bound test.
+        for tick in range(1, kbd._PREV_WORKER_ALIVE_ESCALATE_AFTER):
+            res = _dispatch_once_review(conn)
+            guarded = dict(res.respawn_guarded)
+            assert guarded.get(tid) == "prev_worker_cross_host_unknown", f"tick {tick}"
+            assert kb.get_task(conn, tid).status == "review", f"tick {tick}"
+
+        res = _dispatch_once_review(conn)
+        assert tid not in [s[0] for s in res.spawned]
+        task = kb.get_task(conn, tid)
+        assert task.status == "review", "block_task cannot move a review row"
+        assert task.last_failure_error and "prev_worker_cross_host_unknown" in task.last_failure_error
+        escalated_events = [
+            e for e in kb.list_events(conn, tid) if e.kind == "respawn_guard_escalated"
+        ]
+        assert len(escalated_events) == 1
+        assert escalated_events[0].payload.get("reason") == "prev_worker_cross_host_unknown"
+
+        # Step 3 (control): a bare reopen-review restores 'ready' but does
+        # NOT retire the guard's evidence -- the reviewer's exact complaint.
+        assert kb.reopen_review_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) == "prev_worker_cross_host_unknown", (
+            "control: a bare reopen-review must not have retired the guard evidence"
+        )
+
+    # Re-create the same held-and-escalated review-lane state for the
+    # takeover path (the control run above already consumed/reopened tid).
+    prior_load_config = cfgmod.load_config
+    cfgmod.load_config = lambda *a, **k: {"kanban": {"review_dispatch": True}}
+    try:
+        with kbc.connect() as conn:
+            tid2 = kb.create_task(conn, title="cross-host-review-takeover-2", assignee="reviewer")
+            claimed2 = kb.claim_task(conn, tid2)
+            assert claimed2 is not None
+            run_id2 = claimed2.current_run_id
+            _end_run_as_reclaimed_into_review(conn, tid2, outcome="crashed")
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                    (json.dumps({"prev_worker_pid": 424242, "prev_worker_host": "otherbox"}), run_id2),
+                )
+            for _tick in range(1, kbd._PREV_WORKER_ALIVE_ESCALATE_AFTER):
+                _dispatch_once_review(conn)
+            _dispatch_once_review(conn)
+            assert kb.get_task(conn, tid2).status == "review"
+            escalated_events2 = [
+                e for e in kb.list_events(conn, tid2) if e.kind == "respawn_guard_escalated"
+            ]
+            assert len(escalated_events2) == 1
+
+        # Step 4: human takeover via the real CLI path (``run_slash`` drives
+        # the actual argparse + _cmd_reopen_review code).
+        out = run_slash(f"reopen-review {tid2} --takeover")
+        assert "Reopened" in out and tid2 in out
+        assert "takeover" in out.lower()
+
+        with kbc.connect() as conn:
+            task2 = kb.get_task(conn, tid2)
+            assert task2.status == "ready", "takeover must restore the card to ready"
+
+            # The guard's evidence for that closed run is durably retired.
+            assert kbd._prev_worker_alive_guard_info(conn, tid2) is None
+            assert kbd.check_respawn_guard(conn, tid2) is None
+
+            ack_events = [e for e in kb.list_events(conn, tid2) if e.kind == "prev_worker_ack"]
+            assert len(ack_events) == 1
+            assert ack_events[0].payload.get("run_id") == run_id2
+            assert ack_events[0].payload.get("reason") == "prev_worker_cross_host_unknown"
+
+            run = kb.list_runs(conn, tid2)[-1]
+            assert run.id == run_id2
+            assert run.metadata.get("prev_worker_ack") is True
+            # The original evidence is preserved for audit, not deleted/rewritten.
+            assert run.metadata.get("prev_worker_pid") == 424242
+            assert run.metadata.get("prev_worker_host") == "otherbox"
+
+            # Step 5: the very next dispatch tick actually spawns the card
+            # instead of re-guarding/re-escalating.
+            spawned: list[int] = []
+            res = kbd.dispatch_once(
+                conn, spawn_fn=lambda *a, **k: (spawned.append(1), 999)[1],
+            )
+            assert tid2 in [s[0] for s in res.spawned], (
+                "the card must spawn on the tick after takeover, not re-escalate"
+            )
+            assert spawned == [1]
+            assert dict(res.respawn_guarded).get(tid2) is None
+            # No second escalation was recorded.
+            escalated_events3 = [
+                e for e in kb.list_events(conn, tid2) if e.kind == "respawn_guard_escalated"
+            ]
+            assert len(escalated_events3) == 1, "the takeover tick must not re-escalate"
+    finally:
+        cfgmod.load_config = prior_load_config

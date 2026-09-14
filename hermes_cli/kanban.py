@@ -947,9 +947,19 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     reason = _stripped_or_none(getattr(args, "reason", None))
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
+    takeover = getattr(args, "takeover", False)
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
-        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
+        def op(tid):
+            if reason:
+                kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
+            if takeover:
+                # Retire the prev-worker guard's evidence BEFORE the status
+                # flip, so a dispatcher tick racing this command never sees
+                # the ready/review row with stale guard-holding evidence.
+                kbd.acknowledge_prev_worker_guard(conn, tid)
+            return kb.unblock_task(conn, tid)
+        ok_suffix = suffix + (" (takeover: prev-worker guard evidence retired)" if takeover else "")
+        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{ok_suffix}",
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 
 
@@ -997,15 +1007,25 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
         reason = str(kb.redact_review_value(reason.strip())).strip() or None
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
+    takeover = getattr(args, "takeover", False)
     with kbc.connect_closing() as conn:
         def op(tid):
+            if takeover:
+                # Retire the prev-worker guard's evidence BEFORE the status
+                # flip -- the review lane never reaches 'blocked' on its own
+                # (block_task cannot touch a review row), so a stuck
+                # review-lane card's guard evidence would otherwise survive
+                # an ordinary reopen-review untouched and hold again on the
+                # next dispatch tick.
+                kbd.acknowledge_prev_worker_guard(conn, tid)
             if not kb.reopen_review_task(conn, tid):
                 return False
             if reason:
                 kb.add_comment(conn, tid, author or "operator", f"CHANGES REQUESTED: {reason}")
             return True
 
-        return _bulk_apply(ids, op, lambda tid: f"Reopened {tid}{suffix}",
+        ok_suffix = suffix + (" (takeover: prev-worker guard evidence retired)" if takeover else "")
+        return _bulk_apply(ids, op, lambda tid: f"Reopened {tid}{ok_suffix}",
                            lambda tid: f"cannot reopen {tid} (not in review?)")
 
 

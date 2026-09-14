@@ -1386,11 +1386,17 @@ for.
 
 Card recovery: a human unblocking the card clears ``status`` back to
 ``ready``/``review`` and, on the reclaim path, also clears the stamped
-``worker_pid``/host bookkeeping — but this module does not independently
-verify that the unblock action itself clears the closing run's recorded
-``prev_worker_host``/claim-lock evidence this guard reads; that would need
-to be proven by a test exercising the actual unblock code path, not
-asserted here."""
+``worker_pid``/host bookkeeping. That alone does NOT retire this guard's
+own evidence -- the closing run's recorded ``prev_worker_host``/claim-lock
+data is immutable and this guard rereads it on the very next dispatch tick,
+so an unadorned unblock re-triggers the same cross-host hold and, after
+``_PREV_WORKER_ALIVE_ESCALATE_AFTER`` further ticks, re-escalates. A human
+who has confirmed out-of-band that the previous worker is genuinely gone
+must instead run ``hermes kanban unblock --takeover``, which additionally
+calls :func:`acknowledge_prev_worker_guard` to durably retire THIS run's
+guard evidence (see that function's docstring) before restoring the card
+to ``ready``/``review``. Automatic recovery paths never call it -- the
+fail-closed default holds until a human explicitly takes that step."""
 
 _CROSS_HOST_HOLD_OUTCOMES = frozenset({
     "crashed", "timed_out", "reclaimed", "stale", "rate_limited", "protocol_violation",
@@ -1497,6 +1503,16 @@ def _prev_worker_alive_guard_info(
             )
 
     run_metadata = _kb._json_dict(_kb._row_get(run_row, "metadata"))
+    if run_metadata.get("prev_worker_ack"):
+        # Explicit human takeover (see :func:`acknowledge_prev_worker_guard`):
+        # durably retires THIS run's guard evidence regardless of which
+        # source (durable metadata stamp or claimed-event fallback) would
+        # otherwise have supplied a pid/host. Nothing automatic sets this —
+        # only ``hermes kanban unblock --takeover`` does, after a human has
+        # confirmed out-of-band that the previous worker is genuinely gone —
+        # so the automatic fail-closed default is unweakened for every card
+        # that has not been explicitly acknowledged.
+        return None
     meta_pid = run_metadata.get("prev_worker_pid")
     if meta_pid:
         meta_host = run_metadata.get("prev_worker_host") or ""
@@ -1572,6 +1588,65 @@ def _prev_worker_alive_guard_info(
         "pid": pid, "host": host_prefix.rstrip(":"), "run_id": run_id,
         "reason": _PREV_WORKER_ALIVE_REASON,
     }
+
+
+def acknowledge_prev_worker_guard(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[dict]:
+    """Explicit human takeover: durably retire the prev-worker guard evidence
+    for ``task_id``'s most recently CLOSED run, so
+    :func:`_prev_worker_alive_guard_info` stops holding the card on that
+    run's account.
+
+    Called only from ``hermes kanban unblock --takeover`` (never
+    automatically) after a human has confirmed out-of-band that the
+    previous worker is genuinely gone -- this is the retirement path the
+    PR 109491 review asked for: ``unblock_task`` alone clears task-level
+    claim/failure fields, but cannot make cross-host liveness verifiable,
+    so without this the guard's cross-host reason recurs on the very next
+    tick and re-escalates.
+
+    Mechanism: stamps ``prev_worker_ack`` onto the CLOSED run row's own
+    ``metadata`` JSON -- the same durable, GC-surviving source
+    ``_prev_worker_alive_guard_info`` already reads first for the
+    ``prev_worker_pid``/``prev_worker_host`` stamp -- rather than deleting
+    or rewriting the ``prev_worker_pid``/``prev_worker_host``/claim-lock
+    evidence itself. The evidence stays intact for audit; only its power to
+    hold THIS run is retired. A later, DIFFERENT closed run (a fresh crash
+    after a genuine restart) is unaffected: the ack is scoped to the run row
+    id it was stamped on, not the task as a whole, so the automatic
+    fail-closed default is unweakened for the next unclean close.
+
+    Returns ``{"run_id", "reason"}`` naming the run acknowledged and the
+    guard reason that WAS held for it (``None`` when the latest closed run
+    was not actually guard-held -- e.g. a pre-emptive ack), or ``None`` when
+    there is no closed run to acknowledge at all.
+    """
+    run_row = conn.execute(
+        "SELECT id, metadata FROM task_runs WHERE task_id = ? AND ended_at IS NOT NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if run_row is None:
+        return None
+    run_id = run_row["id"]
+    # Capture what the guard was actually holding BEFORE stamping the ack,
+    # so the audit event/return value name the real thing being retired.
+    prior_info = _prev_worker_alive_guard_info(conn, task_id)
+    reason = prior_info["reason"] if prior_info and prior_info["run_id"] == run_id else None
+    metadata = _kb._json_dict(_kb._row_get(run_row, "metadata"))
+    metadata["prev_worker_ack"] = True
+    metadata["prev_worker_ack_at"] = int(time.time())
+    with _kb.write_txn(conn, allow_nested=True):
+        conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ?",
+            (_kb._json_or_null(metadata), run_id),
+        )
+        _kb._append_event(
+            conn, task_id, "prev_worker_ack",
+            {"run_id": run_id, "reason": reason}, run_id=run_id,
+        )
+    return {"run_id": run_id, "reason": reason}
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:

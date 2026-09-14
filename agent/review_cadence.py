@@ -8,10 +8,17 @@ Memory cadence remains owned by the existing turn prologue.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import threading
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 _PREFIX = "skill-review-cadence:"
+_SESSION_PREFIX = _PREFIX + "session:"
+_STALE_PRUNE_BATCH = 32
+_ClaimRefund = Callable[[], None]
+# Admission into ReviewIdleQueue is synchronous. Keep the refund callback thread-local
+# so the queue can take ownership without leaking it into the deferred review Context.
+_CLAIM_ADMISSION = threading.local()
 
 
 def _scope(agent: Any):
@@ -25,7 +32,7 @@ def _scope(agent: Any):
         key = _PREFIX + "kanban"
     else:
         lineage = db.get_compression_lineage(sid)
-        key = _PREFIX + "session:" + (lineage[0] if lineage else sid)
+        key = _SESSION_PREFIX + (lineage[0] if lineage else sid)
     return db, key
 
 
@@ -54,11 +61,36 @@ def reset_skill_review_cadence(agent: Any) -> None:
     agent._review_cadence_reset = True
 
 
+def current_skill_review_claim_refund() -> Optional[_ClaimRefund]:
+    """Refund owned by the synchronous admission call, if this turn claimed cadence."""
+    return getattr(_CLAIM_ADMISSION, "refund", None)
+
+
 def _count(value: Any) -> int:
     try:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _prune_stale_session_cadence(conn, limit: int = _STALE_PRUNE_BATCH) -> None:
+    """Bound old conversation clocks whose compression root has actually been deleted."""
+    conn.execute(
+        """
+        DELETE FROM state_meta
+        WHERE key IN (
+            SELECT sm.key
+            FROM state_meta sm
+            WHERE sm.key LIKE ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM sessions s
+                  WHERE s.id = substr(sm.key, ?)
+              )
+            LIMIT ?
+        )
+        """,
+        (_SESSION_PREFIX + "%", len(_SESSION_PREFIX) + 1, max(1, int(limit))),
+    )
 
 
 def _advance(db, key: str, delta: int, *, reset: bool, interval: int, claim: bool) -> tuple[int, bool]:
@@ -67,8 +99,47 @@ def _advance(db, key: str, delta: int, *, reset: bool, interval: int, claim: boo
         total = (0 if reset else _count(row[0] if row else None)) + delta
         due = claim and total >= interval
         db.set_meta(key, str(0 if due else total), cursor=conn)
+        # Session ids are not foreign keys in state_meta. Do a small opportunistic
+        # sweep here instead of making every session-deletion path cadence-aware.
+        _prune_stale_session_cadence(conn)
         return total, due
     return db._execute_write(write)
+
+
+def _make_claim_refund(agent: Any, total: int, scope, interval: int) -> _ClaimRefund:
+    refunded = False
+    lock = threading.Lock()
+    persisted = None
+    if scope is not None:
+        db, key = scope
+        persisted = (db, getattr(db, "db_path", None), key)
+
+    def refund() -> None:
+        nonlocal refunded
+        with lock:
+            if refunded:
+                return
+            refunded = True
+        if persisted is None:
+            agent._iters_since_skill = _count(getattr(agent, "_iters_since_skill", 0)) + total
+            return
+        db, db_path, key = persisted
+        try:
+            # Deferred items can outlive the AIAgent/SessionDB object that claimed
+            # them. Reopen file-backed state rather than depending on that object.
+            if db_path is not None and str(db_path) != ":memory:":
+                from hermes_state import SessionDB
+                reopened = SessionDB(db_path)
+                try:
+                    _advance(reopened, key, total, reset=False, interval=interval, claim=False)
+                finally:
+                    reopened.close()
+            else:
+                _advance(db, key, total, reset=False, interval=interval, claim=False)
+        except Exception:
+            logger.warning("Could not refund rejected review cadence claim", exc_info=True)
+
+    return refund
 
 
 def schedule_turn_review(agent: Any, messages: list, *, final_response: Any,
@@ -108,18 +179,26 @@ def schedule_turn_review(agent: Any, messages: list, *, final_response: Any,
         return
     if due and scope is None:
         agent._iters_since_skill = 0
+
+    refund = _make_claim_refund(agent, total, scope, interval) if due else None
+    previous_refund = current_skill_review_claim_refund()
+    _CLAIM_ADMISSION.refund = refund
     try:
-        accepted = agent._spawn_background_review(
-            messages_snapshot=list(messages), review_memory=review_memory, review_skills=due,
-        ) is not False  # existing plugin callbacks may return None
-    except Exception:
-        accepted = False
-        logger.warning("Background review admission failed", exc_info=True)
-    if due and not accepted:
-        if scope is None:
-            agent._iters_since_skill += total
-        else:
+        try:
+            accepted = agent._spawn_background_review(
+                messages_snapshot=list(messages), review_memory=review_memory, review_skills=due,
+            ) is not False  # existing plugin callbacks may return None
+        except Exception:
+            accepted = False
+            logger.warning("Background review admission failed", exc_info=True)
+    finally:
+        if previous_refund is None:
             try:
-                _advance(*scope, total, reset=False, interval=interval, claim=False)
-            except Exception:
-                logger.warning("Could not refund rejected review cadence claim", exc_info=True)
+                del _CLAIM_ADMISSION.refund
+            except AttributeError:
+                pass
+        else:
+            _CLAIM_ADMISSION.refund = previous_refund
+
+    if not accepted and refund is not None:
+        refund()

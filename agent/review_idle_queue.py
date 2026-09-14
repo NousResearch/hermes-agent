@@ -66,6 +66,7 @@ class _PendingReview:
     kwargs: Dict[str, Any]
     enqueued_at: float
     context: contextvars.Context = field(default_factory=contextvars.copy_context)
+    claim_refunds: list[Callable[[], None]] = field(default_factory=list)
 
 
 class ReviewIdleQueue:
@@ -96,16 +97,36 @@ class ReviewIdleQueue:
         self._wake.set()
 
     def enqueue(self, agent: Any, session_key: str, kwargs: Dict[str, Any]) -> bool:
-        """Add (or replace — newest snapshot wins) a session's pending review, keeping the ORIGINAL
-        enqueue time on coalesce so a busy session cannot push its age-out forever."""
+        """Coalesce one session onto its newest snapshot without losing due work.
+
+        The transcript/runtime/context come from the newest request, while review kinds
+        are monotonic until dispatch. Skill cadence has already been claimed before this
+        call, so each coalesced claim carries its own refund if dispatch never starts.
+        """
+        from agent.review_cadence import current_skill_review_claim_refund
         from agent.review_lifecycle import publish_review_status, shutdown_timeout
         agent._review_shutdown_timeout_s = shutdown_timeout(kwargs.get("task_cfg"))
+        claim_refund = current_skill_review_claim_refund()
         with self._lock:
             if getattr(agent, "_background_review_closing", False) is True:
                 return False
             existing = self._pending.get(session_key)
             enqueued_at = existing.enqueued_at if existing is not None else self._now()
-            self._pending[session_key] = _PendingReview(agent, session_key, kwargs, enqueued_at)
+            merged_kwargs = dict(kwargs)
+            claim_refunds = list(existing.claim_refunds) if existing is not None else []
+            if existing is not None:
+                merged_kwargs["review_memory"] = bool(existing.kwargs.get("review_memory")) or bool(
+                    kwargs.get("review_memory")
+                )
+                merged_kwargs["review_skills"] = bool(existing.kwargs.get("review_skills")) or bool(
+                    kwargs.get("review_skills")
+                )
+            if claim_refund is not None:
+                claim_refunds.append(claim_refund)
+            self._pending[session_key] = _PendingReview(
+                agent, session_key, merged_kwargs, enqueued_at,
+                context=contextvars.copy_context(), claim_refunds=claim_refunds,
+            )
         self._ensure_thread()
         self._wake.set()
         logger.info("Background review deferred (session=%s, queued=%d)", session_key[-12:], len(self._pending))
@@ -116,9 +137,27 @@ class ReviewIdleQueue:
         with self._lock:
             return any(item.agent is agent for item in (*self._pending.values(), *self._dispatching.values()))
 
+    @staticmethod
+    def _refund_claims(item: _PendingReview) -> None:
+        refunds, item.claim_refunds = item.claim_refunds, []
+        for refund in refunds:
+            try:
+                refund()
+            except Exception:  # noqa: BLE001 — one bad refund must not hide the rest
+                logger.warning("Deferred review cadence refund failed", exc_info=True)
+
     def discard_for(self, agent: Any) -> None:
+        discarded: list[_PendingReview] = []
         with self._lock:
-            self._pending = {key: item for key, item in self._pending.items() if item.agent is not agent}
+            kept: Dict[str, _PendingReview] = {}
+            for key, item in self._pending.items():
+                if item.agent is agent:
+                    discarded.append(item)
+                else:
+                    kept[key] = item
+            self._pending = kept
+        for item in discarded:
+            self._refund_claims(item)
         self._wake.set()
 
     def pending_count(self) -> int:
@@ -159,6 +198,38 @@ class ReviewIdleQueue:
                 self._dispatching[item.session_key] = item
             return item
 
+    def _dispatch_one(self) -> bool:
+        """Dispatch at most one eligible item; refund every merged claim on no-admission."""
+        item = self._pop_dispatchable()
+        if item is None:
+            return False
+        accepted = False
+        try:
+            if (getattr(item.agent, "_background_review_closing", False) is True
+                    or not item.context.run(self._still_enabled, item)):
+                logger.info(
+                    "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
+                    item.session_key[-12:])
+            else:
+                logger.info(
+                    "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",
+                    item.session_key[-12:], self._now() - item.enqueued_at, self.pending_count())
+                # Older/plugin overrides may return None; only an explicit False means
+                # admission was rejected, matching the immediate-spawn compatibility contract.
+                accepted = item.context.run(item.agent._spawn_background_review_now, **item.kwargs) is not False
+                if not accepted:
+                    logger.info("Deferred background review admission rejected (session=%s)", item.session_key[-12:])
+        except Exception:  # noqa: BLE001 — dispatcher must survive anything
+            logger.warning("Deferred review dispatch failed", exc_info=True)
+        finally:
+            if not accepted:
+                self._refund_claims(item)
+            with self._lock:
+                self._dispatching.pop(item.session_key, None)
+            from agent.review_lifecycle import publish_review_status
+            publish_review_status(item.agent)
+        return True
+
     def _run(self) -> None:
         while True:
             self._wake.wait()
@@ -166,29 +237,7 @@ class ReviewIdleQueue:
                 if not self._pending:
                     self._wake.clear()
                     continue
-            item = None
-            try:
-                item = self._pop_dispatchable()
-                if item is not None:
-                    if (getattr(item.agent, "_background_review_closing", False) is True
-                            or not item.context.run(self._still_enabled, item)):
-                        logger.info(
-                            "Deferred background review dropped: reviews were disabled while it was queued (session=%s)",
-                            item.session_key[-12:])
-                        continue
-                    logger.info(
-                        "Dispatching deferred background review (session=%s, waited=%.0fs, queued=%d)",
-                        item.session_key[-12:], self._now() - item.enqueued_at, self.pending_count())
-                    item.context.run(item.agent._spawn_background_review_now, **item.kwargs)
-            except Exception:  # noqa: BLE001 — dispatcher must survive anything
-                logger.warning("Deferred review dispatch failed", exc_info=True)
-            finally:
-                if item is not None:
-                    with self._lock:
-                        self._dispatching.pop(item.session_key, None)
-                    from agent.review_lifecycle import publish_review_status
-                    publish_review_status(item.agent)
-            if item is None:
+            if not self._dispatch_one():
                 time.sleep(_POLL_INTERVAL_S)
 
     @staticmethod

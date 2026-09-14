@@ -1236,7 +1236,8 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
          pytest.raises(SystemExit):
         cli_main.cmd_gui(_ns(source=True))
 
-    assert mock_run.call_args_list[1].args[0] == ["/usr/bin/npm", "exec", "--", "electron", "."]
+    source_cmd = mock_run.call_args_list[1].args[0]
+    assert source_cmd[:5] == ["/usr/bin/npm", "exec", "--", "electron", "."]
     launch_env = mock_run.call_args_list[1].kwargs["env"]
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
 
@@ -1490,3 +1491,59 @@ def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkey
     assert live_exe.read_text(encoding="utf-8") == "good build"
     assert not list(desktop_dir.glob(".staging-*"))
     assert "produced no launchable app" in capsys.readouterr().out
+
+
+def test_linux_wayland_needs_vulkan_disabled_matches_ozone_backend():
+    wayland = {
+        "XDG_SESSION_TYPE": "wayland",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "DISPLAY": ":0",
+    }
+    assert main_desktop._linux_wayland_needs_vulkan_disabled(wayland, platform="linux") is True
+    assert main_desktop._linux_wayland_needs_vulkan_disabled(wayland, platform="darwin") is False
+    assert (
+        main_desktop._linux_wayland_needs_vulkan_disabled(
+            {**wayland, "ELECTRON_OZONE_PLATFORM_HINT": "x11"},
+            platform="linux",
+        )
+        is False
+    )
+    assert (
+        main_desktop._linux_wayland_needs_vulkan_disabled(
+            {"DISPLAY": ":0"},
+            platform="linux",
+            argv=["--ozone-platform=wayland"],
+        )
+        is True
+    )
+    assert main_desktop._linux_wayland_needs_vulkan_disabled({"DISPLAY": ":0"}, platform="linux") is False
+
+
+def test_desktop_electron_argv_adds_vulkan_on_linux_wayland(monkeypatch):
+    wayland = {
+        "XDG_SESSION_TYPE": "wayland",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "DISPLAY": ":0",
+    }
+    monkeypatch.setattr(main_desktop.sys, "platform", "linux")
+    assert main_desktop._desktop_electron_argv([], wayland) == ["--disable-features=Vulkan"]
+    assert main_desktop._desktop_electron_argv(["--disable-features=Foo"], wayland) == [
+        "--disable-features=Foo,Vulkan"
+    ]
+    assert main_desktop._desktop_electron_argv(["--ozone-platform=x11"], wayland) == [
+        "--ozone-platform=x11"
+    ]
+    monkeypatch.setattr(main_desktop.sys, "platform", "darwin")
+    assert main_desktop._desktop_electron_argv([], wayland) == []
+
+
+def test_merge_electron_disable_features_appends_or_extends():
+    assert main_desktop._merge_electron_disable_features([], "Vulkan") == ["--disable-features=Vulkan"]
+    assert main_desktop._merge_electron_disable_features(
+        ["--ozone-platform-hint=auto", "--disable-features=Foo"],
+        "Vulkan",
+    ) == ["--ozone-platform-hint=auto", "--disable-features=Foo,Vulkan"]
+    assert main_desktop._merge_electron_disable_features(
+        ["--disable-features=Vulkan"],
+        "Vulkan",
+    ) == ["--disable-features=Vulkan"]

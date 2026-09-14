@@ -103,6 +103,65 @@ def test_existing_unowned_session_does_not_auto_bind_from_cwd(tmp_path):
         db.close()
 
 
+def test_parent_linked_empty_session_never_auto_binds_from_inherited_cwd(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "AGENTS.md").write_text("MUST-NOT-REHOME\n", encoding="utf-8")
+    with projects_db.connect_closing(db_path=tmp_path / "projects.db") as conn:
+        projects_db.create_project(conn, name="Project", primary_path=str(root))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("parent", source="test", cwd=str(root))
+        db.create_session("child", source="test", parent_session_id="parent")
+
+        context = collect_turn_project_affinity(
+            _Agent(db, "child"), messages=[], active_system_prompt="SYSTEM",
+        )
+
+        child = db.get_session("child")
+        assert child["message_count"] == 0
+        assert child["parent_session_id"] == "parent"
+        assert context == ""
+        assert child["project_id"] is None
+        assert child["project_affinity_generation"] == 0
+    finally:
+        db.close()
+
+
+def test_compression_child_resume_keeps_full_affinity_and_can_reinject(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "AGENTS.md").write_text("RESUMED-PROJECT-RULE\n", encoding="utf-8")
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("parent", source="test", cwd=str(root))
+        candidate = load_project_affinity_candidate(project_id="project-1", project_root=str(root))
+        assert candidate is not None
+        db.update_session_project_affinity(
+            "parent", project_id=candidate.project_id, project_root=candidate.project_root,
+            project_context_hash=candidate.context_hash,
+        )
+        db.publish_compression_child(
+            parent_session_id="parent", child_session_id="child", source="test",
+            messages=[{"role": "user", "content": "compacted handoff"}],
+            require_compression_lease=False,
+        )
+
+        child = db.get_session("child")
+        context = collect_turn_project_affinity(
+            _Agent(db, "child"),
+            messages=[{"role": "user", "content": "compacted handoff"}],
+            active_system_prompt="SYSTEM",
+        )
+
+        assert child["project_id"] == candidate.project_id
+        assert child["project_root"] == candidate.project_root
+        assert child["project_context_hash"] == candidate.context_hash
+        assert "RESUMED-PROJECT-RULE" in context
+    finally:
+        db.close()
+
+
 def test_skip_context_files_disables_affinity_reads_and_binding(tmp_path):
     root = tmp_path / "project"
     root.mkdir()

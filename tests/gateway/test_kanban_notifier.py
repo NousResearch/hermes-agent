@@ -2,6 +2,8 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -625,6 +627,66 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+# ---------------------------------------------------------------------------
+# #111125 — a repeated-block circuit breaker establishes that orchestration
+# attention is needed, NOT that a human decision exists. The formatter must
+# use neutral wording unless the block was typed as a genuine owner-input
+# request (`needs_input`, the only kind that carries a concrete question).
+# ---------------------------------------------------------------------------
+
+
+class _StubEvent:
+    def __init__(self, payload):
+        self.payload = payload
+
+
+class _StubNotif:
+    head = "H123"
+
+
+def _fmt_block_loop(payload):
+    from gateway.kanban_watchers_notifier import _EVENT_FORMATTERS
+
+    msg, _, _ = _EVENT_FORMATTERS["block_loop_detected"](_StubEvent(payload), _StubNotif())
+    return msg
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["dependency", "capability", "transient", None],
+)
+def test_block_loop_non_owner_input_uses_neutral_orchestration_wording(kind):
+    """Orchestration/technical block kinds must NOT claim a human decision.
+
+    Regression for #111125: before this fix every `block_loop_detected` was
+    rendered as \"needs a human decision\" regardless of its typed reason. A
+    dependency wait, capability gap, or transient failure routed to triage is
+    an orchestration handoff with no question for the owner.
+    """
+    payload = {"reason": "waiting on upstream", "kind": kind, "recurrences": 2}
+    msg = _fmt_block_loop(payload)
+    assert "for orchestration attention" in msg
+    assert "needs a human decision" not in msg
+    # Circuit-breaker visibility is preserved.
+    assert "TRIAGE" in msg
+    assert "waiting on upstream" in msg
+
+
+def test_block_loop_owner_input_keeps_decision_wording():
+    """A `needs_input` block carries a concrete question for the owner, so the
+    owner-decision wording is correct and must be retained (#111125)."""
+    payload = {
+        "reason": "Which API key should this use?",
+        "kind": "needs_input",
+        "recurrences": 2,
+        "limit": kb.BLOCK_RECURRENCE_LIMIT,
+    }
+    msg = _fmt_block_loop(payload)
+    assert "needs a human decision" in msg
+    assert "for orchestration attention" not in msg
+    assert "Which API key should this use?" in msg
 
 
 # ---------------------------------------------------------------------------

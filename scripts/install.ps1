@@ -742,34 +742,38 @@ function Get-PowerShellHostExe {
     return "powershell"
 }
 
+# Shared by Install-Uv and Resolve-UvCmd: a managed uv.exe is only usable
+# if `uv --version` exits 0 and prints a version. Resolve-UvCmd may run in
+# a fresh process where Install-Uv never ran, so this must live at script
+# scope rather than nested inside Install-Uv.
+function Get-UsableUvVersion($UvPath) {
+    $prevEAP = $ErrorActionPreference
+    try {
+        # A broken Chocolatey shim commonly writes its failure to stderr.
+        # Do not let PowerShell's global Stop policy turn that probe into a
+        # terminating exception before we can inspect the native exit code.
+        $ErrorActionPreference = "Continue"
+        $global:LASTEXITCODE = 0
+        $versionOutput = @(& $UvPath --version 2>&1)
+        $exitCode = $LASTEXITCODE
+    } catch {
+        return $null
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($exitCode -eq 0 -and $versionOutput.Count -gt 0) {
+        $version = ($versionOutput -join " ").Trim()
+        if ($version -match '^uv\s+\d+\.\d+') { return $version }
+    }
+    return $null
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there --
     # no PATH probing, no conda guards, no multi-location resolution chains.
     # The runtime update path (hermes_cli/managed_uv.py) looks in the same
     # place, so install.ps1 and `hermes update` stay in sync.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
-
-    function Get-UsableUvVersion($UvPath) {
-        $prevEAP = $ErrorActionPreference
-        try {
-            # A broken Chocolatey shim commonly writes its failure to stderr.
-            # Do not let PowerShell's global Stop policy turn that probe into a
-            # terminating exception before we can inspect the native exit code.
-            $ErrorActionPreference = "Continue"
-            $global:LASTEXITCODE = 0
-            $versionOutput = @(& $UvPath --version 2>&1)
-            $exitCode = $LASTEXITCODE
-        } catch {
-            return $null
-        } finally {
-            $ErrorActionPreference = $prevEAP
-        }
-        if ($exitCode -eq 0 -and $versionOutput.Count -gt 0) {
-            $version = ($versionOutput -join " ").Trim()
-            if ($version -match '^uv\s+\d+\.\d+') { return $version }
-        }
-        return $null
-    }
 
     function Resolve-ExecutableTarget($ExePath) {
         if (-not $ExePath -or -not (Test-Path $ExePath)) { return $null }
@@ -1228,8 +1232,15 @@ function Resolve-UvCmd {
     # Check the managed location first -- this is where Install-Uv puts it.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
     if (Test-Path $managedUv) {
-        $script:UvCmd = $managedUv
-        return
+        if (Get-UsableUvVersion $managedUv) {
+            $script:UvCmd = $managedUv
+            return
+        }
+        # Same self-heal as Install-Uv's rerun path: a salvaged Chocolatey
+        # shim (or a truncated download) would otherwise be accepted here and
+        # fail later inside the venv stage with an unrelated-looking error.
+        Write-Info "Existing managed uv at $managedUv is not usable; replacing it ..."
+        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
     }
 
     # Fall back to PATH (covers edge cases where the installer ran in a

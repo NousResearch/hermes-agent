@@ -1232,3 +1232,38 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Plain card open anchors shift-click range selection
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_plain_card_open_anchors_shift_range_selection():
+    """A plain card open must record the shift-click range anchor.
+
+    ``toggleRange`` anchors on ``lastSelectedId``; before the anchoring
+    opener only ctrl/meta-click ever set it, so the natural click-first,
+    shift-click-second gesture degraded to a single-card selection. Every
+    open-card entry point must route through the anchoring opener instead
+    of setting the drawer task directly.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text(
+        encoding="utf-8"
+    )
+
+    # The opener records the anchor before opening the drawer.
+    assert "const openTask = useCallback(function (taskId) {" in js
+
+    # No open-card site may bypass it straight to setSelectedTaskId.
+    assert "onOpen: setSelectedTaskId," not in js
+    assert "onOpenTask: setSelectedTaskId," not in js
+
+    # Board columns and the attention strip route through the anchoring opener.
+    assert js.count("onOpen: openTask,") == 2
+
+    # Drawer follow-up links re-anchor on the newly opened card.
+    assert "onOpenTask: openTask," in js
+
+    # toggleRange still reads the anchor it is now reliably given.
+    assert "const anchor = lastSelectedId;" in js

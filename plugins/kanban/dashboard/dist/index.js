@@ -961,6 +961,10 @@
       setLastSelectedId(null);
       setFailedIds(new Set());
     }, []);
+    const openTask = useCallback(function (taskId) {
+      setLastSelectedId(taskId);
+      setSelectedTaskId(taskId);
+    }, []);
     const moveSelected = useCallback(function (newStatus) {
       if (selectedIds.size === 0) return;
       const count = selectedIds.size;
@@ -1283,7 +1287,7 @@
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
         }),
         h(BoardToolbar, {
           board: boardData,
@@ -1328,7 +1332,7 @@
           onMoveSelected: moveSelected,
           onDelete: deleteTask,
           onDeleteSelected: deleteSelected,
-          onOpen: setSelectedTaskId,
+          onOpen: openTask,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
         }),
@@ -1336,7 +1340,7 @@
           taskId: selectedTaskId,
           boardSlug: board,
           onClose: function () { setSelectedTaskId(null); },
-          onOpenTask: setSelectedTaskId,
+          onOpenTask: openTask,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),

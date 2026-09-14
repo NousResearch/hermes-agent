@@ -387,7 +387,8 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return bool(_ws_session_is_detached(session) and not session.get("running"))
 
 
-def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None = None) -> bool:
+def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None = None,
+                            stop_reason: str = "user_stop") -> bool:
     """Apply the shared ``session.interrupt`` contract to one claimed session; returns whether the compute-host control
     channel was used. The WS orphan reaper reuses this so a dead client gets the same partial-history/queue semantics."""
     use_compute_host = _session_uses_compute_host(session)
@@ -413,7 +414,7 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
             from hermes_cli.plugins import invoke_hook as _invoke_hook
             _invoke_hook(
                 "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
-                reason="user_stop", invalidation_reason="session_interrupt",
+                reason=stop_reason, invalidation_reason="session_interrupt",
             )
         except Exception:
             logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
@@ -590,7 +591,8 @@ def _schedule_ws_orphan_reap(
                 _pending_ws_reaps.pop(sid, None)
         if interrupt_session is not None:
             try:
-                isolated = _interrupt_session_turn(sid, interrupt_session, request_id=f"client-gone-{sid}")
+                isolated = _interrupt_session_turn(sid, interrupt_session, request_id=f"client-gone-{sid}",
+                                                   stop_reason="client_gone")
                 logger.info("client_gone sid=%s action=interrupt turn_isolation=%s", sid, isolated)
             except Exception:
                 logger.exception("client_gone interrupt failed sid=%s", sid)

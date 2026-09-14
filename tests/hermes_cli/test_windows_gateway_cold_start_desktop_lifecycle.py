@@ -187,7 +187,10 @@ def test_attested_dead_gateway_survives_desktop_ownership_and_marker_is_consumed
     monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: [4242])
     monkeypatch.setattr(gateway_windows, "_write_start_attestation", lambda *a, **k: None)
 
-    assert update_cmd._cold_start_windows_gateway_after_update(token) is True
+    # A token written by pre-generation code and resumed across this very update carries no
+    # ``attested_generation`` key: the marker is probed again rather than the spawn skipped.
+    legacy_token = {k: v for k, v in token.items() if k != "attested_generation"}
+    assert update_cmd._cold_start_windows_gateway_after_update(legacy_token) is True
     assert spawned == [1]
     assert "Gateway started via cold-start after update (PID: 4242)" in capsys.readouterr().out
     assert not marker.exists()  # consumed by the spawn

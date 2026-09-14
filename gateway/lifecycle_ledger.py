@@ -214,6 +214,13 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         logger.debug("Unclean-exit detection failed", exc_info=True)
     try:
         claim: Dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
+        # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
+        # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
+        from hermes_cli.process_identity import _process_create_time
+
+        create_time = _process_create_time(os.getpid())
+        if create_time is not None:
+            claim["create_time"] = create_time
         # Carry the verdict on the PREVIOUS life on the new sentinel: it is the only
         # machine-readable copy (/api/status reads it to report an OOM restart).
         # Scoped to this life — the next clean exit or boot rewrites the sentinel.
@@ -242,8 +249,9 @@ def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdow
                                   "exited_at": _now_iso()}
         # Carry the incarnation identity: the Windows start attestation matches a clean exit by
         # PID *and* start time so a reused PID's exit cannot vouch for a different life (#110020).
-        if sentinel is not None and sentinel.get("start_time") is not None:
-            exited["start_time"] = sentinel["start_time"]
+        for key in ("start_time", "create_time"):
+            if sentinel is not None and sentinel.get(key) is not None:
+                exited[key] = sentinel[key]
         _write_sentinel(exited, home)
     except Exception:
         logger.debug("Failed to mark lifecycle sentinel exited", exc_info=True)

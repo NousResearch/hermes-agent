@@ -907,9 +907,13 @@ def _clear_start_attestation() -> None:
 # meant to bridge the seconds between a ✓ and the next ``hermes gateway status``/``update``; a
 # historical marker must never later override Desktop ownership into a duplicate gateway (#76129).
 START_ATTESTATION_MAX_AGE_S = 24 * 3600
+# Same slack process_identity uses for psutil create_time comparisons (PID reuse disambiguation).
+_CREATE_TIME_TOLERANCE_S = 2.0
+# A backwards clock step (NTP) between write and read must not kill a fresh marker.
+_ATTESTATION_CLOCK_SLACK_S = 60.0
 
 
-def _attestation_within_horizon(data: object, now: float | None = None) -> bool:
+def _attestation_within_horizon(data: object) -> bool:
     """False for a marker whose ``ts`` is missing, unparsable or older than the horizon (fail closed)."""
     try:
         ts = datetime.fromisoformat(str(data["ts"])) if isinstance(data, dict) else None
@@ -917,8 +921,8 @@ def _attestation_within_horizon(data: object, now: float | None = None) -> bool:
             return False
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
-        age = (time.time() if now is None else now) - ts.timestamp()
-        return 0 <= age <= START_ATTESTATION_MAX_AGE_S
+        age = time.time() - ts.timestamp()
+        return -_ATTESTATION_CLOCK_SLACK_S <= age <= START_ATTESTATION_MAX_AGE_S
     except Exception:
         return False
 
@@ -931,6 +935,7 @@ def _attestation_generation(data: object) -> str | None:
 def _consume_start_attestation(generation: str) -> None:
     """Clear the marker only while it is still the ``generation`` that was acted on; a newer
     marker belongs to a gateway start this caller knows nothing about and keeps its own report."""
+    # Best-effort read-then-unlink: a marker written in between loses one post-start report, never authority.
     if _attestation_generation(_read_start_attestation()) == generation:
         _clear_start_attestation()
 
@@ -980,10 +985,11 @@ def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None) -> 
     if not isinstance(data, dict):
         return create_time is not None
     if create_time is not None:
-        start_time = data.get("start_time")
-        if data.get("pid") != pid or type(start_time) not in (int, float):
+        if data.get("pid") != pid:
             return True
-        if abs(float(start_time) - create_time) > 2.0:
+        sentinel_birth = data.get("create_time")
+        # A sentinel from a gateway older than the identity stamp cannot be told apart: PID-only rule.
+        if type(sentinel_birth) in (int, float) and abs(float(sentinel_birth) - create_time) > _CREATE_TIME_TOLERANCE_S:
             return True
     return data.get("phase") == "exited" and data.get("pid") == pid
 

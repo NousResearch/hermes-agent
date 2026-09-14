@@ -216,12 +216,15 @@ def test_prior_exit_label_survives_corrupt_sentinel(tmp_path: Path) -> None:
     assert read_prior_exit_label(tmp_path) == "unknown"
 
 
-def test_mark_exited_carries_start_time_onto_exited_sentinel(tmp_path: Path) -> None:
-    """The exited sentinel keeps the life's ``start_time`` so the Windows start attestation can
-    match a clean exit by incarnation, not by reusable PID (#110020)."""
+def test_sentinel_carries_process_birth_through_exit(tmp_path: Path, monkeypatch) -> None:
+    """The running sentinel stamps the process ``create_time`` (psutil birth, not the later ledger
+    claim) and the exited sentinel keeps it, so the Windows start attestation can match a clean
+    exit by incarnation, not by reusable PID (#110020)."""
+    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 1234.5)
     record_startup(home=tmp_path)
     running = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
+    assert running["create_time"] == 1234.5
     mark_exited(0, reason="graceful_shutdown", home=tmp_path)
     exited = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
     assert exited["phase"] == "exited"
-    assert exited["start_time"] == running["start_time"]
+    assert (exited["start_time"], exited["create_time"]) == (running["start_time"], 1234.5)

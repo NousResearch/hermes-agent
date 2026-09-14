@@ -950,7 +950,12 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
     with _abort_on_error("Could not re-check gateway liveness before cold-start"):
         if list(find_gateway_pids(all_profiles=True)):
             return True
-    generation = (token or {}).get("attested_generation")
+    token = token or {}
+    generation = token.get("attested_generation")
+    if generation is None and "attested_generation" not in token:
+        # Token written by pre-generation code and resumed across this very update: probe the marker.
+        with _abort_on_error("Could not re-read the start attestation before cold-start"):
+            generation = gateway_windows.attested_death_generation(current_pids=[])
     with _abort_on_error("Could not re-check Desktop gateway-lifecycle ownership before cold-start"):
         if _desktop_owns_gateway_lifecycle() and not generation:
             logger.debug("Skipping Windows gateway cold-start: Desktop owns gateway lifecycle")

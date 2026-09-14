@@ -34,19 +34,20 @@ export interface PoolStopperDeps {
   /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
   waitForExit: (child: unknown) => Promise<void>
   /**
-   * Optional scope cleanup that must finish before the key may respawn.
-   * Remote pool entries have no local child, but can still own an SSH tunnel
-   * and a detached ``serve --isolated`` process on the remote host.
+   * Extra per-key work that must finish before a replacement may spawn.
+   * Held on the same in-flight promise as child exit (SSH teardown, etc.).
    */
-  afterStop?: (key: string, entry: PoolStopEntry) => Promise<void>
+  afterStop?: (key: string) => Promise<void>
 }
 
 export interface PoolStopper {
   /** The in-flight stop for a key, if any — await before respawning it. */
   inFlight: (key: string) => Promise<void> | undefined
+  /** Whether the pool has a local child or an already-evicted stop in flight. */
+  hasPending: () => boolean
   /** Stop one pooled backend; concurrent calls share the same promise. */
   stop: (key: string) => Promise<void>
-  /** Stop every pooled backend currently in the pool. */
+  /** Stop every pooled backend and join stops already in flight. */
   stopAll: () => Promise<void>
 }
 
@@ -73,7 +74,9 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
     const stopping = (async () => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
-      await deps.afterStop?.(key, entry)
+      if (deps.afterStop) {
+        await deps.afterStop(key)
+      }
     })().finally(() => {
       stops.delete(key)
     })
@@ -85,9 +88,12 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
 
   return {
     inFlight: key => stops.get(key),
+    hasPending: () => stops.size > 0 || [...deps.pool.values()].some(entry => entry.process != null),
     stop,
     stopAll: async () => {
-      await Promise.all([...deps.pool.keys()].map(stop))
+      const currentStops = [...deps.pool.keys()].map(stop)
+
+      await Promise.all(new Set([...stops.values(), ...currentStops]))
     }
   }
 }

@@ -32,9 +32,9 @@ from plugins.memory.hindsight import (
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
-    _sanitize_bank_segment,
     _WRITER_SENTINEL,
 )
+from plugins.memory.hindsight.settings import _sanitize_bank_segment
 
 
 # ---------------------------------------------------------------------------
@@ -1413,7 +1413,7 @@ class TestAvailability:
             )
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
+            "importlib.import_module",
             _raise,
         )
         p = HindsightMemoryProvider()
@@ -1432,7 +1432,7 @@ class TestAvailability:
             raise RuntimeError("x86_64-v2 unsupported")
 
         monkeypatch.setattr(
-            "plugins.memory.hindsight.importlib.import_module",
+            "importlib.import_module",
             _raise,
         )
 
@@ -1538,6 +1538,23 @@ def test_save_config_sets_owner_only_permissions(tmp_path):
     assert config_file.exists()
     mode = stat.S_IMODE(config_file.stat().st_mode)
     assert mode == 0o600, f"Expected 0o600 (owner-only), got {oct(mode)}"
+
+
+def test_load_config_corrupt_profile_file_falls_through_to_env(tmp_path, monkeypatch):
+    """A corrupt $HERMES_HOME/hindsight/config.json is not the config: the loader falls through
+    (legacy file, then env) instead of returning an empty, silently-unconfigured mapping."""
+    home = tmp_path / "home"
+    (home / "hindsight").mkdir(parents=True)
+    (home / "hindsight" / "config.json").write_text("{not json", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setenv("HINDSIGHT_MODE", "local")
+    monkeypatch.setenv("HINDSIGHT_BANK_ID", "from-env")
+
+    cfg = _load_config()
+
+    assert cfg["mode"] == "local"
+    assert cfg["banks"]["hermes"]["bankId"] == "from-env"
 
 
 class TestLoadSimpleEnv:

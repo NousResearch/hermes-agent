@@ -64,8 +64,14 @@ end-to-end and exposes no knobs:
   overflow in system RAM in the order that hurts least (expert weights
   first, never the attention cache), trading some speed to protect the
   context guarantee.
-- **Conversation compression only kicks in at the model's maximum
-  window** — growth always comes first.
+- **Memory fit includes the launch configuration**, not just the model file:
+  context state, runtime buffers, the vision projector, and MTP buffers all
+  count. For multi-token prediction (MTP), Hermes uses smaller batches when
+  larger batches would spill at the same context window. MTP stays enabled.
+  The same calculation runs when a grown window is restored after restart.
+- **Conversation compression follows a growth check.** If a larger window
+  cannot fit, generation is too slow, or the native maximum is reached,
+  Hermes compresses instead of claiming a window the server did not receive.
 - Idle models are unloaded after 15 minutes to free GPU memory; they
   reload automatically on the next message.
 

@@ -34,7 +34,7 @@ class TestTerminalRequirements:
 
     def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setattr(terminal_tool_module, "managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr("tools.terminal_tool_backends.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
@@ -45,8 +45,7 @@ class TestTerminalRequirements:
             lambda: {"env_type": "modal", "modal_mode": "managed"},
         )
         monkeypatch.setattr(
-            terminal_tool_module,
-            "is_managed_tool_gateway_ready",
+            "tools.terminal_tool_backends.is_managed_tool_gateway_ready",
             lambda _vendor: True,
         )
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
@@ -304,7 +303,7 @@ class TestCheckFnTransientFailureSuppression:
             lambda: {"env_type": "vercel_sandbox", "container_disk": 51200},
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -326,7 +325,7 @@ class TestCheckFnTransientFailureSuppression:
             },
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -351,7 +350,7 @@ class TestCheckFnTransientFailureSuppression:
             },
         )
         monkeypatch.setattr(
-            terminal_tool_module.importlib.util,
+            importlib.util,
             "find_spec",
             lambda _name: object(),
         )
@@ -369,7 +368,68 @@ class TestUnscopedSecretReadLogging:
     crashed check_fn (WARNING + traceback); an unscoped read reported while
     the scope was *resolved* is a genuinely lost scope and stays loud."""
 
+    def test_raising_check_fn_logs_traceback_on_cached_path(self, caplog):
+        """A check_fn that raises is a probe bug, not "nothing configured": the verdict log must
+        carry the traceback so a silently stripped toolset is diagnosable from agent.log (#87950)."""
+        import logging
+
+        import tools.registry as reg
+
+        def probe():
+            raise RuntimeError("resolver exploded")
+
+        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+            assert reg._check_fn_cached(probe) is False
+        verdicts = [r for r in caplog.records if "dependent tools will be unavailable" in r.getMessage()]
+        assert verdicts and all(r.exc_info and r.exc_info[0] is RuntimeError for r in verdicts)
+
     def test_expected_fail_closed_probe_is_quiet_but_lost_scope_stays_loud(self, caplog):
+        """The verdict comes from the LIVE scope at the catch site (#110635): unscoped caller →
+        expected boot-time miss (DEBUG, no traceback); scoped caller whose probe still hit the
+        fail-closed path → a dropped scope inside the probe (WARNING + traceback)."""
+        import logging
+        import threading
+
+        import tools.registry as reg
+        from agent.secret_scope import (
+            get_secret, reset_secret_scope, set_multiplex_active, set_secret_scope,
+        )
+
+        def probe():
+            return bool(get_secret("REGISTRY_LOG_PROBE_TOKEN", ""))
+
+        def probe_on_bare_thread():
+            # A bare thread starts with an EMPTY context: the scope the caller holds never reaches
+            # the get_secret inside — the spawn-site bug the loud branch exists to expose.
+            out = []
+            t = threading.Thread(target=lambda: out.append(probe()))
+            t.start()
+            t.join()
+            return out[0]
+
+        set_multiplex_active(True)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+                assert reg._run_check_fn_uncached(probe) is False
+                boot = [r for r in caplog.records if r.name == "tools.registry"]
+                caplog.clear()
+                token = set_secret_scope({})
+                try:
+                    assert reg._run_check_fn_uncached(probe_on_bare_thread) is False
+                finally:
+                    reset_secret_scope(token)
+                lost = [r for r in caplog.records if r.name == "tools.registry"]
+        finally:
+            set_multiplex_active(False)
+
+        assert boot and all(r.levelno == logging.DEBUG and r.exc_info is None for r in boot)
+        assert any(r.levelno >= logging.WARNING and r.exc_info for r in lost)
+
+    def test_uncached_probe_at_boot_is_not_reported_as_a_lost_scope(self, caplog):
+        """#110635: a ``no_cache_check_fn`` probe (the browser vault gate) skips the cache-scope
+        lookup, so on the old branch-derived hint every gateway start under multiplexing logged
+        WARNING + traceback for an EXPECTED fail-closed read. Same probe, cached or uncached,
+        same DEBUG verdict."""
         import logging
 
         import tools.registry as reg
@@ -378,16 +438,13 @@ class TestUnscopedSecretReadLogging:
         def probe():
             return bool(get_secret("REGISTRY_LOG_PROBE_TOKEN", ""))
 
+        reg.no_cache_check_fn(probe)
         set_multiplex_active(True)
         try:
             with caplog.at_level(logging.DEBUG, logger="tools.registry"):
-                assert reg._run_check_fn_uncached(probe, unresolved_scope=True) is False
-                boot = [r for r in caplog.records if r.name == "tools.registry"]
-                caplog.clear()
-                assert reg._run_check_fn_uncached(probe, unresolved_scope=False) is False
-                lost = [r for r in caplog.records if r.name == "tools.registry"]
+                assert reg._check_fn_cached(probe) is False
         finally:
             set_multiplex_active(False)
-
-        assert boot and all(r.levelno == logging.DEBUG and r.exc_info is None for r in boot)
-        assert any(r.levelno >= logging.WARNING and r.exc_info for r in lost)
+            reg._NO_CACHE_CHECK_FNS.discard(probe)
+        records = [r for r in caplog.records if r.name == "tools.registry"]
+        assert records and all(r.levelno == logging.DEBUG and r.exc_info is None for r in records)

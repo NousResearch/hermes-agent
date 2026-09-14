@@ -340,7 +340,19 @@ def _post_setup_xai_grok() -> None:
 
 
 # post_setup key -> hook. Unknown keys are a silent no-op (callers validate against valid_post_setup_keys()).
+def _post_setup_local_extract() -> None:
+    try:
+        from plugins.web.local.provider import _import_trafilatura
+        _import_trafilatura()
+    except ImportError as exc:
+        _print_warning(f"    trafilatura install failed: {str(exc)[:300]}")
+        return
+    _print_success("    trafilatura is installed")
+    _info_lines("No API key required. Extract-only; pair with a search provider.")
+
+
 _POST_SETUP_HOOKS: dict = {
+    "local_extract": _post_setup_local_extract,
     "lightpanda": _post_setup_lightpanda,
     "agent_browser": lambda: _post_setup_agent_browser("agent_browser"),
     "browserbase": lambda: _post_setup_agent_browser("browserbase"),
@@ -405,7 +417,10 @@ def run_post_setup_command(args) -> int:
 # binary/dependency install (otherwise toggling the toolset on silently skips the hook). Only add an
 # entry when the post_setup is the ONLY install side-effect for a no-key provider and the check is
 # local, bounded, and import-light.
-_POST_SETUP_INSTALLED: dict = {"cua_driver": lambda: _cua_driver_install_ready()}
+_POST_SETUP_INSTALLED: dict = {
+    "cua_driver": lambda: _cua_driver_install_ready(),
+    "local_extract": lambda: _module_installed("trafilatura"),
+}
 
 
 def _post_setup_already_installed(post_setup_key: str) -> bool:

@@ -97,7 +97,7 @@ def _probe(provider, method: str, context: str = "") -> Optional[bool]:
         return None
 
 
-def _get_backend() -> str:
+def _get_backend(capability: Optional[str] = None) -> str:
     """Shared web backend name. A stored ``web.backend`` is returned as-is — no availability probe, no
     fallback — so a broken selection surfaces the vendor's honest error rather than silently rerouting.
     Autodetect runs ONLY when no web selection has ever been stored."""
@@ -126,6 +126,8 @@ def _get_backend() -> str:
 
     # Plugin-contributed providers (built-ins are covered above); probe the held object directly.
     for provider in _list_registered_web_providers():
+        if capability and not _probe(provider, f"supports_{capability}"):
+            continue
         if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available"):
             return provider.name
 
@@ -147,12 +149,12 @@ def _get_backend() -> str:
 
 def _get_search_backend() -> str:
     """Backend for web_search: ``web.search_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("search_backend") or _get_backend()
+    return _configured_backend("search_backend") or _get_backend("search")
 
 
 def _get_extract_backend() -> str:
     """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("extract_backend") or _get_backend()
+    return _configured_backend("extract_backend") or _get_backend("extract")
 
 
 def _ddgs_package_importable() -> bool:

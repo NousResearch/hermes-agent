@@ -82,6 +82,7 @@ class TestBundledPluginsRegister:
             "exa",
             "firecrawl",
             "keenable",
+            "local",
             "parallel",
             "perplexity",
             "searxng",

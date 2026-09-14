@@ -1,0 +1,7 @@
+name: web-local
+version: 1.0.0
+description: "Local web extract — direct httpx fetch + trafilatura readability extraction on this machine. No API key required. Extract-only; pair with any search provider."
+author: Enzo Adami
+kind: backend
+provides_web_providers:
+  - local

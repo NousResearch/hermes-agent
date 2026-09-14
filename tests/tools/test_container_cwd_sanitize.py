@@ -213,3 +213,53 @@ class TestFileOpsCwdSanitizedAtCallSite:
         cwd = self._run_and_capture_cwd(
             monkeypatch, "/Users/me/workspace", env_type="modal")
         assert cwd == "/workspace"
+
+
+class TestLiveEnvCwdSanitizedOnReRegister(object):
+    """E2E pin: re-registering a cwd override against an ALREADY-LIVE container
+    env must not poison ``env.cwd`` with a host path (#98723) — the third site
+    of the container-cwd guard, alongside env-creation (#50636/#54447) and
+    per-command resolution. The desktop/TUI calls
+    ``register_task_env_overrides()`` with the session's HOST workspace on
+    every turn; without this guard the live env's cwd is overwritten raw, and
+    every subsequent file-tool call inside the container dies at exit 126
+    (``cd: /Users/<user>: No such file or directory``) before the real command
+    runs — misreported by callers as "file not found" / "rg missing".
+    """
+
+    def _register_against_live_env(self, monkeypatch, override_cwd, initial_cwd="/root"):
+        import tools.terminal_tool as tt
+
+        class _DummyEnv:
+            def __init__(self, cwd):
+                self.cwd = cwd
+
+        env = _DummyEnv(initial_cwd)
+        task_id = "sess-live-env-reregister"
+
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setattr(tt, "_active_environments", {task_id: env})
+        monkeypatch.setattr(tt, "_session_cwd", {})
+
+        try:
+            tt.register_task_env_overrides(task_id, {"cwd": override_cwd})
+        finally:
+            tt.clear_task_env_overrides(task_id)
+        return env.cwd
+
+    def test_host_cwd_override_does_not_poison_live_env(self, monkeypatch):
+        cwd = self._register_against_live_env(monkeypatch, "/Users/me/workspace")
+        assert cwd == "/root", (
+            f"A host-path cwd override poisoned the live container env: {cwd!r}. "
+            "It must be rejected, keeping the env's existing (usable) cwd."
+        )
+
+    def test_windows_host_cwd_override_does_not_poison_live_env(self, monkeypatch):
+        cwd = self._register_against_live_env(monkeypatch, r"C:\Users\someuser")
+        assert cwd == "/root"
+
+    def test_valid_container_cwd_override_still_applies_live(self, monkeypatch):
+        # In-sandbox path (e.g. ACP client switching project root) must still
+        # take effect immediately on the live env.
+        cwd = self._register_against_live_env(monkeypatch, "/workspace/task42")
+        assert cwd == "/workspace/task42"

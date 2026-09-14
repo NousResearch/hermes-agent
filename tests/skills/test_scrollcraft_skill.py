@@ -5,11 +5,7 @@ from pathlib import Path
 
 import yaml
 
-_STAGING = Path(__file__).resolve().parents[2] / "optional-skills/web-development/scrollcraft"
-_FALLBACK = (
-    Path.home() / ".hermes/hermes-agent/optional-skills/web-development/scrollcraft"
-)
-SKILL_DIR = _STAGING if _STAGING.is_dir() else _FALLBACK
+SKILL_DIR = Path(__file__).resolve().parents[2] / "optional-skills/web-development/scrollcraft"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 
 

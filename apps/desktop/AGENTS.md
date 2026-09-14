@@ -205,10 +205,9 @@ From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
 before `npm run dev`. Stop Electron and its dev server after the run.
 
 To rehearse the free tier's failure handling (the account service refusing or
-unreachable at boot, the welcome host rate-limiting or refusing mid-chat), run
-`python scripts/free_tier_fault_server.py` from the repo root and start the
-desktop with the environment it prints; switch scenarios from the desktop's
-JavaScript console. The walkthrough is in
+unreachable at boot, the welcome host rate-limiting or refusing mid-chat), point
+the desktop at a local stand-in for both services with `HERMES_PORTAL_BASE_URL`,
+`NOUS_INFERENCE_BASE_URL` and `HERMES_EXTRA_WELCOME_HOSTS`. See
 `website/docs/developer-guide/free-tier-fault-rehearsal.md`.
 
 ## The taste test before you hand off

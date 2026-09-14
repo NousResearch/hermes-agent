@@ -350,6 +350,12 @@
               home = cfg.stateDir;
               createHome = true;
               shell = pkgs.bashInteractive;
+              # The restart-safe cron worker dispatches into a transient
+              # `systemd-run --user --scope` unit, which requires a user
+              # manager. A uid that only exists to run a system service never
+              # logs in, so without linger the scope cannot be created and
+              # every gateway-dispatched cron fire fails closed (#110628).
+              linger = !cfg.container.enable;
             };
           })
 

@@ -527,6 +527,9 @@ def _resolve_from_pool(provider: str, requested_provider: str, model_cfg: Dict[s
         pool = None
     if not (pool and pool.has_credentials()):
         return None
+    # Tell the pool which model it is selecting for so model-pinned rows
+    # (``allowed_models``) only serve their own slugs.
+    pool.model_scope = _effective_model(model_cfg, target_model)
     entry = pool.select()
     if entry is None:
         return None

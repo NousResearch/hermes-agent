@@ -1,7 +1,7 @@
 """An idle native client must not reintroduce erased history on its next turn."""
 from hermes_state import SessionDB
 from run_agent import AIAgent
-from tests.run_agent.test_cross_process_turn_lease import _agent_with_db
+from tests.agent.test_cross_process_turn_lease import _agent_with_db
 
 
 def test_idle_agent_reloads_only_affected_history_before_an_uncontended_turn(tmp_path, monkeypatch):

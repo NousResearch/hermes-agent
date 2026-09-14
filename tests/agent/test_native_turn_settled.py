@@ -3,17 +3,17 @@
 import asyncio
 import threading
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import plugins
+from gateway.session_state import SessionState, TurnState
 from hermes_cli.plugins import PluginContext, PluginManager
 from hermes_cli.plugins_manifest import PluginManifest
 from hermes_state import SessionDB
 from run_agent import AIAgent
 from tests.gateway.test_transcript_redaction import _runner
-from tests.run_agent.test_cross_process_turn_lease import _agent_with_db
+from tests.agent.test_cross_process_turn_lease import _agent_with_db
 
 
 def _context(monkeypatch):
@@ -108,10 +108,7 @@ def test_gateway_settled_runs_on_loop_after_release_and_schedules_real_redaction
 
     async def scenario():
         token = await runner._turn_leases.acquire("source", owner_key="route:source", generation=7)
-        state = SimpleNamespace(
-            turn=SimpleNamespace(lease_token=token, lease_generation=7),
-            conversation=SimpleNamespace(ephemeral_pin=None, vc_last=None),
-        )
+        state = SessionState(turn=TurnState(lease_tokens={7: token}))
         runner._peek_session_state = lambda key: state if key == "route:source" else None
         assert runner._release_turn_lease("route:source", 6) is False
         assert receipts == []
@@ -168,7 +165,7 @@ def test_settled_hooks_select_owning_profile_and_scheduled_work_keeps_that_scope
 
     async def release_turn(key, generation):
         token = await runner._turn_leases.acquire("source", owner_key=key, generation=generation)
-        state = SimpleNamespace(turn=SimpleNamespace(lease_token=token, lease_generation=generation))
+        state = SessionState(turn=TurnState(lease_tokens={generation: token}))
         runner._peek_session_state = lambda candidate: state if candidate == key else None
         assert runner._release_turn_lease(key, generation) is True
 

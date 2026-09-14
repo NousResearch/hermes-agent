@@ -21,7 +21,7 @@ class _Runner(GatewayAgentCacheMixin):
     def _peek_session_state(self, key):
         return None
 
-    def _spawn_release_thread(self, target, args, name, *, inline_fallback):
+    def _spawn_release_thread(self, target, args, name, *, inline_fallback, session_key=None):
         self.client_cleanups.append((target, args))
 
 

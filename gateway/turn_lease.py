@@ -156,7 +156,7 @@ class SessionTurnLeaseRegistry:
                 return None
             seen.add(id(lease))
             await lease.lock.acquire()
-            token = TurnLeaseToken(session_id, owner_key, int(generation))
+            token = TurnLeaseToken(session_id, owner_key, int(generation), lease=lease)
             lease.holder = token
             lease.acquired_at = lease.last_used = time.time()
             tokens.append(token)

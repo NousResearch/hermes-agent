@@ -163,7 +163,8 @@ def mount_spa(application: FastAPI):
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build to go through the proxy.
             for attr in ('href="/assets/', 'src="/assets/', 'href="/favicon.ico"', 'href="/fonts/',
-                         'href="/ds-assets/', 'src="/ds-assets/'):
+                         'href="/ds-assets/', 'src="/ds-assets/',
+                         'href="/manifest.webmanifest"', 'href="/icons/'):
                 html = html.replace(attr, attr.replace('"/', f'"{prefix}/', 1))
         theme_bootstrap = _render_active_theme_bootstrap_css()
         if theme_bootstrap:
@@ -202,6 +203,22 @@ def mount_spa(application: FastAPI):
     application.mount(
         "/assets", _ImmutableAssetFiles(directory=WEB_DIST / "assets", check_dir=False), name="assets"
     )
+
+    @application.get("/sw.js")
+    async def serve_service_worker():
+        """The PWA service worker, always revalidated.
+
+        Browsers bypass the HTTP cache for the worker script themselves, but an
+        intermediary (CDN, corporate proxy, the reverse proxy in front of a
+        hosted deploy) does not — and a worker pinned by an intermediary keeps
+        serving its old caching rules to every installed client. ``no-store``
+        removes that failure mode. The catch-all below would otherwise serve
+        this file with only an ETag.
+        """
+        sw_path = WEB_DIST / "sw.js"
+        if not sw_path.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return FileResponse(sw_path, media_type="text/javascript", headers=_NO_STORE)
 
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):

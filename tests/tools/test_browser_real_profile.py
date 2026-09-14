@@ -1132,7 +1132,7 @@ class TestWindowsLockedProfileCopy:
         monkeypatch.setattr(bc, "get_hermes_home", lambda: home)
         # Force both sqlite-backup and raw copy to fail for the DB.
         monkeypatch.setattr(bc, "_copy_auth_file",
-                            lambda s, d: "file is not a database" if os.path.basename(s) in bc._SQLITE_AUTH_DBS else None)
+                            lambda s, d, **_kw: "file is not a database" if os.path.basename(s) in bc._SQLITE_AUTH_DBS else None)
         dst, err = bc.snapshot_real_profile("chrome", src=str(root))
         assert dst is None
         assert err

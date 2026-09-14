@@ -386,14 +386,33 @@ def _real_dir(base: Path, parts: Tuple[str, ...]) -> Path:
     path = base
     for part in parts:
         path = path / part
-        if path.is_symlink():
-            raise DistributionError(
-                f"{path} is a symlink; refusing to replace it — remove the link or point distribution_owned elsewhere"
-            )
+        _refuse_symlink(path)
         if path.exists() and not path.is_dir():
             _remove_existing(path)
         path.mkdir(exist_ok=True)
     return path
+
+
+def _refuse_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise DistributionError(
+            f"{path} is a symlink; refusing to replace it — remove the link "
+            "(or replace it with a real directory) and re-run"
+        )
+
+
+def _refuse_symlinked_targets(target: Path, entries) -> None:
+    """Refuse before the first write. The per-entry check in ``_real_dir`` fires mid-loop,
+    after earlier entries were already replaced and before the manifest is rewritten,
+    leaving a half-updated profile that fails identically on every retry."""
+    for src, rel_parts in entries:
+        # Directories are walked as containers, so the whole chain must be real;
+        # a file only needs a real parent chain (a symlinked file is unlinked, not followed).
+        depth = len(rel_parts) if src.is_dir() else len(rel_parts) - 1
+        path = target
+        for part in rel_parts[:depth]:
+            path = path / part
+            _refuse_symlink(path)
 
 
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
@@ -407,12 +426,15 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     the roots the payload ships are replaced, so roots the user added (or that an older
     version shipped) survive an update or forced reinstall."""
     target.mkdir(parents=True, exist_ok=True)
+    entries = list(_owned_entries(staged, manifest))
+    _refuse_symlinked_targets(target, entries)
 
-    for src, rel_parts in _owned_entries(staged, manifest):
+    for src, rel_parts in entries:
         if len(rel_parts) == 1:
             name = rel_parts[0]
             if name == ENV_TEMPLATE_FILENAME:
-                shutil.copy2(src, target / ENV_EXAMPLE_FILENAME)
+                # _replace_entry unlinks first so copy2 cannot write through a symlinked .env.EXAMPLE.
+                _replace_entry(src, target / ENV_EXAMPLE_FILENAME)
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue

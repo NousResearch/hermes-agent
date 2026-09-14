@@ -10,8 +10,15 @@ import { shimSource } from './runtime'
 /** The names inside the generated destructuring statement. */
 function exportedNames(source: string): string[] {
   const match = /\{([^}]*)\}/.exec(source)
-  if (!match) return []
-  return match[1].split(',').map(name => name.trim()).filter(Boolean)
+
+  if (!match) {
+    return []
+  }
+
+  return match[1]
+    .split(',')
+    .map(name => name.trim())
+    .filter(Boolean)
 }
 
 describe('shimSource', () => {

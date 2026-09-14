@@ -144,10 +144,14 @@ _ALIBABA_CODING_PLAN_MODELS = [
     "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus", "qwen3-max-2026-01-23", "qwen3-coder-plus",
     "qwen3-coder-next", "kimi-k2.5", "glm-5", "glm-4.7", "MiniMax-M2.5",
 ]
-# Verified against a live Token Plan subscription (key tier ``sk-sp-...``).
+# Synced against a live Token Plan subscription (key tier ``sk-sp-...``), 2026-09-14: live
+# GET /compatible-mode/v1/models + per-model chat probes. Alibaba rotated the tier's catalog —
+# kimi-*, glm-5/5.1, qwen3.6-plus, deepseek-v4-flash/v3.2 now 403, qwen3.8-max-0902 404s — while
+# qwen3.8-max/flash, deepseek-v4.1-flash and deepseek-v4-flash-0731 joined. Non-chat SKUs the
+# live API also lists (wan2.7-image*, qwen-audio-*) stay out of the chat picker.
 _ALIBABA_TOKEN_PLAN_MODELS = [
-    "qwen3.8-max-0902", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.6-flash", "deepseek-v4-pro",
-    "deepseek-v4-flash", "deepseek-v3.2", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.2", "glm-5.1", "glm-5",
+    "qwen3.8-max", "qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-pro",
+    "deepseek-v4.1-flash", "deepseek-v4-flash-0731", "glm-5.2",
 ]
 _XAI_MODELS = _xai_curated_models()
 

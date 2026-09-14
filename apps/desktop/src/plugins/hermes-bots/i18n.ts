@@ -163,6 +163,7 @@ type BotsMessages = {
     deleteTitle: string
     deleteAction: string
     composerPlaceholder: string
+    slashCommandsUnsupported: string
     attachHint: string
     newThread: string
     reply: string
@@ -387,6 +388,8 @@ const en: BotsMessages = {
     deleteTitle: 'Delete group chat?',
     deleteAction: 'Delete',
     composerPlaceholder: 'Say something — every bot in this group hears the room.',
+    slashCommandsUnsupported:
+      'Slash commands are not supported in group chats. Open an individual bot chat to use them.',
     attachHint: 'Attach files — every responding bot sees them',
     newThread: 'New Thread',
     reply: 'Reply',
@@ -540,7 +543,9 @@ const ja: BotsMessages = {
     newSectionEllipsis: '新しいセクション…',
     removeFromSection: 'セクションから外す',
     deleted: (name, count) =>
-      count === 0 ? `「${name}」を削除しました` : `「${name}」を削除しました — ${count} 件のボットを未分類に移動しました`,
+      count === 0
+        ? `「${name}」を削除しました`
+        : `「${name}」を削除しました — ${count} 件のボットを未分類に移動しました`,
     undo: '元に戻す'
   },
   bot: {
@@ -602,6 +607,8 @@ const ja: BotsMessages = {
     deleteTitle: 'グループチャットを削除しますか？',
     deleteAction: '削除',
     composerPlaceholder: '何か書いてください — このグループのすべてのボットが部屋の内容を受け取ります。',
+    slashCommandsUnsupported:
+      'グループチャットではスラッシュコマンドを使用できません。個別のボットチャットを開いて使用してください。',
     attachHint: 'ファイルを添付 — 応答するすべてのボットが見ます',
     newThread: '新しいスレッド',
     reply: '返信',
@@ -753,8 +760,7 @@ const zh: BotsMessages = {
     moveTo: '移动到分区',
     newSectionEllipsis: '新建分区…',
     removeFromSection: '移出分区',
-    deleted: (name, count) =>
-      count === 0 ? `已删除“${name}”` : `已删除“${name}” — ${count} 个机器人已移至未分类`,
+    deleted: (name, count) => (count === 0 ? `已删除“${name}”` : `已删除“${name}” — ${count} 个机器人已移至未分类`),
     undo: '撤销'
   },
   bot: {
@@ -816,6 +822,7 @@ const zh: BotsMessages = {
     deleteTitle: '删除群聊？',
     deleteAction: '删除',
     composerPlaceholder: '说点什么 — 这个群里的每个机器人都会听到。',
+    slashCommandsUnsupported: '群聊不支持斜杠命令。请打开单个机器人的聊天来使用。',
     attachHint: '附加文件 — 每个回应的机器人都能看到',
     newThread: '新帖子',
     reply: '回复',
@@ -967,8 +974,7 @@ const zhHant: BotsMessages = {
     moveTo: '移動到分區',
     newSectionEllipsis: '新增分區…',
     removeFromSection: '移出分區',
-    deleted: (name, count) =>
-      count === 0 ? `已刪除「${name}」` : `已刪除「${name}」— ${count} 個機器人已移至未分類`,
+    deleted: (name, count) => (count === 0 ? `已刪除「${name}」` : `已刪除「${name}」— ${count} 個機器人已移至未分類`),
     undo: '復原'
   },
   bot: {
@@ -1030,6 +1036,7 @@ const zhHant: BotsMessages = {
     deleteTitle: '刪除群組聊天？',
     deleteAction: '刪除',
     composerPlaceholder: '說點什麼 — 這個群組裡的每個機器人都會聽到。',
+    slashCommandsUnsupported: '群組聊天不支援斜線命令。請開啟個別機器人的聊天來使用。',
     attachHint: '附加檔案 — 每個回應的機器人都能看到',
     newThread: '新討論串',
     reply: '回覆',

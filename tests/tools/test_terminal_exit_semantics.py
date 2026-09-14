@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools.terminal_tool import _interpret_exit_code
+from tools.terminal_tool_result import _interpret_exit_code
 
 
 class TestInterpretExitCode:

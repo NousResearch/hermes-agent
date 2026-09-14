@@ -57,4 +57,56 @@ describe('preview annotate host', () => {
       y: 20 - ANNOTATE_CROP_PAD
     })
   })
+
+  it('brackets the shot so the crop is taken with only this comment marked', async () => {
+    const order: string[] = []
+
+    const executeJavaScript = vi.fn(async (code: string) => {
+      order.push(code.includes('beginCapture') ? 'begin' : 'end')
+
+      return true
+    })
+
+    const capture = vi.fn(async () => {
+      order.push('capture')
+
+      return 'data:image/png;base64,AA=='
+    })
+
+    await captureAnnotateCrop({ capture, executeJavaScript }, { height: 16, width: 40, x: 10, y: 20 })
+
+    expect(order).toEqual(['begin', 'capture', 'end'])
+  })
+
+  it('restores saved pins even when the capture fails', async () => {
+    const executeJavaScript = vi.fn(async (code: string) => {
+      void code
+
+      return true
+    })
+
+    const capture = vi.fn(async () => {
+      throw new Error('capture exploded')
+    })
+
+    await expect(
+      captureAnnotateCrop({ capture, executeJavaScript }, { height: 16, width: 40, x: 10, y: 20 })
+    ).rejects.toThrow('capture exploded')
+
+    expect(executeJavaScript.mock.calls.some(([code]) => String(code).includes('endCapture'))).toBe(true)
+  })
+
+  it('still captures when the overlay cannot be reached', async () => {
+    const capture = vi.fn(async () => 'data:image/png;base64,AA==')
+
+    const executeJavaScript = vi.fn(async (code: string) => {
+      void code
+
+      throw new Error('guest is gone')
+    })
+
+    await expect(
+      captureAnnotateCrop({ capture, executeJavaScript }, { height: 16, width: 40, x: 10, y: 20 })
+    ).resolves.toContain('data:image/png')
+  })
 })

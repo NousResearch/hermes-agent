@@ -1,23 +1,10 @@
-"""Opt-in per-turn / per-session usage belts: wall-clock and token ceilings.
+"""Opt-in cooperative conversation-loop budgets (zero disables each field).
 
-``IterationBudget`` bounds how many tool-loop passes a turn may take, but
-nothing bounds how LONG a turn may run (slow local generations make 90
-iterations an hours-long turn) or how many TOKENS a session may consume
-(a runaway cloud session burns prepaid balance silently). These limits are
-the missing belt for unattended 24/7 operation.
-
-Design notes, mirroring ``agent.tool_guardrails``:
-
-- Pure module: the tracker only observes and answers; the conversation loop
-  owns breaking out of the turn.
-- Token accounting taps the existing monotonic ``agent.session_total_tokens``
-  aggregate (fed by every provider path). It only grows — there is no refund
-  path — so limits inherit the retry-surviving property: an attempt that
-  reported usage stays counted even if the call is later retried. Failed
-  attempts that never returned a usage payload are NOT counted; the
-  wall-clock ceiling covers stall-and-retry pathologies instead.
-- Everything is disabled (0) by default: interactive sessions see no change
-  unless config.yaml opts in via the ``usage_limits`` section.
+Checked only between outer iterations, not during calls, retries or tools.
+The timer starts after turn preflight. Token limits observe reported session
+usage, not unreported failed calls, auxiliary work, or provider billing.
+A crossing operation completes before the next boundary stops the loop; these
+are not hard deadlines or financial caps. The app-server runtime is not covered.
 """
 
 from __future__ import annotations
@@ -127,11 +114,11 @@ class TurnUsageTracker:
 
 def _limit(value: Any) -> int:
     """Parse a ceiling: non-negative int, anything else (or 0) disables."""
-    if value is None:
+    if value is None or isinstance(value, bool):
         return 0
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
     return parsed if parsed > 0 else 0
 

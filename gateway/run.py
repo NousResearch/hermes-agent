@@ -3265,8 +3265,6 @@ def _builtin_adapter_import(module: str, adapter_name: str, requirement: str):
 _BUILTIN_ADAPTERS: dict[Platform, tuple[str, str, str, str]] = {
     Platform.WHATSAPP_CLOUD: ("whatsapp_cloud", "WhatsAppCloudAdapter", "check_whatsapp_cloud_requirements",
                               "WhatsApp Cloud: aiohttp/httpx missing — reinstall hermes-agent"),
-    Platform.SIGNAL: ("signal", "SignalAdapter", "check_signal_requirements",
-                      "Signal: runtime requirements not met"),
     Platform.WEIXIN: ("weixin", "WeixinAdapter", "check_weixin_requirements",
                       "Weixin: aiohttp/cryptography not installed"),
     Platform.API_SERVER: ("api_server", "APIServerAdapter", "check_api_server_requirements",
@@ -3293,11 +3291,6 @@ def _instantiate_builtin_adapter(platform: Platform, config: Any) -> Optional[Ba
     if not (requirements_ok() if callable(requirements_ok) else requirements_ok):
         logger.warning(warning)
         return None
-    if platform == Platform.SIGNAL:
-        from gateway.platforms.signal import validate_signal_config
-        if not validate_signal_config(config):
-            logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
-            return None
     return adapter_cls(config)
 
 

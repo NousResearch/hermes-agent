@@ -161,12 +161,12 @@ plugins/platforms/                  # plugin-packaged adapters (one dir each)
 ├── line/adapter.py         # LINE Messaging API
 ├── teams/adapter.py        # Microsoft Teams
 ├── irc/adapter.py          # IRC (canonical scoped-lock example)
+├── signal/adapter.py       # Signal via signal-cli HTTP daemon
 ├── homeassistant/adapter.py # Home Assistant conversation integration
 └── …                       # google_chat, ntfy, photon, raft, simplex, …
 
 gateway/platforms/                  # core base + legacy direct adapters
 ├── base.py              # BasePlatformAdapter — shared logic for all platforms
-├── signal.py            # Signal via signal-cli REST API
 ├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
 ├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
 ├── qqbot/               # QQ Bot (Tencent QQ) via Official API v2 (sub-package)

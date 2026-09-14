@@ -1,4 +1,4 @@
-"""Tests for Signal media delivery in send_message_tool.py."""
+"""Tests for Signal media delivery via the plugin standalone sender."""
 
 import asyncio
 import sys
@@ -52,7 +52,7 @@ class TestSendSignalMediaFiles:
 
     def test_send_signal_basic_text_without_media(self):
         """Backward compatibility: text-only signal messages work."""
-        from tools.send_message_tool import _send_signal
+        from plugins.platforms.signal.standalone import _send_signal
 
         extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
 
@@ -65,7 +65,7 @@ class TestSendSignalMediaFiles:
 
     def test_send_signal_with_missing_media_file(self):
         """Missing media files should generate warnings but not fail."""
-        from tools.send_message_tool import _send_signal
+        from plugins.platforms.signal.standalone import _send_signal
 
         extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
 
@@ -89,10 +89,18 @@ class TestSendSignalMediaRestrictions:
         from tools.send_message_tool import _send_to_platform
 
         mock_result = {"success": True, "platform": "signal"}
-        with patch("tools.send_message_tool._send_signal", new=AsyncMock(return_value=mock_result)):
+        from hermes_cli.plugins import discover_plugins
+        from gateway.platform_registry import platform_registry
+        discover_plugins()
+        entry = platform_registry.get("signal")
+        assert entry is not None
+        original = entry.standalone_sender_fn
+        entry.standalone_sender_fn = AsyncMock(return_value=mock_result)
+        try:
             config = MagicMock()
             config.platforms = {Platform.SIGNAL: MagicMock(enabled=True)}
             config.get_home_channel.return_value = None
+            config.extra = {"http_url": "http://localhost:8080", "account": "+155****4567"}
 
             result = asyncio.run(
                 _send_to_platform(
@@ -105,6 +113,8 @@ class TestSendSignalMediaRestrictions:
             )
 
             assert result["success"] is True
+        finally:
+            entry.standalone_sender_fn = original
 
     def test_non_media_platforms_reject_text_only_media(self):
         """Slack should reject text-only media (no MESSAGE content)."""
@@ -181,7 +191,7 @@ class TestSendSignalGroupChats:
 
     def test_send_signal_group_with_attachments(self, tmp_path):
         """Group chat messages with attachments should use groupId parameter."""
-        from tools.send_message_tool import _send_signal
+        from plugins.platforms.signal.standalone import _send_signal
 
         img_path = tmp_path / "test_attachment.pdf"
         img_path.write_bytes(b"%PDF-1.4")

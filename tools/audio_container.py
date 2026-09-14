@@ -3,7 +3,7 @@
 Outbound (``tools/tts_tool.py``): TTS backends silently ignore the requested
 format (Edge emits MP3, Piper WAV), so the file is sniffed and its ``.ogg``
 extension repaired. Inbound (``gateway/platforms/base.py`` cache_audio_*,
-``gateway/platforms/signal.py``): adapters pass wrong/guessed voice-note
+Signal and other adapters): adapters pass wrong/guessed voice-note
 extensions (Telegram ``.oga``, iOS M4A-branded MP4), so the cache sniffs the
 real container for STT and players. Only audio/AV containers are claimed:
 RIFF/WEBP and other images return ``None`` so callers check images first.

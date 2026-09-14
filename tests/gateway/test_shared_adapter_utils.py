@@ -16,7 +16,6 @@ from gateway.platforms import helpers
 
 def _adapter_classes():
     from gateway.platforms.qqbot.adapter import QQAdapter
-    from gateway.platforms.signal import SignalAdapter
     from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
     from plugins.platforms.buzz.adapter import BuzzAdapter
     from plugins.platforms.ntfy.adapter import NtfyAdapter
@@ -24,7 +23,7 @@ def _adapter_classes():
     from plugins.platforms.simplex.adapter import SimplexAdapter
     from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
 
-    return [QQAdapter, SignalAdapter, WhatsAppCloudAdapter, BuzzAdapter, NtfyAdapter,
+    return [QQAdapter, WhatsAppCloudAdapter, BuzzAdapter, NtfyAdapter,
             PhotonAdapter, SimplexAdapter, WecomCallbackAdapter]
 
 

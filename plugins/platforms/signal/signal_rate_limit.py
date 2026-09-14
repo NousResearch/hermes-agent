@@ -1,6 +1,6 @@
 """Signal attachment rate-limit scheduler: process-wide token-bucket simulator mirroring the per-account
 attachment rate limit signal-cli/Signal-Server enforce. Producers (``SignalAdapter.send_multiple_images``
-and the ``send_message`` tool's Signal path) call ``acquire(n)`` before an attachment send; on a 429 they
+and the Signal plugin standalone sender) call ``acquire(n)`` before an attachment send; on a 429 they
 call ``feedback(retry_after, n)`` so the model recalibrates from the server's authoritative hint.
 Concurrent calls serialize through an ``asyncio.Lock`` — FIFO fairness across sessions sharing one daemon."""
 

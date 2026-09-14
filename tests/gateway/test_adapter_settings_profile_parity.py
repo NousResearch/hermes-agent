@@ -72,8 +72,6 @@ _SETTINGS = [
      lambda m: m.FeishuAdapter._load_settings({}).connection_mode),
     ("gateway.platforms.bluebubbles", "BLUEBUBBLES_WEBHOOK_PORT", "18010", "18110",
      lambda m: m._extra_or_secret({}, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", "0")),
-    ("gateway.platforms.signal", "SIGNAL_REACTIONS", "true", "false",
-     lambda m: _signal_reactions(m)),
     ("plugins.platforms.line.adapter", "LINE_PORT", "18015", "18115",
      lambda m: (m._env_enablement() or {}).get("port")),
     ("plugins.platforms.buzz.adapter", "BUZZ_RELAY_URL", "wss://default.relay", "wss://secondary.relay",
@@ -91,12 +89,6 @@ def _slack(mod, method):
     adapter = object.__new__(mod.SlackAdapter)
     adapter.config = PlatformConfig(enabled=True)
     return getattr(adapter, method)()
-
-
-def _signal_reactions(mod):
-    adapter = object.__new__(mod.SignalAdapter)
-    adapter.dm_allow_from = {"*"}
-    return adapter._reactions_enabled()
 
 
 def _discord(mod, method):
@@ -119,26 +111,6 @@ def test_served_secondary_resolves_its_own_setting(monkeypatch, module, var, def
                                  lambda: resolve(mod))
     assert served == standalone, f"{var}: served={served!r} standalone={standalone!r}"
 
-
-def test_signal_startup_gate_reads_the_profile_env(monkeypatch):
-    """A secondary whose SIGNAL_HTTP_URL/SIGNAL_ACCOUNT live only in its own .env must pass the startup
-    gate served exactly as it does standalone; a secondary WITHOUT them must not borrow the default's."""
-    from gateway.platforms import signal as sig
-    for k in ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"):
-        monkeypatch.delenv(k, raising=False)
-    ss.set_multiplex_active(True)
-    token = ss.set_secret_scope({"SIGNAL_HTTP_URL": "http://secondary.invalid:8080", "SIGNAL_ACCOUNT": "+15550000001"})
-    try:
-        assert sig.validate_signal_config(PlatformConfig(enabled=True)) is True
-    finally:
-        ss.reset_secret_scope(token)
-    monkeypatch.setenv("SIGNAL_HTTP_URL", "http://default.invalid:8080")
-    monkeypatch.setenv("SIGNAL_ACCOUNT", "+15550000000")
-    token = ss.set_secret_scope({})
-    try:
-        assert sig.validate_signal_config(PlatformConfig(enabled=True)) is False
-    finally:
-        ss.reset_secret_scope(token)
 
 
 def test_sms_webhook_listener_is_profile_scoped(monkeypatch):

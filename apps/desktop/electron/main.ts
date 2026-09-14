@@ -11364,10 +11364,13 @@ async function ensureBackend(profile, opts: { passive?: boolean; spawnPriority?:
     // A shared backend still owes the caller its profile scope, so renderer-side
     // WebSocket, filesystem, and cache routing target the selected profile.
     // `sharedPrimary` marks this as the shared-primary route: pooled backends
-    // also carry `profile`, so only this descriptor gets the flag.
+    // also carry `profile`, so only this descriptor gets the flag. The
+    // unshared primary carries its own key too: a profile-less descriptor
+    // reads as "default" downstream, which breaks per-source profile memory
+    // (the primary IS "default" only when it actually booted as default).
     return route.descriptorProfile
       ? { ...connection, profile: route.descriptorProfile, sharedPrimary: true }
-      : connection
+      : { ...connection, profile: key }
   }
 
   // A backend for this key may still be dying (idle reap, LRU eviction, a
@@ -13230,6 +13233,7 @@ async function runHermesStart() {
       source: 'local',
       authMode: 'token',
       token: authToken,
+      profile,
       wsUrl,
       logs: hermesLog.slice(-80),
       ...getWindowState()

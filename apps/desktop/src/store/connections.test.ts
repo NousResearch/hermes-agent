@@ -105,7 +105,13 @@ const list = vi.fn(async () => registry)
 const api = vi.fn(async () => ({ profiles: [] }))
 const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...registry, lastUsed: id } }))
 
+// What the (mocked) primary local descriptor reports as its profile. Null
+// mirrors startHermes()'s profile-less primary descriptor; a string mirrors
+// the fixed contract where the primary carries the profile it booted with.
+let primaryLocalDescriptorProfile: null | string = null
+
 beforeEach(() => {
+  primaryLocalDescriptorProfile = null
   localStorage.clear()
   _resetConnectionsForTests()
   $connectionsRegistry.set(null)
@@ -124,7 +130,12 @@ beforeEach(() => {
     $connection.set({
       connectionId: connectionId ?? undefined,
       mode: connectionId === 'local' ? 'local' : 'remote',
-      profile,
+      // The primary local descriptor from startHermes() historically carried
+      // no profile key at all; the registry route fills it in (see the
+      // switch-back regression test at the bottom of this file).
+      ...(connectionId === 'local' && primaryLocalDescriptorProfile === null
+        ? {}
+        : { profile }),
       registryScoped: true
     })
   })
@@ -886,6 +897,33 @@ describe('selectConnection', () => {
 
     expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
     expect($showAllProfiles.get()).toBe(false)
+  })
+
+  it('restores the last-used profile on switch-back even when the primary local descriptor is profile-less', async () => {
+    // The pair is remembered while the primary local descriptor is honest
+    // about its profile (boot publication).
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local', profile: 'mac', registryScoped: true })
+    $activeGatewayProfile.set('mac')
+
+    expect(JSON.parse(localStorage.getItem('hermes.desktop.lastProfileByConnection') || '{}')).toEqual({
+      local: 'mac'
+    })
+
+    // A later resync republishes a profile-less primary descriptor (the
+    // startHermes shape). The remembered pair is the authority for "what was
+    // last used here" — switching away and back must still restore 'mac',
+    // and the commit must not die in targetIsActive() on the descriptor gap.
+    primaryLocalDescriptorProfile = null
+
+    await selectConnection('homelab')
+    expect(ensureGatewayAgent).toHaveBeenLastCalledWith('homelab', 'default', expect.anything())
+
+    await selectConnection('local')
+
+    expect(openGatewayAgent).toHaveBeenLastCalledWith('local', 'mac')
+    expect(ensureGatewayAgent).toHaveBeenLastCalledWith('local', 'mac', expect.anything())
+    expect($newChatProfile.get()).toBe('mac')
   })
 
   it('never re-homes a live connection the registry cannot name', async () => {

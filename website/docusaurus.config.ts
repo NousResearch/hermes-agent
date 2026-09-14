@@ -2,6 +2,8 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+const algoliaSearchApiKey = process.env.ALGOLIA_SEARCH_API_KEY?.trim();
+
 const config: Config = {
   title: 'Hermes Agent',
   tagline: 'The self-improving AI agent',
@@ -92,20 +94,16 @@ const config: Config = {
 
   themeConfig: {
     image: 'img/hermes-agent-banner.png',
-    // Algolia DocSearch (replaces @easyops-cn/docusaurus-search-local).
-    // The local plugin shipped a ~16 MB client-side lunr index that every
-    // visitor downloaded and hydrated before their first result; DocSearch
-    // answers from Algolia's servers with no client index at all. These are
-    // public search-only credentials — safe to commit (the admin key is not
-    // in the repo). Index is populated by the Algolia Crawler configured at
-    // crawler.algolia.com; contextualSearch scopes results to the active
-    // locale via the docusaurus_tag/lang facets the crawler records carry.
-    algolia: {
-      appId: '2JLBVEYZN5',
-      apiKey: '8fda2a49223ce185ac30c2dbf6898a07',
-      indexName: 'hermes docs',
-      contextualSearch: true,
-    },
+    // Supply a search-only key when building the hosted documentation site.
+    // Source archives and downstream runtime images do not need this credential.
+    ...(algoliaSearchApiKey ? {
+      algolia: {
+        appId: '2JLBVEYZN5',
+        apiKey: algoliaSearchApiKey,
+        indexName: 'hermes docs',
+        contextualSearch: true,
+      },
+    } : {}),
     colorMode: {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,

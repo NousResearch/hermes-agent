@@ -48,6 +48,10 @@ jobs:
         run: npm run lint:diagrams
         working-directory: website
 
+      - name: Test documentation search configuration
+        run: node --test docusaurus.config.test.mjs
+        working-directory: website
+
       - name: Build Docusaurus
         # Build only the default (en) locale in CI — the full bilingual
         # build runs in deploy-site.yml on push-to-main / release.

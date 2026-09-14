@@ -283,6 +283,38 @@ class TestExtractMedia:
         )
         assert media == []
 
+    @pytest.mark.windows_only
+    @pytest.mark.parametrize(
+        "tag,expected",
+        [
+            # MSYS / Git Bash forward-slash form
+            ("MEDIA:/C:/Users/wujunze/Desktop/report.pdf", "C:/Users/wujunze/Desktop/report.pdf"),
+            # MSYS / Git Bash backslash form (QQ Bot adapter output)
+            (r"MEDIA:/C:\Users\wujunze\Desktop\report.pdf", r"C:\Users\wujunze\Desktop\report.pdf"),
+            # Native Windows paths must remain untouched
+            ("MEDIA:C:/Users/wujunze/Desktop/report.pdf", "C:/Users/wujunze/Desktop/report.pdf"),
+            (r"MEDIA:C:\Users\wujunze\Desktop\report.pdf", r"C:\Users\wujunze\Desktop\report.pdf"),
+            # Non-Windows POSIX paths must remain untouched
+            ("MEDIA:/tmp/report.pdf", "/tmp/report.pdf"),
+        ],
+    )
+    def test_msys_drive_paths_normalized(self, tag, expected):
+        """Windows MSYS/Git Bash paths in MEDIA tags must be normalized to
+        native drive form so validate_media_delivery_path() can resolve them.
+
+        Under Git Bash / MSYS, native ``C:/...`` paths surface as
+        ``/C:/...`` (forward slashes, seen on Feishu) or ``/C:\\...``
+        (backslashes, seen on QQ Bot). Path() on native Windows cannot
+        parse the leading-slash form — is_absolute() returns False and
+        resolve() raises WinError 123 — so the MEDIA tag was previously
+        dropped and the file never delivered.
+        """
+        media, cleaned = BasePlatformAdapter.extract_media(tag)
+        assert len(media) == 1
+        assert media[0][0] == expected
+        # The tag itself is stripped from the delivered text
+        assert "MEDIA:" not in cleaned
+
     # --- Code block / inline code / blockquote false-positive guards (#35695) ---
 
 

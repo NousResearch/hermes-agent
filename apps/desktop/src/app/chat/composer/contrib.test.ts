@@ -67,12 +67,12 @@ describe('runComposerMiddleware', () => {
     )
 
     const invocation = {
-      runtimeSessionId: 'runtime-mail',
-      storedSessionId: 'stored-mail',
-      target: 'native:stored-mail'
+      runtimeSessionId: 'runtime-surface',
+      storedSessionId: 'stored-surface',
+      target: 'native:stored-surface'
     }
 
-    expect(await runComposerMiddleware({ text: 'x' }, invocation)).toEqual({ text: 'x:legacy:stored-mail' })
+    expect(await runComposerMiddleware({ text: 'x' }, invocation)).toEqual({ text: 'x:legacy:stored-surface' })
     expect(seen).toEqual([invocation])
   })
 })

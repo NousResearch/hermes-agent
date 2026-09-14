@@ -37,10 +37,10 @@ import {
 } from './native-chat-panel'
 
 const route = {
-  connectionId: 'scope-internal',
+  connectionId: 'conn-test',
   mode: 'remote' as const,
-  profile: 'Internal',
-  targetProfile: 'internal-workspace'
+  profile: 'test-profile',
+  targetProfile: 'test-workspace'
 }
 
 describe('createNativeChatSession', () => {
@@ -61,7 +61,7 @@ describe('createNativeChatSession', () => {
     const release = vi.fn()
     retainGatewayForAgent.mockResolvedValue(release)
     requestGatewayForAgent.mockResolvedValue({
-      info: { model: 'internal-model' },
+      info: { model: 'test-model' },
       session_id: 'runtime-1',
       stored_session_id: 'stored-1'
     })
@@ -73,12 +73,12 @@ describe('createNativeChatSession', () => {
       storedSessionId: 'stored-1'
     })
 
-    expect(retainGatewayForAgent).toHaveBeenCalledWith('scope-internal', 'Internal')
+    expect(retainGatewayForAgent).toHaveBeenCalledWith('conn-test', 'test-profile')
     expect(requestGatewayForAgent).toHaveBeenCalledWith(
-      'scope-internal',
-      'Internal',
+      'conn-test',
+      'test-profile',
       'session.create',
-      expect.objectContaining({ hidden: true, profile: 'internal-workspace', source: 'desktop' })
+      expect.objectContaining({ hidden: true, profile: 'test-workspace', source: 'desktop' })
     )
     expect(setSessionOwnerHint).toHaveBeenCalledWith('stored-1', route)
     expect(bindCreatedSession).toHaveBeenCalledWith(expect.objectContaining({ session_id: 'runtime-1' }), 'stored-1')
@@ -94,7 +94,7 @@ describe('createNativeChatSession', () => {
 
     await expect(createNativeChatSession({ route })).rejects.toThrow('without a stored session id')
 
-    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(2, 'scope-internal', 'Internal', 'session.close', {
+    expect(requestGatewayForAgent).toHaveBeenNthCalledWith(2, 'conn-test', 'test-profile', 'session.close', {
       session_id: 'runtime-orphan'
     })
     expect(bindCreatedSession).not.toHaveBeenCalled()
@@ -123,7 +123,7 @@ describe('createNativeChatSession', () => {
     const reopened = _nativeChatAttachmentScopeForTests(route, 'stored-attachments')
 
     const otherOwner = _nativeChatAttachmentScopeForTests(
-      { ...route, connectionId: 'scope-other' },
+      { ...route, connectionId: 'conn-other' },
       'stored-attachments'
     )
 

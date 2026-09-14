@@ -61,10 +61,10 @@ import { $sessionStates } from '@/store/session-states'
 import { createNativeChatSession, NativeChatPanel } from './native-chat-panel'
 
 const route = {
-  connectionId: 'scope-internal',
+  connectionId: 'conn-test',
   mode: 'remote' as const,
-  profile: 'Internal',
-  targetProfile: 'internal-workspace'
+  profile: 'test-profile',
+  targetProfile: 'test-workspace'
 }
 
 function bindingFor(storedSessionId: string, bindingRoute = route): NativeChatBinding {
@@ -210,7 +210,7 @@ describe('NativeChatPanel resume ownership', () => {
     expect(screen.getByTestId('native-surface').getAttribute('data-runtime-id')).toBe('runtime-first-route')
 
     view.rerender(
-      jsx(NativeChatPanel, { binding: bindingFor('stored-reroute', { ...route, connectionId: 'scope-other' }) })
+      jsx(NativeChatPanel, { binding: bindingFor('stored-reroute', { ...route, connectionId: 'conn-other' }) })
     )
 
     await waitFor(() => expect(resumeTile).toHaveBeenCalledTimes(2))
@@ -220,7 +220,7 @@ describe('NativeChatPanel resume ownership', () => {
 
   it('reuses the runtime it created before the first durable message across a close and reopen', async () => {
     requestGatewayForAgent.mockResolvedValue({
-      info: { model: 'internal-model' },
+      info: { model: 'test-model' },
       session_id: 'runtime-created',
       stored_session_id: 'stored-created'
     })

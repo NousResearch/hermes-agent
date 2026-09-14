@@ -161,7 +161,7 @@ export const _nativeChatAttachmentScopeForTests = nativeAttachmentScope
 /** Create a normal Hermes session on one exact profile route without selecting,
  * navigating to, or adding a layout pane for it. The route lease intentionally
  * survives until the first durable message row: an unused new backend session
- * exists only in memory, and Mail/Studio must be able to close and reopen their
+ * exists only in memory, and a plugin must be able to close and reopen its
  * side panel without losing an unsent native composer draft. */
 export async function createNativeChatSession(
   options: CreateNativeChatSessionOptions

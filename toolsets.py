@@ -24,7 +24,7 @@ _HERMES_CORE_TOOLS = [
     "todo_list", "memory",
     "session_search",
     "clarify",
-    "execute_code", "delegate_task",
+    "execute_code", "delegate_task", "delegate_session",
     "cronjob_manage",
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "kanban_show", "kanban_list",
@@ -143,7 +143,8 @@ TOOLSETS = {
     ),
     "clarify": _ts("Ask the user clarifying questions (multiple-choice or open-ended)", ["clarify"]),
     "code_execution": _ts("Run Python scripts that call tools programmatically (reduces LLM round trips)", ["execute_code"]),
-    "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
+    "delegation": _ts("Spawn subagents with isolated context or persistent external-agent sessions", ["delegate_task", "delegate_session"]),
+    "delegation_session": _ts("Persistent external-agent delegation sessions (internal scoping surface)", ["delegate_session"]),
     "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),
     "kanban": _ts(
         "Kanban multi-agent coordination — only active when the agent is spawned by "

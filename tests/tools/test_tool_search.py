@@ -139,7 +139,7 @@ class TestClassification:
         not all of core."""
         from tools.registry import discover_builtin_tools, registry
         from tools.tool_search import (
-            BRIDGE_TOOL_NAMES,
+            ADVERTISED_BRIDGE_TOOL_NAMES,
             ToolSearchConfig,
             assemble_tool_defs,
         )
@@ -167,7 +167,7 @@ class TestClassification:
 
         assert assembled.activated
         assert mcp_name not in names
-        assert BRIDGE_TOOL_NAMES <= names
+        assert ADVERTISED_BRIDGE_TOOL_NAMES <= names
         assert {"terminal", "memory"} <= names
         # computer_use IS in the curated defer set → behind the bridge.
         assert "computer_use" not in names
@@ -354,6 +354,19 @@ class TestRelevanceFloor:
 
 
 class TestAssembly:
+    def test_qwen_tool_call_tag_is_not_advertised_as_the_deferred_bridge(self):
+        """Qwen's ``<tool_call>`` delimiter must not collide with a bridge schema.
+
+        ``tool_call`` remains a dispatch-only legacy alias, but a model must only
+        see ``tool_invoke`` in the deferred-tool bridge schemas.
+        """
+        from tools.tool_search import bridge_tool_schemas
+
+        names = [schema["function"]["name"] for schema in bridge_tool_schemas(1)]
+
+        assert "tool_invoke" in names
+        assert "tool_call" not in names
+
     def test_no_deferrable_returns_unchanged(self):
         """Pure-core toolset: pass-through, no bridge tools added."""
         from tools.tool_search import assemble_tool_defs, ToolSearchConfig

@@ -329,7 +329,7 @@ def _append_skipped_tool_results(
 
 
 def _tool_search_scoped_names(agent) -> frozenset:
-    """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
+    """Deferrable tool names the session may invoke via ``tool_invoke``; the unwrap bypasses
     the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
     validate against this set. Cached on the agent, keyed by registry scope/generation."""
     try:
@@ -371,8 +371,8 @@ def _canonical_tool_name(function_name: str) -> str:
 def _unwrap_tool_search_call(
     agent, function_name: str, function_args: dict, *, flatten_probe: bool = False
 ) -> tuple[str, dict, Optional[str]]:
-    """Peel the ``tool_call`` bridge so downstream hooks (checkpointing, guardrails, plugin
-    hooks, activity feed) see the underlying tool; ``tool_call.function`` stays untouched for
+    """Peel the ``tool_invoke`` bridge so downstream hooks (checkpointing, guardrails, plugin
+    hooks, activity feed) see the underlying tool; ``tool_invoke.function`` stays untouched for
     the transcript and tool_call_id pairing.
 
     The unwrap bypasses handle_function_call's scope check, so session toolset scope is
@@ -384,7 +384,7 @@ def _unwrap_tool_search_call(
     scope_block: Optional[str] = None
     try:
         from tools import tool_search as _ts
-        if function_name != _ts.TOOL_CALL_NAME:
+        if not _ts.is_tool_invoke_name(function_name):
             return function_name, function_args, None
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
         if err or not underlying:

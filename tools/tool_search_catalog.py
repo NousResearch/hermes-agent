@@ -17,8 +17,21 @@ import snowballstemmer
 # protection rejects such registrations).
 TOOL_SEARCH_NAME = "tool_search"
 TOOL_DESCRIBE_NAME = "tool_describe"
-TOOL_CALL_NAME = "tool_call"
-BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_NAME})
+# ``tool_call`` is a common native function-call template delimiter (notably
+# Qwen's ``<tool_call>``). Advertising it as a function makes those models
+# confuse their wrapper tag with the deferred-tool bridge.
+TOOL_INVOKE_NAME = "tool_invoke"
+TOOL_CALL_NAME = TOOL_INVOKE_NAME
+LEGACY_TOOL_CALL_NAME = "tool_call"
+ADVERTISED_BRIDGE_TOOL_NAMES = frozenset({
+    TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_INVOKE_NAME,
+})
+BRIDGE_TOOL_NAMES = ADVERTISED_BRIDGE_TOOL_NAMES | frozenset({LEGACY_TOOL_CALL_NAME})
+
+
+def is_tool_invoke_name(name: str) -> bool:
+    """Whether *name* is the advertised bridge or its dispatch-only legacy alias."""
+    return name in (TOOL_INVOKE_NAME, LEGACY_TOOL_CALL_NAME)
 # Chars-per-token rule of thumb; 4.0 slightly underestimates (fewer false activations).
 CHARS_PER_TOKEN = 4.0
 

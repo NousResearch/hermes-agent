@@ -690,11 +690,11 @@ def _emit_post_tool_call_hook(
 
 def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
                           enabled_toolsets: Optional[List[str]], disabled_toolsets: Optional[List[str]]):
-    """Handle a Tool Search bridge call (tool_search / tool_describe / tool_call).
+    """Handle a Tool Search bridge call (tool_search / tool_describe / tool_invoke).
 
     None when *function_name* is not a bridge tool; ``(result, None)`` for a
     finished catalog read or error; ``(None, (name, args))`` when a validated
-    tool_call should be re-dispatched as the real tool.
+    tool_invoke should be re-dispatched as the real tool.
     """
     try:
         from tools import tool_search as ts
@@ -716,7 +716,7 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         return ts.dispatch_tool_describe(args, current_tool_defs=current_defs), None
     underlying_name, underlying_args, err = ts.resolve_underlying_call(args)
     if err or not underlying_name:
-        return tool_error(err or "tool_call could not be resolved"), None
+        return tool_error(err or "tool_invoke could not be resolved"), None
     if underlying_name == ts.CONNECTOR_BATCH_SENTINEL:
         if not ts.connections_in_scope(current_defs):
             return tool_error("Connectors are not available in this session."), None
@@ -886,7 +886,7 @@ def handle_function_call(
         return result
 
     # Tool Search bridge: tool_search / tool_describe are catalog reads handled
-    # inline; tool_call is unwrapped so every downstream hook (pre/post, edit
+    # inline; tool_invoke is unwrapped so every downstream hook (pre/post, edit
     # approval, guardrails) sees the real tool name, never the bridge.
     bridged = _dispatch_bridge_tool(function_name, function_args, enabled_toolsets, disabled_toolsets)
     if bridged is not None:

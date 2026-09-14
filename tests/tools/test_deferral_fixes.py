@@ -102,6 +102,18 @@ def mcp_pair(monkeypatch):
 class TestBridgePeelInPlanner:
     """Fix 1: batch admission is decided on the underlying tool."""
 
+    def test_advertised_tool_invoke_peels_for_parallel_admission(self, mcp_pair):
+        alpha, beta = mcp_pair
+        calls = [
+            _tc("tool_invoke", json.dumps({"name": alpha, "arguments": {}}), call_id="a"),
+            _tc("tool_invoke", json.dumps({"name": beta, "arguments": {}}), call_id="b"),
+        ]
+
+        segments = _plan_tool_batch_segments(calls)
+
+        assert _kinds(segments) == ["parallel"]
+        assert _flatten_ids(segments) == ["a", "b"]
+
     def test_two_bridged_parallel_safe_mcp_calls_run_parallel(self, mcp_pair):
         alpha, beta = mcp_pair
         calls = [_bridge_tc(alpha, call_id="a"), _bridge_tc(beta, call_id="b")]

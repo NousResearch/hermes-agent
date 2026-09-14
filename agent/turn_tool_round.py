@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.turn_preflight import compress_after_tool_results
-from agent.turn_tool_validation import validate_tool_calls
+from agent.turn_tool_validation import is_dispatchable_tool_name, validate_tool_calls
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -90,7 +90,8 @@ def run_tool_round(
     # Mixed batch: the assistant message keeps EVERY emitted call (each tool_call needs a
     # matching result) while only valid ones dispatch.
     _invalid_batch_calls = [
-        tc for tc in assistant_message.tool_calls if tc.function.name not in agent.valid_tool_names
+        tc for tc in assistant_message.tool_calls
+        if not is_dispatchable_tool_name(tc.function.name, agent.valid_tool_names)
     ] if _tvv.mixed_invalid_batch else []
 
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
@@ -110,7 +111,8 @@ def run_tool_round(
                 ),
             })
         assistant_message.tool_calls = [
-            tc for tc in assistant_message.tool_calls if tc.function.name in agent.valid_tool_names
+            tc for tc in assistant_message.tool_calls
+            if is_dispatchable_tool_name(tc.function.name, agent.valid_tool_names)
         ]
 
     # Persist the tool-call turn before any tool side effects so resume sees the executed

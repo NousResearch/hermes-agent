@@ -18,7 +18,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from tools.registry import tool_error
 from tools.tool_search_catalog import (
-    BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_SEARCH_NAME,
+    ADVERTISED_BRIDGE_TOOL_NAMES, BRIDGE_TOOL_NAMES, CHARS_PER_TOKEN, LEGACY_TOOL_CALL_NAME,
+    TOOL_CALL_NAME, TOOL_DESCRIBE_NAME, TOOL_INVOKE_NAME, TOOL_SEARCH_NAME, is_tool_invoke_name,
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import normalize_tool_call_entries, validate_deferred_call_args
@@ -299,7 +300,7 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
             TOOL_CALL_NAME,
             "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
             "— one entry per invocation; a single call is an array of one. "
-            "Local tools require one entry per tool_call. Only connectors__ names "
+            "Local tools require one entry per invocation. Only connectors__ names "
             "may be batched together; mixed and multi-local batches are rejected. "
             "Connector entries execute individually with results in input order. "
             f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
@@ -523,7 +524,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
 
 def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     """Deferrable names in the *pre-assembly* ``tool_defs`` of the session scope — the
-    universe ``tool_call`` may reach. Gates bridge dispatch AND the executor unwrap so a
+    universe ``tool_invoke`` may reach. Gates bridge dispatch AND the executor unwrap so a
     restricted session cannot invoke an out-of-scope tool via the bridge."""
     defer_tools = load_config_readonly().effective_defer_tools
     return frozenset(n for n in _tool_def_names(tool_defs)
@@ -531,7 +532,7 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
 
 
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
-    """Parse a ``tool_call`` invocation into (underlying_name, args, error_msg).
+    """Parse a ``tool_invoke`` invocation into (underlying_name, args, error_msg).
 
     Used by:
     * the dispatcher in ``model_tools.handle_function_call``,
@@ -552,7 +553,7 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
 
     if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
         return None, {}, (
-            "Local tools require one entry per tool_call; mixed and multi-local batches are not supported."
+            "Local tools require one entry per tool_invoke; mixed and multi-local batches are not supported."
         )
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
@@ -562,13 +563,15 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     if not is_deferrable_tool_name(name, load_config_readonly().effective_defer_tools):
         return None, {}, (
             f"'{name}' is not a deferrable tool. If it appears in the model-facing tools "
-            "list already, call it directly instead of via tool_call."
+            "list already, call it directly instead of via tool_invoke."
         )
     return name, raw_args, None
 
 
 __all__ = [
-    "TOOL_SEARCH_NAME", "TOOL_DESCRIBE_NAME", "TOOL_CALL_NAME", "BRIDGE_TOOL_NAMES",
+    "TOOL_SEARCH_NAME", "TOOL_DESCRIBE_NAME", "TOOL_INVOKE_NAME", "TOOL_CALL_NAME",
+    "LEGACY_TOOL_CALL_NAME", "ADVERTISED_BRIDGE_TOOL_NAMES", "BRIDGE_TOOL_NAMES",
+    "is_tool_invoke_name",
     "ToolSearchConfig", "CatalogEntry", "AssemblyResult", "load_config", "is_deferrable_tool_name",
     "classify_tools", "estimate_tokens_from_schemas", "should_activate", "build_catalog",
     "build_catalog_listing_with_form", "listing_token_budget", "search_catalog",

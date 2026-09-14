@@ -87,10 +87,10 @@ _PARALLEL_SAFE_BRIDGE_LOOKUPS = frozenset({"tool_search", "tool_describe"})
 
 
 def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
-    """Resolve a ``tool_call`` bridge invocation to its underlying tool.
+    """Resolve a ``tool_invoke`` bridge invocation to its underlying tool.
 
     The batch planner admits calls to a parallel run by tool NAME, but when
-    tool search is active the model emits the literal name ``tool_call`` for
+    tool search is active the model emits the literal name ``tool_invoke`` for
     every deferred tool — so a server opted in via
     ``supports_parallel_tool_calls: true`` silently lost concurrency the
     moment the bridge activated. Peel the wrapper here so admission is
@@ -103,11 +103,11 @@ def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
     try:
         from tools.tool_search import (
             CONNECTOR_BATCH_SENTINEL,
-            TOOL_CALL_NAME,
+            is_tool_invoke_name,
             is_connector_name,
             resolve_underlying_call,
         )
-        if tool_name != TOOL_CALL_NAME:
+        if not is_tool_invoke_name(tool_name):
             return tool_name, function_args
         underlying, underlying_args, err = resolve_underlying_call(function_args)
         if err is not None or not underlying:

@@ -3549,6 +3549,49 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 2
 
+    def test_legacy_tool_call_bridge_alias_reaches_execution_only_with_tool_invoke(self, agent):
+        """The dispatch-only bridge alias must bypass validation without becoming advertised."""
+        self._setup_agent(agent)
+        agent.valid_tool_names = {"tool_invoke"}
+        legacy_call = _mock_tool_call(name="tool_call", arguments="{}", call_id="legacy")
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[legacy_call]),
+            _mock_response(content="done", finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(agent, "_execute_tool_calls") as execute,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("invoke the deferred tool")
+
+        assert result["final_response"] == "done"
+        assert agent.valid_tool_names == {"tool_invoke"}
+        assert execute.call_args.args[0].tool_calls[0].function.name == "tool_call"
+
+    def test_non_bridge_invalid_name_still_does_not_reach_execution(self, agent):
+        """The compatibility exception must not weaken normal unknown-name rejection."""
+        self._setup_agent(agent)
+        agent.valid_tool_names = {"tool_invoke"}
+        invalid_call = _mock_tool_call(name="not_a_bridge", arguments="{}", call_id="invalid")
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", finish_reason="tool_calls", tool_calls=[invalid_call]),
+            _mock_response(content="recovered", finish_reason="stop"),
+        ]
+
+        with (
+            patch.object(agent, "_execute_tool_calls") as execute,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("try an invalid tool")
+
+        assert result["final_response"] == "recovered"
+        execute.assert_not_called()
+
     def test_reasoning_only_local_clean_stop_returns_immediately(self, agent):
         """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)

@@ -87,7 +87,7 @@ def test_resolve_multi_local_batch_requires_separate_calls():
         ]}
     )
     assert name is None
-    assert "one entry per tool_call" in err
+    assert "one entry per tool_invoke" in err
 
 
 def test_resolve_legacy_single_shape_unchanged_for_local_names():

@@ -190,10 +190,11 @@ def _todo_state_from_history(history) -> dict | None:
 
 def _connector_tool_lifecycle(name: str, args: dict) -> bool:
     from tools.tool_gateway.names import is_connector_name
+    from tools.tool_search import is_tool_invoke_name
 
     if name == "manage_connections" or is_connector_name(name):
         return True
-    if name != "tool_call" or not isinstance(args, dict):
+    if not is_tool_invoke_name(name) or not isinstance(args, dict):
         return False
     calls = args.get("calls") if isinstance(args.get("calls"), list) else [args]
     return any(isinstance(call, dict) and (call.get("name") == "manage_connections"

@@ -39,6 +39,23 @@ def _preview_name(name: str) -> str:
     return name[:80] + "..." if len(name) > 80 else name
 
 
+def is_dispatchable_tool_name(name: str, valid_names) -> bool:
+    """Whether *name* may pass agent-loop validation.
+
+    ``tool_call`` is a dispatch-only legacy spelling of the advertised
+    ``tool_invoke`` bridge.  Keep it out of ``valid_tool_names`` (which mirrors
+    model-facing schemas), but accept it only while that advertised bridge is
+    available.  Every other name retains the normal exact-membership check.
+    """
+    if name in valid_names:
+        return True
+    try:
+        from tools.tool_search_catalog import LEGACY_TOOL_CALL_NAME, TOOL_INVOKE_NAME
+        return name == LEGACY_TOOL_CALL_NAME and TOOL_INVOKE_NAME in valid_names
+    except Exception:
+        return False
+
+
 def _append_tool_error_results(messages, tool_calls, content_for) -> None:
     """One tool-role result per call so every tool_call keeps a matching result."""
     for tc in tool_calls:
@@ -94,16 +111,21 @@ def validate_tool_calls(
             if repaired:
                 print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                 tc.function.name = repaired
-    invalid_tool_calls = [tc.function.name for tc in tool_calls if tc.function.name not in valid_names]
+    invalid_tool_calls = [
+        tc.function.name for tc in tool_calls
+        if not is_dispatchable_tool_name(tc.function.name, valid_names)
+    ]
     # Mixed batch: error-result ONLY the invalid calls and run the valid
     # ones; voiding the turn discards real work. Strikes advance only when a
     # turn has NO valid call, so a degenerate model still halts at 3.
     _mixed_invalid_batch = bool(invalid_tool_calls) and any(
-        tc.function.name in valid_names for tc in tool_calls
+        is_dispatchable_tool_name(tc.function.name, valid_names) for tc in tool_calls
     )
     if _mixed_invalid_batch:
         agent._invalid_tool_retries = 0
-        _n_valid = sum(1 for tc in tool_calls if tc.function.name in valid_names)
+        _n_valid = sum(
+            1 for tc in tool_calls if is_dispatchable_tool_name(tc.function.name, valid_names)
+        )
         agent._buffer_vprint(
             f"⚠️  Unknown tool '{_preview_name(invalid_tool_calls[0])}' in batch — erroring that call, "
             f"executing {_n_valid} valid call(s)"
@@ -129,7 +151,7 @@ def validate_tool_calls(
             messages, tool_calls,
             lambda tc: (
                 _invalid_tool_name_error_content(tc.function.name, valid_names)
-                if tc.function.name not in valid_names
+                if not is_dispatchable_tool_name(tc.function.name, valid_names)
                 else "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
             ),
         )
@@ -155,7 +177,10 @@ def validate_tool_calls(
         except json.JSONDecodeError as e:
             # A mixed-batch invalid-name call never executes (error result later);
             # don't let its broken args trigger the whole-turn JSON retry.
-            if not (_mixed_invalid_batch and tc.function.name not in valid_names):
+            if not (
+                _mixed_invalid_batch
+                and not is_dispatchable_tool_name(tc.function.name, valid_names)
+            ):
                 invalid_json_args.append((tc.function.name, str(e)))
 
     if invalid_json_args:

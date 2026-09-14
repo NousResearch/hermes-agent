@@ -71,8 +71,7 @@ def _invite(authority, actor, adapter, params):
     _, catalog = _local_room_catalog(adapter, 'default', installation)
     if not catalog['text']:
         raise RuntimeStoreError('canonical_room_peer_unsupported')
-    host = adapter._host
-    endpoint = f'http://{host if ":" not in host else "[" + host + "]"}:{adapter._port}'
+    endpoint = dict(catalog['endpoint'])
     intent = dict(identity, subject=actor.subject, home=authority.profile_id, epoch=authority.epoch,
                   endpoint=endpoint,
                   installation=installation, policy=policy, catalog=catalog, grant_id=supplied_id,

@@ -192,6 +192,8 @@ async def test_native_invitation_consumes_existing_outbound_registration(target,
     # Execution-only seam: never instantiate/start a coordinator or worker.
     monkeypatch.setattr(hosted_room_service, 'HostedRoomRuntime', lambda **kwargs: SimpleNamespace(
         status=lambda: {'running': True, 'stopping': False}, wakeup=lambda: None))
+    config = target.home / 'config.yaml'
+    config.write_text(config.read_text() + '\ngateway:\n  room_link_url: https://target.example.test/hermes\n')
     service = CanonicalHostedRoomService(target.authority, None)
     target.authority.hosted_room_service = service
     installation = hosted_rooms.local_authority_gateway_id()
@@ -208,10 +210,24 @@ async def test_native_invitation_consumes_existing_outbound_registration(target,
         return json.loads(response.text)
     monkeypatch.setattr(PeerRunsHTTPClient, 'probe', in_process_probe)
     result = await target.connection.dispatch(dict(id=2, method='groups.peer.register', params=dict(
-        request_id='register-one', room_id='room-one', member_id='member-one', target_url=first['endpoint'],
+        request_id='register-one', room_id='room-one', member_id='member-one', target_url=first['endpoint']['url'],
         target_profile='default', grant=first['grant'], catalog=first['catalog'],
         cancellation_scope_id='cancel-one', trace_id='trace-one')))
     assert result.get('result', {}).get('registered') is True, result
     stored = hosted_room_links.load_room_link(target.db.db_path, room_id='room-one', member_id='member-one')
     assert stored.grant == first['grant'] and stored.catalog.as_mapping() == first['catalog']
     assert service.peer_routes[('room-one', 'member-one')].attachments is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('url', [None, 'https://target.example.test/hermes'])
+async def test_native_invitation_preserves_advertised_endpoint_contract(target, url):
+    if url is not None:
+        config = target.home / 'config.yaml'
+        config.write_text(config.read_text() + f'\ngateway:\n  room_link_url: {url}\n')
+    first = await invite(target)
+    assert first['endpoint'] == first['catalog']['endpoint']
+    expected = ({'available': False, 'reason': 'not_configured'} if url is None else
+                {'available': True, 'url': url, 'transport_security': 'tls'})
+    assert first['endpoint'] == expected
+    assert await invite(target) == first

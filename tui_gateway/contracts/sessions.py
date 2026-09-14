@@ -526,7 +526,8 @@ class SessionCompressResult(Result):
     lock_held: bool | None = None
     message: str | None = None
     turn_isolation: bool | None = None
-    # Compute-host control metadata is not a gateway RPC contract; Desktop only reads ``output``.
+    # ``methods_session.py:1790`` relays host control metadata; Desktop only reads ``output`` at
+    # ``apps/desktop/src/app/session/hooks/use-prompt-actions/slash.ts:735``.
     host_ack: JsonValue | None = None
 
 
@@ -581,7 +582,8 @@ method("session.redirect", params=SessionCorrectionParams, result=SessionCorrect
 
 
 class SpawnTreeSaveParams(ProfileParams):
-    subagents: list[dict[str, JsonValue]]
+    # TUI persists its live progress snapshot (`createGatewayEventHandler.ts:503`) verbatim.
+    subagents: list[JsonValue]
     session_id: str | None = None  # stored key; "default" when absent
     started_at: float | None = None
     finished_at: float | None = None
@@ -627,7 +629,8 @@ class SpawnTreeLoadParams(ProfileParams):
 
 
 class SpawnTreeLoadResult(Result):
-    """``methods_session.py:2120`` writes this persisted snapshot; no TS consumer."""
+    """``methods_session.py:2120`` writes this persisted snapshot; TUI normalizes subagents at
+    ``ui-tui/src/app/spawnHistoryStore.ts:105``."""
 
     session_id: str
     started_at: float | None
@@ -711,6 +714,8 @@ class LlmOneshotParams(ProfileParams):
     template: str | None = None
     instructions: str | None = None
     input: str | None = None
+    # Template-specific names are consumed by ``agent/oneshot.py:72``; Desktop sends them at
+    # ``apps/desktop/src/lib/oneshot.ts:54``.
     variables: dict[str, JsonValue] | None = None
     task: str | None = None
     temperature: float | None = None

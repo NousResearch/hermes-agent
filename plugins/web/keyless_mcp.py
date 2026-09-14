@@ -46,6 +46,25 @@ def _is_rate_limitish(message: str) -> bool:
     return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS)
 
 
+def _is_empty_results(result: Dict[str, Any]) -> bool:
+    """True when a *successful* vendor reply carried no results at all.
+
+    The anonymous free tiers throttle by returning an empty-but-well-formed
+    payload — HTTP 200 with a "no results for this query" text body (Exa), an
+    empty ``results`` list (Parallel/Keenable), or no rows (Firecrawl). It
+    parses cleanly, so nothing raises and ``_is_rate_limitish`` never sees an
+    error string; the walk used to accept it as the answer and the caller got
+    zero hits while three healthy vendors sat idle. An empty page is
+    indistinguishable from a real empty result for one query, so the ring is
+    walked instead — the last vendor's empty answer is still returned when
+    every vendor agrees (see :func:`search_with_failover`).
+    """
+    if not result.get("success"):
+        return False
+    web = (result.get("data") or {}).get("web")
+    return isinstance(web, list) and not web
+
+
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
     label, env_key, site = _VENDOR_HINTS[vendor]
     alt = " or another web backend via `hermes tools`" if other_backends else ""
@@ -355,20 +374,49 @@ def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
 
 
 def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
-    """Rate-limit-shaped errors advance to the next vendor, other errors stop the walk
-    (a malformed query fails everywhere). ``data.served_by`` is set when the serving
-    vendor differs from *name*."""
+    """Rate-limit-shaped errors — and empty result pages — advance to the next vendor;
+    other errors stop the walk (a malformed query fails everywhere), and an empty answer
+    stands when every vendor returns one. ``data.served_by`` is set when the serving
+    vendor differs from *name*.
 
-    def _throttled(result: Dict[str, Any]) -> bool:
+    Walking an empty page costs one extra vendor call and can surface a later vendor's
+    results for a query the first vendor legitimately had none for; the alternative was
+    silently returning zero hits while healthy vendors were never tried.
+    """
+
+    def _tag(result: Dict[str, Any], vendor: str) -> Dict[str, Any]:
+        if result.get("success") and vendor != name:
+            result.setdefault("data", {})["served_by"] = vendor
+        return result
+
+    current: Dict[str, str] = {}
+    empty_answers: list = []
+
+    def _call(vendor: str) -> Dict[str, Any]:
+        current["vendor"] = vendor
+        return _KEYLESS_SEARCHERS[vendor](query, limit)
+
+    def _hop(result: Dict[str, Any]) -> bool:
+        if _is_empty_results(result):
+            empty_answers.append((current.get("vendor"), result))
+            return True
         return not result.get("success") and _is_rate_limitish(result.get("error", ""))
 
-    order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
+    order, vendor, result, exhausted = _walk_ring(name, "search", _call, _hop)
     if not order:
         return search_fail(_ALL_PAID_MSG)
     if exhausted:
+        if result.get("success"):
+            # Every vendor returned an empty page: that is the honest answer.
+            return _tag(result, vendor)
+        if empty_answers:
+            # Vendors agreed on "no results", then the last ones failed — report the answer
+            # we actually got rather than a throttle error for a query that was served.
+            answered_by, answer = empty_answers[-1]
+            return _tag(answer, answered_by)
         result["error"] = f"{result.get('error', '')} (all keyless vendors throttled: {', '.join(order)})"
-    elif result.get("success") and vendor != name:
-        result.setdefault("data", {})["served_by"] = vendor
+    elif result.get("success"):
+        return _tag(result, vendor)
     return result
 
 

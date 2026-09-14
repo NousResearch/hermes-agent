@@ -127,9 +127,15 @@ def _legacy_gate_set(entry: Mapping[str, Any], spec: CapabilitySpec) -> bool:
     return bool(node)
 
 
-def plugin_capability_granted(plugin_id: str, capability: str, config: Optional[Mapping[str, Any]] = None) -> bool:
+def plugin_capability_granted(
+    plugin_id: str, capability: str, config: Optional[Mapping[str, Any]] = None, *, quiet_deny: bool = False,
+) -> bool:
     """Canonical check: is *capability* live for *plugin_id*? True via ``granted_capabilities`` OR
-    the deprecated-but-honored legacy ``allow_*`` key. Unknown ids / unreadable state -> False."""
+    the deprecated-but-honored legacy ``allow_*`` key. Unknown ids / unreadable state -> False.
+
+    ``quiet_deny`` logs a deny at DEBUG, for load-time precomputes where the plugin attempted
+    nothing: the loader checks tools.override for every user plugin on every load, so hook-only plugins
+    flooded agent.log with deny lines. A real attempt is still refused and logged where it is enforced."""
     spec = CAPABILITY_REGISTRY.get(capability)
     if spec is None:
         logger.debug("capability check for unknown id %r (plugin %s) — denied", capability, plugin_id)
@@ -141,7 +147,8 @@ def plugin_capability_granted(plugin_id: str, capability: str, config: Optional[
         allowed, evidence = True, f"legacy key plugins.entries.{plugin_id}.{'.'.join(spec.legacy_path)} (deprecated)"
     else:
         allowed, evidence = False, "not granted"
-    logger.info(  # audit trail for capability gate decisions
+    logger.log(  # audit trail for capability gate decisions
+        logging.DEBUG if quiet_deny and not allowed else logging.INFO,
         "capability_check plugin=%s capability=%s decision=%s checked_by=plugin_capability_granted evidence=%s",
         plugin_id, capability, "allow" if allowed else "deny", evidence)
     return allowed

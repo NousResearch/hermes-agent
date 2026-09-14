@@ -343,8 +343,9 @@ class PluginLoaderMixin:
         scope = self.scope_key
         with replacement_coordinator.transaction():
             previous_policy = _registry.snapshot_plugin_override_policy(module_name, scope=scope)
+            # quiet_deny: a load-time precompute, not an override attempt; keep its deny out of INFO.
             current_policy = _registry.register_plugin_override_policy(
-                module_name, PluginContext(manifest, self)._tool_override_allowed(""), scope=scope,
+                module_name, PluginContext(manifest, self)._tool_override_allowed("", quiet_deny=True), scope=scope,
             )
             policy_lease = replacement_coordinator.acquire(
                 ("tool_override_policy", scope, module_name), current=current_policy,

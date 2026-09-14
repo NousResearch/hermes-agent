@@ -576,7 +576,7 @@ class PluginContext:
         allowlist = (_plugin_settings_entry(cfg, plugin_id) or {}).get("mcp_allowlist")
         return [str(item) for item in allowlist] if isinstance(allowlist, list) else []
 
-    def _tool_override_allowed(self, tool_name: str) -> bool:
+    def _tool_override_allowed(self, tool_name: str, *, quiet_deny: bool = False) -> bool:
         """Whether this plugin may override built-in tools: bundled plugins are trusted (a maintainer
         choice, not privilege escalation); others need ``tools.override`` via
         :func:`plugin_capability_granted` (granted_capabilities OR legacy ``allow_tool_override: true``).
@@ -599,7 +599,7 @@ class PluginContext:
             return False  # fail closed: better to break the override than silently grant it
         # Pass THIS manager's profile-scoped config so a multi-profile process never consults the
         # active profile's consent state instead.
-        return plugin_capability_granted(self.plugin_id, "tools.override", config=cfg)
+        return plugin_capability_granted(self.plugin_id, "tools.override", config=cfg, quiet_deny=quiet_deny)
 
     # Fail-closed by construction: any failure to read consent state inside plugin_capability_granted
     # returns False. The profile-scoped config is passed through so a multi-profile process consults THIS

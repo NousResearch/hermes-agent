@@ -7,6 +7,7 @@ and backward compatibility with the legacy ``allow_*`` gates.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -352,6 +353,75 @@ class TestLegacyGateCompat:
         ctx = PluginContext(manifest, PluginManager())
         assert ctx._tool_override_allowed("write_file") is True
         assert ctx.has_capability("tools.override") is True
+
+
+# ── Audit log level ────────────────────────────────────────────────────────
+
+
+def _capability_records(caplog, plugin_id):
+    return [r for r in caplog.records
+            if r.name == "hermes_cli.plugin_capabilities"
+            and r.getMessage().startswith(f"capability_check plugin={plugin_id} ")]
+
+
+class TestAuditLogLevel:
+    """Load-time precompute denies log at DEBUG; real checks and every allow stay at INFO."""
+
+    def test_quiet_deny_logs_at_debug(self, hermes_home, caplog):
+        caplog.set_level(logging.DEBUG, logger="hermes_cli.plugin_capabilities")
+        assert plugin_capability_granted("capplug", "tools.override", quiet_deny=True) is False
+        [record] = _capability_records(caplog, "capplug")
+        assert record.levelno == logging.DEBUG
+        assert "decision=deny" in record.getMessage()
+
+    def test_default_deny_still_info(self, hermes_home, caplog):
+        caplog.set_level(logging.DEBUG, logger="hermes_cli.plugin_capabilities")
+        assert plugin_capability_granted("capplug", "tools.override") is False
+        [record] = _capability_records(caplog, "capplug")
+        assert record.levelno == logging.INFO
+
+    def test_quiet_deny_keeps_allow_at_info(self, hermes_home, caplog):
+        record_consent("capplug", ["tools.override"], ["tools.override"])
+        caplog.set_level(logging.DEBUG, logger="hermes_cli.plugin_capabilities")
+        assert plugin_capability_granted("capplug", "tools.override", quiet_deny=True) is True
+        [record] = _capability_records(caplog, "capplug")
+        assert record.levelno == logging.INFO
+        assert "decision=allow" in record.getMessage()
+
+    def test_loader_precompute_deny_is_debug_but_still_denies(self, hermes_home, caplog):
+        """A hook-only user plugin without the grant loads with no INFO deny line, the registry policy
+        still denies overrides, and a real override check still logs at INFO."""
+        from hermes_cli.plugins import PluginContext, PluginManager
+        from tools.registry import registry
+
+        plugin_dir = hermes_home / "plugins" / "hookonly"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text("name: hookonly\n", encoding="utf-8")
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_hook('pre_tool_call', lambda **kw: None)\n",
+            encoding="utf-8")
+        (hermes_home / "config.yaml").write_text(
+            "plugins:\n  enabled: [hookonly]\n  entries:\n    hookonly:\n"
+            "      allow_tool_override: false\n",
+            encoding="utf-8")
+        caplog.set_level(logging.DEBUG, logger="hermes_cli.plugin_capabilities")
+        mgr = PluginManager()
+        try:
+            mgr.discover_and_load()
+            loaded = mgr._plugins["hookonly"]
+            assert loaded.enabled and loaded.hooks_registered == ["pre_tool_call"]
+            records = _capability_records(caplog, "hookonly")
+            assert [r.levelno for r in records] == [logging.DEBUG]
+            assert not registry._plugin_override_allowed(
+                mgr.scope_key, mgr._policy_module_name(loaded.manifest))
+
+            caplog.clear()
+            ctx = PluginContext(loaded.manifest, mgr)
+            assert ctx._tool_override_allowed("write_file") is False
+            assert [r.levelno for r in _capability_records(caplog, "hookonly")] == [logging.INFO]
+        finally:
+            mgr.unload()
 
 
 # ── ctx.has_capability probing ───────────────────────────────────────────────

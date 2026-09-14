@@ -52,6 +52,21 @@ _LOCAL_MODES = {"local", "local_embedded"}
 _RETAIN_CONTEXT_DEFAULT = "conversation between Hermes Agent and the User"
 
 
+def _daemon_startup_failure_message(error: Exception, log_path: Path) -> str:
+    """Return the user-facing diagnosis for an embedded-daemon failure."""
+    if "instance already running" in str(error).lower():
+        return (
+            "Hindsight embedded PostgreSQL could not start because pg0 reported an instance "
+            "already running. A stale pg0 PID after a reboot may be the cause. Before running "
+            "'pg0 stop' or changing any state, verify that no PostgreSQL process is running and "
+            "nothing is listening on port 5432. Only then back up the matching files under "
+            "~/.pg0/instances/<name>/ before moving data/postmaster.pid aside or correcting the "
+            "stale pid in instance.json. Never change those files while PostgreSQL is running. "
+            f"See vectorize-io/pg0#37. Full startup details: {log_path}"
+        )
+    return f"Hindsight embedded daemon failed to start. Full startup details: {log_path}"
+
+
 def _ensure_client_dependency() -> None:
     """Lazily install the Hindsight client (``tools.lazy_deps``) before importing it."""
     try:
@@ -859,6 +874,10 @@ class HindsightMemoryProvider(MemoryProvider):
             _log("\n=== Daemon started successfully ===\n")
         except Exception as e:
             _log(f"\n=== Daemon startup failed: {e} ===\n" + traceback.format_exc())
+            message = _daemon_startup_failure_message(e, log_path)
+            logger.warning(message)
+            with contextlib.suppress(Exception):
+                print(f"  ⚠ {message}", file=sys.stderr, flush=True)
 
     def system_prompt_block(self) -> str:
         mode = self._memory_mode if self._memory_mode in _SYSTEM_PROMPT_TAILS else "hybrid"

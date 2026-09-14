@@ -53,6 +53,29 @@ def _session_source_for_agent(platform: Optional[str]) -> str:
     return str(source or "").strip() or platform or "cli"
 
 
+def _declared_hidden_session() -> bool:
+    """Whether this process declared machine-only sessions (see gateway.session_context).
+
+    A non-interactive entry point (one-shot ``-z``, batch pipelines) declares it up front; the row it
+    mints is then born hidden so it never occupies a human's session list.
+    """
+    try:
+        from gateway.session_context import hidden_session_declared
+
+        return hidden_session_declared()
+    except Exception:
+        return False
+
+
+def _session_row_exists(session_db: Any, session_id: str) -> bool:
+    """Whether ``session_id`` already has a row.  Fail-closed: an unreadable store counts as
+    existing, so a declared-hidden channel can never retro-hide someone else's session."""
+    try:
+        return bool(session_db.get_session(session_id))
+    except Exception:
+        return True
+
+
 def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     """Gateway routing ``origin_json`` for a session row; None when the agent carries no gateway identity.
 
@@ -319,6 +342,9 @@ class AIAgent(
         if getattr(self, "_persist_disabled", False) or self._session_db_created or not self._session_db:
             return
         source = _session_source_for_agent(self.platform)
+        # Machine-only channels mint rows that are BORN hidden — resolved BEFORE the insert so
+        # resuming an existing (human) session through one never retro-hides it.
+        born_hidden = _declared_hidden_session() and not _session_row_exists(self._session_db, self.session_id)
         try:
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.
@@ -345,6 +371,12 @@ class AIAgent(
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
             )
             self._session_db_created = True
+            if born_hidden:
+                # Best-effort: a store predating the hidden column must not fail the turn.
+                try:
+                    self._session_db.set_session_hidden(self.session_id, True)
+                except Exception:
+                    logger.debug("declared-hidden session stamp failed for %s", self.session_id, exc_info=True)
         except Exception as e:
             # Transient failure (e.g. SQLite lock): _session_db_created stays False so the next turn retries.
             logger.warning("Session DB creation failed (will retry next turn): %s", e)

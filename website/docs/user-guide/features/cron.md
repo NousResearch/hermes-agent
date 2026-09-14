@@ -18,6 +18,7 @@ Cron jobs can:
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
+- fire on **external events** — a webhook route with `cron_job` set fires the job the moment something happens (a PR gets feedback, a service posts an alert) instead of waiting for the next scheduled tick. See [Event-Triggered Cron Jobs](/user-guide/messaging/webhooks#event-triggered-cron-jobs).
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
@@ -26,7 +27,7 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 
 - **Per-job pin** — set by *you* via the dashboard, `hermes cron create/edit --model … --provider …`, or by editing `~/.hermes/cron/jobs.json`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned.
 - **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
-- **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you **once** — the job stays skipped (and silent) on subsequent ticks until you act or the config is restored (#44585). For recurring or otherwise repeatable jobs, pin the provider/model explicitly (`hermes cron edit <job_id> --provider <provider> --model <model>`) to proceed. A consumed finite one-shot cannot be updated; create a new future one-shot with an explicit provider and model instead. This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
+- **Global default** — only when neither of the above is set does a job follow `hermes model`. Hermes **snapshots** the provider and model at creation, and that snapshot is the job's effective pin: if you later switch the global default (`hermes model`, `/model`, `hermes config set model.default …`), the job **keeps running on the model and provider it was created under** and logs one INFO line per run noting the difference. A global model change never stops a scheduled job, and an unattended job never silently inherits a switch to a paid provider/model (#44585). To move a job to the new default, **resnap** it (`hermes cron resnap <job_id>`, or `--all` for every unpinned job) so it adopts the current default while staying unpinned, pin it (`hermes cron edit <job_id> --provider <provider> --model <model>`), or set `cron.model` to move the whole fleet at once. Jobs created before snapshots existed keep following the live global default.
 
 Whichever provider a job resolves to, its provider-specific request settings (e.g. `request_overrides` such as `extra_body`/`extra_headers` for custom providers) carry into the scheduled run just like an interactive session.
 
@@ -100,32 +101,30 @@ cron:
 
 Or: `hermes config set cron.preflight false`
 
-## Letting unpinned jobs track global defaults
+## Moving unpinned jobs to a new global default
 
-The model/provider drift guard is enabled by default. If your unpinned cron
-jobs should deliberately follow every global model or provider change, disable
-it in `config.yaml`:
-
-```yaml
-cron:
-  model_drift_guard: false
-```
-
-Or use the config command:
+An unpinned job stays on the provider/model it was created under, so changing your chat model
+never changes (or stops) your cron fleet. When you *do* want scheduled jobs to move:
 
 ```bash
-hermes config set cron.model_drift_guard false
+hermes cron edit <job_id> --provider <provider> --model <model>   # one job
+hermes config set cron.model <model>                               # every unpinned job
 ```
 
-This disables both the runtime block and the warning shown when global
-inference settings change. Existing snapshots remain stored, so setting the
-option back to `true` re-enables protection without recreating jobs.
+`hermes config set model.default …` and the Desktop model picker list the unpinned jobs that will
+keep their original model so you can decide deliberately. Stored snapshots are refreshed whenever
+you edit a job's provider, model, or base URL.
 
-:::warning
-With the guard disabled, unattended unpinned jobs immediately inherit changed
-global defaults. A switch to a paid provider or model can therefore spend money
-on every scheduled run.
-:::
+Resnapping refreshes an unpinned job's stored snapshot to the current global resolution without
+pinning it, so it keeps tracking future changes:
+
+```bash
+hermes cron resnap <job_id>   # one job
+hermes cron resnap --all      # every unpinned agent job
+```
+
+The agent-facing `cronjob` tool accepts the same action (`action=resnap job_id=<id>` or
+`action=resnap all=true`). Pinned axes and `no_agent` script jobs are left untouched.
 
 ## Skill-backed cron jobs
 
@@ -342,6 +341,19 @@ On each tick Hermes:
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
+### Restart-safe workers under systemd
+
+When the gateway runs as a systemd service, each due job is handed to an external worker process launched in a transient user scope (`systemd-run --user --scope`), so restarting the gateway mid-job does not kill the job. Creating that scope needs a user systemd session; hosts without one (containers, minimal LXCs, a service user without linger) cannot provide it.
+
+By default cron then **degrades**: the job still runs as a separate external process with the same execution handoff, but without cgroup isolation, so a gateway restart during the job kills it (the execution ledger records that). One warning is logged per gateway process. To fail closed instead — skip the job and record the error on the job row — set:
+
+```yaml
+cron:
+  require_restart_safe_scope: true
+```
+
+The lasting fix is a user session for the gateway user: `sudo loginctl enable-linger <gateway-user>` (and `XDG_RUNTIME_DIR` / `DBUS_SESSION_BUS_ADDRESS` in the unit for system-level installs), then restart the gateway. Kanban workers always require a scope and fail closed regardless of this key.
+
 ### Execution history
 
 Hermes records each claimed cron attempt in the profile-local
@@ -384,6 +396,28 @@ streak alongside a failing job's last run. One-shot jobs never nudge.
 ```yaml
 cron:
   failure_nudge_threshold: 3   # default; 0 disables the nudge
+```
+
+### Automatic re-runs when the model was unreachable
+
+A recurring job whose run fails with a transient network or DNS error before
+a single model call was made — the classic case is a fire right after the
+computer wakes, while the VPN or Wi-Fi is still reconnecting — does not sit
+out a whole period. The scheduler re-runs it automatically after **5, 15, and
+30 minutes** (inspired by Claude Cowork's scheduled-task re-runs), then falls
+back to the normal schedule. Because zero API calls were made, the re-run is
+spend-neutral and cannot duplicate any side effect.
+
+While a re-run is pending, the interim failure notice is suppressed — you get
+the real result when a re-run succeeds, or a normal failure alert once the
+ladder is exhausted. Any run that reaches the model (success or failure)
+resets the ladder. One-shot jobs are excluded: their dispatch accounting is
+at-most-times and a consumed dispatch is never resurrected. Retries never
+fire past the schedule's own next occurrence when that comes sooner.
+
+```yaml
+cron:
+  retry_unreachable: false   # default true; disables the automatic re-runs
 ```
 
 ### Failure incidents: acknowledge a known failure
@@ -496,6 +530,9 @@ error. A delivery failure does not count toward the job's `failure_streak`
 - `bot-chat:<profile>` targets another profile **on the same machine**. Names are validated against `hermes profile list` when the job is created; profiles on other gateways or machines can never be targeted, so same-named profiles across machines are unambiguous.
 - Each delivery costs the target bot one full agent turn — mind the schedule frequency.
 - Composes with other targets (`bot-chat,telegram`) but is never included in `all`.
+- If the canonical chat is open in a mailbox-capable Desktop/TUI backend, delivery is **durably queued immediately**, whether the bot is idle or busy. Only that live owner runs the incoming turn; cron does not start a competing CLI writer. Without a live mailbox owner, the existing `hermes chat -c "Bot Chat" --create-if-missing` lane remains available (normal session ownership checks still apply).
+- **Queued is not completed.** Cron records receipt IDs and `queued`/`claimed` statuses in `last_delivery_queued`, with delivery outcome `queued` (neither delivered nor failed). A successful job shows `delivery_queued`; genuine errors on other targets still take precedence as delivery failures. The bot may complete later. The durable receipt in the target profile's `runtime/bot_live_delivery/<receipt-id>.json` is authoritative; cron's historical status is not automatically refreshed.
+- Rechecking the same execution inspects its existing receipt, even if the owner has disappeared. It never falls back to another writer after acceptance. `failed`, `cancelled`, or `ambiguous` receipts are not automatically replayed; inspect the chat and receipt before intentionally starting new work. Each new cron execution has a distinct delivery ID.
 
 ### Routing intent (`all`)
 
@@ -599,8 +636,8 @@ Behaviour is **thread-preferred**, scoped to the job's own conversation:
   recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
   delivery's follow-up discussion isolated.
 - **DM-only platforms** (WhatsApp, Signal, SMS): no threads exist, so the brief
-  is mirrored into the origin DM session instead — the DM itself is the
-  continuation surface.
+  is mirrored into the target DM session instead (the origin DM, or the home DM
+  for fallback and bare-platform jobs) — the DM itself is the continuation surface.
 
 Only the job's **own conversation** is ever touched:
 
@@ -613,9 +650,14 @@ Only the job's **own conversation** is ever touched:
   target a conversation. The global `mirror_delivery` flag alone never makes an
   explicitly-addressed chat continuable.
 
-Broadcast / fan-out targets (`all`, bare-platform home channels) are never made
-continuable. The mirror is
-written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
+Broadcast expansions (`all`) are never made continuable. A user-written bare
+platform name (`deliver: slack`) addresses that platform's home channel
+deliberately and follows the same rules as the home-channel fallback above.
+After upgrading, existing `deliver: <platform>` jobs with `cron.mirror_delivery: true`
+can open a new thread per run on thread-capable platforms. Set `attach_to_session: false`
+on a job to opt out of this thread-per-run behaviour.
+
+The mirror is written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
 #### Flat, in-channel continuation (Slack)
@@ -884,6 +926,30 @@ These misses are stamped on the job record as `last_fire_error` (timestamp + rea
 - The dashboard job view
 
 The stamp always reflects **current** auto-fire health: it is overwritten by newer misses and cleared automatically by the next successful run. If you see it, the job and its schedule are fine — the gateway side of the fire path needs attention (most commonly, restart the gateway through its supervisor so it loads the full profile environment: `hermes gateway restart`).
+
+### Local missed-run policy
+
+If the gateway was down (or restarting) when a recurring job's scheduled time
+passed, the job **catches up once** when the scheduler is back: a slot missed
+inside a restart gap fires exactly one time, a slot that already ran before the
+restart is never run again, and a long outage collapses into a single run rather
+than one run per missed slot. Paused jobs never catch up. Each catch-up shows in
+`hermes cron list` as `⚠ late` / `⚠ catch-up after missed fire`.
+
+To avoid that catch-up load after a planned gateway stop, set:
+
+```yaml
+cron:
+  catch_up_missed: false   # default: true
+```
+
+Or run `hermes config set cron.catch_up_missed false`. With this opt-out, a recurring
+job later than its existing grace window (half its period, clamped to 120 seconds–2
+hours) is re-anchored to its next future occurrence without firing now. The skip is
+logged. Jobs inside grace and explicit manual triggers still run normally; if the
+next occurrence cannot be computed, the existing run-once fallback is preserved.
+This does not change one-shot expiry, resume behavior, or the hosted-provider sweep
+below. There is no per-job override.
 
 ### Misfire catch-up
 

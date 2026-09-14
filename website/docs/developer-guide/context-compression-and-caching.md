@@ -75,23 +75,58 @@ Located in `agent/context_compressor.py`. This is the **primary compression
 system** that runs inside the agent's tool loop with access to accurate,
 API-reported token counts.
 
-#### Token accounting: real usage decides, the estimate only decides whether to wait
+#### Token accounting: provider anchors and explicit heuristic fallbacks
 
 Every compaction gate (turn-start preflight, idle, pre-API pressure, post-tool)
 asks the **usage anchor** first (`agent/usage_anchor.py`): the provider's last
-`usage.prompt_tokens` plus a rough estimate of ONLY the messages appended since
+prompt and completion token counts plus a rough estimate of ONLY the messages appended since
 that response. The anchor identifies the priced transcript by a content
 fingerprint, so it survives the gateway re-reading history from the DB every
 turn, and it is persisted on the session row so a fresh process (`--resume`,
 desktop per-turn `serve`) restores it while the durable transcript still
 matches. Compaction, session reset and codex-native compaction clear it.
 
-Without an anchor (first request, rewind/edit-resend) a whole-context rough
-estimate over threshold **waits one request** for the provider's real count
-instead of compressing on a guess (`should_defer_preflight_to_real_usage`).
-The wait is one request, never a disable: a provider that omits usage, a real
-reading already over threshold, a rough figure past the whole window, or a
-provider-proven overflow all compress immediately.
+For the built-in engine's **turn-start and pre-API threshold gates**, without an
+anchor (first request, rewind/edit-resend), a whole-context rough estimate over
+threshold **waits one request** for provider evidence
+(`should_defer_preflight_to_real_usage`). This includes estimates at or above the
+entire context window: estimate magnitude does not prove that a request will fail.
+After a model switch, old usage is cleared and the new provider adjudicates the
+first request too; a genuinely oversized request can incur one rejected request
+before reactive recovery.
+
+The wait is not a disable. Once a response omits usage, the existing heuristic
+fallback remains available; real usage already over threshold and provider-proven
+overflow still allow compression. A post-compaction latch waits for one response
+and is consumed even if that response omits usage. Recovery remains bounded by the
+compression attempt budget and no-progress guards, not an indefinite resend loop.
+
+This is **not an exact-count-only policy**, nor closure of #104462's literal
+never-estimate acceptance. The following policies remain unchanged:
+
+- An anchor includes the provider's prompt and completion tokens plus a **rough
+  appended-message delta** (the first appended assistant is already covered by
+  completion usage). A large new tool result can therefore still cross a threshold
+  on an estimated delta. Boundary fingerprint matching does not fingerprint the
+  whole prefix, model, tools, or system prompt.
+- Opt-in idle compaction uses its own floor/cooldown and can act on unanchored
+  pressure; it does not share the threshold gate's one-request wait.
+- Pre-agent gateway hygiene retains its rough-history fallback and hard-message
+  safety valve. The replay harness's `gateway` shape reloads transcript dictionaries;
+  it does **not** exercise that separate hygiene policy.
+- Post-tool usage-less fallback, micro-compaction, summary/tail sizing, pruning and
+  overflow progress checks still use local estimates. Native compaction keeps its
+  provider-specific ownership and checkpoint latch.
+
+Provider count endpoints remain deferred. Eliminating these remaining estimates
+requires an explicit policy decision: accept the documented liveness fallbacks,
+or replace them with provider evidence while defining behavior for providers that
+never return usage. Simply disabling all unanchored maintenance is not equivalent.
+
+`evals/token_accounting/replay_gates.py` covers below-window and past-window
+inflation, real-over-threshold controls, reload/restore anchors, and local HTTP
+overflow/usage-less recovery with real compression but fixed local summary text.
+These are scripted control-flow checks, not vendor tokenizer or billing evidence.
 
 Opaque provider blobs (`encrypted_content` on Codex reasoning / compaction
 items) contribute 0 to every local estimate; only real usage ever prices them.
@@ -156,7 +191,7 @@ auxiliary:
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
-| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins). The small-context floor still applies on top (see below) |
+| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
 | `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
@@ -181,6 +216,17 @@ Consumers observe the mode rather than diffing session ids:
 
 Set `in_place: false` to restore the legacy rotating path, where each compaction commits a new session id linked to the previous one via `parent_session_id`.
 
+### Auxiliary feasibility and tail retention
+
+A smaller auxiliary compression model can lower the live compression trigger without
+changing the selected tail policy. In `lean` mode the selection budget remains based
+on the **main model's context window**: 2.5%, clamped to 10K–25K tokens. For example,
+a 1M main model with a 512K auxiliary model retains a 25K selection budget even when
+feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
+recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
+These are tail-selection budgets, not strict limits on the entire compacted context:
+protected messages, boundary alignment, summaries, and anchors can add tokens.
+
 ### Per-model threshold overrides
 
 `compression.model_thresholds` lets you trigger compaction at different points
@@ -195,12 +241,20 @@ compression:
     "glm-5.2": 0.40
     "glm-5.2-1M": 0.25
     "claude-sonnet": 0.35
+    "openai-codex:astra": 0.85   # only on the Codex OAuth route (272K cap)
 ```
 
 Resolution rules:
 
 - Keys are **substring-matched** against the model name; the **longest
   matching key wins** (`glm-5.2-1M` beats `glm-5.2` for model `glm-5.2-1M`).
+- Keys may be **provider-scoped** as `"<provider>:<substring>"` (e.g.
+  `"openai-codex:astra": 0.85`). A scoped key only matches when the session's
+  provider is that route, so the same slug served with a different window
+  elsewhere (OpenRouter, Nous, direct OpenAI) keeps the global `threshold`.
+  Ranking uses the model substring only, so `"astra-900k"` still beats
+  `"openai-codex:astra"` for the 900K picker; a scoped key beats a bare key
+  with the identical substring.
 - When no key matches (or the map is empty), the global `threshold` applies.
 - The override is re-resolved on every `/model` switch; switching to a model
   with no matching key falls back to the global `threshold`.

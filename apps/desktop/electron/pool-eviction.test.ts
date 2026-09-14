@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { selectPoolEvictions } from './pool-eviction'
+import { evictPoolEntries, selectPoolEvictions } from './pool-eviction'
 
 const NOW = 1_000_000
 // Mirrors main.ts POOL_KEEPALIVE_FRESH_MS (4 minutes — see #95189).
@@ -83,6 +83,39 @@ test('descriptor-only pools never evict', () => {
   ]
 
   assert.deepEqual(selectPoolEvictions(entries, 2, NOW, FRESH_MS), [])
+})
+
+test('making room waits for every selected backend to finish stopping', async () => {
+  let releaseStop!: () => void
+
+  const stopGate = new Promise<void>(resolve => {
+    releaseStop = resolve
+  })
+
+  const stopped: string[] = []
+  let settled = false
+
+  const entries: [string, ReturnType<typeof spawned>][] = [
+    ['oldest', spawned(500_000)],
+    ['fresh', spawned(1_000)]
+  ]
+
+  const eviction = evictPoolEntries(entries, 1, NOW, FRESH_MS, async key => {
+    stopped.push(key)
+    await stopGate
+  }).then(keys => {
+    settled = true
+
+    return keys
+  })
+
+  await Promise.resolve()
+  assert.deepEqual(stopped, ['oldest'])
+  assert.equal(settled, false, 'a replacement must not race the exiting child for its slot')
+
+  releaseStop()
+  assert.deepEqual(await eviction, ['oldest'])
+  assert.equal(settled, true)
 })
 
 // ── #95189 — Keepalive-fresh window must tolerate transient missed pings ──

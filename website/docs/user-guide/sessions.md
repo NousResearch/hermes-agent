@@ -366,6 +366,10 @@ hermes sessions export telegram-history.jsonl --source telegram
 # Export a single session
 hermes sessions export session.jsonl --session-id 20250305_091523_a1b2c3d4
 
+# Point at a directory (existing, or ending in /) and the file is named for you:
+# ~/exports/hermes_session_20250305_091523_a1b2c3d4.jsonl
+hermes sessions export ~/exports/ --session-id 20250305_091523_a1b2c3d4
+
 # Redact API keys/tokens/credentials from the exported content
 hermes sessions export backup.jsonl --redact
 ```
@@ -641,8 +645,9 @@ routing is the only thing the repair changes. Back up first
 
 Started a conversation in another agent CLI? You can pull it into Hermes and
 continue it here. Hermes reads Claude Code's session logs
-(`~/.claude/projects/`) and Codex CLI's rollouts (`~/.codex/sessions/`) —
-the foreign files are only read, never modified.
+(`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/` when Claude Code's
+config dir is relocated) and Codex CLI's rollouts (`~/.codex/sessions/`, or
+`$CODEX_HOME/sessions/`) — the foreign files are only read, never modified.
 
 ```bash
 # Interactive picker across both tools, newest first
@@ -663,8 +668,8 @@ the id plus a ready-to-paste `hermes --resume <id>` command.
 `--resume @claude` / `--resume @codex` show the same picker and drop you
 straight into the imported conversation.
 
-**Hermes Desktop** has the same importer under **Import session** in the
-sidebar (also in the command palette). It lists the logs on the machine the
+**Hermes Desktop** has the same importer in the command palette (**Import
+session**). It lists the logs on the machine the
 connected backend runs on — not the computer running the app — shows a
 read-only preview, and **Continue in Hermes** copies the conversation into the
 selected profile. Browsing never writes to your session store, importing never
@@ -799,6 +804,32 @@ Legacy `session_reset` settings, reset-policy overrides and reset-timer environm
 variables are ignored. Cached agents may be released to reclaim resources without
 replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
+
+### Session hygiene: why you should still run `/new`
+
+Because gateway conversations never expire on their own, it is easy to run one
+session for weeks. That works, but it quietly defeats the learning loop and
+inflates costs:
+
+- **Memory only pays off at boundaries.** `MEMORY.md` / `USER.md` are injected
+  at session start, and `session_search` exists to recall what fell out of
+  context. In a never-ending session everything is still *in* context, so the
+  agent has no reason to consult memory — the "self-learning" machinery barely
+  runs. Memory distillation (the save before reset) also only happens when a
+  session actually ends.
+- **Cost grows with history.** Compression keeps a long session functional,
+  but every turn still carries a large (compacted) prefix. A fresh session
+  with distilled memory is almost always cheaper than a month-old thread.
+
+Practical rule: end a session when you finish a task or topic. Run `/new`
+(optionally named, e.g. `/new payments-refactor`) at natural stopping points —
+daily or per-project both work. Before the reset, ask the agent to "remember
+anything worth keeping" if the work surfaced durable preferences or
+procedures; it saves memories and skills from the expiring session
+automatically, but an explicit nudge helps. Restarting the machine or the
+gateway is **not** a boundary — the same session resumes.
+
+See [Memory](features/memory.md) for what gets carried across boundaries.
 
 
 ### Continuity After Crashes and Restarts
@@ -951,5 +982,5 @@ hermes sessions prune --older-than 30 --yes
 ```
 
 :::tip
-The database grows slowly (typical: 10-15 MB for hundreds of sessions) and session history powers `session_search` recall across past conversations, so auto-prune ships disabled. Enable it if you're running a heavy gateway/cron workload where `state.db` is meaningfully affecting performance (observed failure mode: 384 MB state.db with ~1000 sessions slowing down FTS5 inserts and `/resume` listing). Use `hermes sessions prune` for one-off cleanup without turning on the automatic sweep.
+Auto-prune is **on by default**: ended sessions that have been inactive for `sessions.retention_days` (default 90) are removed at startup, and active sessions are never touched (see [Automatic Cleanup](#automatic-cleanup) above). Session history powers `session_search` recall across past conversations, so if you want to keep every ended session forever, set `sessions.auto_prune: false` in `config.yaml`, or raise `retention_days`. With auto-prune off, `hermes sessions prune` remains available for one-off cleanup (observed failure mode without any pruning: a 384 MB `state.db` with ~1000 sessions slowing down FTS5 inserts and `/resume` listing).
 :::

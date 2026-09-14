@@ -41,6 +41,8 @@ import { isSecondaryWindow } from '@/store/windows'
 import { MessageRenderBoundary } from '../message-render-boundary'
 
 import { resolveShowEarlierAction, shouldAutoShowEarlier, useTranscriptWindow } from './transcript-window'
+import { useMessagesBelow } from './use-messages-below'
+import { useStickyPromptClip } from './use-sticky-prompt-clip'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -376,6 +378,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
         'flex min-w-0 flex-col gap-(--conversation-turn-gap) pb-(--conversation-turn-gap)',
         virtualized && '[contain-intrinsic-size:auto_37.5rem] [content-visibility:auto]'
       )}
+      data-slot="aui_message-group"
     >
       <MessageRenderBoundary resetKey={resetKey}>
         {group.kind === 'turn' ? (
@@ -954,9 +957,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
   }, [anchorBeforePrepend, expandWindow, hiddenCount, olderAvailable, paneBudget])
 
-  // A long transcript is paged by the existing `showEarlier` path when the
-  // reader reaches its top edge. Listen to `wheel` too: a wheel against a
-  // clamped scrollTop of zero does not produce a native scroll event.
+  // Scroll/wheel at the top edge pages older turns through the same showEarlier
+  // path as the button. Wheel is required because browsers emit no `scroll`
+  // once scrollTop is already 0 — exactly where the reader who wants more is.
   useEffect(() => {
     const el = scrollRef.current
 
@@ -964,34 +967,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
-    let previousScrollTop = el.scrollTop
-
-    const tryShowEarlier = (direction: 'up' | 'down') => {
+    const tryShowEarlier = (wheelDeltaY?: number) => {
       if (
         shouldAutoShowEarlier({
-          atBottom: isAtBottom,
-          direction,
-          hasOlderContent: resolveShowEarlierAction(hiddenCount, olderAvailable) !== null,
+          action: resolveShowEarlierAction(hiddenCount, olderAvailable),
+          isAtBottom,
           loadSettled: loadSettledRef.current,
-          restorePending: restoreFromBottomRef.current !== null,
-          scrollTop: el.scrollTop
+          restorePending: restoreFromBottomRef.current != null,
+          scrollTop: el.scrollTop,
+          wheelDeltaY
         })
       ) {
         showEarlier()
       }
     }
 
-    const onScroll = () => {
-      const direction = el.scrollTop < previousScrollTop ? 'up' : 'down'
-      previousScrollTop = el.scrollTop
-      tryShowEarlier(direction)
-    }
-
-    const onWheel = (event: WheelEvent) => {
-      if (event.deltaY < 0) {
-        tryShowEarlier('up')
-      }
-    }
+    const onScroll = () => tryShowEarlier()
+    const onWheel = (event: WheelEvent) => tryShowEarlier(event.deltaY)
 
     el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('wheel', onWheel, { passive: true })
@@ -1037,6 +1029,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       )),
     [visibleGroups, components, structuralSignature, tailStart]
   )
+
+  useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey })
+  useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
 
   return (
     <div

@@ -150,8 +150,9 @@ _SPECS = [
         _arg("--body", help="Optional opening post"),
         _arg("--assignee", help="Profile name to assign"),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
-        _arg("--workspace", default="scratch",
-             help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch)"),
+        _arg("--workspace",
+             help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "
+                  "an explicit 'scratch' also opts out of a project-scoped board's project)"),
         _arg("--branch", help="Branch name for worktree tasks, e.g. wt/t6-wire"),
         _arg("--project",
              help="Link to a project (id or slug). Anchors the task's "
@@ -328,7 +329,6 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Audit-trail reason (recorded on the task_events row)"),
         _bulk_ids("promote"),
-        _arg("--force", action="store_true", help="Promote even if parent dependencies are not yet done/archived"),
         _arg("--dry-run", action="store_true", help="Validate the promotion without mutating state"),
         _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
     ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
@@ -435,8 +435,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         description="Durable SQLite-backed task board shared across Hermes profiles. "
                     "Tasks are claimed atomically, can depend on other tasks, and "
                     "are executed by a named profile in an isolated workspace. "
-                    "See https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban "
-                    "or docs/hermes-kanban-v1-spec.pdf for the full design.",
+                    "See https://hermes-agent.nousresearch.com/docs/user-guide/features/kanban.",
     )
     # --board scopes every subcommand to one board's DB; when omitted the
     # resolution is HERMES_KANBAN_BOARD, then the persisted current-board

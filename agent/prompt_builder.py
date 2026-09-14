@@ -13,12 +13,13 @@ import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from hermes_constants import (
     get_hermes_home, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
+from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
@@ -158,15 +159,11 @@ HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS = (
 )
 
 
-# Memory guidance (#95681, consolidated): ONE block from ONE builder. The opening frame adapts to which
-# stores config enables; everything else is written exactly once. Leads with the positive posture (save
-# proactively, replace when full) — the routing rules come after, as refinements, not as the headline. WHAT
-# belongs in memory is the memory tool schema's job and is never re-taught here.
-def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = True) -> str:
-    """ONE memory-guidance block whose opening frame adapts to the enabled store(s); "" when both are off.
-
-    Positive posture first, routing rules as refinements. WHAT belongs in memory is the tool schema's job.
-    """
+# Keep the every-session memory scope even when task knowledge cannot be saved as a skill.
+def build_memory_guidance(
+    memory_enabled: bool = True, profile_enabled: bool = True, *, skill_manage_available: bool = True,
+) -> str:
+    """Adapt store and skill-write guidance without widening what belongs in memory."""
     if not memory_enabled and not profile_enabled:
         return ""
     if memory_enabled:
@@ -180,11 +177,17 @@ def build_memory_guidance(memory_enabled: bool = True, profile_enabled: bool = T
             "loaded into each new session's context; save durable facts about the user with the "
             "memory tool (target='user') — the built-in notes store is disabled, so never target='memory'. "
         )
-    return frame + (
+    skill_routing = (
         "Skills come first: when you learn something while doing a task — a "
         "procedure, a pitfall, and the user's preferences and corrections "
         "for that kind of work — record it in the skill you used or built "
         "for the task (skill_manage), where it loads only when relevant. "
+        if skill_manage_available else
+        "Task-specific knowledge — procedures, pitfalls, and the user's preferences "
+        "and corrections for that kind of work — belongs in skills, not in memory, "
+        "even when skill writing is unavailable. "
+    )
+    return frame + skill_routing + (
         "Memory is the narrow exception for facts that apply to EVERY "
         "session regardless of task (who the user is, environment facts, "
         "standing conventions with no task home); it has a hard character "
@@ -510,8 +513,20 @@ STEER_MARKER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
 
 
 def format_steer_marker(steer_text: str) -> str:
-    """Wrap a mid-turn steer for appending to a tool result (see note above)."""
+    """Wrap a mid-turn steer in the self-describing marker (see note above)."""
     return f"\n\n{STEER_MARKER_OPEN}\n{steer_text}\n{STEER_MARKER_CLOSE}"
+
+
+STEER_DISPLAY_KIND = "steer"
+
+
+def steer_user_row(steer_text: str) -> Dict[str, Any]:
+    """The standalone ``role:user`` row a mid-turn /steer is delivered as (after the newest tool
+    result). Its own row — never smeared onto the already-persisted tool row, which append-only
+    persistence would leave divergent from the live request — and typed so the alternation repair
+    never merges the next real prompt into it and history renderers can label it."""
+    return {"role": "user", "content": format_steer_marker(steer_text).lstrip(),
+            "display_kind": STEER_DISPLAY_KIND}
 
 
 STEER_CHANNEL_NOTE = (
@@ -665,12 +680,7 @@ PLATFORM_HINTS = {
         "height live, width from the content's first measured span — lay content flush left with no centering wrappers "
         "or it measures full-bleed. Widgets talk back: data-hermes-send=\"prompt\" on any clickable element (or "
         "window.hermes.send(\"prompt\")) sends that prompt as a hidden user turn — answer it by updating the widget's "
-        "file, not with prose. Property/rental listings render as browsable cards: emit a ```listing fence "
-        "holding JSON — one object, or an array to compare several — with address (required), price, beds, "
-        "baths, size, note (why it is worth a look), facts[] (short specs), catches[] (risks to verify), "
-        "images[] (direct https photo URLs, in listing order — the first is the hero), and links[] "
-        "({label, url} detail pages, never a search-results URL). Use it for every property you present, "
-        "including follow-ups and re-rankings, so listings stay comparable."
+        "file, not with prose."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text only — no markdown, no "
@@ -789,8 +799,10 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "ssh": "a remote host reached over SSH (likely Linux)",
 }
 
-# Per-process probe cache keyed by (env_type, cwd_hint) so a mid-process backend switch rebuilds.
-_BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
+# Per-process probe cache keyed by (home key, env_type, cwd_hint) so a mid-process backend switch
+# rebuilds; the home key because the probe runs against the profile's own terminal.* backend
+# (docker image / ssh host) and one multiplexed process serves several profiles.
+_BACKEND_PROBE_CACHE: dict[tuple[str, str, str], str] = {}
 
 
 def _plugin_backend_attr(backend: str, attr: str, default=None):
@@ -909,7 +921,8 @@ def _format_backend_probe(output: str) -> str:
 
 def _probe_remote_backend(env_type: str) -> str | None:
     """Describe the active non-local backend via a live probe; None if it failed (cached, failures included)."""
-    cache_key = (env_type, _tenv_read("TERMINAL_CWD", ""))
+    from hermes_constants import hermes_home_key
+    cache_key = (hermes_home_key(), env_type, _tenv_read("TERMINAL_CWD", ""))
     formatted = _BACKEND_PROBE_CACHE.get(cache_key)
     if formatted is None:
         formatted = ""
@@ -1014,9 +1027,8 @@ CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
-# Dynamic cap (no explicit context_file_max_chars): ~4 chars/token, a small slice of the window since
-# context files share the cached prefix; small models stay at the floor.
-_CONTEXT_FILE_CHARS_PER_TOKEN = 4
+# Dynamic cap (no explicit context_file_max_chars): a small slice of the window since context files
+# share the cached prefix; small models stay at the floor.
 _CONTEXT_FILE_WINDOW_FRACTION = 0.06
 _CONTEXT_FILE_DYNAMIC_CEILING = 500_000
 
@@ -1025,7 +1037,7 @@ def _dynamic_context_file_max_chars(context_length: Optional[int]) -> int:
     """Char cap from the model's window, clamped to [20K floor, 500K ceiling]; flat default when unknown."""
     if not isinstance(context_length, int) or context_length <= 0:
         return CONTEXT_FILE_MAX_CHARS
-    budget = int(context_length * _CONTEXT_FILE_CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION)
+    budget = int(context_length * CHARS_PER_TOKEN * _CONTEXT_FILE_WINDOW_FRACTION)
     return max(CONTEXT_FILE_MAX_CHARS, min(budget, _CONTEXT_FILE_DYNAMIC_CEILING))
 
 

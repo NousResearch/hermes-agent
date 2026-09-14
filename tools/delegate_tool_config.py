@@ -6,6 +6,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 from utils import base_url_hostname, is_truthy_value
+from hermes_cli.fallback_config import get_fallback_chain
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
 
@@ -412,10 +413,32 @@ _ROUTING_FILTER_DEFAULTS = (
 
 _NOUS_PROVIDERS = frozenset({"nous", "nous-portal", "nousresearch"})
 
+
+def _resolve_child_fallback_chain(parent_agent, routing_cfg: Any, pinned: bool) -> Optional[List[Dict[str, Any]]]:
+    """Fallback chain for a child, owned by the same config block as its route.
+
+    Pinned children (provider, endpoint or model override) never borrow the parent chain;
+    unpinned children inherit it when ``fallback_providers`` is absent/null. An explicit ``[]``
+    disables fallback either way. Malformed entries are dropped by the canonical normalizer.
+    """
+    default = None if pinned else (getattr(parent_agent, "_fallback_chain", None) or None)
+    declared = routing_cfg.get("fallback_providers") if isinstance(routing_cfg, dict) else None
+    if declared is None:
+        return default
+    if declared == []:
+        return None
+    normalized = get_fallback_chain({"fallback_providers": declared})
+    if not normalized:
+        logger.warning("delegation fallback_providers has no usable routes; using the %s default",
+                       "pinned" if pinned else "inherited")
+    return normalized or default
+
+
 def _resolve_child_runtime(
     parent_agent, delegation_cfg: dict, parent_api_key: Any, *, model: Optional[str], override_provider: Optional[str],
     override_base_url: Optional[str], override_api_key: Optional[str], override_api_mode: Optional[str],
     override_acp_command: Optional[str], override_acp_args: Optional[List[str]],
+    routing_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Child credentials, transport and routing (config override > parent inherit) as ``AIAgent`` kwargs. Rules that
     are easy to break: api_mode is re-derived (not inherited) when the child's provider differs from the parent's
@@ -489,9 +512,11 @@ def _resolve_child_runtime(
         "capabilities": _inherit_parent_capabilities(parent_agent, override_provider, override_base_url),
         "api_mode": effective_api_mode, "acp_command": effective_acp_command, "acp_args": effective_acp_args,
         "reasoning_config": child_reasoning,
-        # Inherit the parent's fallback chain EXCEPT under a pinned provider: a mid-run 429/auth failure must not
-        # silently reroute the quiet child onto the parent's fallbacks. Predictability > liveness for explicit pins.
-        "fallback_model": None if override_provider else (getattr(parent_agent, "_fallback_chain", None) or None),
+        # Resolve routing and recovery policy from the same configuration owner. A pinned provider, endpoint, or
+        # model never borrows the parent's chain; an explicitly declared child chain still remains available.
+        "fallback_model": _resolve_child_fallback_chain(
+            parent_agent, delegation_cfg if routing_cfg is None else routing_cfg,
+            pinned=bool(override_provider or override_base_url or model)),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},

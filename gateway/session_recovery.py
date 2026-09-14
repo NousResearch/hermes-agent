@@ -53,8 +53,8 @@ class SessionRecoveryMixin:
         parts = str(session_key).split(":")
         if len(parts) < 2 or parts[0] != "agent":
             return None
-        namespace = parts[1] or "main"
-        return "default" if namespace == "main" else namespace
+        from gateway.session import profile_from_session_key_namespace
+        return profile_from_session_key_namespace(parts[1] or "main")
 
     @staticmethod
     def _active_profile_name() -> str:
@@ -249,6 +249,11 @@ class SessionRecoveryMixin:
                 promote(session_id, reason)
             else:
                 db.end_session(session_id, reason)
+            # Stop the departed conversation's schedule in its owning profile, even when
+            # the in-memory watch still holds a pre-reset session id.
+            heartbeat_key = f"heartbeat:{session_id}"
+            if db.get_meta(heartbeat_key):
+                db.set_meta(heartbeat_key, "")
         except Exception as exc:
             log(exc)
 

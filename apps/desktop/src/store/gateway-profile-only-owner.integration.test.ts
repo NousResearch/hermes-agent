@@ -62,6 +62,7 @@ const { $profiles } = await import('./profile')
 
 const { $activeSessionId, _resetSessionOwnerHintsForTests, setSessionOwnerHint, setSessions } =
   await import('./session')
+
 const { $gateway } = await import('./gateway')
 const { clearAllPrompts } = await import('./prompts')
 

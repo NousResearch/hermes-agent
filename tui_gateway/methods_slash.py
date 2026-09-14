@@ -37,6 +37,11 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     with session.get("history_lock") or contextlib.nullcontext():
         snapshot = list(session.get("history", []))
     snapshot = snapshot or list(getattr(agent, "_session_messages", None) or [])
+    # slash.exec runs on the RPC pool, not inside a turn: bind the same session identity a turn binds
+    # (HERMES_UI_SESSION_ID + steer authority), or delegate_task registers the reviewer with no owner
+    # and `subagent.list` hides it — the Desktop status stack then shows nothing for /review.
+    tokens = _set_session_context(session["session_key"], ui_session_id=sid)
+    runtime_token = _current_runtime_session_record.set(session)
     try:
         from agent.review_engine import format_dispatch_note, start_review
         result = start_review(agent, snapshot, arg or "")
@@ -44,6 +49,9 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
         return str(exc)
     except Exception as exc:
         return f"/review failed to start: {exc}"
+    finally:
+        _current_runtime_session_record.reset(runtime_token)
+        _clear_session_context(tokens)
     return format_dispatch_note(result, arg or "")
 
 
@@ -237,11 +245,18 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
     ``here [N]`` / ``--keep N``). CompressionLockHeld is a clean no-op (skip note returned);
     other errors propagate to the caller, which finalizes the context-engine notification."""
     from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.conversation_compression_manual import (
+        AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
     with session["history_lock"]:
         before_messages = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
+    request = parse_compress_args(arg)
+    if request.aggressive:
+        return AGGRESSIVE_UNSUPPORTED
+    if request.preview:  # report only — history, agent and session key untouched
+        return "\n".join(render_compress_result(compress_now(agent, before_messages, request)))
     sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
     tools = getattr(agent, "tools", None) or None
 

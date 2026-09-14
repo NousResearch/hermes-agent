@@ -33,36 +33,42 @@ export function resolveShowEarlierAction(hiddenCount: number, olderAvailable: bo
   return olderAvailable ? 'window' : null
 }
 
-export const THREAD_TOP_EDGE_PX = 48
+/**
+ * Slack (px) within which a reader counts as "at the top edge". Wide enough
+ * that a wheel notch landing a few pixels short of 0 still pages; well under
+ * the RUN_START_SNAP-style thresholds so a mid-transcript reader never does.
+ */
+export const TOP_EDGE_PX = 48
 
-export type AutoShowEarlierInput = {
-  atBottom: boolean
-  direction: 'up' | 'down' | null
-  hasOlderContent: boolean
+export interface ShouldAutoShowEarlierInput {
+  action: 'dom' | 'window' | null
+  isAtBottom: boolean
   loadSettled: boolean
   restorePending: boolean
   scrollTop: number
+  /** Present only for `wheel` events; omitted for `scroll`. */
+  wheelDeltaY?: number
 }
 
 /**
- * Page backward only after the reader deliberately reaches the transcript's
- * top edge. This is shared by scroll and wheel listeners: a wheel at a
- * clamped `scrollTop === 0` does not emit a scroll event.
+ * Whether reading at the viewport top should page older turns through the
+ * same `showEarlier()` path as the button. An unsettled load, a prepend
+ * restore still pending, a reader following the bottom, or a mid-transcript
+ * scroll must never page on its own — each of those has scrollTop near 0 or
+ * changing for reasons that are not "I want to read earlier".
  */
 export function shouldAutoShowEarlier({
-  atBottom,
-  direction,
-  hasOlderContent,
+  action,
+  isAtBottom,
   loadSettled,
   restorePending,
-  scrollTop
-}: AutoShowEarlierInput): boolean {
-  return (
-    loadSettled &&
-    !restorePending &&
-    !atBottom &&
-    hasOlderContent &&
-    direction === 'up' &&
-    scrollTop <= THREAD_TOP_EDGE_PX
-  )
+  scrollTop,
+  wheelDeltaY
+}: ShouldAutoShowEarlierInput): boolean {
+  if (action == null || !loadSettled || restorePending || isAtBottom || scrollTop > TOP_EDGE_PX) {
+    return false
+  }
+
+  // A wheel at the clamped top is intent only when it points up.
+  return wheelDeltaY === undefined || wheelDeltaY < 0
 }

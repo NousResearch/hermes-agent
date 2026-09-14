@@ -43,7 +43,7 @@ This is the shape that covers the workloads `delegate_task` can't:
 - **Engineering pipelines** — decompose → implement in parallel worktrees → review → iterate → PR.
 - **Fleet work** — one specialist managing N subjects (50 social accounts, 12 monitored services).
 
-For the full design rationale, comparative analysis against Cline Kanban / Paperclip / NanoClaw / Google Gemini Enterprise, and the eight canonical collaboration patterns, see `docs/hermes-kanban-v1-spec.pdf` in the repository.
+The eight canonical collaboration patterns are catalogued in [Collaboration patterns](#collaboration-patterns) below.
 
 ## PR completion contracts
 
@@ -116,7 +116,7 @@ They coexist: a kanban worker may call `delegate_task` internally during its run
 - **Link** — `task_links` row recording a parent → child dependency. The dispatcher promotes `todo → ready` when all parents are `done`.
 - **Comment** — the inter-agent protocol. Agents and humans append comments; when a worker is (re-)spawned it reads the full comment thread as part of its context.
 - **Workspace** — the directory a worker operates in. Three kinds:
-  - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards). **Deleted when the task completes** — scratch is ephemeral by design. Files explicitly declared through `kanban_complete(artifacts=[...])` are copied into durable per-task attachment storage before cleanup; existing deliverable paths in legacy completion summaries receive the same treatment. Other scratch files are removed. A missing declared scratch artifact keeps the task in-flight so the worker can correct the path and retry. Use `worktree:` or `dir:<path>` when the whole workspace should remain available. The first time a scratch workspace is created on an install, the dispatcher logs a warning and emits a `tip_scratch_workspace` event on the task (visible via `hermes kanban show <id>`).
+  - `scratch` (default) — fresh tmp dir under `~/.hermes/kanban/workspaces/<id>/` (or `~/.hermes/kanban/boards/<slug>/workspaces/<id>/` on non-default boards). **Deleted when the task completes** — scratch is ephemeral by design. Files explicitly declared through `kanban_complete(artifacts=[...])` or `kanban_request_review(artifacts=[...])` are copied into durable per-task attachment storage before cleanup (a review handoff stages them at handoff time, since the reviewer's later completion is what deletes the scratch workspace); existing deliverable paths in legacy completion summaries receive the same treatment. Other scratch files are removed. A missing declared scratch artifact keeps the task in-flight so the worker can correct the path and retry. Use `worktree:` or `dir:<path>` when the whole workspace should remain available. The first time a scratch workspace is created on an install, the dispatcher logs a warning and emits a `tip_scratch_workspace` event on the task (visible via `hermes kanban show <id>`).
   - `dir:<path>` — an existing shared directory (Obsidian vault, mail ops dir, per-account folder). **Must be an absolute path.** Relative paths like `dir:../tenants/foo/` are rejected at dispatch because they'd resolve against whatever CWD the dispatcher happens to be in, which is ambiguous and a confused-deputy escape vector. The path is otherwise trusted — it's your box, your filesystem, the worker runs with your uid. This is the trusted-local-user threat model; kanban is single-host by design. **Preserved on completion.**
   - `worktree` — a git worktree under `.worktrees/<id>/` for coding tasks. Use `worktree:<path>` to pin the exact target path. Worker-side `git worktree add` creates it, using `--branch` when provided. **Preserved on completion.**
 - **Dispatcher** — a long-lived loop that, every N seconds (default 60): reclaims stale claims, reclaims crashed workers (PID gone but TTL not yet expired), promotes ready tasks, atomically claims, spawns assigned profiles. Runs **inside the gateway** by default (`kanban.dispatch_in_gateway: true`). One dispatcher sweeps all boards per tick; workers are spawned with `HERMES_KANBAN_BOARD` pinned so they can't see other boards. After `kanban.failure_limit` consecutive spawn failures on the same task (default: 2) the dispatcher auto-blocks it with the last error as the reason — prevents thrashing on tasks whose profile doesn't exist, workspace can't mount, etc.
@@ -340,6 +340,29 @@ unblocked task in the work pool, resolve *why it keeps re-blocking* (unfinished
 parent, missing input, unmet capability) before unblocking, or raise
 `BLOCK_RECURRENCE_LIMIT` if the loop is expected.
 :::
+
+## Enabling tools for a chat profile
+
+The Desktop Kanban plugin displays the board; it does not grant the chat agent
+permission to manage tasks. Enable the `kanban` toolset for the profile and
+platform that should orchestrate work:
+
+```bash
+hermes -p planner tools enable kanban                      # CLI / TUI / Desktop chats
+hermes -p planner tools enable kanban --platform telegram  # a gateway platform
+```
+
+Each platform has its own selection under `platform_toolsets.<platform>` in
+`config.yaml`; the toolset is also a checkbox in `hermes tools` and the dashboard.
+A gateway agent that has it can `kanban_create` from a chat and is auto-subscribed
+to that task's completion/block notifications in the same thread. Start a new chat
+after changing this setting; existing conversations retain their tool schemas and
+prompt cache. `agent.disabled_toolsets` remains authoritative. Legacy top-level
+`toolsets: [kanban]` is honoured as a fallback only when no platform selection was
+saved; `all` alone is not a Kanban opt-in.
+
+Dispatcher-owned workers receive their task lifecycle tools automatically.
+`delegate_task` children do not gain permission to mutate the board.
 
 ## How workers interact with the board
 
@@ -677,6 +700,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
+| `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
 | `done_sub_retention_days` | `30` | Notify subscriptions survive `done` (reopen-safe) and are removed on `archived`. The notifier GC purges subscriptions whose task has been `done` or `blocked` with no new events for this many days, bounding sub-table growth on boards that never archive. `0` disables the sweep. |
 
 And the two auxiliary LLM slots:
@@ -952,6 +976,21 @@ bot> ✓ t_9fc1a3 completed by transcriber
 
 Subscriptions survive a task reaching `done` — completion is reversible (a reviewer or controller can reopen a done task), so the origin session keeps getting notified through reopen cycles. They auto-remove on `archived` (the irreversible end state). On boards that never archive, a GC sweep purges subscriptions for tasks that have sat in `done` or `blocked` with no new activity for `kanban.done_sub_retention_days` days (default 30; set 0 to disable), so stale rows don't accumulate forever. If you script a create with `--json` (machine output) the auto-subscribe is skipped — the assumption is that scripted callers want to manage subscriptions explicitly via `/kanban notify-subscribe`.
 
+Dispatcher workers creating tasks through `kanban_create` or `hermes kanban create`
+copy the owning task's durable notification subscriptions even without `parents`
+dependency links. Destinations, route anchors, and delivery modes are preserved;
+a passive subscription is not upgraded to a wake by auto-subscribe. This copies
+existing subscriptions independently of `auto_subscribe_on_create`, which controls
+adding the current conversation as a new destination. No destination is invented
+for a bare CLI session or a worker whose owning task has no subscriptions.
+
+For `kanban_create`, session lineage resolves in this order: explicit `session_id`,
+the owning worker task's durable session, request-scoped API origin, then the
+current process session. Built-in decomposition also inherits its root's durable
+session. Session lineage is not itself a notification destination: changing
+`session_id` does not replace existing subscriptions; use `notify-subscribe` and
+`notify-unsubscribe` to change where events are delivered.
+
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
 ### Output truncation in messaging
@@ -977,8 +1016,6 @@ The board supports these eight patterns without any new primitives:
 | **P7 Thread-scoped workspace** | `/kanban here` in a thread | per-project gateway threads |
 | **P8 Fleet farming** | one profile, N subjects | 50 social accounts |
 | **P9 Triage specifier** | rough idea → `triage` → `hermes kanban specify` expands body → `todo` | "turn this one-liner into a spec'd task" |
-
-For worked examples of each, see `docs/hermes-kanban-v1-spec.pdf`.
 
 ## Handing context to follow-up cards (the parent link)
 
@@ -1096,6 +1133,8 @@ A subscription removes itself automatically once the task reaches `done` or `arc
 | `notify+wake` | yes | yes | You also want the destination agent to take a real turn — read the board context and reply in its own voice. Chat-originated auto-subscribes use this. |
 | `wake` | no | yes | You only want the agent to act on the event, with no separate ping. |
 
+For `notify+wake`, delivery completes only once the wake is admitted to the adapter's turn queue as well as the passive ping being sent. Missing handlers, rejected routes, and full queues are retried on later notifier ticks without expiring the subscription. Sent pings are checkpointed separately in SQLite, so a rejected wake does not repeat an already checkpointed ping. `notify` remains passive and never starts a turn. Admission is not a guarantee of model execution or a successful reply; normal turn gates still apply. This is not exactly-once delivery: a process crash between a send and its checkpoint can repeat the ping, and the existing claim-before-delivery cursor is not a crash-recoverable queue.
+
 A "wake" forges a synthetic inbound message to the destination gateway agent so it takes a normal turn (reads the comment + result, reasons, replies) instead of getting a one-line passive notification. It only fires when the notifier runs inside a live gateway process; otherwise a `notify+wake` subscription still delivers its passive message, while a `wake`-only subscription does nothing in that process.
 
 **Which events wake.** The ones that hand a decision back to the origin: `completed`, `blocked`, `gave_up`, `crashed`, `timed_out`, `review_requested` (a worker finished the implementation and handed off via `kanban_request_review`) and `block_loop_detected` (the task was routed to `triage` after repeated blocks). `status`, `archived` and `unblocked` are delivered but never wake — they are bookkeeping transitions, not decisions. When a `completed` or `review_requested` event carries a summary, that handoff rides the wake turn, so the woken agent sees what the worker actually did.
@@ -1106,7 +1145,7 @@ A "wake" forges a synthetic inbound message to the destination gateway agent so 
 
 In a one-gateway-per-profile deployment (one dispatcher, separate gateway
 processes for `writer`, `admin`, etc. — see the [multi-gateway
-guide](https://github.com/NousResearch/hermes-agent/blob/main/docs/kanban/multi-gateway.md)),
+guide](/user-guide/features/kanban-multi-gateway)),
 dispatch and delivery have separate owners:
 
 - **Dispatch stays single-owner.** Exactly one gateway keeps
@@ -1118,6 +1157,14 @@ dispatch and delivery have separate owners:
   `writer` profile's Telegram gets its `completed`/`blocked` message delivered
   by the `writer` gateway, even though the `default` gateway did the
   dispatching.
+- **Route-only multiplex profiles** can use the primary adapter when the
+  subscription's persisted platform, chat, thread, scope and parent-channel
+  anchors resolve to that exact served profile through `gateway.profile_routes`.
+  A connected secondary adapter remains authoritative; a partial secondary
+  adapter registry never falls back to the primary bot. Unmatched, reassigned,
+  disabled or ambiguous routes remain undelivered and retryable. Old rows
+  missing required routing anchors are not guessed into a profile. Wake turns keep
+  the destination profile's runtime scope and the authorized transport.
 - **Legacy subscriptions** created before profile stamping (no
   `notifier_profile` on the row) are delivered only by the gateway that holds
   the actual dispatcher singleton lock, so two gateways never race for them.
@@ -1228,7 +1275,3 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 ## Out of scope
 
 Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
-
-## Design spec
-
-The complete design — architecture, concurrency correctness, comparison with other systems, implementation plan, risks, open questions — lives in `docs/hermes-kanban-v1-spec.pdf`. Read that before filing any behavior-change PR.

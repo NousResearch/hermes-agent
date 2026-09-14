@@ -532,29 +532,28 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('custom:local')
   })
 
-  it('reseeds a sticky manual pick that was removed from the catalog', async () => {
-    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+  it('keeps a sticky manual pick even when its provider row does not list the model', async () => {
+    // Rows are hints: a custom endpoint serves ids the picker row lacks. The
+    // pick is the user's selection and must not be reseeded to the default.
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'deepseek-v4-flash-0731', provider: 'custom:hyper' })
 
     const queryClient = new QueryClient()
-    $activeGatewayProfile.set('compass')
     queryClient.setQueryData(modelOptionsQueryKey('default'), {
-      providers: [{ models: ['openrouter/owl-alpha'], name: 'OpenRouter', slug: 'openrouter' }]
-    })
-    queryClient.setQueryData(modelOptionsQueryKey('compass'), {
-      providers: [{ models: ['openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
+      providers: [
+        { aliases: ['custom:hyper', 'hyper'], models: ['deepseek-v4-flash-0731'], name: 'Hyper', slug: 'hyper' }
+      ]
     })
 
-    // A manual pick whose model no longer exists on its provider.
-    setCurrentModel('openrouter/owl-alpha')
-    setCurrentProvider('openrouter')
+    setCurrentModel('deepseek-v4.1-flash')
+    setCurrentProvider('custom:hyper')
     setCurrentModelSource('manual')
 
     const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: vi.fn() }))
 
     await result.current.refreshCurrentModel()
 
-    expect($currentModel.get()).toBe('openai/gpt-5.5')
-    expect(getCurrentModelSource()).toBe('default')
+    expect($currentModel.get()).toBe('deepseek-v4.1-flash')
+    expect(getCurrentModelSource()).toBe('manual')
   })
 
   it('keeps a sticky manual pick that is still in the catalog', async () => {

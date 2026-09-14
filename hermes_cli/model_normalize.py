@@ -254,6 +254,30 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         bare = _strip_matching_provider_prefix(name, provider)
         return bare if "/" in bare else _normalize_for_deepseek(bare)
 
+    # Ollama Cloud's /v1 is a FLAT namespace: /v1/models returns bare ids and inference 404s
+    # vendor-prefixed names ("deepseek/deepseek-v4.1-flash" not found) while the bare id returns 200.
+    # Same shape as OpenCode Zen/Go, but ollama-cloud is live-discovered so _PROVIDER_MODELS carries no
+    # entry for it and _repair_prefix_from_catalogue has nothing to look up.
+    # NOTE: must precede the _MATCHING_PREFIX_STRIP_PROVIDERS branch below, which returns for
+    # ollama-cloud and would otherwise forward the vendor-prefixed name untouched.
+    if provider == "ollama-cloud" and "/" in name:
+        prefix, bare = name.split("/", 1)
+        bare = bare.strip()
+        prefix = prefix.strip().lower()
+        if bare and prefix:
+            try:
+                from hermes_cli.models import _PROVIDER_MODELS
+                catalog = _PROVIDER_MODELS.get(provider) or []
+            except Exception:
+                catalog = []
+            known = {e.split("/", 1)[1].strip().lower() for e in catalog if "/" in e}
+            known |= {e.strip().lower() for e in catalog}
+            # No static catalogue for a live-discovered provider: fall back to the known
+            # vendor-slug table -- still a lookup, never a blind strip from name shape.
+            if bare.lower() in known or prefix in set(_VENDOR_PREFIXES.values()):
+                return bare
+        return name
+
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
         result = _strip_matching_provider_prefix(name, provider)
         return result.lower() if provider in _LOWERCASE_MODEL_PROVIDERS else result

@@ -1,6 +1,7 @@
 """Gateway intentional-silence token behavior."""
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +13,7 @@ from gateway.session import SessionEntry, SessionSource
 from gateway.response_filters import (
     is_intentional_silence_agent_result,
     is_intentional_silence_response,
+    should_swallow_silence,
 )
 
 
@@ -24,11 +26,12 @@ def _source():
     )
 
 
-def _event():
+def _event(*, internal: bool = False):
     return MessageEvent(
         text="side chatter",
         source=_source(),
         message_id="msg-42",
+        internal=internal,
     )
 
 
@@ -92,8 +95,17 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
     assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
 
 
+def test_only_synthetic_turns_can_swallow_silence():
+    result = {"failed": False}
+    for display_kind in ("internal_notification", "model_switch", "auto_continue"):
+        assert should_swallow_silence(result, "NO_REPLY", display_kind=display_kind)
+
+    for display_kind in (None, "steer", ""):
+        assert not should_swallow_silence(result, "NO_REPLY", display_kind=display_kind)
+
+
 @pytest.mark.asyncio
-async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
+async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={
         "final_response": "[SILENT]",
@@ -112,10 +124,57 @@ async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkey
         _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
+    assert "silence marker" in response
+    assert "try again or rephrase" in response
+
+
+@pytest.mark.asyncio
+async def test_internal_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]",
+        "messages": [
+            {"role": "user", "content": "side chatter"},
+            {"role": "assistant", "content": "[SILENT]"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(internal=True), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
     assert response == ""
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
     assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
     assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_queued_human_turn_also_gets_the_visible_fallback():
+    runner = gateway_run.GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="agent:main:telegram:group:-1001:12345",
+        stream_consumer_holder=[None],
+        persist_user_display_kind=None,
+        source=_source(),
+        _status_thread_metadata=None,
+        event_message_id=None,
+        inbound_message_id="msg-42",
+        run_generation=1,
+    )
+    result = {"final_response": "NO_REPLY", "failed": False}
+
+    await runner._run_agent_deliver_first_response(
+        turn_ctx, None, result, result, None,
+    )
+
+    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,10 @@ from typing import Any
 # error/empty-response path, not silence.
 LIVE_GATEWAY_SILENT_MARKERS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
 
+# only these persisted turn kinds are allowed to disappear when they emit a bare marker.
+# ordinary user turns must still get a visible fallback if a model emits one by mistake.
+MACHINERY_DISPLAY_KINDS = frozenset({"internal_notification", "model_switch", "auto_continue"})
+
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
 
@@ -78,6 +82,25 @@ def is_autonomous_silence_response(response: Any) -> bool:
 def is_intentional_silence_agent_result(agent_result: dict | None, response: Any) -> bool:
     """Silence markers suppress delivery only for successful agent turns."""
     return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
+
+
+def should_swallow_silence(
+    agent_result: dict | None,
+    response: Any,
+    *,
+    display_kind: Any = None,
+) -> bool:
+    """allow bare silence only for the current synthetic gateway turn.
+
+    the caller passes the current turn's persisted display kind instead of asking
+    us to infer it from the old transcript. the inbound user row is not in that
+    transcript yet, and a previous internal row must never authorize a human turn.
+    """
+    return (
+        is_intentional_silence_agent_result(agent_result, response)
+        and isinstance(display_kind, str)
+        and display_kind in MACHINERY_DISPLAY_KINDS
+    )
 
 
 def is_partial_silence_marker(text: Any) -> bool:

@@ -51,6 +51,11 @@ _CONTEXT_OVERFLOW_ERROR_PHRASES = (
     "payload too large", "input is too long",
 )
 
+_UNEXPECTED_SILENCE_REPLY = (
+    "⚠️ the model returned only a silence marker for a message that needed a reply. "
+    "try again or rephrase."
+)
+
 
 def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> bool:
     """One verdict for "this failed turn is a context overflow", shared by transcript persistence
@@ -273,6 +278,14 @@ class GatewayTurnMixin:
         try:
             from gateway.response_filters import is_intentional_silence_agent_result
             return is_intentional_silence_agent_result(agent_result, response)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _should_swallow_silence(agent_result, response, *, display_kind=None) -> bool:
+        try:
+            from gateway.response_filters import should_swallow_silence
+            return should_swallow_silence(agent_result, response, display_kind=display_kind)
         except Exception:
             return False
 
@@ -1362,6 +1375,7 @@ class GatewayTurnMixin:
     async def _hmwa_shape_agent_response(
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+        persist_user_display_kind: Optional[str] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
@@ -1377,6 +1391,21 @@ class GatewayTurnMixin:
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
+        if _intentional_silence and not self._should_swallow_silence(
+            agent_result, response, display_kind=persist_user_display_kind,
+        ):
+            # the current inbound row is not in ``history`` yet, so use the turn metadata we
+            # already carried into the agent run instead of guessing from an older row.
+            logger.warning(
+                "silence marker rejected on a user turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
+            )
+            _intentional_silence = False
+            response = _UNEXPECTED_SILENCE_REPLY
+            # a stream consumer may have seen the marker before the final filter. make sure the
+            # visible fallback still goes through the normal final-send path.
+            if isinstance(agent_result, dict):
+                agent_result["already_sent"] = False
 
         # "(empty)" = the model produced no visible content after exhausting all retries.
         if response == "(empty)" and not _intentional_silence:
@@ -2046,6 +2075,7 @@ class GatewayTurnMixin:
             response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
+                persist_user_display_kind=prepared.persist_user_display_kind,
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -3487,11 +3517,22 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            logger.info(
-                "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
-                session_key or "?",
-            )
-        elif first_response:
+            if self._should_swallow_silence(
+                _delivery_result, first_response, display_kind=turn_ctx.persist_user_display_kind,
+            ):
+                logger.info(
+                    "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
+                    session_key or "?",
+                )
+                first_response = ""
+            else:
+                logger.warning(
+                    "Queued follow-up for session %s: replacing a human-turn silence marker.",
+                    session_key or "?",
+                )
+                first_response = _UNEXPECTED_SILENCE_REPLY
+                _already_streamed = False
+        if first_response:
             logger.info(
                 "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing."
                 if _already_streamed else

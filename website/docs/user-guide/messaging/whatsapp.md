@@ -212,15 +212,18 @@ Code blocks and inline code are preserved as-is since WhatsApp supports triple-b
 
 When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
 
-### Native Polls, Clarify-as-Poll, and Locations
+### Native Polls, Clarify-as-Poll, Locations, and Other Rich Inbound Types
 
 The Baileys-bridge adapter (bot mode) supports several native WhatsApp message types:
 
 - **Polls** — the agent can send a native WhatsApp poll (question + options) via the bridge's `/send-poll` endpoint. Poll votes flow back into the conversation.
 - **Clarify questions as polls** — when the agent asks a multiple-choice clarify question, it's rendered as a native single-select poll; tapping an option answers the question. If the poll fails to send, the adapter falls back to a plain text question. Approval prompts are **never** mapped onto polls — polls are only used for genuine multiple-choice clarifies.
 - **Location pins** — the agent can send a native location pin (latitude/longitude, optional name/address) via `/send-location`, and incoming shared locations (including live locations) are delivered to the agent as location messages.
+- **Stickers, reactions, and contact cards (inbound)** — the bridge decodes sticker, reaction, and contact payloads and delivers them to the agent. Hermes does not currently expose first-class agent APIs to *send* stickers, reactions, or contact cards on Baileys.
 
-All of this works out of the box in bot (Baileys) mode; no configuration needed.
+For a side-by-side Baileys vs Cloud capability matrix (including Cloud degradation for location/contacts/stickers), see [WhatsApp Cloud API Setup — Comparison to the Baileys bridge](whatsapp-cloud.md#comparison-to-the-baileys-bridge).
+
+All of the Baileys features above work out of the box in bot mode; no configuration needed.
 
 ### Message Batching (Debounce)
 

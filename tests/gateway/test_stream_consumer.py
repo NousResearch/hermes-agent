@@ -475,6 +475,39 @@ class TestSegmentBreakOnToolBoundary:
         assert config.single_message_per_turn is False
         assert config.single_message_4096_split is False
 
+    def test_message_effect_switch(self, monkeypatch):
+        """Completion effect: off by default; emoji + min-seconds resolve when enabled."""
+        from gateway.config import Platform
+        from gateway.run_turn import GatewayTurnMixin
+
+        streaming = SimpleNamespace(
+            cursor=" ▉", edit_interval=0.5, buffer_threshold=20,
+            fresh_final_after_seconds=0, transport="edit",
+        )
+        source = SimpleNamespace(platform=Platform.TELEGRAM, chat_id="chat_123", chat_type="dm")
+
+        def _cfg(**over):
+            plat = {"streaming_single_message": True, "tool_progress": "off"}
+            plat.update(over)
+            return {"display": {"platforms": {"telegram": plat}}}
+
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: _cfg())
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.message_effect == ""
+        assert config.message_effect_min_seconds == 60.0
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: _cfg(message_effects=True, message_effect="🔥", message_effect_min_seconds=0),
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.message_effect == "🔥"
+        assert config.message_effect_min_seconds == 0.0
+
     @pytest.mark.asyncio
     async def test_single_message_mode_keeps_one_preview_across_tool_boundaries(self):
         """One opt-in preview survives two tool boundaries; the final authoritative

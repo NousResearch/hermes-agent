@@ -2575,6 +2575,17 @@ class GatewayTurnMixin:
         _single_message_4096_split = _single_message_per_turn and bool(resolve_display_setting(
             _user_config, _platform_key, "streaming_single_message_4096_split", False,
         ))
+        # Completion message effect (Telegram DM): emoji + minimum turn age (0 = every turn).
+        _message_effects_on = bool(resolve_display_setting(
+            _user_config, _platform_key, "message_effects", False,
+        ))
+        _message_effect = str(resolve_display_setting(
+            _user_config, _platform_key, "message_effect", "🎉") or "") if _message_effects_on else ""
+        try:
+            _message_effect_min = float(resolve_display_setting(
+                _user_config, _platform_key, "message_effect_min_seconds", 60) or 0)
+        except (TypeError, ValueError):
+            _message_effect_min = 60.0
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor, buffer_only=_buffer_only,
@@ -2584,6 +2595,8 @@ class GatewayTurnMixin:
             single_message_activity=_single_message_activity,
             single_message_thinking=_single_message_thinking,
             single_message_4096_split=_single_message_4096_split,
+            message_effect=_message_effect,
+            message_effect_min_seconds=_message_effect_min,
         )
         return _consumer_cfg, _pause_typing_before_finalize
 

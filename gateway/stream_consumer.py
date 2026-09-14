@@ -89,6 +89,10 @@ class StreamConsumerConfig:
     # when the text genuinely overflows. true = eager ≤limit seals mid-stream (the reply
     # arrives as several long messages). See #110564.
     single_message_4096_split: bool = False
+    # Completion effect (Telegram private chats only): emoji name applied to the turn's
+    # FINAL fresh send when the turn ran at least ``message_effect_min_seconds``. Empty = off.
+    message_effect: str = ""
+    message_effect_min_seconds: float = 60.0
 
 
 @dataclass
@@ -170,6 +174,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._edit_supported = True  # False once progressive edits stop working
         self._last_edit_time = 0.0
         self._last_edit_overflowed = False  # last _send_or_edit split into continuations
+        self._turn_started = time.monotonic()  # basis for the completion message effect
         self._flood_strikes = 0
         self._current_edit_interval = self.cfg.edit_interval  # adaptive backoff
         self._delivered_commentary_texts: list[str] = []
@@ -289,9 +294,24 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._queue.put((_TOOL_PROGRESS, line))
 
     def _compose_frame_content(self) -> str:
-        """Native frame content: text, with any tool-progress lines below a rule."""
-        progress = "\n".join(self._tool_progress_lines)
+        """Interim frame content (native streams, drafts, single message): text, with any
+        tool-progress lines below a rule — expandable-quote styled when the transport
+        formats frames and the overlay is on (see _style_overlay_lines)."""
+        progress = "\n".join(self._style_overlay_lines(self._tool_progress_lines))
         return "\n\n---\n".join(p for p in (self._accumulated, progress) if p)
+
+    def _style_overlay_lines(self, lines: list) -> list:
+        """MarkdownV2 expandable-quote framing for the activity overlay (#110564).
+
+        Only the draft lane formats interim frames (MarkdownV2); edit-lane frames are
+        raw, so styling markers would render literally — those keep the plain lines.
+        Frame convention: first line ``**>``, further lines ``>``, closing ``||``.
+        """
+        if not (self.single_message_mode and self._use_draft_streaming and lines):
+            return list(lines)
+        styled = [f"**> {lines[0]}"] + [f"> {line}" for line in lines[1:]]
+        styled[-1] += "||"
+        return styled
 
     def _metadata_for_send(self, *, final: bool = False, expect_edits: bool = False) -> dict | None:
         """Per-send metadata.  ``final`` → notify=True (Mattermost treats notify-worthy sends
@@ -304,6 +324,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
+            if self.cfg.message_effect and (
+                    time.monotonic() - self._turn_started
+            ) >= float(self.cfg.message_effect_min_seconds):
+                meta["message_effect"] = self.cfg.message_effect
         return meta or None
 
     # Read-only views for the gateway (flag semantics: see _clear_turn_final_flags).

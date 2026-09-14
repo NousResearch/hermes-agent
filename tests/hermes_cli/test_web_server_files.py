@@ -420,3 +420,55 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     assert [e["name"] for e in mcp_listing.json()["entries"]] == []
 
 
+
+
+def test_listing_skips_unreadable_entry_instead_of_failing(forced_files_client):
+    """A dangling symlink must not 500 the whole directory listing.
+
+    _managed_file_entry() stat()s the resolved path and raises HTTPException
+    on failure, so before this guard a single broken entry failed the entire
+    GET /api/files response — the dashboard file browser showed nothing for
+    that directory even though every other entry was readable.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "readable.txt").write_text("ok\n")
+    # A symlink pointing at a path that does not exist: resolve() succeeds but
+    # stat() raises, which is the exact shape of the reported bug.
+    (root / "dangling-link").symlink_to(root / "does-not-exist")
+
+    response = client.get("/api/files", params={"path": str(root)})
+
+    assert response.status_code == 200
+    names = [e["name"] for e in response.json()["entries"]]
+    assert "readable.txt" in names
+    assert "dangling-link" not in names
+
+
+def test_listing_still_reports_directory_level_errors(forced_files_client):
+    """The per-entry guard must not swallow a genuinely unreadable directory.
+
+    Deleting the directory between resolve and scandir is the directory-level
+    failure _io_errors() exists for; it must still surface as an error status
+    rather than an empty successful listing.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    missing = root / "gone"
+    missing.mkdir()
+
+    # Resolve succeeds (path exists at request time) but scandir fails when the
+    # directory is removed underneath it.
+    import os as _os
+
+    real_scandir = _os.scandir
+
+    def _scandir_then_vanish(path):
+        _os.rmdir(missing)
+        return real_scandir(path)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_os, "scandir", _scandir_then_vanish)
+        response = client.get("/api/files", params={"path": str(missing)})
+
+    assert response.status_code >= 400

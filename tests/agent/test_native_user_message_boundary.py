@@ -66,6 +66,43 @@ def test_multimodal_descriptor_is_an_independent_copy(native):
     assert content[0]["text"] == "human request"
 
 
+@pytest.mark.parametrize("override", [None, "clean human request"])
+@pytest.mark.parametrize("image_count", [1, 2])
+def test_flushed_image_turn_exports_its_durable_projection(native, override, image_count):
+    from copy import deepcopy
+    from agent.session_persistence import _db_flush_row, _db_flush_write
+
+    content = [{"type": "text", "text": "inspect the attached image"}] + [
+        {"type": "image_url", "image_url": {"url": f"asset://current-{index}"}}
+        for index in range(image_count)]
+    row = {"role": "user", "content": content}
+    agent = SimpleNamespace(_session_db=native, session_id="parent",
+                            _persist_user_message_override=override)
+    _db_flush_write(agent, [_db_flush_row(agent, row, True)], [row])
+    before = deepcopy(row)
+    result = _native_user_message(agent, [row], 0, content, override or content)
+    assert result == {"role": "user", "content": "inspect the attached image" + "\n[screenshot]" * image_count,
+                      "_row_id": row["_row_id"]}
+    assert row == before
+    # Projection validates the turn-owned coordinate, never another session or input.
+    agent.session_id = "child"
+    assert _native_user_message(agent, [row], 0, content, override or content) is None
+    agent.session_id = "parent"
+    changed = [{"type": "text", "text": "unrelated input"}, content[1]]
+    assert _native_user_message(agent, [{**row, "content": changed}], 0,
+                                changed, changed) is None
+
+
+def test_unrepresented_parts_do_not_become_an_empty_native_anchor(native):
+    from agent.session_persistence import _db_flush_row, _db_flush_write
+
+    content = [{"type": "unsupported", "data": "not retained"}]
+    row = {"role": "user", "content": content}
+    agent = SimpleNamespace(_session_db=native, session_id="parent")
+    _db_flush_write(agent, [_db_flush_row(agent, row, True)], [row])
+    assert _native_user_message(agent, [row], 0, content, content) is None
+
+
 def test_unavailable_storage_returns_no_descriptor(native, monkeypatch):
     row_id = native.append_message("parent", "user", "human request")
     row = {"role": "user", "content": "task wrapper", "_row_id": row_id}

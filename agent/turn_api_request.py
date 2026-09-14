@@ -72,7 +72,15 @@ def _native_user_message(agent: Any, messages: Any, index: Any, user_message: An
         return None
     content = stored[0].get("content")
     if content != original_user_message and content != row.get("content"):
-        return None
+        from agent.session_persistence import _durable_content
+
+        # The native flush projects image blocks to transcript text. Validate
+        # that representation at the same coordinate without changing the wire.
+        if content is None or not any(
+            content == _durable_content(candidate)
+            for candidate in (original_user_message, row.get("content"))
+        ):
+            return None
     return {"role": "user", "content": copy.deepcopy(content), "_row_id": row_id}
 
 

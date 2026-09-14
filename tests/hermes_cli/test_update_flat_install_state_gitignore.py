@@ -18,12 +18,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Runtime state that lives at $HERMES_HOME's root on a flat install, exactly as
-# ``hermes update`` would sweep it: the session store plus its SQLite sidecars
-# (gateway/platforms/base.py _ROOT_CREDENTIAL_PATHS enumerates the same set) and
-# retired-WAL capture dirs, quick snapshots, the legacy transcript dir, the
-# default kanban board, the cron job store (cron/jobs.py JOBS_FILE) and
-# executions ledger, gateway lock/pid files, the cache/spill directories and the
-# config/auth/memory/profile/credential/pairing roots.
+# ``hermes update`` would sweep it: one representative per ignored class. The
+# sidecar names mirror ``_sqlite_files`` in gateway/platforms/base.py; the
+# credential entries mirror ``_ROOT_CREDENTIAL_PATHS`` there.
 FLAT_INSTALL_RUNTIME_STATE = (
     "state.db",
     "state.db-wal",
@@ -31,26 +28,43 @@ FLAT_INSTALL_RUNTIME_STATE = (
     "state.db-journal",
     "state.db.retired-wal-20260914T000000Z-1234/manifest.json",
     "kanban.db",
-    "kanban.db-wal",
-    "kanban.db-shm",
-    "kanban.db-journal",
+    "response_store.db",
+    "response_store.db-wal",
+    "gateway/discord_message_recovery.db",
     "state-snapshots/2026-09-14T06-00-00-pre-update/state.db",
     "sessions/2026-09-14_06-00-00_abcd123d.jsonl",
     "browser-profile/Cookies",
     "cron/executions.db",
     "cron/jobs.json",
+    "cron.pid",
     "gateway.lock",
     "gateway.pid",
+    "gateway_state.json",
+    "processes.json",
     "hook_outputs/2026-09-14_06-00-00/tool.json",
+    "hooks/on_session_end.sh",
     "cache/banner_snapshot.json",
+    "checkpoints/abcd123d/0001.json",
+    "pending_messages/telegram.json",
+    "plugin-data/example/state.json",
+    "kanban/boards/x",
     "config.yaml",
     "auth.json",
     "auth.lock",
+    "auth/google_oauth.json",
+    ".anthropic_oauth.json",
+    "google_token.json",
+    "google_oauth_pending.json",
+    "webhook_subscriptions.json",
+    "channel_directory.json",
+    "channel_aliases.json",
+    "feishu_comment_pairing.json",
     "memories/MEMORY.md",
     "profiles/work/config.yaml",
-    ".credentials/github_token",
+    "credentials/github_token",
     "mcp-tokens/server.json",
     "pairing/telegram.json",
+    "platforms/pairing/x.json",
 )
 
 

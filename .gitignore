@@ -169,42 +169,56 @@ docs/superpowers/*
 .hermes-bootstrap-complete
 
 # Flat-install runtime state (checkout root == $HERMES_HOME, e.g. installs made
-# with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): the live session
-# store, its SQLite sidecars and retired-WAL capture dirs, quick snapshots, the
-# legacy transcripts, the cron job store (jobs.json) and executions ledger,
-# gateway lock/pid files, cache/spill directories, and the profile's own
-# config/credential/memory/profile roots are Hermes-managed runtime state,
-# never code changes.
+# with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): every root-level
+# SQLite store (state.db, kanban.db, response_store.db, ...) with its
+# WAL/SHM/journal sidecars and retired-WAL capture dirs, the legacy transcripts,
+# the cron job store (jobs.json) and executions ledger, gateway lock/pid/state
+# files, cache/spill directories, and the profile's own config/credential/
+# memory/profile/pairing roots are Hermes-managed runtime state, never code
+# changes. (`*-snapshots/` above already covers state-snapshots/.)
 # Ignore them so `hermes update`'s `git stash push --include-untracked` cannot
 # sweep the live state.db/-wal into the stash and unlink it under the running
 # gateway (#110648). Nested installs keep all of this under $HERMES_HOME outside
 # the checkout, where the `.hermes/` rule above already applies.
-/state.db
-/state.db-wal
-/state.db-shm
-/state.db-journal
-/state.db.retired-wal-*/
-/kanban.db
-/kanban.db-wal
-/kanban.db-shm
-/kanban.db-journal
-/state-snapshots/
+/*.db
+/*.db-wal
+/*.db-shm
+/*.db-journal
+/*.db.retired-wal-*/
+/gateway/discord_message_recovery.db*
 /sessions/
 /browser-profile/
 /cron/executions.db
 /cron/jobs.json
+/cron.pid
 /gateway.lock
 /gateway.pid
+/gateway_state.json
+/processes.json
 /hook_outputs/
+/hooks/
 /cache/
+/checkpoints/
+/pending_messages/
+/plugin-data/
+/kanban/
 /config.yaml
 /auth.json
 /auth.lock
+/auth/
+/.anthropic_oauth.json
+/google_token.json
+/google_oauth_pending.json
+/webhook_subscriptions.json
+/channel_directory.json
+/channel_aliases.json
+/feishu_comment_pairing.json
 /memories/
 /profiles/
-/.credentials/
+/credentials/
 /mcp-tokens/
 /pairing/
+/platforms/
 
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/

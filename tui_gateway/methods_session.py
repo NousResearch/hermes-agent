@@ -389,6 +389,24 @@ def _(rid, params: dict) -> dict:
                  "profile_name": _response_profile_name(profile)}})
 
 
+def _unarchive_recoverable(db, session_id: str) -> bool:
+    """``unarchive_recoverable_session`` that works on a read-only listing handle (foreign profile):
+    the rare write escalates to a short-lived registry writer instead of writing on the reader."""
+    if not getattr(db, "read_only", False):
+        return db.unarchive_recoverable_session(session_id)
+    from hermes_state_registry import acquire
+    try:
+        wdb = acquire(db.db_path)
+    except Exception:
+        logger.warning("Bot Chat unarchive skipped: writer unavailable for %s", db.db_path, exc_info=True)
+        return False
+    try:
+        return wdb.unarchive_recoverable_session(session_id)
+    finally:
+        with contextlib.suppress(Exception):
+            wdb.close()
+
+
 def _session_list_by_title(rid, db, title_lookup: str) -> dict:
     """EXACT-title lookup (title as identity), window-free on purpose (a busy profile's windowed listing can
     push the row out). Hidden rows resolve (canonical chats are born hidden); archived / deny-listed do not;
@@ -398,7 +416,7 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
         from tools.bot_mode_probe import BOT_CHAT_TITLE
         # A Bot Chat archived by the ws-orphan reaper / agent_close is an accident (the desktop would mint
         # replacements forever): resurrect recoverable reasons only. Re-fetch by ID — title is not UNIQUE.
-        if title_lookup == BOT_CHAT_TITLE and db.unarchive_recoverable_session(row["id"]):
+        if title_lookup == BOT_CHAT_TITLE and _unarchive_recoverable(db, row["id"]):
             # The canonical Bot Chat is identity-scoped: an archive stamped by the ws-orphan reaper or older
             # agent cleanup (ws_orphan_reap / agent_close) is an accident, not user intent, and hiding the
             # row here makes the desktop mint transient replacements forever (#92687). Resurrect it — same

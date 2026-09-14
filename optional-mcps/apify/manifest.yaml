@@ -1,8 +1,8 @@
 manifest_version: 1
 
 name: apify
-description: Discover and run Apify Actors for web scraping, data extraction, and automation, and search Apify documentation.
-source: https://docs.apify.com/platform/integrations/mcp
+description: Extract data from any website with thousands of scrapers, crawlers, and automations on Apify Store.
+source: https://docs.apify.com/integrations/mcp
 
 # Hosted Streamable HTTP; disable optional tool/client telemetry by default.
 transport:
@@ -17,6 +17,10 @@ auth:
 suggest:
   keywords:
     - apify
+    - web scraping
+    - web scraper
+    - web crawling
+    - data extraction
   hosts:
     - apify.com
 

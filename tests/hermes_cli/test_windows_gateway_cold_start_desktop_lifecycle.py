@@ -284,15 +284,25 @@ def test_dead_attested_default_is_cold_started_beside_running_beta(monkeypatch, 
     assert marker.exists()  # plan-time probe is read-only
 
     spawned = []
+    attested = []
+    real_write = gateway_windows._write_start_attestation
     monkeypatch.setattr(gateway_windows, "_spawn_via_scheduled_task", lambda *a, **k: None)  # no task registered
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda **k: spawned.append(k) or 4242)
+    monkeypatch.setattr(
+        gateway_windows, "_write_start_attestation",
+        lambda pids, via, **k: attested.append((pids, via, k.get("home"))) or real_write(pids, via, **k),
+    )
     update_cmd._resume_windows_gateways_after_update(token)
 
     assert spawned == [{"home": homes["default"]}]
     # Readiness is probed in the default profile's own home: live ``beta`` must not vouch for it.
     assert {"home": homes["default"]} in homes["_ready_probes"]
-    # The authorizing generation is consumed and the NEW PID is attested in the same profile home,
-    # so a death after this CLI exits stays visible to the next update.
+    # The authorizing generation is consumed and the NEW PID is attested in the same profile home
+    # by the per-profile cold-start itself (not only the fleet-wide relaunch write), so a death
+    # after this CLI exits stays visible to the next update.
+    assert any(
+        pids == [4242] and "profile default" in via and home == homes["default"] for pids, via, home in attested
+    )
     reattested = json.loads(marker.read_text(encoding="utf-8"))
     assert (reattested["pids"], reattested["generation"] != generation) == ([4242], True)
     assert "cold_start_profiles" not in token

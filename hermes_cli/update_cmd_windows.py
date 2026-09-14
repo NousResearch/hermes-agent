@@ -923,13 +923,17 @@ def _pause_windows_gateways_for_update() -> dict | None:
         if any(not u.get("argv") for u in unmapped):  # no recoverable cmdline (psutil missing, denied, gone)
             print("    Restart manually after update: hermes gateway run")
     token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}
-    _record_attested_cold_start_profiles(token, set(profiles))
+    # Service-managed gateways are alive too (they are paused by the service path, not the socket).
+    service_profiles = {str(getattr(s, "profile", "") or "") for s in service_gateways} - {""}
+    _record_attested_cold_start_profiles(token, set(profiles) | service_profiles)
     return _pause_windows_gateway_services(service_gateways, token, profiles, unmapped)
 
 
 def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> None:
     """Record ``token["cold_start_profiles"] = {name: generation}`` for every known profile that is not
-    running yet holds a start attestation for a gateway that died without a clean exit (#110959).
+    running (``running_profiles`` = socket-paused and service-managed) yet holds a start attestation for
+    a gateway that died without a clean exit (#110959). The probe uses the profile's own live pids so a
+    gateway that is up but escaped discovery is never declared dead.
 
     The all-or-nothing plan only ever probed the ACTIVE profile and only when NO gateway ran at all, so a
     dead-but-attested default beside a still-running ``beta`` never got a cold-start obligation. Only
@@ -946,7 +950,10 @@ def _record_attested_cold_start_profiles(token: dict, running_profiles: set) -> 
         for name, home in profiles_to_serve(multiplex=True):
             if name in running_profiles or (name == active and token.get("cold_start_if_installed")):
                 continue
-            generation = gateway_windows.attested_death_generation([], home=Path(home))
+            home = Path(home)
+            generation = gateway_windows.attested_death_generation(
+                current_pids=gateway_windows._live_gateway_pids(home=home), home=home,
+            )
             if generation:
                 cold[name] = generation
         if cold:

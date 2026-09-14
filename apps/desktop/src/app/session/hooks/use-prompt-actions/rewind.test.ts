@@ -1,7 +1,10 @@
+import type { PromptSubmitParams, TranscriptMessage } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { promptSubmitResult, transcriptMessage } from '@/test/contract'
+import { gatewayRequestMock, type RpcMethod } from '@/test/gateway-request'
 
 import {
   appendMidTurnUserMessage,
@@ -156,19 +159,25 @@ describe('truncateSubmitParams', () => {
 describe('survivorRowIdsFrom', () => {
   it('returns undefined when the field is absent or not an array (older gateway)', () => {
     expect(survivorRowIdsFrom(undefined)).toBeUndefined()
-    expect(survivorRowIdsFrom({ status: 'streaming' })).toBeUndefined()
-    expect(survivorRowIdsFrom({ survivor_user_row_ids: 'nope' })).toBeUndefined()
+    expect(survivorRowIdsFrom(promptSubmitResult({ status: 'streaming' }))).toBeUndefined()
   })
 
   it('keeps integer ids and nulls anything else', () => {
-    expect(survivorRowIdsFrom({ survivor_user_row_ids: [7, null, 9.5, '11', 12] })).toEqual([7, null, null, null, 12])
+    expect(survivorRowIdsFrom(promptSubmitResult({ survivor_user_row_ids: [7, null, 9.5, 12] }))).toEqual([
+      7,
+      null,
+      null,
+      12
+    ])
   })
 
   it('prefers the explicit old-to-new row id map', () => {
-    const parsed = survivorRowIdsFrom({
-      survivor_user_row_ids: [100, 200],
-      survivor_row_id_map: { '11': 101, '21': 201, '31': null }
-    })
+    const parsed = survivorRowIdsFrom(
+      promptSubmitResult({
+        survivor_user_row_ids: [100, 200],
+        survivor_row_id_map: { '11': 101, '21': 201, '31': null }
+      })
+    )
 
     expect(parsed).toEqual(
       new Map([
@@ -396,21 +405,14 @@ describe('failed-turn-aware ordinal space', () => {
 })
 
 describe('resolveDurableRowId', () => {
-  const gatewayWith = (messages: unknown[]) => {
-    const request = (async (method: string) => {
-      expect(method).toBe('session.history')
-
-      return { messages }
-    }) as <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
-
-    return request
-  }
+  const gatewayWith = (messages: TranscriptMessage[]) =>
+    gatewayRequestMock({ 'session.history': () => ({ count: messages.length, messages }) })
 
   it('resolves a unique content match to its durable row id', async () => {
     const request = gatewayWith([
-      { role: 'user', text: 'first prompt', row_id: 11 },
-      { role: 'assistant', text: 'reply', row_id: 12 },
-      { role: 'user', text: 'typo prompt', row_id: 13 }
+      transcriptMessage({ role: 'user', text: 'first prompt', row_id: 11 }),
+      transcriptMessage({ role: 'assistant', text: 'reply', row_id: 12 }),
+      transcriptMessage({ role: 'user', text: 'typo prompt', row_id: 13 })
     ])
 
     expect(await resolveDurableRowId(request, 'sid', 'typo prompt', 1)).toBe(13)
@@ -418,8 +420,8 @@ describe('resolveDurableRowId', () => {
 
   it('ignores synthetic user-role injections (display_kind rows)', async () => {
     const request = gatewayWith([
-      { role: 'user', text: 'real prompt', row_id: 11 },
-      { role: 'user', text: 'real prompt', row_id: 12, display_kind: 'auto_continue' }
+      transcriptMessage({ role: 'user', text: 'real prompt', row_id: 11 }),
+      transcriptMessage({ role: 'user', text: 'real prompt', row_id: 12, display_kind: 'auto_continue' })
     ])
 
     expect(await resolveDurableRowId(request, 'sid', 'real prompt', 0)).toBe(11)
@@ -427,8 +429,8 @@ describe('resolveDurableRowId', () => {
 
   it('refuses ambiguous matches unless the target is provably the newest turn', async () => {
     const request = gatewayWith([
-      { role: 'user', text: 'same text', row_id: 11 },
-      { role: 'user', text: 'same text', row_id: 13 }
+      transcriptMessage({ role: 'user', text: 'same text', row_id: 11 }),
+      transcriptMessage({ role: 'user', text: 'same text', row_id: 13 })
     ])
 
     // Ambiguous + target not the latest -> undefined (plain resubmit).
@@ -438,9 +440,7 @@ describe('resolveDurableRowId', () => {
   })
 
   it('returns undefined on gateway failure or empty text', async () => {
-    const failing = (async () => {
-      throw new Error('boom')
-    }) as <T>(method: string) => Promise<T>
+    const failing = gatewayRequestMock()
 
     expect(await resolveDurableRowId(failing, 'sid', 'text', 0)).toBeUndefined()
     expect(await resolveDurableRowId(gatewayWith([]), 'sid', '   ', 0)).toBeUndefined()
@@ -449,26 +449,29 @@ describe('resolveDurableRowId', () => {
 
 describe('runRewindSubmit durable-address discipline (#87059)', () => {
   interface Call {
-    method: string
-    params?: Record<string, unknown>
+    method: RpcMethod
+    params?: PromptSubmitParams
   }
 
   const historyMessages = [
-    { role: 'user', text: 'first prompt', row_id: 11 },
-    { role: 'assistant', text: 'ok', row_id: 12 },
-    { role: 'user', text: 'typo prompt', row_id: 13 }
+    transcriptMessage({ role: 'user', text: 'first prompt', row_id: 11 }),
+    transcriptMessage({ role: 'assistant', text: 'ok', row_id: 12 }),
+    transcriptMessage({ role: 'user', text: 'typo prompt', row_id: 13 })
   ]
 
   const makeGateway = (calls: Call[]) =>
-    (async (method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
+    gatewayRequestMock({
+      'prompt.submit': params => {
+        calls.push({ method: 'prompt.submit', params })
 
-      if (method === 'session.history') {
-        return { messages: historyMessages }
+        return promptSubmitResult({ status: 'streaming' })
+      },
+      'session.history': () => {
+        calls.push({ method: 'session.history' })
+
+        return { count: historyMessages.length, messages: historyMessages }
       }
-
-      return { status: 'streaming' }
-    }) as <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+    })
 
   it('resolves a missing rowId by content before submitting, and drops the client ordinal', async () => {
     const calls: Call[] = []

@@ -15,8 +15,7 @@ import {
   clearPetUnread,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
-  type PetInfo,
-  type PetInfoMeta,
+  PET_DISABLED,
   petProfile,
   setPetInfo
 } from '@/store/pet'
@@ -149,7 +148,7 @@ export function FloatingPet() {
     // revision (scale-only move still changes the sig) short-circuits below
     // via hasPetSpriteForMeta + mergePetInfoMeta.
     if (changeEventsAvailable && petChange.tick > 0 && petChange.meta?.enabled === false) {
-      setPetInfo({ enabled: false })
+      setPetInfo(PET_DISABLED)
 
       return
     }
@@ -158,14 +157,14 @@ export function FloatingPet() {
       try {
         if (active) {
           try {
-            const meta = await requestGateway<PetInfoMeta>('pet.info.meta', { profile: petProfile() })
+            const meta = await requestGateway('pet.info.meta', { profile: petProfile() })
 
             if (cancelled || !meta) {
               return
             }
 
             if (!meta.enabled) {
-              setPetInfo({ enabled: false })
+              setPetInfo(PET_DISABLED)
 
               return
             }
@@ -192,7 +191,7 @@ export function FloatingPet() {
         const held = $petInfo.get()
         const knownRevision = held.enabled && held.spritesheetBase64 ? held.spritesheetRevision : undefined
 
-        const next = await requestGateway<PetInfo & { spritesheetUnchanged?: boolean }>('pet.info', {
+        const next = await requestGateway('pet.info', {
           knownRevision,
           profile: petProfile()
         })
@@ -272,7 +271,7 @@ export function FloatingPet() {
   // profile's mascot + gallery cache so the poll above refetches the new
   // profile's pet (its config + pets dir resolve per-profile on the backend).
   useOnProfileSwitch(() => {
-    setPetInfo({ enabled: false })
+    setPetInfo(PET_DISABLED)
     resetPetGallery()
   })
 
@@ -455,7 +454,7 @@ export function FloatingPet() {
 
   // While roaming, drive the directional run row + mirror from the travel
   // direction; at rest, fall back to the inward-facing static mascot.
-  const walk = roamWalkRow(roamDir, info.stateRows)
+  const walk = roamWalkRow(roamDir, info.stateRows ?? undefined)
 
   // While popped out, the desktop overlay window owns the mascot — hide the
   // in-window one so there aren't two.

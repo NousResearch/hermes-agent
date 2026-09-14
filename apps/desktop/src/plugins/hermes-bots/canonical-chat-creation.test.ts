@@ -17,6 +17,7 @@
  * creation section out of the old plugin.js bundle and ran it under `vm`.
  */
 
+import type { JsonValue } from '@hermes/plugin-sdk'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { RosterRow } from './types'
@@ -62,9 +63,26 @@ vi.mock('./shared', () => ({ getPluginCtx: () => pluginCtx.current }))
  *  because the ORDER between them is most of what this suite pins. */
 let events: string[]
 
-function respondWith(handler: (method: string, params: Record<string, unknown>) => unknown) {
-  requestForBotMock.mockImplementation(async (_bot: unknown, method: string, params: Record<string, unknown>) =>
-    handler(method, params ?? {})
+/** What a scripted handler answers with: the result fields the test asserts
+ *  on, awaited so a handler can hold its RPC open. */
+type ScriptedResult = Record<string, JsonValue | undefined>
+type ScriptedAnswer = Promise<ScriptedResult> | ScriptedResult
+
+/** The gateway's empty answer per RPC, so a test scripts only the fields it
+ *  asserts on and still answers what the contract declares. */
+const EMPTY_ANSWERS = {
+  'profiles.list': { bot_mode_protocol: false, profiles: [] },
+  'session.list': { sessions: [] }
+} satisfies Record<string, Record<string, JsonValue>>
+
+const emptyAnswerFor = (method: string) => Object.entries(EMPTY_ANSWERS).find(([name]) => name === method)?.[1]
+
+function respondWith(handler: (method: string, params: Record<string, JsonValue>) => ScriptedAnswer) {
+  requestForBotMock.mockImplementation(
+    async (_bot: Partial<RosterRow>, method: string, params: Record<string, JsonValue>) => ({
+      ...emptyAnswerFor(method),
+      ...(await handler(method, params ?? {}))
+    })
   )
 }
 

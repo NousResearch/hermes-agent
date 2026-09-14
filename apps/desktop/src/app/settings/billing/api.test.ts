@@ -1,7 +1,8 @@
 import { renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { BillingChargeResponse, BillingStateResponse } from './types'
+import { OK_ENVELOPE, todayBillingState } from './fixtures.test-util'
+import type { BillingChargeResult, BillingStateResult } from './types'
 
 const requestGatewayMock = vi.hoisted(() => vi.fn())
 
@@ -19,6 +20,7 @@ describe('createBillingApi', () => {
 
   it('passes successful RPC results through as data', async () => {
     const state = {
+      ...todayBillingState,
       auto_reload: null,
       balance_display: '$10.00',
       balance_usd: '10',
@@ -27,16 +29,11 @@ describe('createBillingApi', () => {
       charge_presets: ['10'],
       charge_presets_display: ['$10'],
       cli_billing_enabled: true,
-      is_admin: true,
-      logged_in: true,
       max_usd: '100',
-      min_usd: '10',
       monthly_cap: null,
-      ok: true,
       org_name: 'Nous',
-      portal_url: 'https://portal.nousresearch.com/billing',
-      role: 'OWNER'
-    } satisfies BillingStateResponse
+      usage: null
+    } satisfies BillingStateResult
 
     requestGatewayMock.mockResolvedValueOnce(state)
 
@@ -188,10 +185,10 @@ describe('createBillingApi', () => {
     vi.spyOn(crypto, 'randomUUID').mockReturnValue('11111111-1111-4111-8111-111111111111')
 
     const submitted = {
+      ...OK_ENVELOPE,
       charge_id: 'ch_123',
-      idempotency_key: '11111111-1111-4111-8111-111111111111',
-      ok: true
-    } satisfies BillingChargeResponse
+      idempotency_key: '11111111-1111-4111-8111-111111111111'
+    } satisfies BillingChargeResult
 
     requestGatewayMock.mockResolvedValue(submitted)
 

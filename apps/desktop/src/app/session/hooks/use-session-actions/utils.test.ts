@@ -13,6 +13,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
+import { inflightTurn, sessionResumeResult } from '@/test/contract'
 import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import {
@@ -1311,12 +1312,13 @@ describe('appendLiveSessionProjection', () => {
   it('projects mid-turn redirect corrections after the assistant output that predates them', () => {
     const restored = appendLiveSessionProjection([], {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: 'remove the session counts',
         corrections: ['hurry up', 'and the worktree ones'],
         assistant: 'Moving.',
         streaming: true
-      }
+      })
     })
 
     expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
@@ -1333,13 +1335,14 @@ describe('appendLiveSessionProjection', () => {
   it('interleaves corrections into the assistant dump at their arrival offsets', () => {
     const restored = appendLiveSessionProjection([], {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: 'remove the session counts',
         corrections: ['hurry up', 'and the worktree ones'],
         correction_offsets: [7, 13],
         assistant: 'Moving.Still.Done soon.',
         streaming: true
-      }
+      })
     })
 
     expect(restored.map(message => message.parts.map(part => ('text' in part ? part.text : '')).join(''))).toEqual([
@@ -1367,13 +1370,14 @@ describe('appendLiveSessionProjection', () => {
   it('keeps the live stream row even when every offset points at the dump tail', () => {
     const restored = appendLiveSessionProjection([], {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: 'prompt',
         corrections: ['nudge'],
         correction_offsets: [4],
         assistant: 'text',
         streaming: true
-      }
+      })
     })
 
     // The whole dump precedes the correction, and the still-streaming turn
@@ -1394,12 +1398,13 @@ describe('appendLiveSessionProjection', () => {
 
     const restored = appendLiveSessionProjection(stored, {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: 'remove the session counts',
         corrections: ['hurry up'],
         assistant: 'Moving.',
         streaming: true
-      }
+      })
     })
 
     expect(restored.filter(message => message.role === 'user').map(message => message.id)).toEqual([
@@ -1421,11 +1426,12 @@ describe('appendLiveSessionProjection', () => {
 
     const restored = appendLiveSessionProjection(stored, {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: 'current running prompt',
         assistant: 'partial answer',
         streaming: true
-      }
+      })
     })
 
     // The persisted user already carries the same visible text (the attachment
@@ -1446,11 +1452,11 @@ describe('appendLiveSessionProjection', () => {
 
     const restored = appendLiveSessionProjection(stored, {
       session_id: 'runtime-1',
-      inflight: {
+      inflight: inflightTurn({
         user: 'current prompt',
         assistant: 'partial answer',
         streaming: true
-      },
+      }),
       queued: { user: 'newest prompt' }
     })
 
@@ -1474,11 +1480,12 @@ describe('appendLiveSessionProjection', () => {
 
     const restored = appendLiveSessionProjection(stored, {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: 'current running prompt',
         assistant: 'partial answer',
         streaming: true
-      }
+      })
     })
 
     expect(restored.map(message => message.role)).toEqual(['user', 'user', 'user', 'assistant'])
@@ -1494,7 +1501,7 @@ describe('appendLiveSessionProjection', () => {
   it('preserves the original array when no live projection exists', () => {
     const stored = [msg('stored-user', 'user', 'earlier')]
 
-    expect(appendLiveSessionProjection(stored, { session_id: 'runtime-1' })).toBe(stored)
+    expect(appendLiveSessionProjection(stored, { inflight: null, queued: null, session_id: 'runtime-1' })).toBe(stored)
   })
 
   it('does not sandwich a structured mid-turn row with the inflight flat dump (#76444)', () => {
@@ -1514,13 +1521,14 @@ describe('appendLiveSessionProjection', () => {
 
     const restored = appendLiveSessionProjection(stored, {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: 'do the work',
         // Flat dump includes thinking chatter + tool narration — longer than
         // the answer text alone, which is how the sandwich used to grow.
         assistant: 'thinking about tools\nRan terminal\npartial and more dump',
         streaming: true
-      }
+      })
     })
 
     const assistants = restored.filter(message => message.role === 'assistant')
@@ -1552,11 +1560,12 @@ describe('appendLiveSessionProjection', () => {
 
     const restored = appendLiveSessionProjection(stored, {
       session_id: 'runtime-1',
-      inflight: {
+      queued: null,
+      inflight: inflightTurn({
         user: 'new task',
         assistant: 'working on it',
         streaming: true
-      }
+      })
     })
 
     expect(restored.map(message => message.id)).toContain('assistant-stream-runtime-1')
@@ -1586,15 +1595,14 @@ describe('resolveResumedBusy', () => {
 })
 
 const runningProjection = (user: string): SessionResumeResult =>
-  ({
+  sessionResumeResult({
     session_id: 'runtime-1',
     session_key: 'stored-1',
     resumed: 'stored-1',
     message_count: 2,
-    messages: [],
     running: true,
-    inflight: { user, assistant: 'partial answer', streaming: true }
-  }) as SessionResumeResult
+    inflight: inflightTurn({ user, assistant: 'partial answer', streaming: true })
+  })
 
 describe('dedupeInflightUserAgainstTranscript', () => {
   it('retains the in-flight user source only when it already exists after the runtime anchor', () => {
@@ -1621,7 +1629,7 @@ describe('dedupeInflightUserAgainstTranscript', () => {
 
     const projection = {
       ...runningProjection('current prompt'),
-      inflight: { user: 'current prompt', assistant: '', streaming: false },
+      inflight: inflightTurn({ user: 'current prompt', assistant: '', streaming: false }),
       queued: { user: 'queued prompt' }
     }
 

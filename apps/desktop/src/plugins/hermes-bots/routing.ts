@@ -8,6 +8,7 @@
  */
 
 import { host } from '@hermes/plugin-sdk'
+import type { JsonValue, ProfileRow, RpcMethods } from '@hermes/plugin-sdk'
 
 import type { BotMeta, GroupMessageAuthor, ProfileRoute, RosterRow } from './types'
 
@@ -126,7 +127,7 @@ export function backendTargetProfile(route: null | ProfileRoute | undefined, fal
   return route.targetProfile || route.profile
 }
 
-function rewriteCliProfileOperands(argv: string[], logical: string, target: string) {
+function rewriteCliProfileOperands(argv: JsonValue[], logical: string, target: string) {
   const next = [...argv]
 
   for (let index = 0; index < next.length; index += 1) {
@@ -148,7 +149,9 @@ function rewriteCliProfileOperands(argv: string[], logical: string, target: stri
   return next
 }
 
-function scopedBotParams(route: ProfileRoute, method: string, params: Record<string, unknown>) {
+/** The alias rewrite is wire-level — it renames the profile operands a method
+ *  carries, whatever the method — so it reads the params bag as JSON. */
+function scopedBotParams(route: ProfileRoute, method: string, params: Record<string, JsonValue>) {
   const logical = route.profile
   const target = backendTargetProfile(route, logical)
   let next = params
@@ -204,12 +207,26 @@ export interface BotRequestOptions {
   spawnPriority?: 'background' | 'foreground'
 }
 
-export async function requestForBot<T = unknown>(
+/* eslint-disable no-redeclare -- overload signatures; the rule predates TS */
+export async function requestForBot<M extends keyof RpcMethods>(
+  bot: Partial<RosterRow> | null | undefined,
+  method: M,
+  params: RpcMethods[M]['params'],
+  options?: BotRequestOptions
+): Promise<RpcMethods[M]['result']>
+export async function requestForBot(
   bot: Partial<RosterRow> | null | undefined,
   method: string,
-  params: Record<string, unknown> = {},
+  params?: Record<string, JsonValue>,
   options?: BotRequestOptions
-): Promise<T> {
+): Promise<JsonValue>
+
+export async function requestForBot(
+  bot: Partial<RosterRow> | null | undefined,
+  method: string,
+  params: Record<string, JsonValue> = {},
+  options?: BotRequestOptions
+): Promise<JsonValue> {
   const route = botConnectionRoute(bot)
 
   if (route) {
@@ -239,6 +256,7 @@ export async function requestForBot<T = unknown>(
     throw asRpcError(error, `Gateway request ${method} failed`)
   }
 }
+/* eslint-enable no-redeclare */
 
 /** A rejection duck-typed across realms: an Error-like whose fields are only
  *  conventionally typed, so every read stays `unknown` until it is checked. */
@@ -383,6 +401,17 @@ export function aliasIdentityFor(bot: Partial<RosterRow> | null | undefined): Al
   const entry = aliasRouteIndex.get(`${connectionId}::${target}`) || null
 
   return entry && entry.name !== String(bot?.name || '').trim() ? entry : null
+}
+
+/** `profiles.list` answers generated `ProfileRow`s; the roster reads them as
+ *  annotated RosterRows. `ui_meta` is opaque JSON in the contract — Bot Mode
+ *  owns the `hermes-bots` key inside it. */
+export function rosterRowFromProfile(row: ProfileRow): RosterRow {
+  // SAFETY: data.ts (profiles.configure) is the only writer of the
+  // 'hermes-bots' ui_meta namespace, so that key holds the BotMeta it wrote.
+  const ui_meta = (row.ui_meta ?? undefined) as RosterRow['ui_meta']
+
+  return { ...row, ui_meta }
 }
 
 // Bot metadata is scoped to the active gateway until the server exposes a

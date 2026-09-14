@@ -1,6 +1,8 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
+import { modelOptionProvider } from '@/test/contract'
+
 import {
   collapseModelFamilies,
   defaultVisibleKeys,
@@ -13,11 +15,7 @@ import {
   toggleModelVisibility
 } from './model-visibility'
 
-const provider = (slug: string, models: string[]): ModelOptionProvider => ({
-  models,
-  name: slug,
-  slug
-})
+const provider = (slug: string, models: string[]): ModelOptionProvider => modelOptionProvider({ models, name: slug, slug })
 
 describe('model visibility', () => {
   it('keeps newly configured providers visible when stored choices are stale', () => {
@@ -226,12 +224,8 @@ describe('resolveVisibleKeys', () => {
 })
 
 describe('featured defaults', () => {
-  const featuredProvider = (slug: string, models: string[], featured_models: string[]): ModelOptionProvider => ({
-    featured_models,
-    models,
-    name: slug,
-    slug
-  })
+  const featuredProvider = (slug: string, models: string[], featured_models: string[]): ModelOptionProvider =>
+    modelOptionProvider({ featured_models, models, name: slug, slug })
 
   it('defaults to the featured shortlist when a provider publishes one', () => {
     const nous = featuredProvider(

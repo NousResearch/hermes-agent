@@ -1,12 +1,14 @@
+import type { PetGalleryEntry, PetGalleryResult, RpcMethods } from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { normalize } from '@/lib/text'
 import {
   $petInfo,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
-  type PetInfo,
+  PET_DISABLED,
   type PetInfoMeta,
   petProfile,
   setPetInfo
@@ -30,39 +32,24 @@ import {
  * owns gallery state anymore.
  */
 
-export interface GalleryPet {
-  slug: string
-  displayName: string
-  installed: boolean
-  spritesheetUrl?: string
-  /** petdex's hand-picked set — used only to rank "popular" pets first. */
-  curated?: boolean
-  /** Hatched locally by the user (createdBy=generator) — badged + ranked first. */
-  generated?: boolean
-}
+export type GalleryPet = PetGalleryEntry
 
-export interface PetGallery {
-  enabled: boolean
-  active: string
-  pets: GalleryPet[]
-}
+export type PetGallery = PetGalleryResult
 
 export type PetGalleryStatus = 'idle' | 'loading' | 'ready' | 'stale' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest` — passed in so the
  *  store reuses the hook's reconnect/reauth handling instead of duplicating it. */
-export type GatewayRequest = <T>(
-  method: string,
-  params?: Record<string, unknown>,
-  timeoutMs?: number,
-  signal?: AbortSignal
-) => Promise<T>
+export type { GatewayRequest }
 
 /** Profile-scoped pet RPC. Pets are per-profile, so every call carries the active
  *  profile (the gateway no-ops it for the launch profile). One chokepoint so no
  *  call site can forget it. */
-const petRpc = <T>(request: GatewayRequest, method: string, params: Record<string, unknown> = {}): Promise<T> =>
-  request<T>(method, { ...params, profile: petProfile() })
+const petRpc = <M extends keyof RpcMethods>(
+  request: GatewayRequest,
+  method: M,
+  params: RpcMethods[M]['params']
+): Promise<RpcMethods[M]['result']> => request(method, { ...params, profile: petProfile() })
 
 /** A JSON-RPC "method not found" — the backend predates the pet RPCs. */
 export const $petGallery = atom<PetGallery | null>(null)
@@ -98,7 +85,7 @@ export function loadPetThumb(request: GatewayRequest, slug: string, url?: string
   let pending = thumbCache.get(slug)
 
   if (!pending) {
-    pending = petRpc<{ ok: boolean; dataUri?: string }>(request, 'pet.thumb', { slug, url: url ?? '' })
+    pending = petRpc(request, 'pet.thumb', { slug, url: url ?? '' })
       .then(result => (result?.ok && result.dataUri ? result.dataUri : null))
       .catch(() => null)
     thumbCache.set(slug, pending)
@@ -132,7 +119,7 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
       // Phase 1: local pets only — instant, never blocks on the remote petdex
       // manifest. The user's own/generated pets render right away.
       const [local] = await Promise.all([
-        petRpc<PetGallery>(request, 'pet.gallery', { localOnly: true }),
+        petRpc(request, 'pet.gallery', { localOnly: true }),
         syncInfo(request)
       ])
 
@@ -159,7 +146,7 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
     // manifest fetch never hides the local pets shown in phase 1.
     if (localOk) {
       try {
-        const full = await petRpc<PetGallery>(request, 'pet.gallery')
+        const full = await petRpc(request, 'pet.gallery', {})
 
         if (full) {
           $petGallery.set(full)
@@ -181,13 +168,13 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
     let meta: PetInfoMeta | null = null
 
     try {
-      meta = await petRpc<PetInfoMeta>(request, 'pet.info.meta')
+      meta = await petRpc(request, 'pet.info.meta', {})
     } catch (e) {
       if (!isMissingRpcMethod(e)) {
         throw e
       }
 
-      const info = await petRpc<PetInfo>(request, 'pet.info')
+      const info = await petRpc(request, 'pet.info', {})
 
       if (info) {
         setPetInfo(info)
@@ -201,7 +188,7 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
     }
 
     if (!meta.enabled) {
-      setPetInfo({ enabled: false })
+      setPetInfo(PET_DISABLED)
 
       return
     }
@@ -218,7 +205,7 @@ async function syncInfo(request: GatewayRequest): Promise<void> {
       return
     }
 
-    const info = await petRpc<PetInfo>(request, 'pet.info')
+    const info = await petRpc(request, 'pet.info', {})
 
     if (info) {
       setPetInfo(info)
@@ -241,7 +228,7 @@ export async function applyAdoptedPet(request: GatewayRequest, slug: string, dis
     active: slug,
     pets: gallery.pets.some(p => p.slug === slug)
       ? gallery.pets.map(p => (p.slug === slug ? { ...p, installed: true, displayName } : p))
-      : [...gallery.pets, { slug, displayName, installed: true, spritesheetUrl: '' }]
+      : [...gallery.pets, { curated: null, displayName, generated: false, installed: true, slug, spritesheetUrl: '' }]
   }))
   await syncInfo(request)
 }
@@ -359,7 +346,7 @@ export function setPetEnabled(
     if (on) {
       await petRpc(request, 'pet.select', { slug })
     } else {
-      await petRpc(request, 'pet.disable')
+      await petRpc(request, 'pet.disable', {})
     }
 
     patchGallery(g => ({ ...g, enabled: on, active: on ? slug : g.active }))
@@ -403,7 +390,7 @@ export function setPetScale(request: GatewayRequest, scale: number): void {
 
   clearTimeout(scalePersist)
   scalePersist = setTimeout(() => {
-    petRpc<{ ok: boolean; scale?: number }>(request, 'pet.scale', { scale: next })
+    petRpc(request, 'pet.scale', { scale: next })
       .then(result => {
         // Reconcile with the server's clamp (cheap; only matters at the bounds).
         if (typeof result?.scale === 'number' && result.scale !== $petInfo.get().scale) {
@@ -422,7 +409,7 @@ export async function exportPet(request: GatewayRequest, slug: string, fallback:
   $petGalleryError.set(null)
 
   try {
-    const res = await petRpc<{ ok: boolean; filename: string; zipBase64: string }>(request, 'pet.export', { slug })
+    const res = await petRpc(request, 'pet.export', { slug })
 
     if (!res?.ok || !res.zipBase64) {
       throw new Error(fallback)
@@ -470,7 +457,7 @@ export function renamePet(request: GatewayRequest, slug: string, name: string, f
 
   return (async () => {
     try {
-      const res = await petRpc<{ ok: boolean; slug: string; displayName: string }>(request, 'pet.rename', {
+      const res = await petRpc(request, 'pet.rename', {
         slug,
         name: trimmed
       })

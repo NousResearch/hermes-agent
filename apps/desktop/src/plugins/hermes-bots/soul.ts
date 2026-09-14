@@ -114,11 +114,11 @@ export function backfillMessagingProtocol(roster: RosterRow[] | null | undefined
 
     soulProtocolInflight.add(name)
     host
-      .request<{ soul?: string }>('profiles.describe', {
+      .request('profiles.describe', {
         name
       })
       .then(res => {
-        const soul = (res && res.soul) || ''
+        const soul = res.soul
 
         if (hasMessagingProtocol(soul)) {
           soulProtocolChecked.add(name)

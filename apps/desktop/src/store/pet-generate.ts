@@ -6,7 +6,7 @@ import { capitalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
-import { type PetInfo } from '@/store/pet'
+import { PET_DISABLED, type PetInfo } from '@/store/pet'
 import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
 /**
  * Feature store for the "generate a pet" flow (Cmd-K → Pets → Generate).
@@ -133,7 +133,7 @@ export function markRemixConfirmed(): void {
 /** Probe whether generation is possible (a reference-capable backend exists). */
 export async function checkPetGenAvailable(request: GatewayRequest): Promise<void> {
   try {
-    const res = await request<{ available: boolean; providers?: PetGenProvider[] }>('pet.generate.status')
+    const res = await request('pet.generate.status', {})
     $petGenAvailable.set(Boolean(res?.available))
     const providers = res?.providers ?? []
     $petGenProviders.set(providers)
@@ -399,7 +399,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
     }) ?? (() => {})
 
   try {
-    const result = await request<{ ok: boolean; token: string; drafts: PetDraft[] }>(
+    const result = await request(
       'pet.generate',
       {
         prompt,
@@ -513,7 +513,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
     }) ?? (() => {})
 
   try {
-    const result = await request<{ ok: boolean; slug: string; displayName: string; pet?: PetInfo }>(
+    const result = await request(
       'pet.hatch',
       {
         token,
@@ -542,7 +542,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
       throw new Error('hatch produced no preview')
     }
 
-    $petGenPreview.set({ ...result.pet, enabled: true })
+    $petGenPreview.set({ ...PET_DISABLED, ...result.pet, enabled: true })
     $petGenStatus.set('preview')
     notifyPetGenDone('Your pet hatched', 'Reopen to name and adopt it.', 'success')
 
@@ -597,7 +597,7 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
     let adoptSlug = preview.slug
 
     if (finalName && finalName !== preview.displayName) {
-      const renamed = await request<{ ok: boolean; slug: string }>('pet.rename', {
+      const renamed = await request('pet.rename', {
         slug: preview.slug,
         name: finalName
       }).catch(() => null)
@@ -607,7 +607,7 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
       }
     }
 
-    const result = await request<{ ok: boolean; slug: string; displayName: string }>('pet.select', {
+    const result = await request('pet.select', {
       slug: adoptSlug
     })
 
@@ -618,9 +618,10 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
     // pet.select already set the active mascot (disk + config). Reflect it
     // locally — no remote petdex manifest fetch — and close immediately.
     resetPetGen()
-    void applyAdoptedPet(request, result.slug, result.displayName)
+    const displayName = result.displayName ?? result.slug
+    void applyAdoptedPet(request, result.slug, displayName)
 
-    return { ok: true, slug: result.slug, displayName: result.displayName }
+    return { ok: true, slug: result.slug, displayName }
   } catch (e) {
     $petGenStatus.set('preview')
     $petGenError.set(e instanceof Error ? e.message : 'Could not adopt the pet.')

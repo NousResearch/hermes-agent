@@ -128,7 +128,7 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
         return null
       }
 
-      const res = await gateway.request<{ profiles?: Array<{ has_avatar?: boolean; name: string }> }>('profiles.list', {
+      const res = await gateway.request('profiles.list', {
         include_sessions: false
       })
 
@@ -144,7 +144,7 @@ export async function resolveAgentAvatar(handle: string): Promise<null | string>
         return null
       }
 
-      const asset = await gateway.request<{ data?: string; found?: boolean }>('profiles.get_asset', {
+      const asset = await gateway.request('profiles.get_asset', {
         asset: 'avatar',
         name: profile.name
       })

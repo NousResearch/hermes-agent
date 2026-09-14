@@ -10,6 +10,16 @@ import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowMark, ConnectorSummary } from '@/components/ui/connector-card'
 import { useI18n } from '@/i18n'
 import {
+ useStore } from '@nanostores/react'
+import { useEffect, useMemo, useState } from 'react'
+
+import { useSessionView } from '@/app/chat/session-view'
+import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
+import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { Button } from '@/components/ui/button'
+import { ConnectorCard, ConnectorRow, type ConnectorRowMark, ConnectorSummary } from '@/components/ui/connector-card'
+import { useI18n } from '@/i18n'
+import {
   connectorAuthorizationUrl,
   connectorCalls,
   connectorText,
@@ -17,6 +27,7 @@ import {
   connectorToolName,
   recordOf
 } from '@/lib/connector-tools'
+
 import {
   type ConnectionRequest,
   type ConnectionTarget,
@@ -113,6 +124,8 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
       cancelled = true
     }
   }, [live, ownerSessionId])
+
+
 
   if (!live || !request) {
     return <ToolFallback {...props} />

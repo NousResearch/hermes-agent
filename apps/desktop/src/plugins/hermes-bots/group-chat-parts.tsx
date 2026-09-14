@@ -22,15 +22,6 @@ import { displayName } from './labels'
 import { botRosterMeta } from './routing'
 import type { BotMeta, GroupMember, GroupPrompt } from './types'
 
-/** The `image.generate` reply. Older gateways answer `image`, newer ones
- *  `image_data`; both are data URLs. */
-interface ImageGenerateResponse {
-  error?: string
-  image?: string
-  image_data?: string
-  success?: boolean
-}
-
 interface GroupImageControlsProps {
   image: null | string
   onImage: (image: null | string) => void
@@ -72,15 +63,15 @@ export function GroupImageControls({ image, onImage, seedName, seedMembers }: Gr
         .filter(Boolean)
         .join(' — ')
 
-      const res = await host.request<ImageGenerateResponse>('image.generate', {
+      const res = await host.request('image.generate', {
         prompt:
           `Group chat icon for an AI agent team called "${who || 'a bot team'}". ` +
           'Friendly minimal emblem, bold flat vector style, solid color background, centered, no text.',
         aspect_ratio: 'square'
       })
 
-      if (!res?.success) {
-        throw new Error(res?.error || 'generation failed')
+      if (!res.success) {
+        throw new Error(res.error || 'generation failed')
       }
 
       const img = res.image_data || res.image
@@ -389,11 +380,11 @@ export function GroupClarifyCard({ entry, members }: GroupClarifyCardProps) {
 
   const questions: GroupClarifyQuestion[] =
     entry.questions && entry.questions.length
-      ? entry.questions.map((q, i) => ({
-          qid: q?.qid ?? q?.id ?? `q${i}`,
-          question: typeof q?.question === 'string' ? q.question : '',
-          choices: Array.isArray(q?.choices) ? q.choices.filter(c => typeof c === 'string' && c) : [],
-          multiSelect: Boolean(q?.multi_select ?? q?.multiSelect)
+      ? entry.questions.map(q => ({
+          qid: q.qid,
+          question: q.question,
+          choices: q.choices || [],
+          multiSelect: q.multi_select
         }))
       : [
           {

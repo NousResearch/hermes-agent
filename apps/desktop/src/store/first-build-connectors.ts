@@ -5,7 +5,6 @@ import { endFirstBuildConnect, isFirstBuildSession } from '@/app/contrib/handoff
 import {
   connectionRows,
   connectorAuthorizationUrl,
-  type ConnectorRow,
   connectorText,
   recordOf
 } from '@/lib/connector-tools'
@@ -218,7 +217,7 @@ export function watchFirstBuildRows(
     }
 
     try {
-      const result = await request<{ available: boolean; connectors: ConnectorRow[] }>('connectors.list', {
+      const result = await request('connectors.list', {
         session_id: runtimeId
       })
 

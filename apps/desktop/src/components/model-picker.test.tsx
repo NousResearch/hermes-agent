@@ -22,6 +22,7 @@ vi.mock('@/lib/model-options', async importOriginal => ({
 }))
 
 import { requestModelOptions } from '@/lib/model-options'
+import { modelOptionProvider, modelOptionsResult } from '@/test/contract'
 
 stubResizeObserver()
 stubMenuDomApis()
@@ -30,19 +31,19 @@ const OPTIONS: ModelOptionsResult = {
   model: 'Qwen3.6-27B-UD-Q4_K_XL',
   provider: 'llamacpp',
   providers: [
-    {
+    modelOptionProvider({
       slug: 'llamacpp',
       name: 'Local',
       models: ['Qwen3.6-27B-UD-Q4_K_XL'],
       is_current: true,
       authenticated: true
-    },
-    {
+    }),
+    modelOptionProvider({
       slug: 'nous',
       name: 'Nous',
       models: ['Hermes-4.5'],
       authenticated: true
-    }
+    })
   ]
 }
 
@@ -113,9 +114,7 @@ describe('ModelPickerDialog download rows', () => {
 
   it('shows a first-ever download under its own Local group when no local provider exists yet', async () => {
     $localRuntimeJobs.set([DOWNLOAD_JOB])
-    vi.mocked(requestModelOptions).mockResolvedValue({
-      providers: [OPTIONS.providers![1]]
-    })
+    vi.mocked(requestModelOptions).mockResolvedValue(modelOptionsResult({ providers: [OPTIONS.providers[1]] }))
     renderPicker()
 
     expect(await screen.findByText('Hermes-4.5')).toBeTruthy()
@@ -160,9 +159,11 @@ describe('ModelPickerDialog search ranking', () => {
   const MODELS = ['glm-4.6-omni', 'claude-sonnet-4', 'gpt-4o']
 
   it('orders model rows exactly as the shared fuzzyRank does', async () => {
-    vi.mocked(requestModelOptions).mockResolvedValue({
-      providers: [{ slug: 'nous', name: 'Nous', models: MODELS, authenticated: true }]
-    })
+    vi.mocked(requestModelOptions).mockResolvedValue(
+      modelOptionsResult({
+        providers: [modelOptionProvider({ slug: 'nous', name: 'Nous', models: MODELS, authenticated: true })]
+      })
+    )
     renderPicker({ currentModel: 'gpt-4o', currentProvider: 'nous' })
     await screen.findByText('gpt-4o')
 
@@ -189,9 +190,11 @@ describe('ModelPickerDialog search ranking', () => {
   ])('separator variant %s still lists %s', async (query, expected) => {
     const catalog = ['gpt-4o', 'claude-3-opus', 'qwen3.8-flash']
 
-    vi.mocked(requestModelOptions).mockResolvedValue({
-      providers: [{ slug: 'nous', name: 'Nous', models: catalog, authenticated: true }]
-    })
+    vi.mocked(requestModelOptions).mockResolvedValue(
+      modelOptionsResult({
+        providers: [modelOptionProvider({ slug: 'nous', name: 'Nous', models: catalog, authenticated: true })]
+      })
+    )
     renderPicker({ currentModel: 'gpt-4o', currentProvider: 'nous' })
     await screen.findByText('gpt-4o')
 

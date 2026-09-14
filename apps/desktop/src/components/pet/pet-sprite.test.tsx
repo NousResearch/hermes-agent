@@ -18,13 +18,14 @@ vi.mock('@/store/pet', () => {
   }
 })
 
+import { petInfoResult } from '@/test/contract'
 import { reactRoot } from '@/test/react-root'
 
 import { installWindowStateBridge, setDocumentHidden, type WindowStateBridge } from '../../test/window-state'
 
 import { PetSprite } from './pet-sprite'
 
-const INFO = {
+const INFO = petInfoResult({
   enabled: true,
   frameH: 16,
   frameW: 16,
@@ -33,7 +34,7 @@ const INFO = {
   scale: 1,
   spritesheetBase64: 'stub',
   stateRows: ['idle']
-}
+})
 
 const mount = reactRoot()
 let windowState: WindowStateBridge

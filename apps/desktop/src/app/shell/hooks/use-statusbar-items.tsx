@@ -16,6 +16,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { displayPath, pathLeaf } from '@/lib/display-path'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import {
   Activity,
   AlertCircle,
@@ -85,7 +86,7 @@ interface StatusbarItemsOptions {
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
   freshDraftReady: boolean
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
   statusSnapshot: StatusResponse | null
   toggleCommandCenter: () => void
 }

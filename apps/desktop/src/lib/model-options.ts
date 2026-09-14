@@ -1,6 +1,15 @@
-import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
+import { isRecord } from '@hermes/shared'
+import type {
+  JsonValue,
+  ModelOptionProvider,
+  ModelOptionsResult,
+  RpcMethods,
+  SavedKeyModelCapabilities,
+  SavedKeyModelPricing
+} from '@hermes/shared'
 
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 
 type CatalogProviderIdentity = Pick<ModelOptionProvider, 'aliases' | 'name' | 'slug'>
 
@@ -18,6 +27,64 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
   )
 }
 
+// `model.options` types the per-model capability and pricing maps as free JSON, so this
+// module is the one place that reads them back into the contract's row types.
+const jsonRow = (value: JsonValue | null | undefined, key: string): JsonValue | undefined => {
+  if (!isRecord(value)) {
+    return undefined
+  }
+
+  const row = value[key]
+
+  return isRecord(row) ? row : undefined
+}
+
+/** A placeholder catalog row for a pick the catalog has not returned yet. */
+export function optimisticProvider(slug: string, model: string, name = slug): ModelOptionProvider {
+  return {
+    aliases: null,
+    api_url: null,
+    auth_type: null,
+    authenticated: null,
+    capabilities: null,
+    featured_models: null,
+    free_tier: null,
+    free_tier_pending: null,
+    free_tier_row: null,
+    is_current: false,
+    is_user_defined: false,
+    key_env: null,
+    models: model ? [model] : [],
+    name,
+    native_catalog_empty: null,
+    pricing: null,
+    pricing_pending: null,
+    slug,
+    source: '',
+    total_models: model ? 1 : 0,
+    unavailable_models: null,
+    warning: null
+  }
+}
+
+/** One model's capability row off a catalog provider. */
+export function providerCapabilities(
+  provider: ModelOptionProvider | null | undefined,
+  model: string
+): SavedKeyModelCapabilities | undefined {
+  // SAFETY: the gateway fills `capabilities` with `SavedKeyModelCapabilities` rows keyed by model id.
+  return jsonRow(provider?.capabilities, model) as SavedKeyModelCapabilities | undefined
+}
+
+/** One model's pricing row off a catalog provider. */
+export function providerPricing(
+  provider: ModelOptionProvider | null | undefined,
+  model: string
+): SavedKeyModelPricing | undefined {
+  // SAFETY: the gateway fills `pricing` with `SavedKeyModelPricing` rows keyed by model id.
+  return jsonRow(provider?.pricing, model) as SavedKeyModelPricing | undefined
+}
+
 /** The catalog's option support for the current pick, or undefined while the
  *  catalog is loading / doesn't say. Callers treat undefined as "assume
  *  reasoning" so controls never flicker away during the fetch. */
@@ -25,8 +92,11 @@ export function currentModelCapabilities(
   options: ModelOptionsResult | null | undefined,
   provider: string,
   model: string
-): ModelCapabilities | undefined {
-  return options?.providers?.find(row => catalogProviderMatches(row, provider))?.capabilities?.[model]
+): SavedKeyModelCapabilities | undefined {
+  return providerCapabilities(
+    options?.providers?.find(row => catalogProviderMatches(row, provider)),
+    model
+  )
 }
 
 // A picked (provider, model) pair is never retargeted from catalog membership.
@@ -45,7 +115,7 @@ interface ModelOptionsRequest {
   /** Owner-routed RPC. When set, catalog reads hit this dispatcher instead of
    *  `gateway.request` — a tile's model menu must not query the ambient
    *  chrome socket (#93892). */
-  request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  request?: GatewayRequest
   /** Profile for the REST recovery path. Must match the catalog owner so a
    *  secondary tile does not fall back to the launch profile's models. */
   profile?: null | string
@@ -90,7 +160,7 @@ export async function requestModelOptions({
   const dispatch = request ?? (gateway ? gateway.request.bind(gateway) : null)
 
   if (dispatch) {
-    const params: Record<string, unknown> = {}
+    const params: RpcMethods['model.options']['params'] = {}
 
     if (sessionId) {
       params.session_id = sessionId
@@ -114,7 +184,7 @@ export async function requestModelOptions({
     let gatewayOptions: ModelOptionsResult | undefined
 
     try {
-      gatewayOptions = await dispatch<ModelOptionsResult>('model.options', params)
+      gatewayOptions = await dispatch('model.options', params)
     } catch (error) {
       gatewayError = error
     }

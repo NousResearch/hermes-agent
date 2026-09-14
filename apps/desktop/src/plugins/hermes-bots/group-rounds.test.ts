@@ -458,8 +458,8 @@ describe('per-member delta', () => {
     const alphaSession = room.gateway.sessions.get(String(alphaFirst?.stored))
     const betaSession = room.gateway.sessions.get(String(betaFirst?.stored))
 
-    expect(alphaSession?.messages.some(message => message.content.includes('BETA_ONLY'))).toBe(false)
-    expect(betaSession?.messages.some(message => message.content.includes('ALPHA_ONLY'))).toBe(false)
+    expect(alphaSession?.messages.some(message => message.text.includes('BETA_ONLY'))).toBe(false)
+    expect(betaSession?.messages.some(message => message.text.includes('ALPHA_ONLY'))).toBe(false)
   })
 })
 

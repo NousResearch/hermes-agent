@@ -752,7 +752,7 @@ export async function refreshSessionControl(
   const token = beginRead(sessionId, Boolean(options.background))
 
   try {
-    const response = await requestForOwnedSession<unknown>(
+    const response = await requestForOwnedSession(
       sessionId,
       ambientRequestFor(gateway),
       'session.control.read',
@@ -823,9 +823,9 @@ export async function runSessionControlAction(
   const token = beginAction(sessionId, action)
 
   try {
-    const response = await requestForOwnedSession<unknown>(sessionId, ambientRequestFor(gateway), 'session.control', {
+    const response = await requestForOwnedSession(sessionId, ambientRequestFor(gateway), 'session.control', {
       action,
-      args: args ?? {},
+      args: { index: null, profile: null, text: null, ...args },
       session_id: sessionId
     })
 

@@ -36,6 +36,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
+import type { RpcMethods } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { avatarColor, blobatarSvg, botAppearance, BotFace } from './avatar'
@@ -62,9 +63,7 @@ import { McpSetupButton } from './mcp-setup'
 import { ModelPicker } from './model-picker'
 import type {
   CapabilityEntry,
-  McpCatalogResponse,
-  ProfileConfigurePayload,
-  ProfileDescribeResponse
+  ProfileConfigurePayload
 } from './profile-config'
 import { CheckList, SkillsView, skillsViewRoutesConnections } from './profile-config'
 import { deleteBot } from './profile-ops'
@@ -180,7 +179,10 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
 
   /** Gateway RPC on the create target: the picked connection's default
    *  backend for remote targets, the active gateway otherwise. */
-  const requestForTarget = <T,>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
+  const requestForTarget = <M extends keyof RpcMethods>(
+    method: M,
+    params: RpcMethods[M]['params']
+  ): Promise<RpcMethods[M]['result']> =>
     remoteTarget
       ? host.requestProfile(
           {
@@ -302,21 +304,21 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
     }
 
     Promise.all([
-      requestForTarget<ProfileDescribeResponse>('profiles.describe', {
+      requestForTarget('profiles.describe', {
         name: remoteTarget ? 'default' : capSource
       }),
-      requestForTarget<McpCatalogResponse>('mcp.catalog', {}).catch(() => null)
+      requestForTarget('mcp.catalog', {}).catch(() => null)
     ])
       .then(([res, cat]) => {
         // Full MCP menu = the profile's configured servers + the bundled
         // catalog (installable). Configured entries win on name clash.
-        const configured = res.mcp_servers || []
+        const configured = res.mcp_servers
         const have = new Set(configured.map(m => m.name))
-        const catalog = ((cat && cat.servers) || []).filter(s => !have.has(s.name))
+        const catalog = (cat?.servers || []).filter(s => !have.has(s.name))
         setCaps({
           source: capSource,
-          skills: res.skills || [],
-          toolsets: res.toolsets || [],
+          skills: res.skills,
+          toolsets: res.toolsets,
           mcp: [
             ...configured,
             ...catalog.map(s => ({
@@ -324,9 +326,8 @@ export function CreateAgentDialog({ open, onClose, roster }: CreateAgentDialogPr
               enabled: false,
               fromCatalog: true,
               installed: s.installed,
-              auth: s.auth,
-              requires: s.requires || [],
-              description: s.description || ''
+              requires: s.requires,
+              description: s.description
             }))
           ]
         })

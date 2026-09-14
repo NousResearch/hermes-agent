@@ -22,6 +22,7 @@ import { showHandoffTour } from '@/components/onboarding-chat/signpost'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, activateTreePane } from '@/components/pane-shell/tree/store'
 import { toChatMessages } from '@/lib/chat-messages'
+import { toSessionMessages } from '@/lib/chat-messages/hydration'
 import { connectorTitle } from '@/lib/connector-tools'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -161,10 +162,21 @@ export function useOnboardingHandoff({
             personalize: async () => {
               const answers = $onboardingAnswers.get()
 
-              const result = await request<{ saved?: boolean; profile?: string; target?: string }>(
+              const result = await request(
                 owner,
                 'profiles.remember_onboarding',
-                { answers: { ...answers, connectors: answers.connectors.map(connectorTitle) } }
+                {
+                  answers: {
+                    accent: answers.accent,
+                    connectors: answers.connectors.map(connectorTitle),
+                    context: answers.context,
+                    focus: answers.committed,
+                    layout: answers.layout,
+                    name: answers.name,
+                    profile: BUILD_PROFILE,
+                    theme: null
+                  }
+                }
               )
 
               if (!result.saved || result.profile !== BUILD_PROFILE || result.target !== 'user') {
@@ -227,7 +239,7 @@ export function useOnboardingHandoff({
                   snapshot
                     ? {
                         ...state,
-                        messages: toChatMessages(snapshot.messages ?? []),
+                        messages: toChatMessages(toSessionMessages(snapshot.messages)),
                         busy: running,
                         awaitingResponse: running
                       }

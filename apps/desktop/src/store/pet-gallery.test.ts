@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { petGalleryEntry, petInfoResult } from '@/test/contract'
+
 import { $petInfo, setPetInfo } from './pet'
 import { $petGallery, adoptPet, type GatewayRequest, loadPetGallery, resetPetGallery } from './pet-gallery'
 
@@ -7,24 +9,24 @@ function localGallery() {
   return {
     enabled: true,
     active: 'boba',
-    pets: [{ slug: 'boba', displayName: 'Boba', installed: true }]
+    pets: [petGalleryEntry({ slug: 'boba', displayName: 'Boba', installed: true })]
   }
 }
 
 describe('pet gallery pet.info sync', () => {
   beforeEach(() => {
     resetPetGallery()
-    setPetInfo({ enabled: false })
+    setPetInfo(petInfoResult({ enabled: false }))
   })
 
   afterEach(() => {
     resetPetGallery()
-    setPetInfo({ enabled: false })
+    setPetInfo(petInfoResult({ enabled: false }))
     vi.restoreAllMocks()
   })
 
   it('uses pet.info.meta and keeps the cached spritesheet when the revision is current', async () => {
-    setPetInfo({
+    setPetInfo(petInfoResult({
       enabled: true,
       slug: 'boba',
       displayName: 'Old Boba',
@@ -33,7 +35,7 @@ describe('pet gallery pet.info sync', () => {
       spritesheetRevision: '100:2048',
       frameW: 192,
       frameH: 208
-    })
+    }))
 
     const requestMock = vi.fn(async (method: string) => {
       if (method === 'pet.gallery') {
@@ -77,14 +79,14 @@ describe('pet gallery pet.info sync', () => {
   })
 
   it('fetches full pet.info when metadata reports a new spritesheet revision', async () => {
-    setPetInfo({
+    setPetInfo(petInfoResult({
       enabled: true,
       slug: 'boba',
       displayName: 'Boba',
       scale: 0.33,
       spritesheetBase64: 'old-sprite-payload',
       spritesheetRevision: '100:2048'
-    })
+    }))
 
     const requestMock = vi.fn(async (method: string) => {
       if (method === 'pet.gallery') {
@@ -168,14 +170,14 @@ describe('pet gallery pet.info sync', () => {
 
   it('keeps mutation sync on metadata when the selected pet sprite is unchanged', async () => {
     $petGallery.set(localGallery())
-    setPetInfo({
+    setPetInfo(petInfoResult({
       enabled: true,
       slug: 'boba',
       displayName: 'Boba',
       scale: 0.33,
       spritesheetBase64: 'large-sprite-payload',
       spritesheetRevision: '100:2048'
-    })
+    }))
 
     const requestMock = vi.fn(async (method: string) => {
       if (method === 'pet.select') {

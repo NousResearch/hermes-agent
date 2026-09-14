@@ -32,7 +32,6 @@ import {
 import {
   $imagenAvailable,
   generateAvatarImage,
-  type GeneratedImage,
   normalizeAvatarImage,
   pickImageFromDevice,
   probeImagen
@@ -96,16 +95,16 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
 
       const img = custom
         ? await (async () => {
-            const res = await host.request<GeneratedImage>('image.generate', {
+            const res = await host.request('image.generate', {
               prompt: `${custom}. Avatar for an AI agent: centered, bold flat vector style, solid color background, no text.`,
               aspect_ratio: 'square'
             })
 
-            if (!res?.success) {
-              throw new Error(res?.error || 'generation failed')
+            if (!res.success) {
+              throw new Error(res.error || 'generation failed')
             }
 
-            return res.image_data || res.image
+            return res.image_data || res.image || undefined
           })()
         : await generateAvatarImage(generateSeed?.name || 'agent', generateSeed?.title, generateSeed?.description)
 

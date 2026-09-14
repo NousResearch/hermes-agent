@@ -1,4 +1,4 @@
-import type { GatewayEventName } from '@hermes/shared'
+import type { GatewayEvent, GatewayEventName } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -8,8 +8,9 @@ const SID = 'timeline-session'
 
 let stream: MessageStreamHarness
 
+// SAFETY: `timestamp` rides on payloads ahead of the contract (GatewayEventPayload reads it); the rest is the wire.
 const event = (type: GatewayEventName, timestamp: number, payload: Record<string, unknown> = {}) =>
-  act(() => stream.handleEvent({ payload: { ...payload, timestamp }, session_id: SID, type }))
+  act(() => stream.handleEvent({ payload: { ...payload, timestamp } as GatewayEvent['payload'], session_id: SID, type }))
 
 describe('live transcript timeline events', () => {
   beforeEach(async () => {

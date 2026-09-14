@@ -3,6 +3,7 @@ import { act, cleanup, render, renderHook, waitFor } from '@testing-library/reac
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -15,6 +16,7 @@ import {
   setCurrentProvider
 } from '@/store/session'
 import * as SessionStates from '@/store/session-states'
+import { modelOptionProvider } from '@/test/contract'
 
 import { deferred } from '../../../test/deferred'
 
@@ -71,7 +73,7 @@ function Harness({
   requestGateway
 }: {
   onReady: (controls: Controls) => void
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }) {
   const controls = useModelControls({
     queryClient: new QueryClient(),
@@ -247,11 +249,7 @@ describe('useModelControls', () => {
       model: 'poolside/laguna-xs-2.1:free',
       provider: 'nous',
       providers: [
-        {
-          models: ['poolside/laguna-xs-2.1:free'],
-          name: 'nous',
-          slug: 'nous'
-        }
+        modelOptionProvider({ models: ['poolside/laguna-xs-2.1:free'], name: 'nous', slug: 'nous', total_models: 1 })
       ]
     })
   })

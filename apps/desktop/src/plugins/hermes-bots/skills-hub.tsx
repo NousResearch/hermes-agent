@@ -7,9 +7,11 @@
  */
 
 import { Button, host, Input } from '@hermes/plugin-sdk'
+import type { SkillHubHit } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { useBots } from './i18n'
+import { profileScopeName } from './mcp-setup'
 
 // ── skills hub section: the REAL hub page (docs) embedded as a picker ──────
 // https://hermes-agent.nousresearch.com/docs/skills?embed=picker hides the
@@ -20,11 +22,6 @@ import { useBots } from './i18n'
 
 const HUB_ORIGIN = 'https://hermes-agent.nousresearch.com'
 const HUB_PICKER_URL = HUB_ORIGIN + '/docs/skills?embed=picker'
-/** One `skills.manage action=search` hit. */
-interface HubSkillResult {
-  description?: string
-  name: string
-}
 interface HubSkillsSectionProps {
   /** Install target: a bare profile name, a connection-scoped descriptor for a
    *  bot on another gateway, or null for the launch profile (create time). */
@@ -35,7 +32,7 @@ interface HubSkillsSectionProps {
 export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionProps) {
   const b = useBots()
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<HubSkillResult[] | null>(null)
+  const [results, setResults] = useState<SkillHubHit[] | null>(null)
   const [searching, setSearching] = useState(false)
   const [installing, setInstalling] = useState<null | string>(null)
   const [installed, setInstalled] = useState<Record<string, boolean>>({})
@@ -96,7 +93,7 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
     setResults(null)
 
     try {
-      const res: { results?: HubSkillResult[] } = await host.request('skills.manage', {
+      const res = await host.request('skills.manage', {
         action: 'search',
         query: q
       })
@@ -108,6 +105,10 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
       setSearching(false)
     }
   }
+
+  // The gateway scopes the install by profile NAME; the panes hand down either
+  // a bare name or a connection-qualified scope. null = launch profile.
+  const installProfile = profileScopeName(forProfile)
 
   const install = async (name: string, displayName?: string) => {
     const label = displayName || name
@@ -125,11 +126,8 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
       await host.request('skills.manage', {
         action: 'install',
         query: name,
-        ...(forProfile
-          ? {
-              profile: forProfile
-            }
-          : {})
+        // Omitted entirely for the launch profile — the gateway's own default.
+        ...(installProfile ? { profile: installProfile } : {})
       })
       setInstalled(prev => ({
         ...prev,
@@ -140,9 +138,7 @@ export function HubSkillsSection({ forProfile, onInstalled }: HubSkillsSectionPr
         message: `Skill "${label}" installed`
       })
 
-      if (typeof onInstalled === 'function') {
-        onInstalled(label)
-      }
+      onInstalled?.(label)
     } catch (err) {
       host.notifyError(err, `Installing "${label}" failed`)
     } finally {

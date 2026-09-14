@@ -1,8 +1,10 @@
+import type { GatewayEvent } from '@hermes/shared'
+
 import { reportFirstBuildToolComplete } from '@/components/onboarding-chat/first-build'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { flashPetActivity, setPetActivity } from '@/store/pet'
-import { pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { pruneDelegateFallbackSubagents, type SubagentEventName, upsertSubagent } from '@/store/subagents'
 import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
 import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
@@ -13,6 +15,11 @@ import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/s
 import { SUBAGENT_EVENT_TYPES, toTodoPayload } from '../utils'
 
 import type { GatewayEventContext } from './types'
+
+// The event name is the wire discriminant: narrowing on it hands the handler
+// the generated subagent payload instead of the envelope's loose bag.
+const isSubagentEvent = (event: GatewayEvent): event is GatewayEvent<SubagentEventName> =>
+  SUBAGENT_EVENT_TYPES.has(event.type)
 
 /** tool.generating / tool.start / tool.complete / subagent.*. */
 export function handleToolEvent(ctx: GatewayEventContext): boolean {
@@ -132,8 +139,10 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
     return true
   }
 
-  if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-    if (sessionId && payload && !sessionInterrupted(sessionId)) {
+  if (isSubagentEvent(event)) {
+    const frame = event.payload
+
+    if (sessionId && frame && !sessionInterrupted(sessionId)) {
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         pruneDelegateFallbackSubagents(sessionId)
       }
@@ -141,7 +150,7 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
       nativeSubagentSessionsRef.current.add(sessionId)
       upsertSubagent(
         sessionId,
-        payload as Record<string, unknown>,
+        frame,
         event.type === 'subagent.spawn_requested' || event.type === 'subagent.start',
         event.type
       )

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
+import { commandsCatalogResult } from '@/test/contract'
 
 import { insertInlineRefsIntoEditor } from './inline-refs'
 import {
@@ -16,9 +17,9 @@ import {
 import { placeCaretAtEnd } from './test-utils'
 
 beforeEach(() => {
-  rememberDesktopCommandsCatalog({
+  rememberDesktopCommandsCatalog(commandsCatalogResult({
     commands: { '/goal': { argument_mode: 'mixed', desktop: null } }
-  })
+  }))
 })
 
 afterEach(() => {

@@ -284,7 +284,7 @@ async function pollOnce(sessionId: string, requestGateway: FreeTierRequester, mi
     // The tokens are on disk now, so the backend's view of this identity has
     // changed: reload its env and re-read the free-tier verdict before the
     // completed screen claims the user is signed in.
-    await requestGateway('reload.env').catch(() => undefined)
+    await requestGateway('reload.env', {}).catch(() => undefined)
     await refreshFreeTierStatus(requestGateway)
 
     if (stale()) {

@@ -1,3 +1,4 @@
+import type { JsonValue } from '@hermes/shared'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileInfo } from '@/types/hermes'
@@ -97,6 +98,24 @@ vi.mock('@/store/profile', async () => {
 vi.mock('@/store/gateway', async () => {
   const { atom } = await import('nanostores')
 
+  // The typed door and the plugin-boundary untyped door share one spy per
+  // route flavor: they differ only in how the method name is typed, and every
+  // assertion here is about which ROUTE the call took.
+  const agentDoor = vi.fn(
+    async (connectionId: string, profile: string, method: string, params: Record<string, JsonValue>) => ({
+      connectionId,
+      method,
+      params,
+      profile
+    })
+  )
+
+  const profileDoor = vi.fn(async (profile: string, method: string, params: Record<string, JsonValue>) => ({
+    method,
+    params,
+    profile
+  }))
+
   return {
     $activeGatewayRoute: atom('default'),
     $gateway: atom(null),
@@ -105,19 +124,10 @@ vi.mock('@/store/gateway', async () => {
     ensureGatewayForAgent: vi.fn(),
     openGatewayForAgent: vi.fn(),
     openGatewayForProfile: vi.fn(),
-    requestGatewayForAgent: vi.fn(
-      async (connectionId: string, profile: string, method: string, params: Record<string, unknown>) => ({
-        connectionId,
-        method,
-        params,
-        profile
-      })
-    ),
-    requestGatewayForProfile: vi.fn(async (profile: string, method: string, params: Record<string, unknown>) => ({
-      method,
-      params,
-      profile
-    })),
+    requestGatewayForAgent: agentDoor,
+    requestGatewayForAgentUntyped: agentDoor,
+    requestGatewayForProfile: profileDoor,
+    requestGatewayForProfileUntyped: profileDoor,
     retireLocalProfileGateways: vi.fn()
   }
 })

@@ -49,7 +49,6 @@ import { $sessionTiles, closeAllOpenSessionTiles } from '@/store/session-states'
 import { ackStoredSessionId } from '@/store/session-unread'
 import { canOpenSessionInTerminal, canOpenSessionWindow, openSessionInTerminal } from '@/store/windows'
 
-import type { SessionTitleResponse } from '../../types'
 
 // Rename a session, preferring the gateway's session.title RPC over REST.
 //
@@ -78,12 +77,12 @@ export async function renameSessionPreferringRpc(
 
   if (title && runtimeId && gateway) {
     try {
-      const result = await gateway.request<SessionTitleResponse>('session.title', {
+      const result = await gateway.request('session.title', {
         session_id: runtimeId,
         title
       })
 
-      return { title: result?.title ?? title }
+      return { title: result.title || title }
     } catch (err) {
       // Fall through to REST — e.g. the socket is mid-reconnect. REST still
       // works for any session that already has a persisted row. Log so a

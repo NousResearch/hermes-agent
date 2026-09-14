@@ -171,7 +171,7 @@ export async function refreshSessionGoal(sid: string): Promise<void> {
   }
 
   try {
-    const result = await requestForOwnedSession<{ output?: string }>(sid, ambientRequestFor(gateway), 'slash.exec', {
+    const result = await requestForOwnedSession(sid, ambientRequestFor(gateway), 'slash.exec', {
       command: 'goal status',
       session_id: sid
     })

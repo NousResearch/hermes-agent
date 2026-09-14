@@ -9,6 +9,7 @@ import {
   publishSessionState,
   reconcileBusyStatesOnReconnect
 } from '@/store/session-states'
+import { sessionActiveItem } from '@/test/contract'
 
 import { rehydrateLiveSessionStatuses, resetLiveRuntimeTracking } from './use-background-sync'
 
@@ -38,7 +39,7 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
 
   it('shows the spinner for a turn that started with no stream events', () => {
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-cold', session_key: 'stored-cold', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-cold', session_key: 'stored-cold', status: 'working' })]
     })
 
     expect($workingSessionIds.get()).toContain('stored-cold')
@@ -46,10 +47,10 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
 
   it('keeps the spinner across polls while the turn is still running', () => {
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-cold', session_key: 'stored-cold', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-cold', session_key: 'stored-cold', status: 'working' })]
     })
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-cold', session_key: 'stored-cold', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-cold', session_key: 'stored-cold', status: 'working' })]
     })
 
     expect($workingSessionIds.get()).toContain('stored-cold')
@@ -140,11 +141,11 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     // A respawned backend can mint the same runtime id for a different stored
     // session. The row for the NEW stored id must light up, not the stale one.
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-1', session_key: 'stored-old', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-1', session_key: 'stored-old', status: 'working' })]
     })
 
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-1', session_key: 'stored-new', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-1', session_key: 'stored-new', status: 'working' })]
     })
 
     expect($workingSessionIds.get()).toContain('stored-new')
@@ -157,7 +158,7 @@ describe('rehydrateLiveSessionStatuses — seeding a turn the renderer never saw
     // is not proof of a turn — lighting the spinner here would fire on merely
     // opening a session. A real turn arrives as `working`.
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-boot', session_key: 'stored-boot', status: 'starting' }]
+      sessions: [sessionActiveItem({ id: 'runtime-boot', session_key: 'stored-boot', status: 'starting' })]
     })
 
     expect($workingSessionIds.get()).not.toContain('stored-boot')

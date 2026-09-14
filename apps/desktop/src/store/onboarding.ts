@@ -13,6 +13,7 @@ import {
   validateProviderCredential
 } from '@/hermes'
 import { translateNow } from '@/i18n'
+import type { GatewayRequest } from '@/lib/gateway-rpc'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
@@ -89,7 +90,7 @@ export interface DesktopOnboardingState {
 export interface OnboardingContext {
   onCompleted?: () => void
   profile?: string
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequest
 }
 
 const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
@@ -370,7 +371,7 @@ async function completeWithModelConfirm(
   ignoreRuntimeGate = false
 ) {
   const generation = flowGeneration
-  await ctx.requestGateway('reload.env').catch(() => undefined)
+  await ctx.requestGateway('reload.env', {}).catch(() => undefined)
 
   if (generation !== flowGeneration) {
     return
@@ -1137,7 +1138,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
       return { ok: false }
     }
 
-    await ctx.requestGateway('reload.env').catch(() => undefined)
+    await ctx.requestGateway('reload.env', {}).catch(() => undefined)
 
     if (generation !== flowGeneration) {
       return { ok: false }

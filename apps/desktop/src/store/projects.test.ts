@@ -673,7 +673,15 @@ describe('repository discovery policy', () => {
 
     expect(scanRepos).not.toHaveBeenCalled()
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
-      discovery_policy: { enabled: false, exclude_paths: [], roots: [] },
+      discovery_policy: {
+        enabled: false,
+        exclude_paths: [],
+        profile: null,
+        repo_scan_enabled: false,
+        repo_scan_exclude_paths: [],
+        repo_scan_roots: [],
+        roots: []
+      },
       profile: 'default',
       repos: []
     })
@@ -708,10 +716,14 @@ describe('repository discovery policy', () => {
       discovery_policy: {
         enabled: true,
         exclude_paths: ['/work/vendor'],
+        profile: null,
+        repo_scan_enabled: true,
+        repo_scan_exclude_paths: ['/work/vendor'],
+        repo_scan_roots: ['/work'],
         roots: ['/work']
       },
       profile: 'default',
-      repos: [{ label: 'repo', root: '/work/repo' }]
+      repos: [{ label: 'repo', profile: null, root: '/work/repo' }]
     })
   })
 
@@ -851,9 +863,17 @@ describe('repository discovery policy', () => {
     await pending
 
     expect(request).toHaveBeenCalledWith('projects.record_repos', {
-      discovery_policy: { enabled: true, exclude_paths: [], roots: ['/work'] },
+      discovery_policy: {
+        enabled: true,
+        exclude_paths: [],
+        profile: null,
+        repo_scan_enabled: true,
+        repo_scan_exclude_paths: [],
+        repo_scan_roots: ['/work'],
+        roots: ['/work']
+      },
       profile: 'launch',
-      repos: [{ label: 'repo', root: '/work/repo' }]
+      repos: [{ label: 'repo', profile: null, root: '/work/repo' }]
     })
     expect(request).not.toHaveBeenCalledWith('projects.record_repos', expect.objectContaining({ profile: 'coder' }))
     expect($projectTree.get()).toEqual([])

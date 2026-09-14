@@ -22,6 +22,7 @@
  * `stopBotRelay`; only the SDK `host` and the attention hooks are mocked.
  */
 
+import type { JsonValue } from '@hermes/plugin-sdk'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileRoute } from './types'
@@ -69,7 +70,22 @@ interface RelayCall {
   params: Record<string, unknown>
 }
 
-function respondWith(handler: (call: RelayCall) => unknown) {
+/** What a scripted handler answers with: the result fields the test asserts
+ *  on, awaited so a handler can hold its RPC open. */
+type ScriptedResult = Record<string, JsonValue | undefined>
+type ScriptedAnswer = Promise<ScriptedResult> | ScriptedResult
+
+/** The gateway's empty answer per relay RPC, so a handler scripts only the
+ *  call it is about and every other answer still matches the contract. */
+const EMPTY_ANSWERS = {
+  'bot_relay.deliver': { reply: '' },
+  'bot_relay.outbox.drain': { envelopes: [] },
+  'profiles.list': { bot_mode_protocol: false, profiles: [] }
+} satisfies Record<string, Record<string, JsonValue>>
+
+const emptyAnswerFor = (method: string) => Object.entries(EMPTY_ANSWERS).find(([name]) => name === method)?.[1]
+
+function respondWith(handler: (call: RelayCall) => ScriptedAnswer) {
   const calls: RelayCall[] = []
 
   ;(hostMock.requestProfile as ReturnType<typeof vi.fn>).mockImplementation(
@@ -78,7 +94,7 @@ function respondWith(handler: (call: RelayCall) => unknown) {
 
       calls.push(call)
 
-      return handler(call)
+      return { ...emptyAnswerFor(method), ...(await handler(call)) }
     }
   )
 
@@ -130,7 +146,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   hostMock.onEvent = vi.fn(() => vi.fn())
   hostMock.profileRoutes = vi.fn(async () => [route('a'), route('b')])
-  hostMock.requestProfile = vi.fn(async () => ({}))
+  hostMock.requestProfile = vi.fn(async (_route: ProfileRoute, method: string) => ({ ...emptyAnswerFor(method) }))
   hostMock.retainProfileSocket = vi.fn(() => vi.fn())
 })
 

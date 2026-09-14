@@ -1,4 +1,4 @@
-import { JSON_RPC_METHOD_NOT_FOUND } from '@hermes/shared'
+import { JSON_RPC_METHOD_NOT_FOUND, type RpcMethods } from '@hermes/shared'
 
 /** True when a JSON-RPC call failed because the backend predates the method.
  *  The gateway answers -32601 (`tui_gateway/server.py::dispatch`) and the
@@ -47,4 +47,23 @@ export function isBusySessionModelSwitch(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
   return /session busy/i.test(message) && /switching models/i.test(message)
+}
+
+/** The typed RPC caller every desktop request wrapper forwards; the method literal picks params and result. */
+export type GatewayRequest = <M extends keyof RpcMethods>(
+  method: M,
+  params: RpcMethods[M]['params'],
+  timeoutMs?: number,
+  signal?: AbortSignal
+) => Promise<RpcMethods[M]['result']>
+
+/** The routing keys the generated params carry: `profile` on every method, `session_id` on the session-scoped ones. */
+export interface RoutableParams {
+  profile?: null | string
+  session_id?: null | string
+}
+
+/** The session a session-scoped RPC names, read off the generated params. */
+export function paramsSessionId(params: RoutableParams): string {
+  return (params.session_id ?? '').trim()
 }

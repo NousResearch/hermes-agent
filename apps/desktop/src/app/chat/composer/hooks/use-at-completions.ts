@@ -190,7 +190,7 @@ export function useAtCompletions(options: {
         // `git ls-files` + rank on the backend (~40ms of the ~50ms round trip
         // measured on this repo's 8k files).
         const result = await cachedPathCompletion(cacheKey(query), () =>
-          gateway.request<{ items?: CompletionEntry[] }>('complete.path', params)
+          gateway.request('complete.path', params)
         )
 
         const items = result.items ?? []

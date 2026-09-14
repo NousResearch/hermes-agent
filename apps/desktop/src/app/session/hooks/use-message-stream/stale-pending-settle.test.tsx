@@ -8,6 +8,8 @@ import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { sessionLiveInfo } from '@/test/contract'
+
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
@@ -47,7 +49,7 @@ describe('turn end without message.complete (session.info running=false)', () =>
 
     expect(stream.state()?.messages.at(-1)?.pending).toBe(true)
 
-    emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
+    emit({ payload: sessionLiveInfo({ running: false }), session_id: SID, type: 'session.info' })
 
     const state = stream.state()
     const tail = state?.messages.at(-1)
@@ -75,7 +77,7 @@ describe('turn end without message.complete (session.info running=false)', () =>
       type: 'tool.complete'
     })
 
-    emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
+    emit({ payload: sessionLiveInfo({ running: false }), session_id: SID, type: 'session.info' })
 
     const state = stream.state()
 

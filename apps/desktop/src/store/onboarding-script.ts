@@ -6,6 +6,9 @@
  * cannot be interpreted downstream.
  */
 
+import type { SeedMessage } from '@hermes/shared'
+
+import { seedMessage } from '@/app/session/hooks/use-session-actions/create-overrides'
 import { machineKind, machineLanguageName, machineLooksNew, machineSetupLeads, machineUserName } from '@/store/machine'
 
 const VOICE_RULES =
@@ -21,14 +24,10 @@ export function buildChatOnboardingSeedMessages(
   greeting: string,
   signedIn = false,
   capabilities = ''
-): {
-  content: string
-  display_kind?: 'hidden'
-  role: 'assistant' | 'user'
-}[] {
+): SeedMessage[] {
   return [
-    { content: buildChatOnboardingPrompt(machineUserName(), signedIn, capabilities), display_kind: 'hidden', role: 'user' },
-    { content: greeting, role: 'assistant' }
+    seedMessage('user', buildChatOnboardingPrompt(machineUserName(), signedIn, capabilities), 'hidden'),
+    seedMessage('assistant', greeting)
   ]
 }
 

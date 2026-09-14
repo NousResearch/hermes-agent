@@ -10,6 +10,7 @@
  */
 
 import { atom, host } from '@hermes/plugin-sdk'
+import type { ProfilesConfigureParams, RpcMethods } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
@@ -23,8 +24,7 @@ import type {
   GroupMember,
   GroupMessage,
   GroupMessageAuthor,
-  GroupPrompt,
-  RosterRow
+  GroupPrompt
 } from './types'
 
 /** Optional secondary navigation inside the Bots pane (group-chat rooms). */
@@ -57,7 +57,7 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
 
 /** One room inside the bounded ui_meta projection: a compacted log plus the
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
-interface GroupChatSyncRoom {
+type GroupChatSyncRoom = {
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]
@@ -68,7 +68,7 @@ interface GroupChatSyncRoom {
 
 /** The v3 envelope stored under the default profile's `hermes-bots-groups`
  *  ui_meta key. `deleted` maps a room key to its tombstone revision. */
-interface GroupChatSyncSnapshot {
+type GroupChatSyncSnapshot = {
   deleted?: Record<string, number>
   rooms: Record<string, GroupChatSyncRoom>
   updatedAt?: number
@@ -816,11 +816,11 @@ function groupChatSyncConnectionId() {
 /** Route a sync job back to the gateway that was active when it was queued.
  *  A foreground switch during debounce must not write the old snapshot into
  *  the newly active gateway. */
-async function groupChatSyncRequest<T>(
+async function groupChatSyncRequest<M extends keyof RpcMethods>(
   job: GroupChatSyncJob,
-  method: string,
-  params: Record<string, unknown>
-): Promise<T> {
+  method: M,
+  params: RpcMethods[M]['params']
+): Promise<RpcMethods[M]['result']> {
   if (job.connectionId && typeof host.profileRoutes === 'function' && typeof host.requestProfile === 'function') {
     const routes = await host.profileRoutes()
 
@@ -845,18 +845,20 @@ async function groupChatSyncRequest<T>(
 }
 
 async function groupChatRemoteSnapshot(job: GroupChatSyncJob) {
-  const result = await groupChatSyncRequest<{ profiles?: RosterRow[] }>(job, 'profiles.list', {
+  const result = await groupChatSyncRequest(job, 'profiles.list', {
     include_sessions: false
   })
 
-  const profile = (Array.isArray(result?.profiles) ? result.profiles : []).find(row => row?.name === 'default')
+  const profile = result.profiles.find(row => row.name === 'default')
+  // SAFETY: Bot Mode is the only writer of this ui_meta key (the
+  // profiles.configure below), so the JSON under it is the room projection.
   const snapshot = profile?.ui_meta?.[GROUP_CHAT_SYNC_META_KEY] as GroupChatSyncSnapshot | undefined
-  const supportsCas = Boolean(profile && Object.prototype.hasOwnProperty.call(profile, 'ui_meta_revisions'))
 
   return {
-    snapshot: snapshot && typeof snapshot === 'object' && !Array.isArray(snapshot) ? snapshot : null,
-    revision: Math.max(0, Number(profile?.ui_meta_revisions?.[GROUP_CHAT_SYNC_META_KEY] || 0)),
-    supportsCas
+    snapshot: snapshot ?? null,
+    revision: Math.max(0, profile?.ui_meta_revisions?.[GROUP_CHAT_SYNC_META_KEY] || 0),
+    // Compare-and-swap is feature-detected: a pre-CAS gateway omits the field.
+    supportsCas: Boolean(profile && Object.prototype.hasOwnProperty.call(profile, 'ui_meta_revisions'))
   }
 }
 
@@ -1000,11 +1002,7 @@ async function flushGroupChatServerSync(connectionId?: string) {
       return
     }
 
-    const configureParams: {
-      name: string
-      ui_meta: Record<string, GroupChatSyncSnapshot>
-      ui_meta_expected_revisions?: Record<string, number>
-    } = {
+    const configureParams: ProfilesConfigureParams = {
       name: 'default',
       ui_meta: {
         [GROUP_CHAT_SYNC_META_KEY]: snapshot
@@ -1017,17 +1015,15 @@ async function flushGroupChatServerSync(connectionId?: string) {
       }
     }
 
-    const result = await groupChatSyncRequest<{
-      applied?: { ui_meta?: boolean; ui_meta_revisions?: Record<string, number> }
-    }>(job, 'profiles.configure', configureParams)
+    const result = await groupChatSyncRequest(job, 'profiles.configure', configureParams)
 
-    if (result?.applied?.ui_meta !== true) {
+    if (result.applied.ui_meta !== true) {
       throw new Error('Gateway rejected group chat ui_meta')
     }
 
     if (
       remoteState.supportsCas &&
-      Number(result?.applied?.ui_meta_revisions?.[GROUP_CHAT_SYNC_META_KEY] || 0) !== writeRevision
+      Number(result.applied.ui_meta_revisions?.[GROUP_CHAT_SYNC_META_KEY] || 0) !== writeRevision
     ) {
       throw new Error('Gateway did not advance group chat ui_meta revision')
     }

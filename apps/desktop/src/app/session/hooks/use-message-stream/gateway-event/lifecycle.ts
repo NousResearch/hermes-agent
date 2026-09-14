@@ -1,5 +1,4 @@
 import type { GatewayEvent } from '@hermes/shared'
-import type { HermesSkin } from '@hermes/shared/skin'
 
 import {
   notifyCronChanged,
@@ -53,7 +52,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     // A runtime skin switch (Hermes activating an authored skin, or `/skin`
     // on another surface). Only the active source+profile's change repaints.
     if (fromActiveSource()) {
-      ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
+      // SAFETY: `event.type === 'skin.changed'` was checked above; GatewayEvent<K> keys payload by type.
+      ingestBackendSkin((event as GatewayEvent<'skin.changed'>).payload, { apply: true })
     }
 
     return true

@@ -1,5 +1,33 @@
 import { isRecord } from '@assistant-ui/core/internal'
 import type { ToolCallMessagePart } from '@assistant-ui/react'
+import type { ConnectorRow } from '@hermes/shared'
+
+import type { ChatMessage } from '@/lib/chat-messages'
+
+export function latestConnectorPart(messages: ChatMessage[]) {
+  return messages
+    .flatMap(message => message.parts)
+    .filter(part => {
+      if (part.type !== 'tool-call') {
+        return false
+      }
+
+      if (part.toolName === 'manage_connections') {
+        const input = recordOf(part.args)
+
+        return (
+          (input.action ?? 'status') !== 'status' || (Array.isArray(input.connectors) && input.connectors.length > 0)
+        )
+      }
+
+      return connectorCalls(part.toolName, part.args).length > 0
+    })
+    .at(-1)
+}
+
+ from '@assistant-ui/core/internal'
+import type { ToolCallMessagePart } from '@assistant-ui/react'
+import type { ConnectorRow as WireConnectorRow } from '@hermes/shared'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
@@ -75,6 +103,21 @@ export interface ConnectorRow {
   name?: string
   description?: string
 }
+
+/** A `connectors.list` row as the cards display it: nulls dropped, the status narrowed to the known set. */
+export function connectorRowFromWire(row: WireConnectorRow): ConnectorRow {
+  return {
+    connector: row.connector,
+    connected: row.connected,
+    enabled: row.enabled,
+    ...(row.connectionStatus !== null && isConnectionStatus(row.connectionStatus)
+      ? { connectionStatus: row.connectionStatus }
+      : {}),
+    ...(row.name !== null ? { name: row.name } : {}),
+    ...(row.description !== null ? { description: row.description } : {})
+  }
+}
+
 
 export function connectorText(value: ToolCallMessagePart['result']): string | undefined {
   return typeof value === 'string' ? value : undefined
@@ -165,7 +208,7 @@ export function connectionRows(
 
     if (slug !== undefined) {
       if (/^[a-z0-9_-]+$/i.test(slug)) {
-        rows.set(slug, rows.get(slug) ?? { connector: slug })
+        rows.set(slug, rows.get(slug) ?? blankConnectorRow(slug))
       }
 
       return
@@ -178,7 +221,7 @@ export function connectionRows(
       return
     }
 
-    const merged: ConnectorRow = { ...rows.get(connector), connector }
+    const merged: ConnectorRow = { ...blankConnectorRow(connector), ...rows.get(connector) }
 
     if (row.connected === true || row.connected === false) {
       merged.connected = row.connected

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
+import { setupRuntimeCheckResult, setupStatusResult } from '@/test/contract'
+import { gatewayRequestMock } from '@/test/gateway-request'
+
 import {
   evaluateRuntimeReadiness,
   fetchRuntimeReadinessSignals,
@@ -10,9 +13,9 @@ import {
 describe('interpretRuntimeReadiness', () => {
   it('prefers runtime_check when both signals exist', () => {
     const result = interpretRuntimeReadiness({
-      setup: { provider_configured: false },
+      setup: setupStatusResult({ provider_configured: false }),
       setupError: null,
-      runtime: { ok: true },
+      runtime: setupRuntimeCheckResult({ ok: true }),
       runtimeError: null
     })
 
@@ -26,9 +29,9 @@ describe('interpretRuntimeReadiness', () => {
 
   it('surfaces runtime mismatch details when runtime_check fails', () => {
     const result = interpretRuntimeReadiness({
-      setup: { provider_configured: true },
+      setup: setupStatusResult({ provider_configured: true }),
       setupError: null,
-      runtime: { error: 'No provider can serve the selected model.', ok: false },
+      runtime: setupRuntimeCheckResult({ error: 'No provider can serve the selected model.', ok: false }),
       runtimeError: null
     })
 
@@ -41,7 +44,7 @@ describe('interpretRuntimeReadiness', () => {
 
   it('falls back to setup.status when runtime_check has no boolean result', () => {
     const result = interpretRuntimeReadiness({
-      setup: { provider_configured: true },
+      setup: setupStatusResult({ provider_configured: true }),
       setupError: null,
       runtime: null,
       runtimeError: 'runtime check RPC unavailable'
@@ -71,43 +74,30 @@ describe('interpretRuntimeReadiness', () => {
 
 describe('fetchRuntimeReadinessSignals', () => {
   it('scopes setup.runtime_check to the requested provider', async () => {
-    const calls: Array<{ method: string; params?: Record<string, unknown> }> = []
-
-    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      if (method === 'setup.status') {
-        return { provider_configured: true } as T
-      }
-
-      if (method === 'setup.runtime_check') {
-        return { ok: true } as T
-      }
-
-      throw new Error(`unexpected method: ${method}`)
-    }
+    const requestGateway = gatewayRequestMock({
+      'setup.runtime_check': () => setupRuntimeCheckResult({ ok: true }),
+      'setup.status': () => setupStatusResult({ provider_configured: true })
+    })
 
     await fetchRuntimeReadinessSignals(requestGateway, 'nous')
 
-    expect(calls).toEqual([{ method: 'setup.status' }, { method: 'setup.runtime_check', params: { provider: 'nous' } }])
+    expect(requestGateway.mock.calls.map(([method, params]) => ({ method, params }))).toEqual([
+      { method: 'setup.status', params: {} },
+      { method: 'setup.runtime_check', params: { provider: 'nous' } }
+    ])
   })
 })
 
 describe('evaluateRuntimeReadiness', () => {
   it('forwards requestedProvider to setup.runtime_check', async () => {
-    const requestGateway = async <T = unknown>(method: string, params?: Record<string, unknown>) => {
-      if (method === 'setup.status') {
-        return { provider_configured: true } as T
-      }
-
-      if (method === 'setup.runtime_check') {
+    const requestGateway = gatewayRequestMock({
+      'setup.runtime_check': params => {
         expect(params).toEqual({ provider: 'nous' })
 
-        return { ok: true } as T
-      }
-
-      throw new Error(`unexpected method: ${method}`)
-    }
+        return setupRuntimeCheckResult({ ok: true })
+      },
+      'setup.status': () => setupStatusResult({ provider_configured: true })
+    })
 
     const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'nous' })
 

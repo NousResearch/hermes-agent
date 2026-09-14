@@ -52,13 +52,6 @@ export function dismissSendDiagnostics(): void {
   $sendDiagnostics.set(null)
 }
 
-interface ShareNousResponse {
-  error?: string
-  expires_at?: string
-  ok: boolean
-  upload_id?: string
-  view_url?: string
-}
 
 /** Read the LOCAL desktop log via Electron so a remote backend's bundle still
  *  carries the Desktop-side transport evidence. Best-effort: absence of the
@@ -106,7 +99,7 @@ export async function confirmSendDiagnostics(): Promise<void> {
       return
     }
 
-    const response = await gateway.request<ShareNousResponse>(
+    const response = await gateway.request(
       'diagnostics.share_nous',
       {
         ...(current.errorContext ? { error_context: current.errorContext } : {}),
@@ -127,9 +120,9 @@ export async function confirmSendDiagnostics(): Promise<void> {
       ...current,
       phase: 'done',
       result: {
-        expiresAt: response.expires_at,
-        uploadId: response.upload_id,
-        viewUrl: response.view_url
+        expiresAt: response.expires_at ?? undefined,
+        uploadId: response.upload_id ?? undefined,
+        viewUrl: response.view_url ?? undefined
       }
     })
   } catch (error) {

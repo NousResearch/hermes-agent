@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $modelPresets, applyModelPreset, getModelPreset, modelPresetKey, setModelPreset } from './model-presets'
 import { $currentFastMode, $currentReasoningEffort, setCurrentFastMode, setCurrentReasoningEffort } from './session'
@@ -26,33 +26,21 @@ describe('model presets', () => {
   })
 
   it('pushes only the provided dimensions to the gateway', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-
-    const request = async <T>(method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      return {} as T
-    }
+    const request = vi.fn().mockResolvedValue({})
 
     await applyModelPreset({ effort: 'high' }, { failMessage: 'x', request, sessionId: 's1' })
     await applyModelPreset({}, { failMessage: 'x', request, sessionId: 's1' })
 
-    expect(calls).toEqual([{ method: 'config.set', params: { key: 'reasoning', session_id: 's1', value: 'high' } }])
+    expect(request.mock.calls.map(([method, params]) => ({ method, params }))).toEqual([{ method: 'config.set', params: { key: 'reasoning', session_id: 's1', value: 'high' } }])
   })
 
   it('applies a fresh-draft preset locally without mutating gateway config', async () => {
-    const calls: { method: string; params?: Record<string, unknown> }[] = []
-
-    const request = async <T>(method: string, params?: Record<string, unknown>) => {
-      calls.push({ method, params })
-
-      return {} as T
-    }
+    const request = vi.fn().mockResolvedValue({})
 
     await applyModelPreset({ effort: 'high', fast: true }, { failMessage: 'x', request, sessionId: null })
 
     expect($currentReasoningEffort.get()).toBe('high')
     expect($currentFastMode.get()).toBe(true)
-    expect(calls).toEqual([])
+    expect(request).not.toHaveBeenCalled()
   })
 })

@@ -1,3 +1,4 @@
+import type { ForeignSessionRow } from '@hermes/shared'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -24,7 +25,7 @@ afterEach(() => {
 
 const owner = { connectionId: 'workstation', profile: 'research' }
 
-const session = {
+const session: ForeignSessionRow = {
   id: 'foreign-one',
   source: 'claude',
   label: 'Claude Code',
@@ -49,12 +50,12 @@ function mount(onOpenSession = vi.fn()) {
 it('browses without importing, then retries a failed import on the captured owner before opening', async () => {
   let attempts = 0
   vi.mocked(foreignRequest).mockImplementation(async (_owner, method) => {
-    if (method === 'list') {
+    if (method === 'session.foreign.list') {
       return { sessions: [session], next_offset: null, host: 'studio', unreadable: 0 }
     }
 
-    if (method === 'preview') {
-      return { messages: [{ role: 'user', content: 'Please repair this' }], total: 1, already_imported: null }
+    if (method === 'session.foreign.preview') {
+      return { messages: [{ role: 'user', content: 'Please repair this' }], total: 1, truncated: false, already_imported: null, cwd: null }
     }
 
     if (++attempts === 1) {
@@ -73,18 +74,18 @@ it('browses without importing, then retries a failed import on the captured owne
   fireEvent.click(screen.getByRole('button', { name: 'Continue in Hermes' }))
   await waitFor(() => expect(onOpenSession).toHaveBeenCalledWith('durable-one'))
   expect(setSessionOwnerHint).toHaveBeenCalledWith('durable-one', owner)
-  expect(foreignRequest).toHaveBeenCalledWith(owner, 'import', { id: 'foreign-one' }, expect.any(AbortSignal))
+  expect(foreignRequest).toHaveBeenCalledWith(owner, 'session.foreign.import', { id: 'foreign-one' }, expect.any(AbortSignal))
 })
 
 it('does not navigate when an import finishes after the view has closed', async () => {
   let finish!: (result: ForeignImportResult) => void
   vi.mocked(foreignRequest).mockImplementation(async (_owner, method) => {
-    if (method === 'list') {
+    if (method === 'session.foreign.list') {
       return { sessions: [session], next_offset: null, host: 'studio', unreadable: 0 }
     }
 
-    if (method === 'preview') {
-      return { messages: [], total: 0, already_imported: 'existing' }
+    if (method === 'session.foreign.preview') {
+      return { messages: [], total: 0, truncated: false, already_imported: 'existing', cwd: null }
     }
 
     return new Promise<ForeignImportResult>(resolve => {

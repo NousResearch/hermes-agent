@@ -15,8 +15,8 @@
  * still picks `.dark` from the real background luminance.
  */
 
+import type { SkinPayload } from '@hermes/shared'
 import { ensureContrast, mix } from '@hermes/shared/color'
-import type { HermesSkin, SkinColors } from '@hermes/shared/skin'
 
 import { luminance, normalizeHex, readableInk } from './color'
 import type { DesktopTheme, DesktopThemeColors } from './types'
@@ -26,7 +26,7 @@ import type { DesktopTheme, DesktopThemeColors } from './types'
 const ACCENT_MIN_CONTRAST = 4.5
 
 /** First normalizable hex among `keys`, alpha flattened over `backdrop`. */
-const pick = (colors: SkinColors, keys: string[], backdrop: string): string | null => {
+const pick = (colors: Record<string, string>, keys: string[], backdrop: string): string | null => {
   for (const key of keys) {
     const value = normalizeHex(colors[key], backdrop)
 
@@ -44,11 +44,14 @@ const titleCase = (name: string): string => name.charAt(0).toUpperCase() + name.
  * Convert a resolved skin into a `DesktopTheme`, or null when it carries no
  * usable colors (so a broken/empty skin never registers junk).
  */
-export function skinToDesktopTheme(skin: HermesSkin): DesktopTheme | null {
+/** The two skin fields the converter reads; the rest of the payload is terminal chrome. */
+export type SkinSource = Pick<SkinPayload, 'colors' | 'name'>
+
+export function skinToDesktopTheme(skin: SkinSource): DesktopTheme | null {
   const name = (skin.name ?? '').trim()
   const colors = skin.colors
 
-  if (!name || !colors || typeof colors !== 'object') {
+  if (!name || !colors) {
     return null
   }
 

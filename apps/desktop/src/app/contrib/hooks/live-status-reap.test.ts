@@ -11,6 +11,7 @@ import {
   publishSessionState,
   reconcileBusyStatesOnReconnect
 } from '@/store/session-states'
+import { sessionActiveItem } from '@/test/contract'
 
 import { rehydrateLiveSessionStatuses } from './use-background-sync'
 
@@ -39,7 +40,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
 
   it('clears a working session that disappears from the live snapshot', () => {
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-a', session_key: 'stored-a', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-a', session_key: 'stored-a', status: 'working' })]
     })
 
     expect($workingSessionIds.get()).toEqual(['stored-a'])
@@ -52,7 +53,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
 
   it('fires the unread "your turn" marker for a vanished background session', () => {
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-b', session_key: 'stored-b', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-b', session_key: 'stored-b', status: 'working' })]
     })
 
     rehydrateLiveSessionStatuses({ sessions: [] })
@@ -76,7 +77,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
 
   it('clears a blocked session that disappears from the live snapshot', () => {
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-c', session_key: 'stored-c', status: 'waiting' }]
+      sessions: [sessionActiveItem({ id: 'runtime-c', session_key: 'stored-c', status: 'waiting' })]
     })
 
     expect($attentionSessionIds.get()).toEqual(['stored-c'])
@@ -91,7 +92,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     // never appear in this profile's active_list. Reaping them would dark out
     // every other profile's running rows.
     rehydrateLiveSessionStatuses(
-      { sessions: [{ id: 'runtime-other', session_key: 'stored-other', status: 'working' }] },
+      { sessions: [sessionActiveItem({ id: 'runtime-other', session_key: 'stored-other', status: 'working' })] },
       Date.now(),
       'other'
     )
@@ -122,7 +123,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     $activeSessionId.set('runtime-tools')
 
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-tools', session_key: 'stored-tools', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-tools', session_key: 'stored-tools', status: 'working' })]
     })
     rehydrateLiveSessionStatuses({ sessions: [] })
 
@@ -153,7 +154,7 @@ describe('rehydrateLiveSessionStatuses — reaping vanished runtimes', () => {
     $activeSessionId.set('runtime-await')
 
     rehydrateLiveSessionStatuses({
-      sessions: [{ id: 'runtime-await', session_key: 'stored-await', status: 'working' }]
+      sessions: [sessionActiveItem({ id: 'runtime-await', session_key: 'stored-await', status: 'working' })]
     })
     rehydrateLiveSessionStatuses({ sessions: [] })
 

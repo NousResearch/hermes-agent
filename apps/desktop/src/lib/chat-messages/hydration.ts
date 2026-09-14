@@ -1,4 +1,5 @@
 import { skillInvocationText } from '@hermes/shared'
+import type { TranscriptMessage } from '@hermes/shared'
 
 import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
@@ -462,4 +463,21 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length
     )
   )
+}
+
+// The gateway transcript types `role` as a free string; the renderer's rows are a closed set.
+const TRANSCRIPT_ROLES: readonly SessionMessage['role'][] = ['assistant', 'system', 'tool', 'user']
+
+/** Project the gateway transcript onto the renderer's row shape (REST already serves that shape). */
+export function toSessionMessages(messages: TranscriptMessage[]): SessionMessage[] {
+  return messages.map(message => ({
+    ...message,
+    content: message.text,
+    display_kind: message.display_kind ?? undefined,
+    display_metadata: message.display_metadata ?? undefined,
+    name: message.name ?? undefined,
+    role: TRANSCRIPT_ROLES.find(known => known === message.role) ?? 'assistant',
+    row_id: message.row_id ?? undefined,
+    timestamp: message.timestamp ?? undefined
+  }))
 }

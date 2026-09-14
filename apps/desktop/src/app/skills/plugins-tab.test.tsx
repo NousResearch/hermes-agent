@@ -7,6 +7,7 @@ import { $pluginRecords } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
+import { agentPluginRow } from '@/test/contract'
 
 import { PageSearchShell } from '../page-search-shell'
 
@@ -86,14 +87,14 @@ describe('PluginsTab', () => {
 
   it('lists the scoped profile agent plugins with toggles', () => {
     $agentPlugins.set([
-      {
+      agentPluginRow({
         description: 'A test plugin',
         key: 'demo-plugin',
         name: 'demo-plugin',
         source: 'git',
         status: 'enabled',
         version: '1.0.0'
-      }
+      })
     ])
 
     renderPlugins({ profile: 'workbot' })
@@ -105,14 +106,14 @@ describe('PluginsTab', () => {
 
   it('hides bundled plugins (managed from their own surfaces)', () => {
     $agentPlugins.set([
-      {
+      agentPluginRow({
         description: '',
         key: 'image_gen/fal',
         name: 'fal',
         source: 'bundled',
         status: 'enabled',
         version: ''
-      }
+      })
     ])
 
     renderPlugins({ profile: null })
@@ -127,14 +128,14 @@ describe('PluginsTab', () => {
       media: { id: 'media', name: 'Media Studio', kind: 'disk', status: 'loaded', packageName: 'hermes-media-studio' }
     })
     $agentPlugins.set([
-      {
+      agentPluginRow({
         description: '',
         key: 'hermes-media-studio',
         name: 'hermes-media-studio',
         source: 'git',
         status: 'disabled',
         version: '1'
-      }
+      })
     ])
 
     renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
@@ -215,14 +216,14 @@ describe('PluginsTab', () => {
 
   it('toggles by canonical key through plugins.manage', async () => {
     $agentPlugins.set([
-      {
+      agentPluginRow({
         description: '',
         key: 'image_gen/legacy',
         name: 'Legacy plugin',
         source: 'user',
         status: 'disabled',
         version: '0.20.0'
-      }
+      })
     ])
     requestGateway.mockResolvedValueOnce({
       ok: true,
@@ -245,13 +246,13 @@ describe('PluginsTab', () => {
     // Name-addressed toggles flip every same-named plugin across category
     // dirs — pre-contract-v6 rows must never reach the RPC.
     $agentPlugins.set([
-      {
+      agentPluginRow({
         description: 'Returned by a pre-key backend',
         name: 'Legacy plugin',
         source: 'user',
         status: 'disabled',
         version: '0.20.0'
-      }
+      })
     ])
 
     renderPlugins({ profile: null })
@@ -354,7 +355,7 @@ describe('PluginsTab catalog UX', () => {
 
   it('shows an Update chip when the catalog pin moved past the installed SHA', () => {
     $agentPlugins.set([
-      {
+      agentPluginRow({
         catalog_name: 'demo-weather',
         catalog_sha: 'b'.repeat(40),
         catalog_tier: 'community',
@@ -366,7 +367,7 @@ describe('PluginsTab catalog UX', () => {
         status: 'enabled',
         update_available: true,
         version: '1.0.0'
-      }
+      })
     ])
 
     renderPlugins({ profile: null })
@@ -376,7 +377,7 @@ describe('PluginsTab catalog UX', () => {
 
   it('re-pins through plugins.manage update when the chip is clicked', async () => {
     $agentPlugins.set([
-      {
+      agentPluginRow({
         catalog_name: 'demo-weather',
         catalog_sha: 'b'.repeat(40),
         catalog_tier: 'community',
@@ -388,7 +389,7 @@ describe('PluginsTab catalog UX', () => {
         status: 'enabled',
         update_available: true,
         version: '1.0.0'
-      }
+      })
     ])
     requestGateway.mockResolvedValue({ ok: true, unchanged: false, plugins: [] } as never)
 
@@ -406,7 +407,7 @@ describe('PluginsTab catalog UX', () => {
 
   it('disables installation of a catalog entry that is already installed and current', async () => {
     $agentPlugins.set([
-      {
+      agentPluginRow({
         catalog_name: 'demo-weather',
         description: '',
         installed_sha: 'a'.repeat(40),
@@ -416,7 +417,7 @@ describe('PluginsTab catalog UX', () => {
         status: 'enabled',
         update_available: false,
         version: '1.0.0'
-      }
+      })
     ])
 
     seedCatalog([{ ...weatherEntry, name: 'demo-weather' }])
@@ -431,7 +432,7 @@ describe('PluginsTab catalog UX', () => {
 
   it('offers catalog installation for an installed entry when an update is available', async () => {
     $agentPlugins.set([
-      {
+      agentPluginRow({
         catalog_name: 'demo-weather',
         description: '',
         installed_sha: 'a'.repeat(40),
@@ -441,7 +442,7 @@ describe('PluginsTab catalog UX', () => {
         status: 'enabled',
         update_available: true,
         version: '1.0.0'
-      }
+      })
     ])
 
     const entry = { ...weatherEntry, name: 'demo-weather', sha: 'b'.repeat(40) }

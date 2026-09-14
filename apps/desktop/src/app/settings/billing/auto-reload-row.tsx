@@ -12,7 +12,7 @@ import type { BillingRefusal } from './api'
 import { useBillingApi } from './api'
 import { initialAutoReloadAmount, validateAutoReloadInputs } from './billing-amounts'
 import { BillingRefusalInline } from './inline-feedback'
-import type { BillingAutoReload, BillingStateResponse } from './types'
+import type { BillingAutoReload, BillingStateResult } from './types'
 import type { BillingAccountRowView } from './use-billing-state'
 
 export function AutoReloadRow({
@@ -21,7 +21,7 @@ export function AutoReloadRow({
   row
 }: {
   autoReload: BillingAutoReload
-  bounds: Pick<BillingStateResponse, 'max_usd' | 'min_usd'>
+  bounds: Pick<BillingStateResult, 'max_usd' | 'min_usd'>
   row: BillingAccountRowView
 }) {
   const api = useBillingApi()

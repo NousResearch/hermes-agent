@@ -50,7 +50,7 @@ export function useConnectorCatalog(storedId: null | string, runtimeId: null | s
         const connectionId = isSessionOwnerRoute(scope) ? scope.connectionId : null
         const profile = isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
 
-        return requestGatewayForAgent<{ available: boolean; connectors: ConnectorRow[] }>(
+        return requestGatewayForAgent(
           connectionId,
           profile,
           'connectors.list',

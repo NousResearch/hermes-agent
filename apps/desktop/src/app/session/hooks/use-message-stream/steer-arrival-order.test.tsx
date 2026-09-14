@@ -36,15 +36,9 @@ let redirect: ((text: string) => Promise<boolean>) | null = null
 let states: Map<string, ClientSessionState>
 
 /** The gateway accepts every redirect — these suites pin CLIENT ordering. */
-const requestGatewayMock = vi.fn(async (method: string): Promise<unknown> =>
-  method === 'session.redirect' ? { status: 'redirected' } : {}
-)
-
-const requestGateway = requestGatewayMock as unknown as <T>(
-  method: string,
-  params?: Record<string, unknown>,
-  timeoutMs?: number
-) => Promise<T>
+const requestGateway = vi
+  .fn()
+  .mockImplementation(async (method: string) => (method === 'session.redirect' ? { status: 'redirected' } : {}))
 
 function Harness() {
   const activeSessionIdRef = useRef<null | string>(SID)
@@ -133,7 +127,7 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     handleEvent = null
     redirect = null
     states = new Map()
-    requestGatewayMock.mockClear()
+    requestGateway.mockClear()
   })
 
   afterEach(() => {
@@ -262,7 +256,7 @@ describe('steer mid-turn keeps arrival order (user bubble never above prior outp
     emit({ payload: { text: 'streaming along' }, session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
-    requestGatewayMock.mockImplementationOnce(async () => ({ status: 'not_running' }))
+    requestGateway.mockImplementationOnce(async () => ({ status: 'not_running' }))
 
     await act(async () => {
       await expect(redirect!('too late')).resolves.toBe(false)

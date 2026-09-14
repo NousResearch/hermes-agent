@@ -230,7 +230,12 @@ describe('a row without a reachable owner', () => {
 
 describe('requestForBot rides the bot’s own source', () => {
   it('pins same-name bots to their own connection under concurrent requests', async () => {
-    hostMock.requestProfile.mockImplementation(async (route: ProfileRoute) => ({ from: route.connectionId }))
+    // The roster the owning connection answers with: its own id as the row
+    // name, so each answer names the socket it actually rode.
+    hostMock.requestProfile.mockImplementation(async (route: ProfileRoute) => ({
+      bot_mode_protocol: false,
+      profiles: [{ name: route.connectionId }]
+    }))
 
     const rows = ['vera', 'mac-mini'].map(
       connectionId =>
@@ -242,9 +247,9 @@ describe('requestForBot rides the bot’s own source', () => {
         }) as RosterRow
     )
 
-    const answers = await Promise.all(rows.map(bot => requestForBot<{ from: string }>(bot, 'profiles.list', {})))
+    const answers = await Promise.all(rows.map(bot => requestForBot(bot, 'profiles.list', {})))
 
-    expect(answers.map(answer => answer.from)).toEqual(['vera', 'mac-mini'])
+    expect(answers.map(answer => answer.profiles[0].name)).toEqual(['vera', 'mac-mini'])
     expect(hostMock.request).not.toHaveBeenCalled()
   })
 

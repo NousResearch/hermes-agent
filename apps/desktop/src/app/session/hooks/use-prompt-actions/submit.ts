@@ -597,19 +597,23 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           // profile is live would fork the conversation into the wrong DB (#67603).
           // A runtime a previous drift-aborted recovery already minted for this
           // exact stored session is reused instead of resuming again.
-          const cachedRuntimeId = takeRecoveredRuntime(targetStoredSessionId)
+          // `targetStoredSessionId` is a `let`, so the guard above does not narrow it inside the closure.
+          const resumeStoredSessionId = targetStoredSessionId
+          const cachedRuntimeId = takeRecoveredRuntime(resumeStoredSessionId)
 
           const resumed = cachedRuntimeId
             ? { session_id: cachedRuntimeId }
-            : await singleFlightSessionResume(targetStoredSessionId, async () => {
-                const resumeProfile = await resolveSessionProfile(targetStoredSessionId)
+            : await singleFlightSessionResume(resumeStoredSessionId, async () => {
+                const resumeProfile = await resolveSessionProfile(resumeStoredSessionId)
 
-                return requestGateway<{ session_id: string }>('session.resume', {
-                  session_id: targetStoredSessionId,
+                const resume = await requestGateway('session.resume', {
+                  session_id: resumeStoredSessionId,
                   source: 'desktop',
                   omit_messages: true,
                   ...(resumeProfile ? { profile: resumeProfile } : {})
                 })
+
+                return { session_id: resume.session_id }
               })
 
           const resumeDrift = sessionDriftReason()

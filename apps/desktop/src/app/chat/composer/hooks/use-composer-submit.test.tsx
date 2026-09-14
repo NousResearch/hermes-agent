@@ -14,6 +14,7 @@ import {
   setSudoRequest
 } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
+import { clarifySingle } from '@/test/contract'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
@@ -464,13 +465,21 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
   const parkClarify = (sessionId: string) => {
     const requestId = `req-${sessionId}`
 
-    rememberServerRequest({ fail: vi.fn(), id: requestId, method: 'clarify', params: {}, respond })
+    rememberServerRequest({
+      fail: vi.fn(),
+      id: requestId,
+      method: 'clarify',
+      params: clarifySingle({ choices: ['a', 'b'], question: 'which one?', session_id: sessionId }),
+      respond,
+      sessionId
+    })
     $clarifyRequests.set({
       [sessionId]: {
+        kind: 'single',
         requestId,
         question: 'which one?',
         choices: ['a', 'b'],
-        multiSelect: false,
+        multi_select: false,
         sessionId
       }
     })

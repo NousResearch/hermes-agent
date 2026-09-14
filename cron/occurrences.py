@@ -25,12 +25,21 @@ def completed_occurrence(job, instant):
     instant = scheduled_instant(instant)
     if instant is None:
         return False
+    instant_dt = datetime.fromisoformat(instant)
     try:
         with _transaction() as conn:
-            return conn.execute(
-                "SELECT 1 FROM executions WHERE job_id=? AND scheduled_instant=? "
-                "AND status='completed' LIMIT 1", (str(job['id']), instant)
-            ).fetchone() is not None
+            rows = conn.execute(
+                "SELECT finished_at, claimed_at FROM executions "
+                "WHERE job_id=? AND scheduled_instant=? "
+                "AND status='completed'", (str(job['id']), instant)
+            ).fetchall()
+        for row in rows:
+            completed_at = scheduled_instant(row["finished_at"] or row["claimed_at"])
+            # Legacy or malformed timestamps remain proof; only positively identified poison
+            # rows — completions recorded before their claimed occurrence — are ignored.
+            if completed_at is None or datetime.fromisoformat(completed_at) >= instant_dt:
+                return True
+        return False
     except Exception:
         logger.warning("Cannot check completed occurrence for job %s", job['id'], exc_info=True)
         return False

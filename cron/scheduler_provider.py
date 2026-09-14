@@ -151,7 +151,7 @@ class CronScheduler(ABC):
         attempt (even if the job failed); False if the claim was lost or the job is gone.
         ``manual`` marks an off-tick run-now (dashboard trigger): the claim must not stamp
         ``next_run_at`` as the occurrence, or that slot is skipped when it arrives. Webhook and
-        misfire fires run the slot that is due and keep the stamp."""
+        misfire fires keep the stamp only once that occurrence is due."""
         claimed_job = self.claim_fire(job_id, force=force, manual=manual)
         if claimed_job is None:
             return False

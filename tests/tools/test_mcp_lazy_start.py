@@ -85,6 +85,24 @@ class TestLazyMcpRegistration:
         mock_run.assert_not_called()
         mock_loop.assert_not_called()
 
+    def test_operator_can_allow_stale_schema_for_lazy_registration(self):
+        config = _lazy_config()
+        config["playwright"]["lazy_allow_stale_schema"] = True
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_schema_cache.config_fingerprint", return_value="abc"), \
+             patch("tools.mcp_schema_cache.get_cached_entry", return_value=_fake_cache_entry()) as mock_get, \
+             patch(
+                 "tools.mcp_tool_registration._register_from_cache_sync",
+                 return_value=["mcp_playwright_browser_navigate"],
+             ), \
+             patch("tools.mcp_tool_discovery._discover_and_register_server", new_callable=AsyncMock), \
+             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("tools.mcp_tool_loop._run_on_mcp_loop"):
+
+            _mcp_discovery.register_mcp_servers(config)
+
+        mock_get.assert_called_once_with("playwright", "abc", allow_stale=True)
+
     def test_cache_miss_falls_back_to_eager_connect(self):
         config = _lazy_config()
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \

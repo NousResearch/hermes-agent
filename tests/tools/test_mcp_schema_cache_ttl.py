@@ -33,6 +33,18 @@ def test_entry_past_ttl_is_a_miss(monkeypatch):
     assert sc.get_cached_entry("srv", "fp") is None
 
 
+def test_expired_entry_can_be_used_for_operator_opted_in_lazy_start(monkeypatch):
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=0)
+    entry = sc.get_cached_entry("srv", "fp", allow_stale=True)
+    assert entry is not None
+    assert entry["tools"] == [{"name": "t"}]
+
+
+def test_allow_stale_does_not_bypass_fingerprint():
+    sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=0)
+    assert sc.get_cached_entry("srv", "different", allow_stale=True) is None
+
+
 def test_ttl_rewrite_advances_written_at():
     sc.write_cache_entry("srv", "fp", tools=[{"name": "t"}], ttl_ms=60_000)
     first = sc.get_cached_entry("srv", "fp")["written_at"]

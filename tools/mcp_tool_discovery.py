@@ -277,11 +277,12 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
 
 
 def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, dict], int, int]:
-    """Register ``lazy: true`` servers from a valid schema-cache entry without connecting
-    (missing/stale entry or failed registration -> eager). Returns (eager servers, lazy tool
-    count, lazy server count)."""
-    # A missing or stale cache entry falls back to the normal eager connect below (which write-through
-    # refreshes the cache for next time). See #56832.
+    """Register ``lazy: true`` servers from an eligible schema-cache entry without connecting.
+
+    Missing or expired entries fall back to eager discovery. An operator can explicitly keep a
+    fingerprint-matching expired schema available with ``lazy_allow_stale_schema: true``.
+    Returns ``(eager_servers, lazy_tool_count, lazy_server_count)``.
+    """
     eager_servers: Dict[str, dict] = dict(new_servers)
     lazy_registered = 0
     lazy_server_count = 0
@@ -292,7 +293,11 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
     for name, cfg in new_servers.items():
         if not _resolve_server_lazy(name, cfg):
             continue
-        entry = get_cached_entry(name, config_fingerprint(cfg))
+        entry = get_cached_entry(
+            name,
+            config_fingerprint(cfg),
+            allow_stale=_parse_boolish(cfg.get("lazy_allow_stale_schema", False), default=False),
+        )
         if not entry:
             continue
         with _core._lock:

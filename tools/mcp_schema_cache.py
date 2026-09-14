@@ -56,18 +56,26 @@ def _save_all(data: Dict[str, Any]) -> None:
     atomic_json_write(_cache_path(), data, mode=0o600)
 
 
-def get_cached_entry(server_name: str, fingerprint: str) -> Optional[dict]:
-    """Return cached entry when fingerprint matches (and TTL holds), else None. ``tools/list``
-    results may carry ``ttlMs`` (SEP-2549); an entry older than a recorded TTL is a miss so the
-    next startup re-probes instead of serving a stale manifest forever. Entries without a TTL
-    never expire. ``cacheScope`` is irrelevant: this cache is per-user local disk."""
+def get_cached_entry(
+    server_name: str,
+    fingerprint: str,
+    *,
+    allow_stale: bool = False,
+) -> Optional[dict]:
+    """Return a fingerprint-matching cache entry, enforcing its TTL by default.
+
+    ``allow_stale`` is an explicit operator escape hatch for lazy servers that must keep
+    their last known tool schemas available while the live server is temporarily offline.
+    It never bypasses the connection-config fingerprint check.
+    """
     with _cache_lock:
         entry = _load_all().get(server_name)
     if not isinstance(entry, dict) or entry.get("fingerprint") != fingerprint:
         return None
     ttl_ms = entry.get("ttl_ms")
     written_at = entry.get("written_at")
-    expired = (isinstance(ttl_ms, (int, float)) and isinstance(written_at, (int, float))
+    expired = (not allow_stale and isinstance(ttl_ms, (int, float))
+               and isinstance(written_at, (int, float))
                and (time.time() - written_at) * 1000.0 >= float(ttl_ms))
     return None if expired else entry
 

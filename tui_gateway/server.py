@@ -447,16 +447,15 @@ class _SlashWorker:
         # inherited pgid, and killpg() then kills the TUI parent itself.
         # See agent/lsp/client.py for the symmetric LSP server fix and
         # tools/mcp_tool.py _filter_mcp_children for defense-in-depth.
+        # subprocess.Popen: encoding/errors MUST come right after text=True (and
+        # before any platform-specific kwargs like creationflags) so that
+        # tests which inspect mock_popen.call_args[1] see them. (#53137)
         self.proc = subprocess.Popen(
             argv,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            # Force UTF-8 with lossy decoding so child output containing bytes
-            # that are invalid in the system locale (e.g. GBK on Chinese
-            # Windows) can't raise UnicodeDecodeError inside the drain threads
-            # and crash the gateway. See #53137.
             encoding="utf-8",
             errors="replace",
             bufsize=1,

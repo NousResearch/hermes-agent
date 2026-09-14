@@ -251,6 +251,8 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     payload = record.get("payload", {})
     action = payload.get("action", "")
     name = payload.get("name", "")
+    if action == "batch":
+        return _batch_pending_diff(record)
     if action == "create":
         return payload.get("content") or ""
     if action not in {"edit", "patch", "write_file"}:
@@ -275,6 +277,25 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     diff = difflib.unified_diff(current.splitlines(keepends=True), new.splitlines(keepends=True),
                                 fromfile=f"a/{target_label}", tofile=f"b/{target_label}")
     return "".join(diff) or "(no textual change)"
+
+
+def _batch_pending_diff(record: Dict[str, Any]) -> str:
+    """Render every operation of a ``batch`` payload: the plain diff handlers above cannot read a
+    batch record, so ``/skills diff <id>`` used to answer ``(batch on '')``. Each op is rendered by
+    delegating to ``skill_pending_diff`` with a single-op record (same code path as an approved write)."""
+    ops = record.get("payload", {}).get("operations") or []
+    names = [op.get("name") for op in ops if op.get("name")]
+    header = f"batch: {len(ops)} operation(s)" + (f" on '{names[0]}'" if names else "")
+    if names and len(set(names)) > 1:
+        header += f" — skills: {', '.join(sorted(set(names)))}"
+    parts = [header]
+    for i, op in enumerate(ops):
+        label = f"op[{i}] {op.get('action', '')} {op.get('name', '')}"
+        if op.get("file_path"):
+            label += f" ({op['file_path']})"
+        parts.append(f"\n===== {label} =====")
+        parts.append(skill_pending_diff({"payload": op}))
+    return "\n".join(parts)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -313,8 +313,26 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
 def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
     """Truncated tool call: re-run the same call (up to 4×) with a boosted max_tokens —
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
-    execute incomplete arguments."""
+    execute incomplete arguments. No retries when the prompt already filled the window:
+    a higher max_tokens cannot create output room (#106830)."""
     agent = st.agent
+    if st.window_filled is not None:
+        agent._flush_status_buffer()
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Truncated tool call with the prompt already filling "
+            f"the context window ({st.window_filled[0]:,}/{st.window_filled[1]:,} tokens) "
+            "— skipping max_tokens retries: no output fits regardless of the cap.",
+            force=True,
+        )
+        # Prior tool batches can leave a tool-result tail; this path never reaches
+        # finalize_turn (same terminal contract as the #106260 overflow stub).
+        close_interrupted_tool_sequence(st.messages, _CONTEXT_OVERFLOW_PARTIAL_FINAL)
+        return st.end_turn(
+            _CONTEXT_OVERFLOW_PARTIAL_FINAL,
+            error=_CONTEXT_OVERFLOW_PARTIAL_FINAL,
+            failed=True,
+            compression_exhausted=True,
+        )
     if st.truncated_tool_call_retries < 4:
         st.truncated_tool_call_retries += 1
         n = st.truncated_tool_call_retries

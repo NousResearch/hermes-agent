@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.kanban_api import router
 
 
@@ -139,7 +140,7 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
     assert all("payload" not in event for event in events.json()["events"])
     assert "private" not in events.text
 
-    with kanban_db.connect(board="default") as conn:
+    with kbc.connect(board="default") as conn:
         now = 1_700_000_000
         with kanban_db.write_txn(conn):
             conn.execute(
@@ -225,7 +226,7 @@ def test_idempotency_key_is_unique_among_live_tasks(client: TestClient) -> None:
     created = _create(client, idempotency_key="race-key")
     task_id = created["task"]["id"]
 
-    with kanban_db.connect(board="default") as conn:
+    with kbc.connect(board="default") as conn:
         row = conn.execute(
             "SELECT * FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
@@ -327,7 +328,7 @@ def test_patch_rejects_edits_to_archived_task(client: TestClient) -> None:
 def test_events_and_runs_limit_returns_most_recent_in_order(client: TestClient) -> None:
     task_id = _create(client, idempotency_key="limit-key")["task"]["id"]
 
-    with kanban_db.connect(board="default") as conn:
+    with kbc.connect(board="default") as conn:
         with kanban_db.write_txn(conn):
             for i in range(5):
                 conn.execute(
@@ -393,7 +394,7 @@ def test_runs_expose_executing_profile(client: TestClient) -> None:
     task_id = _create(
         client, idempotency_key="run-profile-key", assignee="worker-a"
     )["task"]["id"]
-    with kanban_db.connect(board="default") as conn:
+    with kbc.connect(board="default") as conn:
         with kanban_db.write_txn(conn):
             conn.execute(
                 "INSERT INTO task_runs "

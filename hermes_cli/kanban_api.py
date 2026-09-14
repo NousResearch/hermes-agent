@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from agent.redact import redact_sensitive_text
 from hermes_cli import kanban_db
+from hermes_cli import kanban_db_connect as kbc
 
 log = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def _connection(board: Optional[str]) -> Iterator[sqlite3.Connection]:
     # ``_board_counts``. This is a network-facing polling surface, so it stays
     # on the cached path.
     slug = _resolve_board_slug(board)
-    with kanban_db.connect_closing(board=slug) as conn:
+    with kbc.connect_closing(board=slug) as conn:
         yield conn
 
 
@@ -165,7 +166,7 @@ def _board_counts(slug: str) -> dict[str, int]:
     # it halves the connections ``list_boards`` opens while enumerating boards.
     # Boards are separate SQLite files, so per-board counts genuinely need one
     # connection each; the query itself stays single.
-    with kanban_db.connect_closing(board=slug) as conn:
+    with kbc.connect_closing(board=slug) as conn:
         rows = conn.execute(
             "SELECT status, COUNT(*) AS count FROM tasks GROUP BY status"
         ).fetchall()

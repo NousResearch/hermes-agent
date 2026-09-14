@@ -181,7 +181,7 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 
 
 def test_create_task_idempotent_reports_replay(kanban_home):
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         first_id, first_created = kb.create_task_idempotent(
             conn, title="original", idempotency_key="replay-key"
         )
@@ -210,7 +210,7 @@ def test_create_task_idempotent_resolves_lost_unique_index_race(
     def winner_commits_then_new_id():
         if not state["injected"]:
             state["injected"] = True
-            other = kb.connect()
+            other = kbc.connect()
             try:
                 with kb.write_txn(other):
                     other.execute(
@@ -224,7 +224,7 @@ def test_create_task_idempotent_resolves_lost_unique_index_race(
 
     monkeypatch.setattr(kb, "_new_task_id", winner_commits_then_new_id)
 
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         task_id, created = kb.create_task_idempotent(
             conn, title="loser", idempotency_key="race-key"
         )
@@ -246,7 +246,7 @@ def test_concurrent_creates_with_one_key_yield_one_task(kanban_home):
 
     def worker():
         try:
-            conn = kb.connect()
+            conn = kbc.connect()
             try:
                 barrier.wait(timeout=10)
                 results.append(
@@ -266,7 +266,7 @@ def test_concurrent_creates_with_one_key_yield_one_task(kanban_home):
     assert not errors, errors
     assert len(results) == 4
     assert len(set(results)) == 1
-    with kb.connect() as conn:
+    with kbc.connect() as conn:
         count = conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE idempotency_key = 'stampede'"
         ).fetchone()[0]

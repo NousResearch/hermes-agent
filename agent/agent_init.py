@@ -15,7 +15,6 @@ import re
 import sys
 import threading
 import time
-import uuid
 from collections import deque
 from contextlib import suppress
 from datetime import datetime
@@ -41,6 +40,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
+from hermes_state_ids import new_session_id
 from utils import base_url_host_matches, is_truthy_value
 
 # Same logger name as run_agent so caplog/patches on "run_agent" see our records.
@@ -1122,9 +1122,7 @@ def _publish_session_id(session_id: str) -> None:
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
     checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):
     agent.session_start = datetime.now()
-    agent.session_id = session_id or (
-        f"{agent.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    )
+    agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
 
     # ~/.hermes/sessions/ — kept unconditionally for request_dump_*.json debug breadcrumbs.

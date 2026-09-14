@@ -100,6 +100,8 @@ discord:
 
 The old `liveness_interval_seconds` and `liveness_failure_threshold` names remain compatibility aliases only; they no longer mean REST probing.
 
+Any knob at `0` disables the whole WebSocket liveness probe. Values that fail to parse as a positive number (e.g. `15s`, `nan`, `true`, `-1`) also disable it, and log a warning each time the adapter starts — check `gateway.log` if the probe seems inactive.
+
 ## Step 1: Create a Discord Application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and sign in with your Discord account.

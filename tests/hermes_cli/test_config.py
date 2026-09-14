@@ -405,6 +405,21 @@ class TestSaveAndLoadRoundtrip:
         assert config_path.read_text(encoding="utf-8") == original
         assert list((tmp_path / "backups" / "config").glob("config.yaml.corrupt.*"))
 
+class TestLoadEnvInlineComments:
+    def test_unquoted_hash_is_a_comment_quoted_hash_is_data(self, tmp_path):
+        """load_env is the one dotenv reader (agent.secret_scope.load_env_file): an unquoted ` #...` tail
+        is a comment, a quoted value keeps its hash. Hermes' own writer (_quote_env_value) always quotes
+        values containing `#`, so a saved secret round-trips."""
+        from hermes_cli.config import invalidate_env_cache
+
+        (tmp_path / ".env").write_text('PASSWORD=abc #123\nPASSWORD2="abc #123"\n', encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            invalidate_env_cache()
+            env = load_env()
+        assert env["PASSWORD"] == "abc"
+        assert env["PASSWORD2"] == "abc #123"
+
+
 class TestSaveEnvValueSecure:
 
     def test_secure_save_returns_metadata_only(self, tmp_path):

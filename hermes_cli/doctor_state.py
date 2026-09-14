@@ -27,15 +27,11 @@ def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
     """Return the effective memory section used by doctor diagnostics."""
     from hermes_cli.doctor import HERMES_HOME
     try:
-        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+        from hermes_cli.config_effective import load_user_config_effective
         config_path = (hermes_home if hermes_home is not None else HERMES_HOME) / "config.yaml"
         if not config_path.exists():
             return {}
-        config = _expand_env_vars(read_user_config_raw(config_path))
-        with warn_on_error(""):
-            from hermes_cli import managed_scope
-            config = managed_scope.apply_managed_overlay(config)
-        section = config.get("memory") if isinstance(config, dict) else None
+        section = load_user_config_effective(config_path).get("memory")
         return section if isinstance(section, dict) else {}
     except Exception:
         return {}
@@ -298,9 +294,14 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
 
 
 def _gh_authenticated() -> bool:
-    """Check if gh CLI is authenticated via token file or device flow."""
+    """Check if gh CLI is authenticated via token file or device flow.
+
+    Plain ``gh auth status`` (exit code only): gh 2.98+ dropped the
+    ``authenticated`` JSON field, so ``--json authenticated`` exits 1 even
+    when logged in, and the doctor falsely reported "No GITHUB_TOKEN".
+    """
     try:
-        result = subprocess.run(["gh", "auth", "status", "--json", "authenticated"], capture_output=True, timeout=10)
+        result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False

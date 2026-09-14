@@ -97,6 +97,7 @@ def _tool_calls_summary(tool_calls) -> str:
 _RESUME_EVENT_TEXT = {
     "model_switch": "model changed",
     "async_delegation_complete": "background delegation completed",
+    "process_complete": "background process finished",
     "auto_continue": "resumed interrupted turn"}
 
 def _collect_resume_entries(display_history, disp: dict, clean_assistant):
@@ -125,7 +126,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
             continue
         if display_kind in _RESUME_EVENT_TEXT:
             metadata = msg.get("display_metadata") or {}
-            label = metadata.get("display_text") if display_kind == "async_delegation_complete" else None
+            label = metadata.get("display_text") if display_kind in ("async_delegation_complete", "process_complete") else None
             entries.append(("event", _sanitize_display_text(label or _RESUME_EVENT_TEXT[display_kind])))
             continue
         if role == "user":

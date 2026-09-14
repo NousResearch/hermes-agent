@@ -2352,24 +2352,6 @@ def save_config(
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
-def _parse_env_value(raw_value: str) -> str:
-    """Parse the small .env value subset Hermes writes itself (bare, 'single', or "double" with
-    ``\\"`` / ``\\\\`` escapes)."""
-    value = raw_value.strip()
-    if len(value) >= 2 and value[0] == value[-1] == '"':
-        quoted = value[1:-1]
-        parsed: list[str] = []
-        i = 0
-        while i < len(quoted):
-            escaped = quoted[i] == "\\" and quoted[i + 1:i + 2] in ('"', "\\")
-            parsed.append(quoted[i + 1] if escaped else quoted[i])
-            i += 2 if escaped else 1
-        return "".join(parsed)
-    if len(value) >= 2 and value[0] == value[-1] == "'":
-        return value[1:-1]
-    return value
-
-
 # load_env() memo keyed on (path, mtime, size). Editing .env bumps mtime -> rebuild;
 # invalidate_env_cache() is the explicit knob for writers on coarse-mtime filesystems.
 _env_cache: Optional[Tuple[Tuple[str, Optional[float], Optional[int]], Dict[str, str]]] = None
@@ -2391,13 +2373,9 @@ def load_env() -> Dict[str, str]:
     if cache_key is not None and _env_cache is not None and _env_cache[0] == cache_key:
         return dict(_env_cache[1])
 
-    env_vars: Dict[str, str] = {}
-    for line in _read_env_lines(env_path) if env_path.exists() else ():
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            # Bash-compatible ``export KEY=...`` parses as ``KEY``.
-            key, _, value = line.removeprefix('export ').partition('=')
-            env_vars[key.strip()] = _parse_env_value(value)
+    from agent.secret_scope import load_env_file  # the one .env tokenizer; also installs profile scopes
+
+    env_vars = load_env_file(env_path)
     if cache_key is not None:
         _env_cache = (cache_key, dict(env_vars))
     return env_vars

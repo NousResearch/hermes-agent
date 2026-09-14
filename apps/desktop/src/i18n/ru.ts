@@ -194,7 +194,10 @@ export const ru = defineLocale({
       errorTitle: 'Сервер MCP недоступен',
       errorMessage: name => `MCP ${name} не прошёл проверку работоспособности.`,
       signIn: 'Войти',
-      view: 'Просмотр'
+      view: 'Просмотр',
+      disable: 'Отключить',
+      disabledMessage: name => `${name} MCP отключён. Включить снова можно в любой момент в разделе Возможности → MCP.`,
+      disableFailed: name => `Не удалось отключить ${name} MCP.`
     },
     errors: {
       elevenLabsNeedsKey: 'Для STT ElevenLabs нужен ELEVENLABS_API_KEY.',
@@ -1354,6 +1357,7 @@ export const ru = defineLocale({
       setToMain: 'На основную',
       change: 'Изменить',
       autoUseMain: 'авто · использовать основную модель',
+      inheritMainEffort: 'наследовать · усилие основной модели',
       providerDefault: '(по умолчанию провайдера)',
       fallbackAdd: 'Добавить запасную',
       fallbackEmpty: 'Запасных моделей нет — используется модель по умолчанию, если она не падает.',
@@ -3657,6 +3661,19 @@ export const ru = defineLocale({
       copyQuery: 'Копировать запрос',
       copyFile: 'Копировать файл',
       copyPath: 'Копировать путь',
+      failedCalls: (count: number) => `Вызовов с ошибкой: ${count}`,
+      skillActivity: {
+        loading: 'Загружается скилл',
+        loaded: 'Загружен скилл',
+        loadFailed: 'Не удалось загрузить скилл',
+        readingResource: 'Читается ресурс скилла',
+        readResource: 'Прочитан ресурс скилла',
+        resourceFailed: 'Не удалось прочитать ресурс скилла',
+        listing: 'Загружается список скиллов',
+        listed: 'Получен список скиллов',
+        listFailed: 'Не удалось получить список скиллов',
+        unavailable: 'Результат работы со скиллом недоступен'
+      },
       outputAlt: 'Вывод инструмента',
       rawResponse: 'Сырой ответ',
       copyActivity: 'Копировать активность',
@@ -3669,6 +3686,7 @@ export const ru = defineLocale({
       statusError: 'Ошибка',
       statusRecovered: 'Восстановлено',
       statusDone: 'Готово',
+      resultUnavailable: 'Результат недоступен',
       memoryWriteNoted: 'Запись в память отмечена',
       actions: {
         read: 'Чтение',

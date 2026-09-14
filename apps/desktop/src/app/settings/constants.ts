@@ -1,3 +1,5 @@
+import { REASONING_EFFORTS } from '@hermes/shared'
+
 import {
   Box,
   Brain,
@@ -12,7 +14,6 @@ import {
   Sun,
   Wrench
 } from '@/lib/icons'
-import { REASONING_EFFORTS } from '@/lib/reasoning-effort'
 import type { ThemeMode } from '@/themes/context'
 
 // Single source of truth for built-in personality names lives in

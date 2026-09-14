@@ -258,6 +258,9 @@ export interface Translations {
       errorMessage: (name: string) => string
       signIn: string
       view: string
+      disable: string
+      disabledMessage: (name: string) => string
+      disableFailed: (name: string) => string
     }
     errors: {
       elevenLabsNeedsKey: string
@@ -656,6 +659,7 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeSearchPlaceholder: string
       themeProfileNote: (profile: string) => string
       installTitle: string
       installDesc: string
@@ -706,6 +710,30 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    uninstallSection: {
+      dangerZone: string
+      confirmUninstall: string
+      uninstallHermes: string
+    }
+    poolLimits: {
+      warmBotBackendsAria: string
+      warmBotBackendsTitle: string
+      backendIdleTimeoutAria: string
+      backendIdleTimeoutTitle: string
+    }
+    customEndpoints: {
+      title: string
+      deleteEndpoint: string
+      emptyDescription: string
+      emptyTitle: string
+      namePlaceholder: string
+      contextPlaceholder: string
+    }
+    computerUse: {
+      accessibility: string
+      screenRecording: string
+      driverHealth: string
+    }
     about: {
       heading: string
       version: (value: string) => string
@@ -765,6 +793,7 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      showOptions: string
     }
     quickEntry: {
       enabledTitle: string
@@ -1121,10 +1150,14 @@ export interface Translations {
       setToMain: string
       change: string
       autoUseMain: string
+      inheritMainEffort: string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      moaTitle: string
+      moaPreset: string
+      moaAggregator: string
       tasks: Record<string, AuxTaskCopy>
     }
     localModels: {
@@ -3457,6 +3490,19 @@ export interface Translations {
       copyQuery: string
       copyFile: string
       copyPath: string
+      failedCalls: (count: number) => string
+      skillActivity: {
+        loading: string
+        loaded: string
+        loadFailed: string
+        readingResource: string
+        readResource: string
+        resourceFailed: string
+        listing: string
+        listed: string
+        listFailed: string
+        unavailable: string
+      }
       outputAlt: string
       rawResponse: string
       copyActivity: string
@@ -3469,6 +3515,7 @@ export interface Translations {
       statusRecovered: string
       statusDone: string
       /** Over-budget / rejected memory write title — not "Saved to memory". */
+      resultUnavailable: string
       memoryWriteNoted: string
       actions: {
         read: string

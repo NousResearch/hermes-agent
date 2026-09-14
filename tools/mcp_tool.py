@@ -316,7 +316,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         "_recycled_reason", "initialize_result", "_ping_unsupported", "_list_cache_meta",
         "_reconnect_retries", "_session_proven", "_was_parked", "_inflight_tasks", "_reconnecting",
         "_suspect_reason", "_teardown_race", "_permanent_grace_used", "_stdio_child_pids",
-        "_ever_connected")
+        "_ever_connected", "_sse_fallback")
 
     def __init__(self, name: str):
         self.name = name
@@ -345,6 +345,8 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
         self._session_proven: bool = False
         # Never cleared (unlike _ready): separates first-connect from reconnect failures.
         self._ever_connected: bool = False
+        # Latched when the Streamable HTTP -> SSE fallback connects: reconnects reuse SSE directly.
+        self._sse_fallback: bool = False
         # True from park until proven healthy again; logs the revival once.
         self._was_parked: bool = False
         # In-flight RPC tasks so a deliberate teardown fails them fast; _reconnecting is True
@@ -466,7 +468,9 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # before the RPC fires. A lying readOnlyHint can only skip approval for calls the operator was
 # already warned about, never widen access. Missing trust = full; unrecognized = untrusted (a
 # typo must never disable the gate). Classified at CALL time from DISCOVERY data: no schema
-# mutation, prompt cache intact.
+# mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
+# key (its policy for the name, even when it adopted another profile's connection);
+# ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: Dict[Any, str] = {}
 _tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
 
@@ -495,8 +499,8 @@ def _reset_server_error(server_name: str) -> None:
     _server_errors_all_application.pop(key, None)
 
 
-# Raw server names opted into parallel tool calls (``foo-bar``/``foo_bar`` sanitize alike but
-# must not share policy).
+# Servers opted into parallel tool calls, keyed by the consuming profile's own key (``foo-bar``/
+# ``foo_bar`` sanitize alike but must not share policy; neither do two profiles' same-named servers).
 _parallel_safe_servers: set = set()
 # registry tool name -> raw server name (the generated name is lossy; never re-parse it).
 _mcp_tool_server_names: Dict[str, str] = {}

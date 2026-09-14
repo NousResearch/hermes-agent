@@ -1,5 +1,6 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
+import ast
 import logging
 
 import pytest
@@ -288,6 +289,104 @@ class TestJsonFields:
         text = '{"name": "John", "model": "gpt-4"}'
         result = redact_sensitive_text(text)
         assert result == text
+
+
+class TestPythonReprFields:
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "BRAVE_API_KEY",
+            "SERVICE_TOKEN",
+            "DB_PASSWORD",
+            "api_key",
+            "access_token",
+            "client_secret",
+            "id_token",
+            "private_key",
+        ],
+    )
+    def test_secret_field_in_nested_python_repr_is_redacted(self, key):
+        secret = f"opaque-{key.lower()}-value-1234567890"
+        text = f"kwargs={{'env': {{'{key}': '{secret}'}}}}"
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert secret not in result
+        assert f"'{key}': '***'" in result
+
+    @pytest.mark.parametrize(
+        "key",
+        ["TOKEN_COUNT", "AUTH_METHOD", "PASSWORD_POLICY", "SECRET_NAME", "CREDENTIAL_TYPE"],
+    )
+    def test_uppercase_metadata_field_is_unchanged(self, key):
+        text = f"{{'{key}': 'public-metadata-value'}}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    @pytest.mark.parametrize(
+        "key",
+        ["UserPassword", "sessionToken", "clientApiKey", "gh_token", "webhookSecret"],
+    )
+    def test_mixed_case_credential_suffix_key_is_redacted(self, key):
+        """Case-insensitive dict-entry class per OpenHands/software-agent-sdk#4508."""
+        secret = f"opaque-{key.lower()}-value-1234567890"
+        text = f"{{'{key}': '{secret}'}}"
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert secret not in result
+        assert f"'{key}': '***'" in result
+
+    @pytest.mark.parametrize(
+        "key",
+        ["tokenizer", "secretary", "password_policy", "token_count", "keyring"],
+    )
+    def test_embedded_or_metadata_keyword_key_is_unchanged(self, key):
+        text = f"{{'{key}': 'ordinary-value-1234567890'}}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "apostrophe-near-head-'1234567890",
+            "apostrophe-near-tail-1234567890'",
+            b"bytes-apostrophe-near-head-'1234567890",
+            b"bytes-apostrophe-near-tail-1234567890'",
+        ],
+    )
+    def test_escaped_repr_value_remains_parseable(self, value):
+        text = repr({"API_KEY": value})
+
+        result = redact_sensitive_text(text, force=True)
+        parsed = ast.literal_eval(result)
+
+        assert parsed["API_KEY"] == (b"***" if isinstance(value, bytes) else "***")
+
+    def test_double_quoted_repr_value_is_redacted(self):
+        secret = "opaque-double-quoted-value-1234567890"
+        text = f"payload={{'SERVICE_TOKEN': \"{secret}\"}}"
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert secret not in result
+        assert "'SERVICE_TOKEN': \"***\"" in result
+
+    def test_programmatic_env_lookup_is_preserved(self):
+        text = "{'API_KEY': \"os.getenv('OPENAI_API_KEY')\"}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_non_secret_python_repr_field_is_unchanged(self):
+        text = "{'model': 'gpt-5', 'token_count': '123'}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_already_masked_repr_value_keeps_its_scheme_word(self):
+        # An upstream scrub (MCP probe headers) leaves ``Digest ***``; the repr
+        # pass must not collapse that to a bare ``***`` and lose the scheme.
+        text = "headers={'Authorization': 'Digest ***'}"
+        assert redact_sensitive_text(text, force=True) == text
+
+    def test_code_file_preserves_secret_shaped_fixture(self):
+        text = "CONFIG = {'BRAVE_API_KEY': 'fixture-value-1234567890'}"
+        assert redact_sensitive_text(text, force=True, code_file=True) == text
 
 
 class TestAuthHeaders:
@@ -861,53 +960,53 @@ class TestTerminalOutputRedaction:
 
     # ── .env file detection (issue #61352 v2) ──
 
-    def test_command_reads_env_file_detection(self):
-        from agent.redact import _command_reads_env_file
+    def test_command_reads_secret_file_detection(self):
+        from agent.redact import _command_reads_secret_file
         # Basic detection
-        assert _command_reads_env_file("cat .env")
-        assert _command_reads_env_file("cat .env.local")
-        assert _command_reads_env_file("cat .env.production")
-        assert _command_reads_env_file("cat .envrc")
-        assert _command_reads_env_file("head .env")
-        assert _command_reads_env_file("tail .env")
-        assert _command_reads_env_file("type .env")
-        assert _command_reads_env_file("nl .env")
-        assert _command_reads_env_file("bat .env")
+        assert _command_reads_secret_file("cat .env")
+        assert _command_reads_secret_file("cat .env.local")
+        assert _command_reads_secret_file("cat .env.production")
+        assert _command_reads_secret_file("cat .envrc")
+        assert _command_reads_secret_file("head .env")
+        assert _command_reads_secret_file("tail .env")
+        assert _command_reads_secret_file("type .env")
+        assert _command_reads_secret_file("nl .env")
+        assert _command_reads_secret_file("bat .env")
         # With flags
-        assert _command_reads_env_file("cat -n .env")
-        assert _command_reads_env_file("cat -A .env")
+        assert _command_reads_secret_file("cat -n .env")
+        assert _command_reads_secret_file("cat -A .env")
         # With paths
-        assert _command_reads_env_file("cat ~/.hermes/.env")
-        assert _command_reads_env_file("cat /home/user/project/.env")
-        assert _command_reads_env_file("cat ./config/.env.local")
+        assert _command_reads_secret_file("cat ~/.hermes/.env")
+        assert _command_reads_secret_file("cat /home/user/project/.env")
+        assert _command_reads_secret_file("cat ./config/.env.local")
         # In a pipeline / sequence
-        assert _command_reads_env_file("cat .env | grep KEY")
-        assert _command_reads_env_file("echo '---' && cat .env")
+        assert _command_reads_secret_file("cat .env | grep KEY")
+        assert _command_reads_secret_file("echo '---' && cat .env")
         # Windows-style backslash paths
-        assert _command_reads_env_file("cat C:\\Users\\test\\.env")
+        assert _command_reads_secret_file("cat C:\\Users\\test\\.env")
         # Quoted paths (plain split leaves the quotes attached)
-        assert _command_reads_env_file('cat ".env"')
-        assert _command_reads_env_file("cat '.env'")
+        assert _command_reads_secret_file('cat ".env"')
+        assert _command_reads_secret_file("cat '.env'")
         # Case-insensitive basename (macOS/Windows filesystems)
-        assert _command_reads_env_file("cat .ENV")
+        assert _command_reads_secret_file("cat .ENV")
 
-    def test_command_reads_env_file_excludes_templates(self):
-        from agent.redact import _command_reads_env_file
+    def test_command_reads_secret_file_excludes_templates(self):
+        from agent.redact import _command_reads_secret_file
         # Templates/examples should NOT trigger
-        assert not _command_reads_env_file("cat .env.example")
-        assert not _command_reads_env_file("cat .env.sample")
-        assert not _command_reads_env_file("cat .env.template")
-        assert not _command_reads_env_file("cat .env.dist")
+        assert not _command_reads_secret_file("cat .env.example")
+        assert not _command_reads_secret_file("cat .env.sample")
+        assert not _command_reads_secret_file("cat .env.template")
+        assert not _command_reads_secret_file("cat .env.dist")
 
-    def test_command_reads_env_file_rejects_non_env_files(self):
-        from agent.redact import _command_reads_env_file
-        assert not _command_reads_env_file("cat config.py")
-        assert not _command_reads_env_file("cat README.md")
-        assert not _command_reads_env_file("cat .envrc.bak")  # .bak not in list
-        assert not _command_reads_env_file("python app.py")
-        assert not _command_reads_env_file("echo .env")  # echo is not a file-read cmd
-        assert not _command_reads_env_file("")
-        assert not _command_reads_env_file(None)
+    def test_command_reads_secret_file_rejects_non_env_files(self):
+        from agent.redact import _command_reads_secret_file
+        assert not _command_reads_secret_file("cat config.py")
+        assert not _command_reads_secret_file("cat README.md")
+        assert not _command_reads_secret_file("cat .envrc.bak")  # .bak not in list
+        assert not _command_reads_secret_file("python app.py")
+        assert not _command_reads_secret_file("echo .env")  # echo is not a file-read cmd
+        assert not _command_reads_secret_file("")
+        assert not _command_reads_secret_file(None)
 
     def test_cat_env_file_masks_opaque_token(self):
         """cat .env → code_file=False → generic ENV pass redacts opaque keys."""
@@ -968,6 +1067,80 @@ class TestTerminalOutputRedaction:
         assert "abc123secret" not in red
         assert "export MISTRAL_API_KEY=*** # prod key" in red
 
+    @pytest.mark.parametrize(
+        ("command", "output", "secret"),
+        [
+            ("cat ~/.hermes/config.yaml", "api_key: hermesConfigSecret123", "hermesConfigSecret123"),
+            (
+                "head ~/.hermes/profiles/work/config.yaml",
+                "provider.token=profileConfigSecret456",
+                "profileConfigSecret456",
+            ),
+            ("tail ~/.bashrc", "export SERVICE_TOKEN=bashRcSecret789", "bashRcSecret789"),
+            ("grep TOKEN ~/.zshrc", "SERVICE_TOKEN=zshRcSecret123", "zshRcSecret123"),
+            (
+                "awk -F= '/TOKEN/ {print $2}' ~/.profile",
+                "SERVICE_TOKEN=profileSecret456",
+                "profileSecret456",
+            ),
+            ("sed -n '1,20p' ~/.zprofile", "api_key: zprofileSecret789", "zprofileSecret789"),
+            (
+                'cat "$HERMES_HOME/config.yaml"',
+                "SERVICE_TOKEN=variablePathSecret123456789",
+                "variablePathSecret123456789",
+            ),
+            (
+                'cat "${HERMES_HOME}/config.yaml"',
+                "SERVICE_TOKEN=variablePathSecret123456789",
+                "variablePathSecret123456789",
+            ),
+            (
+                "cat $HOME/.hermes/config.yaml",
+                "SERVICE_TOKEN=homeVariablePathSecret123456",
+                "homeVariablePathSecret123456",
+            ),
+            (
+                "awk '{print $1; print $2}' ~/.bashrc",
+                "export SERVICE_TOKEN=awkQuotedSecret123",
+                "awkQuotedSecret123",
+            ),
+            (
+                "grep 'foo|bar' ~/.hermes/config.yaml",
+                "SERVICE_TOKEN=grepQuotedSecret456",
+                "grepQuotedSecret456",
+            ),
+        ],
+    )
+    def test_secret_bearing_file_commands_mask_assignments(self, command, output, secret):
+        from agent.redact import redact_terminal_output
+
+        assert secret not in redact_terminal_output(output, command)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat config.yaml",
+            "cat /project/config.yaml",
+            "cat ~/.hermes/config.example.yaml",
+            "cat ~/.hermes/config.template.yaml",
+            "cat ~/.bashrc.example",
+            'cat "$OTHER/config.yaml"',
+            "grep TOKEN app.py",
+            "grep .bashrc app.py",
+            "grep -n .env src/settings.py",
+            "awk '/TOKEN/' settings.yaml",
+            "sed -n '1,20p' template.yaml",
+        ],
+    )
+    def test_arbitrary_yaml_and_source_reads_stay_unredacted(self, command):
+        """Only the known secret-bearing files flip the gate: the same opaque value read
+        from project YAML / source code is left alone (code_file path), while the
+        identical text under ``cat .env`` is masked."""
+        from agent.redact import redact_terminal_output
+
+        output = "SERVICE_TOKEN=3JcQ1UzX9vQ2mL7pR4tY8wA1sD5fG6hJ2kSbn7Q0"
+        assert redact_terminal_output(output, command) == output
+        assert "3JcQ1UzX9vQ2mL7pR4tY8wA1sD5fG6hJ2kSbn7Q0" not in redact_terminal_output(output, "cat .env")
 
 
     def test_disabled_passes_through(self, monkeypatch):
@@ -976,6 +1149,66 @@ class TestTerminalOutputRedaction:
         out = "CUSTOM_TOKEN=zzzopaque1234567890abcdef"
         red = redact_terminal_output(out, "printenv")
         assert "zzzopaque1234567890abcdef" in red
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "python -m pytest",
+            "uv run pytest",
+            "poetry run pytest",
+            "coverage run -m pytest",
+            "PYTHONPATH=. pytest",
+            "/usr/bin/env pytest",
+            "bash -lc 'pytest tests/agent/test_redact.py'",
+        ],
+    )
+    def test_pytest_diagnostic_masks_python_repr_secret_field(self, command):
+        from agent.redact import redact_terminal_output
+
+        secret = "opaque-brave-value-1234567890"
+        out = f"E       kwargs={{'env': {{'BRAVE_API_KEY': '{secret}'}}}}"
+
+        red = redact_terminal_output(out, command, force=True)
+
+        assert secret not in red
+        assert "'BRAVE_API_KEY': '***'" in red
+
+    def test_exception_line_masks_python_repr_secret_field(self):
+        from agent.redact import redact_terminal_output
+
+        secret = "opaque-exception-value-1234567890"
+        out = f"RuntimeError: payload={{'API_KEY': '{secret}'}}"
+
+        red = redact_terminal_output(out, "python app.py", force=True)
+
+        assert secret not in red
+        assert "'API_KEY': '***'" in red
+
+    def test_source_dump_preserves_python_repr_fixture(self):
+        from agent.redact import redact_terminal_output
+
+        out = "CONFIG = {'BRAVE_API_KEY': 'fixture-value-1234567890'}"
+        assert redact_terminal_output(out, "cat config.py", force=True) == out
+        assert redact_terminal_output(out, "python dump_source.py", force=True) == out
+
+    def test_pytest_source_line_preserves_python_repr_fixture(self):
+        from agent.redact import redact_terminal_output
+
+        source = "    CONFIG = {'BRAVE_API_KEY': 'fixture-value-1234567890'}"
+        out = source + "\nE       assert False"
+
+        red = redact_terminal_output(out, "uv run pytest", force=True)
+
+        assert source in red
+
+    def test_disabled_pytest_diagnostic_passes_through(self, monkeypatch):
+        from agent.redact import redact_terminal_output
+
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        secret = "opaque-disabled-value-1234567890"
+        out = f"E       payload={{'API_KEY': '{secret}'}}"
+
+        assert redact_terminal_output(out, "uv run pytest") == out
 
 
 class TestFileReadNonReusableRedaction:
@@ -1185,3 +1418,25 @@ class TestValueAwareGatingCorpus:
         result = redact_sensitive_text(block, force=True)
         assert prose_line in result
         assert "A9f3kZq7Lm2Xw8Rt4Yv6" not in result
+
+
+class TestRedactForEgress:
+    """``redact_for_egress`` is the single scrub every remote-reader surface (gateway chat, A2A, monitoring)
+    calls; there is no second pattern list to keep in sync."""
+
+    def test_opaque_bearer_without_vendor_prefix_is_masked(self):
+        from agent.redact import redact_for_egress
+        out = redact_for_egress("curl -H 'Authorization: Bearer opaque0123456789abcdef' https://x.example")
+        assert "opaque0123456789abcdef" not in out
+        assert "https://x.example" in out
+
+    def test_bearer_sweep_masks_real_tokens_not_the_english_word(self):
+        from agent.redact import redact_for_egress
+        prose = "I'm the bearer of bad news: the deploy failed"
+        assert redact_for_egress(prose) == prose
+        assert "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9" not in redact_for_egress("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+
+    def test_fails_closed_when_the_redactor_raises(self, monkeypatch):
+        from agent import redact as R
+        monkeypatch.setattr(R, "redact_sensitive_text", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert R.redact_for_egress("sk-live-0123456789abcdef") == R.REDACTION_UNAVAILABLE

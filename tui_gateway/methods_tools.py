@@ -5,6 +5,7 @@ bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
 Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / ``_mcp_`` prefixes).
 """
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -20,12 +21,20 @@ def _profile_scoped_rpc(
     fail_code: int, *, required=(), catch_resolve: bool = True, prefix: str = "",
     scoped: bool = True, live_session: bool = False,
 ):
-    """Wrap a handler body with the optional ``profile`` HERMES_HOME scope. Order: ``required``
+    """Wrap a handler body with the optional ``profile`` runtime scope. Order: ``required``
     params (4063 ``<key> required``) → ``live_session`` resolution via ``_sess`` (waits for the
     agent build; body gets ``session`` as 3rd arg) → profile (4064 when its dir is missing) → body;
     body exceptions become ``fail_code`` (``prefix`` + message). ``catch_resolve`` also maps
     resolve-time exceptions to ``fail_code``; mcp.servers.* let them propagate to dispatch().
-    ``scoped=False`` ignores ``profile``. The override is always reset afterwards."""
+    ``scoped=False`` ignores ``profile``.
+
+    The scope is the same home + secret + terminal composition a turn binds
+    (``_session_profile_runtime_scope``), not HERMES_HOME alone: these bodies read config.yaml,
+    whose ``${VAR}`` refs (``config._env_ref_lookup``) and the MCP probe's own header/env
+    interpolation resolve through ``get_secret`` — with only the home bound they read plain
+    ``os.environ``, i.e. the launch profile's values, so ``mcp.servers.test`` for a secondary
+    reported green against the default profile's token (or the literal placeholder). External
+    sources are hydrated first (the requested profile may never have been served in this process)."""
 
     def deco(body):
         def handler(rid, params: dict) -> dict:
@@ -38,23 +47,26 @@ def _profile_scoped_rpc(
                 if err:
                     return err
                 args = (rid, params, session)
-            token = None
+            scope = contextlib.nullcontext()
             if profile := _str_arg(params, "profile") if scoped else "":
                 try:
-                    profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    try:
+                        profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    except ValueError:  # traversal-shaped name: same answer as a missing dir
+                        profile_dir = None
                     if not profile_dir or not profile_dir.is_dir():
                         return _err(rid, 4064, f"profile '{profile}' not found")
-                    token = _tools_mod("hermes_constants").set_hermes_home_override(str(profile_dir))
+                    _tools_mod("hermes_cli.env_loader").hydrate_profile_secret_sources(profile_dir)
+                    scope = _session_profile_runtime_scope({"profile_home": str(profile_dir)})
                 except Exception as e:
                     if not catch_resolve:
                         raise
                     return _err(rid, fail_code, str(e))
             try:
-                return body(*args)
+                with scope:
+                    return body(*args)
             except Exception as e:
                 return _err(rid, fail_code, f"{prefix}{e}")
-            finally:
-                _mcp_reset_profile(token)
         handler.__doc__ = body.__doc__
         return handler
     return deco
@@ -283,17 +295,22 @@ def _(rid, params: dict) -> dict:
     req_rev = str(params.get("rev") or "")
 
     def _refresh_session_agent() -> None:
-        """Rebuild THIS session's cached tool snapshot + push session.info (the agent never
-        re-reads the registry). Runs under _mcp_reload_lock so a concurrent reload can't
-        tear the registry down mid-refresh."""
-        if not session:
-            return
-        agent = session["agent"]
-        try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-            _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
-        except Exception as _exc:
-            logger.warning("Failed to refresh cached agent tools after /reload-mcp: %s", _exc)
-        _emit("session.info", params.get("session_id", ""), _session_info(agent, session))
+        """Rebuild EVERY live session's cached tool snapshot + push session.info (agents never
+        re-read the registry). The MCP pool is process-global, so refreshing only the requester
+        would leave sibling sessions on stale tools until /new — and a request without a
+        resolvable session_id (desktop passes ``activeSessionId ?? undefined``) would refresh
+        nothing while still answering "reloaded". Runs under _mcp_reload_lock so a concurrent
+        reload can't tear the registry down mid-refresh."""
+        with _sessions_lock:
+            live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None]
+        for sid, sess in live:
+            agent = sess["agent"]
+            try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
+                with _session_profile_runtime_scope(sess):
+                    _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
+            except Exception as _exc:
+                logger.warning("Failed to refresh cached agent tools after /reload-mcp (session %s): %s", sid, _exc)
+            _emit("session.info", sid, _session_info(agent, sess))
 
     def _do_full_reload() -> None:
         """shutdown+discover+refresh under the lock, then mark a completed generation. Config
@@ -309,6 +326,17 @@ def _(rid, params: dict) -> dict:
             if after == loaded:
                 break
             loaded = after
+        # The unscoped shutdown tore down every profile's servers, but discover_mcp_tools() above
+        # only rebuilt the launch profile's overlay; a secondary-profile session refreshed against
+        # that registry would lose its MCP tools until its own reload.
+        with _sessions_lock:
+            homes = {sess.get("profile_home") for sess in _sessions.values() if sess.get("agent") is not None}
+        for home in sorted(homes - {None}):
+            try:
+                with _session_profile_runtime_scope({"profile_home": home}):
+                    _mcp_discovery.discover_mcp_tools()
+            except Exception as _exc:
+                logger.warning("MCP rediscovery failed for profile %s: %s", home, _exc)
         _refresh_session_agent()
         _mcp_reload_loaded_rev = loaded
         _mcp_reload_gen += 1

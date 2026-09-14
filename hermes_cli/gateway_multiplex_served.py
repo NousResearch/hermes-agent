@@ -17,12 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 def live_default_gateway_pid() -> Optional[int]:
-    """PID of the default profile's gateway when its pid record names a live process, else None."""
+    """PID of the default profile's gateway when a VERIFIED live process owns it, else None.
+
+    ``gateway.status.live_gateway_pid_for_home``: pid file + lock, then the runtime record the gateway
+    itself writes, each proven against the live process (start time, gateway command line, home). A
+    launch-service gateway can be live with no ``gateway.pid`` at all, and a stale record whose PID was
+    recycled by an unrelated process must not make its ``served_profiles`` authoritative. Never key this
+    off the record's ``updated_at``: an idle gateway never advances it.
+    """
     from hermes_constants import get_default_hermes_root
-    from gateway.status import _pid_exists, _pid_from_record, _read_pid_record
-    rec = _read_pid_record(get_default_hermes_root() / "gateway.pid")
-    pid = _pid_from_record(rec) if rec else None
-    return pid if pid and _pid_exists(pid) else None
+    from gateway.status import live_gateway_pid_for_home
+    return live_gateway_pid_for_home(get_default_hermes_root())
 
 
 def recorded_served_profiles(default_root: Optional[Path] = None) -> Optional[list[str]]:

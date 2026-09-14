@@ -291,6 +291,11 @@ class PluginContext:
         """This plugin's profile-scoped durable JSON state facade."""
         return PluginState(self.plugin_id, self.manifest.skill_namespace)
 
+    def get_session_project_affinity(self, session_id: str):
+        """Return immutable, read-only Core-owned Project identity for one profile session."""
+        from hermes_cli.session_project_affinity import read_session_project_affinity
+
+        return read_session_project_affinity(self._manager.home_path, session_id)
     @cached_property
     def platform_actions(self):
         """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``). Every call

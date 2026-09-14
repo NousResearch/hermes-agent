@@ -598,9 +598,11 @@ class SessionSessionsMixin:
             generation = int(row["project_affinity_generation"] or 0) + 1
             conn.execute(
                 "UPDATE sessions SET project_id = ?, project_root = ?, "
-                "project_affinity_generation = ?, project_context_hash = ? WHERE id = ?",
+                "project_affinity_generation = ?, project_context_hash = ?, "
+                "system_prompt = NULL, system_prompt_hash = NULL WHERE id = ?",
                 (*normalized[:2], generation, normalized[2], session_id),
             )
+            self._delete_unreferenced_system_prompts(conn)
             return generation
 
         return self._execute_write(_do)
@@ -626,14 +628,22 @@ class SessionSessionsMixin:
             git_generation = int(row["git_metadata_generation"] or 0) + 1
             current_affinity = (row["project_id"], row["project_root"], row["project_context_hash"])
             affinity_generation = int(row["project_affinity_generation"] or 0)
-            if current_affinity != normalized:
+            affinity_changed = current_affinity != normalized
+            if affinity_changed:
                 affinity_generation += 1
             conn.execute(
                 "UPDATE sessions SET cwd = ?, git_branch = NULL, git_repo_root = NULL, "
                 "git_metadata_generation = ?, project_id = ?, project_root = ?, "
-                "project_affinity_generation = ?, project_context_hash = ? WHERE id = ?",
-                (cwd, git_generation, *normalized[:2], affinity_generation, normalized[2], session_id),
+                "project_affinity_generation = ?, project_context_hash = ?, "
+                "system_prompt = CASE WHEN ? THEN NULL ELSE system_prompt END, "
+                "system_prompt_hash = CASE WHEN ? THEN NULL ELSE system_prompt_hash END WHERE id = ?",
+                (
+                    cwd, git_generation, *normalized[:2], affinity_generation, normalized[2],
+                    affinity_changed, affinity_changed, session_id,
+                ),
             )
+            if affinity_changed:
+                self._delete_unreferenced_system_prompts(conn)
             return git_generation, affinity_generation
 
         return self._execute_write(_do)

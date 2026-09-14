@@ -6,7 +6,7 @@ from hermes_state import SessionDB
 from tui_gateway import server
 
 
-def test_explicit_project_switch_persists_affinity_and_returns_context(monkeypatch, tmp_path):
+def test_explicit_project_switch_persists_identity_and_invalidates_prompt(monkeypatch, tmp_path):
     project_root = tmp_path / "project"
     project_root.mkdir()
     (project_root / "AGENTS.md").write_text("SWITCHED-PROJECT-RULE\n", encoding="utf-8")
@@ -14,7 +14,12 @@ def test_explicit_project_switch_persists_affinity_and_returns_context(monkeypat
     session_key = "stored-session"
     runtime_sid = "runtime-session"
     db.create_session(session_key, source="desktop", cwd=str(tmp_path))
-    agent = type("Agent", (), {"session_id": session_key, "_cached_system_prompt": "PINNED-SYSTEM"})()
+    agent = type("Agent", (), {
+        "session_id": session_key,
+        "_cached_system_prompt": "PINNED-SYSTEM",
+        "_cached_system_prompt_static": "PINNED-STATIC",
+        "_memory_store": None,
+    })()
     session = {
         "session_key": session_key,
         "agent": agent,
@@ -44,8 +49,9 @@ def test_explicit_project_switch_persists_affinity_and_returns_context(monkeypat
         assert row["project_affinity_generation"] == 1
         assert row["project_context_hash"] == result["context_hash"]
         assert result["project_id"] == "project-1"
-        assert "SWITCHED-PROJECT-RULE" in result["context"]
-        assert agent._cached_system_prompt == "PINNED-SYSTEM"
+        assert result["status"] == "bound"
+        assert "context" not in result
+        assert agent._cached_system_prompt is None
         assert git_claims == [(session, str(project_root.resolve()), 1)]
         assert emitted[-1][0:2] == ("session.info", runtime_sid)
     finally:

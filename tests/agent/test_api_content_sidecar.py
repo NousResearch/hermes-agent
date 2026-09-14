@@ -281,20 +281,6 @@ class TestPrologueStamping:
             ctx = _build(agent)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
-    def test_project_affinity_context_is_stamped_into_the_turn_sidecar(self):
-        agent = _FakeAgent()
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]), patch(
-            "agent.project_affinity.collect_turn_project_affinity",
-            return_value="PROJECT-AFFINITY-CONTEXT",
-        ):
-            ctx = _build(agent)
-
-        msg = ctx.messages[ctx.current_turn_user_idx]
-        assert msg["content"] == "hello"
-        assert msg["api_content"] == "hello\n\nPROJECT-AFFINITY-CONTEXT"
-        assert agent._cached_system_prompt == "SYSTEM"
-        assert agent.api_content_at_persist == msg["api_content"]
-
 
 # ---------------------------------------------------------------------------
 # Flush: persist-override rows keep the sent bytes in the sidecar (#48677)

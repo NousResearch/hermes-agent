@@ -120,7 +120,7 @@ class TestProjectHandler(unittest.TestCase):
             "id": "p_1", "slug": "one", "name": "One", "primary_path": "C:/project", "folders": [],
         })()
         with patch("hermes_cli.projects_db.connect_closing") as connect, \
-             patch("hermes_cli.projects_db.set_active"), \
+             patch("hermes_cli.projects_db.set_active") as set_active, \
              patch.object(pt, "_resolve", return_value=project), \
              patch.object(pt, "_workspace_callback", return_value=None):
             connect.return_value.__enter__.return_value = object()
@@ -128,6 +128,7 @@ class TestProjectHandler(unittest.TestCase):
 
         self.assertFalse(result["success"])
         self.assertIn("was not moved", result["error"])
+        set_active.assert_not_called()
 
 
 class TestDietBudget(unittest.TestCase):

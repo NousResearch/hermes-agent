@@ -1592,6 +1592,92 @@ def _scrub_export_secrets(staged: Path) -> None:
         path.write_text(redacted, encoding="utf-8")
 
 
+def export_instance_tree(output_dir: str) -> Path:
+    """Export every profile (default + named) as a diffable directory tree, credential-free.
+
+    Unlike :func:`export_profile` (one profile, tar.gz), this snapshots the whole instance —
+    default plus every live named profile under ``profiles/`` — as plain directories so the
+    result can live in a git repo with history and review (#110428). Reuses the same
+    exclusion/redaction rules as a single-profile export: the default profile's root-level
+    allow-list (``_default_export_ignore``), named-profile credential exclusion
+    (``_EXPORT_CREDENTIAL_FILES``), and text-content secret scrubbing (``_scrub_export_secrets``)
+    — nothing here loosens what a single export already keeps out.
+    """
+    out_root = Path(output_dir)
+    if out_root.exists() and any(out_root.iterdir()):
+        raise ValueError(f"Output directory {out_root} already exists and is not empty.")
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    def _ignore_credentials(directory: str, contents: list) -> set:
+        return set(_EXPORT_CREDENTIAL_FILES & set(contents))
+
+    written: List[str] = []
+    default_home = _get_default_hermes_home()
+    if default_home.is_dir():
+        staged = out_root / "default"
+        shutil.copytree(default_home, staged, symlinks=True, ignore=_default_export_ignore(default_home))
+        written.append("default")
+    for entry in _iter_named_profile_dirs():
+        staged = out_root / entry.name
+        shutil.copytree(entry, staged, symlinks=True, ignore=_ignore_credentials)
+        written.append(entry.name)
+    _scrub_export_secrets(out_root)
+    if not written:
+        raise ValueError("No profiles found to export (no default profile home, no named profiles).")
+    return out_root
+
+
+def import_instance_tree(input_dir: str, *, overwrite: bool = False) -> List[str]:
+    """Restore profiles from a tree written by :func:`export_instance_tree`.
+
+    Each top-level directory in ``input_dir`` is imported as a profile of the same name
+    (``"default"`` merges into the current default home's user-data areas rather than
+    replacing it wholesale — the default profile IS ``~/.hermes`` and cannot be swapped out
+    from under a running instance). Named profiles are refused when they already exist unless
+    ``overwrite=True``. Returns the list of profile names restored.
+    """
+    in_root = Path(input_dir)
+    if not in_root.is_dir():
+        raise FileNotFoundError(f"Export tree not found: {in_root}")
+    restored: List[str] = []
+    for entry in sorted(in_root.iterdir()):
+        if not entry.is_dir():
+            continue
+        canon = entry.name
+        if canon == "default":
+            target = _get_default_hermes_home()
+            target.mkdir(parents=True, exist_ok=True)
+            for child in entry.iterdir():
+                dest = target / child.name
+                if dest.exists() and not overwrite:
+                    continue
+                if dest.exists():
+                    if dest.is_dir() and not dest.is_symlink():
+                        shutil.rmtree(dest)
+                    else:
+                        dest.unlink()
+                if child.is_dir() and not child.is_symlink():
+                    shutil.copytree(child, dest, symlinks=True)
+                else:
+                    shutil.copy2(child, dest, follow_symlinks=False)
+            restored.append("default")
+            continue
+        canon = _canon_valid(canon)
+        profile_dir = get_profile_dir(canon)
+        if profile_dir.exists():
+            if not overwrite:
+                raise FileExistsError(
+                    f"Profile '{canon}' already exists at {profile_dir}. "
+                    "Pass overwrite=True / --overwrite to replace it.")
+            shutil.rmtree(profile_dir)
+        _get_profiles_root().mkdir(parents=True, exist_ok=True)
+        shutil.copytree(entry, profile_dir, symlinks=True)
+        restored.append(canon)
+    if not restored:
+        raise ValueError(f"No profile directories found under {in_root}.")
+    return restored
+
+
 def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive; credential files are excluded and staged text is
     force-redacted first. Returns the output file path."""

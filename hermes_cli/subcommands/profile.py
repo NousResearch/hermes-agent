@@ -98,6 +98,27 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         "--name", dest="import_name", metavar="NAME",
         help="Profile name (default: inferred from archive)")
 
+    profile_export_instance = profile_subparsers.add_parser(
+        "export-instance",
+        help="Export every profile as a diffable directory tree (for git-based backup)",
+        description="Export the default profile plus every named profile under "
+            "profiles/ as plain directories (not an archive) so the result can be "
+            "committed to a git repo with history and review. Same credential "
+            "exclusion and secret-scrubbing as `hermes profile export`.")
+    profile_export_instance.add_argument("output_dir", help="Destination directory (must not already exist with content)")
+
+    profile_import_instance = profile_subparsers.add_parser(
+        "import-instance",
+        help="Restore profiles from a directory tree written by export-instance",
+        description="Restore profiles from a tree produced by `hermes profile "
+            "export-instance`. The default profile's directories are merged into "
+            "the current ~/.hermes; named profiles are created fresh (or refuse "
+            "to overwrite an existing profile unless --overwrite is passed).")
+    profile_import_instance.add_argument("input_dir", help="Source directory (output of export-instance)")
+    profile_import_instance.add_argument(
+        "--overwrite", action="store_true",
+        help="Overwrite existing profiles / default-home files instead of skipping them")
+
     # ---------- Distribution subcommands (issue #20456) ----------
     profile_install = profile_subparsers.add_parser(
         "install", help="Install a profile distribution from a git URL or local directory",

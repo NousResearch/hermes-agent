@@ -329,10 +329,11 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
-    # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
-    # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
-    # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
-    _seen_uids_snapshot: Dict[str, set] = {}
+    # Per-account replay-state snapshot surviving adapter recreation: the reconnect watcher builds a
+    # FRESH adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen
+    # and skip mail that arrived during the outage. Keyed by address (multiplex runs several accounts);
+    # same-process only. The payload is a dict (seen UIDs + watermark + UIDVALIDITY + pending retries).
+    _seen_uids_snapshot: Dict[str, Any] = {}
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
@@ -353,6 +354,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+        # Use BODY.PEEK[] for IMAP FETCH so polling does not mark messages as read on the
+        # server (RFC822 sets \Seen). Opt back into the legacy behaviour with
+        #   platforms:
+        #     email:
+        #       imap_peek: false
+        self._imap_peek = is_truthy_value(extra.get("imap_peek"), default=True)
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -363,6 +370,15 @@ class EmailAdapter(BasePlatformAdapter):
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
+        # Highest UID known consumed in the current mailbox epoch. BODY.PEEK[] leaves fetched
+        # messages UNSEEN, so this in-process boundary prevents replay once _seen_uids trims
+        # older entries past the cap (#60637).
+        self._uid_watermark: Optional[int] = None
+        self._uidvalidity: Optional[int] = None
+        # UIDs whose FETCH returned a non-OK status. They stay eligible even after later
+        # successes advance the watermark, so one persistently bad message cannot starve
+        # all newer mail.
+        self._pending_fetch_uids: set = set()
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
         # chat_id (sender email) -> last subject + message-id for threading
@@ -381,6 +397,114 @@ class EmailAdapter(BasePlatformAdapter):
             logger.debug("[Email] Trimmed seen UIDs to %d entries", len(self._seen_uids))
         except (ValueError, TypeError):
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
+
+    def _max_uid(self, uids) -> Optional[int]:
+        """Largest numeric UID in *uids* (bytes/str/int), or ``None``; malformed entries are skipped."""
+        best: Optional[int] = None
+        for uid in uids:
+            try:
+                n = int(uid)
+            except (TypeError, ValueError):
+                continue
+            if best is None or n > best:
+                best = n
+        return best
+
+    def _seed_seen_uids(self, uids) -> None:
+        """Seed UID state from every message in the current mailbox epoch (connect-time baseline).
+
+        The watermark is computed from the *full* set before trimming, so trimming can never lower
+        the consumed boundary — the defense against replay after eviction from the bounded set.
+        """
+        uid_list = list(uids)
+        self._seen_uids = set(uid_list)
+        self._uid_watermark = self._max_uid(uid_list)
+        self._pending_fetch_uids.clear()
+        self._trim_seen_uids()
+
+    def _record_consumed_uid(self, uid) -> None:
+        """Record a UID as consumed and advance the replay boundary."""
+        try:
+            numeric_uid = int(uid)
+        except (TypeError, ValueError):
+            numeric_uid = None
+        if numeric_uid is not None and (self._uid_watermark is None or numeric_uid > self._uid_watermark):
+            self._uid_watermark = numeric_uid
+        self._seen_uids.add(uid)
+        if len(self._seen_uids) > self._seen_uids_max:
+            self._trim_seen_uids()
+
+    @staticmethod
+    def _read_uidvalidity(imap) -> Optional[int]:
+        """Return the selected mailbox's UIDVALIDITY when advertised, else ``None``."""
+        try:
+            response = imap.response("UIDVALIDITY")
+        except Exception:
+            return None
+        if not isinstance(response, (tuple, list)) or len(response) < 2:
+            return None
+        values = response[1]
+        if not isinstance(values, (tuple, list)) or not values:
+            return None
+        raw = values[-1]
+        if isinstance(raw, bytes):
+            raw = raw.decode("ascii", errors="ignore")
+        match = re.search(r"\d+", str(raw))
+        return int(match.group(0)) if match else None
+
+    def _sync_uidvalidity(self, imap) -> bool:
+        """Reset and reseed UID state when the mailbox epoch changes; ``False`` = unusable."""
+        current = self._read_uidvalidity(imap)
+        if current is None:
+            if self._uidvalidity is not None:
+                logger.warning("[Email] UIDVALIDITY became unavailable; refusing replay state from mailbox epoch %s", self._uidvalidity)
+                return False
+            return True
+        if self._uidvalidity is None:
+            if not (self._seen_uids or self._pending_fetch_uids or self._uid_watermark is not None):
+                self._uidvalidity = current  # fresh state: adopt the newly visible epoch
+                return True
+            # State accumulated while the epoch was unknown cannot be validated by a newly
+            # visible UIDVALIDITY — reseed below before adopting it.
+        elif current == self._uidvalidity:
+            return True
+
+        status, data = imap.uid("search", None, "ALL")
+        if status != "OK" or not data:
+            logger.warning("[Email] UIDVALIDITY changed from %s to %s but UID state could not be reseeded", self._uidvalidity, current)
+            return False
+        old_uidvalidity = self._uidvalidity
+        self._uidvalidity = current
+        existing_uids = data[0].split() if data[0] else []
+        self._seed_seen_uids(existing_uids)
+        logger.info("[Email] UIDVALIDITY changed from %s to %s; reseeded %d existing UIDs", old_uidvalidity, current, len(existing_uids))
+        return True
+
+    def _save_uid_snapshot(self) -> None:
+        """Persist replay state for a fresh adapter created on reconnect."""
+        self._seen_uids_snapshot[self._address] = {
+            "seen_uids": set(self._seen_uids),
+            "uid_watermark": self._uid_watermark,
+            "uidvalidity": self._uidvalidity,
+            "pending_fetch_uids": set(self._pending_fetch_uids),
+        }
+
+    def _restore_uid_snapshot(self, snapshot: Any, current_uidvalidity: Optional[int]) -> bool:
+        """Restore reconnect state; ``False`` when the mailbox epoch changed."""
+        if not isinstance(snapshot, dict):
+            return False
+        # Once an epoch has been observed, losing UIDVALIDITY is not evidence it stayed
+        # unchanged — a stale watermark could suppress low UIDs after a mailbox reset.
+        if snapshot.get("uidvalidity") != current_uidvalidity:
+            return False
+        self._seen_uids = set(snapshot.get("seen_uids") or set())
+        self._uid_watermark = snapshot.get("uid_watermark")
+        if self._uid_watermark is None:
+            self._uid_watermark = self._max_uid(self._seen_uids)
+        self._uidvalidity = current_uidvalidity
+        self._pending_fetch_uids = set(snapshot.get("pending_fetch_uids") or set())
+        self._trim_seen_uids()
+        return True
 
     def _connect_imap(self) -> imaplib.IMAP4:
         """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
@@ -435,18 +559,32 @@ class EmailAdapter(BasePlatformAdapter):
         try:
             with self._inbox() as imap:
                 snapshot = self._seen_uids_snapshot.get(self._address)
-                if is_reconnect and snapshot is not None:
+                current_uidvalidity = self._read_uidvalidity(imap)
+                if (
+                    is_reconnect
+                    and snapshot is not None
+                    and isinstance(snapshot, dict)
+                    and snapshot.get("uidvalidity") is not None
+                    and current_uidvalidity is None
+                ):
+                    # A saved epoch + a server that now hides UIDVALIDITY cannot be verified —
+                    # refuse rather than restore a possibly stale watermark.
+                    raise imaplib.IMAP4.error("UIDVALIDITY unavailable; refusing to restore IMAP replay state")
+                if is_reconnect and snapshot is not None and self._restore_uid_snapshot(snapshot, current_uidvalidity):
                     # Same-process reconnect: restore the previous adapter's baseline so mail that
                     # arrived during the outage stays eligible for the next poll.
-                    self._seen_uids = set(snapshot)
                     passed = "[Email] IMAP reconnect test passed. Restored %d seen UIDs; messages received during the outage will be processed."
-                else:  # first connect (or no snapshot): mark all existing messages seen
+                else:  # first connect, no snapshot, or changed UIDVALIDITY: mark all existing messages seen
                     status, data = imap.uid("search", None, "ALL")
-                    self._seen_uids.update(data[0].split() if status == "OK" and data and data[0] else ())
+                    # Fail closed: without a baseline the watermark is unknown and PEEK would replay
+                    # the entire inbox as "new" on the first poll.
+                    if status != "OK" or not data:
+                        raise imaplib.IMAP4.error("unable to establish safe IMAP UID baseline")
+                    self._uidvalidity = current_uidvalidity
+                    self._seed_seen_uids(data[0].split() if data[0] else [])
                     passed = "[Email] IMAP connection test passed. %d existing messages skipped."
-                self._trim_seen_uids()
                 logger.info(passed, len(self._seen_uids))
-            self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+            self._save_uid_snapshot()
             return True
         except Exception as e:
             # Always set an explicit fatal code, else the gateway treats every failure as transient with zero
@@ -526,21 +664,67 @@ class EmailAdapter(BasePlatformAdapter):
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
+        self._last_fetch_failed = False
+        self._last_fetch_error = ""
         try:
             with self._inbox() as imap:
+                if not self._sync_uidvalidity(imap):
+                    self._last_fetch_failed = True
+                    self._last_fetch_error = "Unable to verify or reseed IMAP UIDVALIDITY replay state"
+                    return results
+
                 status, data = imap.uid("search", None, "UNSEEN")
-                for uid in (data[0].split() if status == "OK" and data and data[0] else []):
-                    if uid in self._seen_uids:
+                if status != "OK" or not data:
+                    # The check itself failed — not an empty inbox: surface it so the gateway's
+                    # reconnect/backoff machinery learns the mailbox is unhealthy (#80016).
+                    self._last_fetch_failed = True
+                    self._last_fetch_error = f"IMAP UNSEEN search failed with status {status}"
+                    return results
+                if not data[0]:
+                    self._pending_fetch_uids.clear()
+                    return results
+
+                uids = data[0].split()
+                try:
+                    uids = sorted(uids, key=int)
+                except (TypeError, ValueError):
+                    pass
+                # Drop retry exceptions that are no longer UNSEEN (deleted, externally marked
+                # read, or otherwise absent from the search).
+                self._pending_fetch_uids.intersection_update(uids)
+
+                for uid in uids:
+                    retry_pending = uid in self._pending_fetch_uids
+                    if uid in self._seen_uids and not retry_pending:
                         continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    # BODY.PEEK[] leaves consumed mail UNSEEN: skip anything at or below the
+                    # consumed watermark even if _seen_uids evicted it after crossing the
+                    # bounded-set cap (#60637).
+                    if self._uid_watermark is not None and not retry_pending:
+                        try:
+                            if int(uid) <= self._uid_watermark:
+                                continue
+                        except (TypeError, ValueError):
+                            pass
+                    fetch_selector = "(BODY.PEEK[])" if self._imap_peek else "(RFC822)"
+                    status, msg_data = imap.uid("fetch", uid, fetch_selector)
                     if status != "OK":
-                        continue  # transient per-UID refusal: leave unseen so the next poll retries
+                        # Keep this UID as an explicit exception to the watermark and continue,
+                        # so one persistently unfetchable message cannot starve all later mail.
+                        # The failure still surfaces through reconnect/backoff after _check_inbox()
+                        # dispatches any partial results.
+                        self._pending_fetch_uids.add(uid)
+                        self._last_fetch_failed = True
+                        self._last_fetch_error = f"IMAP FETCH failed for UID {uid!r} with status {status}"
+                        logger.warning("[Email] %s", self._last_fetch_error)
+                        continue
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
                     # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
                     # IMAP fetch can return unexpected structures (e.g. a single bytes item instead of a
-                    # list of tuples). See #80032.
-                    self._seen_uids.add(uid)
-                    self._trim_seen_uids()
+                    # list of tuples). See #80032. Advance the replay boundary only after the server
+                    # returned a response; a failed fetch must remain eligible next poll.
+                    self._pending_fetch_uids.discard(uid)
+                    self._record_consumed_uid(uid)
                     try:
                         raw_email = msg_data[0][1]
                     except (IndexError, TypeError):
@@ -562,9 +746,12 @@ class EmailAdapter(BasePlatformAdapter):
             # _close_imap guarantees the socket dies even when logout() raises IMAP4.abort on a broken
             # connection (#79889).
             logger.error("[Email] IMAP fetch error: %s", e)
-            self._last_fetch_failed, self._last_fetch_error = True, str(e)
-        # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
-        self._seen_uids_snapshot[self._address] = set(self._seen_uids)
+            self._last_fetch_failed = True
+            self._last_fetch_error = str(e)
+        finally:
+            # Persist even on early returns (empty inbox, UIDVALIDITY reseed, failed search) so a
+            # fresh reconnect adapter never restores a stale consumed boundary or mailbox epoch.
+            self._save_uid_snapshot()
         return results
 
     def _parse_fetched_message(self, uid: bytes, raw_email: "bytes | bytearray") -> Optional[Dict[str, Any]]:

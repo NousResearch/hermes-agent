@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { type EnumeratedWindow, enumerationFailureNote, pickWindowBelow } from './window-below'
+import { type EnumeratedWindow, enumerationFailureNote, getWindowsFailureReason, pickWindowBelow } from './window-below'
 
 const win = (pid: number, x = 0, y = 0, width = 800, height = 600, app = `app-${pid}`): EnumeratedWindow => ({
   app,
@@ -143,5 +143,31 @@ describe('enumerationFailureNote', () => {
 
     expect(note).toMatch(/xprop/)
     expect(note).not.toMatch(/ENOENT/)
+  })
+})
+
+describe('getWindowsFailureReason', () => {
+  it('explains the native binding gap on Windows ARM64 without discarding the failure', () => {
+    for (const detail of [
+      'module missing',
+      'binding failed to load',
+      'the window enumerator returned no window list'
+    ]) {
+      const reason = getWindowsFailureReason(detail, 'win32', 'arm64')
+
+      expect(reason).toContain(detail)
+      expect(reason).toMatch(/win32-arm64/)
+      expect(reason).toMatch(/native binding/)
+      expect(reason).toMatch(/x64/)
+      expect(enumerationFailureNote('win32', {}, reason)).toContain(reason)
+
+      for (const [platform, arch] of [
+        ['win32', 'x64'],
+        ['darwin', 'arm64'],
+        ['linux', 'arm64']
+      ]) {
+        expect(getWindowsFailureReason(detail, platform, arch)).toBe(detail)
+      }
+    }
   })
 })

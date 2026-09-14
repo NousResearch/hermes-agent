@@ -27,6 +27,35 @@ def _like(value: str) -> str:
     return f"%{_escape_like(value.lower())}%"
 
 
+def _configured_source_retention_days() -> Dict[str, float]:
+    """``sessions.source_retention_days`` map from config.yaml (``{source: days}``); ``{}`` when unset/invalid.
+
+    Per-source retention overrides for the auto-prune sweep (#110589): automation-heavy
+    installs (a cron-dominant store with FTS amplification) age that class out on a
+    shorter window without touching the human-history default. Overrides only tighten —
+    the global pass has already run, so a source cannot be kept longer than
+    ``sessions.retention_days``.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly().get("sessions") or {}).get("source_retention_days")
+        if not isinstance(raw, dict):
+            return {}
+        out: Dict[str, float] = {}
+        for source, days in raw.items():
+            if not isinstance(source, str) or not source:
+                continue
+            try:
+                days_f = float(days)
+            except (TypeError, ValueError):
+                continue
+            if days_f > 0:
+                out[source] = days_f
+        return out
+    except Exception:
+        return {}
+
+
 def _cwd_prefix_filter(value: str) -> Tuple[List[str], list]:
     from hermes_state_sessions import _cwd_prefix_clause
     clause, params = _cwd_prefix_clause(value)
@@ -399,6 +428,13 @@ class SessionMaintenanceMixin:
             # Prune first: orphans closed below get a full retention window.
             result["pruned"] = pruned = self.prune_sessions(
                 older_than_days=retention_days, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+            # Per-source retention overrides (#110589): age automation-heavy source
+            # classes out faster than the global window (cron dominance + FTS
+            # amplification). Overrides only tighten — the global pass already ran.
+            for source, days in sorted(_configured_source_retention_days().items()):
+                result["pruned"] += self.prune_sessions(
+                    older_than_days=days, source=source, sessions_dir=sessions_dir,
+                    exclude_active_write_guards=True)
             closed = self.sweep_orphaned_sessions(
                 max_idle_seconds=float(retention_days) * 86400.0,
                 sources=self._AUTO_PRUNE_STALE_OPEN_SOURCES, exclude_pinned=True,

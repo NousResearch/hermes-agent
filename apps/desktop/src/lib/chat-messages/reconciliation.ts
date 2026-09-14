@@ -183,11 +183,55 @@ export function preserveLocalAssistantErrors(
     return mergedNextMessages
   }
 
-  const preserved = currentMessages
-    .filter(message => preserveIds.has(message.id))
-    .map(message => ({ ...message, pending: false }))
+  // Keep omitted error turns in their original timeline position. Hydration can
+  // omit a failed turn while retaining newer messages; appending the preserved
+  // pair to the end makes an older reply appear after newer user turns.
+  const nextIndexById = new Map(mergedNextMessages.map((message, index) => [message.id, index]))
+  const insertionAfter = new Map<number, ChatMessage[]>()
 
-  return [...mergedNextMessages, ...preserved]
+  for (let index = 0; index < currentMessages.length; ) {
+    if (!preserveIds.has(currentMessages[index].id)) {
+      index += 1
+
+      continue
+    }
+
+    const runStart = index
+    const run: ChatMessage[] = []
+
+    while (index < currentMessages.length && preserveIds.has(currentMessages[index].id)) {
+      run.push({ ...currentMessages[index], pending: false })
+      index += 1
+    }
+
+    let anchor = -1
+
+    for (let probe = runStart - 1; probe >= 0; probe -= 1) {
+      const candidateIndex = nextIndexById.get(currentMessages[probe].id)
+
+      if (candidateIndex !== undefined) {
+        anchor = candidateIndex
+
+        break
+      }
+    }
+
+    if (anchor === -1) {anchor = mergedNextMessages.length}
+    const groups = insertionAfter.get(anchor) ?? []
+    insertionAfter.set(anchor, [...groups, ...run])
+  }
+
+  const ordered: ChatMessage[] = []
+  ordered.push(...(insertionAfter.get(-1) ?? []))
+
+  for (let index = 0; index < mergedNextMessages.length; index += 1) {
+    ordered.push(mergedNextMessages[index])
+    ordered.push(...(insertionAfter.get(index) ?? []))
+  }
+
+  ordered.push(...(insertionAfter.get(mergedNextMessages.length) ?? []))
+
+  return ordered
 }
 
 export function branchGroupForUser(userMessage: ChatMessage): string {

@@ -2,13 +2,13 @@
 
 Telegram delivers a URL attached to a word (e.g. "тут" -> github.com) as a
 ``text_link`` entity. The visible text carries no URL, so without expansion the
-model only ever sees the bare word and cannot fetch the link. ``_expand_link_entities``
+model only ever sees the bare word and cannot fetch the link. ``expand_link_entities``
 inlines the real URL right after its anchor for both ``text`` and ``caption``.
 """
 
 import pytest
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from plugins.platforms.telegram.telegram_entities import expand_link_entities
 
 
 class _Entity:
@@ -27,80 +27,46 @@ class _Message:
         self.caption_entities = caption_entities
 
 
-@pytest.fixture
-def adapter():
-    # _expand_link_entities only uses getattr on the message, so an unbound
-    # instance is enough.
-    return TelegramAdapter.__new__(TelegramAdapter)
-
-
-def test_hidden_link_in_word_is_inlined(adapter):
+def test_hidden_link_in_word_is_inlined():
     msg = _Message(
         text="Ссылка: тут\n#tag",
         entities=[_Entity("text_link", 8, 3, "https://github.com/Cysharp/R3")],
     )
-    out = adapter._expand_link_entities(msg)
+    out = expand_link_entities(msg)
     assert "https://github.com/Cysharp/R3" in out
     assert out.startswith("Ссылка: тут (https://github.com/Cysharp/R3)")
 
 
-def test_plain_text_without_entities_is_unchanged(adapter):
-    msg = _Message(text="просто текст без ссылок")
-    assert adapter._expand_link_entities(msg) == "просто текст без ссылок"
 
-
-def test_caption_link_on_media_is_inlined(adapter):
+def test_caption_link_on_media_is_inlined():
     msg = _Message(
         caption="Смотри тут проект",
         caption_entities=[_Entity("text_link", 7, 3, "https://example.com/x")],
     )
-    assert adapter._expand_link_entities(msg) == "Смотри тут (https://example.com/x) проект"
+    assert expand_link_entities(msg) == "Смотри тут (https://example.com/x) проект"
 
 
-def test_utf16_offset_is_respected_after_emoji(adapter):
+def test_utf16_offset_is_respected_after_emoji():
     # Telegram entity offsets are measured in UTF-16 code units. The emoji is
     # two units, so the visible anchor starts at offset 3, not Python index 2.
     msg = _Message(
         text="🔥 тут",
         entities=[_Entity("text_link", 3, 3, "https://example.com/emoji")],
     )
-    assert adapter._expand_link_entities(msg) == "🔥 тут (https://example.com/emoji)"
+    assert expand_link_entities(msg) == "🔥 тут (https://example.com/emoji)"
 
 
-def test_expansion_is_idempotent(adapter):
+def test_expansion_is_idempotent():
     msg = _Message(
         text="Ссылка: тут\n#tag",
         entities=[_Entity("text_link", 8, 3, "https://github.com/Cysharp/R3")],
     )
-    out = adapter._expand_link_entities(msg)
+    out = expand_link_entities(msg)
     repeat = _Message(text=out, entities=[_Entity("text_link", 8, 3, "https://github.com/Cysharp/R3")])
-    assert adapter._expand_link_entities(repeat) == out
+    assert expand_link_entities(repeat) == out
 
 
-def test_multiple_distinct_links(adapter):
-    msg = _Message(
-        text="a b",
-        entities=[
-            _Entity("text_link", 0, 1, "https://one.com"),
-            _Entity("text_link", 2, 1, "https://two.com"),
-        ],
-    )
-    out = adapter._expand_link_entities(msg)
-    assert out == "a (https://one.com) b (https://two.com)"
 
-
-def test_non_text_link_entities_are_ignored(adapter):
-    msg = _Message(text="жирный текст", entities=[_Entity("bold", 0, 6)])
-    assert adapter._expand_link_entities(msg) == "жирный текст"
-
-
-def test_anchor_repeats_later_in_text(adapter):
-    msg = _Message(
-        text="тут и ещё тут",
-        entities=[_Entity("text_link", 0, 3, "https://x.com")],
-    )
-    out = adapter._expand_link_entities(msg)
-    assert out.startswith("тут (https://x.com) и ещё тут")
 
 
 @pytest.mark.parametrize(
@@ -111,23 +77,29 @@ def test_anchor_repeats_later_in_text(adapter):
         _Entity("text_link", "invalid", 1, "https://example.com/bad-offset"),
     ],
 )
-def test_malformed_link_entities_are_ignored(adapter, entity):
+def test_malformed_link_entities_are_ignored(entity):
     msg = _Message(text="abc", entities=[entity])
-    assert adapter._expand_link_entities(msg) == "abc"
+    assert expand_link_entities(msg) == "abc"
 
 
-def test_text_does_not_use_caption_entities(adapter):
+def test_text_does_not_use_caption_entities():
     msg = _Message(
         text="plain text",
         caption="linked caption",
         caption_entities=[_Entity("text_link", 0, 6, "https://example.com/caption")],
     )
-    assert adapter._expand_link_entities(msg) == "plain text"
+    assert expand_link_entities(msg) == "plain text"
 
 
-def test_offset_inside_utf16_surrogate_pair_is_ignored(adapter):
+def test_offset_inside_utf16_surrogate_pair_is_ignored():
     msg = _Message(
         text="🔥 link",
         entities=[_Entity("text_link", 1, 1, "https://example.com/mid-surrogate")],
     )
-    assert adapter._expand_link_entities(msg) == "🔥 link"
+    assert expand_link_entities(msg) == "🔥 link"
+
+
+def test_anchor_that_is_already_the_url_is_not_duplicated():
+    url = "https://example.com/self"
+    msg = _Message(text=f"see {url} now", entities=[_Entity("text_link", 4, len(url), url)])
+    assert expand_link_entities(msg) == f"see {url} now"

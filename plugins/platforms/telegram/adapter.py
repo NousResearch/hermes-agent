@@ -137,6 +137,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES, SUPPORTED_IMAGE_DOCUMENT_TYPES, _TEXT_INJECT_EXTENSIONS, utf16_len,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from plugins.platforms.telegram.telegram_entities import expand_link_entities
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
 from plugins.platforms.telegram.telegram_network import (
     SEED_FALLBACK_IPS, TelegramFallbackTransport, discover_fallback_ips, parse_fallback_ip_env, tcp_keepalive_socket_options)
@@ -5425,64 +5426,6 @@ class TelegramAdapter(BasePlatformAdapter):
         """Guest-mode bypass: explicit bot mention (caller already verified group chat)."""
         return self._telegram_guest_mode() and self._message_mentions_bot(message)
 
-    def _expand_link_entities(self, message: Message) -> str:
-        """Inline Telegram ``text_link`` URLs into visible message text.
-
-        Telegram stores hidden-link entity offsets as UTF-16 code units, while
-        Python string indexes are Unicode code points. Convert offsets before
-        inserting so links still expand correctly when text before the anchor
-        contains emoji or other non-BMP characters.
-        """
-        text = getattr(message, "text", None)
-        if text:
-            entities = getattr(message, "entities", None) or []
-        else:
-            text = getattr(message, "caption", None) or ""
-            entities = getattr(message, "caption_entities", None) or []
-        if not text or not entities:
-            return text
-
-        def utf16_index(offset: int) -> Optional[int]:
-            units = 0
-            for index, char in enumerate(text):
-                if units == offset:
-                    return index
-                units += 2 if ord(char) > 0xFFFF else 1
-                if units > offset:
-                    return None
-            return len(text) if units == offset else None
-
-        utf16_length = sum(2 if ord(char) > 0xFFFF else 1 for char in text)
-
-        links: list[tuple[int, int, str]] = []
-        for entity in entities:
-            entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
-            raw_url = getattr(entity, "url", None)
-            url = raw_url.strip() if isinstance(raw_url, str) else ""
-            if entity_type != "text_link" or not url:
-                continue
-            try:
-                offset = int(getattr(entity, "offset", -1))
-                length = int(getattr(entity, "length", 0))
-            except (TypeError, ValueError):
-                continue
-            if offset < 0 or length <= 0 or offset + length > utf16_length:
-                continue
-            start, end = utf16_index(offset), utf16_index(offset + length)
-            if start is None or end is None or end <= start:
-                continue
-            links.append((start, end, url))
-
-        expanded = text
-        for _start, end, url in sorted(links, reverse=True):
-            inline = f" ({url})"
-            # The guard makes repeated processing of an already-expanded event
-            # harmless without changing the original entity offsets.
-            if expanded[end:].startswith(inline):
-                continue
-            expanded = f"{expanded[:end]}{inline}{expanded[end:]}"
-        return expanded
-
     def _clean_bot_trigger_text(self, text: Optional[str]) -> Optional[str]:
         bot_username = self._current_bot_username()
         if not text or not bot_username:
@@ -6133,14 +6076,14 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._should_observe_unmentioned_group_message(msg):
                 _event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
                 if msg.caption:
-                    _event.text = self._clean_bot_trigger_text(self._expand_link_entities(msg))
+                    _event.text = self._clean_bot_trigger_text(expand_link_entities(msg))
                 await self._cache_observed_media(msg, _event)
                 self._observe_unmentioned_group_message(msg, _event.message_type, update_id=update.update_id, event=_event)
             return
         event = self._build_message_event(msg, self._media_message_type(msg), update_id=update.update_id)
         if msg.caption:
             from plugins.platforms.telegram.telegram_context import group_trigger_text
-            event.text = group_trigger_text(self, msg, self._expand_link_entities(msg))
+            event.text = group_trigger_text(self, msg, expand_link_entities(msg))
         # Stickers: _handle_sticker overwrites event.text with its vision description, so observe attribution must run after it.
         if msg.sticker:
             await self._handle_sticker(msg, event)
@@ -6441,7 +6384,7 @@ class TelegramAdapter(BasePlatformAdapter):
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
         return MessageEvent(
-            text=self._expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
+            text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),

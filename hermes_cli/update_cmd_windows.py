@@ -949,13 +949,14 @@ def _cold_start_windows_gateway_after_update() -> bool:
         pid = gateway_windows._spawn_detached()
     if not pid:
         raise RuntimeError("Windows gateway cold-start did not return a process ID")
-    # The dead attestation has now done its job (it authorized this spawn under Desktop ownership).
-    # Consume it the same way check_start_attestation does, so a stale crash marker cannot
-    # re-authorize a cold start on a later update if this one never becomes ready.
-    gateway_windows._clear_start_attestation()
     ready_pids = gateway_windows._wait_for_gateway_ready()
     if not ready_pids:
         raise RuntimeError(f"Windows gateway cold-start PID {pid} did not become ready")
+    # The dead attestation has done its job (it authorized this spawn under Desktop ownership). Consume
+    # it only now: a spawn that never became ready leaves it in place, so the registered retry still
+    # holds its recovery obligation instead of seeing Desktop ownership with no marker and returning
+    # success without a gateway (#110020 review).
+    gateway_windows._clear_start_attestation()
     print(f"\n✓ Gateway started via cold-start after update (PID: {', '.join(map(str, ready_pids))})")
     with suppress(Exception):
         gateway_windows._write_start_attestation(ready_pids, "cold-start after update")

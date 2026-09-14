@@ -395,7 +395,6 @@ class InProcessCronScheduler(CronScheduler):
 
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
 
-        # Multiplex: tick EACH profile's store every cycle, heartbeats/recovery scoped per profile.
         # ── Multiplex profiles ──────────────────────────────────────────── When profile_homes is set
         # (multiplex_profiles on), tick EACH profile's cron store on every tick cycle so secondary-profile
         # jobs actually fire instead of languishing in a store no ticker owns (#69377). Without this, only
@@ -423,7 +422,8 @@ class InProcessCronScheduler(CronScheduler):
             record_ticker_heartbeat()
         except BaseException as e:
             logger.exception("Cron startup recovery error: %s", e)
-        # EMFILE backoff: don't hammer the store while fds are exhausted; a clean tick resets it.
+        # EMFILE backoff: don't hammer the store while fds are exhausted; a clean tick resets it
+        # (#87644).
         consecutive_failures = 0
         while not stop_event.is_set():
             try:
@@ -438,8 +438,6 @@ class InProcessCronScheduler(CronScheduler):
                         )
                     ok = True
                 except BaseException as e:
-                    # BaseException, not Exception: a SystemExit must not silently kill the ticker;
-                    # KeyboardInterrupt is caught on purpose — shutdown is driven by stop_event.
                     # Catch BaseException (not just Exception) so a SystemExit from a misbehaving provider SDK /
                     # agent retry path does not kill the ticker thread silently (#32612). KeyboardInterrupt is
                     # intentionally caught here too — gateway shutdown is driven by stop_event (set by the main
@@ -453,9 +451,6 @@ class InProcessCronScheduler(CronScheduler):
                     # Persist the reason so `hermes cron status` (separate process) shows WHY.
                     record_ticker_error(f"{type(e).__name__}: {e}")
                     consecutive_failures = _note_tick_failure(e, consecutive_failures)
-                # Liveness every iteration; success marker only on a clean tick.
-                # EMFILE: reclaim fds + back off exponentially so the exhausted process stops hammering the
-                # store while it has no chance of making progress (#87644).
                 # Record liveness every iteration; bump the success marker only on a clean tick, so status can
                 # tell "alive but failing every tick" from "actually firing jobs" (#32612, #32895).
                 record_ticker_heartbeat(success=ok)
@@ -567,16 +562,24 @@ class InProcessCronScheduler(CronScheduler):
                     # EMFILE: reclaim fds + exponential backoff (#87644).
                     consecutive_failures = _note_tick_failure(e, consecutive_failures)
                 # Completed cycle: each profile's own outcome; aborted cycle: all beats unsuccessful.
+                # Per-home guard (as in the startup loop above): a raising marker write for one
+                # profile must not skip the beats of the profiles after it, or their heartbeat
+                # goes stale while the ticker is alive and status blames the wrong profile.
                 for _, home in cycle_homes:
-                    with _profile_cron_scope(home):
-                        _home_ok = _tick_error is None and str(home) not in _profile_errors
-                        record_ticker_heartbeat(success=_home_ok)
-                        if _home_ok:
-                            clear_ticker_error()
-                        elif str(home) in _profile_errors:
-                            record_ticker_error(_profile_errors[str(home)])
-                        elif _tick_error:
-                            record_ticker_error(_tick_error)
+                    try:
+                        with _profile_cron_scope(home):
+                            _home_ok = _tick_error is None and str(home) not in _profile_errors
+                            record_ticker_heartbeat(success=_home_ok)
+                            if _home_ok:
+                                clear_ticker_error()
+                            elif str(home) in _profile_errors:
+                                record_ticker_error(_profile_errors[str(home)])
+                            elif _tick_error:
+                                record_ticker_error(_tick_error)
+                    except BaseException as e:
+                        logger.error(
+                            "Cron marker write error for profile at %s: %s", home, e, exc_info=True
+                        )
                 if ok:
                     consecutive_failures = 0
             except BaseException as e:

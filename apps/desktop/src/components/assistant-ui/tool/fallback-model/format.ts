@@ -1,3 +1,5 @@
+import { translateNow } from '@/i18n'
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value))
 }
@@ -66,7 +68,7 @@ export function contextValue(value: unknown): string {
 // Each tool result is server-capped (~100KB), but a turn over a big directory
 // stacks many rows; painting/serializing them all floods the renderer (freeze,
 // then OOM). Clamp every inline-painted payload to a bounded slice — the row's
-// Copy button still reads the uncapped `view.detail` for the full output.
+// inspector provides the complete available payload separately.
 export const MAX_TOOL_RENDER_CHARS = 20_000
 
 export function clampForDisplay(value: string, max = MAX_TOOL_RENDER_CHARS): string {
@@ -76,7 +78,7 @@ export function clampForDisplay(value: string, max = MAX_TOOL_RENDER_CHARS): str
 
   const omitted = value.length - max
 
-  return `${value.slice(0, max)}\n\n… ${omitted.toLocaleString()} more characters truncated — use Copy for the full output.`
+  return `${value.slice(0, max)}\n\n… ${translateNow('assistant.tool.inspector.previewLimit', omitted)}`
 }
 
 export function prettyJson(value: unknown): string {

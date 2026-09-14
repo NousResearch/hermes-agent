@@ -42,10 +42,6 @@ interface ExpensiveModelConfirmResponse {
   warning?: string;
 }
 
-interface ConfigSetResponse extends ExpensiveModelConfirmResponse {
-  value?: string;
-}
-
 interface PendingExpensiveConfirm {
   message: string;
   model: string;
@@ -106,10 +102,10 @@ export function ModelPickerDialog(props: Props) {
   const closedRef = useRef(false);
 
   const applyOptions = (r: ModelOptionsResult) => {
-    const next = r?.providers ?? [];
+    const next = r.providers;
     setProviders(next);
-    setCurrentModel(String(r?.model ?? ""));
-    setCurrentProviderSlug(String(r?.provider ?? ""));
+    setCurrentModel(r.model);
+    setCurrentProviderSlug(r.provider);
     setSelectedSlug((prev) => {
       if (prev && next.some((p) => p.slug === prev)) return prev;
       return (next.find((p) => p.is_current) ?? next[0])?.slug ?? "";
@@ -117,22 +113,18 @@ export function ModelPickerDialog(props: Props) {
     setSelectedModel("");
   };
 
-  const requestOptions = (refresh = false) =>
-    standalone
-      ? (loader as (options?: { refresh?: boolean }) => Promise<ModelOptionsResult>)({
-          refresh,
-        })
-      : (gw as GatewayClient).request<ModelOptionsResult>(
-          "model.options",
-          {
-            ...(sessionId ? { session_id: sessionId } : {}),
-            ...(refresh ? { refresh: true } : {}),
-            // Dashboard picker mirrors the TUI: full provider universe with
-            // setup warnings. The backend now defaults to the configured
-            // subset (#56974), so opt into unconfigured rows explicitly.
-            include_unconfigured: true,
-          },
-        );
+  const requestOptions = (refresh = false): Promise<ModelOptionsResult> => {
+    if (standalone && loader) return loader({ refresh });
+    if (!gw) return Promise.reject(new Error("model picker has no gateway client"));
+    return gw.request("model.options", {
+      ...(sessionId ? { session_id: sessionId } : {}),
+      ...(refresh ? { refresh: true } : {}),
+      // Dashboard picker mirrors the TUI: full provider universe with
+      // setup warnings. The backend now defaults to the configured
+      // subset (#56974), so opt into unconfigured rows explicitly.
+      include_unconfigured: true,
+    });
+  };
 
   const refreshOptions = () => {
     setError(null);
@@ -293,13 +285,13 @@ export function ModelPickerDialog(props: Props) {
       setApplying(true);
       try {
         const global = shouldPersistGlobal ? " --global" : "";
-        const result = await gw.request<ConfigSetResponse>("config.set", {
+        const result = await gw.request("config.set", {
           confirm_expensive_model: confirmExpensiveModel,
           key: "model",
           session_id: sessionId,
           value: `${model} --provider ${providerSlug}${global}`,
         });
-        if (result?.confirm_required) {
+        if (result.confirm_required) {
           setPendingConfirm({
             provider: providerSlug,
             model,

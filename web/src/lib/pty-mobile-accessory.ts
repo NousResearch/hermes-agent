@@ -81,7 +81,7 @@ export function mountPtyMobileAccessory(
   bar.style.borderTop = "1px solid rgba(255,255,255,0.18)";
   bar.style.boxSizing = "border-box";
   bar.style.overflowX = "auto";
-  bar.style.webkitOverflowScrolling = "touch";
+  bar.style.setProperty("-webkit-overflow-scrolling", "touch");
 
   const mk = (label: string, ariaLabel: string, onClick: () => void, compact = false) => {
     const btn = doc.createElement("button");

@@ -55,6 +55,57 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
     from block_kit import render_blocks, sanitize_blocks  # type: ignore
 
 
+def _slack_intake_durability_supported(os_name: str = os.name) -> bool:
+    return os_name != "nt"
+
+
+SlackIntakeObserver: Any
+event_team_id: Any
+install_socket_observer: Any
+if _slack_intake_durability_supported():
+    try:
+        from .intake_observability import (
+            SlackIntakeObserver as _SlackIntakeObserver,
+            event_team_id as _event_team_id,
+            install_socket_observer as _install_socket_observer,
+        )
+    except ImportError:  # pragma: no cover - plugin loaded outside package context
+        from intake_observability import (  # type: ignore
+            SlackIntakeObserver as _SlackIntakeObserver,
+            event_team_id as _event_team_id,
+            install_socket_observer as _install_socket_observer,
+        )
+    SlackIntakeObserver = _SlackIntakeObserver
+    event_team_id = _event_team_id
+    install_socket_observer = _install_socket_observer
+else:
+    class _DisabledSlackIntakeObserver:
+        def context_for_event(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    def _disabled_event_team_id(event: dict, body: Optional[dict] = None) -> str:
+        for payload in (event, body or {}):
+            if not isinstance(payload, dict):
+                continue
+            team = payload.get("team_id") or payload.get("team")
+            if isinstance(team, str) and team:
+                return team
+            if isinstance(team, dict) and team.get("id"):
+                return str(team["id"])
+        authorizations = (body or {}).get("authorizations") if isinstance(body, dict) else None
+        for authorization in authorizations or []:
+            if isinstance(authorization, dict) and authorization.get("team_id"):
+                return str(authorization["team_id"])
+        return ""
+
+    def _disabled_install_socket_observer(_client: Any, _observer: Any) -> None:
+        return None
+
+    SlackIntakeObserver = _DisabledSlackIntakeObserver
+    event_team_id = _disabled_event_team_id
+    install_socket_observer = _disabled_install_socket_observer
+
+
 logger = logging.getLogger(__name__)
 
 # User-Agent prefix (``HermesAgent/<version>``) for platform-partner attribution of API calls.
@@ -1014,6 +1065,7 @@ class SlackAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.SLACK)
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
+        self._intake_observer = SlackIntakeObserver()
         self._socket_mode_task: Optional[asyncio.Task] = None
         # Bot identity per workspace (team_id → WebClient / bot_user_id / display name), so the
         # agent never mistakes a human's mention for itself; primary workspace identity separate.
@@ -1040,8 +1092,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Dedup cache: prevents duplicate bot responses when Socket Mode reconnects redeliver events
         # (#4777).
         self._dedup = MessageDeduplicator(ttl_seconds=_slack_dedup_ttl_seconds())
-        # ts of messages already routed to the agent, so later edits don't re-trigger a reply.
-        self._processed_message_ts: Dict[str, float] = {}
+        # Successful dispatches are scoped by workspace/channel/original timestamp. A separate
+        # in-flight map preserves direct-handler unfurl protection for callers outside Bolt's
+        # observed listener boundary without presenting an unfinished attempt as completed.
+        self._processed_message_ts: Dict[Any, float] = {}
+        self._inflight_message_ts: Dict[Tuple[str, str, str], float] = {}
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: Dict[Any, bool] = {}
@@ -1209,7 +1264,9 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app or not self._app_token:
             raise RuntimeError("Socket Mode requires an initialized app and app token")
         self._handler = AsyncSocketModeHandler(self._app, self._app_token, proxy=self._proxy_url)
-        _apply_slack_proxy(self._handler.client, self._proxy_url)
+        client = getattr(self._handler, "client", None)
+        _apply_slack_proxy(client, self._proxy_url)
+        install_socket_observer(client, self._intake_observer)
         task = asyncio.create_task(self._handler.start_async())
         self._socket_mode_task = task
         self._socket_handler_started_monotonic = time.monotonic()
@@ -1596,7 +1653,8 @@ class SlackAdapter(BasePlatformAdapter):
             return _listener
 
         for event_type, handler in (
-            ("message", self._handle_slack_message), ("app_mention", self._handle_slack_message),
+            ("message", self._handle_observed_slack_message),
+            ("app_mention", self._handle_observed_slack_message),
             ("app_home_opened", self._handle_app_home_opened),
             ("app_context_changed", self._handle_app_context_changed),
             ("file_shared", self._handle_slack_file_shared), ("file_created", _noop),
@@ -1895,6 +1953,11 @@ class SlackAdapter(BasePlatformAdapter):
     def _workspace_event_id(team_id: str, event_id: str) -> str:
         """Scope Slack's workspace-local event/message ids for deduplication."""
         return f"{team_id}:{event_id}" if team_id else str(event_id)
+
+    def _intake_dedup_id(self, team_id: str, channel_id: str, timestamp: str) -> str:
+        """Message timestamps identify a channel-local message, not a workspace."""
+        event_id = f"{channel_id}:{timestamp}" if channel_id else timestamp
+        return self._workspace_event_id(team_id, event_id)
 
     @staticmethod
     def _workspace_message_marker(team_id: str, message_id: str) -> Any:
@@ -3393,12 +3456,21 @@ class SlackAdapter(BasePlatformAdapter):
             "context_channel_id": context_channel_id or cached.get("context_channel_id", ""),
             "team_id": team_id, "user_id": user_id}
 
-    def _remember_processed_message_ts(self, ts: str) -> None:
-        """Claim a message ts for the ``message_changed`` guard: on entry (suppresses mid-flight
-        unfurls) and after construction (refreshes LRU recency). Bounded."""
+    def _remember_processed_message_ts(
+        self, ts: str, *, team_id: str = "", channel_id: str = ""
+    ) -> None:
+        """Remember a completed dispatch, scoped when message identity is available.
+
+        The bare timestamp entry preserves the established helper contract for callers that do
+        not have workspace/channel identity. Production duplicate decisions use only the scoped
+        tuple, so equal timestamps in separate Slack channels remain independent.
+        """
         if not ts:
             return
-        self._processed_message_ts[ts] = time.time()
+        observed_at = time.time()
+        self._processed_message_ts[ts] = observed_at
+        if team_id or channel_id:
+            self._processed_message_ts[(str(team_id), str(channel_id), str(ts))] = observed_at
         if len(self._processed_message_ts) > self._PROCESSED_MESSAGE_TS_MAX:
             newest = sorted(self._processed_message_ts.items(), key=lambda item: item[1])
             self._processed_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
@@ -3407,19 +3479,7 @@ class SlackAdapter(BasePlatformAdapter):
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
         """Resolve a workspace ID from the event plus Bolt's outer payload.
         Bolt passes only the inner ``event``; Slack puts ``team_id`` on the outer payload."""
-        for payload in (event, body or {}):
-            if not isinstance(payload, dict):
-                continue
-            team = payload.get("team_id") or payload.get("team")
-            if isinstance(team, str) and team:
-                return team
-            if isinstance(team, dict) and team.get("id"):
-                return str(team["id"])
-        authorizations = (body or {}).get("authorizations") if isinstance(body, dict) else None
-        for authorization in authorizations or []:
-            if isinstance(authorization, dict) and authorization.get("team_id"):
-                return str(authorization["team_id"])
-        return ""
+        return event_team_id(event, body)
 
     @staticmethod
     def _context_channel_id(context: Any) -> str:
@@ -3837,7 +3897,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Let the normal message.file_share event arrive first; if it did,
         # its share ts is already recorded and this fallback skips.
         await asyncio.sleep(0.75)
-        if ts and self._dedup.is_duplicate(self._workspace_event_id(team_id, ts)):
+        if (
+            ts
+            and (team_id, channel_id, ts) in self._processed_message_ts
+            and self._dedup.contains(self._intake_dedup_id(team_id, channel_id, ts))
+        ):
             return
         fallback_event = {
             "type": "message",
@@ -3847,11 +3911,11 @@ class SlackAdapter(BasePlatformAdapter):
             "channel": channel_id,
             "channel_type": "im" if channel_id.startswith("D") else "channel",
             "team": team_id,
-            "ts": "",  # already recorded above; avoid tripping our own dedup guard
+            "ts": ts,
             "files": [file_obj]}
         if thread_ts and thread_ts != ts:
             fallback_event["thread_ts"] = thread_ts
-        await self._handle_slack_message(fallback_event)
+        await self._handle_observed_slack_message(fallback_event)
 
     def _register_mentioned_thread(self, thread_ts: str, team_id: str = "") -> None:
         """Record a thread as bot-mentioned so future replies auto-trigger.
@@ -4029,8 +4093,6 @@ class SlackAdapter(BasePlatformAdapter):
         if not isinstance(updated_message, dict):
             return None
         original_message_ts = str(updated_message.get("ts") or "")
-        if original_message_ts and original_message_ts in self._processed_message_ts:
-            return None
         edited = updated_message.get("edited")
         edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
         outer_event_ts = str(event.get("ts") or "")
@@ -4215,26 +4277,103 @@ class SlackAdapter(BasePlatformAdapter):
         self._reacting_message_ids.add(self._workspace_message_marker(team_id, ts))
         self._evict_oldest_by_ts(self._reacting_message_ids, self._REACTING_MESSAGE_IDS_MAX)
 
-    async def _handle_slack_message(self, event: dict, payload: Optional[dict] = None) -> None:
-        """Guard around :meth:`_handle_slack_message_impl`: the impl claims the ts early (no second
-        turn from a mid-flight unfurl); if THIS call newly claimed it and raises, release the claim
-        so a retry/edit can re-drive it. Pre-existing claims stay."""
-        _ts = str((event or {}).get("ts") or "")
-        # getattr: bare test doubles (object.__new__) may lack the map.
-        _claims = getattr(self, "_processed_message_ts", None)
-        _was_claimed = bool(_ts) and _claims is not None and _ts in _claims
+    @staticmethod
+    def _intake_event_timestamp(event: dict) -> str:
+        """Return the transport timestamp claimed by the message deduplicator."""
+        if event.get("subtype") != "message_changed":
+            return str(event.get("ts") or "")
+        updated = event.get("message")
+        if not isinstance(updated, dict):
+            return ""
+        original_ts = str(updated.get("ts") or "")
+        edited = updated.get("edited")
+        edited_ts = str(edited.get("ts") or "") if isinstance(edited, dict) else ""
+        outer_ts = str(event.get("ts") or "")
+        changed_ts = str(event.get("event_ts") or edited_ts or "")
+        if not changed_ts and outer_ts and outer_ts != original_ts:
+            changed_ts = outer_ts
+        return changed_ts or (f"{original_ts}:changed" if original_ts else "")
+
+    def _intake_message_key(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> Tuple[str, str, str]:
+        """Return the workspace/channel/original-timestamp identity shared by event twins."""
+        message = event.get("message") if event.get("subtype") == "message_changed" else event
+        if not isinstance(message, dict):
+            message = event
+        team_id = self._event_team_id(event, payload)
+        channel_id = str(message.get("channel") or event.get("channel") or "")
+        message_ts = str(message.get("ts") or event.get("ts") or "")
+        return team_id, channel_id, message_ts
+
+    async def _handle_observed_slack_message(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> Any:
+        """Serialize semantic-message twins and carry their durable intake disposition."""
+        from weakref import WeakValueDictionary
+
+        team_id, channel_id, message_ts = self._intake_message_key(event, payload)
+        event_ts = self._intake_event_timestamp(event)
+        dedup_id = self._intake_dedup_id(team_id, channel_id, event_ts) if event_ts else ""
+        lock_id = self._intake_dedup_id(team_id, channel_id, message_ts) if message_ts else dedup_id
+        locks = getattr(self, "_intake_message_locks", None)
+        if locks is None:
+            locks = self._intake_message_locks = WeakValueDictionary()
+        lock = locks.get(lock_id) if lock_id else None
+        if lock is None:
+            lock = asyncio.Lock()
+            if lock_id:
+                locks[lock_id] = lock
+
+        event_id = payload.get("event_id") if isinstance(payload, dict) else None
+        context = self._intake_observer.context_for_event(event_id, workspace_id=team_id)
+        acquired = started = completed = False
+        handler_result: Optional[str] = None
+
+        async def dispatch(actual_event, actual_payload):
+            nonlocal acquired, started, completed, handler_result
+            await lock.acquire()
+            acquired = True
+            started = True
+            handler_result = await self._handle_slack_message(actual_event, actual_payload)
+            completed = True
+            return handler_result
+
+        try:
+            if context is None:
+                return await dispatch(event, payload)
+            return await self._intake_observer.run_listener(context, dispatch, event, payload)
+        finally:
+            try:
+                rejected = (
+                    isinstance(handler_result, str)
+                    and handler_result not in {"duplicate_event", "duplicate_ts"}
+                )
+                dedup = getattr(self, "_dedup", None)
+                if dedup_id and dedup is not None and started and (not completed or rejected):
+                    dedup.discard(dedup_id)
+            finally:
+                if acquired:
+                    lock.release()
+
+    async def _handle_slack_message(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> Optional[str]:
+        """Release only this invocation's in-flight semantic claim after handler failure."""
+        message_key = self._intake_message_key(event, payload)
+        claims = getattr(self, "_inflight_message_ts", None)
+        if claims is None:
+            claims = self._inflight_message_ts = {}
+        was_claimed = bool(message_key[2]) and message_key in claims
         try:
             return await self._handle_slack_message_impl(event, payload)
         except BaseException:
-            _claims = getattr(self, "_processed_message_ts", None)
-            if _ts and not _was_claimed and _claims is not None and _ts in _claims:
-                _claims.pop(_ts, None)
-                logger.warning(
-                    "[%s] handler failed after claiming ts=%s; claim released "
-                    "so a retry or edit can re-drive the turn", self.name, _ts)
+            claims = getattr(self, "_inflight_message_ts", None)
+            if not was_claimed and claims is not None:
+                claims.pop(message_key, None)
             raise
 
-    async def _drop_bot_sender(self, event: dict) -> bool:
+    async def _drop_bot_sender(self, event: dict) -> Optional[str]:
         """allow_bots gate: ``none`` drops all bot posts (default), ``mentions`` those not
         @mentioning us, ``all`` accepts — own posts always drop (echo loops). Unlabeled events
         without ``client_msg_id`` are probed via users.info (humans carry it, stray bots don't)."""
@@ -4245,10 +4384,10 @@ class SlackAdapter(BasePlatformAdapter):
                 msg_user, chat_id=event.get("channel", ""),
                 team_id=str(event.get("team") or event.get("team_id") or ""))
         if not sender_is_bot:
-            return False
+            return None
         allow_bots = self._slack_allow_bots()
         if allow_bots == "none":
-            return True
+            return "bot_message"
         if allow_bots == "mentions":
             # Mentions may live only in Block Kit, not the flat text.
             # See #52387.
@@ -4257,13 +4396,16 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.debug(
                     "[Slack] Dropping bot message under allow_bots=mentions: "
                     "no <@%s> mention in flat text or blocks", self._bot_user_id)
-                return True
-        return bool(msg_user and self._bot_user_id and msg_user == self._bot_user_id)
+                return "missing_mention"
+        if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
+            return "bot_message"
+        return None
 
     async def _prefilter_inbound(
-        self, event: dict, payload: Optional[dict]) -> Optional[Tuple[dict, str, str]]:
+        self, event: dict, payload: Optional[dict]
+    ) -> Any:
         """Normalize edits, then drop replays / ignored channels / bot posts / deletions.
-        Returns ``(event, team_id, channel_id)`` for messages the handler should consider."""
+        Return a fixed drop reason or ``(event, team_id, channel_id)`` for accepted input."""
         # Entry log BEFORE any filtering so operators can tell "dropped here"
         # from "never subscribed in the manifest". Metadata only, never text.
         # DEBUG entry log — fires BEFORE any filtering so users debugging bot-to-bot interop, allow_bots
@@ -4279,44 +4421,78 @@ class SlackAdapter(BasePlatformAdapter):
                 (_bot_profile.get("name") if isinstance(_bot_profile, dict) else "") or "",
                 event.get("channel", ""), event.get("ts", ""), event.get("thread_ts", ""))
         if event.get("subtype") == "message_changed":
+            updated = event.get("message")
+            if not isinstance(updated, dict):
+                return "invalid_event"
+            edit_team_id, edit_channel_id, original_ts = self._intake_message_key(event, payload)
+            message_key = (edit_team_id, edit_channel_id, original_ts)
+            if original_ts and (
+                message_key in getattr(self, "_processed_message_ts", {})
+                or message_key in getattr(self, "_inflight_message_ts", {})
+            ):
+                return "duplicate_event"
             event = self._normalize_changed_message(event)
             if event is None:
-                return None
+                return "invalid_event"
+            # Event identity wins over a conflicting nested edit identity all the way through
+            # receipt lookup, client selection, dispatch metadata, and completion caching.
+            event["team_id"] = edit_team_id
+            event["team"] = edit_team_id
+        else:
+            # Canonical identity is per delivery. Do not write an outer-payload team into the
+            # caller's reusable SDK event dict and poison a later workspace delivery.
+            event = dict(event)
         # Socket Mode redelivers after reconnects. Scope by workspace: ts is only unique per team.
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777) Scope the dedup id by
         # workspace: Slack event ts values are only unique within one workspace, so two teams' events with
         # the same ts must not suppress each other.
         event_ts = event.get("_slack_changed_event_ts") or event.get("ts", "")
         dedup_team_id = self._event_team_id(event, payload)
-        if event_ts and self._dedup.is_duplicate(self._workspace_event_id(dedup_team_id, event_ts)):
-            return None
+        # Canonicalize once so every downstream lookup and dispatch uses the same event-first
+        # workspace identity, including events whose team exists only on Bolt's outer payload.
+        event["team_id"] = dedup_team_id
+        event["team"] = dedup_team_id
         channel_id = event.get("channel", "")
+        message_ts = str(event.get("ts") or "")
+        if message_ts and (
+            dedup_team_id, channel_id, message_ts
+        ) in getattr(self, "_processed_message_ts", {}):
+            return "duplicate_event"
+        if event_ts and self._dedup.is_duplicate(
+            self._intake_dedup_id(dedup_team_id, channel_id, event_ts)
+        ):
+            return "duplicate_event"
         if self._is_ignored_channel(channel_id):
             logger.info("[Slack] Ignoring message in configured ignored channel %s", channel_id)
-            return None
-        if await self._drop_bot_sender(event):
-            return None
+            return "ignored_channel"
+        sender_drop = await self._drop_bot_sender(event)
+        if sender_drop:
+            return sender_drop
         # Edits were normalized above so an @mention added by edit can wake the bot once.
         if event.get("subtype") == "message_deleted":
-            return None
+            return "message_deleted"
         return event, dedup_team_id, channel_id
 
     async def _peer_bot_drop(
         self, event: dict, user_id: str, bot_uid: Optional[str], channel_id: str, team_id: str,
-        is_mentioned: bool) -> bool:
-        """True when a bot *user* post (peer agent: no bot_id/subtype) must be dropped.
+        is_mentioned: bool) -> Optional[str]:
+        """Return the fixed reason when a bot *user* post must be dropped.
         Such posts would otherwise re-trigger via old thread mentions or active sessions and cause
         agent-agent loops. Under ``mentions`` only the current text counts as a summons."""
         if not user_id or user_id == bot_uid:
-            return False
+            return None
         sender_is_bot_user = self._event_declares_bot_sender(event)
         if not sender_is_bot_user:
             sender_is_bot_user = await self._resolve_user_is_bot(
                 user_id, chat_id=channel_id, team_id=team_id)
         if not sender_is_bot_user:
-            return False
+            return None
         allow_bots = self._slack_allow_bots()
-        return allow_bots == "none" or (allow_bots == "mentions" and not is_mentioned)
+        if allow_bots == "none":
+            return "bot_message"
+        if allow_bots == "mentions" and not is_mentioned:
+            return "missing_mention"
+        return None
 
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
@@ -4343,11 +4519,13 @@ class SlackAdapter(BasePlatformAdapter):
             self._register_mentioned_thread(thread_ts, team_id=team_id)
         return text, original_text, command_probe_text, is_command_text
 
-    async def _handle_slack_message_impl(self, event: dict, payload: Optional[dict] = None) -> None:
+    async def _handle_slack_message_impl(
+        self, event: dict, payload: Optional[dict] = None
+    ) -> Optional[str]:
         """Handle an incoming Slack message event."""
         accepted = await self._prefilter_inbound(event, payload)
-        if accepted is None:
-            return
+        if isinstance(accepted, str):
+            return accepted
         event, dedup_team_id, channel_id = accepted
         original_text = event.get("text", "")
         # Slack rejects slash commands inside threads, so a leading ``!`` is rewritten to ``/``
@@ -4386,14 +4564,14 @@ class SlackAdapter(BasePlatformAdapter):
             logger.info(
                 "[Slack] Ignoring DM because Slack DMs are disabled: channel=%s user=%s",
                 channel_id, user_id)
-            return
+            return "dm_disabled"
         # Only a 1:1 IM earns DM exemptions (no mention needed, free reactions); an MPIM obeys
         # channel gating, though session/thread scoping treats both as DM-style.
         is_one_to_one_dm = channel_type == "im"
         # Reject unauthorized users before the expensive lookups/downloads;
         # the runner's own auth check only runs after MessageEvent is built.
         if self._early_reject_unauthorized(user_id, channel_id, is_dm):
-            return
+            return "unauthorized"
         thread_ts = self._session_thread_ts(event, ts, is_dm, assistant_meta)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         # Mentions may live only in Block Kit blocks.
@@ -4407,22 +4585,34 @@ class SlackAdapter(BasePlatformAdapter):
         # Internal triggers (reactions) skip the mention requirement but NOT
         # allowed_channels or user authorization.
         force_process = bool(event.get("_hermes_force_process"))
-        if await self._peer_bot_drop(event, user_id, bot_uid, channel_id, team_id, is_mentioned):
-            return
+        peer_drop = await self._peer_bot_drop(
+            event, user_id, bot_uid, channel_id, team_id, is_mentioned
+        )
+        if peer_drop:
+            return peer_drop
         if (
             not is_one_to_one_dm and bot_uid and not await self._channel_gate_allows(
             channel_id=channel_id, routing_text=routing_text, bot_uid=bot_uid,
             is_mentioned=is_mentioned, is_thread_reply=is_thread_reply,
             event_thread_ts=event_thread_ts, user_id=user_id, team_id=team_id, is_dm=is_dm,
             force_process=force_process)):
-            return
-        # Claim the message ts HERE: a link unfurl emits `message_changed` with a different event
-        # ts, so only the `_processed_message_ts` guard stops a duplicate turn, and it must be set
-        # before the slow enrichment awaits. Claiming before the filters would let an ignored
-        # original block a later "@bot" edit from summoning the bot.
+            allowed_channels = self._slack_allowed_channels()
+            return (
+                "ignored_channel"
+                if allowed_channels and channel_id not in allowed_channels
+                else "missing_mention"
+            )
+        # Direct callers do not own the observer's semantic-message lock. Keep a separate in-flight
+        # claim for their link-unfurl race, while the completed cache remains an outcome only.
         _claim_ts = str(event.get("ts") or "")
         if _claim_ts:
-            self._remember_processed_message_ts(_claim_ts)
+            inflight = getattr(self, "_inflight_message_ts", None)
+            if inflight is None:
+                inflight = self._inflight_message_ts = {}
+            inflight[(dedup_team_id, channel_id, _claim_ts)] = time.time()
+            if len(inflight) > self._PROCESSED_MESSAGE_TS_MAX:
+                newest = sorted(inflight.items(), key=lambda item: item[1])
+                self._inflight_message_ts = dict(newest[-self._PROCESSED_MESSAGE_TS_MAX :])
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
@@ -4453,9 +4643,15 @@ class SlackAdapter(BasePlatformAdapter):
             msg_event.text = (
                 f"[Slack app context: user is viewing channel {context_channel_id}]\n\n"
                 f"{msg_event.text}")
-        if ts:
-            self._remember_processed_message_ts(ts)
         await self.handle_message(msg_event)
+        if ts:
+            getattr(self, "_inflight_message_ts", {}).pop(
+                (dedup_team_id, channel_id, str(ts)), None
+            )
+            self._remember_processed_message_ts(
+                str(ts), team_id=dedup_team_id, channel_id=channel_id
+            )
+        return None
 
     async def _build_message_event(
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,

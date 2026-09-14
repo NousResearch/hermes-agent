@@ -2808,6 +2808,23 @@ class TestHandleMaxIterations:
         assert all(summary["model"] == ordinary["model"] for summary in summaries)
         assert all(summary["messages"][0] == ordinary["messages"][0] for summary in summaries)
 
+    def test_summary_request_scrubs_surrogates_in_tool_schema(self, agent):
+        """The summary rides the same outbound surrogate chokepoint as the main loop (#50959 class)."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        agent.tools = [{"type": "function", "function": {
+            "name": "web_search", "description": "lone surrogate \ud83d here",
+            "parameters": {"type": "object", "properties": {}},
+        }}]
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        sent = agent.client.chat.completions.create.call_args.kwargs
+        description = sent["tools"][0]["function"]["description"]
+        assert "\ud83d" not in description
+        description.encode("utf-8")  # a provider serializes this; lone surrogates raise here
+
     def test_summary_tool_call_only_response_retries_once(self, agent):
         """A tool-only summary is scrubbed to empty and receives one retry."""
         agent.client.chat.completions.create.side_effect = [

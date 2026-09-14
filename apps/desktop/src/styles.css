@@ -622,16 +622,6 @@
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
-  /* A surface that FADES INTO the field (a pane tab's hover ✕ runway) declares
-     `data-glass-field` and reads `--glass-field` for its endpoint. Under glass
-     the surface tokens are transparent, so a fade aimed at one goes
-     transparent→transparent and the runway vanishes; the field is the <body>
-     mix above, so that is what a fade must land on. Inert with glass off:
-     the caller's own fallback (its surface token) applies. */
-  :root[data-hermes-glass] [data-glass-field] {
-    --glass-field: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
-  }
-
   /* Sidebar scope (the Finder shape): glass rail, opaque content column.
      <body> stays the one painter but splits at the rail's visual edge — the
      store publishes it as --glass-rail-edge (live-tracked through collapse
@@ -1524,6 +1514,20 @@ body.guest-pointer-lock :is(webview, iframe) {
   width: 100%;
 }
 
+/* Remove label pixels under the hover close button; translucent paint would
+   stack the glass tint and still let the label bleed through. */
+[data-slot='pane-tab'][data-closeable] {
+  --pane-tab-close-width: 1.5rem;
+}
+
+[data-slot='pane-tab'][data-closeable]:hover > .pane-tab-content {
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - var(--pane-tab-close-width) - 1rem),
+    transparent calc(100% - var(--pane-tab-close-width))
+  );
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md,
 [data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote, table, pre) {
   font-size: inherit;
@@ -1602,16 +1606,10 @@ body.guest-pointer-lock :is(webview, iframe) {
   top: var(--sticky-human-offset);
 }
 
-/* Cover the gap above the floating bubble with the thread's solid surface. */
-[data-slot='aui_user-message-root']::before {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset-inline: 0;
-  top: calc(-1 * var(--sticky-human-offset));
-  height: calc(var(--sticky-human-offset) + 1rem);
-  pointer-events: none;
-  background: var(--ui-chat-surface-background);
+/* The sticky prompt owns no field paint. Clip only the scrolling siblings
+   behind it, including the top gap, so bubble transparency still works. */
+[data-sticky-prompt-clip] {
+  clip-path: inset(var(--sticky-prompt-clip) 0 0);
 }
 
 [data-slot='aui_user-message-root'],

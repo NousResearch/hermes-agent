@@ -1,19 +1,11 @@
 """Tests for the central command registry and autocomplete."""
 
-import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, COMMANDS_BY_CATEGORY, CommandDef, GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, command_desktop_meta, gateway_help_lines, infer_argument_mode, resolve_command
 from hermes_cli.commands_completion import SlashCommandAutoSuggest, SlashCommandCompleter
 from hermes_cli.commands_platforms import _CMD_NAME_LIMIT, _SLACK_RESERVED_COMMANDS, _SLACK_VIA_HERMES_ONLY, _clamp_command_names, _sanitize_telegram_name, slack_app_manifest, slack_native_slashes, slack_subcommand_map, telegram_bot_commands, telegram_menu_commands
-from hermes_cli.commands import SUBCOMMAND_DESCRIPTIONS, WISDOM_SUBCOMMAND_HELP
-
-
-@pytest.fixture(autouse=True)
-def _wisdom_entitled_by_default(monkeypatch):
-    """Registry tests exercise the eligible view unless a test overrides it."""
-    monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
 
 
 def _completions(completer: SlashCommandCompleter, text: str):
@@ -30,25 +22,6 @@ def _completions(completer: SlashCommandCompleter, text: str):
 # ---------------------------------------------------------------------------
 
 class TestCommandRegistry:
-
-    def test_wisdom_is_a_busy_rejecting_cross_client_command(self):
-        command = resolve_command("wisdom")
-
-        assert command is not None
-        assert command.category == "Tools & Skills"
-        assert command.gateway_only is False
-        assert command.argument_mode == "mixed"
-        assert resolve_command("collective-wisdom-install") is command
-        assert command.busy_policy == "reject"
-        assert {"browse", "submit", "install", "update", "notifications"} <= set(
-            command.subcommands
-        )
-        assert command.subcommand_descriptions == WISDOM_SUBCOMMAND_HELP
-
-    def test_wisdom_survives_the_default_telegram_menu_cap(self):
-        menu, _hidden = telegram_menu_commands(max_commands=60)
-
-        assert "wisdom" in {name for name, _description in menu}
 
 
     def test_save_command_supports_formats(self):
@@ -165,17 +138,6 @@ class TestGatewayKnownCommands:
 
 class TestGatewayHelpLines:
 
-    def test_wisdom_visibility_follows_local_entitlement(self, monkeypatch):
-        monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: False)
-        assert not any("/wisdom" in line for line in gateway_help_lines())
-        assert "wisdom" not in {name for name, _description in telegram_bot_commands()}
-        assert "wisdom" not in {name for name, _description, _hint in slack_native_slashes()}
-
-        monkeypatch.setattr("hermes_wisdom.entitlement.is_entitled", lambda: True)
-        assert any("/wisdom" in line for line in gateway_help_lines())
-        assert "wisdom" in {name for name, _description in telegram_bot_commands()}
-        assert "wisdom" in {name for name, _description, _hint in slack_native_slashes()}
-
     def test_excludes_cli_only_commands_without_config_gate(self):
         import re
         lines = gateway_help_lines()
@@ -209,6 +171,23 @@ class TestTelegramBotCommands:
         """Telegram does not support hyphens in command names."""
         for name, _ in telegram_bot_commands():
             assert "-" not in name, f"Telegram command '{name}' contains a hyphen"
+
+    def test_no_unicode_dashes_in_descriptions(self):
+        """BotFather rejects setMyCommands descriptions with em/en dashes (#2925)."""
+        for name, desc in telegram_bot_commands():
+            assert not any(c in desc for c in "\u2012\u2013\u2014\u2015\u2212"), (
+                f"Telegram command '{name}' description has a Unicode dash: {desc!r}")
+
+    def test_unicode_dashes_folded_to_hyphen(self, monkeypatch):
+        """Stubbed registry entry with em/en dashes comes back hyphenated."""
+        fake = CommandDef(name="dashy", description="does a \u2014 b \u2013 c",
+                          category="Session")
+        monkeypatch.setattr("hermes_cli.commands_platforms._gateway_available_commands",
+                            lambda: [fake])
+        monkeypatch.setattr("hermes_cli.commands_platforms._iter_plugin_command_entries",
+                            lambda: iter([]))
+        assert ("dashy", "does a - b - c") in telegram_bot_commands(
+            include_plugins=False)
 
 
     def test_includes_builtin_commands_with_required_args(self):
@@ -244,12 +223,6 @@ class TestSlackNativeSlashes:
     """Slack native slash command generation — used to register every
     COMMAND_REGISTRY entry as a first-class Slack slash, matching Discord
     and Telegram."""
-
-    def test_wisdom_is_native_and_low_value_start_ping_is_via_hermes(self):
-        names = {name for name, _description, _hint in slack_native_slashes()}
-
-        assert "wisdom" in names
-        assert "start" not in names
 
 
     def test_names_respect_slack_limits(self):
@@ -330,7 +303,7 @@ class TestGatewayConfigGate:
         """When the config gate is falsy, the command should not appear in help."""
         # Write a config with the gate off (default)
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("display:\n  tool_progress_command: false\n")
+        config_file.write_text("display:\n  tool_progress_command: false\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         lines = gateway_help_lines()
@@ -340,7 +313,7 @@ class TestGatewayConfigGate:
 
     def test_config_gate_included_in_slack_when_on(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("display:\n  tool_progress_command: true\n")
+        config_file.write_text("display:\n  tool_progress_command: true\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         mapping = slack_subcommand_map()
@@ -435,24 +408,11 @@ class TestSubcommands:
         assert "/quit" not in SUBCOMMANDS
         assert "/clear" not in SUBCOMMANDS
 
-    def test_wisdom_subcommands_include_registry_owned_documentation(self):
-        assert SUBCOMMAND_DESCRIPTIONS["/wisdom"] == WISDOM_SUBCOMMAND_HELP
-
 
 # ── Subcommand tab completion ───────────────────────────────────────────
 
 
 class TestSubcommandCompletion:
-
-    def test_wisdom_subcommands_show_usage_and_descriptions(self):
-        completions = _completions(SlashCommandCompleter(), "/wisdom ")
-        by_name = {completion.text: completion for completion in completions}
-
-        assert by_name["show"].display_meta_text == WISDOM_SUBCOMMAND_HELP["show"]
-        assert (
-            by_name["installed"].display_meta_text
-            == WISDOM_SUBCOMMAND_HELP["installed"]
-        )
 
 
     def test_tools_enable_skips_already_listed(self, monkeypatch):
@@ -558,6 +518,13 @@ class TestSanitizeTelegramName:
         assert _sanitize_telegram_name("-leading") == "leading"
         assert _sanitize_telegram_name("trailing-") == "trailing"
         assert _sanitize_telegram_name("-both-") == "both"
+
+    def test_names_that_would_lose_letters_are_omitted(self):
+        """``/中文helper`` is registered under its Unicode slug; advertising ``/helper`` would
+        answer "Unknown command", so mixed-script names are left out of the menu (#12351)."""
+        assert _sanitize_telegram_name("中文helper") == ""
+        assert _sanitize_telegram_name("小说拆条") == ""
+        assert _sanitize_telegram_name("plan+review") == "planreview"  # punctuation-only loss keeps the entry
 
 
 # ---------------------------------------------------------------------------
@@ -1047,7 +1014,7 @@ class TestDiscordSkillCommandsByCategory:
                 name = f"skill-{c:02d}-{s:02d}"
                 skill_subdir = tmp_path / "skills" / cat / name
                 skill_subdir.mkdir(parents=True, exist_ok=True)
-                (skill_subdir / "SKILL.md").write_text("---\nname: x\n---\n")
+                (skill_subdir / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
                 fake_cmds[f"/{name}"] = {
                     "name": name,
                     "description": f"Category {cat} skill {s}",
@@ -1094,10 +1061,10 @@ class TestDiscordSkillCommandsByCategory:
         external_dir = tmp_path / "external-skills"
 
         (local_skills_dir / "creative" / "local-skill").mkdir(parents=True)
-        (local_skills_dir / "creative" / "local-skill" / "SKILL.md").write_text("")
+        (local_skills_dir / "creative" / "local-skill" / "SKILL.md").write_text("", encoding="utf-8")
 
         (external_dir / "mlops" / "external-skill").mkdir(parents=True)
-        (external_dir / "mlops" / "external-skill" / "SKILL.md").write_text("")
+        (external_dir / "mlops" / "external-skill" / "SKILL.md").write_text("", encoding="utf-8")
 
         fake_cmds = {
             "/local-skill": {

@@ -189,3 +189,37 @@ def test_breakaway_fallback_warns_even_on_success(monkeypatch, attest_home, caps
     assert "✓" in out
     assert "could not break away" in out
     assert "schtasks /Run /TN Hermes_Gateway" in out
+
+
+# ---------------------------------------------------------------------------
+# #109538: read-only death probe for the update path
+# ---------------------------------------------------------------------------
+
+
+def test_attested_probe_fails_closed_without_a_well_formed_dead_attestation(attest_home):
+    """``hermes update`` uses this probe to override Desktop-owned lifecycle suppression
+    (#109538), so only a *detectable* death may read True: no marker, malformed ``pids``,
+    a gateway alive now, or a clean ledger exit all read False. The probe must also be
+    read-only — consuming the marker here would silence the CLI-start warning that reports
+    the same death to the user.
+    """
+    marker = attest_home / "state" / "gateway.start-attestation.json"
+    assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # no marker yet
+
+    marker.parent.mkdir(exist_ok=True)
+    for malformed in ('{"pids": null}', '{"pids": 555}', '["not", "a", "dict"]', "not json"):
+        marker.write_text(malformed, encoding="utf-8")
+        assert gateway_windows.attested_gateway_died(current_pids=[]) is False, malformed
+
+    gateway_windows._write_start_attestation([555], "cold-start after update")
+    assert gateway_windows.attested_gateway_died(current_pids=[555]) is False  # alive
+    assert gateway_windows.attested_gateway_died(current_pids=[]) is True  # dead, unclean
+    assert marker.exists()  # unconsumed — the CLI start below still reports it
+    assert gateway_windows.check_start_attestation(current_pids=[]) is not None
+
+    (marker.parent / "gateway.lifecycle.json").write_text(
+        json.dumps({"phase": "exited", "pid": 556, "exit_reason": "graceful_shutdown"}),
+        encoding="utf-8",
+    )
+    gateway_windows._write_start_attestation([556], "cold-start after update")
+    assert gateway_windows.attested_gateway_died(current_pids=[]) is False  # planned stop

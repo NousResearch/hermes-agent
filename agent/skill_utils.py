@@ -9,7 +9,12 @@ import sys
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import (
+    get_config_path,
+    get_skills_dir,
+    get_subprocess_home,
+    is_termux,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +38,6 @@ ORG_ACTIVE_MARKER = ".active_org"
 ORG_PROVENANCE_FILE = ".org-provenance.json"
 ORG_BASELINE_FILE = ".org-baseline.json"  # upstream fingerprint; detects local edits
 
-# Collective Wisdom managed installs are intentionally separate from the M2
-# whole-org mirror. The only writer of this marker is the Wisdom setup/client
-# path after the Gateway has accepted the profile's installation identity.
-WISDOM_MANAGED_DIR_NAME = "_wisdom"
-WISDOM_ACTIVE_MARKER = ".active_org"
-
 
 def read_active_org_id(skills_dir: Path) -> Optional[str]:
     """The org id whose mirror may resolve, or None (no org skills load)."""
@@ -47,27 +46,6 @@ def read_active_org_id(skills_dir: Path) -> Optional[str]:
         return (marker.read_text(encoding="utf-8").strip() or None) if marker.exists() else None
     except OSError:
         return None
-
-
-def read_active_wisdom_org_id(skills_dir: Path) -> Optional[str]:
-    """The last Gateway-verified org whose managed Wisdom skills may load."""
-    try:
-        marker = skills_dir / WISDOM_MANAGED_DIR_NAME / WISDOM_ACTIVE_MARKER
-        if not marker.exists():
-            return None
-        value = marker.read_text(encoding="utf-8").strip()
-        return value or None
-    except OSError:
-        return None
-
-
-def is_wisdom_managed_path(path, skills_dir: Path) -> bool:
-    """True when *path* is below ``_wisdom/<org-id>/``."""
-    try:
-        rel = Path(path).resolve().relative_to(Path(skills_dir).resolve())
-    except (OSError, ValueError):
-        return False
-    return bool(rel.parts) and rel.parts[0] == WISDOM_MANAGED_DIR_NAME
 
 
 def _org_rel_parts(path, skills_dir: Path) -> Tuple[str, ...]:
@@ -725,17 +703,37 @@ def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
     return current
 
 
+_HOME_VAR_RE = re.compile(r"\$(?:\{HOME\}|HOME)(?=$|[/\\])")
+
+
+def _expand_skill_config_path(value: str) -> str:
+    """Expand ``~`` / ``$HOME`` against the HOME Hermes injects into tool subprocesses.
+
+    Skill config defaults describe paths the agent hands to tools, so in a container where the
+    control process HOME (``/opt/data``) differs from the tool HOME (``{HERMES_HOME}/home``) a
+    plain ``expanduser`` pointed the prompt at a path no tool would ever read (#12260).
+    """
+    subprocess_home = get_subprocess_home()
+    if subprocess_home:
+        if value == "~" or value.startswith(("~/", "~\\")):
+            value = subprocess_home + value[1:]
+        # Callable replacement: a literal template would parse backslashes in the home path
+        # as regex escapes.
+        value = _HOME_VAR_RE.sub(lambda _m: subprocess_home, value)
+    return os.path.expanduser(os.path.expandvars(value))
+
+
 def resolve_skill_config_values(config_vars: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Map logical skill config keys to current values (or declared defaults);
-    path-like string values are ``~``/``${VAR}`` expanded."""
+    path-like string values are ``~``/``$HOME``/``${VAR}`` expanded against the tool HOME."""
     config = _load_raw_config()
     resolved: Dict[str, Any] = {}
     for var in config_vars:
         value = _resolve_dotpath(config, f"{SKILL_CONFIG_PREFIX}.{var['key']}")
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
-        if isinstance(value, str) and ("~" in value or "${" in value):
-            value = os.path.expanduser(os.path.expandvars(value))
+        if isinstance(value, str) and ("~" in value or "$" in value):
+            value = _expand_skill_config_path(value)
         resolved[var["key"]] = value
     return resolved
 
@@ -760,113 +758,22 @@ def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bo
     return len(_normalize_skill_description(frontmatter)) > SKILL_PROMPT_DESC_LIMIT
 
 
-def extract_skill_editorial_metadata(
-    frontmatter: Dict[str, Any],
-    *,
-    fallback_name: str,
-    fallback_description: str,
-) -> Dict[str, str]:
-    """Resolve optional human-facing skill copy without changing agent metadata.
-
-    ``name`` and ``description`` remain the canonical agent-facing routing
-    fields. Hermes UIs may use the optional values under ``metadata.hermes``;
-    older and third-party skills fall back to the canonical pair.
-    """
-    metadata = frontmatter.get("metadata")
-    hermes = metadata.get("hermes") if isinstance(metadata, dict) else None
-    if not isinstance(hermes, dict):
-        hermes = {}
-
-    editorial_name = hermes.get("editorial_name")
-    editorial_description = hermes.get("editorial_description")
-    return {
-        "editorial_name": (
-            editorial_name.strip()
-            if isinstance(editorial_name, str) and editorial_name.strip()
-            else fallback_name
-        ),
-        "editorial_description": (
-            editorial_description.strip()
-            if isinstance(editorial_description, str)
-            and editorial_description.strip()
-            else fallback_description
-        ),
-    }
-
-
-def load_skill_editorial_metadata(
-    skill_path: Path,
-    *,
-    fallback_name: str | None = None,
-    fallback_description: str = "",
-) -> Dict[str, str]:
-    """Load human-facing copy from a skill directory with safe fallbacks."""
-    canonical_name = fallback_name or skill_path.name
-    canonical_description = fallback_description
-    try:
-        frontmatter, _body = parse_frontmatter(
-            (skill_path / "SKILL.md").read_text(encoding="utf-8")
-        )
-        name = frontmatter.get("name")
-        description = frontmatter.get("description")
-        if isinstance(name, str) and name.strip():
-            canonical_name = name.strip()
-        if isinstance(description, str) and description.strip():
-            canonical_description = description.strip()
-        return extract_skill_editorial_metadata(
-            frontmatter,
-            fallback_name=canonical_name,
-            fallback_description=canonical_description,
-        )
-    except (OSError, UnicodeError, ValueError):
-        return {
-            "editorial_name": canonical_name,
-            "editorial_description": canonical_description,
-        }
-
-
-# ── File iteration ────────────────────────────────────────────────────────
-
-
 def iter_skill_index_files(skills_dir: Path, filename: str):
-    """Walk skills_dir yielding sorted paths matching *filename*.
-
-    Excludes Hermes metadata, VCS, virtualenv/dependency, cache, and skill
-    support directories. Support directories (references/templates/assets/
-    scripts) can contain arbitrary markdown and even archived package
-    ``SKILL.md`` files, but they are progressive-disclosure data loaded through
-    ``skill_view(..., file_path=...)`` rather than active skill roots.
-
-    M2 org mirrors (``_org/``) and Collective Wisdom installs
-    (``_wisdom/``): TOKEN-GATED resolution. Only the active org's
-    subdir (per the sync-client-written ``.active_org`` marker) is walked;
-    every other ``_org/<id>/`` (stale mirror from a previous org, or no
-    marker at all) is pruned — leave an org and its skills stop resolving,
-    without any manual cleanup.
-    """
+    """Walk skills_dir yielding sorted paths matching *filename*; prunes
+    EXCLUDED_SKILL_DIRS and support dirs of skill roots. Org mirrors are
+    TOKEN-GATED: only the active org's subdir is walked, so leaving an org
+    stops its skills resolving without manual cleanup."""
     skills_dir_str = str(skills_dir)
     active_org = read_active_org_id(skills_dir)
-    active_wisdom_org = read_active_wisdom_org_id(skills_dir)
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
-    wisdom_root = os.path.join(skills_dir_str, WISDOM_MANAGED_DIR_NAME)
     matches: list[str] = []
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)
-        if root == skills_dir_str and WISDOM_MANAGED_DIR_NAME in dirs and active_wisdom_org is None:
-            dirs.remove(WISDOM_MANAGED_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        elif root == wisdom_root:
-            # Inside _wisdom/: descend ONLY into the last Gateway-verified org.
-            dirs[:] = [d for d in dirs if d == active_wisdom_org]
-        dirs[:] = [
-            d
-            for d in dirs
-            if d not in EXCLUDED_SKILL_DIRS
-            and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
-        ]
+        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
         if filename in files:
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))

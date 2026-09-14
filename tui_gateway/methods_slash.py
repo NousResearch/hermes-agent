@@ -197,9 +197,6 @@ def _format_live_status_output(sid: str, session: dict, arg: str) -> str:
 # name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
 # A None no-session reply means the formatter handles a missing session itself.
 _LIVE_SLASH_OUTPUT = {
-    "wisdom": (None, lambda sid, session, arg: _format_live_wisdom_output(session or {}, "wisdom", arg)),
-    "collective-wisdom-install": (
-        None, lambda sid, session, arg: _format_live_wisdom_output(session or {}, "collective-wisdom-install", arg)),
     "compress": ("no active session for /compress",
                  lambda sid, session, arg: _mirror_slash_side_effects(sid, session, f"/compress {arg}".strip())),
     "usage": (_NO_AGENT_USAGE, _format_live_usage_output),
@@ -248,11 +245,18 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
     ``here [N]`` / ``--keep N``). CompressionLockHeld is a clean no-op (skip note returned);
     other errors propagate to the caller, which finalizes the context-engine notification."""
     from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.conversation_compression_manual import (
+        AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
     with session["history_lock"]:
         before_messages = list(session.get("history", []))
         history_version = int(session.get("history_version", 0))
+    request = parse_compress_args(arg)
+    if request.aggressive:
+        return AGGRESSIVE_UNSUPPORTED
+    if request.preview:  # report only — history, agent and session key untouched
+        return "\n".join(render_compress_result(compress_now(agent, before_messages, request)))
     sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
     tools = getattr(agent, "tools", None) or None
 

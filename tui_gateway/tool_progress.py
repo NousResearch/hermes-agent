@@ -224,6 +224,8 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
             transport = current_transport() or _stdio_transport
     frame = _event_frame(event, sid, payload)
     _stamp_event(frame)
+    from tui_gateway.hosted_room_member_activity import project_room_member_activity
+    project_room_member_activity(frame, _sessions)
     transport.write(frame)
 
 

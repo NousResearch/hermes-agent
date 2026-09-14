@@ -57,7 +57,7 @@ def _run_nous_flow(config: dict, *, context: str, cancel_exc: tuple, cancel_line
 def _run_portal_one_shot(config: dict) -> None:
     """One-shot Nous Portal setup (``hermes setup --portal`` / ``hermes portal``)."""
     from hermes_cli.setup import _info, _print_banner, print_error, print_info, print_success
-    _print_banner("│     ⚕ Hermes Setup — Nous Portal (one-shot)             │")
+    _print_banner("│     ☤ Hermes Setup — Nous Portal (one-shot)             │")
     _info(None, "  One subscription, 300+ models, plus the Tool Gateway:",
           "    web search, image generation, TTS, browser automation",
           "    — all routed through your Nous Portal sub.", None,
@@ -164,7 +164,7 @@ def _blank_slate_minimal_toolsets(config: dict):
     keep = {"file", "terminal", "vision", "skills"}
     config.setdefault("platform_toolsets", {})["cli"] = sorted(keep)
     try:
-        from toolsets import TOOLSETS, resolve_toolset
+        from toolsets import TOOLSETS
         from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
         all_keys = {k for k, _, _ in CONFIGURABLE_TOOLSETS}
         all_keys.update(_get_plugin_toolset_keys())
@@ -178,12 +178,7 @@ def _blank_slate_minimal_toolsets(config: dict):
             # here causes model_tools to subtract their tools (terminal, read_file, …) from the minimal
             # Blank Slate surface (#57315).
             all_keys.add(k)
-        # Disabling a bundle subtracts its tools even if another kept bundle owns them.
-        kept_tools = {tool for name in keep for tool in resolve_toolset(name)}
-        disabled = sorted(
-            name for name in all_keys - keep
-            if kept_tools.isdisjoint(resolve_toolset(name))
-        )
+        disabled = sorted(all_keys - keep)
         if disabled:
             config.setdefault("agent", {})["disabled_toolsets"] = disabled
     except Exception as exc:

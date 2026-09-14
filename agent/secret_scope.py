@@ -7,10 +7,11 @@ context-local secret scope: ``set_secret_scope(mapping)`` installs the active
 profile's secrets for the current task (a contextvar, so it propagates into the
 agent's worker thread via ``copy_context()``); ``get_secret(name)`` reads from
 it and, when multiplexing is active with no scope set, RAISES rather than
-falling back to ``os.environ``. Design: ``docs/design/multiplexing-gateway.md``.
+falling back to ``os.environ``. Design: ``website/docs/developer-guide/multiplexing-gateway.md``.
 """
 from __future__ import annotations
 
+import codecs
 import os
 import re
 from contextvars import ContextVar, Token
@@ -131,10 +132,17 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             f"while multiplexing is on. This credential read must run inside a "
             f"set_secret_scope(...) block (the per-turn / per-adapter profile "
             f"scope). Reading os.environ here would risk leaking another "
-            f"profile's value. See docs/design/multiplexing-gateway.md "
+            f"profile's value. See website/docs/developer-guide/multiplexing-gateway.md "
             f"(Workstream A)."
         )
     return _environ_or(name, default)
+
+
+def get_secret_str(name: str, default: str = "") -> str:
+    """``get_secret`` for callers that want a ``str``: ``default`` only when the secret is genuinely
+    unset. Still raises ``UnscopedSecretError`` — swallowing it hides a spawn-site bug."""
+    val = get_secret(name, default)
+    return default if val is None else val
 
 
 def _strip_inline_comment(value: str) -> str:
@@ -160,17 +168,42 @@ def _strip_inline_comment(value: str) -> str:
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
+def _parse_env_value(raw_value: str) -> str:
+    """Parse the small .env value subset Hermes writes itself (bare, 'single', or "double" with
+    ``\\"`` / ``\\\\`` escapes)."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        quoted = value[1:-1]
+        parsed: list[str] = []
+        i = 0
+        while i < len(quoted):
+            escaped = quoted[i] == "\\" and quoted[i + 1:i + 2] in ('"', "\\")
+            parsed.append(quoted[i + 1] if escaped else quoted[i])
+            i += 2 if escaped else 1
+        return "".join(parsed)
+    if len(value) >= 2 and value[0] == value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
 def load_env_file(env_path: Path) -> Dict[str, str]:
-    """Parse a ``.env`` file into a dict WITHOUT touching ``os.environ``: ``export``
-    prefix, ``#`` comments, and the writer's quote escapes reversed via the canonical
-    ``_parse_env_value``. ``utf-8-sig`` so a BOM doesn't prefix the first key."""
+    """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
+    scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
+    disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
+    prefix, ``#`` comments, quote escapes reversed; ``utf-8-sig`` so a BOM doesn't prefix the first key.
+    Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
+    into ``os.environ``. Absent/unreadable → ``{}``."""
     secrets: Dict[str, str] = {}
     try:
-        text = env_path.read_text(encoding="utf-8-sig")
-    except (FileNotFoundError, OSError, UnicodeDecodeError):
+        raw = env_path.read_bytes()
+    except OSError:
         return secrets
-
-    from hermes_cli.config import _parse_env_value
+    if raw.startswith(codecs.BOM_UTF8):
+        raw = raw[len(codecs.BOM_UTF8):]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("latin-1")
 
     for raw in text.splitlines():
         line = raw.strip()

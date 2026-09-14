@@ -405,6 +405,18 @@ def _interrupt_session_turn(sid: str, session: dict, *, request_id: str | None =
         session["queued_prompt"] = None
         session.pop("queued_prompts", None)
         session["_queued_prompt_generation"] = int(session.get("_queued_prompt_generation", 0)) + 1
+    if should_interrupt:
+        # Sibling of gateway/run_agent_cache.py::_interrupt_and_clear_session: a user-initiated stop of a
+        # live TUI/desktop turn is the same "loop is gone" event for plugins holding per-turn external
+        # resources. Observer-only; dispatch failures never break the interrupt.
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "agent_loop_stopped", session_key=session.get("session_key", ""), platform="tui",
+                reason="user_stop", invalidation_reason="session_interrupt",
+            )
+        except Exception:
+            logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
     if not use_compute_host:
         if should_interrupt:
             from agent.interrupt_compat import request_hard_interrupt
@@ -438,8 +450,9 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
     if session_id:
         # Only when this session may end its durable row by key — never for gateway-originated sessions (TUI is a
         # viewer there). Unknown DB state -> assume ownership.
-        with contextlib.suppress(Exception):
-            db = _get_db()
+        # The row lives in the session's OWN store (a named-profile session's row is invisible to
+        # the launch handle, which would leave this guard permanently dead).
+        with contextlib.suppress(Exception), _session_db(session) as db:
             if db is not None and _is_gateway_owned_source((db.get_session(session_id) or {}).get("source", "")):
                 owned_session_key = ""
     if not own_sid and not owned_session_key:

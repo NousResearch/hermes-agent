@@ -419,12 +419,17 @@ def build_anthropic_bedrock_client(region: str):
     ``context-1m-2025-08-07`` are attached: without the latter Bedrock caps Opus 4.6/4.7 at 200K.
     A configured ``bedrock.guardrail`` rides as InvokeModel headers so every client built here
     (primary, auxiliary, per-request rebuild) enforces it."""
-    from agent.bedrock_adapter import bedrock_guardrail_headers
+    from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
         raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+    # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
+    # launch profile's process env); unscoped passes nothing and keeps the default chain.
+    scoped = scoped_aws_session_kwargs()
+    aws_kwargs = {"aws_access_key": scoped.get("aws_access_key_id"), "aws_secret_key": scoped.get("aws_secret_access_key"),
+                  "aws_session_token": scoped.get("aws_session_token"), "aws_profile": scoped.get("profile_name")}
     return sdk.AnthropicBedrock(
-        aws_region=region, timeout=_client_timeout(None),
+        aws_region=region, timeout=_client_timeout(None), **{k: v for k, v in aws_kwargs.items() if v},
         max_retries=0,  # retry belongs to hermes's outer loop (honors Retry-After)
         default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
     )
@@ -617,6 +622,21 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
             sorted(leaked),
         )
     return api_kwargs
+
+
+def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None) -> None:
+    """Retry knob for a malformed fine-grained tool-JSON stream (#107830): the beta streams tool
+    args unvalidated, so a model that emits ``{"names": cronjob_manage}`` breaks the SDK parser
+    and an identical retry breaks identically. ``eager_input_streaming: false`` per tool restores
+    Anthropic's buffered, validated args for the rest of this turn (the flag lives on the turn's
+    kwargs, so a later retry of the same turn keeps it; the changed ``tools`` block costs one
+    prompt-cache miss, cheaper than a dead turn). Off the happy path on purpose:
+    buffering a large payload is a zero-event gap the stale-stream detector kills. No-op on
+    endpoints that never get the beta (MiniMax) rather than sending them an unknown field."""
+    if _TOOL_STREAMING_BETA not in _common_betas_for_base_url(base_url):
+        return
+    for tool in api_kwargs.get("tools") or ():
+        tool["eager_input_streaming"] = False
 
 
 def _is_stream_unavailable_error(exc: Exception) -> bool:

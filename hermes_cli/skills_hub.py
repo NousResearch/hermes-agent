@@ -585,10 +585,21 @@ def _pinned_sources(c: Console, sources, source_id: Optional[str], identifier: s
     return None
 
 
-def _print_fetch_failure(c: Console, sources, identifier: str) -> None:
+def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source=None) -> None:
     rate_limited = any(getattr(src, "is_rate_limited", False)
                        or getattr(getattr(src, "github", None), "is_rate_limited", False)
                        for src in sources)
+    # Index hit but files gone: a stale index entry, not a user typo — name it so users stop
+    # re-trying spellings (#3259). Only when no adapter was rate limited: a throttled fetch
+    # also yields meta-without-bundle, and calling that "stale" would send users away from a
+    # skill that exists.
+    if meta is not None and not rate_limited:
+        src_id = getattr(source, "source_id", lambda: "the registry")()
+        c.print(f"[bold red]Error:[/] '{identifier}' is listed in the {src_id} index, "
+                f"but its files no longer exist upstream.")
+        c.print("[dim]Stale index entry: the skill was likely renamed or removed by "
+                "its author. Try `hermes skills search` for an alternative.[/]\n")
+        return
     c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.")
     if rate_limited:
         c.print("[yellow]Hint:[/] GitHub API rate limit exhausted "
@@ -663,7 +674,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"\n[bold]Fetching:[/] {identifier}")
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
     if not bundle:
-        _print_fetch_failure(c, sources, identifier)
+        _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return
     if not _resolve_url_bundle_name(c, bundle, meta, identifier, name_override, skip_confirm):
         return

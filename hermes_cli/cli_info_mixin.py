@@ -238,9 +238,7 @@ class CLIInfoMixin:
     def _command_available(self, slash_command: str) -> bool:
         if slash_command == "/fast":
             return self._fast_command_available()
-        from hermes_cli.commands import command_available, resolve_command
-        command = resolve_command(slash_command)
-        return command is None or command_available(command)
+        return True
 
     def show_help(self, arg: str = ""):
         """Display help. Bare /help shows categorized core commands with the skill list collapsed
@@ -461,7 +459,7 @@ class CLIInfoMixin:
         Dispatched from the input loop BEFORE slash routing and before anything is queued for the
         agent, so a bang command never becomes a turn: nothing touches ``conversation_history``,
         zero tokens, role alternation / prompt caching untouched by construction
-        (tests/cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
+        (tests/hermes_cli/test_bang_shell_mode.py). Returns False when the text is not a bang command or
         bang mode is disabled for this context (gateway/cron), so the caller routes normally.
         """
         from cli import _rich_text_from_ansi
@@ -774,9 +772,12 @@ class CLIInfoMixin:
                 i += 1
 
         try:
-            from hermes_state import SessionDB
+            from hermes_state import SessionDB, _default_db_path
             from agent.insights import InsightsEngine
-            db = SessionDB()
+            if not _default_db_path().exists():
+                print("  No session data yet.")
+                return
+            db = SessionDB(read_only=True)
             try:
                 engine = InsightsEngine(db)
                 print(engine.format_terminal(engine.generate(days=days, source=source)))

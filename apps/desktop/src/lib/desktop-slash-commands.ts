@@ -1,5 +1,7 @@
 import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
 
+import desktopSlashRegistry from './desktop-slash-registry.json'
+
 export interface CommandsCatalogSection {
   name: string
   pairs: [string, string][]
@@ -280,65 +282,50 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   }
 ]
 
-// Known commands with no desktop surface (and no alias) — a flat name list
-// per reason beats 40 identical object literals.
-const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
-  terminal: [
-    '/busy',
-    '/clear',
-    '/config',
-    '/copy',
-    '/cron',
-    '/density',
-    '/details',
-    '/exit',
-    '/footer',
-    '/gateway',
-    '/history',
-    '/image',
-    '/indicator',
-    '/logs',
-    '/mouse',
-    '/paste',
-    '/platforms',
-    '/plugins',
-    '/quit',
-    '/redraw',
-    '/reload',
-    '/restart',
-    '/sb',
-    '/set-home',
-    '/sethome',
-    '/snap',
-    '/snapshot',
-    '/statusbar',
-    '/toolsets',
-    '/update',
-    '/verbose'
-  ],
-  messaging: ['/approve', '/deny'],
-  settings: ['/skills', '/pets', '/login'],
-  advanced: [
-    '/curator',
-    '/fast',
-    '/insights',
-    '/kanban',
-    '/reasoning',
-    '/reload-mcp',
-    '/reload_mcp',
-    '/reload-skills',
-    '/reload_skills'
-  ],
-  // /voice arms SERVER-side capture (voice.record → PortAudio on the backend
-  // host) — meaningless on desktop, which has its own composer-native voice
-  // conversation (mic menu / Ctrl+B) with client-side capture and playback.
-  // Point the user at the button instead of a generic "advanced" shrug.
-  'composer-voice': ['/voice']
+/**
+ * Offline fallback for the registry's `desktop=` metadata, dumped from
+ * `hermes_cli/commands.py::desktop_surface_registry` by
+ * `scripts/dump_desktop_slash_registry.py`. The live `commands.catalog` answers
+ * first (`specFromCatalog`); this copy only covers the gap before the backend
+ * replies. A Python test and `desktop-slash-commands.test.ts` both fail when
+ * the JSON drifts from either side, so the Python registry stays the single
+ * place a command's desktop disposition is authored.
+ */
+const REGISTRY_DESKTOP_SURFACE: Readonly<Record<string, string>> = desktopSlashRegistry
+
+/**
+ * Commands the Python registry has never heard of, so they cannot ride the
+ * dump above. `/density`, `/details`, `/logs`, `/mouse` are Ink-process-local
+ * display toggles handled inside `ui-tui/src/app/slash/commands/core.ts`
+ * (three are advertised through `tui_gateway/server.py::_TUI_EXTRA`); `/pets`
+ * is the plural typo of the desktop's own `/pet` action and points at the
+ * sidebar instead of falling through as an unknown skill.
+ */
+export const TS_ONLY_NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
+  advanced: [],
+  'composer-voice': [],
+  messaging: [],
+  settings: ['/pets'],
+  terminal: ['/density', '/details', '/logs', '/mouse']
+}
+
+const LOCAL_SPEC_NAMES = new Set(DESKTOP_COMMAND_SPECS.flatMap(spec => [spec.name, ...(spec.aliases ?? [])]))
+
+/** Registry rows with a real unavailability reason. `hidden` (e.g. `/model`) is
+ *  a popover flag on an executable command and is read from the live catalog
+ *  by `specFromCatalog`; a local spec always wins over the dump. */
+function registryUnavailableSpecs(): DesktopCommandSpec[] {
+  return Object.entries(REGISTRY_DESKTOP_SURFACE).flatMap(([name, value]) => {
+    const reason = asUnavailableReason(value)
+
+    return reason && !LOCAL_SPEC_NAMES.has(name) ? [{ name, surface: unavailable(reason) }] : []
+  })
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [
   ...DESKTOP_COMMAND_SPECS,
-  ...(Object.entries(NO_DESKTOP_SURFACE) as [DesktopUnavailableReason, readonly string[]][]).flatMap(
+  ...registryUnavailableSpecs(),
+  ...(Object.entries(TS_ONLY_NO_DESKTOP_SURFACE) as [DesktopUnavailableReason, readonly string[]][]).flatMap(
     ([reason, names]) => names.map(name => ({ name, surface: unavailable(reason) }))
   )
 ]

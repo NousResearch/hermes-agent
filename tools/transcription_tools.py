@@ -33,7 +33,7 @@ from tools.transcription_local import (
     _transcribe_local_command, _try_lazy_install_stt, build_local_transcribe_kwargs)
 # The ``_transcribe_<provider>`` handlers are looked up in this module's globals by _dispatch_stt_provider.
 from tools.transcription_cloud import (  # noqa: F401  (handlers dispatched via globals())
-    _has_xai_stt_credentials, _resolve_openai_audio_client_config, _transcribe_deepinfra,
+    _has_xai_stt_credentials, _normalize_openai_model, _resolve_openai_audio_client_config, _transcribe_deepinfra,
     _transcribe_elevenlabs, _transcribe_groq, _transcribe_mistral, _transcribe_openai,
     _transcribe_xai)
 from tools.transcription_command import (
@@ -455,10 +455,23 @@ def _dispatch_stt_provider(
     prompt = stt_config.get("prompt")
     prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
     # Fires after provider resolution and BEFORE any backend; ``language`` stays None unless a hook sets it.
+    hook_fields: Dict[str, str] = {}
     model, language, prompt = _apply_pre_transcription_hook(
         file_path=file_path, provider=provider, model=model,
         language=_get_stt_section(stt_config, provider).get("language"), prompt=prompt, source=source,
+        field_overrides=hook_fields,
     )
+    if provider in ("openai", "deepinfra"):
+        model = _builtin_model_name(provider, stt_config, model)
+        if provider == "openai":
+            model = _normalize_openai_model(model)
+        if model == "gpt-transcribe" or provider == "deepinfra":
+            # The SDK client owns the actual endpoint. Defer defaults, validation and truncation
+            # until it exists; None means unset, whereas "" must suppress every prompt fallback.
+            # DeepInfra may also select its final model from the catalog inside its backend.
+            handler = globals()[f"_transcribe_{provider}"]
+            return handler(file_path, model, language=language,
+                           prompt=hook_fields.get("prompt"), stt_config=stt_config)
     prompt = _enforce_prompt_length_limit(prompt, provider)
     if provider in BUILTIN_STT_PROVIDERS:
         # Looked up in this module at call time so tests may patch ``_transcribe_*``.

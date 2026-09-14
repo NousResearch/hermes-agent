@@ -2787,7 +2787,8 @@ class GatewayTurnMixin:
         # gets no cards either. Every other explicit mode keeps the card lane.
         _native_slack_task_cards = False
         if (
-            source.platform == Platform.SLACK
+            progress_mode != "full"
+            and source.platform == Platform.SLACK
             and hasattr(adapter, "native_task_cards_enabled")
             and not (_tool_progress_explicit and progress_mode == "off")
         ):

@@ -1227,6 +1227,45 @@ def test_specify_happy_path(client, monkeypatch):
     assert "**Goal**" in (detail["body"] or "")
 
 
+def test_specify_without_board_param_uses_the_active_board(client, monkeypatch):
+    """An omitted ``?board=`` means the active board on every route (#107718 K11).
+
+    The auxiliary-LLM endpoints pinned ``default`` instead, so a triage task on the
+    board the user had switched to came back "not found" from specify/decompose
+    while the rest of the dashboard was showing it."""
+    import json as jsonlib
+
+    kb.create_board("alpha")
+    kb.set_current_board("alpha")
+    assert kb.get_current_board() == "alpha"
+
+    # Created without ``?board=`` → lands on the active board, alpha.
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "one-liner", "triage": True},
+    ).json()["task"]
+    assert client.get(f"/api/plugins/kanban/tasks/{t['id']}").status_code == 200
+    assert client.get(f"/api/plugins/kanban/tasks/{t['id']}?board=default").status_code == 404
+
+    _patch_specifier_response(
+        monkeypatch,
+        content=jsonlib.dumps({"title": "Polished", "body": "**Goal**\nDo the thing."}),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{t['id']}/specify",
+        json={"author": "ui-tester"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True, body
+    assert body["new_title"] == "Polished"
+
+    # The task on alpha is the one that changed.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["title"] == "Polished"
+
+
 # ---------------------------------------------------------------------------
 # Final result visibility for Done cards
 # ---------------------------------------------------------------------------

@@ -234,15 +234,25 @@ def get_profile_dir(name: str) -> Path:
     canon = normalize_profile_name(name)
     if canon == "default":
         return _get_default_hermes_home()
+    # The name becomes a path component under profiles/; refuse anything that
+    # is not a valid profile id so every caller (WS params, /p/<profile>/
+    # prefixes, tool args) fails closed instead of escaping the root. The
+    # regex only, not _RESERVED_NAMES: a pre-reserved-list dir like
+    # profiles/hermes may still exist and must keep resolving.
+    if not _PROFILE_ID_RE.match(canon):
+        raise ValueError(f"Invalid profile name {canon!r}. Must match [a-z0-9][a-z0-9_-]{{0,63}}")
     return _get_profiles_root() / canon
 
 
 def profile_exists(name: str) -> bool:
     """Check whether a live (non-tombstoned) profile directory exists."""
-    canon = normalize_profile_name(name)
+    try:
+        canon = normalize_profile_name(name)
+        profile_dir = get_profile_dir(canon)
+    except ValueError:
+        return False
     if canon == "default":
         return True
-    profile_dir = get_profile_dir(canon)
     return profile_dir.is_dir() and not named_profile_is_deleted(profile_dir)
 
 
@@ -940,6 +950,16 @@ def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: boo
 def _notify_multiplexer(canon: str) -> None:
     from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
     notify_multiplexer_profiles_changed(canon)
+
+
+def _live_default_multiplexer() -> bool:
+    """True when a live default gateway has recorded a served-profile set: every dir under
+    profiles/ is then served by it, so a profile-identity change must be unrouted first."""
+    try:
+        from hermes_cli.gateway_multiplex_served import recorded_served_profiles
+        return recorded_served_profiles() is not None
+    except Exception:
+        return False
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
@@ -1717,33 +1737,30 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         _cleanup_gateway_service(old_canon, old_dir)
         _stop_gateway_process(old_dir)
 
-    # 1b. Unroute the old name from a live multiplexer BEFORE the rename. A multiplexed
-    # secondary has no gateway.pid of its own, so the check above reports it stopped while
-    # the default gateway still holds its adapters, cron ticker, logging and SQLite handles.
-    # Tombstone + notify so the multiplexer stops those adapters and releases its handles
-    # into old_dir; without it the live components immediately re-``mkdir`` the old home
-    # (no tombstone → ``mkdir_under_hermes_home`` does not refuse it) and the periodic
-    # reconcile re-adopts the resurrected dir as a ghost served profile.
-    served_by_mux = _served_by_running_multiplexer(old_canon)
-    if served_by_mux:
+    # 1b. Unroute the old name from a live multiplexer BEFORE the rename (same protocol as
+    # delete_profile). A multiplexed secondary has no gateway.pid of its own, so the check above
+    # reports it stopped while the default gateway still holds its adapters, cron ticker, logging
+    # and SQLite handles; those re-``mkdir`` the old home the moment it moves (no tombstone →
+    # ``mkdir_under_hermes_home`` does not refuse it) and the periodic reconcile re-adopts the
+    # resurrected dir as a ghost served profile (#109267).
+    live_mux = _live_default_multiplexer()
+    if live_mux:
         mark_named_profile_deleted(old_dir)
         _notify_multiplexer(old_canon)
 
-    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing
-    # writer), undo the unroute above so we never strand the profile as tombstoned-but-present:
-    # restore its directory to the served set and clear the marker before re-raising.
+    # 2. Rename directory. If the move fails (cross-device EXDEV, permissions, a racing writer),
+    # undo the unroute so the profile is never stranded tombstoned-but-present.
     try:
         old_dir.rename(new_dir)
     except Exception:
-        if served_by_mux:
+        if live_mux:
             clear_named_profile_deleted(old_dir)
             _notify_multiplexer(old_canon)
         raise
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    # The tombstone lived at profiles/.deleted/<old_name>; old_dir is gone now so it can no
-    # longer resurrect, and new_dir carries no tombstone. Clear the stale marker so a future
-    # profile reusing the old name is not treated as deleted.
-    if served_by_mux:
+    # The tombstone lives at profiles/.deleted/<old_name>; old_dir is gone so nothing can
+    # resurrect it, and a future profile reusing the old name must not read as deleted.
+    if live_mux:
         clear_named_profile_deleted(old_dir)
 
     # 3. Update profile-scoped Honcho host blocks, preserving aiPeer identity
@@ -1761,9 +1778,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     # 5. Update active_profile if it pointed to old name
     _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
 
-    # 6. Ask a live multiplexer to hot-serve the renamed profile now (mirrors create); it
-    # also rescans periodically, so a missed signal only delays serving.
-    if served_by_mux:
+    # 6. Hot-serve the renamed profile now (mirrors create; a missed signal only delays it).
+    if live_mux:
         _notify_multiplexer(new_canon)
     return new_dir
 

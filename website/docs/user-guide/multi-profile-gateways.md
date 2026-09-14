@@ -193,7 +193,13 @@ using the default listener's existing credentials.
   `config.yaml`. That secret is then accepted only at
   `/p/coder/webhooks/<route>` and is rejected on every other profile prefix.
 - Webhook routes without `profile` remain default-profile routes and are not
-  reachable through a named profile prefix.
+  reachable through a named profile prefix. Dynamic subscriptions bind the same
+  way: `hermes webhook subscribe <name> --route-profile coder` writes
+  `profile: coder` into the default gateway's `webhook_subscriptions.json` and
+  prints the `/p/coder/webhooks/<name>` URL (`hermes webhook ls` shows the
+  binding). Use `--route-profile`, not the global `-p coder`: `-p` would write
+  the subscription into coder's own subscriptions file, which the default
+  gateway's webhook adapter never reads.
 - Delivery follows the same binding. A `profile: coder` route's reply (or
   `deliver_only` message) goes out through **coder's** adapter for the
   `deliver` platform, falls back to **coder's** home channel when
@@ -294,7 +300,9 @@ migration, no orphaned history. Every gateway path that reads a key back —
 delegation completions after a restart, shutdown notices, a per-user-thread
 `/stop` of a sibling's run, `/undo`, QQ approval buttons — accepts the
 `agent:<profile>:…` shape too, so secondary profiles get the same behaviour
-as the default one.
+as the default one. The one profile name that would collide with the default's
+namespace, a profile literally called `main`, is keyed `agent:main~:…` so it
+keeps its own sessions and its own `profiles/main/state.db`.
 
 Each profile's rows land in **its own** `state.db`: a named profile's under
 `profiles/<name>/state.db`, the default profile's under the launch home — even
@@ -331,7 +339,10 @@ route *and* credentials, including mTLS `client_cert`/`client_key`) share one
 connection, and an owner's `/reload-mcp`
 re-registers the sharing profiles' tools without them reloading. `auth: oauth`
 servers are never shared across profiles: each profile holds its own token under
-its own `mcp-tokens/` and opens its own connection. Terminal settings
+its own `mcp-tokens/` and opens its own connection. Trust policy stays per
+profile: a `trust: untrusted` profile sharing a `trust: full` profile's
+connection is still asked before every write-capable call, and
+`supports_parallel_tool_calls` applies only to the profile that set it. Terminal settings
 (`terminal.backend`, `terminal.cwd`, `terminal.docker_volumes`,
 `terminal.docker_shared_container_key`, SSH targets, …) are likewise resolved
 per profile on every routed turn: a profile that omits a terminal key gets the
@@ -403,7 +414,7 @@ profile and never shares with the default or any sibling:
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
 | Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
-| Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_PROXY`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card) | The owning profile's `.env` and `config.yaml` | The adapter's documented default — never the default profile's setting |
+| Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_ALLOW_BOTS`, `*_PROXY`, Discord `allow_mentions`, Matrix `allowed_users` / `ignore_user_patterns`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card / public URL, WhatsApp bridge policy, Yuanbao home channel) | The owning profile, in this order: explicit `.env` value → its `config.yaml` → the adapter's default | The adapter's documented default — never the default profile's setting. Single-profile installs keep env-over-YAML exactly as each platform page documents |
 | `MEDIA:` attachment denylist | Every home under `profiles/` plus the default home, enumerated at check time | A turn can never attach another profile's `.env`, `auth.json`, `state.db`, sessions or token stores |
 | stdio MCP child environment | Safe baseline + the profile's scoped values for secret-source names + the server's own `env:` | A name the profile lacks is absent from the child — no default-profile fallthrough |
 | Outbound egress (`send_message`, shutdown/restart/`/update` notices, `/loop` wakeups, `profile:`-bound webhook delivery, `github_comment` tokens) | The profile's own connected adapter and `.env` | Clear failure; never posts through the default profile's bot |

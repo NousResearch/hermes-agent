@@ -5,6 +5,7 @@ bodies reference server globals bare (``_ok``, ``_err``, ``_sessions``, ...).
 Helper names must not collide with server.py's own (``_cmd_`` / ``_toolset_`` / ``_mcp_`` prefixes).
 """
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -20,12 +21,20 @@ def _profile_scoped_rpc(
     fail_code: int, *, required=(), catch_resolve: bool = True, prefix: str = "",
     scoped: bool = True, live_session: bool = False,
 ):
-    """Wrap a handler body with the optional ``profile`` HERMES_HOME scope. Order: ``required``
+    """Wrap a handler body with the optional ``profile`` runtime scope. Order: ``required``
     params (4063 ``<key> required``) → ``live_session`` resolution via ``_sess`` (waits for the
     agent build; body gets ``session`` as 3rd arg) → profile (4064 when its dir is missing) → body;
     body exceptions become ``fail_code`` (``prefix`` + message). ``catch_resolve`` also maps
     resolve-time exceptions to ``fail_code``; mcp.servers.* let them propagate to dispatch().
-    ``scoped=False`` ignores ``profile``. The override is always reset afterwards."""
+    ``scoped=False`` ignores ``profile``.
+
+    The scope is the same home + secret + terminal composition a turn binds
+    (``_session_profile_runtime_scope``), not HERMES_HOME alone: these bodies read config.yaml,
+    whose ``${VAR}`` refs (``config._env_ref_lookup``) and the MCP probe's own header/env
+    interpolation resolve through ``get_secret`` — with only the home bound they read plain
+    ``os.environ``, i.e. the launch profile's values, so ``mcp.servers.test`` for a secondary
+    reported green against the default profile's token (or the literal placeholder). External
+    sources are hydrated first (the requested profile may never have been served in this process)."""
 
     def deco(body):
         def handler(rid, params: dict) -> dict:
@@ -38,23 +47,26 @@ def _profile_scoped_rpc(
                 if err:
                     return err
                 args = (rid, params, session)
-            token = None
+            scope = contextlib.nullcontext()
             if profile := _str_arg(params, "profile") if scoped else "":
                 try:
-                    profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    try:
+                        profile_dir = _tools_mod("hermes_cli.profiles").get_profile_dir(profile)
+                    except ValueError:  # traversal-shaped name: same answer as a missing dir
+                        profile_dir = None
                     if not profile_dir or not profile_dir.is_dir():
                         return _err(rid, 4064, f"profile '{profile}' not found")
-                    token = _tools_mod("hermes_constants").set_hermes_home_override(str(profile_dir))
+                    _tools_mod("hermes_cli.env_loader").hydrate_profile_secret_sources(profile_dir)
+                    scope = _session_profile_runtime_scope({"profile_home": str(profile_dir)})
                 except Exception as e:
                     if not catch_resolve:
                         raise
                     return _err(rid, fail_code, str(e))
             try:
-                return body(*args)
+                with scope:
+                    return body(*args)
             except Exception as e:
                 return _err(rid, fail_code, f"{prefix}{e}")
-            finally:
-                _mcp_reset_profile(token)
         handler.__doc__ = body.__doc__
         return handler
     return deco

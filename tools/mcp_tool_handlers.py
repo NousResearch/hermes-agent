@@ -41,10 +41,12 @@ _STDIO_OUTCOME_UNCERTAIN_MSG = (
 def _trust_gate_check(server_name: str, tool_name: str) -> Optional[str]:
     """Approval gate for write-capable tools on ``trust: untrusted`` servers. None to proceed,
     else a ``tool_error``. Fail-closed: approval-system errors block."""
-    from tools.mcp_tool_scope import _resolve_server_key
-    key = _resolve_server_key(server_name)
-    if (_core._server_trust_levels.get(key, _core._TRUST_FULL) != _core._TRUST_UNTRUSTED
-            or _core._tool_read_only_hints.get(key, {}).get(tool_name) is True):
+    from tools.mcp_tool_scope import _resolve_server_key, _server_key
+    # Trust is the calling profile's own policy (an adopter of a shared connection keeps its own tier);
+    # readOnlyHint is a property of the connection's tools, so it lives under the connection key.
+    trust = _core._server_trust_levels.get(_server_key(server_name), _core._TRUST_FULL)
+    if (trust != _core._TRUST_UNTRUSTED
+            or _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True):
         return None
     try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
         from tools.approval_prompt import request_elicitation_consent

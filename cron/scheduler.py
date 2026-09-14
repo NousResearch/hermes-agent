@@ -347,6 +347,17 @@ def _upsert_incident_for_failure(
         return False, None
 
 
+def _resolve_incidents_for_recovered_job(job: dict) -> None:
+    """Best-effort: a successful run marks the job's open incidents ``resolved`` (never touches an
+    operator ``closed`` ack). Store errors log at debug; delivery is unaffected."""
+    try:
+        from cron.incidents import close_incidents_for_recovered_job
+
+        close_incidents_for_recovered_job(job["id"])
+    except Exception as exc:
+        logger.debug("Incident store unavailable for job %s (delivery unaffected): %s", job["id"], exc)
+
+
 def _mark_incident_alerted(incident_id: Optional[str]) -> None:
     """Best-effort: mark incident ``alerted`` (no-op for closed; never resurrects an acked one)."""
     if not incident_id:
@@ -1550,7 +1561,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
 
                 fb_kwargs = {"requested": fb_provider, "target_model": fb_model}
                 if entry.get("base_url"):
@@ -1559,6 +1570,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                 if fb_api_key:
                     fb_kwargs["explicit_api_key"] = fb_api_key
                 runtime = resolve_runtime_provider(**fb_kwargs)
+                # Named custom entries resolve to the bare "custom" billing class; keep the configured
+                # identity so job sessions record the provider name (#98739).
+                runtime["provider"] = effective_runtime_provider(entry, runtime)
                 logger.info(
                     "Job '%s': fallback resolved to %s model %s",
                     job_id, runtime.get("provider"), fb_model)
@@ -2587,6 +2601,7 @@ def _compose_run_delivery(
         )
     elif success:
         deliver_content = final_response
+        _resolve_incidents_for_recovered_job(job)
     else:
         # Record the job+error signature once; if already acked by the operator, suppress the
         # per-run ping. Best-effort: a ledger failure never breaks delivery.

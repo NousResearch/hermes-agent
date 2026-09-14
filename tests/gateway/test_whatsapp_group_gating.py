@@ -126,6 +126,8 @@ def test_blank_free_response_chats_falls_through_to_env(monkeypatch):
     adapter = object.__new__(WhatsAppAdapter)
     adapter.config = PlatformConfig(enabled=True, extra={"free_response_chats": ""})
     assert adapter._whatsapp_free_response_chats() == {"123@g.us"}
+    # An explicit empty list is a real "no chats" value once no explicit env is set.
+    monkeypatch.setenv("WHATSAPP_FREE_RESPONSE_CHATS", "  ")
     adapter.config = PlatformConfig(enabled=True, extra={"free_response_chats": []})
     assert adapter._whatsapp_free_response_chats() == set()
 

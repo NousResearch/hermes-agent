@@ -38,7 +38,8 @@ def two_profiles(tmp_path, monkeypatch):
     ledgers = ("_servers", "_server_scope_keys", "_server_tool_scopes", "_server_connecting",
                "_server_connect_errors", "_server_connect_retry_after", "_server_connect_failures",
                "_server_error_counts", "_server_breaker_opened_at", "_lazy_server_configs",
-               "_mcp_tool_server_names", "_orphaned_adopters")
+               "_mcp_tool_server_names", "_orphaned_adopters", "_parallel_safe_servers",
+               "_server_trust_levels", "_tool_read_only_hints")
     saved = {n: type(getattr(core, n))(getattr(core, n)) for n in ledgers}
     for n in ledgers:
         getattr(core, n).clear()
@@ -192,3 +193,51 @@ def test_owner_reload_reregisters_profiles_that_adopted_its_connection(two_profi
     two_profiles("b")
     assert registry.get_tool_names_for_toolset("mcp-x") == ["mcp__x__t"]
     assert disc.get_mcp_status({"x": cfg})[0]["status"] == "connected"
+
+
+def test_untrusted_adopter_of_a_full_profiles_connection_keeps_its_own_trust_gate(two_profiles, monkeypatch):
+    """Trust is the consuming profile's policy: adopting A's ``trust: full`` connection must not let
+    B's ``trust: untrusted`` write-capable call skip approval."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_handlers as handlers
+    from tools import mcp_tool_registration as reg
+    import tools.approval_prompt as approval_prompt
+
+    route = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer shared"}}
+    cfg_a, cfg_b = dict(route, trust="full"), dict(route, trust="untrusted")
+    asked = []
+    monkeypatch.setattr(approval_prompt, "request_elicitation_consent",
+                        lambda *a, **k: asked.append(a) or "deny")
+
+    two_profiles("a")
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+
+    two_profiles("b")
+    assert reg.register_connected_into_current_scope({"x": cfg_b}) == 1
+    assert handlers._trust_gate_check("x", "t") is not None and asked
+
+    two_profiles("a")
+    assert handlers._trust_gate_check("x", "t") is None and len(asked) == 1
+
+
+def test_parallel_safe_opt_in_is_per_profile(two_profiles):
+    """B's ``supports_parallel_tool_calls`` on its own same-named server never makes A's serial
+    server's tool parallel-safe (the batch planner would run two A calls concurrently)."""
+    from tools import mcp_tool_discovery as disc, mcp_tool_registration as reg
+
+    cfg_a = {"url": "https://mcp.example/x", "headers": {"Authorization": "Bearer A"}}
+    cfg_b = dict(cfg_a, headers={"Authorization": "Bearer B"}, supports_parallel_tool_calls=True)
+
+    two_profiles("a")
+    disc._select_new_servers({"x": cfg_a})
+    srv_a = _server("x", cfg_a)
+    disc._adopt_server("x", srv_a)
+    srv_a._registered_tool_names = reg._register_server_tools("x", srv_a, cfg_a)
+
+    two_profiles("b")
+    disc._select_new_servers({"x": cfg_b})
+    assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is True
+
+    two_profiles("a")
+    assert disc.is_mcp_tool_parallel_safe("mcp__x__t") is False

@@ -879,10 +879,16 @@ def _write_start_attestation(pids: list[int], via: str) -> None:
     try:
         path = _start_attestation_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_cli.process_identity import _process_create_time
+
         payload = {
             "pids": [int(p) for p in pids], "via": via, "ts": datetime.now(timezone.utc).isoformat(),
             "generation": uuid.uuid4().hex,
         }
+        # Bind each PID to its incarnation (#110020 review): the ledger sentinel is matched by PID
+        # only otherwise, so a stale marker would be re-read against whatever lifecycle wrote last.
+        create_times = {str(int(p)): _process_create_time(int(p)) for p in pids}
+        payload["create_times"] = {k: v for k, v in create_times.items() if v is not None}
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload), encoding="utf-8")
         tmp.replace(path)
@@ -950,21 +956,44 @@ def _attested_pids_from(data: object) -> list[int]:
     return list(pids)
 
 
-def _attested_pid_exited_cleanly(pid: int) -> bool:
-    """True when the lifecycle ledger shows a clean exit for ``pid``."""
+def _attested_create_time(data: object, pid: int) -> float | None:
+    """The process create time the marker bound ``pid`` to, or ``None`` (older marker / psutil silent)."""
+    times = data.get("create_times") if isinstance(data, dict) else None
+    value = times.get(str(pid)) if isinstance(times, dict) else None
+    return float(value) if type(value) in (int, float) else None
+
+
+def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None) -> bool:
+    """True when the lifecycle ledger shows a clean exit for ``pid`` — or, for a marker that bound
+    ``pid`` to a ``create_time``, whenever the sentinel cannot be shown to describe THAT incarnation
+    (#110020 review): a sentinel for another PID or another start time means an unrelated lifecycle
+    has run since and the marker is stale; "unknown" must never read as "dead". A missing sentinel
+    still reads as dead (the attested process never booted far enough to claim it)."""
     try:
         from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
         data = json.loads(get_lifecycle_sentinel_path(_hermes_home()).read_text(encoding="utf-8"))
-    except Exception:
+    except OSError:
         return False
-    return isinstance(data, dict) and data.get("phase") == "exited" and data.get("pid") == pid
+    except Exception:
+        return create_time is not None
+    if not isinstance(data, dict):
+        return create_time is not None
+    if create_time is not None:
+        start_time = data.get("start_time")
+        if data.get("pid") != pid or type(start_time) not in (int, float):
+            return True
+        if abs(float(start_time) - create_time) > 2.0:
+            return True
+    return data.get("phase") == "exited" and data.get("pid") == pid
 
 
-def _attested_dead(attested: list[int], current_pids: list[int]) -> bool:
+def _attested_dead(attested: list[int], current_pids: list[int], data: object = None) -> bool:
     """The liveness rule shared by the consuming and read-only probes: attested PIDs are dead when
     no gateway runs now and the lifecycle ledger shows no clean exit for any of them."""
-    return not current_pids and not any(_attested_pid_exited_cleanly(pid) for pid in attested)
+    return not current_pids and not any(
+        _attested_pid_exited_cleanly(pid, _attested_create_time(data, pid)) for pid in attested
+    )
 
 
 def attested_death_generation(current_pids: list[int]) -> str | None:
@@ -980,7 +1009,7 @@ def attested_death_generation(current_pids: list[int]) -> str | None:
     exit): "unknown" must never read as "dead"."""
     data = _read_start_attestation()
     attested = _attested_pids_from(data)
-    if not attested or not _attestation_within_horizon(data) or not _attested_dead(attested, current_pids):
+    if not attested or not _attestation_within_horizon(data) or not _attested_dead(attested, current_pids, data):
         return None
     return _attestation_generation(data)
 
@@ -1005,7 +1034,7 @@ def check_start_attestation(current_pids: list[int] | None = None) -> str | None
             return None
 
     _clear_start_attestation()
-    if not _attested_dead(attested, current_pids):
+    if not _attested_dead(attested, current_pids, data):
         return None
     return _format_attestation_warning(attested, data)
 

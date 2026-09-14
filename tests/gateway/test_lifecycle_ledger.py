@@ -214,3 +214,14 @@ def test_prior_exit_label_survives_corrupt_sentinel(tmp_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("garbage", encoding="utf-8")
     assert read_prior_exit_label(tmp_path) == "unknown"
+
+
+def test_mark_exited_carries_start_time_onto_exited_sentinel(tmp_path: Path) -> None:
+    """The exited sentinel keeps the life's ``start_time`` so the Windows start attestation can
+    match a clean exit by incarnation, not by reusable PID (#110020)."""
+    record_startup(home=tmp_path)
+    running = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
+    mark_exited(0, reason="graceful_shutdown", home=tmp_path)
+    exited = json.loads(get_lifecycle_sentinel_path(tmp_path).read_text(encoding="utf-8"))
+    assert exited["phase"] == "exited"
+    assert exited["start_time"] == running["start_time"]

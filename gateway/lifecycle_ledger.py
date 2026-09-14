@@ -238,8 +238,13 @@ def mark_exited(exit_code: Optional[int] = None, reason: str = "graceful_shutdow
         sentinel = _read_json(get_lifecycle_sentinel_path(home))
         if sentinel is not None and sentinel.get("pid") != os.getpid():
             return
-        _write_sentinel({"phase": "exited", "pid": os.getpid(), "exit_code": exit_code, "exit_reason": reason,
-                         "exited_at": _now_iso()}, home)
+        exited: Dict[str, Any] = {"phase": "exited", "pid": os.getpid(), "exit_code": exit_code, "exit_reason": reason,
+                                  "exited_at": _now_iso()}
+        # Carry the incarnation identity: the Windows start attestation matches a clean exit by
+        # PID *and* start time so a reused PID's exit cannot vouch for a different life (#110020).
+        if sentinel is not None and sentinel.get("start_time") is not None:
+            exited["start_time"] = sentinel["start_time"]
+        _write_sentinel(exited, home)
     except Exception:
         logger.debug("Failed to mark lifecycle sentinel exited", exc_info=True)
 

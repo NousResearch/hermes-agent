@@ -222,6 +222,29 @@ RETAIN_SCHEMA = {
             "context": {"type": "string", "description": "Short label (e.g. 'user preference', 'project decision')."},
             "tags": {"type": "array", "items": {"type": "string"},
                      "description": "Optional per-call tags to merge with configured default retain tags."},
+            "observation_scopes": {
+                "anyOf": [
+                    {"type": "string", "enum": ["combined", "per_tag", "all_combinations"]},
+                    {"type": "array", "items": {"type": "array", "items": {"type": "string"}}},
+                ],
+                "description": ("Optional per-call override of how observations are scoped during "
+                                "consolidation: 'combined', 'per_tag', 'all_combinations', or a list "
+                                "of tag-lists. Omit to use the configured default."),
+            },
+            "entities": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"text": {"type": "string"}, "type": {"type": "string"}},
+                          "required": ["text"]},
+                "description": "Optional entities to pin on this memory, e.g. [{'text': 'Alice', 'type': 'person'}].",
+            },
+            "metadata": {"type": "object", "additionalProperties": {"type": "string"},
+                         "description": "Optional string key/value metadata merged over the default metadata."},
+            "document_id": {"type": "string", "description": (
+                "Optional document id. Retaining again with the same id updates that "
+                "document instead of creating a new one.")},
+            "update_mode": {"type": "string", "enum": ["replace", "append"], "description": (
+                "With document_id: 'replace' overwrites the document, 'append' adds to it.")},
+            "strategy": {"type": "string", "description": "Optional named retain strategy configured on the bank."},
             "occurred_at": {"type": "string", "description": (
                 "When the remembered event actually happened, as an ISO-8601 date "
                 "or datetime (e.g. '2026-08-20' or '2026-08-20T14:30:00+02:00'). "
@@ -987,7 +1010,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _build_retain_kwargs(self, content: str, *, context: str | None = None,
                              metadata: Dict[str, str] | None = None, tags: List[str] | None = None,
-                             occurred_at: str | None = None, update_mode: str | None = None) -> Dict[str, Any]:
+                             occurred_at: str | None = None, update_mode: str | None = None,
+                             observation_scopes: Any = None, entities: Any = None,
+                             strategy: str | None = None) -> Dict[str, Any]:
         """Build one aretain_batch item. The server resolves occurred_start/end (incl.
         relative phrases in content) from the item timestamp: explicit occurred_at
         wins, else the configured event clock."""
@@ -999,7 +1024,13 @@ class HindsightMemoryProvider(MemoryProvider):
         }
         merged_tags = _normalize_retain_tags(list(self._retain_tags) + _normalize_retain_tags(tags))
         item.update({k: v for k, v in (("context", context), ("update_mode", update_mode)) if v is not None})
-        item.update({k: v for k, v in (("tags", merged_tags), ("observation_scopes", self._observation_scopes)) if v})
+        scopes = _normalize_observation_scopes(observation_scopes) or self._observation_scopes
+        # Drop malformed entities rather than send a payload the server rejects.
+        entities = [{k: str(e[k]).strip() for k in ("text", "type") if str(e.get(k) or "").strip()}
+                    for e in (entities if isinstance(entities, list) else []) if isinstance(e, dict)]
+        entities = [e for e in entities if "text" in e]
+        item.update({k: v for k, v in (("tags", merged_tags), ("observation_scopes", scopes),
+                                       ("entities", entities), ("strategy", (strategy or "").strip())) if v})
         return item
 
     def _retain_batch(self, item: dict, *, bank_id: str, document_id: str | None = None,
@@ -1090,11 +1121,19 @@ class HindsightMemoryProvider(MemoryProvider):
 
     def _tool_retain(self, args: dict) -> str:
         content, context = args["content"], args.get("context")
-        item = self._build_retain_kwargs(content, context=context, tags=args.get("tags"),
-                                         occurred_at=args.get("occurred_at"))
-        logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                     self._bank_id, len(content), context)
-        self._retain_batch(item, bank_id=self._bank_id)
+        extra_metadata = args.get("metadata")
+        metadata = self._build_metadata(message_count=1, turn_index=self._turn_index)
+        if isinstance(extra_metadata, dict):
+            metadata.update({str(k): str(v) for k, v in extra_metadata.items() if v is not None})
+        document_id = (args.get("document_id") or "").strip() or None
+        update_mode = args.get("update_mode") if document_id and args.get("update_mode") in ("replace", "append") else None
+        item = self._build_retain_kwargs(content, context=context, metadata=metadata, tags=args.get("tags"),
+                                         occurred_at=args.get("occurred_at"), update_mode=update_mode,
+                                         observation_scopes=args.get("observation_scopes"),
+                                         entities=args.get("entities"), strategy=args.get("strategy"))
+        logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s, doc=%s",
+                     self._bank_id, len(content), context, document_id)
+        self._retain_batch(item, bank_id=self._bank_id, document_id=document_id)
         logger.debug("Tool hindsight_retain: success")
         return "Memory stored successfully."
 

@@ -492,6 +492,44 @@ class TestToolHandlers:
         item = provider._build_retain_kwargs("dinner with Sam", occurred_at="2026-08-20T19:00:00+02:00")
         assert item["timestamp"] == "2026-08-20T19:00:00+02:00"
 
+    def test_retain_tool_observation_scopes_overrides_config(self, provider_with_config):
+        p = provider_with_config(observation_scopes="combined")
+        p.handle_tool_call("hindsight_retain", {"content": "x", "observation_scopes": "per_tag"})
+        assert p._client.aretain_batch.call_args.kwargs["items"][0]["observation_scopes"] == "per_tag"
+
+    def test_retain_tool_observation_scopes_invalid_falls_back_to_config(self, provider_with_config):
+        p = provider_with_config(observation_scopes="per_tag")
+        p.handle_tool_call("hindsight_retain", {"content": "x", "observation_scopes": "bogus"})
+        assert p._client.aretain_batch.call_args.kwargs["items"][0]["observation_scopes"] == "per_tag"
+
+    def test_retain_tool_observation_scopes_tag_lists(self, provider):
+        provider.handle_tool_call("hindsight_retain",
+                                  {"content": "x", "observation_scopes": [["a"], ["a", "b"]]})
+        assert provider._client.aretain_batch.call_args.kwargs["items"][0]["observation_scopes"] == [["a"], ["a", "b"]]
+
+    def test_retain_tool_passes_entities_strategy_metadata(self, provider):
+        provider.handle_tool_call("hindsight_retain", {
+            "content": "x", "strategy": "facts", "metadata": {"topic": "db"},
+            "entities": [{"text": "Alice", "type": "person"}, {"type": "no-text"}, "junk"],
+        })
+        item = provider._client.aretain_batch.call_args.kwargs["items"][0]
+        assert item["entities"] == [{"text": "Alice", "type": "person"}]
+        assert item["strategy"] == "facts"
+        assert item["metadata"]["topic"] == "db"
+
+    def test_retain_tool_document_id_and_update_mode(self, provider):
+        provider.handle_tool_call("hindsight_retain",
+                                  {"content": "x", "document_id": "doc-1", "update_mode": "append"})
+        kwargs = provider._client.aretain_batch.call_args.kwargs
+        assert kwargs["document_id"] == "doc-1"
+        assert kwargs["items"][0]["update_mode"] == "append"
+
+    def test_retain_tool_update_mode_ignored_without_document_id(self, provider):
+        provider.handle_tool_call("hindsight_retain", {"content": "x", "update_mode": "append"})
+        kwargs = provider._client.aretain_batch.call_args.kwargs
+        assert "document_id" not in kwargs
+        assert "update_mode" not in kwargs["items"][0]
+
     def test_retain_schema_exposes_occurred_at(self):
         from plugins.memory.hindsight import RETAIN_SCHEMA
 

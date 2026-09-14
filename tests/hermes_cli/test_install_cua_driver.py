@@ -265,6 +265,11 @@ class TestInstallCuaDriverUpgrade:
              patch.object(tools_config, "_clear_stale_cua_install_lock"), \
              patch.object(
                  tools_config,
+                 "_cua_release_endpoint_reachable",
+                 return_value=True,
+             ) as release_reachable, \
+             patch.object(
+                 tools_config,
                  "_repair_cua_driver_autostart_windows",
                  return_value=True,
              ), \
@@ -278,6 +283,7 @@ class TestInstallCuaDriverUpgrade:
 
         assert popen.call_args.kwargs["stdin"] is subprocess.DEVNULL
         fake_proc.communicate.assert_called_once_with(timeout=120)
+        release_reachable.assert_called_once_with()
 
     def test_upgrade_can_suppress_installer_progress(self):
         from hermes_cli import tools_config_cua as tools_config

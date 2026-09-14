@@ -723,6 +723,77 @@ class TestBuildMessageEvent:
         assert event.source.chat_type == "group"
         assert event.source.thread_id == "spaces/G/threads/T1"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("quoted_metadata", "expected_id", "expected_text", "expected_author"),
+        [
+            (
+                {
+                    "name": "spaces/S/messages/QUOTED.1",
+                    "lastUpdateTime": "2026-06-01T09:00:00Z",
+                    "quotedMessageSnapshot": {
+                        "sender": "Hermes Bot",
+                        "text": "the previous message being quoted",
+                    },
+                },
+                "spaces/S/messages/QUOTED.1",
+                "the previous message being quoted",
+                "Hermes Bot",
+            ),
+            ("not-a-mapping", None, None, None),
+            ({"name": "spaces/S/messages/QUOTED.1"}, "spaces/S/messages/QUOTED.1", None, None),
+            (
+                {"name": "spaces/S/messages/QUOTED.1", "quotedMessageSnapshot": "not-a-mapping"},
+                "spaces/S/messages/QUOTED.1",
+                None,
+                None,
+            ),
+            (
+                {"name": " ", "quotedMessageSnapshot": {"text": " ", "sender": " "}},
+                None,
+                None,
+                None,
+            ),
+            (
+                {"name": 42, "quotedMessageSnapshot": {"text": "quoted", "sender": 7}},
+                None,
+                "quoted",
+                None,
+            ),
+        ],
+        ids=[
+            "documented-payload",
+            "malformed-metadata",
+            "missing-snapshot",
+            "malformed-snapshot",
+            "whitespace-fields",
+            "invalid-fields",
+        ],
+    )
+    async def test_quoted_message_metadata_populates_schema_safe_reply_context(
+        self, adapter, quoted_metadata, expected_id, expected_text, expected_author
+    ):
+        env = _make_chat_envelope(text="what did you mean by this?")
+        msg = env["chat"]["messagePayload"]["message"]
+        msg["quotedMessageMetadata"] = quoted_metadata
+
+        event = await adapter._build_message_event(msg, env)
+
+        assert event is not None
+        assert event.text == "what did you mean by this?"
+        assert event.reply_to_message_id == expected_id
+        assert event.reply_to_text == expected_text
+        assert event.reply_to_author_name == expected_author
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_no_quoted_message_leaves_reply_to_fields_unset(self, adapter):
+        env = _make_chat_envelope(text="hola, sin cita")
+        msg = env["chat"]["messagePayload"]["message"]
+        event = await adapter._build_message_event(msg, env)
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+        assert event.reply_to_author_name is None
 
 # ===========================================================================
 # send() — text, patch-in-place, chunking, error handling

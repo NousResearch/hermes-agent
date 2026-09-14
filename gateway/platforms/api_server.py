@@ -2890,8 +2890,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         payload = {"object": "hermes.session", "session": self._session_response(session)}
         if _coerce_request_bool(request.query.get("include_usage"), default=False):
             from gateway.platforms.api_server_session_usage import session_usage_page
+            limit = self._parse_nonnegative_int(request.query.get("usage_limit"), default=100, maximum=500)
+            offset = self._parse_nonnegative_int(request.query.get("usage_offset"), default=0, maximum=1_000_000)
             db = await self._ensure_session_db_async()
-            payload["model_usage"] = await session_usage_page(db, session["id"], request.query)
+            payload["model_usage"] = await session_usage_page(db, session["id"], limit=max(1, limit), offset=offset)
 
         return web.json_response(payload)
 

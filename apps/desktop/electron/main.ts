@@ -2558,7 +2558,7 @@ function isCommandScript(command) {
   return IS_WINDOWS && /\.(cmd|bat)$/i.test(command || '')
 }
 
-function unwrapWindowsVenvHermesCommand(command, backendArgs) {
+async function unwrapWindowsVenvHermesCommand(command, backendArgs) {
   return resolveVenvHermesCommand(command, backendArgs, {
     isWindows: IS_WINDOWS,
     isCommandScript,
@@ -2581,11 +2581,7 @@ function unwrapWindowsVenvHermesCommand(command, backendArgs) {
 // detect support so getBackendArgsForRuntime() can route old runtimes through
 // the legacy `dashboard --no-open` form instead of crashing on an unknown
 // subcommand (would brick every user mid-upgrade — #54568 follow-up).
-//
-// Fast path: read the runtime's own dashboard.py (instant, covers managed
-// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
-// (covers a bare `hermes` resolved from PATH with no known source root). Result
-// is cached per resolved runtime so we probe at most once per backend.
+// Fast-path / probe / cache strategy: see backend-serve-support.ts header.
 const backendSupportsServe = createBackendServeSupportResolver(HERMES_HOME, rememberLog)
 
 // Given a resolved backend whose args target `serve`, return the args the
@@ -4674,11 +4670,14 @@ async function isActiveRuntimeUsable() {
   return (
     isHermesSourceRoot(ACTIVE_HERMES_ROOT) &&
     fileExists(venvPython) &&
-    canImportHermesCli(venvPython, {
+    // Explicit await: a bare promise as the last `&&` operand only works via
+    // async-return flattening; any operand appended after it would make the
+    // expression truthy regardless of the probe result.
+    (await canImportHermesCli(venvPython, {
       env: {
         PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
       }
-    })
+    }))
   )
 }
 
@@ -12876,18 +12875,14 @@ async function runHermesStart() {
       // resolveRemote() may take arbitrarily long (settings resolve / ws-ticket
       // mint). If a newer attempt started meanwhile (e.g. the user switched
       // remotes and Apply invalidated this attempt), bail before probing.
-      if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
-        throw new Error('Hermes backend start was superseded by a newer connection attempt.')
-      }
+      backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
-      if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
-        throw new Error('Hermes backend start was superseded by a newer connection attempt.')
-      }
+      backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
       updateBootProgress({
         phase: 'backend.ready',

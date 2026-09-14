@@ -13,6 +13,16 @@ interface ServeCandidate {
   label?: string
 }
 
+// Does the resolved runtime understand the `serve` subcommand? The desktop
+// spawns `hermes serve`; runtimes older than serve only have `dashboard`, so
+// main.ts routes those through the legacy `dashboard --no-open` form instead
+// of crashing on an unknown subcommand.
+//
+// Fast path: read the runtime's own dashboard.py (instant, covers managed
+// installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
+// (covers a bare `hermes` resolved from PATH with no known source root). Result
+// is cached per resolved runtime so we probe at most once per backend.
+//
 // One cache per desktop runtime context; source inspection precedes a CLI probe.
 export function createBackendServeSupportResolver(hermesHome: string, rememberLog: (message: string) => void) {
   const cache = new Map<string, Promise<boolean>>()

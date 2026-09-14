@@ -38,6 +38,12 @@ DOC_PATH = REPO_ROOT / "website" / "docs" / "reference" / "slash-commands.md"
 # mentions in prose or descriptions are not rows.
 _ROW_CMD_RE = re.compile(r"^\|\s*`/([a-z0-9_-]+)", re.MULTILINE)
 
+
+def _mentioned(form: str, doc_text: str) -> bool:
+    """``/form`` as a whole command token — a bare substring test would let the
+    alias ``/q`` be "documented" by ``/queue`` and ``/v`` by ``/version``."""
+    return re.search(rf"/{re.escape(form)}(?![A-Za-z0-9_-])", doc_text) is not None
+
 # Doc rows that are deliberately not CommandDef entries.
 _NON_REGISTRY_ROWS = {
     # Dynamic skill invocation — every installed skill becomes /<skill-name>.
@@ -63,7 +69,7 @@ def test_every_registered_command_is_documented(registry, doc_text):
     missing = []
     for cmd in registry:
         forms = [cmd.name, *(cmd.aliases or ())]
-        if not any(f"/{form}" in doc_text for form in forms):
+        if not any(_mentioned(form, doc_text) for form in forms):
             missing.append(cmd.name)
     assert not missing, (
         "Commands registered in hermes_cli/commands.py but absent from "

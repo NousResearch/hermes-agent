@@ -12407,15 +12407,15 @@ function startHudGameOverlayFeed(win: BrowserWindow) {
   let reported = false
 
   const enumerate = async () => {
-    const windows = await enumerateWindowsFrontToBack(process.pid, titlesAvailable)
+    const enumeration = await enumerateWindowsFrontToBack(process.pid, titlesAvailable)
 
-    if (!enumerationFailed(windows)) {
-      return windows
+    if (!enumerationFailed(enumeration)) {
+      return enumeration.windows
     }
 
     if (!reported) {
       reported = true
-      console.warn(`[hermes] HUD cannot enumerate windows: ${windows.reason}`)
+      console.warn(`[hermes] HUD cannot enumerate windows: ${enumeration.reason}`)
     }
 
     return null

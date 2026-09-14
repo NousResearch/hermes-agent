@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { type EnumeratedWindow, enumerationFailureNote, pickWindowBelow, resolveOutsideAsar } from './window-below'
+import {
+  type EnumeratedWindow,
+  enumerationFailed,
+  enumerationFailureNote,
+  openWindowsWithTitleFallback,
+  pickWindowBelow,
+  resolveOutsideAsar,
+  titlesHiddenNote
+} from './window-below'
 
 const win = (pid: number, x = 0, y = 0, width = 800, height = 600, app = `app-${pid}`): EnumeratedWindow => ({
   app,
@@ -168,5 +176,90 @@ describe('resolveOutsideAsar', () => {
     const lookalike = 'file:///opt/app.asar-tools/node_modules/get-windows/index.js'
 
     expect(resolveOutsideAsar(lookalike)).toBe(lookalike)
+  })
+})
+
+// get-windows 9.3.0 treats `screenRecordingPermission: true` as an assertion
+// that the grant is already held, not as a request for it. Where the Swift
+// helper's own check then fails it prints prose and exits 0, and the module
+// throws `Error parsing window data` — so the machines this was meant to fix
+// traded `spawn ENOTDIR` for a different error and still got no windows.
+// Diagnosed by @b-rightstart on #89633.
+describe('openWindowsWithTitleFallback', () => {
+  const RAW = [{ id: 1, owner: { name: 'Chrome', processId: 9 }, title: 'a tab' }]
+  const PARSE_ERROR = new Error('Error parsing window data')
+
+  it('drops the Screen Recording assertion and retries when the first call throws', async () => {
+    const openWindows = vi.fn().mockRejectedValueOnce(PARSE_ERROR).mockResolvedValueOnce(RAW)
+
+    const opened = await openWindowsWithTitleFallback(openWindows, 'darwin', true)
+
+    expect(enumerationFailed(opened)).toBe(false)
+    expect(opened).toMatchObject({ raw: RAW, titlesGranted: false })
+    expect(openWindows).toHaveBeenNthCalledWith(1, { accessibilityPermission: false, screenRecordingPermission: true })
+    expect(openWindows).toHaveBeenNthCalledWith(2, { accessibilityPermission: false, screenRecordingPermission: false })
+  })
+
+  it('leaves the working path a single call with titles intact', async () => {
+    const openWindows = vi.fn().mockResolvedValue(RAW)
+
+    const opened = await openWindowsWithTitleFallback(openWindows, 'darwin', true)
+
+    expect(opened).toMatchObject({ raw: RAW, titlesGranted: true })
+    expect(openWindows).toHaveBeenCalledTimes(1)
+  })
+
+  // Nothing was asserted, so a throw here is the helper failing to spawn and
+  // the retry would be the identical call.
+  it('does not retry when titles were never asked for', async () => {
+    const openWindows = vi.fn().mockRejectedValue(new Error('spawn ENOTDIR'))
+
+    const opened = await openWindowsWithTitleFallback(openWindows, 'darwin', false)
+
+    expect(openWindows).toHaveBeenCalledTimes(1)
+    expect(opened).toMatchObject({ reason: expect.stringContaining('spawn ENOTDIR') })
+  })
+
+  it('never asserts anything off macOS, where titles are free', async () => {
+    const openWindows = vi.fn().mockResolvedValue(RAW)
+
+    for (const platform of ['linux', 'win32']) {
+      expect(await openWindowsWithTitleFallback(openWindows, platform, false)).toMatchObject({ titlesGranted: true })
+    }
+
+    expect(openWindows).toHaveBeenCalledWith(undefined)
+  })
+
+  // Two different failures: what the assertion provoked, and why the
+  // enumerator could not answer even untitled. Swallowing either leaves the
+  // same dead end this PR exists to remove.
+  it('reports both causes when the retry fails too', async () => {
+    const openWindows = vi.fn().mockRejectedValueOnce(PARSE_ERROR).mockRejectedValueOnce(new Error('spawn ENOTDIR'))
+
+    const opened = await openWindowsWithTitleFallback(openWindows, 'darwin', true)
+
+    expect(opened).toMatchObject({
+      reason: expect.stringContaining('Error parsing window data')
+    })
+    expect((opened as { reason: string }).reason).toMatch(/spawn ENOTDIR/)
+  })
+})
+
+describe('titlesHiddenNote', () => {
+  // Keyed on what was granted, not on what was requested: after a fallback the
+  // titles are empty even though the caller asked for them, and a result with
+  // blank titles and no note reads as a bug.
+  it('explains empty titles after the assertion was dropped', () => {
+    expect(titlesHiddenNote('darwin', false)).toMatch(/Screen Recording/)
+  })
+
+  it('says nothing when titles came through', () => {
+    expect(titlesHiddenNote('darwin', true)).toBeUndefined()
+  })
+
+  it('says nothing off macOS, where titles need no permission', () => {
+    for (const platform of ['linux', 'win32']) {
+      expect(titlesHiddenNote(platform, false)).toBeUndefined()
+    }
   })
 })

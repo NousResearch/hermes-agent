@@ -1187,6 +1187,18 @@ class GatewayInboundMixin:
             logger.debug("FIFO orphan rescue pre-claim failed for %s", _quick_key, exc_info=True)
             return event, source, is_internal
 
+    def _chat_muted_for_source(self, source: SessionSource, _quick_key: str) -> bool:
+        """True when ``/mute`` silenced this chat; a broken mute store fails OPEN (never silences every chat)."""
+        try:
+            from gateway.chat_mute import is_chat_muted
+            platform = source.platform.value if source.platform else "unknown"
+            if is_chat_muted(platform, source.chat_id):
+                logger.info("Dropping message for muted chat %s:%s (session %s)", platform, source.chat_id, _quick_key)
+                return True
+        except Exception:
+            logger.debug("chat-mute gate check failed", exc_info=True)
+        return False
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent
         interrupt → get/create session → build context → run agent → return response."""
@@ -1231,6 +1243,12 @@ class GatewayInboundMixin:
                 # Debounced so a user who forgets about topic mode doesn't get ten reminders.
                 if self._should_send_telegram_lobby_reminder(source):
                     return self._telegram_topic_root_lobby_message()
+                return None
+            # Chat-mute gate (/mute, Poke/Devin-inspired): while a chat is muted, conversational
+            # messages are dropped deterministically — no turn, no tokens, no reply. Sits AFTER
+            # slash dispatch so every command (most importantly /unmute) pierces the mute;
+            # internal events bypass because background completions must not be lost.
+            if self._chat_muted_for_source(source, _quick_key):
                 return None
             # External-drain new-turn gate: when NAS engaged an external drain (.drain_request.json,
             # seen by _drain_control_watcher), refuse to START new turns so the in-flight set can

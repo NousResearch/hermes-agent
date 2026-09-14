@@ -308,7 +308,7 @@ Opt-in toolset (not loaded in the default `hermes-cli` set). Add via `--toolsets
 Backends ship as plugins under `plugins/video_gen/<name>/`:
 
 - **xAI Grok-Imagine** — text-to-video and image-to-video (SuperGrok OAuth or `XAI_API_KEY`).
-- **FAL.ai** — Veo 3.1, Pixverse v6, Kling O3 (requires `FAL_KEY`).
+- **FAL.ai** — Veo 3.1, Pixverse v6, Kling 3.0 / O3 (requires `FAL_KEY`).
 - **OpenRouter** — every generative model on OpenRouter's video API (Veo 3.1, Sora 2 Pro, Kling 3, Seedance 2, Wan 3, Hailuo 3, Grok Imagine, FLUX 3 Video, …); text-to-video, image-to-video and reference-to-video; catalog and per-model limits fetched live (requires `OPENROUTER_API_KEY`, billed to your OpenRouter credit).
 - **DeepInfra** — live `video-gen` catalog over the OpenAI-compatible videos endpoint (requires `DEEPINFRA_API_KEY`).
 

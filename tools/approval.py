@@ -177,6 +177,17 @@ def list_gateway_approvals(session_key: str) -> list[dict]:
         return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
 
 
+def register_gateway_settle(session_key: str, request_id: str, settle) -> bool:
+    """Attach ``settle(reason)`` to one pending approval; it runs once when that wait ends by any path.
+    False when the request is no longer pending (the surface should withdraw its prompt itself)."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.settle = settle
+                return True
+    return False
+
+
 def ack_gateway_approval(session_key: str, request_id: str) -> bool:
     """Record that a client received a particular pending approval request."""
     with _lock:
@@ -885,7 +896,10 @@ def _run_approval_gate(
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
-    if _yolo_active():
+    # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
+    # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,
+    # dangerous-pattern prompts) must too, or "off" still prompts on those surfaces.
+    if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):

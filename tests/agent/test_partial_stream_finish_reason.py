@@ -975,6 +975,36 @@ class TestStreamIncludeUsageFinalChunk:
         assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
         assert response.choices[0].message.content == "Partial text before drop"
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_reasoning_only_abrupt_drop_without_usage_still_returns_stub(
+        self, _mock_close, mock_create, monkeypatch,
+    ):
+        """A stream severed while still reasoning (only ``delta.reasoning`` frames,
+        no finish_reason, no usage) is a drop, not a clean stop: stamping "stop"
+        would let the reasoning-only clean-stop promotion surface the truncated
+        thought as the final answer instead of entering the continuation ladder."""
+        def _dropped_stream():
+            for text in ("Let me think about", " the question carefully, first"):
+                chunk = _make_stream_chunk()
+                chunk.choices[0].delta.reasoning = text
+                yield chunk
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = lambda *a, **kw: _dropped_stream()
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.content is None
+        assert response.choices[0].message.reasoning_content == (
+            "Let me think about the question carefully, first"
+        )
+
 
 # ── Merged-finish content chunk swallowed by the SSE-echo guard (#94614) ──
 

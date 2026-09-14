@@ -496,15 +496,17 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
         server._sessions.pop("iso-sid", None)
 
 
-def test_compute_host_clarify_snapshot_replays_and_proxies_batch_answers(monkeypatch):
-    """A host-owned clarify survives activation and receives its UI answers."""
+def test_compute_host_open_request_survives_activation_and_proxies_locks_and_responses(monkeypatch):
+    """A host-owned server request (batch clarify) is mirrored by the parent so `open_requests` replays it;
+    `clarify.lock` and the client's response frame are relayed to the child that owns the wait."""
     class _Supervisor:
         def __init__(self):
             self.responses = []
 
         def respond(self, sid, params, *, timeout=15.0):
             self.responses.append((sid, dict(params), timeout))
-            remaining = ["q1"] if params.get("question_id") == "q0" else []
+            lock = params.get("lock") or {}
+            remaining = ["q1"] if lock.get("question_id") == "q0" else []
             return {"type": "respond.ack", "response": {"result": {"status": "ok", "remaining": remaining}}}
 
     sid = "host-clarify"
@@ -515,53 +517,25 @@ def test_compute_host_clarify_snapshot_replays_and_proxies_batch_answers(monkeyp
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: supervisor)
     monkeypatch.setattr(server, "write_json", lambda _message: True)
 
+    questions = [{"qid": "q0", "question": "First?", "choices": ["a"]}, {"qid": "q1", "question": "Second?", "choices": ["b"]}]
     try:
-        server._relay_compute_host_rpc(
-            {
-                "jsonrpc": "2.0",
-                "method": "event",
-                "params": {
-                    "type": "clarify.request",
-                    "session_id": sid,
-                    "payload": {
-                        "request_id": "host-request",
-                        "questions": [
-                            {"qid": "q0", "question": "First?", "choices": ["a"]},
-                            {"qid": "q1", "question": "Second?", "choices": ["b"]},
-                        ],
-                    },
-                },
-            }
-        )
+        server._relay_compute_host_rpc({"jsonrpc": "2.0", "id": "srq-host", "method": "clarify",
+                                        "params": {"session_id": sid, "questions": questions}})
 
         activated = server._live_session_payload(sid, session)
-        assert activated["pending_clarify"]["request_id"] == "host-request"
+        assert activated["open_requests"] == [{"id": "srq-host", "method": "clarify",
+                                               "params": {"session_id": sid, "questions": questions}}]
 
-        response = server.handle_request(
-            {
-                "id": "clarify-q0",
-                "method": "clarify.respond",
-                "params": {"request_id": "host-request", "question_id": "q0", "answer": "a"},
-            }
-        )
-
+        response = server.handle_request({"id": "lock-q0", "method": "clarify.lock",
+                                          "params": {"request_id": "srq-host", "question_id": "q0", "answer": "a"}})
         assert response["result"] == {"status": "ok", "remaining": ["q1"]}
-        assert supervisor.responses == [
-            (sid, {"request_id": "host-request", "question_id": "q0", "answer": "a"}, 15.0)
-        ]
-        replayed = server._live_session_payload(sid, session)["pending_clarify"]
-        assert replayed["answers"] == {"q0": "a"}
+        assert supervisor.responses == [(sid, {"lock": {"request_id": "srq-host", "question_id": "q0", "answer": "a"}}, 15.0)]
+        assert server._live_session_payload(sid, session)["open_requests"][0]["params"]["answers"] == {"q0": "a"}
 
-        final_response = server.handle_request(
-            {
-                "id": "clarify-q1",
-                "method": "clarify.respond",
-                "params": {"request_id": "host-request", "question_id": "q1", "answer": "b"},
-            }
-        )
-
-        assert final_response["result"] == {"status": "ok", "remaining": []}
-        assert "pending_clarify" not in server._live_session_payload(sid, session)
+        # The client's response frame (cancel-all) is relayed to the child and clears the mirror.
+        assert server.dispatch({"jsonrpc": "2.0", "id": "srq-host", "result": {}}) is None
+        assert supervisor.responses[-1] == (sid, {"frame": {"jsonrpc": "2.0", "id": "srq-host", "result": {}}}, 15.0)
+        assert "open_requests" not in server._live_session_payload(sid, session)
     finally:
         server._sessions.pop(sid, None)
 
@@ -7233,7 +7207,7 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
 
-    def _deliver(_rid, sid, session, text):
+    def _deliver(_rid, sid, session, text, **_kw):
         delivered["a" if sid == "sid-a-live-handoff" else "b"].append(text)
         session["running"] = False
 
@@ -7342,7 +7316,7 @@ def test_notification_poller_live_loop_drops_addressed_orphan(
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kw: delivered.append(text),
     )
     server._sessions["sid-live-orphan"] = session
     process_registry._completion_consumed.discard(event["session_id"])
@@ -7383,7 +7357,7 @@ def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kw: delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
@@ -7449,7 +7423,7 @@ def test_notification_poller_delivers_owned_events(
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, **_kw: delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: _CompressionDB())
 
@@ -11745,6 +11719,46 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
     assert "Agent Running: Yes" in out
 
 
+def test_session_status_reads_live_compute_host_metadata(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="stale-gateway-model",
+        provider="stale-gateway-provider",
+    )
+    server._sessions["sid"] = _session(
+        agent=agent,
+        _compute_host_active=True,
+        _metadata_mirror={
+            "model": "live-host-model",
+            "provider": "live-host-provider",
+        },
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "Model: live-host-model (live-host-provider)" in resp["result"]["output"]
+
+
+def test_session_status_falls_back_to_agent_before_first_host_frame(monkeypatch):
+    agent = types.SimpleNamespace(model="live-model", provider="live-provider")
+    server._sessions["sid"] = _session(agent=agent, _compute_host_active=True)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert "Model: live-model (live-provider)" in resp["result"]["output"]
+
+
 def test_skills_reload_runs_in_gateway_process(monkeypatch):
     import agent.skill_commands as skill_commands
 
@@ -13545,10 +13559,20 @@ def test_prompt_submit_row_id_accepts_full_lineage_ordinal(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _open_request(sid, method="clarify"):
+    from tui_gateway import server_requests
+    req = server_requests.ServerRequest(sid, method, {})
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+    return req
+
+
 def test_interrupt_only_clears_own_session_pending():
-    """session.interrupt on session A must NOT release pending prompts
-    that belong to session B."""
+    """session.interrupt on session A withdraws A's open server→client requests (a request.cancel each)
+    and must NOT touch session B's — otherwise B's clarify/sudo/secret prompt silently resolves as if
+    the user cancelled it."""
     import types
+    from tui_gateway import server_requests
 
     session_a = _session()
     session_a["agent"] = types.SimpleNamespace(interrupt=lambda: None)
@@ -13556,71 +13580,21 @@ def test_interrupt_only_clears_own_session_pending():
     session_b["agent"] = types.SimpleNamespace(interrupt=lambda: None)
     server._sessions["sid_a"] = session_a
     server._sessions["sid_b"] = session_b
+    req_a1, req_a2, req_b = _open_request("sid_a"), _open_request("sid_a", "sudo"), _open_request("sid_b")
 
     try:
-        # Simulate pending prompts on both sessions (what _block creates
-        # while a clarify/sudo/secret request is outstanding).
-        ev_a = threading.Event()
-        ev_b = threading.Event()
-        server._pending["rid-a"] = ("sid_a", ev_a)
-        server._pending["rid-b"] = ("sid_b", ev_b)
-        server._answers.clear()
-
-        # Interrupt session A.
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.interrupt",
-                "params": {"session_id": "sid_a"},
-            }
-        )
+        resp = server.handle_request({"id": "1", "method": "session.interrupt", "params": {"session_id": "sid_a"}})
         assert resp.get("result"), f"got error: {resp.get('error')}"
 
-        # Session A's pending must be released to empty.
-        assert ev_a.is_set(), "sid_a pending Event should be set after interrupt"
-        assert server._answers.get("rid-a") == ""
-
-        # Session B's pending MUST remain untouched — no cross-session blast.
-        assert not ev_b.is_set(), (
-            "CRITICAL: session.interrupt on sid_a released a pending prompt "
-            "belonging to sid_b — other sessions' clarify/sudo/secret "
-            "prompts are being silently cancelled"
-        )
-        assert "rid-b" not in server._answers
+        assert req_a1.event.is_set() and req_a2.event.is_set() and not req_a1.answered
+        assert not req_b.event.is_set(), (
+            "CRITICAL: session.interrupt on sid_a released a prompt belonging to sid_b")
+        assert server_requests.open_requests("sid_a") == []
+        assert [r["id"] for r in server_requests.open_requests("sid_b")] == [req_b.id]
     finally:
         server._sessions.pop("sid_a", None)
         server._sessions.pop("sid_b", None)
-        server._pending.pop("rid-a", None)
-        server._pending.pop("rid-b", None)
-        server._answers.pop("rid-a", None)
-        server._answers.pop("rid-b", None)
-
-
-def test_interrupt_clears_multiple_own_pending():
-    """When a single session has multiple pending prompts (uncommon but
-    possible via nested tool calls), interrupt must release all of them."""
-    import types
-
-    sess = _session()
-    sess["agent"] = types.SimpleNamespace(interrupt=lambda: None)
-    server._sessions["sid"] = sess
-
-    try:
-        ev1, ev2 = threading.Event(), threading.Event()
-        server._pending["r1"] = ("sid", ev1)
-        server._pending["r2"] = ("sid", ev2)
-
-        resp = server.handle_request(
-            {"id": "1", "method": "session.interrupt", "params": {"session_id": "sid"}}
-        )
-        assert resp.get("result")
-        assert ev1.is_set() and ev2.is_set()
-        assert server._answers.get("r1") == "" and server._answers.get("r2") == ""
-    finally:
-        server._sessions.pop("sid", None)
-        for key in ("r1", "r2"):
-            server._pending.pop(key, None)
-            server._answers.pop(key, None)
+        server_requests.reset_for_tests()
 
 
 def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
@@ -14255,39 +14229,16 @@ def test_wait_agent_for_prompt_expires_at_cap(monkeypatch):
 
 
 def test_clear_pending_without_sid_clears_all():
-    """_clear_pending(None) is the shutdown path — must still release
-    every pending prompt regardless of owning session."""
-    ev1, ev2, ev3 = threading.Event(), threading.Event(), threading.Event()
-    server._pending["a"] = ("sid_x", ev1)
-    server._pending["b"] = ("sid_y", ev2)
-    server._pending["c"] = ("sid_z", ev3)
+    """_clear_pending(None) is the process-exit path — every open request is withdrawn, and a response for
+    a withdrawn id is dropped quietly (no error frame back to the client)."""
+    from tui_gateway import server_requests
+    reqs = [_open_request("sid-x"), _open_request("sid-y", "sudo")]
     try:
         server._clear_pending(None)
-        assert ev1.is_set() and ev2.is_set() and ev3.is_set()
+        assert all(r.event.is_set() and not r.answered for r in reqs)
+        assert server.dispatch({"jsonrpc": "2.0", "id": reqs[0].id, "result": {"answer": "late"}}) is None
     finally:
-        for key in ("a", "b", "c"):
-            server._pending.pop(key, None)
-            server._answers.pop(key, None)
-
-
-def test_respond_unpacks_sid_tuple_correctly():
-    """After the (sid, Event) tuple change, _respond must still work."""
-    ev = threading.Event()
-    server._pending["rid-x"] = ("sid_x", ev)
-    try:
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "clarify.respond",
-                "params": {"request_id": "rid-x", "answer": "the answer"},
-            }
-        )
-        assert resp.get("result")
-        assert ev.is_set()
-        assert server._answers.get("rid-x") == "the answer"
-    finally:
-        server._pending.pop("rid-x", None)
-        server._answers.pop("rid-x", None)
+        server_requests.reset_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -15310,7 +15261,10 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
+    monkeypatch.setattr(
+        "hermes_cli.web_server_sessions._open_session_db_at_path",
+        lambda db_path, *, read_only: ProfileDB(db_path=db_path),
+    )
 
     resp = server.handle_request(
         {
@@ -15351,7 +15305,10 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB2)
+    monkeypatch.setattr(
+        "hermes_cli.web_server_sessions._open_session_db_at_path",
+        lambda db_path, *, read_only: ProfileDB2(db_path=db_path),
+    )
 
     resp = server.handle_request(
         {
@@ -20657,49 +20614,44 @@ def test_speak_text_with_barge_no_monitor_when_voice_mode_off(monkeypatch):
     assert not listened.is_set()
 
 
-def test_clarify_callback_uses_configured_timeout(monkeypatch):
-    """The TUI/desktop clarify bridge honors the canonical clarify timeout
-    (via _clarify_timeout_seconds) instead of the hardcoded _block default."""
+def _capture_server_request(monkeypatch, result):
+    """Stub the server-request send and capture (method, sid, params, timeout)."""
+    from tui_gateway import server_requests
     captured = {}
 
+    def fake_send(method, sid, params, *, timeout, qids=None):
+        captured.update(method=method, sid=sid, params=params, timeout=timeout, qids=qids)
+        return result
+
+    monkeypatch.setattr(server_requests, "send", fake_send)
+    return captured
+
+
+def test_clarify_callback_uses_configured_timeout(monkeypatch):
+    """The TUI/desktop clarify bridge sends a ``clarify`` server request with the canonical clarify timeout
+    (via _clarify_timeout_seconds), and returns the response's ``answer``."""
     monkeypatch.setattr(server, "_clarify_timeout_seconds", lambda: 42)
-
-    def fake_block(event, sid, payload, timeout=300):
-        captured.update(event=event, sid=sid, payload=payload, timeout=timeout)
-        return "answer"
-
-    monkeypatch.setattr(server, "_block", fake_block)
+    captured = _capture_server_request(monkeypatch, {"answer": "answer"})
 
     result = server._agent_cbs("sid-1")["clarify_callback"]("Pick one", ["a", "b"])
 
     assert result == "answer"
-    assert captured["event"] == "clarify.request"
+    assert captured["method"] == "clarify" and captured["sid"] == "sid-1"
     assert captured["timeout"] == 42
-    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+    assert captured["params"] == {"question": "Pick one", "choices": ["a", "b"]}
 
 
 def test_clarify_callback_multi_select_hint(monkeypatch):
-    """multi_select=True adds the hint to the payload; the single-select
-    payload shape stays byte-identical to the pre-multi-select protocol
-    (older renderers must never see the extra field)."""
-    captured = {}
-
-    def fake_block(event, sid, payload, timeout=300):
-        captured.update(payload=payload)
-        return "answer"
-
-    monkeypatch.setattr(server, "_block", fake_block)
+    """multi_select=True adds the hint to the params; the single-select shape stays byte-identical to the
+    pre-multi-select protocol (older renderers must never see the extra field)."""
+    captured = _capture_server_request(monkeypatch, {"answer": "answer"})
     cb = server._agent_cbs("sid-1")["clarify_callback"]
 
     cb("Pick many", ["a", "b"], multi_select=True)
-    assert captured["payload"] == {
-        "question": "Pick many",
-        "choices": ["a", "b"],
-        "multi_select": True,
-    }
+    assert captured["params"] == {"question": "Pick many", "choices": ["a", "b"], "multi_select": True}
 
     cb("Pick one", ["a", "b"], multi_select=False)
-    assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+    assert captured["params"] == {"question": "Pick one", "choices": ["a", "b"]}
 
 
 @pytest.mark.parametrize(
@@ -20707,8 +20659,8 @@ def test_clarify_callback_multi_select_hint(monkeypatch):
     [(0, None), (-1, None), (42, 42)],
 )
 def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, configured, expected):
-    """A ``<= 0`` clarify timeout means unlimited and reaches _block as None
-    (ev.wait(None) waits forever) rather than an immediate ev.wait(0) skip."""
+    """A ``<= 0`` clarify timeout means unlimited and reaches the server request as None
+    (wait(None) waits forever) rather than an immediate wait(0) skip."""
     monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
 
     assert server._clarify_timeout_seconds() == expected
@@ -22488,7 +22440,7 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     import contextlib
 
     @contextlib.contextmanager
-    def _fake_db(_params):
+    def _fake_db(_params, *, writer=False):
         yield FakeDB()
 
     monkeypatch.setattr(server, "_profile_db", _fake_db)

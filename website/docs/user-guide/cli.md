@@ -68,11 +68,20 @@ explicitly:
 
 ```bash
 hermes worktree list              # audit: age, size, verdict, reason per tree
+hermes worktree list --json       # machine-readable audit (trees, external trees, branches)
 hermes worktree prune             # remove safe trees + delete merged branches
 hermes worktree prune --dry-run   # show the plan without changing anything
+hermes worktree prune --older-than 7   # only reap trees idle for 7+ days
 hermes worktree prune --trees-only     # leave local branches alone
 hermes worktree prune --branches-only  # leave worktrees alone
 ```
+
+Worktrees registered **outside** `.worktrees/` (created by hand or by another
+tool) are reported read-only in `list` output and are never removed. The one
+exception is metadata: registrations whose directory no longer exists are
+dropped via `git worktree prune` (no files are touched). `--older-than DAYS`
+only ever narrows what gets reaped — a tree carrying real work is kept at any
+age regardless of the flag.
 
 Inside a session, `/worktree prune [--dry-run]` does the same (and never
 touches the tree the session is running in).

@@ -18,6 +18,7 @@ Cron jobs can:
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
+- fire on **external events** — a webhook route with `cron_job` set fires the job the moment something happens (a PR gets feedback, a service posts an alert) instead of waiting for the next scheduled tick. See [Event-Triggered Cron Jobs](/user-guide/messaging/webhooks#event-triggered-cron-jobs).
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 

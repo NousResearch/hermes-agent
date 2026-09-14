@@ -468,7 +468,9 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # before the RPC fires. A lying readOnlyHint can only skip approval for calls the operator was
 # already warned about, never widen access. Missing trust = full; unrecognized = untrusted (a
 # typo must never disable the gate). Classified at CALL time from DISCOVERY data: no schema
-# mutation, prompt cache intact.
+# mutation, prompt cache intact. ``_server_trust_levels`` is keyed by the CONSUMING profile's own
+# key (its policy for the name, even when it adopted another profile's connection);
+# ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: Dict[Any, str] = {}
 _tool_read_only_hints: Dict[Any, Dict[str, bool]] = {}
 
@@ -497,8 +499,8 @@ def _reset_server_error(server_name: str) -> None:
     _server_errors_all_application.pop(key, None)
 
 
-# Raw server names opted into parallel tool calls (``foo-bar``/``foo_bar`` sanitize alike but
-# must not share policy).
+# Servers opted into parallel tool calls, keyed by the consuming profile's own key (``foo-bar``/
+# ``foo_bar`` sanitize alike but must not share policy; neither do two profiles' same-named servers).
 _parallel_safe_servers: set = set()
 # registry tool name -> raw server name (the generated name is lossy; never re-parse it).
 _mcp_tool_server_names: Dict[str, str] = {}

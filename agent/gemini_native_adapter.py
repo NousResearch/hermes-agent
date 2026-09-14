@@ -21,7 +21,7 @@ import httpx
 
 from agent.bounded_response import read_streaming_error_body
 from agent.retry_utils import parse_retry_after_seconds
-from agent.gemini_schema import sanitize_gemini_tool_parameters
+from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,13 @@ def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
     return "generativelanguage.googleapis.com" in normalized and not normalized.endswith("/openai")
+
+
+def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
+    """``FunctionDeclaration.parametersJsonSchema`` exists only in the ``v1beta`` surface of
+    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto); other versions and
+    unknown proxies get the legacy ``parameters`` subset."""
+    return str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
 
 
 def probe_gemini_tier(
@@ -329,7 +336,7 @@ def _build_gemini_contents(
     return _merge_alternating(contents), ({"role": "system", "parts": [{"text": joined_system}]} if joined_system else None)
 
 
-def _function_declaration(tool: Any) -> Optional[Dict[str, Any]]:
+def _function_declaration(tool: Any, *, json_schema: bool = False) -> Optional[Dict[str, Any]]:
     fn = (tool.get("function") or {}) if isinstance(tool, dict) else None
     if not isinstance(fn, dict) or not (isinstance(fn.get("name"), str) and fn["name"]):
         return None
@@ -337,12 +344,18 @@ def _function_declaration(tool: Any) -> Optional[Dict[str, Any]]:
     if isinstance(fn.get("description"), str) and fn["description"]:
         decl["description"] = fn["description"]
     if isinstance(fn.get("parameters"), dict):
-        decl["parameters"] = sanitize_gemini_tool_parameters(fn["parameters"])
+        # Full JSON Schema where the API version has the field (unions, bare arrays,
+        # $ref survive); the lossy OpenAPI subset elsewhere. Mutually exclusive on the wire.
+        if json_schema:
+            decl["parametersJsonSchema"] = prepare_gemini_tool_parameters(fn["parameters"])
+        else:
+            decl["parameters"] = sanitize_gemini_tool_parameters(fn["parameters"])
     return decl
 
 
-def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
-    declarations = [d for d in map(_function_declaration, tools if isinstance(tools, list) else []) if d]
+def _translate_tools_to_gemini(tools: Any, *, json_schema: bool = False) -> List[Dict[str, Any]]:
+    declarations = [d for d in (_function_declaration(t, json_schema=json_schema)
+                                for t in (tools if isinstance(tools, list) else [])) if d]
     return [{"functionDeclarations": declarations}] if declarations else []
 
 
@@ -396,13 +409,14 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
 def build_gemini_request(
     *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
-    model: str = "",
+    model: str = "", tools_as_json_schema: bool = False,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
     contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
     optional = (
-        ("systemInstruction", system_instruction), ("tools", _translate_tools_to_gemini(tools)),
+        ("systemInstruction", system_instruction),
+        ("tools", _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)),
         ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
     )
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
@@ -675,6 +689,7 @@ class GeminiNativeClient:
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+            tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"

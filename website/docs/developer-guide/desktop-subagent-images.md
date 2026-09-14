@@ -13,6 +13,8 @@ The existing `subagent.tail` Desktop RPC includes optional image metadata while 
 
 These are live, best-effort inspection metadata, not archived image history or an extension of the public subagent lifecycle API. Clients must tolerate absent fields. Desktop pins the parent gateway/profile route but reads files through the child session; it never falls back to the parent file scope or an arbitrary local disk read.
 
+The wire fields are declared in `SubagentTailResult` in `tui_gateway/contracts/profiles_vault_complete_foreign_subagents.py`. After changing that model, run `scripts/gen_gateway_contracts.py` with the repository Python environment to regenerate the shared TypeScript and OpenRPC contracts; `tests/tui_gateway/contracts/test_generated.py` verifies they stay synchronized.
+
 ## Capture and lifecycle
 
 The live-log writer captures structured tool arguments/results before text truncation. Known image fields, explicit image arrays, native image blocks and supported local media markers are extracted with bounded traversal. Relative paths require a reliable child working directory; transient terminal working directories and sandbox-to-host mappings are not guessed. Native pixels, including crops, take precedence over provisional source references and use the existing image cache.

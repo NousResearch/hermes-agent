@@ -2089,7 +2089,8 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
-    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key)
+    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
+    profile_from_session_key_namespace)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE
@@ -2381,10 +2382,13 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         for entry in fb_list:
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry))
+                # Named custom entries resolve to the bare "custom" billing class; persist the configured
+                # identity so UI/billing rows match the manual-switch path (#98739).
+                runtime["provider"] = effective_runtime_provider(entry, runtime)
                 # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
                 logger.info(
                     # Log the literal `provider` key from config, not the resolved runtime category — an
@@ -2869,7 +2873,8 @@ _PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
 
-    ``{ns}`` is ``main`` for the default profile or a named-profile id (profile ids match
+    ``{ns}`` is ``main`` for the default profile, ``main~`` for a profile literally named ``main``
+    (``gateway.session._session_key_namespace``), or a named-profile id (profile ids match
     ``[a-z0-9][a-z0-9_-]{0,63}`` — never contain ``:`` — so a plain split stays unambiguous).
     For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id``
     is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
@@ -2879,11 +2884,11 @@ def _parse_session_key(session_key: str) -> "dict | None":
     if (
         len(parts) >= 5
         and parts[0] == "agent"
-        and (parts[1] == "main" or _PROFILE_ID_KEY_RE.match(parts[1]))
+        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
     ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
         if parts[1] != "main":
-            result["profile"] = parts[1]
+            result["profile"] = profile_from_session_key_namespace(parts[1])
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result

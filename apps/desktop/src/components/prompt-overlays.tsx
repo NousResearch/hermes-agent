@@ -33,8 +33,7 @@ import {
   sessionVaultSaveLoginRequest,
   sessionVaultUnlockRequest
 } from '@/store/prompts'
-import { ambientRequestFor } from '@/store/session-gone-latch'
-import { requestForOwnedSession } from '@/store/session-states'
+import { respondToServerRequest } from '@/store/server-requests'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
 // password and skill secret capture. Dangerous-command / execute_code approval
@@ -78,10 +77,7 @@ function SudoDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>('sudo.respond', {
-          password: value,
-          request_id: request.requestId
-        })
+        respondToServerRequest(request.requestId, { value })
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -181,10 +177,7 @@ function SecretDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await gateway.request<{ status?: string }>('secret.respond', {
-          request_id: request.requestId,
-          value: secret
-        })
+        respondToServerRequest(request.requestId, { value: secret })
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -285,14 +278,9 @@ function VaultUnlockDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        // A master password must reach the backend that raised the prompt, not whatever
-        // gateway is foreground right now (background profile tiles have their own socket).
-        await requestForOwnedSession<{ status?: string }>(
-          request.sessionId,
-          ambientRequestFor(gateway),
-          'vault.unlock.respond',
-          { request_id: request.requestId, password }
-        )
+        // The response frame goes back over the socket the request arrived on — the
+        // backend that raised the prompt, never whatever gateway is foreground.
+        respondToServerRequest(request.requestId, { value: password })
         triggerHaptic('submit')
         clearVaultUnlockRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -387,12 +375,7 @@ function VaultSaveLoginDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await requestForOwnedSession<{ status?: string }>(
-          request.sessionId,
-          ambientRequestFor(gateway),
-          'vault.save_login.respond',
-          { login, request_id: request.requestId }
-        )
+        respondToServerRequest(request.requestId, { value: login })
         triggerHaptic('submit')
         clearVaultSaveLoginRequest(request.sessionId, request.requestId)
       } catch (error) {
@@ -504,12 +487,7 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
       setSubmitting(true)
 
       try {
-        await requestForOwnedSession<{ status?: string }>(
-          request.sessionId,
-          ambientRequestFor(gateway),
-          'vault.code.respond',
-          { code: value, request_id: request.requestId }
-        )
+        respondToServerRequest(request.requestId, { value })
         triggerHaptic('submit')
         clearVaultCodeRequest(request.sessionId, request.requestId)
       } catch (error) {

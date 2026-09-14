@@ -21,6 +21,7 @@ import {
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { directoryEntry } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
@@ -28,6 +29,7 @@ import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { clearMcpSetupRequest, type McpSetupOutcome, sessionMcpSetupRequest } from '@/store/mcp-setup'
 import { notifyError } from '@/store/notifications'
+import { respondToServerRequest } from '@/store/server-requests'
 import { invalidateMcpSuggestionIndex } from '@/store/suggestion-providers/mcp'
 
 import { selectMessageRunning } from './tool/fallback-model'
@@ -228,15 +230,8 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         invalidateMcpSuggestionIndex()
       }
 
-      try {
-        await gateway.request<{ status?: string }>('mcp.setup.respond', {
-          request_id: request.requestId,
-          result: JSON.stringify(outcome)
-        })
-        // tool.complete lands next → McpSetupSettled.
-      } catch (error) {
-        notifyError(error, copy.sendFailed)
-      }
+      respondToServerRequest(request.requestId, { value: JSON.stringify(outcome) })
+      // tool.complete lands next → McpSetupSettled.
     },
     [copy.gatewayDisconnected, copy.reloadFailed, copy.sendFailed, gateway, request]
   )
@@ -419,7 +414,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         return
       }
 
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      if (isSubmitEnter(event) && (event.metaKey || event.ctrlKey)) {
         if (!working) {
           event.preventDefault()
           void approve()

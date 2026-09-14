@@ -103,14 +103,40 @@ def test_buzz_yaml_bridge_seeds_extra_for_a_secondary_profile(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
-def test_extra_or_secret_honours_explicit_false_but_not_blank(monkeypatch):
-    monkeypatch.setattr(shared, "get_scoped_secret", lambda n, d=None, **k: f"env:{d}")
+def test_extra_or_secret_precedence_env_then_yaml_then_default(monkeypatch):
+    """Explicit scoped env → the profile's YAML → default; a blank env value is unset (#108440, #109032)."""
+    env: dict = {}
+    monkeypatch.setattr(shared, "get_scoped_secret", lambda n, d=None, **k: env.get(n, d))
+    # YAML alone: explicit False is a real value; blank/None fall to the default.
     assert shared.extra_or_secret({"require_mention": False}, "require_mention", "X", "true") is False
-    assert shared.extra_or_secret({"require_mention": ""}, "require_mention", "X", "true") == "env:true"
-    assert shared.extra_or_secret(None, "require_mention", "X", "true") == "env:true"
+    assert shared.extra_or_secret({"require_mention": ""}, "require_mention", "X", "true") == "true"
+    assert shared.extra_or_secret(None, "require_mention", "X", "true") == "true"
     # Readers where a blank YAML value means "cleared" (channel whitelists) keep it as a value.
-    assert shared.extra_or_secret({"allowed_channels": ""}, "allowed_channels", "X", "", blank_is_unset=False) == ""
-    assert shared.extra_or_secret({}, "allowed_channels", "X", "", blank_is_unset=False) == "env:"
+    assert shared.extra_or_secret({"allowed_channels": ""}, "allowed_channels", "X", "dflt", blank_is_unset=False) == ""
+    assert shared.extra_or_secret({}, "allowed_channels", "X", "dflt", blank_is_unset=False) == "dflt"
+    # An explicit env value beats YAML in either direction; a blank env value does not.
+    env["X"] = "false"
+    assert shared.extra_or_secret({"reactions": True}, "reactions", "X", "true") == "false"
+    env["X"] = "true"
+    assert shared.extra_or_secret({"reactions": False}, "reactions", "X", "false") == "true"
+    env["X"] = "  "
+    assert shared.extra_or_secret({"reactions": False}, "reactions", "X", "true") is False
+
+
+def test_extra_or_secret_scoped_miss_never_reads_launch_env(monkeypatch):
+    """Under a secondary's scope the launch process's os.environ is another profile's value: a miss
+    falls to the secondary's OWN YAML, then the default — never to os.environ."""
+    monkeypatch.setenv("X_FLAG", "launch-value")
+    ss.set_multiplex_active(True)
+    token = ss.set_secret_scope({})
+    try:
+        assert shared.extra_or_secret({"flag": "yaml-value"}, "flag", "X_FLAG", "dflt") == "yaml-value"
+        assert shared.extra_or_secret({}, "flag", "X_FLAG", "dflt") == "dflt"
+    finally:
+        ss.reset_secret_scope(token)
+    # Unscoped (single-profile / default profile): env-over-YAML exactly as documented.
+    ss.set_multiplex_active(False)
+    assert shared.extra_or_secret({"flag": "yaml-value"}, "flag", "X_FLAG", "dflt") == "launch-value"
 
 
 def test_external_fallback_consults_profile_scope_only_when_unscoped(monkeypatch):

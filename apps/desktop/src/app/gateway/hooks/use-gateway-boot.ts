@@ -2,6 +2,7 @@ import {
   type GatewayEvent,
   isGatewayReauthRequired,
   isGatewayWebSocketUrl,
+  JSON_RPC_METHOD_NOT_FOUND,
   JsonRpcGatewayError,
   reconnectBackoffDelayMs,
   resolveGatewayWsUrl
@@ -31,6 +32,7 @@ import {
   closeLegacySecondaryGateways,
   closeSecondaryGateways,
   configureGatewayRegistry,
+  dispatchPrimaryServerRequest,
   disposeSecondariesForConnection,
   ensureActiveGatewayOpen,
   ensureGatewayForProfile,
@@ -40,6 +42,7 @@ import {
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
+  type ScopedServerRequest,
   setPrimaryGateway,
   setPrimaryGatewayConnection,
   touchSecondaryGateways
@@ -148,6 +151,8 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
   handleGatewayEvent: (event: GatewayEvent) => void
+  /** Server→client request from any registry socket; false = no handler (the channel answers -32601). */
+  handleServerRequest: (request: ScopedServerRequest) => boolean
   onConnectionReady: (
     connection: Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null
   ) => void
@@ -159,6 +164,7 @@ interface GatewayBootOptions {
 export function useGatewayBoot({
   beforeConnectionSwitch,
   handleGatewayEvent,
+  handleServerRequest,
   onConnectionReady,
   onGatewayReady,
   refreshHermesConfig,
@@ -167,6 +173,7 @@ export function useGatewayBoot({
   const callbacksRef = useRef({
     beforeConnectionSwitch,
     handleGatewayEvent,
+    handleServerRequest,
     onConnectionReady,
     onGatewayReady,
     refreshHermesConfig,
@@ -176,6 +183,7 @@ export function useGatewayBoot({
   callbacksRef.current = {
     beforeConnectionSwitch,
     handleGatewayEvent,
+    handleServerRequest,
     onConnectionReady,
     onGatewayReady,
     refreshHermesConfig,
@@ -805,6 +813,11 @@ export function useGatewayBoot({
     // (connectionId, profile) keep-set so two sources exposing the same
     // profile name (every source has a 'default') can't collide.
     configureGatewayRegistry({
+      onServerRequest: request => {
+        if (!callbacksRef.current.handleServerRequest(request)) {
+          request.fail(JSON_RPC_METHOD_NOT_FOUND, `Hermes Desktop cannot answer ${request.method}`)
+        }
+      },
       // The primary socket has no secondary entry to carry registry identity.
       // Electron's published active descriptor is authoritative after boot;
       // a true legacy primary has no connectionId and remains unqualified.
@@ -909,6 +922,9 @@ export function useGatewayBoot({
       recordSessionEventScope(scopedEvent)
       callbacksRef.current.handleGatewayEvent(scopedEvent)
     })
+
+    // Secondary sockets reach the same handler through the registry's onServerRequest.
+    const offRequest = gateway.onRequest(request => dispatchPrimaryServerRequest(request, sourceProfile))
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
@@ -1274,6 +1290,7 @@ export function useGatewayBoot({
       offActiveStateReauth()
       offState()
       offEvent()
+      offRequest()
       offExit()
       offWindowState?.()
       offBootProgress()

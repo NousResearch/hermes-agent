@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _AUX_TASK_SLOTS, _apply_model_assignment_sync, _dashboard_code_skew_guard,
+    _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
 )
 from agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
@@ -188,6 +188,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
             tasks.append({
                 "task": slot, "provider": str(slot_cfg.get("provider", "auto") or "auto"),
                 "model": str(slot_cfg.get("model", "") or ""), "base_url": base_url,
+                "reasoning_effort": str(slot_cfg.get("reasoning_effort") or "") or None,
                 # Lets the UI tell a free local/LAN pin from a forgotten paid-provider pin.
                 "local_endpoint": is_local_endpoint(base_url),
             })
@@ -254,9 +255,13 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 raise HTTPException(status_code=422, detail="Invalid MoA config: " + "; ".join(problems))
             normalized = normalize_moa_config(raw)
             # Merge, don't overwrite: hand-edited keys not in MoaConfigPayload (save_traces, trace_dir) survive.
-            # See issue #58819.
-            cfg.setdefault("moa", {}).update(normalized)
-            save_config(cfg)
+            # See issue #58819. Write ONLY the moa section (merge_existing deep-merges it over the
+            # on-disk raw file): saving the whole default-expanded ``cfg`` snapshot re-persisted
+            # every other section too, so a Desktop MoA autosave could wipe a chain another
+            # surface wrote meanwhile (#89184, ``fallback_providers: []``).
+            moa_section = dict(cfg.get("moa") or {})
+            moa_section.update(normalized)
+            save_config({"moa": moa_section}, merge_existing=True)
             return {"ok": True, **normalized}
 
 
@@ -288,8 +293,11 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 return {"ok": False, "scope": scope, "provider": provider, "model": model,
                         "confirm_required": True, "confirm_message": warning.message}
 
+        reasoning_effort = body.reasoning_effort if "reasoning_effort" in body.model_fields_set else _UNSET
+
         def _apply_assignment():
             with _profile_scope(body.profile or profile):
-                return _apply_model_assignment_sync(scope, provider, model, task, base_url, api_key)
+                return _apply_model_assignment_sync(
+                    scope, provider, model, task, base_url, api_key, reasoning_effort=reasoning_effort)
 
         return await asyncio.to_thread(_apply_assignment)

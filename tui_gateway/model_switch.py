@@ -5,6 +5,7 @@ time (method_ctx.bind_module), so they reference server.py globals bare."""
 from __future__ import annotations
 
 import contextlib
+import copy
 
 from .method_ctx import HandlerRegistry, bind_module
 
@@ -17,6 +18,7 @@ _RUNTIME_KEYS = ("model", "provider", "api_key", "base_url", "api_mode")
 def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
+            "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
             "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
 
 
@@ -24,6 +26,10 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     """Restore an agent model runtime captured before a one-turn override."""
     if not snapshot or agent is None:
         return
+    # `/model X --reasoning high --once`: the effort leaves with the model. Set before the
+    # runtime restore paths below (primary_runtime may predate a session /reasoning change).
+    if "reasoning_config" in snapshot:
+        agent.reasoning_config = snapshot["reasoning_config"]
     primary = snapshot.get("primary_runtime")
     if primary and hasattr(agent, "_restore_primary_runtime"):
         try:
@@ -31,6 +37,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent._fallback_activated = True
             agent._rate_limited_until = 0
             if agent._restore_primary_runtime():
+                if "reasoning_config" in snapshot:
+                    agent.reasoning_config = snapshot["reasoning_config"]
                 return
         except Exception:
             logger.debug("TUI one-turn model restore via primary runtime failed", exc_info=True)
@@ -39,6 +47,8 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
         agent.switch_model(
             new_model=model, new_provider=provider, api_key=api_key, base_url=base_url,
             api_mode=api_mode, capabilities=snapshot.get("capabilities"))
+        if "reasoning_config" in snapshot:
+            agent.reasoning_config = snapshot["reasoning_config"]
 
 
 @contextlib.contextmanager
@@ -87,8 +97,8 @@ def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready:
     return True
 
 
-def _switch_request(raw_input: str, parsed_flags, persist_override) -> tuple[str, str, bool, bool]:
-    """Normalize /model flags → (model_input, explicit_provider, one_turn, persist_global)."""
+def _switch_request(raw_input: str, parsed_flags, persist_override) -> tuple[str, str, bool, bool, str]:
+    """Normalize /model flags → (model_input, explicit_provider, one_turn, persist_global, reasoning_effort)."""
     from hermes_cli.model_switch import (
         MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL, MODEL_SWITCH_ERROR_TEXT, parse_model_switch_args,
         resolve_persist_behavior)
@@ -97,6 +107,8 @@ def _switch_request(raw_input: str, parsed_flags, persist_override) -> tuple[str
     model_input, explicit_provider, is_global_flag, is_session, one_turn = (
         f.model_input, f.explicit_provider, f.is_global, f.is_session, f.is_once)
     # Conflict validation is the shared parser's; surface it with the canonical copy.
+    for code in getattr(f, "errors", ()):
+        raise ValueError(MODEL_SWITCH_ERROR_TEXT[code])
     if is_global_flag and one_turn:
         raise ValueError(MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL])
     if persist_override is None:
@@ -104,7 +116,7 @@ def _switch_request(raw_input: str, parsed_flags, persist_override) -> tuple[str
             is_global_flag, is_session, is_once=one_turn, explicit_provider=explicit_provider)
     if not model_input:
         raise ValueError("model value required")
-    return model_input, explicit_provider, one_turn, persist_override
+    return model_input, explicit_provider, one_turn, persist_override, getattr(f, "reasoning_effort", "") or ""
 
 
 def _current_model_runtime(agent, explicit_provider: str) -> tuple:
@@ -141,13 +153,16 @@ def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) ->
         logger.debug("preflight-compression switch warning failed: %s", exc)
 
 
-def _expensive_model_confirm(result, current_base_url: str, current_api_key) -> dict | None:
-    """Deferred-confirm response when the selection guards flag the target model, else None."""
+def _expensive_model_confirm(result, current_base_url: str, current_api_key, agent=None) -> dict | None:
+    """Deferred-confirm response when the selection guards flag the target model (or, with a live
+    ``agent``, the switch itself — large cached context), else None."""
     try:
-        from hermes_cli.model_selection_guards import combined_selection_warning
+        from hermes_cli.model_selection_guards import (
+            combined_selection_warning, selection_context_for_agent)
         warning = combined_selection_warning(
             result.new_model, provider=result.target_provider, base_url=result.base_url or current_base_url,
-            api_key=result.api_key or current_api_key, model_info=result.model_info)
+            api_key=result.api_key or current_api_key, model_info=result.model_info,
+            selection_context=selection_context_for_agent(agent))
     except Exception:
         warning = None
     if warning is None:
@@ -190,7 +205,7 @@ def _apply_model_switch(
     pin_session_override: bool = True, parsed_flags: Any | None = None,
     persist_override: bool | None = None) -> dict:
     from hermes_cli.model_switch import switch_model
-    model_input, explicit_provider, one_turn, persist_global = _switch_request(
+    model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
     agent = session.get("agent")
     if one_turn and not agent:
@@ -216,7 +231,7 @@ def _apply_model_switch(
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
     if not confirm_expensive_model:
-        confirm = _expensive_model_confirm(result, current_base_url, current_api_key)
+        confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent)
         if confirm is not None:
             return confirm
     if agent:
@@ -231,10 +246,35 @@ def _apply_model_switch(
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
+    if reasoning_effort:
+        _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,
         "scope": "once" if one_turn else ("global" if persist_global else "session")}
+
+
+def _apply_switch_reasoning(sid: str, session, agent, effort: str, *, persist_global: bool, one_turn: bool) -> None:
+    """``/model X --reasoning <level>``: the effort rides with the pick and shares its scope. Runs
+    AFTER ``agent.switch_model`` (which re-resolves ``reasoning_config`` from config.yaml, so an
+    earlier write would be clobbered). ``--once`` restores through ``one_turn_model_restore`` —
+    the snapshot's ``primary_runtime`` carries the pre-switch ``reasoning_config``."""
+    from hermes_constants import parse_reasoning_effort
+    parsed = parse_reasoning_effort(effort)
+    if parsed is None:
+        return
+    if agent is not None:
+        agent.reasoning_config = parsed
+    if one_turn or not isinstance(session, dict):
+        return
+    if persist_global:
+        _write_config_key("agent.reasoning_effort", effort)
+        session.pop("create_reasoning_override", None)  # global wins; see _set_reasoning
+    else:
+        session["create_reasoning_override"] = parsed
+    if agent is not None:
+        _persist_live_session_runtime(session)
+        _emit_session_info(sid, session)  # the switch's own emit predates the effort change
 
 
 def _sync_bot_capabilities(sid: str, session: dict) -> None:

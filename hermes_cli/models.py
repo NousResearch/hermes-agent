@@ -795,9 +795,31 @@ def _base_url_looks_like_anthropic_messages(base_url: str) -> bool:
     return urllib.parse.urlparse(normalized).path.rstrip("/").endswith(("/anthropic", "/anthropic/v1"))
 
 
-def _anthropic_models_url(base_url: Optional[str] = None) -> str:
+def _anthropic_models_url(base_url: Optional[str] = None, *, after_id: Optional[str] = None) -> str:
+    """Anthropic ``/v1/models`` page URL. The endpoint is cursor-paginated with a default page of
+    20 (smaller than the live catalog), so every request asks for the maximum page size and
+    ``after_id`` continues from a previous page's ``last_id``."""
     endpoint = str(base_url or "https://api.anthropic.com").strip().rstrip("/")
-    return endpoint + ("/models" if endpoint.endswith("/v1") else "/v1/models")
+    url = endpoint + ("/models" if endpoint.endswith("/v1") else "/v1/models")
+    params = {"limit": "1000"}
+    if after_id:
+        params["after_id"] = after_id
+    return url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+
+
+_ANTHROPIC_MODELS_MAX_PAGES = 20
+
+
+def _anthropic_next_cursor(page: Any, seen_cursors: set[str]) -> Optional[str]:
+    """``last_id`` to continue from, or None when the page is final or the server repeats a
+    cursor (which would otherwise loop forever)."""
+    if not isinstance(page, dict) or page.get("has_more") is not True:
+        return None
+    last_id = page.get("last_id")
+    if not isinstance(last_id, str) or not last_id or last_id in seen_cursors:
+        return None
+    seen_cursors.add(last_id)
+    return last_id
 
 
 def curated_models_for_provider(
@@ -1827,6 +1849,14 @@ def _fetch_anthropic_models(
             )
             data = _get_json(url, timeout=timeout, headers=headers)
         models = [m["id"] for m in data.get("data", []) if m.get("id")]
+        seen_cursors: set[str] = set()
+        for _page in range(_ANTHROPIC_MODELS_MAX_PAGES):
+            cursor = _anthropic_next_cursor(data, seen_cursors)
+            if cursor is None:
+                break
+            data = _get_json(_anthropic_models_url(resolved_base_url, after_id=cursor), timeout=timeout, headers=headers)
+            models.extend(m["id"] for m in data.get("data", []) if m.get("id"))
+        models = list(dict.fromkeys(models))
         # opus, then sonnet, then haiku; alphabetical within tier.
         return sorted(models, key=lambda m: ("opus" not in m, "sonnet" not in m, "haiku" not in m, m))
     except Exception as e:

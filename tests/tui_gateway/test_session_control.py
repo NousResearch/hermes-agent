@@ -43,8 +43,7 @@ def server(hermes_home, monkeypatch):
     monkeypatch.setattr(mod, "_cfg_path", None)
     yield mod
     mod._sessions.clear()
-    mod._pending.clear()
-    mod._answers.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 @pytest.fixture()

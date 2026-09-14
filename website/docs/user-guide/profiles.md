@@ -102,11 +102,35 @@ hermes profile create twin --clone --clone-channels   # keep the source's bots a
 ```
 
 `--clone-channels` is refused when a running multiplexed gateway already serves the source
-(the copy would be parked immediately) and otherwise prints a warning naming the platforms
-now shared with the source. `hermes profile list` prints the same warning for any existing
+(the copy would be parked immediately) — from the CLI, the dashboard and the TUI alike — and
+otherwise prints a warning naming the platforms now shared with the source. It is an error
+without a clone flag. `hermes profile list` prints the same warning for any existing
 profile whose bot credential is byte-identical to the default's, so older clones surface
-before they bite. The key set is derived from the platform adapters themselves (registry
-entries and the gateway's env table), so a newly added platform is covered automatically.
+before they bite.
+
+**What counts as a channel setting** — the inventory is ownership-based and is judged in the
+*source* profile's plugin scope (its private `plugins/` adapters included):
+
+- every key an adapter declares (tokens, app/client ids, allowlists, allow-all switches, home
+  channels) and every key under its `<PLATFORM>_` prefix, including historical aliases
+  (`WECOM_*`, `SMS_*`/`TWILIO_*`, `QQ_*`, `HASS_*`, `EMAIL_*`);
+- gateway-wide channel policy `GATEWAY_ALLOW_ALL_USERS` / `GATEWAY_ALLOWED_USERS` and the
+  relay enrollment identity `GATEWAY_RELAY_ID` / `GATEWAY_RELAY_SECRET` / `GATEWAY_RELAY_DELIVERY_KEY`;
+- for `--clone-all`, per-bot state files **and directories** (`platforms/`, pairing ledgers,
+  `google_chat_user_tokens/`, `<platform>_*`).
+
+Credentials that a messaging adapter shares with a non-channel capability — `HASS_TOKEN`/`HASS_URL`
+(also the Home Assistant tool), `TWILIO_*` (also the telephony skill), `EMAIL_*` (also
+mail-sending scripts) — are stripped **only when the source's gateway would run that adapter**
+(the platform is enabled in its `config.yaml`, or its credential set is complete and not
+explicitly disabled). A source with `platforms.homeassistant.enabled: false` uses `HASS_TOKEN`
+as a tool key, so the clone keeps it. Allowlists and ports under those prefixes are always
+channel-only and always stripped.
+
+Clones are built in a hidden staging directory beside `profiles/` and published with one
+rename after the strip, so a running multiplexer (which rescans `profiles/` on create) can
+never start adapters on a half-copied tree. A symlinked source `.env`/`config.yaml` is
+materialized as a private copy first — the clone never writes through to the source.
 
 :::tip Honcho memory + profiles
 When Honcho is enabled, clone operations automatically create a dedicated AI peer for the new profile while sharing the same user workspace. Each profile builds its own observations and identity. See [Honcho -- Multi-agent / Profiles](./features/memory-providers.md#honcho) for details.

@@ -285,19 +285,24 @@ def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[st
 
 def resolve_proxy_url(
     platform_env_var: str | None = None, *,
-    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None) -> str | None:
-    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then HTTPS_PROXY /
-    HTTP_PROXY / ALL_PROXY (any case), then the macOS system proxy — the latter two only when
-    ``gateway.trust_env`` is true. None when nothing is found or NO_PROXY matches a target.
+    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
+    configured: str | None = None) -> str | None:
+    """Proxy URL: *platform_env_var* (e.g. ``DISCORD_PROXY``) first, then the adapter's own YAML
+    value *configured* (``telegram.proxy_url``), then HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (any
+    case), then the macOS system proxy — the latter two only when ``gateway.trust_env`` is true.
+    None when nothing is found or NO_PROXY matches a target.
 
     *platform_env_var* is a per-adapter, per-profile-configurable setting (each proxy URL can
     embed credentials, e.g. ``http://user:pass@host``) so it is read scope-aware: under a
     secondary multiplex profile it comes from that profile's own ``.env``, not the shared
-    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold. The
-    generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw process-env read —
-    those are OS/system-level network settings, not a per-profile Hermes concept."""
+    process env another profile's ``TELEGRAM_PROXY``/``DISCORD_PROXY``/etc. may hold; the YAML
+    value is the same profile's, so a secondary keeps its configured route without any env
+    bridge (#108440). The generic ``HTTPS_PROXY``/``HTTP_PROXY``/``ALL_PROXY`` fallback stays a raw
+    process-env read — those are OS/system-level network settings, not a per-profile Hermes concept."""
     from gateway.platforms._shared import get_scoped_secret as _get_scoped_proxy_var
     value = (_get_scoped_proxy_var(platform_env_var, "") or "").strip() if platform_env_var else ""
+    if not value:
+        value = str(configured or "").strip()
     if not value:
         if not gateway_trust_env():  # only the explicit per-platform var is honored
             return None
@@ -3245,6 +3250,18 @@ class BasePlatformAdapter(ABC):
         if eph_ttl > 0 and result.success and result.message_id:
             self._schedule_ephemeral_delete(event.source.chat_id, result.message_id, eph_ttl)
 
+    def _media_delivery_scope(self, source: Optional[SessionSource]):
+        """The runner's ``_media_delivery_scope_for_source`` (routed profile's home + terminal
+        policy) for validating outbound paths; a no-op without a runner or outside multiplexing."""
+        resolve = getattr(self.gateway_runner, "_media_delivery_scope_for_source", None)
+        if not callable(resolve) or source is None:
+            return contextlib.nullcontext()
+        try:
+            return resolve(source)
+        except Exception:
+            logger.debug("[%s] Failed to resolve media delivery scope", self.name, exc_info=True)
+            return contextlib.nullcontext()
+
     def _final_delivery_adapter(self, source: Optional[SessionSource]) -> "BasePlatformAdapter":
         """The runner's CURRENT adapter for a new final-response send: a reconnect can swap the
         registry adapter mid-task; an unsent final response belongs on the replacement transport,
@@ -4007,30 +4024,32 @@ class BasePlatformAdapter(ABC):
         # Captured before extract_media strips it: images then go via send_document (no recompression).
         force_document = "[[as_document]]" in response
         pre_extract = response
-        # Pre-extract snapshot for the #29346 recovery/invariant below.
-        media_files, response = self.extract_media(response)
-        media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
-        images, text_content = self.extract_images(response)
-        # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
-        # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
-        # the body for extract_local_files below to pick up rather than silently dropped (#34517).
-        text_content = _strip_media_directives(text_content).strip()
-        if images:
-            logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
-        local_files = []
-        if not is_ephemeral_response:
-            local_files, text_content = self.extract_local_files(text_content)
-            local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
-            history = (await self._bounded_history_media_paths_for_session(session_key)
-                       if local_files else None)
-            if history:
-                suppressed = [p for p in local_files if p in history]
-                if suppressed:
-                    logger.info("[%s] Suppressing %d bare local file path(s) already delivered in "
-                                "this session: %s", self.name, len(suppressed), suppressed)
-                    local_files = [p for p in local_files if p not in history]
-            if local_files:
-                logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
+        # The handler's routed profile scope is gone by now; Docker MEDIA translation and the
+        # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
+        with self._media_delivery_scope(event.source):
+            media_files, response = self.extract_media(response)
+            media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
+            images, text_content = self.extract_images(response)
+            # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
+            # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
+            # the body for extract_local_files below to pick up rather than silently dropped (#34517).
+            text_content = _strip_media_directives(text_content).strip()
+            if images:
+                logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
+            local_files = []
+            if not is_ephemeral_response:
+                local_files, text_content = self.extract_local_files(text_content)
+                local_files = self.filter_local_delivery_paths(local_files, session_key=session_key)
+        history = (await self._bounded_history_media_paths_for_session(session_key)
+                   if local_files else None)
+        if history:
+            suppressed = [p for p in local_files if p in history]
+            if suppressed:
+                logger.info("[%s] Suppressing %d bare local file path(s) already delivered in "
+                            "this session: %s", self.name, len(suppressed), suppressed)
+                local_files = [p for p in local_files if p not in history]
+        if local_files:
+            logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
         # A2 (#29346): extraction can reduce a non-empty response to empty text with no attachment, and the
         # `if text_content` guard below then drops it silently. Recover on every platform (#33842 was
         # Discord-only); the guard avoids duplicating an attachment.

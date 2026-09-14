@@ -519,9 +519,9 @@ display:
 | Mode | What you receive |
 |------|-----------------|
 | `concise` | One-line status message on completion; failures append a short output tail (default) |
-| `all` | Running-output updates **and** the final raw-output message |
-| `result` | Only the final raw-output completion message (regardless of exit code) |
-| `error` | Only the final raw-output message when the exit code is non-zero |
+| `all` | Running-output updates **and** the final status message with the output tail |
+| `result` | Only the final status message with the output tail (regardless of exit code) |
+| `error` | Only the final status message with the output tail when the exit code is non-zero |
 | `off` | No process watcher messages at all |
 
 You can also set this via environment variable:

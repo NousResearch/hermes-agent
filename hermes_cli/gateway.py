@@ -592,9 +592,11 @@ def _scan_gateway_pids(
                 or f"hermes_home={current_home_lc}" in command_lc
             )
 
-        # Default profile: accept unless argv advertises another profile. HERMES_HOME may come via
-        # env (invisible to wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
-        if "--profile " in command_lc or " -p " in command_lc:
+        # Default profile: accept unless argv advertises another profile in any spelling the CLI
+        # pre-parser accepts (``--profile=ops`` slipped past a substring test, so a default-profile
+        # fallback stop could SIGTERM the named gateway). HERMES_HOME may come via env (invisible to
+        # wmic/CIM), so only a non-matching explicit HERMES_HOME= disqualifies.
+        if profile_flag_value(command_lc) is not None:
             return False
         return not ("hermes_home=" in command_lc and f"hermes_home={current_home_lc}" not in command_lc)
 

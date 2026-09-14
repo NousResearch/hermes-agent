@@ -1293,7 +1293,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Scoped read: under multiplex a secondary profile's .env must govern its own adapter; yaml
         # feishu.allow_bots reaches it via ``extra`` (the env bridge is skipped under its scope).
         # See #86905.
-        allow_bots = str(_get_scoped_secret("FEISHU_ALLOW_BOTS", "") or extra.get("allow_bots") or "none").strip().lower()
+        allow_bots = str(_extra_or_secret("allow_bots", "FEISHU_ALLOW_BOTS", "none") or "none").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",

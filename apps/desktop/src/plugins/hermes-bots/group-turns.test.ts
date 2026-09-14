@@ -344,11 +344,12 @@ describe('reply selection (#94376)', () => {
 // command approval. Those live in a hidden session the room can't see, so the
 // poll mirrors them into the room and holds the turn open until they resolve.
 describe('clarify and approvals (#90694)', () => {
+  /** The member's blocking clarify as `session.resume` now reports it: an
+   *  open server→client request frame (`open_requests`). */
   const CLARIFY = {
-    choices: ['staging', 'prod'],
-    multi_select: false,
-    question: 'Which env should I target?',
-    request_id: 'req-clarify-1'
+    id: 'req-clarify-1',
+    method: 'clarify',
+    params: { choices: ['staging', 'prod'], multi_select: false, question: 'Which env should I target?' }
   }
 
   const APPROVAL = {
@@ -365,7 +366,7 @@ describe('clarify and approvals (#90694)', () => {
     const room = await loadRoom({
       clarifyUntil: { research: { payload: CLARIFY, until: 3 } },
       // The mirror pass runs while the question is still blocking — this is
-      // the observable proof the gate inspected pending_clarify. Asserting
+      // the observable proof the gate inspected open_requests. Asserting
       // on $groupNeedsYou/$groupClarify AFTER the turn lands proves nothing:
       // the clarify has already resolved and its mirror is gone by then.
       onResumePoll: () => {
@@ -401,7 +402,7 @@ describe('clarify and approvals (#90694)', () => {
     const { chat, turns } = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }
 
-    expect(turns.syncGroupClarify('Core', member, { pending_clarify: CLARIFY })).toBe(true)
+    expect(turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })).toBe(true)
 
     const mirrored = Object.values(chat.$groupClarify.get())
 
@@ -414,7 +415,7 @@ describe('clarify and approvals (#90694)', () => {
     expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(true)
 
     // Same request again: no new entry, identity preserved.
-    turns.syncGroupClarify('Core', member, { pending_clarify: CLARIFY })
+    turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })
 
     expect(Object.values(chat.$groupClarify.get())[0]).toBe(mirrored[0])
 
@@ -425,45 +426,50 @@ describe('clarify and approvals (#90694)', () => {
     expect(turns.groupHasPendingClarify(chat.$groupClarify.get(), 'Core')).toBe(false)
   })
 
-  it('never mirrors a question for older backends without pending_clarify', async () => {
+  it('never mirrors a question for older backends without open_requests', async () => {
     const { chat, turns } = await loadRoom()
 
     expect(turns.syncGroupClarify('Core', { name: 'research' }, { messages: [] })).toBe(false)
     expect(Object.keys(chat.$groupClarify.get())).toHaveLength(0)
   })
 
-  it('routes an answer through clarify.respond and clears the mirror', async () => {
+  it('answers the open request by id through request.answer and clears the mirror', async () => {
     const room = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }
 
-    room.turns.syncGroupClarify('Core', member, { pending_clarify: CLARIFY })
+    room.turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })
     await room.turns.answerGroupClarify(Object.values(room.chat.$groupClarify.get())[0], member, 'staging')
 
-    expect(room.gateway.rpcFor('clarify.respond').map(call => call.params)).toEqual([
-      { answer: 'staging', request_id: 'req-clarify-1' }
+    expect(room.gateway.rpcFor('request.answer').map(call => call.params)).toEqual([
+      { id: 'req-clarify-1', result: { answer: 'staging' } }
     ])
     expect(Object.keys(room.chat.$groupClarify.get())).toHaveLength(0)
   })
 
-  it('sends one respond per batch question, in order', async () => {
+  it('locks one batch question per clarify.lock call, in order', async () => {
     const room = await loadRoom()
     const member: GroupMember = { name: 'research', title: '' }
 
     room.turns.syncGroupClarify('Core', member, {
-      pending_clarify: {
-        questions: [
-          { choices: ['staging', 'prod'], qid: 'q0', question: 'Env?' },
-          { choices: [], qid: 'q1', question: 'Region?' }
-        ],
-        request_id: 'req-batch-1'
-      }
+      open_requests: [
+        {
+          id: 'req-batch-1',
+          method: 'clarify',
+          params: {
+            questions: [
+              { choices: ['staging', 'prod'], qid: 'q0', question: 'Env?' },
+              { choices: [], qid: 'q1', question: 'Region?' }
+            ]
+          }
+        }
+      ]
     })
     await room.turns.answerGroupClarify(Object.values(room.chat.$groupClarify.get())[0], member, {
       q0: 'staging',
       q1: 'eu-west'
     })
 
-    expect(room.gateway.rpcFor('clarify.respond').map(call => call.params)).toEqual([
+    expect(room.gateway.rpcFor('clarify.lock').map(call => call.params)).toEqual([
       { answer: 'staging', question_id: 'q0', request_id: 'req-batch-1' },
       { answer: 'eu-west', question_id: 'q1', request_id: 'req-batch-1' }
     ])
@@ -473,8 +479,8 @@ describe('clarify and approvals (#90694)', () => {
   it('clears only the disbanded room’s mirrored questions', async () => {
     const room = await loadRoom()
 
-    room.turns.syncGroupClarify('Core', { name: 'research' }, { pending_clarify: CLARIFY })
-    room.turns.syncGroupClarify('Other', { name: 'ops' }, { pending_clarify: { ...CLARIFY, request_id: 'req-2' } })
+    room.turns.syncGroupClarify('Core', { name: 'research' }, { open_requests: [CLARIFY] })
+    room.turns.syncGroupClarify('Other', { name: 'ops' }, { open_requests: [{ ...CLARIFY, id: 'req-2' }] })
     room.turns.clearGroupClarify('Core')
 
     const remaining = Object.values(room.chat.$groupClarify.get())
@@ -489,7 +495,7 @@ describe('clarify and approvals (#90694)', () => {
   it('keeps pending prompts independent from mention attention through their lifecycle', async () => {
     const { chat, turns } = await loadRoom()
     const member = { name: 'research', title: '' }
-    turns.syncGroupClarify('Core', member, { pending_clarify: CLARIFY })
+    turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })
     expect(chat.$groupNeedsYou.get().Core).toBeFalsy()
     turns.syncGroupClarify('Core', { name: 'ops' }, { pending_approval: APPROVAL })
     expect(Object.values(chat.$groupClarify.get())).toHaveLength(2)
@@ -540,7 +546,7 @@ describe('clarify and approvals (#90694)', () => {
             submitted = true
           }
 
-          if (method === 'clarify.respond') {
+          if (method === 'request.answer') {
             answered = true
           }
 
@@ -550,7 +556,7 @@ describe('clarify and approvals (#90694)', () => {
               await held
             }
 
-            return { ...result, pending_clarify: CLARIFY }
+            return { ...result, open_requests: [CLARIFY] }
           }
 
           return result
@@ -725,7 +731,7 @@ describe('clarify and approvals (#90694)', () => {
 
       if (recreate) {
         room.chat.updateGroupChat('Core', current => ({ ...current, roomId: 'replacement-room' }))
-        room.turns.syncGroupClarify('Core', member, { pending_clarify: CLARIFY })
+        room.turns.syncGroupClarify('Core', member, { open_requests: [CLARIFY] })
       }
 
       const roomsBefore = structuredClone(room.chat.$groupChats.get())
@@ -789,7 +795,7 @@ describe('clarify and approvals (#90694)', () => {
         }
       }
 
-      return { running: true, pending_clarify: CLARIFY }
+      return { running: true, open_requests: [CLARIFY] }
     }
 
     await room.rounds.runGroupChatRounds('Core', members, 'thread')
@@ -889,14 +895,14 @@ describe('clarify and approvals (#90694)', () => {
     expect(room.gateway.rpcFor('approval.respond').map(call => call.params)).toEqual([
       { choice: 'once', request_id: 'req-approval-1', session_id: 'rt-research-1' }
     ])
-    expect(room.gateway.rpcFor('clarify.respond')).toHaveLength(0)
+    expect(room.gateway.rpcFor('request.answer')).toHaveLength(0)
     expect(Object.keys(room.chat.$groupClarify.get())).toHaveLength(0)
   })
 
   it('lets clarify outrank approval when a snapshot carries both', async () => {
     const { chat, turns } = await loadRoom()
 
-    turns.syncGroupClarify('Core', { name: 'research' }, { pending_approval: APPROVAL, pending_clarify: CLARIFY })
+    turns.syncGroupClarify('Core', { name: 'research' }, { open_requests: [CLARIFY], pending_approval: APPROVAL })
 
     const entry = Object.values(chat.$groupClarify.get())[0]
 

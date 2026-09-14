@@ -769,3 +769,35 @@ def test_gateway_drain_retains_and_formats_overflow_events():
     out_released = _format_gateway_process_notification(released)
     assert "notifications resumed" in out_released
     assert "exit code" not in out_released
+
+
+@pytest.mark.asyncio
+async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
+    """#54266: the chat-facing watcher messages (final in all/result/error, interim in all) carry a
+    status header and the (ANSI-stripped) output, never the internal ``proc_*`` id or the bracketed
+    ``[Background process …~ …]`` debug wrapper. Full output stays available via the process tool."""
+    import tools.process_registry as pr_module
+
+    running = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n", exited=False, exit_code=None,
+                              command="make -j8 all", started_at=None)
+    done = SimpleNamespace(output_buffer="\x1b[32mstep 1 ok\x1b[0m\n\x1b[31mlinker error\x1b[0m\n", exited=True,
+                           exit_code=2, command="make -j8 all", started_at=None)
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry([running, done]))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    await runner._run_process_watcher(_watcher_dict(session_id="proc_deadbeef"))
+
+    sent = [call.args[1] for call in adapter.send.await_args_list]
+    assert len(sent) == 2
+    interim, final = sent
+    assert interim.startswith("⏳ Background task still running") and "step 1 ok" in interim
+    assert final.startswith("❌ Background task failed (exit 2)") and "linker error" in final
+    for text in sent:
+        assert "proc_deadbeef" not in text and "[Background process" not in text and "~" not in text
+        assert "\x1b[" not in text
+        assert "make -j8 all" in text

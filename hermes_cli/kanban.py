@@ -938,6 +938,44 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
         return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
 
 
+class _TakeoverFlipFailed(Exception):
+    """Internal signal: the status flip inside a ``--takeover`` transaction
+    didn't apply (id not in the expected source status). Caught by
+    ``_takeover_ack_and_flip`` to roll the whole transaction back — see F-1,
+    PR 109491 QA: the guard ack must never commit when the flip it precedes
+    fails, or the operator is told nothing happened while the guard is
+    actually disarmed."""
+
+
+def _takeover_ack_and_flip(conn, tid: str, flip, fail_msg: dict) -> bool:
+    """Stamp the prev-worker-guard ack and run ``flip(tid)`` (``unblock_task``/
+    ``reopen_review_task``, called with ``allow_nested=True``) in ONE
+    transaction, so a failed flip leaves the guard's evidence untouched
+    instead of silently disarming it (F-1, PR 109491 QA). The "stamp before
+    the flip" ordering from the original commit message is preserved: within
+    the transaction the ack still runs first, so a dispatcher tick racing
+    this command never observes a partially-applied takeover — it either
+    sees neither the ack nor the flip, or both, atomically.
+
+    Also refuses (F-2, PR 109491 QA) when the guard being retired is a
+    SAME-HOST ``prev_worker_alive`` hold whose pid is verifiably still
+    running -- ``acknowledge_prev_worker_guard`` raises
+    :class:`kbd.PrevWorkerAliveTakeoverRefused` for that case; the refusal
+    message is captured into ``fail_msg[tid]`` for the caller's bulk-apply
+    failure line."""
+    try:
+        with kb.write_txn(conn):
+            kbd.acknowledge_prev_worker_guard(conn, tid, allow_nested=True)
+            if not flip(tid):
+                raise _TakeoverFlipFailed()
+    except kbd.PrevWorkerAliveTakeoverRefused as exc:
+        fail_msg[tid] = str(exc)
+        return False
+    except _TakeoverFlipFailed:
+        return False
+    return True
+
+
 def _cmd_unblock(args: argparse.Namespace) -> int:
     if os.environ.get("HERMES_KANBAN_TASK"):
         return _err("kanban unblock is orchestrator-only; workers must hand off their assigned task")
@@ -948,19 +986,23 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     takeover = getattr(args, "takeover", False)
+    fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
             if takeover:
-                # Retire the prev-worker guard's evidence BEFORE the status
-                # flip, so a dispatcher tick racing this command never sees
-                # the ready/review row with stale guard-holding evidence.
-                kbd.acknowledge_prev_worker_guard(conn, tid)
+                # Ack + flip atomically: a failed unblock (not blocked/
+                # scheduled) must leave the guard's evidence intact rather
+                # than disarming it while reporting nothing happened.
+                ok = _takeover_ack_and_flip(
+                    conn, tid, lambda t: kb.unblock_task(conn, t, allow_nested=True), fail_msg)
+                fail_msg.setdefault(tid, f"cannot unblock {tid} (not blocked/scheduled?)")
+                return ok
+            fail_msg[tid] = f"cannot unblock {tid} (not blocked/scheduled?)"
             return kb.unblock_task(conn, tid)
         ok_suffix = suffix + (" (takeover: prev-worker guard evidence retired)" if takeover else "")
-        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{ok_suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+        return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{ok_suffix}", fail_msg.__getitem__)
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:
@@ -1008,25 +1050,29 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     takeover = getattr(args, "takeover", False)
+    fail_msg: dict[str, str] = {}
     with kbc.connect_closing() as conn:
         def op(tid):
+            fail_msg[tid] = f"cannot reopen {tid} (not in review?)"
             if takeover:
-                # Retire the prev-worker guard's evidence BEFORE the status
-                # flip -- the review lane never reaches 'blocked' on its own
-                # (block_task cannot touch a review row), so a stuck
-                # review-lane card's guard evidence would otherwise survive
-                # an ordinary reopen-review untouched and hold again on the
-                # next dispatch tick.
-                kbd.acknowledge_prev_worker_guard(conn, tid)
-            if not kb.reopen_review_task(conn, tid):
+                # Ack + flip atomically: the review lane never reaches
+                # 'blocked' on its own (block_task cannot touch a review
+                # row), so a stuck review-lane card's guard evidence has no
+                # other path back to a working state after escalation --
+                # but a failed reopen (not in review) must leave that
+                # evidence intact instead of disarming it silently (F-1,
+                # PR 109491 QA).
+                if not _takeover_ack_and_flip(
+                    conn, tid, lambda t: kb.reopen_review_task(conn, t, allow_nested=True), fail_msg):
+                    return False
+            elif not kb.reopen_review_task(conn, tid):
                 return False
             if reason:
                 kb.add_comment(conn, tid, author or "operator", f"CHANGES REQUESTED: {reason}")
             return True
 
         ok_suffix = suffix + (" (takeover: prev-worker guard evidence retired)" if takeover else "")
-        return _bulk_apply(ids, op, lambda tid: f"Reopened {tid}{ok_suffix}",
-                           lambda tid: f"cannot reopen {tid} (not in review?)")
+        return _bulk_apply(ids, op, lambda tid: f"Reopened {tid}{ok_suffix}", fail_msg.__getitem__)
 
 
 def _cmd_promote(args: argparse.Namespace) -> int:

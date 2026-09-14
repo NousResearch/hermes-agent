@@ -2408,3 +2408,116 @@ def test_respawn_guard_cross_host_takeover_lifecycle_unblocks_and_respawns(
             assert len(escalated_events3) == 1, "the takeover tick must not re-escalate"
     finally:
         cfgmod.load_config = prior_load_config
+
+
+def test_takeover_ack_does_not_commit_when_the_flip_it_precedes_fails(
+    kanban_home, all_assignees_spawnable,
+):
+    """(F-1, PR 109491 QA) A failed ``reopen-review --takeover`` -- the id
+    isn't actually in ``review`` -- must leave the prev-worker guard's
+    evidence completely intact: no ``prev_worker_ack`` event, the run row's
+    ``metadata`` unstamped, and ``check_respawn_guard`` still returning the
+    original hold. Before the fix, ``acknowledge_prev_worker_guard`` ran in
+    its own transaction ahead of the flip and ``_bulk_apply`` had no
+    rollback, so the ack committed unconditionally even though
+    ``reopen_review_task`` never touched the row (QA's live reproduction:
+    ``cannot reopen t_f587abf9 (not in review?)`` while the ack stamp was
+    already ``True`` and the guard had gone silent)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="takeover-ack-atomicity", assignee="reviewer")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+        run_id = claimed.current_run_id
+        # Cross-host unclean close -- the guard holds fail-closed, and the
+        # card lands back in READY (not review), so a subsequent
+        # ``reopen-review`` genuinely cannot apply.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status='ready', claim_lock=NULL, "
+                "claim_expires=NULL, worker_pid=NULL WHERE id=?",
+                (tid,),
+            )
+            kb._end_run(conn, tid, outcome="crashed", status="crashed", error="test-induced close")
+            conn.execute(
+                "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                (json.dumps({"prev_worker_pid": 424242, "prev_worker_host": "otherbox"}), run_id),
+            )
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kbd.check_respawn_guard(conn, tid) == "prev_worker_cross_host_unknown"
+
+        # RED (pre-fix): this used to report failure while silently
+        # retiring the guard anyway.
+        out = run_slash(f"reopen-review {tid} --takeover")
+        assert "cannot reopen" in out and tid in out, out
+        assert "Reopened" not in out
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready", "a failed reopen must not move the card"
+
+        ack_events = [e for e in kb.list_events(conn, tid) if e.kind == "prev_worker_ack"]
+        assert ack_events == [], (
+            "a failed flip must leave the guard's ack evidence untouched -- "
+            "the ack must not commit when the flip it precedes fails"
+        )
+        assert kbd.check_respawn_guard(conn, tid) == "prev_worker_cross_host_unknown", (
+            "guard evidence must survive a failed takeover unchanged"
+        )
+        run = kb.list_runs(conn, tid)[-1]
+        assert run.id == run_id
+        assert not run.metadata.get("prev_worker_ack"), (
+            "the run row must not be stamped by a takeover whose flip failed"
+        )
+
+
+@pytest.mark.linux_only
+def test_takeover_refuses_a_same_host_alive_prev_worker(
+    kanban_home, all_assignees_spawnable,
+):
+    """(F-2, PR 109491 QA) ``--takeover`` must refuse to retire a SAME-HOST
+    ``prev_worker_alive`` hold when the recorded pid is genuinely still
+    running -- verified with a real child process, not a mock. Before the
+    fix, the short-circuit in ``_prev_worker_alive_guard_info`` returned
+    ``None`` for ANY ack reason before ever reading a pid, so ``--takeover``
+    retired a hold the host could directly prove was still true -- reopening
+    exactly the duplicate-writer case this PR exists to prevent (QA's live
+    reproduction: guard info named a real, running pid; takeover reported
+    success; the guard cleared; the child was still alive)."""
+    proc = _spawn_stand_in_worker()
+    try:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title="takeover-refuses-alive", assignee="alice")
+            claimed = kb.claim_task(conn, tid)
+            assert claimed is not None
+            kbd._set_worker_pid(conn, tid, proc.pid)
+            _end_run_as_reclaimed(conn, tid)
+            assert kbd.check_respawn_guard(conn, tid) == "prev_worker_alive"
+
+            # Move the card to 'blocked' (no reason -> no run synthesized,
+            # so the guard-held closed run stays the latest one) so
+            # ``unblock --takeover`` has a flip that WOULD otherwise
+            # succeed -- isolating the F-2 refusal from the F-1 rollback.
+            assert kb.block_task(conn, tid) is True
+            assert kb.get_task(conn, tid).status == "blocked"
+
+        assert proc.poll() is None, "test setup: the worker must genuinely be alive"
+
+        out = run_slash(f"unblock {tid} --takeover")
+        assert "Unblocked" not in out
+        assert str(proc.pid) in out and "still alive" in out.lower(), out
+
+        with kbc.connect() as conn:
+            task = kb.get_task(conn, tid)
+            assert task.status == "blocked", "a refused takeover must not move the card"
+            ack_events = [e for e in kb.list_events(conn, tid) if e.kind == "prev_worker_ack"]
+            assert ack_events == [], "a refused takeover must not stamp the ack"
+            assert kbd.check_respawn_guard(conn, tid) == "prev_worker_alive", (
+                "the guard must still hold on the genuinely-alive pid"
+            )
+        assert proc.poll() is None, "the refused takeover must not have touched the live worker"
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+            proc.wait(timeout=5)

@@ -1590,8 +1590,32 @@ def _prev_worker_alive_guard_info(
     }
 
 
+class PrevWorkerAliveTakeoverRefused(RuntimeError):
+    """Raised by :func:`acknowledge_prev_worker_guard` when asked to retire a
+    SAME-HOST ``prev_worker_alive`` hold whose pid is provably still alive
+    (verified via the non-patchable :func:`_prev_worker_alive_probe`, the
+    same probe :func:`_prev_worker_alive_guard_info` itself uses -- not the
+    patchable ``_kb._pid_alive``).
+
+    Unlike the cross-host reason -- which this host fundamentally cannot
+    verify, so ``--takeover`` keeps its unconditional escape hatch for it --
+    a same-host pid is directly checkable, so a takeover reopens exactly the
+    duplicate-writer case this PR exists to prevent if it is allowed to
+    retire evidence the host can prove is still true (F-2, PR 109491 QA).
+    Carries the guard ``info`` dict (``pid``/``host``/``run_id``/``reason``)
+    the refusal was based on."""
+
+    def __init__(self, info: dict):
+        self.info = info
+        super().__init__(
+            f"refusing takeover: pid {info.get('pid')} is still alive on this host "
+            "(prev_worker_alive) -- the previous worker is provably still running; "
+            "wait for it to exit, or re-run without --takeover once it has."
+        )
+
+
 def acknowledge_prev_worker_guard(
-    conn: sqlite3.Connection, task_id: str,
+    conn: sqlite3.Connection, task_id: str, *, allow_nested: bool = False,
 ) -> Optional[dict]:
     """Explicit human takeover: durably retire the prev-worker guard evidence
     for ``task_id``'s most recently CLOSED run, so
@@ -1617,6 +1641,14 @@ def acknowledge_prev_worker_guard(
     id it was stamped on, not the task as a whole, so the automatic
     fail-closed default is unweakened for the next unclean close.
 
+    ``allow_nested=True`` composes this under a caller-owned transaction --
+    used by the ``--takeover`` CLI paths (see ``_cmd_unblock``/
+    ``_cmd_reopen_review`` in ``hermes_cli/kanban.py``) to stamp the ack and
+    the ``blocked``/``review`` -> ``ready`` status flip in ONE commit, so a
+    failed flip (e.g. the task wasn't actually blocked/in-review) can never
+    leave the guard disarmed while reporting nothing changed (F-1, PR
+    109491 QA).
+
     Returns ``{"run_id", "reason"}`` naming the run acknowledged and the
     guard reason that WAS held for it (``None`` when the latest closed run
     was not actually guard-held -- e.g. a pre-emptive ack), or ``None`` when
@@ -1634,10 +1666,21 @@ def acknowledge_prev_worker_guard(
     # so the audit event/return value name the real thing being retired.
     prior_info = _prev_worker_alive_guard_info(conn, task_id)
     reason = prior_info["reason"] if prior_info and prior_info["run_id"] == run_id else None
+    if (
+        reason == _PREV_WORKER_ALIVE_REASON
+        and prior_info is not None
+        and _prev_worker_alive_probe(prior_info.get("pid"))
+    ):
+        # Same-host hold, and the pid is directly verifiable from here --
+        # refuse rather than retire evidence the host can prove is still
+        # true. The cross-host reason has no such check: this host cannot
+        # read a remote /proc, so unverifiable liveness keeps the
+        # unconditional escape hatch the PR argues for (F-2, PR 109491 QA).
+        raise PrevWorkerAliveTakeoverRefused(prior_info)
     metadata = _kb._json_dict(_kb._row_get(run_row, "metadata"))
     metadata["prev_worker_ack"] = True
     metadata["prev_worker_ack_at"] = int(time.time())
-    with _kb.write_txn(conn, allow_nested=True):
+    with _kb.write_txn(conn, allow_nested=allow_nested):
         conn.execute(
             "UPDATE task_runs SET metadata = ? WHERE id = ?",
             (_kb._json_or_null(metadata), run_id),

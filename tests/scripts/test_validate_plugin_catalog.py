@@ -155,6 +155,29 @@ def test_unknown_platform_fails(tmp_path):
     _expect_error(tmp_path, {"platforms": ["linux", "amiga"]}, "platforms")
 
 
+def test_desktop_ui_component_is_valid(tmp_path):
+    entry = {
+        **VALID_ENTRY,
+        "components": ["desktop-ui"],
+        "desktop_id": "example-plugin",
+    }
+    path = write_entry(tmp_path, entry)
+    result = run_validator("--json", str(path))
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    (file_entry,) = payload["files"]
+    assert file_entry["ok"] is True
+    assert not any("components" in w or "desktop_id" in w for w in file_entry["warnings"])
+
+
+def test_unknown_component_value_fails(tmp_path):
+    _expect_error(tmp_path, {"components": ["toaster"]}, "components")
+
+
+def test_bad_desktop_id_fails(tmp_path):
+    _expect_error(tmp_path, {"desktop_id": "Not A Valid Id"}, "desktop_id")
+
+
 def test_entry_not_a_mapping_fails(tmp_path):
     path = tmp_path / "entry.yaml"
     path.write_text("- just\n- a\n- list\n", encoding="utf-8")

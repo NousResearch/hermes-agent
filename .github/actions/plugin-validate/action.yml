@@ -1,8 +1,8 @@
 name: Hermes Plugin Validate
 description: >-
-  Validate a Hermes Agent plugin (plugin.yaml manifest schema AND
-  declared-vs-actually-registered capabilities) using
-  `hermes plugins validate`. Drop this into your plugin repo's CI:
+  Validate a Hermes plugin (Agent plugin.yaml / portable plugin.json, or
+  standalone Desktop plugin.js) using `hermes plugins validate`. Drop this
+  into your plugin repo's CI:
 
     - uses: actions/checkout@<sha>
     - uses: NousResearch/hermes-agent/.github/actions/plugin-validate@main
@@ -15,7 +15,7 @@ description: >-
 
 inputs:
   path:
-    description: Path to the plugin directory (containing plugin.yaml).
+    description: Path to the plugin directory.
     default: "."
   hermes-ref:
     description: hermes-agent git ref (branch/tag/sha) to install and validate with.
@@ -45,9 +45,10 @@ runs:
         _PLUGIN_PATH: ${{ inputs.path }}
       run: |
         set -uo pipefail
-        # `hermes plugins validate` checks the plugin.yaml manifest schema
-        # and loads the plugin in a scratch subprocess to verify that the
-        # capabilities it DECLARES match what it actually registers.
+        # `hermes plugins validate` checks Agent plugin.yaml / portable
+        # plugin.json, or a standalone Desktop plugin.js, and (for Agent
+        # plugins) loads the plugin in a scratch subprocess to verify that
+        # the capabilities it DECLARES match what it actually registers.
         if hermes plugins validate "$_PLUGIN_PATH"; then
           echo "✅ PASS: plugin at '$_PLUGIN_PATH' validated cleanly"
         else

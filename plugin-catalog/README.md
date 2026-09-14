@@ -30,6 +30,9 @@ meaningful:
    (tools, hooks, middleware, env vars) must match what the plugin actually
    registers at the pinned commit. Validation fails the entry otherwise —
    undeclared capability creep is treated as a security issue.
+   Standalone Desktop packages (root `plugin.js`, no Agent manifest) are
+   admitted by the same `hermes plugins validate` gate; hybrid Agent +
+   `desktop/plugin.js` packages stay on the Agent path.
 
 ## Entry schema
 
@@ -44,6 +47,8 @@ tier: official              # official | community (default community)
 requires_hermes: ">=0.19"   # optional
 docs_url: ""                # optional
 platforms: []               # optional, e.g. [linux, macos]; empty = all
+components: []              # optional; allowed values: agent, desktop-ui
+desktop_id: ""              # optional Desktop plugin id, [a-z0-9_-]{1,64}
 capabilities:
   provides_tools: []
   provides_hooks: []

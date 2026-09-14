@@ -27,6 +27,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 CATALOG_TIERS = ("official", "community")
+CATALOG_COMPONENTS = ("agent", "desktop-ui")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
 _REQUEST_TIMEOUT = 5.0
@@ -64,6 +65,8 @@ class PluginCatalogEntry:
     subdir: str = ""
     docs_url: str = ""
     platforms: List[str] = field(default_factory=list)  # empty = all OSes
+    components: List[str] = field(default_factory=list)  # agent, desktop-ui
+    desktop_id: str = ""  # optional Desktop plugin id when it differs from name
     capabilities: CatalogCapabilities = field(default_factory=CatalogCapabilities)
 
     @property
@@ -77,6 +80,7 @@ class PluginCatalogEntry:
             "name": self.name, "repo": self.repo, "sha": self.sha, "description": self.description,
             "maintainer": self.maintainer, "tier": self.tier, "requires_hermes": self.requires_hermes,
             "subdir": self.subdir, "docs_url": self.docs_url, "platforms": list(self.platforms),
+            "components": list(self.components), "desktop_id": self.desktop_id,
             "capabilities": {
                 "provides_tools": list(caps.provides_tools), "provides_hooks": list(caps.provides_hooks),
                 "provides_middleware": list(caps.provides_middleware), "requires_env": list(caps.requires_env),
@@ -113,6 +117,31 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
     if problem:
         logger.warning("Plugin catalog: %s: %s", label, problem)
         return None
+    components_raw = data.get("components")
+    if components_raw is None:
+        components: List[str] = []
+    elif not isinstance(components_raw, list):
+        logger.warning("Plugin catalog: %s: components must be a list", label)
+        return None
+    else:
+        components = [str(item) for item in components_raw]
+        unknown = [item for item in components if item not in CATALOG_COMPONENTS]
+        if unknown:
+            logger.warning(
+                "Plugin catalog: %s: components %r not in allowed set %s",
+                label, unknown, list(CATALOG_COMPONENTS),
+            )
+            return None
+    raw_desktop_id = data.get("desktop_id")
+    desktop_id = ""
+    if raw_desktop_id not in (None, ""):
+        if not isinstance(raw_desktop_id, str) or not _NAME_RE.match(raw_desktop_id.strip()):
+            logger.warning(
+                "Plugin catalog: %s: invalid desktop_id %r (must match [a-z0-9_-]{1,64})",
+                label, raw_desktop_id,
+            )
+            return None
+        desktop_id = raw_desktop_id.strip()
     caps_raw = data.get("capabilities")
     caps: Dict[str, Any] = caps_raw if isinstance(caps_raw, dict) else {}
     return PluginCatalogEntry(
@@ -122,6 +151,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
         requires_hermes=str(data.get("requires_hermes") or "").strip(),
         subdir=str(data.get("subdir") or "").strip(), docs_url=str(data.get("docs_url") or "").strip(),
         platforms=_str_list(data.get("platforms")),
+        components=components, desktop_id=desktop_id,
         capabilities=CatalogCapabilities(
             provides_tools=_str_list(caps.get("provides_tools")), provides_hooks=_str_list(caps.get("provides_hooks")),
             provides_middleware=_str_list(caps.get("provides_middleware")),
@@ -279,7 +309,13 @@ def entry_capability_summary(entry: PluginCatalogEntry) -> str:
     bits = [f"{entry.name} ({entry.tier}, maintained by {entry.maintainer})"]
     if entry.description:
         bits.append(entry.description)
-    bits.append(f"This plugin {'; '.join(parts) if parts else 'declares no tools, hooks, middleware, or env vars'}.")
+    has_desktop_ui = "desktop-ui" in entry.components
+    if has_desktop_ui:
+        bits.append("This plugin includes a Desktop UI component.")
+    if parts:
+        bits.append(f"This plugin {'; '.join(parts)}.")
+    elif not has_desktop_ui:
+        bits.append("This plugin declares no tools, hooks, middleware, or env vars.")
     if entry.platforms:
         bits.append(f"Platforms: {', '.join(entry.platforms)}.")
     if entry.requires_hermes:

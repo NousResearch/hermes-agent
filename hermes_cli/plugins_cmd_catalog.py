@@ -223,11 +223,13 @@ def cmd_info(name: str) -> None:
     console.print()
 
 
-def cmd_validate(path: str, as_json: bool = False) -> None:
+def cmd_validate(
+    path: str, as_json: bool = False, expected_id: Optional[str] = None
+) -> None:
     """Catalog-admission validation of a plugin directory (the CI gate); exits 0/1."""
     from hermes_cli.plugin_validate import validate_plugin_dir
     from hermes_cli.plugins_cmd import _console
-    report = validate_plugin_dir(Path(path))
+    report = validate_plugin_dir(Path(path), expected_id=expected_id)
     if as_json:
         print(json.dumps(report.to_dict(), indent=2))
         sys.exit(report.exit_code)

@@ -216,6 +216,79 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
   return getWindowsModule
 }
 
+/** Windows front-to-back, and whether titles actually came with them.
+ *  `titlesGranted` is what the OS gave us, which on macOS is not always what
+ *  was asked for — see `openWindowsWithTitleFallback`. */
+export interface Enumeration {
+  titlesGranted: boolean
+  windows: EnumeratedWindow[]
+}
+
+/**
+ * Ask `get-windows` for the window list, giving up titles rather than the
+ * list itself when macOS refuses the pair.
+ *
+ * `screenRecordingPermission` reads like a request and is an ASSERTION:
+ * get-windows 9.3.0 appends `--no-screen-recording-permission` only when the
+ * option is literally `false`, so passing `true` does not ask for the grant,
+ * it claims one. Omitting the flag makes the Swift helper enforce its own
+ * check, and when that check fails the helper prints prose to stdout and exits
+ * 0, so the module's `parseMac()` throws `Error parsing window data` and no
+ * windows come back at all.
+ *
+ * Whether the check passes depends on which process TCC holds responsible for
+ * the helper, which varies with how the bundle is signed and launched: it
+ * passes on some machines and fails on others with the same build. So the
+ * assertion is dropped on exactly the machines where it fails, and only there.
+ * The cost is titles, which the caller's note already explains; the
+ * alternative is the whole enumeration.
+ *
+ * Reported by @b-rightstart on #89633, who diagnosed the assertion semantics
+ * and proposed this shape.
+ */
+export async function openWindowsWithTitleFallback(
+  openWindows: GetWindowsModule['openWindows'],
+  platform: string,
+  titlesAvailable: boolean
+): Promise<{ raw: unknown; titlesGranted: boolean } | EnumerationFailure> {
+  const darwin = platform === 'darwin'
+  // Titles are free everywhere but macOS, so there is nothing to assert and
+  // nothing to fall back from.
+  const asserting = darwin && titlesAvailable
+
+  try {
+    return {
+      raw: await openWindows(
+        darwin ? { accessibilityPermission: false, screenRecordingPermission: titlesAvailable } : undefined
+      ),
+      titlesGranted: !darwin || titlesAvailable
+    }
+  } catch (error) {
+    if (!asserting) {
+      // On macOS this is the helper binary failing to spawn — a missing or
+      // non-executable `main`, or the OS refusing to run it — which is
+      // invisible from the outside and used to surface as the generic note.
+      return { reason: `the window enumerator failed: ${describeError(error)}` }
+    }
+
+    try {
+      return {
+        raw: await openWindows({ accessibilityPermission: false, screenRecordingPermission: false }),
+        titlesGranted: false
+      }
+    } catch (retryError) {
+      // Both causes, because they are different failures: the first is
+      // whatever the assertion provoked, the second is the enumerator failing
+      // for a reason that has nothing to do with titles.
+      return {
+        reason:
+          `the window enumerator failed: ${describeError(error)} ` +
+          `(retrying without the Screen Recording assertion also failed: ${describeError(retryError)})`
+      }
+    }
+  }
+}
+
 /**
  * Every window `get-windows` can see, front-to-back, or why it could not look.
  *
@@ -225,29 +298,20 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
  * something that isn't a list — each say so, because they have three different
  * fixes and the caller has no other way to tell them apart.
  */
-async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<EnumeratedWindow[] | EnumerationFailure> {
+async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumeration | EnumerationFailure> {
   const getWindows = await loadGetWindows()
 
   if (enumerationFailed(getWindows)) {
     return getWindows
   }
 
-  let raw
+  const opened = await openWindowsWithTitleFallback(getWindows.openWindows, process.platform, titlesAvailable)
 
-  try {
-    raw = await getWindows.openWindows(
-      process.platform === 'darwin'
-        ? { accessibilityPermission: false, screenRecordingPermission: titlesAvailable }
-        : undefined
-    )
-  } catch (error) {
-    // On macOS this is the helper binary failing to spawn — a missing or
-    // non-executable `main`, or the OS refusing to run it — which is invisible
-    // from the outside and used to surface as the generic note.
-    return { reason: `the window enumerator failed: ${describeError(error)}` }
+  if (enumerationFailed(opened)) {
+    return opened
   }
 
-  if (!Array.isArray(raw)) {
+  if (!Array.isArray(opened.raw)) {
     return { reason: 'the window enumerator returned no window list' }
   }
 
@@ -256,20 +320,23 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
   // iterates `_NET_CLIENT_LIST_STACKING` in raw xprop order, which EWMH
   // defines as bottom-to-top — so the Linux list arrives back-to-front and
   // must be reversed to match. (Verified against get-windows 9.3.0.)
-  const ordered = process.platform === 'linux' ? [...raw].reverse() : raw
+  const ordered = process.platform === 'linux' ? [...opened.raw].reverse() : opened.raw
 
-  return ordered.map(w => ({
-    app: w.owner?.name ?? '',
-    bounds: {
-      x: w.bounds?.x ?? 0,
-      y: w.bounds?.y ?? 0,
-      width: w.bounds?.width ?? 0,
-      height: w.bounds?.height ?? 0
-    },
-    id: w.id ?? 0,
-    pid: w.owner?.processId ?? 0,
-    title: w.title ?? ''
-  }))
+  return {
+    titlesGranted: opened.titlesGranted,
+    windows: ordered.map(w => ({
+      app: w.owner?.name ?? '',
+      bounds: {
+        x: w.bounds?.x ?? 0,
+        y: w.bounds?.y ?? 0,
+        width: w.bounds?.width ?? 0,
+        height: w.bounds?.height ?? 0
+      },
+      id: w.id ?? 0,
+      pid: w.owner?.processId ?? 0,
+      title: w.title ?? ''
+    }))
+  }
 }
 
 /**
@@ -284,25 +351,42 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
 export async function enumerateWindowsFrontToBack(
   selfPid: number,
   titlesAvailable: boolean
-): Promise<EnumeratedWindow[] | EnumerationFailure> {
-  return (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+): Promise<Enumeration | EnumerationFailure> {
+  const hyprland = await readHyprlandWindows(selfPid)
+
+  // Hyprland is Linux, where titles need no permission.
+  return hyprland ? { titlesGranted: true, windows: hyprland } : await enumerateViaGetWindows(titlesAvailable)
 }
+
+/**
+ * Why the titles in a result are empty, when they are.
+ *
+ * Keyed on what the OS actually granted rather than on what was requested: a
+ * macOS machine where the Screen Recording assertion failed falls back to an
+ * untitled enumeration, and without this the windows would arrive with blank
+ * titles and no explanation.
+ */
+export const titlesHiddenNote = (platform: string, titlesGranted: boolean): string | undefined =>
+  platform === 'darwin' && !titlesGranted
+    ? 'Window titles are hidden: macOS reveals other apps\u2019 titles only with the ' +
+      'Screen Recording permission, which Hermes does not request for this.'
+    : undefined
 
 export async function readWindowBelow(
   selfPid: number,
   selfBounds: EnumeratedWindow['bounds'],
   titlesAvailable: boolean
 ): Promise<WindowBelowResult | WindowBelowUnavailable> {
-  const windows = await enumerateWindowsFrontToBack(selfPid, titlesAvailable)
+  const enumeration = await enumerateWindowsFrontToBack(selfPid, titlesAvailable)
 
-  if (enumerationFailed(windows)) {
+  if (enumerationFailed(enumeration)) {
     return {
-      error: enumerationFailureNote(process.platform, process.env, windows.reason),
+      error: enumerationFailureNote(process.platform, process.env, enumeration.reason),
       platform: process.platform
     }
   }
 
-  const { below, frontmost } = pickWindowBelow(windows, selfPid, selfBounds)
+  const { below, frontmost } = pickWindowBelow(enumeration.windows, selfPid, selfBounds)
 
   const result: WindowBelowResult = {
     frontmost: frontmost ? { app: frontmost.app, title: frontmost.title } : null,
@@ -310,10 +394,10 @@ export async function readWindowBelow(
     window: below ? { app: below.app, bounds: below.bounds, id: below.id, title: below.title } : null
   }
 
-  if (process.platform === 'darwin' && !titlesAvailable) {
-    result.note =
-      'Window titles are hidden: macOS reveals other apps\u2019 titles only with the ' +
-      'Screen Recording permission, which Hermes does not request for this.'
+  const note = titlesHiddenNote(process.platform, enumeration.titlesGranted)
+
+  if (note) {
+    result.note = note
   }
 
   return result

@@ -430,12 +430,49 @@ def _pricing_entry_from_metadata(
     request = _to_decimal(pricing.get("request"))
     if prompt is None and completion is None and request is None:
         return None
+    # OpenRouter (and some endpoints) carry tiered pricing in ``overrides[]``
+    # where ``min_prompt_tokens`` gates higher rates for the whole request.
+    # See #109976 — previously this array was dropped, causing 2-5x undercount
+    # on long-context models like gpt-5.6-sol-pro and gpt-6-astra.
+    tier_threshold: Optional[int] = None
+    tier_input: Optional[Decimal] = None
+    tier_output: Optional[Decimal] = None
+    tier_cache_read: Optional[Decimal] = None
+    tier_cache_write: Optional[Decimal] = None
+    overrides = pricing.get("overrides")
+    if isinstance(overrides, list) and overrides:
+        # Use the first override entry (``min_prompt_tokens: 272000`` on the
+        # affected models). If multiple tiers exist the lowest threshold wins.
+        first = next((o for o in overrides if isinstance(o, dict)), None)
+        if first is not None:
+            try:
+                raw_thr = first.get("min_prompt_tokens")
+                if raw_thr is not None:
+                    tier_threshold = int(raw_thr)
+            except Exception:
+                tier_threshold = None
+            if tier_threshold is not None:
+                def _tier_per_million(key: str, *aliases: str) -> Optional[Decimal]:
+                    raw = first.get(key)  # type: ignore[union-attr]
+                    for alias in aliases:
+                        raw = raw or first.get(alias)  # type: ignore[union-attr]
+                    v = _to_decimal(raw)
+                    return None if v is None else v * _ONE_MILLION
+                tier_input = _tier_per_million("prompt")
+                tier_output = _tier_per_million("completion")
+                tier_cache_read = _tier_per_million("cache_read", "cached_prompt", "input_cache_read")
+                tier_cache_write = _tier_per_million("cache_write", "cache_creation", "input_cache_write")
     return PricingEntry(
         input_cost_per_million=prompt, output_cost_per_million=completion,
         cache_read_cost_per_million=per_million("cache_read", "cached_prompt", "input_cache_read"),
         cache_write_cost_per_million=per_million("cache_write", "cache_creation", "input_cache_write"),
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
+        tier_threshold_tokens=tier_threshold,
+        input_cost_per_million_above=tier_input,
+        output_cost_per_million_above=tier_output,
+        cache_read_cost_per_million_above=tier_cache_read,
+        cache_write_cost_per_million_above=tier_cache_write,
     )
 
 

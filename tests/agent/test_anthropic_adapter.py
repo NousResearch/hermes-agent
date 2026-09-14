@@ -1070,6 +1070,82 @@ class TestBuildAnthropicKwargs:
         assert "fast-mode-2026-02-01" not in beta_header
 
 
+class TestOAuthIdentityRewrite:
+    """OAuth requests carry a Claude Code system prefix and sanitize product names in prose, but the
+    rewrite must not corrupt identifiers the model has to emit or follow verbatim (docs URL, skill
+    name, code spans), and the model must still be told it is running as Hermes."""
+
+    @staticmethod
+    def _oauth_system_texts(system_prompt: str) -> list[str]:
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": "hi"}],
+            tools=None, max_tokens=1024, reasoning_config=None, is_oauth=True,
+        )
+        return [b["text"] for b in kwargs["system"] if b.get("type") == "text"]
+
+    def test_prefix_block_stays_first(self):
+        texts = self._oauth_system_texts("You are Hermes Agent.")
+        assert texts[0] == "You are Claude Code, Anthropic's official CLI for Claude."
+
+    def test_prose_product_names_are_still_sanitized(self):
+        joined = "\n".join(self._oauth_system_texts("You are Hermes Agent, built by Nous Research."))
+        assert "You are Claude Code, built by Anthropic." in joined
+
+    def test_docs_url_is_preserved(self):
+        joined = "\n".join(self._oauth_system_texts(
+            "The documentation at https://hermes-agent.nousresearch.com/docs is authoritative."
+        ))
+        assert "https://hermes-agent.nousresearch.com/docs" in joined
+        assert "claude-code.nousresearch.com" not in joined
+
+    def test_skill_view_name_is_preserved(self):
+        joined = "\n".join(self._oauth_system_texts(
+            "Load it with skill_view(name='hermes-agent') before troubleshooting."
+        ))
+        assert "skill_view(name='hermes-agent')" in joined
+        assert "skill_view(name='claude-code')" not in joined
+
+    def test_backtick_code_spans_are_preserved(self):
+        joined = "\n".join(self._oauth_system_texts(
+            "The `hermes-agent` skill has the commands; `Hermes Agent` is the product name."
+        ))
+        assert "`hermes-agent`" in joined
+        assert "`Hermes Agent`" in joined
+
+    def test_filesystem_paths_are_preserved(self):
+        # The prompt carries install/repo paths the model must cd into verbatim; rewriting the slug
+        # inside them points it at a directory that does not exist (Windows and POSIX alike).
+        joined = "\n".join(self._oauth_system_texts(
+            r"Install directory: C:\Users\x\AppData\Local\hermes\hermes-agent\venv "
+            "and repo /home/x/.hermes/hermes-agent/skills; Hermes Agent lives there."
+        ))
+        assert r"C:\Users\x\AppData\Local\hermes\hermes-agent\venv" in joined
+        assert "/home/x/.hermes/hermes-agent/skills" in joined
+        assert "claude-code" not in joined
+        assert "Claude Code lives there" in joined
+
+    def test_prose_apostrophes_do_not_shield_product_names(self):
+        joined = "\n".join(self._oauth_system_texts(
+            "The user's Hermes Agent config isn't shared with Nous Research's servers."
+        ))
+        assert "Hermes Agent" not in joined.split("\n")[1]
+        assert "Nous Research" not in joined.split("\n")[1]
+
+    def test_hermes_identity_note_is_appended(self):
+        texts = self._oauth_system_texts("You are Hermes Agent.")
+        assert len(texts) >= 3  # prefix, rewritten prompt, identity note
+        assert "Hermes Agent" in texts[-1]
+        assert "Nous Research" in texts[-1]
+
+    def test_empty_system_still_gets_prefix_and_note(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6", messages=[{"role": "user", "content": "hi"}],
+            tools=None, max_tokens=1024, reasoning_config=None, is_oauth=True,
+        )
+        texts = [b["text"] for b in kwargs["system"]]
+        assert texts[0].startswith("You are Claude Code")
+        assert "Hermes" in texts[-1]
 
 
 

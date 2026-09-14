@@ -471,6 +471,45 @@ _OAUTH_SYSTEM_REPLACEMENTS = (
     ("hermes-agent", "claude-code"), ("Nous Research", "Anthropic"),
 )
 
+# Spans the product-name rewrite must leave untouched: identifiers the model has to emit or follow
+# verbatim. Rewriting them turned the docs URL into a dead host, ``skill_view(name='hermes-agent')``
+# into a nonexistent skill, code spans into wrong identifiers, and install/repo paths into directories
+# that do not exist. URLs, filesystem paths, backtick code spans, and quoted string literals are
+# protected; everything else is prose and still sanitized.
+_OAUTH_PROTECTED_SPAN_RE = re.compile(
+    r"https?://[^\s<>\"'`)\]]+"      # URLs (hostnames carry product names)
+    r"|`[^`\n]*`"                     # inline code spans
+    r"|'[^'\s]*'|\"[^\"\s]*\""        # quoted identifier tokens, e.g. skill_view(name='hermes-agent');
+                                      # whitespace excluded so apostrophes in prose don't pair up
+    r"|(?:[A-Za-z]:)?(?:[\\/][^\s\\/<>\"'`|]+)+"  # filesystem paths: C:\x\hermes-agent\venv, /home/x/hermes-agent
+)
+
+# The prefix tells the model it is Claude Code so OAuth routing works; this note restores the truth
+# for the model's own self-description without touching the prefix Anthropic keys on.
+_HERMES_IDENTITY_NOTE = (
+    "Context: this session actually runs inside Hermes Agent, the open-source agent framework by "
+    "Nous Research. When the user asks who or what you are, answer as Hermes Agent, not as a CLI product. "
+    "Skill names, documentation URLs, and tool identifiers in this prompt are literal — use them verbatim."
+)
+
+
+def _sanitize_oauth_prose(text: str) -> str:
+    """Apply the product-name replacements to prose only; protected spans pass through unchanged."""
+    out: list[str] = []
+    pos = 0
+    for match in _OAUTH_PROTECTED_SPAN_RE.finditer(text):
+        out.append(_replace_product_names(text[pos:match.start()]))
+        out.append(match.group(0))
+        pos = match.end()
+    out.append(_replace_product_names(text[pos:]))
+    return "".join(out)
+
+
+def _replace_product_names(text: str) -> str:
+    for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
+        text = text.replace(old, new)
+    return text
+
 
 def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
     """OAuth transforms: Claude Code system prefix, product-name sanitizing (avoids server-side
@@ -481,12 +520,10 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     if isinstance(system, str) and system:
         system = [{"type": "text", "text": system}]
     system = [cc_block] + (system if isinstance(system, list) else [])
-    for block in system:
+    for block in system[1:]:  # the prefix block is the exact string Anthropic keys on; never rewrite it
         if isinstance(block, dict) and block.get("type") == "text":
-            text = block.get("text", "")
-            for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
-                text = text.replace(old, new)
-            block["text"] = _apply_oauth_prose_aliases(text)
+            block["text"] = _apply_oauth_prose_aliases(_sanitize_oauth_prose(block.get("text", "")))
+    system.append({"type": "text", "text": _HERMES_IDENTITY_NOTE})
     for tool in anthropic_tools or []:
         if "name" in tool:
             tool["name"] = to_wire(tool["name"])

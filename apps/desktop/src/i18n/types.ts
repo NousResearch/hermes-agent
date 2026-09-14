@@ -51,6 +51,40 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  connectors: {
+    title: string
+    connect: string
+    skip: string
+    cancel: string
+    retry: string
+    grant: string
+    connected: string
+    checking: string
+    waitingSignIn: string
+    notConnected: string
+    notAvailable: string
+    startWith: (count: number) => string
+    startWithout: string
+    skipped: string
+    disabled: string
+    failed: string
+    needsAuth: string
+    opening: string
+    waiting: string
+    timeout: string
+    keepWaiting: string
+    refresh: string
+    statusError: string
+    connectError: string
+    unavailable: string
+    ownerMissing: string
+    search: string
+    empty: string
+    disclaimer: string
+    connectTitle: (app: string) => string
+    describe: (app: string) => string
+    execution: string
+  }
   sessionImport: {
     title: string
     subtitle: string
@@ -224,6 +258,9 @@ export interface Translations {
       errorMessage: (name: string) => string
       signIn: string
       view: string
+      disable: string
+      disabledMessage: (name: string) => string
+      disableFailed: (name: string) => string
     }
     errors: {
       elevenLabsNeedsKey: string
@@ -256,6 +293,10 @@ export interface Translations {
       transcriptionUnavailable: string
       tryRecordingAgain: string
       unavailable: string
+      liveEnded: string
+      liveError: string
+      liveDelegationFailed: string
+      liveUnavailable: (reason: string) => string
     }
     // Native OS notification copy (titles + generic fallback bodies). Dynamic
     // bodies (the agent's reply, a command, an error) are passed through raw.
@@ -559,6 +600,10 @@ export interface Translations {
       tabStripAuto: string
       tabStripAlways: string
       tabStripNever: string
+      appActionsTitle: string
+      appActionsDesc: string
+      appActionsLeft: string
+      appActionsRight: string
       terminalFontTitle: string
       terminalFontDesc: string
       terminalFontPlaceholder: string
@@ -614,6 +659,7 @@ export interface Translations {
       technicalDesc: string
       themeTitle: string
       themeDesc: string
+      themeSearchPlaceholder: string
       themeProfileNote: (profile: string) => string
       installTitle: string
       installDesc: string
@@ -664,6 +710,30 @@ export interface Translations {
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
+    uninstallSection: {
+      dangerZone: string
+      confirmUninstall: string
+      uninstallHermes: string
+    }
+    poolLimits: {
+      warmBotBackendsAria: string
+      warmBotBackendsTitle: string
+      backendIdleTimeoutAria: string
+      backendIdleTimeoutTitle: string
+    }
+    customEndpoints: {
+      title: string
+      deleteEndpoint: string
+      emptyDescription: string
+      emptyTitle: string
+      namePlaceholder: string
+      contextPlaceholder: string
+    }
+    computerUse: {
+      accessibility: string
+      screenRecording: string
+      driverHealth: string
+    }
     about: {
       heading: string
       version: (value: string) => string
@@ -723,6 +793,7 @@ export interface Translations {
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      showOptions: string
     }
     quickEntry: {
       enabledTitle: string
@@ -1079,10 +1150,14 @@ export interface Translations {
       setToMain: string
       change: string
       autoUseMain: string
+      inheritMainEffort: string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string
       notInCatalog: string
+      moaTitle: string
+      moaPreset: string
+      moaAggregator: string
       tasks: Record<string, AuxTaskCopy>
     }
     localModels: {
@@ -1107,6 +1182,9 @@ export interface Translations {
       /** Recommended-badge tooltip by resolver branch; unknown keys (newer
        *  backend) simply show no tooltip. */
       recommendedReason: Record<string, string>
+      noRecommendationTitle: string
+      noRecommendationDetail: string
+      noRecommendationAction: string
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
@@ -1649,6 +1727,10 @@ export interface Translations {
     restartGateway: string
     openBrowser: string
     gatewayRestartFailed: string
+    sharedGatewayRestartTitle: string
+    sharedGatewayRestartDescription: (bots: string) => string
+    sharedGatewayRestartConfirm: string
+    sharedGatewayRestarted: (count: number) => string
     updateHermes: string
     reloadWindow: string
     actionRunning: string
@@ -1732,6 +1814,7 @@ export interface Translations {
     states: Record<string, string>
     unknown: string
     hintPendingRestart: string
+    sharedListenerUrl: string
     hintGatewayStopped: string
     credentialsSet: string
     needsSetup: string
@@ -1758,6 +1841,8 @@ export interface Translations {
     restartToApply: string
     setupSaved: (name: string) => string
     restartToReconnect: string
+    appliedLive: string
+    connectingLive: string
     keyCleared: (key: string) => string
     setupUpdated: (name: string) => string
     failedUpdate: (name: string) => string
@@ -2363,6 +2448,13 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceControls: string
+    voiceEngine: string
+    voiceEngineChained: string
+    voiceEngineLive: string
+    voiceEngineLiveNeedsKey: string
+    voiceEngineChangeFailed: string
+    voiceEngineChainedShort: string
+    voiceEngineLiveShort: string
     voiceDictation: string
     speakReplies: string
     stopSpeakingReplies: string
@@ -2387,6 +2479,7 @@ export interface Translations {
     queuedPaused: (count: number) => string
     attachmentOnly: string
     emptyTurn: string
+    hiddenQueued: string
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
@@ -2679,6 +2772,23 @@ export interface Translations {
     }
   }
 
+  /** The guided first run's pre-written opening line — banked, not generated,
+   *  so the first paint costs no model time. Translated per locale because the
+   *  model is told to speak the user's language from its first real turn, and
+   *  an English opener above a Japanese reply reads as two different agents.
+   *  `nameSuggestion` offers the OS account name as a default. */
+  handoffTour: {
+    profileTitle: string
+    profileText: string
+    sessionsTitle: string
+    sessionsText: string
+    stayTitle: string
+    stayText: string
+  }
+  guidedGreeting: {
+    line: string
+    nameSuggestion: (name: string) => string
+  }
   install: {
     stageStates: Record<string, string>
     oneTimeTitle: string
@@ -2816,6 +2926,8 @@ export interface Translations {
     openModelPicker: string
     dismiss: string
     // Statusbar chip.
+    /** The status-bar chip's label: the provider name alone; the model id and the sign-in follow it. */
+    providerName: string
     statusLabel: (model: string) => string
     // Sign-in dialog.
     signIn: string
@@ -3485,6 +3597,8 @@ export interface Translations {
     readOnlyTranscriptSendBlocked: string
     resumeStrandedTitle: string
     resumeStrandedBody: string
+    poolSlotTimeoutBody: string
+    poolSlotTimeoutOpenSettings: string
     resumeRetry: string
     nothingToBranch: string
     branchNeedsChat: string
@@ -3515,6 +3629,8 @@ export interface Translations {
     imageAttach: string
     imageWriteFailed: string
     imageAttachFailed: string
+    pastedContent: string
+    pasteAttachFailed: string
     attachImages: string
     clipboard: string
     noClipboardImage: string

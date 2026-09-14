@@ -3,6 +3,41 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  connectors: {
+    title: 'Connect your apps',
+    connect: 'Connect',
+    skip: 'Not now',
+    cancel: 'Stop waiting',
+    retry: 'Try again',
+    grant: 'Reconnect',
+    connected: 'Connected',
+    checking: 'Checking your apps…',
+    waitingSignIn: 'Waiting for you to finish signing in…',
+    notConnected: "Didn't connect",
+    notAvailable: 'Not available',
+    startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
+    startWithout: 'Start without connections',
+    skipped: 'Skipped',
+    disabled: 'Unavailable',
+    failed: 'Could not connect',
+    needsAuth: 'Access expired',
+    opening: 'Opening sign-in…',
+    waiting: 'Finish connecting in your browser…',
+    timeout: 'Still waiting for authorization.',
+    keepWaiting: 'Keep waiting',
+    refresh: 'Refresh status',
+    statusError: 'Could not check connections. Try refreshing.',
+    connectError: 'Could not start authorization. Try again.',
+    unavailable: 'Connectors are unavailable for this session.',
+    ownerMissing: 'Reopen this conversation to manage its connections.',
+    search: 'Find an app',
+    empty: 'No matching apps',
+    disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
+    connectTitle: app => `Connect ${app}?`,
+    describe: app => `Hermes signs in to ${app} in your browser and asks before reading anything there.`,
+    execution: 'Connector tools'
+  },
+
   sessionImport: {
     title: 'Continue from another app',
     subtitle: 'Bring a conversation into Hermes and pick up where you left off.',
@@ -183,7 +218,10 @@ export const en: Translations = {
       errorTitle: 'MCP server unreachable',
       errorMessage: name => `${name} MCP failed its health check.`,
       signIn: 'Sign in',
-      view: 'View'
+      view: 'View',
+      disable: 'Disable',
+      disabledMessage: name => `${name} MCP disabled. Re-enable it any time from Capabilities → MCP.`,
+      disableFailed: name => `Could not disable ${name} MCP.`
     },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT needs ELEVENLABS_API_KEY.',
@@ -216,7 +254,11 @@ export const en: Translations = {
       transcriptionFailed: 'Voice transcription failed',
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
-      unavailable: 'Voice unavailable'
+      unavailable: 'Voice unavailable',
+      liveEnded: 'Live voice session ended',
+      liveError: 'Live voice',
+      liveDelegationFailed: 'Could not hand the request to Hermes',
+      liveUnavailable: reason => `GPT-Live voice chat is not available: ${reason}. Using speech-to-text instead.`
     },
     native: {
       approvalTitle: 'Approval needed',
@@ -675,6 +717,10 @@ export const en: Translations = {
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
+      appActionsTitle: 'App Actions',
+      appActionsDesc: 'Where Settings, Layout, and HUD sit in the titlebar. Right leaves room for tabs on the left.',
+      appActionsLeft: 'Left',
+      appActionsRight: 'Right',
       terminalFontTitle: 'Terminal Font',
       terminalFontDesc:
         'Choose an installed font for Desktop terminals. Nerd Fonts render Powerlevel10k and shell icons; leave blank to use bundled JetBrains Mono.',
@@ -711,10 +757,11 @@ export const en: Translations = {
       reactionsDesc: 'iMessage-style emoji tapbacks — react to messages, and Hermes can react to yours.',
       tipsTitle: 'In-App Tips',
       tipsDesc:
-        'A small bubble pointing at one part of the app, shown occasionally while idle and by Hermes when it helps. Each tip appears once.',
+        'Occasional hints from the app and Hermes. Each tip appears once. Turns off automatically after your first 30 days; you can turn it back on.',
       tipsReset: (count: number) => `Show ${count} ${count === 1 ? 'tip' : 'tips'} again`,
       toursTitle: 'Guided Tours',
-      toursDesc: 'Let Hermes walk you through the app, dimming the screen and spotlighting each step.',
+      toursDesc:
+        'Let Hermes spotlight each step as it guides you through the app. Turns off automatically after your first 30 days; you can turn it back on.',
       composerPopoutTitle: 'Floating Composer',
       composerPopoutDesc: 'Allow dragging the composer out of its dock. Turn this off to keep it locked at the bottom.',
       vibeHeartsTitle: 'Vibe Hearts',
@@ -736,6 +783,7 @@ export const en: Translations = {
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
+      themeSearchPlaceholder: 'Search your themes or the VS Code Marketplace…',
       themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
       installTitle: 'Install from VS Code',
       installDesc:
@@ -789,6 +837,30 @@ export const en: Translations = {
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
+    uninstallSection: {
+      dangerZone: 'Danger zone',
+      confirmUninstall: 'Confirm uninstall',
+      uninstallHermes: 'Uninstall Hermes'
+    },
+    poolLimits: {
+      warmBotBackendsAria: 'Warm bot backends',
+      warmBotBackendsTitle: 'Warm Bot Backends',
+      backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
+      backendIdleTimeoutTitle: 'Backend Idle Timeout'
+    },
+    customEndpoints: {
+      title: 'Custom Endpoints',
+      deleteEndpoint: 'Delete endpoint',
+      emptyDescription: 'Add an OpenAI-compatible endpoint below.',
+      emptyTitle: 'No custom endpoints',
+      namePlaceholder: 'Axet Proxy',
+      contextPlaceholder: 'Auto'
+    },
+    computerUse: {
+      accessibility: 'Accessibility',
+      screenRecording: 'Screen Recording',
+      driverHealth: 'Driver health'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `Version ${value}`,
@@ -852,7 +924,8 @@ export const en: Translations = {
       attachmentSizeDesc:
         'How big a local file Desktop will load for previews and image attach, in MB. Default is 16. Remote non-image attach uses a separate 256 MB cap. Setting this very high loads the whole file into memory and can freeze or crash the app.',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: 'Max preview / image load size in megabytes'
+      attachmentSizeLabel: 'Max preview / image load size in megabytes',
+      showOptions: 'Show options'
     },
     quickEntry: {
       enabledTitle: 'Quick Entry',
@@ -1234,10 +1307,14 @@ export const en: Translations = {
       setToMain: 'Set to main',
       change: 'Change',
       autoUseMain: 'auto · use main model',
+      inheritMainEffort: 'inherit · main model effort',
       providerDefault: '(provider default)',
       fallbackAdd: 'Add fallback',
       fallbackEmpty: 'No fallback models — the default model is used unless it fails.',
       notInCatalog: "isn't in this provider's model list — calls may fall back to a backup.",
+      moaTitle: 'Mixture of Agents',
+      moaPreset: 'Preset',
+      moaAggregator: 'Aggregator',
       tasks: {
         vision: { label: 'Vision', hint: 'Image analysis' },
         compression: { label: 'Compression', hint: 'Context compaction' },
@@ -1279,9 +1356,12 @@ export const en: Translations = {
         'speed-gated-quality':
           'A higher-quality model fits this machine but would respond too slowly on its memory bandwidth — this is the best model that stays fast.',
         'fastest-resident':
-          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.',
-        'least-painful-spilled': 'No model fits entirely in GPU memory here — this one runs best from system RAM.'
+          'No model reaches full speed on this hardware; this one comes closest while running entirely in GPU memory.'
       } as Record<string, string>,
+      noRecommendationTitle: 'No automatic recommendation for this machine',
+      noRecommendationDetail:
+        'Automatic setup requires a curated model that fits entirely in GPU or unified memory. You can still choose a model below or browse more models.',
+      noRecommendationAction: 'Browse models',
       downloaded: 'Downloaded',
       downloadAction: size => `Download · ${size}`,
       downloadProgress: (done, total) => `Downloading ${done} of ${total}`,
@@ -1293,7 +1373,7 @@ export const en: Translations = {
       quickstartDetailReady: model =>
         `One click makes ${model} your default for new chats. Everything runs on this machine.`,
       quickstartAction: 'Set up for me',
-      quickstartConfigure: 'Configure…',
+      quickstartConfigure: 'Let me choose',
       quickstartDoneToast: model => `${model} is set up — new chats run on this machine.`,
       quickstartFailed: 'Local model setup failed',
       quickstartStageEngine: 'Engine',
@@ -1871,6 +1951,10 @@ export const en: Translations = {
     restartGateway: 'Restart gateway',
     openBrowser: 'Open browser',
     gatewayRestartFailed: 'Gateway restart failed.',
+    sharedGatewayRestartTitle: 'Restart the shared gateway?',
+    sharedGatewayRestartDescription: bots => `All bots on this device reconnect: ${bots}`,
+    sharedGatewayRestartConfirm: 'Restart all',
+    sharedGatewayRestarted: count => `Shared gateway restarted (${count} ${count === 1 ? 'bot' : 'bots'})`,
     updateHermes: 'Update Hermes',
     reloadWindow: 'Reload window',
     actionRunning: 'running',
@@ -1964,6 +2048,7 @@ export const en: Translations = {
     },
     unknown: 'Unknown',
     hintPendingRestart: 'Restart the gateway from the status bar to apply this change.',
+    sharedListenerUrl: 'Served on the shared gateway listener at',
     hintGatewayStopped: 'Start the gateway from the status bar to connect.',
     credentialsSet: 'Credentials set',
     needsSetup: 'Needs setup',
@@ -1990,6 +2075,8 @@ export const en: Translations = {
     restartToApply: 'This change takes effect after a gateway restart.',
     setupSaved: name => `${name} setup saved`,
     restartToReconnect: 'New credentials take effect after a gateway restart.',
+    appliedLive: 'Applied to the running gateway.',
+    connectingLive: 'The running gateway is connecting with the new credentials.',
     keyCleared: key => `${key} cleared`,
     setupUpdated: name => `${name} setup was updated.`,
     failedUpdate: name => `Failed to update ${name}`,
@@ -2755,6 +2842,13 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceControls: 'Voice',
+    voiceEngine: 'Voice chat engine',
+    voiceEngineChained: 'Speech-to-text + Hermes voice',
+    voiceEngineLive: 'GPT-Live (full-duplex, delegates to Hermes)',
+    voiceEngineLiveNeedsKey: 'Needs an OpenAI API key',
+    voiceEngineChangeFailed: 'Could not change the voice chat engine',
+    voiceEngineChainedShort: 'speech-to-text',
+    voiceEngineLiveShort: 'GPT-Live',
     voiceDictation: 'Voice dictation',
     speakReplies: 'Read replies aloud',
     stopSpeakingReplies: 'Stop reading replies aloud',
@@ -2795,6 +2889,7 @@ export const en: Translations = {
     queuedPaused: count => `${count} Queued — paused`,
     attachmentOnly: 'Attachment-only turn',
     emptyTurn: 'Empty turn',
+    hiddenQueued: 'Setup note',
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
@@ -3120,6 +3215,20 @@ export const en: Translations = {
     }
   },
 
+  handoffTour: {
+    profileTitle: 'Your first task runs on the default profile',
+    profileText:
+      'This rail switches profiles. The one lit up now is default, where the task session lives. The other one is the setup profile, where the welcome chat lives.',
+    sessionsTitle: 'Each profile keeps its own sessions',
+    sessionsText:
+      'This list belongs to the default profile. New session starts one on whichever profile is selected. Switch profiles on the rail and the list changes with it.',
+    stayTitle: 'Hermes is one click away',
+    stayText: 'Switch to the setup profile and open Welcome to Hermes whenever you want a hand. It stays there.'
+  },
+  guidedGreeting: {
+    line: "Hey, come on in. I'm Hermes. Give me two minutes to set the place up around you, then we'll put me to work on something you actually want done.\n\nFirst though, what should I call you?",
+    nameSuggestion: (name: string) => `(I can also just call you ${name}, if you prefer.)`
+  },
   install: {
     stageStates: {
       pending: 'Pending',
@@ -3286,7 +3395,8 @@ export const en: Translations = {
     stripBody: 'Open the model picker to try them, or sign in with a Nous account.',
     openModelPicker: 'Open model picker',
     dismiss: 'Dismiss',
-    statusLabel: model => `Nous · free tier · ${model}`,
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
     signIn: 'Sign in',
     signInHeading: 'Sign in with a Nous account to unlock more models and tools.',
     settingUp: 'Setting up free inference…',
@@ -3960,7 +4070,8 @@ export const en: Translations = {
     vaultCodeDesc: site =>
       `${site} is asking for a one-time code (text message, email or authenticator app). Enter it here and Hermes types it into the page; the model never sees it.`,
     vaultCodeLabel: 'Code',
-    vaultCodeFootnote: 'Tip: save the authenticator key with this login in Settings → Passwords & Logins and Hermes enters codes for you.',
+    vaultCodeFootnote:
+      'Tip: save the authenticator key with this login in Settings → Passwords & Logins and Hermes enters codes for you.',
     vaultCodeSkip: 'Skip',
     vaultCodeConfirm: 'Enter code'
   },
@@ -3999,6 +4110,9 @@ export const en: Translations = {
     resumeStrandedTitle: "Couldn't load this session",
     resumeStrandedBody:
       'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    poolSlotTimeoutBody:
+      'All local profile backend slots are busy. Increase Warm Bot Backends in Settings → Advanced, or retry after an idle backend is evicted.',
+    poolSlotTimeoutOpenSettings: 'Open Advanced Settings',
     resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',
@@ -4029,6 +4143,8 @@ export const en: Translations = {
     imageAttach: 'Image attach',
     imageWriteFailed: 'Failed to write image to disk.',
     imageAttachFailed: 'Image attach failed',
+    pastedContent: 'Pasted content',
+    pasteAttachFailed: 'Could not attach pasted text',
     attachImages: 'Attach images',
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',

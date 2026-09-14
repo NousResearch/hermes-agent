@@ -194,7 +194,10 @@ export const ru = defineLocale({
       errorTitle: 'Сервер MCP недоступен',
       errorMessage: name => `MCP ${name} не прошёл проверку работоспособности.`,
       signIn: 'Войти',
-      view: 'Просмотр'
+      view: 'Просмотр',
+      disable: 'Отключить',
+      disabledMessage: name => `${name} MCP отключён. Включить снова можно в любой момент в разделе Возможности → MCP.`,
+      disableFailed: name => `Не удалось отключить ${name} MCP.`
     },
     errors: {
       elevenLabsNeedsKey: 'Для STT ElevenLabs нужен ELEVENLABS_API_KEY.',
@@ -568,6 +571,10 @@ export const ru = defineLocale({
       tabStripAuto: 'Авто',
       tabStripAlways: 'Всегда',
       tabStripNever: 'Никогда',
+      appActionsTitle: 'Действия приложения',
+      appActionsDesc: 'Где в заголовке окна сидят Настройки, Макет и HUD. Справа оставляют место для вкладок слева.',
+      appActionsLeft: 'Слева',
+      appActionsRight: 'Справа',
       terminalFontTitle: 'Шрифт терминала',
       terminalFontDesc:
         'Выберите установленный шрифт для терминалов приложения. Nerd Fonts отображают Powerlevel10k и иконки оболочки; оставьте пустым, чтобы использовать встроенный JetBrains Mono.',
@@ -1350,6 +1357,7 @@ export const ru = defineLocale({
       setToMain: 'На основную',
       change: 'Изменить',
       autoUseMain: 'авто · использовать основную модель',
+      inheritMainEffort: 'наследовать · усилие основной модели',
       providerDefault: '(по умолчанию провайдера)',
       fallbackAdd: 'Добавить запасную',
       fallbackEmpty: 'Запасных моделей нет — используется модель по умолчанию, если она не падает.',
@@ -1804,6 +1812,10 @@ export const ru = defineLocale({
     restartGateway: 'Перезапустить шлюз',
     openBrowser: 'Открыть браузер',
     gatewayRestartFailed: 'Не удалось перезапустить шлюз.',
+    sharedGatewayRestartTitle: 'Перезапустить общий шлюз?',
+    sharedGatewayRestartDescription: bots => `Все боты на этом устройстве переподключатся: ${bots}`,
+    sharedGatewayRestartConfirm: 'Перезапустить все',
+    sharedGatewayRestarted: count => `Общий шлюз перезапущен (ботов: ${count})`,
     updateHermes: 'Обновить Hermes',
     reloadWindow: 'Перезагрузить окно',
     actionRunning: 'выполняется',
@@ -1896,6 +1908,7 @@ export const ru = defineLocale({
     },
     unknown: 'Неизвестно',
     hintPendingRestart: 'Перезапустите шлюз из строки состояния, чтобы применить это изменение.',
+    sharedListenerUrl: 'Обслуживается общим слушателем шлюза по адресу',
     hintGatewayStopped: 'Запустите шлюз из строки состояния для подключения.',
     credentialsSet: 'Учётные данные заданы',
     needsSetup: 'Нужна настройка',
@@ -1922,6 +1935,8 @@ export const ru = defineLocale({
     restartToApply: 'Это изменение вступит в силу после перезапуска шлюза.',
     setupSaved: name => `Настройка ${name} сохранена`,
     restartToReconnect: 'Новые учётные данные вступят в силу после перезапуска шлюза.',
+    appliedLive: 'Применено к работающему шлюзу.',
+    connectingLive: 'Работающий шлюз подключается с новыми учётными данными.',
     keyCleared: key => `${key} очищено`,
     setupUpdated: name => `Настройка ${name} обновлена.`,
     failedUpdate: name => `Не удалось обновить ${name}`,
@@ -3012,6 +3027,10 @@ export const ru = defineLocale({
       noReturn: 'Бэкенд не вернулся в сеть. Обновление могло не завершиться — проверьте хост бэкенда.'
     }
   },
+  guidedGreeting: {
+    line: 'Заходите. Я Hermes. Дайте мне пару минут — обустрою тут всё под вас, а потом займёмся тем, что вам правда нужно.\n\nДля начала: как к вам обращаться?',
+    nameSuggestion: (name: string) => `(Могу звать вас просто ${name}, если так удобнее.)`
+  },
   install: {
     stageStates: {
       pending: 'Ожидает',
@@ -3774,6 +3793,9 @@ export const ru = defineLocale({
     resumeStrandedTitle: 'Не удалось загрузить этот сеанс',
     resumeStrandedBody:
       'Соединение с этим сеансом оборвалось, и автоматические повторные попытки исчерпаны. Проверьте, что шлюз работает, и попробуйте снова.',
+    poolSlotTimeoutBody:
+      'Все слоты локальных бэкендов профилей заняты. Увеличьте Warm Bot Backends в «Настройки» → «Дополнительно» или повторите попытку после освобождения неактивного бэкенда.',
+    poolSlotTimeoutOpenSettings: 'Открыть расширенные настройки',
     resumeRetry: 'Повторить',
     nothingToBranch: 'Нечего ветвить',
     branchNeedsChat: 'Начните или возобновите чат перед ветвлением.',

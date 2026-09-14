@@ -212,18 +212,16 @@ def _has_configured_mcp_servers() -> bool:
 
 
 def ensure_mcp_discovery_started() -> None:
-    """Start background MCP discovery for the current profile context, once. ``main()`` calls
-    this for stdio; ``server._start_agent_build`` also calls it AFTER binding the session
-    profile's HERMES_HOME. MCP registration is process-global: the FIRST profile wins.
+    """Start background MCP discovery for the current profile context, once per profile home.
+    ``main()`` calls this for stdio; ``server._start_agent_build`` also calls it AFTER binding the
+    session profile's HERMES_HOME.
 
     WebSocket/Desktop entrypoints can accept sessions without running ``main()``, so the agent-build path
     (``server._start_agent_build``) also calls it AFTER binding the session profile's HERMES_HOME override —
     the shared owner in ``hermes_cli.mcp_startup`` captures the caller's context-local override and
     propagates it into the discovery thread, so discovery reads the SELECTED profile's ``mcp_servers``, not
-    the launch profile's (#67605).
-    Known limitation: MCP tool registration is process-global, so in a multi-profile process the FIRST
-    profile that builds an agent wins the discovery slot. Full per-profile MCP registries are tracked in
-    #67605.
+    the launch profile's. The discovery slot in ``hermes_cli.mcp_startup`` is keyed by profile home, so
+    every profile a shared backend serves discovers its own ``mcp_servers`` (#67605).
     """
     global _mcp_discovery_enabled
     if not _has_configured_mcp_servers():

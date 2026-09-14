@@ -188,7 +188,10 @@ export const ar = defineLocale({
       errorTitle: 'تعذر الوصول إلى خادم MCP',
       errorMessage: name => `فشل فحص سلامة ${name} MCP.`,
       signIn: 'تسجيل الدخول',
-      view: 'عرض'
+      view: 'عرض',
+      disable: 'تعطيل',
+      disabledMessage: name => `تم تعطيل ${name} MCP. يمكنك إعادة تفعيله في أي وقت من الإمكانات → MCP.`,
+      disableFailed: name => `تعذّر تعطيل ${name} MCP.`
     },
     errors: {
       elevenLabsNeedsKey: 'يتطلب ElevenLabs STT المفتاح ELEVENLABS_API_KEY.',
@@ -581,10 +584,11 @@ export const ar = defineLocale({
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
       tipsTitle: 'نصائح داخل التطبيق',
       tipsDesc:
-        'فقاعة صغيرة تشير إلى جزء من التطبيق، تظهر أحيانًا أثناء الخمول ومن Hermes عند الحاجة. تظهر كل نصيحة مرة واحدة.',
+        'نصائح تظهر أحيانًا من التطبيق وHermes. تظهر كل نصيحة مرة واحدة. تُعطّل تلقائيًا بعد أول 30 يومًا من الاستخدام، ويمكنك تفعيلها مجددًا.',
       tipsReset: count => `إظهار ${count} نصيحة مرة أخرى`,
       toursTitle: 'جولات إرشادية',
-      toursDesc: 'دع Hermes يرشدك في التطبيق، مع تعتيم الشاشة وإبراز كل خطوة.',
+      toursDesc:
+        'دع Hermes يرشدك في التطبيق مع إبراز كل خطوة. تُعطّل الجولات تلقائيًا بعد أول 30 يومًا من الاستخدام، ويمكنك تفعيلها مجددًا.',
       composerPopoutTitle: 'محرر عائم',
       composerPopoutDesc: 'السماح بسحب محرر الرسائل خارج موضعه. عطّل هذا الخيار لإبقائه مثبتًا في الأسفل.',
       vibeHeartsTitle: 'قلوب المزاج',
@@ -991,6 +995,7 @@ export const ar = defineLocale({
       setToMain: 'ضبط على الرئيسي',
       change: 'تغيير',
       autoUseMain: 'تلقائي · استخدام النموذج الرئيسي',
+      inheritMainEffort: 'وراثة · جهد النموذج الرئيسي',
       providerDefault: '(افتراضي المزوّد)',
       tasks: {
         vision: {
@@ -1318,6 +1323,10 @@ export const ar = defineLocale({
     restartGateway: 'إعادة تشغيل البوابة',
     openBrowser: 'فتح المتصفح',
     gatewayRestartFailed: 'فشل إعادة تشغيل البوابة.',
+    sharedGatewayRestartTitle: 'إعادة تشغيل البوابة المشتركة؟',
+    sharedGatewayRestartDescription: bots => `تتم إعادة اتصال جميع البوتات على هذا الجهاز: ${bots}`,
+    sharedGatewayRestartConfirm: 'إعادة تشغيل الكل',
+    sharedGatewayRestarted: count => `تمت إعادة تشغيل البوابة المشتركة (${count} بوت)`,
     updateHermes: 'تحديث Hermes',
     reloadWindow: 'إعادة تحميل النافذة',
     actionRunning: 'الإجراء قيد التشغيل',
@@ -1363,6 +1372,7 @@ export const ar = defineLocale({
     },
     unknown: 'غير معروف',
     hintPendingRestart: 'تحتاج إعادة تشغيل لتطبيق التغييرات.',
+    sharedListenerUrl: 'يُخدم عبر مستمع البوابة المشتركة على',
     hintGatewayStopped: 'البوابة متوقفة.',
     restartNeeded: 'تم الحفظ. أعد تشغيل بوابة المراسلة لتطبيق الإعدادات الجديدة.',
     restartNow: 'إعادة التشغيل الآن',
@@ -1421,6 +1431,8 @@ export const ar = defineLocale({
     restartToApply: 'أعد التشغيل لتطبيق التغييرات.',
     setupSaved: name => `تم حفظ إعداد ${name}`,
     restartToReconnect: 'أعد التشغيل لإعادة الاتصال.',
+    appliedLive: 'تم التطبيق على البوابة قيد التشغيل.',
+    connectingLive: 'البوابة قيد التشغيل تتصل باستخدام بيانات الاعتماد الجديدة.',
     keyCleared: key => `تم مسح ${key}`,
     setupUpdated: name => `تم تحديث إعداد ${name}`,
     failedUpdate: name => `فشل تحديث ${name}`,
@@ -2341,6 +2353,10 @@ export const ar = defineLocale({
       noReturn: 'لم تعد الواجهة الخلفية إلى الاتصال. قد لا يكون التحديث قد اكتمل — تحقق من مضيف الواجهة الخلفية.'
     }
   },
+  guidedGreeting: {
+    line: 'أهلا، تفضل بالدخول. أنا Hermes. امنحني دقيقتين لأرتب المكان حولك، ثم نبدأ بشيء تريد إنجازه فعلا.\n\nبداية، بماذا أناديك؟',
+    nameSuggestion: (name: string) => `(يمكنني أن أناديك ${name} إن كنت تفضل ذلك.)`
+  },
   install: {
     stageStates: {
       pending: 'قيد الانتظار',
@@ -3060,7 +3076,8 @@ export const ar = defineLocale({
     vaultCodeDesc: site =>
       `يطلب ${site} رمزًا لمرة واحدة (رسالة نصية أو بريد إلكتروني أو تطبيق مصادقة). أدخله هنا وسيكتبه Hermes في الصفحة؛ لا يراه النموذج أبدًا.`,
     vaultCodeLabel: 'الرمز',
-    vaultCodeFootnote: 'تلميح: احفظ مفتاح المصادقة مع بيانات الدخول هذه في الإعدادات ← كلمات المرور وتسجيلات الدخول وسيُدخل Hermes الرموز نيابةً عنك.',
+    vaultCodeFootnote:
+      'تلميح: احفظ مفتاح المصادقة مع بيانات الدخول هذه في الإعدادات ← كلمات المرور وتسجيلات الدخول وسيُدخل Hermes الرموز نيابةً عنك.',
     vaultCodeSkip: 'تخطٍ',
     vaultCodeConfirm: 'إدخال الرمز'
   },
@@ -3097,6 +3114,9 @@ export const ar = defineLocale({
     resumeStrandedTitle: 'تعذّر تحميل هذه الجلسة',
     resumeStrandedBody:
       'فشل الاتصال بهذه الجلسة وتوقفت إعادة المحاولة التلقائية. تأكد من تشغيل البوابة، ثم حاول مجددا.',
+    poolSlotTimeoutBody:
+      'جميع خانات الواجهات الخلفية المحلية للملفات الشخصية مشغولة. زد عدد Warm Bot Backends من الإعدادات ← متقدم، أو أعد المحاولة بعد إزالة واجهة خلفية خاملة.',
+    poolSlotTimeoutOpenSettings: 'فتح الإعدادات المتقدمة',
     resumeRetry: 'إعادة المحاولة',
     nothingToBranch: 'لا يوجد ما يمكن تفريعه',
     branchNeedsChat: 'يحتاج التفريع إلى محادثة',
@@ -3127,6 +3147,8 @@ export const ar = defineLocale({
     imageAttach: 'إرفاق الصورة',
     imageWriteFailed: 'فشل كتابة الصورة',
     imageAttachFailed: 'فشل إرفاق الصورة',
+    pastedContent: 'محتوى ملصق',
+    pasteAttachFailed: 'تعذر إرفاق النص الملصق',
     attachImages: 'إرفاق الصور',
     clipboard: 'الحافظة',
     noClipboardImage: 'لا توجد صورة في الحافظة',

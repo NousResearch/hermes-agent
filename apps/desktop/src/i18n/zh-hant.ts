@@ -178,7 +178,10 @@ export const zhHant = defineLocale({
       errorTitle: 'MCP 伺服器無法連線',
       errorMessage: name => `${name} MCP 健康檢查失敗。`,
       signIn: '登入',
-      view: '檢視'
+      view: '檢視',
+      disable: '停用',
+      disabledMessage: name => `已停用 ${name} MCP。可隨時在「功能 → MCP」重新啟用。`,
+      disableFailed: name => `無法停用 ${name} MCP。`
     },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
@@ -484,6 +487,10 @@ export const zhHant = defineLocale({
       tabStripAuto: '自動',
       tabStripAlways: '一律',
       tabStripNever: '永不',
+      appActionsTitle: '應用操作',
+      appActionsDesc: '設定、版面與 HUD 放在標題列左側或右側。選右側可把左側留給分頁。',
+      appActionsLeft: '左側',
+      appActionsRight: '右側',
       terminalFontTitle: '終端機字型',
       terminalFontDesc:
         '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',
@@ -518,10 +525,10 @@ export const zhHant = defineLocale({
       reactionsTitle: '訊息回應',
       reactionsDesc: 'iMessage 風格的表情回應 — 你可以對訊息做出回應，Hermes 也能回應你的訊息。',
       tipsTitle: '應用程式內提示',
-      tipsDesc: '指向應用程式某處的小氣泡：閒置時偶爾出現，需要時 Hermes 也會給你一則。每則提示只出現一次。',
+      tipsDesc: '偶爾顯示來自應用程式和 Hermes 的提示，每則提示只出現一次。開始使用滿30天後自動關閉，你可以重新開啟。',
       tipsReset: (count: number) => `再次顯示 ${count} 則提示`,
       toursTitle: '導覽',
-      toursDesc: '讓 Hermes 帶你認識應用程式：調暗畫面並逐步標示每個位置。',
+      toursDesc: '讓 Hermes 逐步標示每個位置，帶你認識應用程式。開始使用滿30天後自動關閉，你可以重新開啟。',
       composerPopoutTitle: '懸浮輸入框',
       composerPopoutDesc: '允許將輸入框拖出底部停靠區。關閉後，輸入框會鎖定在底部。',
       vibeHeartsTitle: '心情愛心',
@@ -541,6 +548,7 @@ export const zhHant = defineLocale({
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeSearchPlaceholder: '搜尋本機主題或 VS Code Marketplace…',
       themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
       installTitle: '從 VS Code 安裝',
       installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
@@ -644,7 +652,8 @@ export const zhHant = defineLocale({
       },
       browser: {
         allowPrivateUrls: '瀏覽器私有 URL',
-        autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器'
+        autoLocalForPrivateUrls: '私有 URL 使用本機瀏覽器',
+        useRealProfile: '使用我的真實瀏覽器設定檔'
       },
       checkpoints: {
         enabled: '檔案檢查點',
@@ -653,11 +662,17 @@ export const zhHant = defineLocale({
       voice: {
         recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
-        autoTts: '朗讀回覆'
+        autoTts: '朗讀回覆',
+        voiceChatMode: '語音聊天模式',
+        gptLive: {
+          voice: 'GPT-Live 音色',
+          instructions: 'GPT-Live 人設'
+        }
       },
       stt: {
         enabled: '語音轉文字',
         provider: '語音轉文字提供方',
+        echoTranscripts: '回傳轉寫文字',
         local: {
           model: '本機轉寫模型',
           language: '轉寫語言'
@@ -690,6 +705,10 @@ export const zhHant = defineLocale({
         elevenlabs: {
           voiceId: 'ElevenLabs 語音',
           modelId: 'ElevenLabs 模型'
+        },
+        deepinfra: {
+          model: 'DeepInfra TTS 模型',
+          voice: 'DeepInfra 語音'
         },
         xai: {
           voiceId: 'xAI (Grok) 語音',
@@ -773,7 +792,11 @@ export const zhHant = defineLocale({
       terminal: {
         cwd: '工具與終端機操作的預設專案資料夾。',
         persistentShell: '後端支援時，在指令之間保留 Shell 狀態。',
-        envPassthrough: '傳入工具執行的環境變數。'
+        envPassthrough: '傳入工具執行的環境變數。',
+        dockerImage: '執行後端為 Docker 時使用的容器映像。',
+        singularityImage: '執行後端為 Singularity 時使用的映像。',
+        modalImage: '執行後端為 Modal 時使用的映像。',
+        daytonaImage: '執行後端為 Daytona 時使用的映像。'
       },
       codeExecution: {
         mode: '程式碼執行被限制在目前專案中的嚴格程度。'
@@ -799,13 +822,38 @@ export const zhHant = defineLocale({
       compression: {
         enabled: '對話變大時摘要較早的上下文。'
       },
+      browser: {
+        useRealProfile:
+          '本機瀏覽會使用你的真實登入狀態。Hermes 會將預設瀏覽器的設定（Cookie、登入資訊與偏好）複製成受管理的快照，再以內建的 Chromium 驅動它——不會直接開啟你正在使用的設定檔，且每次執行都會從目前的設定檔重新整理副本。設定雲端瀏覽器後端時，也允許代理視需要開啟本機真實設定檔工作階段。僅支援 Chromium 系瀏覽器（Chrome、Edge、Brave、Brave Origin、Chromium）；若預設瀏覽器並非 Chromium 系，會顯示明確錯誤。預設關閉。'
+      },
       voice: {
-        autoTts: '自動朗讀助手回覆。'
+        autoTts: '自動朗讀助手回覆。',
+        voiceChatMode:
+          'chained：語音轉文字 → Hermes → 文字轉語音，使用下方的提供方。gpt-live：由全雙工 OpenAI 語音模型（gpt-live-1）負責聆聽與說話，並將每個實際請求交給 Hermes——由你選擇的任意模型使用完整工具集作答。需要 OpenAI API 金鑰；語音層每分鐘收費 $0.05。',
+        gptLive: {
+          voice: 'GPT-Live 模式使用的音色，可填入自訂音色 ID。',
+          instructions: '附加至即時語音人設的句子（語氣、語速、語言）。Hermes 會保留自己的系統提示詞。'
+        }
       },
       stt: {
         enabled: '啟用本機或提供方支援的語音轉寫。',
+        echoTranscripts: '將語音訊息的原始 🎙️ 轉寫文字傳回聊天。',
         elevenlabs: {
           languageCode: '可選的 ISO-639-3 語言代碼。留空讓 ElevenLabs 自動偵測。'
+        }
+      },
+      tts: {
+        xai: {
+          voiceId: 'xAI 音色 ID（例如 eve）或自訂音色 ID。',
+          language: '口語語言代碼（例如 en、pt-BR），或填入 "auto" 自動偵測。',
+          speed: '播放速度。0.7 = 較慢，1.0 = 正常，1.5 = 較快。',
+          autoSpeechTags: '合成前讓 LLM 在文稿中插入富有表現力的音訊標籤（例如 [laughing]、[sighs]）。',
+          optimizeStreamingLatency: '延遲與品質的權衡。0 = 最佳品質，2 = 最低延遲。',
+          sampleRate: '音訊取樣率（Hz）。越高音質越好、檔案越大。',
+          bitRate: 'MP3 位元率（bps）。僅在編碼為 mp3 時生效。'
+        },
+        neutts: {
+          device: 'NeuTTS 的本機推論裝置。'
         }
       },
       updates: {
@@ -813,6 +861,30 @@ export const zhHant = defineLocale({
           'Hermes 從應用程式內更新自身時，保留本機原始碼變更（stash）或丟棄（discard）。終端機更新一律會詢問。'
       }
     }),
+    uninstallSection: {
+      dangerZone: '危險操作',
+      confirmUninstall: '確認解除安裝',
+      uninstallHermes: '解除安裝 Hermes'
+    },
+    poolLimits: {
+      warmBotBackendsAria: '預熱機器人後端',
+      warmBotBackendsTitle: '預熱機器人後端',
+      backendIdleTimeoutAria: '後端閒置逾時（毫秒）',
+      backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
+    },
+    customEndpoints: {
+      title: '自訂端點',
+      deleteEndpoint: '刪除端點',
+      emptyDescription: '在下方新增 OpenAI 相容端點。',
+      emptyTitle: '尚無自訂端點',
+      namePlaceholder: '我的代理',
+      contextPlaceholder: '自動'
+    },
+    computerUse: {
+      accessibility: '輔助使用',
+      screenRecording: '螢幕錄製',
+      driverHealth: '驅動程式健康狀態'
+    },
     about: {
       heading: 'Hermes Desktop',
       version: value => `版本 ${value}`,
@@ -866,7 +938,8 @@ export const zhHant = defineLocale({
       imported: '設定已匯入',
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
-      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。'
+      keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      showOptions: '顯示選項'
     },
     quickEntry: {
       enabledTitle: '快速輸入',
@@ -1096,7 +1169,11 @@ export const zhHant = defineLocale({
       setToMain: '設為主要模型',
       change: '變更',
       autoUseMain: '自動 · 使用主要模型',
+      inheritMainEffort: '繼承 · 主要模型推理強度',
       providerDefault: '(提供方預設)',
+      moaTitle: '混合代理（Mixture of Agents）',
+      moaPreset: '預設',
+      moaAggregator: '聚合模型',
       tasks: {
         vision: { label: '視覺', hint: '圖片分析' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
@@ -1131,9 +1208,13 @@ export const zhHant = defineLocale({
         'best-quality-resident': '在完全駐留 GPU 且保持全速的模型中品質最高。推薦會在品質與該硬體的預計速度之間權衡。',
         'speed-gated-quality':
           '有更高品質的模型可以裝入這台機器，但受記憶體頻寬限制回應會太慢——這是保持流暢的最佳模型。',
-        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。',
-        'least-painful-spilled': '沒有模型能完全裝入 GPU 記憶體——這是從系統記憶體執行表現最好的一個。'
+        'fastest-resident': '沒有模型能在該硬體上達到全速；這是完全駐留 GPU 記憶體中最快的一個。'
       } as Record<string, string>,
+      noRecommendationTitle: '此裝置暫無自動推薦模型',
+      noRecommendationDetail:
+        '自動設定需要一個可完全放入 GPU 記憶體或統一記憶體的精選模型。你仍可在下方自行選擇，或瀏覽更多模型。',
+      noRecommendationAction: '瀏覽模型',
+      quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
       downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
@@ -1571,6 +1652,10 @@ export const zhHant = defineLocale({
     restartGateway: '重新啟動閘道',
     openBrowser: '開啟瀏覽器',
     gatewayRestartFailed: '閘道重新啟動失敗。',
+    sharedGatewayRestartTitle: '重新啟動共享閘道？',
+    sharedGatewayRestartDescription: bots => `此裝置上的所有機器人都會重新連線：${bots}`,
+    sharedGatewayRestartConfirm: '全部重新啟動',
+    sharedGatewayRestarted: count => `共享閘道已重新啟動（${count} 個機器人）`,
     updateHermes: '更新 Hermes',
     reloadWindow: '重新載入視窗',
     actionRunning: '執行中',
@@ -1617,6 +1702,7 @@ export const zhHant = defineLocale({
     },
     unknown: '未知',
     hintPendingRestart: '在狀態列重新啟動閘道以套用此變更。',
+    sharedListenerUrl: '透過共享閘道監聽器提供，位址為',
     hintGatewayStopped: '在狀態列啟動閘道以建立連線。',
     restartNeeded: '已儲存。請重新啟動訊息閘道以套用新設定。',
     restartNow: '立即重新啟動',
@@ -1675,6 +1761,8 @@ export const zhHant = defineLocale({
     restartToApply: '此變更將在閘道重新啟動後生效。',
     setupSaved: name => `${name} 設定已儲存`,
     restartToReconnect: '新憑證將在閘道重新啟動後生效。',
+    appliedLive: '已套用到執行中的閘道。',
+    connectingLive: '執行中的閘道正在使用新憑證連線。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 設定已更新。`,
     failedUpdate: name => `更新 ${name} 失敗`,
@@ -2605,6 +2693,10 @@ export const zhHant = defineLocale({
     }
   },
 
+  guidedGreeting: {
+    line: '來了，進來吧。我是 Hermes。給我兩分鐘，把這裡按你的習慣整理一下，然後我們找件你真正想做的事來做。\n\n先說，我該怎麼稱呼你？',
+    nameSuggestion: (name: string) => `（如果你願意，我也可以直接叫你 ${name}。）`
+  },
   install: {
     stageStates: {
       pending: '等待中',
@@ -3355,6 +3447,9 @@ export const zhHant = defineLocale({
     readOnlyTranscriptSendBlocked: '此對話目前以唯讀逐字稿方式開啟——傳送已停用。',
     resumeStrandedTitle: '無法載入此工作階段',
     resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
+    poolSlotTimeoutBody:
+      '所有本機設定檔後端插槽目前都在使用中。請在「設定」→「進階」中增加 Warm Bot Backends，或等待閒置後端被移除後重試。',
+    poolSlotTimeoutOpenSettings: '開啟進階設定',
     resumeRetry: '重試',
     nothingToBranch: '沒有可分支的內容',
     branchNeedsChat: '分支前請先開始或繼續一個聊天。',
@@ -3385,6 +3480,8 @@ export const zhHant = defineLocale({
     imageAttach: '附加圖片',
     imageWriteFailed: '無法將圖片寫入磁碟。',
     imageAttachFailed: '附加圖片失敗',
+    pastedContent: '貼上內容',
+    pasteAttachFailed: '無法附加貼上的文字',
     attachImages: '附加圖片',
     clipboard: '剪貼簿',
     noClipboardImage: '剪貼簿中沒有圖片',

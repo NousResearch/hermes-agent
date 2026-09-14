@@ -910,6 +910,15 @@ _NOUS_MODEL = "google/gemini-3.6-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
+_AUTH_JSON_PATH_AT_IMPORT = _AUTH_JSON_PATH
+
+
+def _auth_json_path():
+    """Active profile's ``auth.json`` at call time (a patched ``_AUTH_JSON_PATH`` still wins). The
+    import-time constant is the LAUNCH profile's; under multiplexing a secondary's auxiliary calls
+    would otherwise authenticate to Nous with the default profile's token."""
+    from hermes_cli.auth import _auth_file_path
+    return _AUTH_JSON_PATH if _AUTH_JSON_PATH != _AUTH_JSON_PATH_AT_IMPORT else _auth_file_path()
 
 # Hosts exposing BOTH ``…/anthropic`` and a sibling OpenAI ``…/v1``. Matched on the URL *host*
 # only: unconditional rewrites break Anthropic-only gateways.
@@ -1048,7 +1057,7 @@ def _nous_min_key_ttl_seconds() -> int:
 
 
 def _scoped_key_env(name: str) -> str:
-    """Read a provider API key env var through the profile secret scope.
+    """Read a provider API key (or its paired base-URL) env var through the profile secret scope.
 
     In agent turns the scope's verdict is authoritative (a scoped miss must not borrow another
     profile's key); unscoped startup/CLI paths fall back to os.environ.
@@ -1859,9 +1868,10 @@ def _read_nous_auth() -> Optional[dict]:
             "source": "pool",
         }
     try:
-        if not _AUTH_JSON_PATH.is_file():
+        auth_path = _auth_json_path()
+        if not auth_path.is_file():
             return None
-        data = json.loads(_AUTH_JSON_PATH.read_text(encoding="utf-8-sig"))
+        data = json.loads(auth_path.read_text(encoding="utf-8-sig"))
         if data.get("active_provider") != "nous":
             return None
         provider = data.get("providers", {}).get("nous", {})
@@ -1971,8 +1981,8 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                 ).strip()
                 _url = lambda v: str(v or "").strip().rstrip("/")  # noqa: E731
                 base_url = _xai_validate_inference_base_url(
-                    _url(os.getenv("HERMES_XAI_BASE_URL", ""))
-                    or _url(os.getenv("XAI_BASE_URL", ""))
+                    _url(_scoped_key_env("HERMES_XAI_BASE_URL"))
+                    or _url(_scoped_key_env("XAI_BASE_URL"))
                     or _url(getattr(entry, "runtime_base_url", None))
                     or _url(getattr(entry, "base_url", None)),
                     fallback=DEFAULT_XAI_OAUTH_BASE_URL,
@@ -2246,7 +2256,7 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             _mark_provider_unhealthy("nous", ttl=60)
             return None, None
         base_url = str(
-            (nous or {}).get("inference_base_url") or os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
+            (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
         ).rstrip("/")
     lane = "vision" if vision else "text"
     # The free tier's host serves exactly one model, for every lane: asking it for the Portal's
@@ -2632,7 +2642,8 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
     if not isinstance(runtime, dict):
-        openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+        # Base URL is per-profile like the key one line below (a scoped key must not hit the default's proxy).
+        openai_base = _scoped_key_env("OPENAI_BASE_URL").rstrip("/")
         if not openai_base:
             return None, None, None
         runtime = {"base_url": openai_base, "api_key": _scoped_key_env("OPENAI_API_KEY")}
@@ -4537,7 +4548,17 @@ def _wrap_transport(req: _ResolveRequest, client_obj: Any, final_model_str: str,
                      "(api_mode=%s, model=%s, base_url=%s)",
                      req.api_mode or "auto-detected", final_model_str, base_url_str[:60] if base_url_str else "")
         return CodexAuxiliaryClient(client_obj, final_model_str)
-    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, req.api_mode)
+    # A profile that declares the Messages wire (commandcode-anthropic) is on it whatever the URL
+    # looks like; the same declaration gates ``_reasoning_config`` in _build_call_kwargs.
+    api_mode = req.api_mode or _profile_declared_messages_wire(req.provider)
+    return _maybe_wrap_anthropic(client_obj, final_model_str, api_key_str, base_url_str, api_mode)
+
+
+def _profile_declared_messages_wire(provider: str) -> Optional[str]:
+    """``"anthropic_messages"`` when the registered profile declares that api_mode, else None."""
+    from providers import get_provider_profile
+    profile = get_provider_profile(str(provider or "").strip().lower())
+    return "anthropic_messages" if profile is not None and profile.api_mode == "anthropic_messages" else None
 
 
 def _route_client(req: _ResolveRequest, client_obj: Any, final_model_str: Optional[str]) -> _ResolveResult:
@@ -5548,6 +5569,13 @@ def _get_cached_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
+    if client is not None and _aux_probe_active():
+        # Availability probes answer "resolvable?" and must leave the cache untouched: the
+        # probe stub (bare, or wrapped in a Codex/Anthropic adapter whose leaf is the stub)
+        # shares the runtime key, and a cached one is served to every later caller — the
+        # next probe dies in _compat_model() on stub attribute access, so check_fns flip to
+        # False and vision tools vanish for the process lifetime (#87654).
+        return client, model or default_model
     if client is not None:
         with _client_cache_lock:
             if cache_key not in _client_cache:
@@ -5561,7 +5589,7 @@ def _get_cached_client(
                 client, default_model, _ = _client_cache[cache_key]
                 # Race loser was never exposed to a caller — safe to close now.
                 _close_cached_client(built_client, close_async=async_mode)
-    return client, model or default_model
+    return client, _compat_model(client, model, default_model)
 
 
 # Aliases for direct REST APIs not modeled in PROVIDER_REGISTRY, so ``auxiliary.<task>.provider:
@@ -5605,7 +5633,7 @@ def _expand_direct_api_alias(prov: Optional[str], existing_base: Optional[str]) 
         from hermes_cli.runtime_provider import _get_named_custom_provider
         if _get_named_custom_provider(prov) is not None:
             return prov, existing_base
-    return "custom", existing_base or os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/") or target_base
+    return "custom", existing_base or _scoped_key_env("OPENAI_BASE_URL").rstrip("/") or target_base
 
 
 def _preserve_provider_with_base_url(prov: Optional[str]) -> bool:
@@ -5850,8 +5878,10 @@ def _get_task_extra_body(task: str) -> Dict[str, Any]:
 # During provider incidents each call also retries / fans out across the fallback chain, multiplying request
 # volume on already-degraded endpoints. A per-task semaphore caps in-flight calls so retry amplification
 # stays bounded. See #23324.
-_aux_sync_semaphores: Dict[str, Tuple[int, threading.BoundedSemaphore]] = {}
-_aux_async_semaphores: Dict[Tuple[str, int], Tuple[int, Any]] = {}
+# Keyed by profile home as well: the limit is the profile's ``auxiliary.<task>.max_concurrency``, and two
+# multiplexed profiles with different limits would otherwise rebuild (and reset) one shared semaphore.
+_aux_sync_semaphores: Dict[Tuple[str, str], Tuple[int, threading.BoundedSemaphore]] = {}
+_aux_async_semaphores: Dict[Tuple[str, str, int], Tuple[int, Any]] = {}
 _aux_sem_lock = threading.Lock()
 
 
@@ -5879,7 +5909,10 @@ def _cached_semaphore(store: dict, key: Any, limit: int, factory: Callable[[int]
 def _acquire_sync_aux_semaphore(task: Optional[str]) -> Optional[threading.BoundedSemaphore]:
     """Get a per-task sync semaphore, rebuilding it after a config change."""
     limit = _get_task_max_concurrency(task)
-    return None if limit is None else _cached_semaphore(_aux_sync_semaphores, task, limit, threading.BoundedSemaphore)
+    if limit is None:
+        return None
+    from hermes_constants import hermes_home_key
+    return _cached_semaphore(_aux_sync_semaphores, (hermes_home_key(), task), limit, threading.BoundedSemaphore)
 
 
 def _acquire_async_aux_semaphore(task: Optional[str]):
@@ -5892,7 +5925,8 @@ def _acquire_async_aux_semaphore(task: Optional[str]):
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return None
-    return _cached_semaphore(_aux_async_semaphores, (task, id(loop)), limit, asyncio.Semaphore)
+    from hermes_constants import hermes_home_key
+    return _cached_semaphore(_aux_async_semaphores, (hermes_home_key(), task, id(loop)), limit, asyncio.Semaphore)
 
 
 def _reset_aux_semaphores() -> None:
@@ -6035,6 +6069,7 @@ class _ProfileProjection(NamedTuple):
     reasoning_extra: Dict[str, Any]
     top_level: Dict[str, Any]
     handles_reasoning: bool
+    messages_wire: bool = False
 
 
 def _project_provider_profile(
@@ -6045,11 +6080,13 @@ def _project_provider_profile(
     reasoning_extra: Dict[str, Any] = {}
     top_level: Dict[str, Any] = {}
     handles_reasoning = False
+    messages_wire = False
     try:
         from providers import get_provider_profile
         from providers.base import ProviderProfile
         profile = get_provider_profile(provider_norm)
         if profile is not None:
+            messages_wire = profile.api_mode == "anthropic_messages"
             body = profile.build_extra_body(model=model, base_url=effective_base, reasoning_config=reasoning_config) or {}
             reasoning_extra, top_level = profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config, supports_reasoning=reasoning_config is not None,
@@ -6065,7 +6102,7 @@ def _project_provider_profile(
             )
     except Exception as exc:
         logger.debug("_build_call_kwargs: provider profile projection failed for %s: %s", provider, exc)
-    return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning)
+    return _ProfileProjection(body, reasoning_extra, top_level, handles_reasoning, messages_wire)
 
 
 def _merge_aux_extra_body(
@@ -6131,11 +6168,14 @@ def _build_call_kwargs(
         kwargs["extra_body"] = merged_extra
     # Anthropic Messages adapters take reasoning via a private kwarg that plain OpenAI SDK clients
     # would reject; Portal Claude is dual-wire, so include it only when the catalog id selects
-    # /v1/messages.
+    # /v1/messages. A profile declaring api_mode=anthropic_messages (commandcode-anthropic) is on
+    # that wire regardless of URL shape — once it overrides build_api_kwargs_extras the generic
+    # ``extra_body.reasoning`` fallback the adapter used to read is gone, so this is the adapter's
+    # only path. _wrap_transport wraps such providers on the same declaration.
     if reasoning_config and isinstance(reasoning_config, dict):
         raw_base = base_url or ""
         if (
-            provider_norm == "anthropic" or _nous_on_messages_wire(provider_norm, model)
+            provider_norm == "anthropic" or projection.messages_wire or _nous_on_messages_wire(provider_norm, model)
             or _endpoint_speaks_anthropic_messages(raw_base) or _is_anthropic_compat_endpoint(provider_norm, raw_base)
         ):
             kwargs["_reasoning_config"] = dict(reasoning_config)

@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
@@ -29,7 +30,6 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
-import { compactNumber } from '@/lib/format'
 import { Loader2 } from '@/lib/icons'
 import { queryClient } from '@/lib/query-client'
 import { invalidateSlashCompletions } from '@/lib/slash-completion-cache'

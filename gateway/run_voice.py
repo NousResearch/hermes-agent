@@ -309,7 +309,22 @@ class GatewayVoiceMixin:
             return False
         # Dedup: base adapter auto-TTS already handles voice input (play_tts plays in VC when
         # connected) — unless streaming consumed the text (already_sent): then the runner must.
-        return not (is_voice_input and not already_sent)
+        #
+        # Exception: when the bot is in a Discord voice channel, the runner's
+        # _send_voice_reply() is the only path that reliably calls
+        # play_in_voice_channel(). The base adapter's play_tts() override routes
+        # to the VC too, but this dedup skip prevents _send_voice_reply from
+        # running, and the base adapter path can fail silently when the
+        # response was already sent via streaming. So for VC-connected Discord,
+        # let the runner handle it. (#101185)
+        if is_voice_input and not already_sent:
+            guild_id = self._get_guild_id(event)
+            is_in_vc = getattr(adapter, "is_in_voice_channel", None)
+            if guild_id and callable(is_in_vc) and is_in_vc(guild_id):
+                pass  # Don't skip — let _send_voice_reply play in VC
+            else:
+                return False
+        return True
 
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))

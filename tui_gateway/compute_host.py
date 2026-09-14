@@ -42,8 +42,10 @@ class _HostTransport:
 
 
 # Slice of ``ComputeHost.shutdown``'s budget held back for the post-drain finalize: the
-# supervisor SIGKILLs the host 10s (= default ``wait``) after SIGTERM, so a drain that ate
+# supervisor force-kills the host 10s (= default ``wait``) after SIGTERM, so a drain that ate
 # the whole budget would leave the flush racing that kill and persist nothing.
+# (Force-kill is SIGKILL on POSIX, taskkill /T /F on Windows — see
+# ``gateway.status.terminate_pid``.)
 _FLUSH_RESERVE_SECS = 1.0
 
 # Fallback control.error text when a routed server method returns an error without a message.

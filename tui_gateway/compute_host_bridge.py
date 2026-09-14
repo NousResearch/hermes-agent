@@ -195,15 +195,24 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
 
 
 def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
+    turn_error = frame.get("type") == "turn.error"
+    error_message = (
+        str(frame.get("message") or "compute host turn failed") if turn_error else None
+    )
     with session["history_lock"]:
         _compute_host_adopt_frame_meta(session, frame)
         session["running"] = False
         session["last_active"] = time.time()
-        _clear_inflight_turn(session)
+        if turn_error:
+            _fail_inflight_turn(session, error_message)
+        else:
+            _clear_inflight_turn(session)
         session.pop("_compute_host_pending_clarify", None)
-    if frame.get("type") == "turn.error":
-        message = str(frame.get("message") or "compute host turn failed")
-        _emit("message.complete", sid, {"text": f"Error: {message}", "status": "error"})
+    if turn_error:
+        _emit("message.complete", sid, {
+            "text": f"Error: {error_message}", "status": "error",
+            "error": error_message, "recoverable": True,
+        })
     _apply_compute_host_metadata_mirror(session, frame)
     info = _compute_host_session_info(session)
     if not frame.get("session_info_emitted"):

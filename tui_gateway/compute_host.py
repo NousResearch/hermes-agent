@@ -257,7 +257,11 @@ class ComputeHost:
                 if session is not None:
                     with session.get("history_lock", threading.Lock()):
                         session["running"] = False
-                        server._clear_inflight_turn(session)
+                        # Keep the failed turn available for a reconnecting client.  The
+                        # compute host is the last owner of this snapshot on this path;
+                        # clearing it before sending turn.error makes a WAL failure
+                        # indistinguishable from a lost turn after a disconnect.
+                        server._fail_inflight_turn(session, exc)
             self._reply("turn.error", sid, request_id, reason="exception", message=str(exc))
 
     def _emit_turn_activity(self, sid: str, session: dict, turn_id: str, started_at: float) -> None:

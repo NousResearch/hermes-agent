@@ -91,11 +91,32 @@ def test_battery_score_rejects_malformed_evidence(passed, cost):
         BatteryScore(passed, cost)
 
 
+@pytest.mark.parametrize(
+    "validity",
+    (
+        {"patch_applies": "false", "tests_pass": True, "typecheck_pass": True},
+        {"patch_applies": True, "tests_pass": 1, "typecheck_pass": True},
+        {"patch_applies": True, "tests_pass": True, "typecheck_pass": 0},
+    ),
+)
+def test_calibration_rejects_non_boolean_validity_evidence(validity):
+    raw = {
+        "case_id": "bad-validity",
+        "label": "known_bad",
+        "validity": validity,
+        "activation": {"replayed_trace_ids": [], "activated_trace_ids": []},
+        "scores": [],
+    }
+
+    with pytest.raises(ValueError, match="validity evidence fields must be booleans"):
+        CalibrationCase.from_dict(raw)
+
+
 def test_calibration_rejects_malformed_battery_score():
     raw = {
         "case_id": "bad-evidence",
         "label": "known_bad",
-        "validity": {"schema_valid": True, "tests_passed": True, "policy_compliant": True},
+        "validity": {"patch_applies": True, "tests_pass": True, "typecheck_pass": True},
         "activation": {"replayed_trace_ids": [], "activated_trace_ids": []},
         "scores": [{"task_id": "sealed-1", "baseline": {"passed": False, "cost": 1.0}, "candidate": {"passed": True, "cost": float("nan")}}],
     }

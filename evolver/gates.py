@@ -23,6 +23,10 @@ class ValidityEvidence:
     tests_pass: bool
     typecheck_pass: bool
 
+    def __post_init__(self) -> None:
+        if any(type(value) is not bool for value in (self.patch_applies, self.tests_pass, self.typecheck_pass)):
+            raise ValueError("validity evidence fields must be booleans")
+
 
 @dataclass(frozen=True)
 class ActivationEvidence:

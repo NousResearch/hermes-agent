@@ -267,6 +267,8 @@ class PathologyArchive:
 
         root = Path(root)
         paths: Iterable[Path] = [root] if root.is_file() else sorted((*root.rglob("*.json"), *root.rglob("*.jsonl")))
+        archive_path = self.path.resolve()
+        paths = [path for path in paths if path.resolve() != archive_path]
         written = 0
         for path in paths:
             with path.open(encoding="utf-8") as handle:

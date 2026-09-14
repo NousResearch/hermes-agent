@@ -111,3 +111,17 @@ def test_ingest_assigns_distinct_repeatable_ids_to_trace_less_runner_errors(tmp_
         separate_root_ids.append(next(iter(separate_archive)).task.task_id)
 
     assert len(set(separate_root_ids)) == 2
+
+
+def test_repeated_directory_ingestion_excludes_archive_output(tmp_path):
+    source = tmp_path / "fix_results" / "runs.jsonl"
+    source.parent.mkdir()
+    source.write_text(
+        json.dumps({"completed": False, "error": "sandbox setup failed", "conversations": []}) + "\n",
+        encoding="utf-8",
+    )
+    archive = PathologyArchive(tmp_path / "archive" / "pathologies.jsonl")
+
+    assert archive.ingest_fix_results(tmp_path) == 1
+    assert archive.ingest_fix_results(tmp_path) == 1
+    assert len(list(archive)) == 2

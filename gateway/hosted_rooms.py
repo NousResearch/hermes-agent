@@ -13,7 +13,7 @@ import re
 import sqlite3
 import secrets
 import time
-from contextlib import closing
+from contextlib import closing, nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Any, Mapping
@@ -638,8 +638,10 @@ def revoke_room_grant_id(
     claims: Mapping[str, Any],
     expires_at: float,
     now: float | None = None,
+    _connection=None,
+    _authorize_write=None,
 ) -> None:
-    """Revoke only one bearer grant without fencing concurrent replacements."""
+    """Revoke one bearer; native callers supply already fenced store connections."""
 
     timestamp = float(now if now is not None else time.time())
     expiry = float(expires_at)
@@ -649,15 +651,21 @@ def revoke_room_grant_id(
     if len(token_sha256) != 64 or any(c not in "0123456789abcdef" for c in token_sha256):
         raise HostedRoomError("exact revocation requires a verified signed-token digest")
     scope_key = _room_grant_scope_key(claims)
-    with _transaction(db_path, immediate=True) as conn:
+    with (nullcontext(_connection) if _connection is not None else _transaction(db_path, immediate=True)) as conn:
+        if _authorize_write is not None:
+            _authorize_write(conn)
         conn.execute(
             "DELETE FROM hosted_room_revoked_grant_ids WHERE expires_at<=?",
             (timestamp,),
         )
+        if _authorize_write is not None:
+            _authorize_write(conn)
         conn.execute(
             "DELETE FROM hosted_room_revoked_grant_tokens WHERE expires_at<=?",
             (timestamp,),
         )
+        if _authorize_write is not None:
+            _authorize_write(conn)
         conn.execute(
             """INSERT INTO hosted_room_revoked_grant_tokens(
                    scope_key, token_sha256, expires_at
@@ -670,15 +678,20 @@ def revoke_room_grant_id(
 
 
 def revoke_room_grant_scope(
-    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None) -> None:
+    db_path: DbPath, *, claims: Mapping[str, Any], expires_at: float, now: float | None = None,
+    _connection=None, _authorize_write=None) -> None:
     """Revoke every grant issued at or before now for one exact room scope."""
     scope_key = _room_grant_scope_key(claims)
     timestamp = _now(now)
     expiry = float(expires_at)
     if expiry <= timestamp:
         return
-    with _transaction(db_path, immediate=True) as conn:
+    with (nullcontext(_connection) if _connection is not None else _transaction(db_path, immediate=True)) as conn:
+        if _authorize_write is not None:
+            _authorize_write(conn)
         conn.execute("DELETE FROM hosted_room_revoked_grants WHERE expires_at<=?", (timestamp,))
+        if _authorize_write is not None:
+            _authorize_write(conn)
         conn.execute("""INSERT INTO hosted_room_revoked_grants(
                    scope_key, expires_at, revoked_before
                ) VALUES (?, ?, ?)
@@ -687,6 +700,8 @@ def revoke_room_grant_scope(
                                   excluded.expires_at),
                    revoked_before=MAX(hosted_room_revoked_grants.revoked_before,
                                       excluded.revoked_before)""", (scope_key, expiry, timestamp))
+        if _authorize_write is not None:
+            _authorize_write(conn)
         conn.execute("""UPDATE hosted_room_peer_reservations SET revoked_at=?, updated_at=? WHERE room_id=?
                 AND member_id=? AND target_profile=? AND authority_gateway_id=?
                 AND authority_epoch=?""",

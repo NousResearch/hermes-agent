@@ -209,16 +209,15 @@ async def _handle_room_member_invitation(
         )
     try:
         from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant, _DISPATCH_FIELDS
-        from gateway.session_group_peers import invitation_lifetimes
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.session_group_peers import invitation_preflight
 
         profile = _effective_room_profile(_api_request_profile)
         unavailable = _room_peer_unavailable(self, profile, _openai_error=_openai_error)
         if unavailable is not None:
             return unavailable
         target_install_id = hosted_rooms.local_authority_gateway_id()
-        ttl, status_ttl = invitation_lifetimes(body)
-        identity = {name: _DISPATCH_FIELDS[name](body[name], field=name) for name in _ROOM_IDENTITY_FIELDS}
+        identity, (ttl, status_ttl) = invitation_preflight(body)
         execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
         if not catalog['text'] or execution_policy['approval_mode'] == 'off':
             raise ValueError('remote room execution requires an enabled approval policy')

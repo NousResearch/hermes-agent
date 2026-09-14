@@ -88,7 +88,7 @@ def portal(monkeypatch, tmp_path):
             kw["transport"] = httpx.MockTransport(fake.handler)
             super().__init__(*a, **kw)
     monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    anon_auth._mint_failed = False
+    anon_auth.reset_mint_memo_for_tests()
     from hermes_cli import free_tier_bootstrap as _fb
     _fb.reset_for_tests()
     # resolve_nous_access_token memoises the last token for 5 s per profile home (dict); a token minted

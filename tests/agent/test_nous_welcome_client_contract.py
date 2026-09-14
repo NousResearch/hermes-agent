@@ -131,13 +131,13 @@ class TestRefusalCopy:
     def test_copy_names_the_served_model_and_the_sign_in(self):
         refusal = anon_auth.parse_welcome_refusal({"reason": "model_not_free", "alternates": ["nous/welcome"]})
         chat = anon_auth.welcome_refusal_copy(refusal, model="gpt-5", in_chat=True)
-        assert chat == "gpt-5 isn't on the Nous free tier; it serves nous/welcome only. Sign in with a Nous account for the full catalog: /login."
+        assert chat == "gpt-5 isn't available without signing in, so Hermes uses nous/welcome for now. Sign in for more models. To sign in: /login."
         terminal = anon_auth.welcome_refusal_copy(refusal, model="gpt-5", in_chat=False)
         assert "`hermes auth upgrade`" in terminal and "/login" not in terminal
 
     def test_capacity_copy_carries_the_retry(self):
         refusal = anon_auth.parse_welcome_refusal({"reason": "at_capacity", "retry_after": 30})
-        assert "Retrying in 30s." in anon_auth.welcome_refusal_copy(refusal)
+        assert "try again in about a minute" in anon_auth.welcome_refusal_copy(refusal)
 
     @pytest.mark.parametrize("copy_fn, args", [
         (anon_auth.welcome_refusal_copy, ({"reason": r},)) for r in sorted(anon_auth.WELCOME_REFUSAL_REASONS)

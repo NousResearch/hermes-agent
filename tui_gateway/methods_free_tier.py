@@ -31,10 +31,15 @@ def _(rid, params: dict) -> dict:
         from hermes_cli import anon_auth
         has_guest = anon_auth.has_guest()
         enabled = anon_auth.guest_enabled()
-        return _ok(rid, {
+        payload = {
             "has_guest": has_guest, "enabled": enabled, "available": has_guest and enabled,
             "notice_pending": bool(has_guest and enabled and anon_auth.guest_notice_pending()),
-            "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL})
+            "model": anon_auth.GUEST_MODEL, "label": anon_auth.FREE_TIER_LABEL}
+        if enabled and not has_guest:
+            # Why there is no identity, when the last attempt to make one failed:
+            # ``{error, error_code, retryable, retry_after}`` (the mint memo's verdict).
+            payload.update(anon_auth.last_mint_failure() or {})
+        return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5090, str(e))
 
@@ -45,21 +50,32 @@ def _(rid, params: dict) -> dict:
     """Explicit retry of the free-tier set-up for the focused profile: adopt the shared store's
     identity, else mint one (blocking, short timeout). The boot bootstrap normally did this already;
     the desktop calls this when the record says the identity is missing (portal down at boot, gate
-    turned on later) and the user asks again. ``{has_guest, enabled}``; ``error`` when the portal
-    refused."""
+    turned on later) and the user asks again. The user's click is the one attempt that may run
+    inside the mint memo's cooldown. ``{has_guest, enabled}``, plus
+    ``{error, error_code, retryable, retry_after}`` when the portal refused."""
     try:
         from hermes_cli import anon_auth
+        from hermes_cli import free_tier_bootstrap
         enabled = anon_auth.guest_enabled()
-        error = None
+        failure = None
         if enabled and not anon_auth.has_guest():
-            try:
-                anon_auth.ensure_portal_identity(explicit=True)
-            except Exception as exc:
-                logger.info("free tier provisioning failed: %s", exc)
-                error = str(exc)
-        payload = {"has_guest": anon_auth.has_guest(), "enabled": enabled}
-        if error:
-            payload["error"] = error
+            if free_tier_bootstrap.current_record() is not None and not params.get("profile"):
+                # The launch profile: refresh the boot record too, so ``setup.status`` and the
+                # ``setup.ready`` listeners move with the outcome.
+                failure = free_tier_bootstrap.retry_bootstrap_mint(force=True).failure_fields()
+            else:
+                try:
+                    anon_auth.ensure_portal_identity(explicit=True, force=True)
+                except Exception as exc:
+                    logger.info("free tier provisioning failed: %s", exc)
+                    err = anon_auth._classify_mint_exception(exc)
+                    failure = {"error": str(err), "error_code": str(err.code or ""),
+                               "retryable": err.code not in anon_auth.ANON_TERMINAL_CODES,
+                               "retry_after": int(err.retry_after or 0)}
+        has_guest = anon_auth.has_guest()
+        payload = {"has_guest": has_guest, "enabled": enabled}
+        if enabled and not has_guest:
+            payload.update(anon_auth.last_mint_failure() or failure or {})
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5092, str(e))

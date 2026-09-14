@@ -1013,10 +1013,14 @@ def resolve_nous_runtime_credentials(
         return _resolve_nous_runtime_credentials(
             timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
             force_refresh=force_refresh, stale_access_token=stale_access_token)
-    except AnonCredentialDead:
+    except AnonCredentialDead as dead_exc:
         from hermes_cli.auth import get_provider_auth_state
+        from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED
         dead = get_provider_auth_state("nous") or {}
-        clear_dead_guest("anon_credential_dead", dead_token=dead.get("anon_token"))
+        clear_dead_guest(str(dead_exc.code or "anon_credential_dead"), dead_token=dead.get("anon_token"))
+        # A locked account is retired but never silently replaced: the way forward is a sign-in.
+        if dead_exc.code == ANON_ACCOUNT_LOCKED:
+            raise
         if ensure_portal_identity(explicit=True, timeout_seconds=timeout_seconds) is None:
             raise
         return _resolve_nous_runtime_credentials(

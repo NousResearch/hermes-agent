@@ -110,6 +110,7 @@ def handle_api_error(
         api_error, provider=getattr(agent, "provider", "") or "",
         model=getattr(agent, "model", "") or "", approx_tokens=approx_tokens,
         context_length=_ctx_len, num_messages=len(api_messages) if api_messages else 0,
+        base_url=str(getattr(agent, "base_url", "") or ""),
     )
     logger.debug(
         "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",

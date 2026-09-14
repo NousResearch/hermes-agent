@@ -606,8 +606,9 @@ class ClientLifecycleMixin:
         api_key, base_url = creds.get("api_key"), creds.get("base_url")
         if not _valid_credential_pair(api_key, base_url):
             return False
-        if str(api_key).strip() == str(self.api_key or "").strip():
-            return False  # store holds the same key: nothing to adopt, no client rebuild
+        if (str(api_key).strip() == str(self.api_key or "").strip()
+                and str(base_url).strip().rstrip("/") == str(self.base_url or "").strip().rstrip("/")):
+            return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
         if require_account is not None:
             try:
                 from hermes_cli.auth_constants import _decode_jwt_claims

@@ -898,6 +898,28 @@ the `hermes tools` UI.
 
 Leaving the list empty, or omitting the key, is a no-op.
 
+## Per-Tool Disable
+
+To remove single tools while keeping the rest of their toolset, list the tool
+names under `tools.disabled_functions`:
+
+```yaml
+tools:
+  disabled_functions:
+    - skill_manage      # keep skills_list / skill_view, drop editing
+    - web_extract       # keep web_search, use your own scraper MCP instead
+```
+
+A disabled tool is removed everywhere, after every toolset rule: the CLI, every
+gateway platform, cron jobs, delegated subagents, and the Tool Search catalog.
+Tools a context engine or memory provider adds are filtered too. Its schema is
+never sent, a call to it is rejected as an unknown tool, and direct registry
+calls (for example from `execute_code`) get a "disabled by configuration"
+error. Editing the list takes effect on the next agent the gateway builds, with
+no restart needed.
+
+Leaving the list empty, or omitting the key, is a no-op.
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:

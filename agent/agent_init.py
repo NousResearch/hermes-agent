@@ -1947,6 +1947,8 @@ def _inject_context_engine_tools(agent):
             t.get("function", {}).get("name") for t in agent.tools if isinstance(t, dict)
         }
         from agent.memory_manager import normalize_tool_schema
+        from model_tools import disabled_function_names
+        _disabled_names = disabled_function_names()
         for _raw_schema in agent.context_compressor.get_tool_schemas():
             _schema = normalize_tool_schema(_raw_schema)
             if _schema is None:
@@ -1959,8 +1961,8 @@ def _inject_context_engine_tools(agent):
                 )
                 continue
             _tname = _schema["name"]
-            if _tname in _existing_tool_names:
-                continue  # already registered via plugin/cache path
+            if _tname in _existing_tool_names or _tname in _disabled_names:
+                continue  # already registered via plugin/cache path, or tools.disabled_functions
             agent.tools.append({"type": "function", "function": _schema})
             for _names in (agent.valid_tool_names, agent._context_engine_tool_names, _existing_tool_names):
                 _names.add(_tname)

@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -46,6 +47,27 @@ def _pid_alive(pid: int) -> bool:
 def _kill(pid: int, sig) -> None:
     with contextlib.suppress(ProcessLookupError):
         os.kill(pid, sig)
+
+
+def _pid_is_recorded_bot(pid: int, record: Dict[str, Any]) -> bool:
+    """Start fingerprints are opaque host-native values, not wall-clock seconds."""
+    if not _pid_alive(pid):
+        return False
+    from gateway.status import get_process_start_time
+
+    recorded_start = record.get("pid_start_time")
+    if recorded_start is not None:
+        return type(recorded_start) is int and get_process_start_time(pid) == recorded_start
+    # Legacy records lack a fingerprint. Keep argv boundaries: a script or
+    # `python -c` argument mentioning meet_bot is not a bot invocation.
+    import psutil
+
+    try:
+        argv = psutil.Process(pid).cmdline()
+    except psutil.Error:
+        return False
+    return (len(argv) == 3 and argv[1:] == ["-m", "plugins.google_meet.meet_bot"]
+            and re.fullmatch(r"python(?:\d+(?:\.\d+)*)?w?(?:\.exe)?", Path(argv[0]).name.lower()) is not None)
 
 
 _NO_ACTIVE = {"ok": False, "reason": "no active meeting"}
@@ -94,7 +116,9 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
         proc = subprocess.Popen([sys.executable, "-m", "plugins.google_meet.meet_bot"], stdin=subprocess.DEVNULL,
                                 stdout=log_fh, stderr=subprocess.STDOUT, env=env, start_new_session=True,
                                 close_fds=True)
-    record = {"pid": proc.pid, "meeting_id": meeting_id, "out_dir": str(out), "url": url,
+    from gateway.status import get_process_start_time
+    record = {"pid": proc.pid, "pid_start_time": get_process_start_time(proc.pid),
+              "meeting_id": meeting_id, "out_dir": str(out), "url": url,
               "started_at": time.time(), "session_id": session_id, "log_path": str(log_path), "mode": mode}
     _write_active(record)
     return {"ok": True, **record}
@@ -153,14 +177,15 @@ def stop(*, reason: str = "requested") -> Dict[str, Any]:
         return dict(_NO_ACTIVE)
     pid = int(active.get("pid", 0))
     out_dir = active.get("out_dir")
-    if _pid_alive(pid):
+    if _pid_is_recorded_bot(pid, active):
         _kill(pid, signal.SIGTERM)
         for _ in range(20):
-            if not _pid_alive(pid):
+            if not _pid_is_recorded_bot(pid, active):
                 break
             time.sleep(0.5)
         else:
-            _kill(pid, signal.SIGKILL)  # windows-footgun: ok — POSIX-only plugin (google_meet registers no-op on Windows; see __init__.py)
+            if _pid_is_recorded_bot(pid, active):
+                _kill(pid, signal.SIGKILL)  # POSIX-only plugin; recheck after the final wait.
     (_root() / ".active.json").unlink(missing_ok=True)
     return {"ok": True, "reason": reason, "meetingId": active.get("meeting_id"),
             "transcriptPath": str(Path(out_dir) / "transcript.txt") if out_dir else None}

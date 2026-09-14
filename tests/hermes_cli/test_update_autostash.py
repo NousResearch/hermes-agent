@@ -151,6 +151,7 @@ def _make_update_side_effect(
     merge_base_exists=True,
     update_ref_fails=False,
     pre_pull_sha_unavailable=False,
+    behind_count=None,
     existing_rescue_refs=None,
 ):
     """Build a subprocess.run side_effect for cmd_update tests.
@@ -172,6 +173,11 @@ def _make_update_side_effect(
     ``existing_rescue_refs`` simulates the refs already present under
     ``refs/hermes-update-backups/orphan-<branch>-*`` (oldest first) so the
     ``_prune_orphan_rescue_refs`` cleanup pass has something to trim.
+
+    ``behind_count`` models the REMOTE-ahead ``rev-list HEAD..origin/<branch>`` probe separately from
+    ``commit_count`` (the LOCAL-ahead ``origin/<branch>..HEAD`` one). With a single number for both
+    directions a "zero local commits" case also reports zero remote commits, and the update returns on
+    the already-up-to-date path instead of exercising the divergence it claims to test.
     """
     recorded = []
     head_sha_calls = []
@@ -204,6 +210,10 @@ def _make_update_side_effect(
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
+            # Direction matters: ``HEAD..origin/<branch>`` is the REMOTE-ahead probe, everything else
+            # (``origin/<branch>..HEAD``) is the LOCAL-ahead count the backup path keys on.
+            if behind_count is not None and "HEAD..origin/" in joined:
+                return SimpleNamespace(stdout=f"{behind_count}\n", stderr="", returncode=0)
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "merge-base" in joined:
             if merge_base_exists:
@@ -435,18 +445,30 @@ def test_prune_orphan_rescue_refs_leaves_unparseable_names_alone():
 def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, capsys):
     """Common ancestor still exists (e.g. upstream force-push) and there are no
     local-only commits → no rescue ref, no orphan messaging, behavior identical
-    to before #87694."""
+    to before #87694.
+
+    ``behind_count``/``commit_count`` are set separately so this really travels the divergence path:
+    with one number for both directions the "remote ahead by 3" update reported zero behind and
+    returned on the already-up-to-date path, asserting nothing. ``reset_fails=True`` keeps the run off
+    the post-reset gateway restart (blocked by the conftest live-system guard on this host) while still
+    proving the reset was attempted from the divergence path.
+    """
     _setup_update_mocks(monkeypatch, tmp_path)
 
     side_effect, recorded = _make_update_side_effect(
-        ff_only_fails=True, merge_base_exists=True, commit_count="0",
+        ff_only_fails=True, merge_base_exists=True, commit_count="0", behind_count="3",
+        reset_fails=True,
     )
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    with pytest.raises(SystemExit):
+        hermes_main.cmd_update(SimpleNamespace())
 
     update_ref_calls = [c for c in recorded if "update-ref" in " ".join(str(x) for x in c)]
     assert update_ref_calls == []
+
+    reset_calls = [c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c]
+    assert len(reset_calls) == 1, "the divergence path must reach the reset"
 
     out = capsys.readouterr().out
     assert "orphan divergence" not in out

@@ -14,7 +14,6 @@ from gateway.session_contract import Principal
 from hermes_state_runtime import RuntimeStoreError, _epoch
 
 _PREFIX = 'gateway.peer.invite.v1.'
-_PERMISSIONS = ('approve', 'dispatch', 'status', 'stop')
 
 
 def invitation_lifetimes(params):
@@ -122,7 +121,7 @@ def _invite(operation, adapter, params):
     authority, actor = operation.authority, operation.actor
     run_store = adapter._run_idempotency_store
     from gateway import hosted_rooms
-    from gateway.hosted_room_peer import _identifier, issue_room_grant, decode_room_grant
+    from gateway.hosted_room_peer import _identifier, issue_room_grant, decode_room_grant, invitation_permissions
     from gateway.platforms.api_server_room_grants import _local_room_catalog
     from gateway.hosted_room_grant_state import reserve_grant_state
     from gateway.session_peer_target import target_policy, require_current_grant
@@ -136,11 +135,12 @@ def _invite(operation, adapter, params):
     _, catalog = _local_room_catalog(adapter, 'default', installation)
     if not catalog['text']:
         raise RuntimeStoreError('canonical_room_peer_unsupported')
+    permissions = invitation_permissions(catalog)
     endpoint = dict(catalog['endpoint'])
     intent = dict(identity, subject=actor.subject, home=operation.profile_id, epoch=operation.epoch,
                   endpoint=endpoint,
                   installation=installation, policy=policy, catalog=catalog, grant_id=supplied_id,
-                  ttl_seconds=ttl, status_ttl_seconds=status_ttl, permissions=list(_PERMISSIONS))
+                  ttl_seconds=ttl, status_ttl_seconds=status_ttl, permissions=list(permissions))
     key = _PREFIX + hashlib.sha256(request_id.encode()).hexdigest()
 
     def require_target(conn):
@@ -150,6 +150,9 @@ def _invite(operation, adapter, params):
         current, current_paths, current_policy = target_policy(adapter, connection=conn)
         if current is not authority or current_paths != operation.paths or current_policy != policy:
             raise RuntimeStoreError('room_execution_policy_changed')
+        _, current_catalog = _local_room_catalog(adapter, 'default', installation, _connection=conn)
+        if current_catalog != catalog or invitation_permissions(current_catalog) != permissions:
+            raise RuntimeStoreError('room_capability_catalog_changed')
         operation.require_current(conn)
 
     def prepare(conn):
@@ -164,7 +167,7 @@ def _invite(operation, adapter, params):
             return receipt, False
         issue = dict(identity, grant_id=supplied_id or 'grant-' + uuid.uuid4().hex,
                      target_install_id=installation, target_profile='default',
-                     execution_policy_digest=policy['policy_digest'], permissions=list(_PERMISSIONS),
+                     execution_policy_digest=policy['policy_digest'], permissions=list(permissions),
                      issued_at=time.time(), ttl_seconds=ttl, status_ttl_seconds=status_ttl)
         receipt = dict(intent=intent, issue=issue, status='pending')
         operation.require_current(conn)

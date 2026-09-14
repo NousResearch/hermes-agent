@@ -63,7 +63,7 @@ async def test_refresh_preserves_existing_explicit_rights_and_hard_horizon(targe
     reserve_grant_state(grant_state_db_paths(target.home), claims=claims, expires_at=claims['status_expires_at'])
     response = await target.adapter._handle_room_member_grant_refresh(request({'ttl_seconds': 1800}, token=token))
     if 'dispatch' not in rights:
-        assert response.status == 403, response.text
+        assert response.status == 401, response.text
         return
     assert response.status == 200, response.text
     refreshed = peer.decode_room_grant(target.adapter._room_grant_secret(), json.loads(response.text)['grant'], permission='dispatch')

@@ -209,7 +209,7 @@ async def _handle_room_member_invitation(
         )
     try:
         from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant, invitation_permissions
         from gateway.session_group_peers import invitation_preflight
 
         profile = _effective_room_profile(_api_request_profile)
@@ -221,11 +221,12 @@ async def _handle_room_member_invitation(
         execution_policy, catalog = _local_room_catalog(self, profile, target_install_id)
         if not catalog['text'] or execution_policy['approval_mode'] == 'off':
             raise ValueError('remote room execution requires an enabled approval policy')
+        permissions = invitation_permissions(catalog)
         token = issue_room_grant(
             self._room_grant_secret(),
             grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
             **identity,
-            permissions=("approve", "dispatch", "status", "stop"),
+            permissions=permissions,
             target_install_id=target_install_id,
             target_profile=profile,
             execution_policy_digest=execution_policy["policy_digest"],
@@ -253,6 +254,10 @@ async def _handle_room_member_invitation(
                     _, _, current_policy = target_policy(self, profile, connection=conn)
                     if current_policy != execution_policy:
                         raise ValueError('room execution policy changed')
+                    _, current_catalog = _local_room_catalog(
+                        self, profile, target_install_id, _connection=conn)
+                    if current_catalog != catalog or invitation_permissions(current_catalog) != permissions:
+                        raise ValueError('room capability catalog changed')
                     require_current_grant(shared, claims)
                     require_current_grant(conn, claims)
                 authority.db._execute_write(confirm)

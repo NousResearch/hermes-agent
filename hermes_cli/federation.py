@@ -51,6 +51,11 @@ def _federation_seed_reservation_is_stale(profile_dir: Path) -> bool:
     try:
         payload = json.loads(reservation.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError):
+        # An empty or unparseable lock has no PID and therefore no live
+        # owner — treat it as immediately reclaimable rather than waiting
+        # out the age floor.
+        if not reservation.exists() or reservation.stat().st_size == 0:
+            return True
         return time.time() - stat.st_mtime >= _FEDERATION_SEED_RESERVATION_STALE_SECONDS
 
     pid = payload.get("pid") if isinstance(payload, dict) else None

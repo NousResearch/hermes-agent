@@ -23,6 +23,10 @@ export interface ComposerScope {
   /** This scope's "turn parked on user input" edge — gates Esc-to-stop. */
   $awaitingInput: ReadableAtom<boolean>
   attachments: ComposerAttachmentScope
+  /** The attachment atom outlives this mounted composer (plugin-native panels).
+   * On remount, an empty draft-stash snapshot must not erase the still-owned
+   * unsent chips from that retained scope. */
+  retainAttachmentsAcrossUnmount?: boolean
   /** This scope's transcript. Read it imperatively (input-history browse) to
    *  keep streaming out of the composer's renders; subscribe only off-render
    *  (auto-speak) where the reply edge is the whole point. */

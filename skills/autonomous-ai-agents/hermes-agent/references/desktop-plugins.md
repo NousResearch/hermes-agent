@@ -145,10 +145,14 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   only when the plugin is in `plugins.enabled` in `config.yaml` (separate from
   the in-app enable toggle). For gateway-wide data use `host.request` /
   `host.onEvent` instead.
-- `Contribute` (mount-scoped): render `jsx(Contribute, { area, id, children })`
-  inside a component so page-owned chrome (e.g. a titlebar control in
   `TITLEBAR_AREAS.center`) leaves when the page unmounts — `ctx.register` is for
   permanent contributions.
+- Native chat: `host.createNativeChatSession({ route })` opens a real Hermes
+  conversation on one exact registry route (`connectionId` + `mode` + `profile` +
+  `targetProfile` from `host.profileRoutes()`) without navigating, selecting or
+  opening a tile; render the binding with `NativeChatPanel`. Private
+  (`hidden: true`) by default, resumed through the shared session store, drafts
+  retained across a panel close. Feature-detect it on older desktops.
 - `defaultEnabled: false` on the default export ships an opt-in plugin: it
   inventories in Settings → Plugins, off until the user flips it on.
 - Users manage plugins in Settings → Plugins (enable/disable live, reveal

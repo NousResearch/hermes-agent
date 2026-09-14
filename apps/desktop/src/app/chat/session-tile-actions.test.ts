@@ -20,9 +20,10 @@ const RUNTIME_SESSION_ID = 'rt-tile-current'
 const STORED_SESSION_ID = 'stored-tile-db'
 const RECOVERED_SESSION_ID = 'rt-tile-recovered'
 
-function renderTileActions() {
+function renderTileActions(options: { onRuntimeRecovered?: (runtimeId: string) => void } = {}) {
   return renderHook(() =>
     useSessionTileActions({
+      onRuntimeRecovered: options.onRuntimeRecovered,
       requestGateway: requestGatewayMock,
       runtimeId: RUNTIME_SESSION_ID,
       scope: MAIN_COMPOSER_SCOPE,
@@ -210,6 +211,41 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
     expect($activeSessionId.get()).toBe('foreground-runtime')
+  })
+
+  it('exports the recovered runtime to a non-layout native surface instead of leaving it on the stale binding', async () => {
+    const onRuntimeRecovered = vi.fn()
+    let submitAttempts = 0
+
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      if (method === 'prompt.submit') {
+        submitAttempts += 1
+
+        if (submitAttempts === 1) {
+          throw new Error('session not found')
+        }
+
+        return {}
+      }
+
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID }
+      }
+
+      return {}
+    })
+
+    const { result } = renderTileActions({ onRuntimeRecovered })
+
+    await act(async () => {
+      await expect(result.current.submitText('continue embedded chat')).resolves.toBe(true)
+    })
+
+    expect(onRuntimeRecovered).toHaveBeenCalledWith(RECOVERED_SESSION_ID)
+    // NativeChatPanel owns its runtime atom and rerenders SessionChatSurface /
+    // ChatBar from this callback. The generic action hook must not hide that
+    // recovery by mutating the layout-tile binding instead.
+    expect($sessionTiles.get()[0]?.runtimeId).toBe(RUNTIME_SESSION_ID)
   })
 })
 

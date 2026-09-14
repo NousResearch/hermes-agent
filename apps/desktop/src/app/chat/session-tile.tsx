@@ -37,7 +37,11 @@ import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
 import { transcribeAudioClientDirect } from '@/lib/voice-client-direct'
-import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
+import {
+  type ComposerAttachmentScope,
+  createComposerAttachmentScope,
+  draftTitleFor
+} from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -52,7 +56,7 @@ import {
   sessionPinId
 } from '@/store/session'
 import { isSessionRemovalPending } from '@/store/session-removal'
-import { requestForSessionProfile } from '@/store/session-request-router'
+import { requestForSessionProfile, type SessionOwnerRoute } from '@/store/session-request-router'
 import {
   $sessionStates,
   $sessionTileDelegateRevision,
@@ -173,32 +177,37 @@ const tileTranscribeAudio = async (audio: Blob) => {
   return (await transcribeAudio(await blobToDataUrl(audio), audio.type)).transcript
 }
 
-function TileChat({
+export function SessionChatSurface({
+  attachmentScope,
+  className,
+  forceFocused = false,
+  listSessionOnFirstSend = true,
+  onRetryResume,
+  onRuntimeRecovered,
+  ownerRoute,
+  retainAttachmentsAcrossUnmount = false,
   runtimeId,
+  scopeTarget,
+  sessionAnchorOverride,
   storedSessionId,
   view
 }: {
+  attachmentScope?: ComposerAttachmentScope
+  className?: string
+  forceFocused?: boolean
+  listSessionOnFirstSend?: boolean
+  onRetryResume?: () => void
+  onRuntimeRecovered?: (runtimeId: string) => void
+  ownerRoute?: SessionOwnerRoute
+  retainAttachmentsAcrossUnmount?: boolean
   runtimeId: string
+  scopeTarget?: string
+  sessionAnchorOverride?: null | string
   storedSessionId: string
   view: SessionView
 }) {
   const { gateway, requestGateway } = useGatewayRequest()
   const queryClient = useQueryClient()
-
-  // Owner ladder, same as useSessionTileActions (session-tile-actions.ts:99-103).
-  // Recomputed when the tile store or any owner-bearing session list changes,
-  // NOT on every render: this component re-renders per streamed token, and the
-  // lookup spreads three arrays before scanning them.
-  const tiles = useStore($sessionTiles)
-  const sessionRows = useStore($sessions)
-  const cronRows = useStore($cronSessions)
-  const messagingRows = useStore($messagingSessions)
-
-  const ownerRoute = useMemo(() => {
-    const rows = cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
-
-    return tileOwnerRoute(tiles, rows, storedSessionId)
-  }, [cronRows, messagingRows, sessionRows, storedSessionId, tiles])
 
   const requestTileGateway = useCallback(
     <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<T> =>
@@ -217,23 +226,37 @@ function TileChat({
   const cwd = useStore(view.$cwd)
   const gatewayOpen = useStore($gatewayState) === 'open'
 
-  // One attachment set + focus key per tile, stable for the tile's lifetime.
-  const attachments = useRef(createComposerAttachmentScope()).current
+  // Layout tiles own one attachment set for their mounted lifetime. Embedded
+  // native panels may inject an owner-qualified scope that survives a
+  // conditional panel unmount/reopen.
+  const attachments = useMemo(
+    () => attachmentScope ?? createComposerAttachmentScope(),
+    [attachmentScope]
+  )
 
   const scope = useMemo<ComposerScope>(
     () => ({
       $awaitingInput: sessionAwaitingInput(runtimeId),
       $messages: view.$messages,
       attachments,
-      target: `tile:${storedSessionId}`
+      retainAttachmentsAcrossUnmount,
+      target: scopeTarget ?? `tile:${storedSessionId}`
     }),
-    [attachments, runtimeId, storedSessionId, view.$messages]
+    [attachments, retainAttachmentsAcrossUnmount, runtimeId, scopeTarget, storedSessionId, view.$messages]
   )
 
   // Tile actions must keep the persisted owner route. The ambient gateway hook
   // follows foreground focus and can point at another backend during restore or
   // reconnect, which turns a recoverable stale runtime into "session not found".
-  const actions = useSessionTileActions({ requestGateway: requestTileGateway, runtimeId, scope, storedSessionId })
+  const actions = useSessionTileActions({
+    listSessionOnFirstSend,
+    onRuntimeRecovered,
+    ownerRoute,
+    requestGateway: requestTileGateway,
+    runtimeId,
+    scope,
+    storedSessionId
+  })
 
   // The same attach/pick/paste/drop pipeline the primary composer uses,
   // pointed at this tile's chips + session.
@@ -271,7 +294,11 @@ function TileChat({
   const onPickFolders = useCallback(() => void pickContextPaths('folder'), [pickContextPaths])
   const onPickImages = useCallback(() => void pickImages(), [pickImages])
   const onRemoveAttachment = useCallback((id: string) => void removeAttachment(id), [removeAttachment])
-  const onRetryResume = useCallback(() => patchSessionTile(storedSessionId, { error: undefined }), [storedSessionId])
+
+  const retryResume = useCallback(
+    () => (onRetryResume ? onRetryResume() : patchSessionTile(storedSessionId, { error: undefined })),
+    [onRetryResume, storedSessionId]
+  )
 
   // Per-tile model menu — rendered under this tile's SessionView so the pill
   // + switch target THIS runtime, not the primary (which may be mid-turn).
@@ -321,6 +348,8 @@ function TileChat({
     <SessionViewProvider value={view}>
       <ComposerScopeProvider value={scope}>
         <ChatView
+          className={className}
+          forceFocused={forceFocused}
           gateway={gateway}
           modelMenuContent={modelMenuContent}
           modelOptionsOwnerConnectionId={ownerRoute?.connectionId || undefined}
@@ -342,7 +371,7 @@ function TileChat({
           onReload={actions.reloadFromMessage}
           onRemoveAttachment={onRemoveAttachment}
           onRestoreToMessage={actions.restoreToMessage}
-          onRetryResume={onRetryResume}
+          onRetryResume={retryResume}
           onSteer={actions.steerPrompt}
           onSteerHidden={actions.injectHiddenPrompt}
           onSubmit={actions.submitText}
@@ -351,9 +380,35 @@ function TileChat({
           onTranscribeAudio={tileTranscribeAudio}
           reasoningMenuContent={reasoningMenuContent}
           requestModelOptionsForOwner={requestTileGateway}
+          sessionAnchorOverride={sessionAnchorOverride}
+          sessionOwnerRoute={ownerRoute}
         />
       </ComposerScopeProvider>
     </SessionViewProvider>
+  )
+}
+
+function TileChat({ runtimeId, storedSessionId, view }: { runtimeId: string; storedSessionId: string; view: SessionView }) {
+  // Layout tiles keep their persisted owner route. Recompute only when an
+  // owner-bearing source changes, not on streamed transcript deltas.
+  const tiles = useStore($sessionTiles)
+  const sessionRows = useStore($sessions)
+  const cronRows = useStore($cronSessions)
+  const messagingRows = useStore($messagingSessions)
+
+  const ownerRoute = useMemo(() => {
+    const rows = cronRows.length || messagingRows.length ? [...sessionRows, ...cronRows, ...messagingRows] : sessionRows
+
+    return tileOwnerRoute(tiles, rows, storedSessionId)
+  }, [cronRows, messagingRows, sessionRows, storedSessionId, tiles])
+
+  return (
+    <SessionChatSurface
+      ownerRoute={ownerRoute}
+      runtimeId={runtimeId}
+      storedSessionId={storedSessionId}
+      view={view}
+    />
   )
 }
 

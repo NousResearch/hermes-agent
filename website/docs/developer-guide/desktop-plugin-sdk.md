@@ -391,6 +391,107 @@ plugin is the worked example (it is also a complete, installable disk plugin).
 attachment source, or transform a draft before it is sent (`ComposerMiddleware`
 with a `handler(draft) => draft | null`).
 
+### Native chat inside your surface
+
+A plugin surface that needs a real conversation — not a preview of one, and not
+a second chat client — embeds the app's own chat: the same transcript, composer,
+streaming, tools and approval flow as the primary chat and session tiles. The
+caller picks its OWN exact registry route (one row of
+`host.profileRoutes()`) and the plugin keys the conversation by route + subject,
+then renders it:
+
+```javascript
+import * as sdk from '@hermes/plugin-sdk'
+import { useEffect, useState } from 'react'
+import { jsx } from 'react/jsx-runtime'
+
+const ID = 'companion-chat'
+// The plugin's own subject: one row of host.profileRoutes() plus the thing
+// this surface is about (a mail thread, a doc, …). Set it when it changes.
+const $subject = sdk.atom(null)
+
+function CompanionChat({ ctx, route, threadId }) {
+  const [binding, setBinding] = useState(null)
+  // One conversation per EXACT route + thread: connectionId + profile +
+  // targetProfile, never an ambient/partial route.
+  const key = [route.connectionId, route.profile, route.targetProfile, threadId].join(':')
+
+  useEffect(() => {
+    let live = true
+
+    void (async () => {
+      // Resume this subject's conversation, else open one. Persist the WHOLE
+      // binding: only storedSessionId is durable across a restart, and a stale
+      // runtimeSessionId just re-resumes.
+      const stored = await ctx.storage.get(key)
+      const next = stored ?? (await sdk.host.createNativeChatSession({ route }))
+
+      if (!stored) {
+        await ctx.storage.set(key, next)
+      }
+
+      if (live) {
+        setBinding(next)
+      }
+    })()
+
+    return () => {
+      live = false
+    }
+  }, [ctx, key, route])
+
+  if (!binding) {
+    return null
+  }
+
+  // Keyed by the exact binding: switching thread (or route) remounts the
+  // panel and drops the previous conversation's component state.
+  return jsx(sdk.NativeChatPanel, { binding, className: 'h-full', key })
+}
+
+export default {
+  id: ID,
+  name: 'Companion Chat',
+  register(ctx) {
+    ctx.register({
+      id: 'chat',
+      area: 'panes',
+      title: 'Companion',
+      data: { placement: 'right', width: '380px' },
+      render: () => jsx(CompanionPane, { ctx })
+    })
+  }
+}
+```
+
+What the pair guarantees:
+
+- **One conversation, one owner.** `createNativeChatSession` opens a normal
+  Hermes session on the route you passed and returns
+  `{ route, storedSessionId, runtimeSessionId? }`. Persist the binding; the
+  panel resumes `storedSessionId` through the shared session store, so a
+  restart, a reconnect, or a stale `runtimeSessionId` all reopen the SAME
+  conversation. There is no second gateway socket and no second transcript.
+- **Private by default.** The session is created `hidden: true`, so a companion
+  surface doesn't add a row to the Sessions sidebar. Pass `hidden: false` for a
+  user-facing conversation, or `cwd` to pin its workspace.
+- **No navigation, no focus theft, no layout tile.** The panel never navigates
+  the Hub, selects the session, opens a workspace tab, or changes which session
+  is globally focused — it is an ordinary session surface that happens to live
+  in your UI. Increment `focusRequest` to focus **its own** composer.
+- **Feature-detect older desktops before touching either door:** the module
+  namespace (`sdk.NativeChatPanel`, `sdk.host.createNativeChatSession`), then
+  fall back to a regular pane plus `host.newChat()` when they're absent.
+- **Drafts and unsent attachments survive** a close/reopen of your panel: the
+  creation lease is held (bounded) until the conversation's first durable
+  message row, and the foreground keep-alive is released on unmount.
+
+`composer.middleware` handlers and `composer.attachments` providers also
+receive the exact invoking surface — an optional
+`{ runtimeSessionId, storedSessionId, target }` — so a plugin can bind private
+state to one conversation instead of reading the globally focused session (which
+an embedded panel never becomes).
+
 ### Transcript directives — inline components the model addresses
 
 `TRANSCRIPT_DIRECTIVE_AREA` makes the transcript itself a contribution area.
@@ -507,8 +608,12 @@ host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
-                                           // dock a plugin-rendered tab into the MAIN
+                                           //   dock a plugin-rendered tab into the MAIN
                                            //   workspace zone and reveal it; returns a disposer
+host.createNativeChatSession({ route, cwd?, hidden? })
+                                           // open a native conversation on ONE exact
+                                           //   registry route (no navigation/selection);
+                                           //   pair the binding with NativeChatPanel
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer

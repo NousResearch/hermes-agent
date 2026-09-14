@@ -3,7 +3,13 @@ import { useLayoutEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
-import { clearSessionDraft, type ComposerAttachment, mainComposerScope, stashSessionDraft } from '@/store/composer'
+import {
+  clearSessionDraft,
+  type ComposerAttachment,
+  createComposerAttachmentScope,
+  mainComposerScope,
+  stashSessionDraft
+} from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import { useComposerActions } from '../../hooks/use-composer-actions'
@@ -249,6 +255,43 @@ describe('useComposerDraft — draft survives full unmount (Settings navigation,
     expect(mockComposerApi.setText).toHaveBeenCalledWith('unsent thought')
 
     remount.unmount()
+  })
+
+  it('does not erase a retained native attachment scope when its stash has no attachment snapshot', () => {
+    const attachments = createComposerAttachmentScope()
+
+    const attachment: ComposerAttachment = {
+      id: 'native-file',
+      kind: 'file',
+      label: 'quote.pdf',
+      occurrenceId: 'native-occurrence',
+      path: '/workspace/quote.pdf'
+    }
+
+    attachments.add(attachment)
+    clearSessionDraft('session-native')
+
+    const scope: ComposerScope = {
+      ...MAIN_COMPOSER_SCOPE,
+      attachments,
+      retainAttachmentsAcrossUnmount: true,
+      target: 'native:session-native'
+    }
+
+    const mounted = render(
+      <ComposerScopeProvider value={scope}>
+        <ProbeHarness
+          activeQueueSessionKey="session-native"
+          onLayoutSnapshot={() => undefined}
+          sessionId="runtime-native"
+        />
+      </ComposerScopeProvider>
+    )
+
+    expect(attachments.$attachments.get()).toEqual([attachment])
+
+    mounted.unmount()
+    clearSessionDraft('session-native')
   })
 })
 

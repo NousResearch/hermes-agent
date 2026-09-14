@@ -22,6 +22,10 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { ReactNode } from 'react'
 
 import { capabilityScoped } from '@/api/client'
+import {
+  createNativeChatSession as createNativeChatSessionInternal,
+  type CreateNativeChatSessionOptions
+} from '@/app/chat/native-chat-panel'
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import type { ClientSessionState } from '@/app/types'
@@ -1207,6 +1211,13 @@ export const host = {
     newSessionTarget: WorkspaceNewSessionTarget | null = null
   ): boolean => publishWorkspaceScope(mode, ownerKey, newSessionTarget),
 
+  /** Create a native Hermes conversation on one exact profile route without
+   *  navigating the Hub, selecting the session, or opening a layout tile. Pair
+   *  the returned binding with `NativeChatPanel` inside a plugin-owned surface.
+   *  The panel resumes through the same shared session store/router as the
+   *  primary chat and session tiles. */
+  createNativeChatSession: (options: CreateNativeChatSessionOptions) => createNativeChatSessionInternal(options),
+
   /** Start a fresh chat draft, optionally pointed at another profile (its
    *  backend spins up in the background — same door the sidebar's per-profile
    *  "+" uses). */
@@ -1451,8 +1462,20 @@ export {
   type ComposerAtCompletionItem,
   type ComposerAtCompletionSource,
   type ComposerAttachmentProvider,
-  type ComposerMiddleware
+  type ComposerMiddleware,
+  type NativeChatInvocationContext
 } from '@/app/chat/composer/contrib'
+
+/** THE native Hermes transcript + composer rendered inside a plugin-owned
+ * surface. It does not navigate or create a second gateway/transcript client;
+ * it is another view of the app's canonical session state. */
+export {
+  type CreateNativeChatSessionOptions,
+  type NativeChatBinding,
+  NativeChatPanel,
+  type NativeChatPanelProps,
+  type NativeChatProfileRoute
+} from '@/app/chat/native-chat-panel'
 
 // -- ui: the design language --------------------------------------------------
 

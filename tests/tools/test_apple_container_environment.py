@@ -22,6 +22,7 @@ class RunRecorder:
         self.run_returncode = 0
         self.returncodes: dict[str, int] = {}
         self.force_delete_returncode = 0
+        self.version_output = "container 0.test\n"
 
     def __call__(self, cmd, **kwargs):
         argv = list(cmd)
@@ -29,7 +30,7 @@ class RunRecorder:
         if argv[-2:] == ["system", "status"]:
             return subprocess.CompletedProcess(argv, 0, "running\n", "")
         if "--version" in argv:
-            return subprocess.CompletedProcess(argv, 0, "container 0.test\n", "")
+            return subprocess.CompletedProcess(argv, 0, self.version_output, "")
         if len(argv) > 1 and argv[1] == "stop" and self.stop_times_out:
             raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
         if len(argv) > 1 and argv[1] == "run":
@@ -56,6 +57,8 @@ def recorder(monkeypatch, tmp_path):
     monkeypatch.setattr(credential_files, "get_credential_file_mounts", lambda: [])
     monkeypatch.setattr(credential_files, "get_skills_directory_mount", lambda: [])
     monkeypatch.setattr(credential_files, "get_cache_directory_mounts", lambda: [])
+    # Version probe is cached per executable; isolate it so tests can't leak versions into each other.
+    monkeypatch.setattr(apple, "_CLI_VERSION_CACHE", {})
     return run
 
 
@@ -244,6 +247,32 @@ def test_resource_flags_image_and_keepalive_contract(recorder):
     env.cleanup()
 
 
+@pytest.mark.parametrize("version_output,expect_init", [
+    ("container CLI version 1.4.1 (build: release, commit: unspeci)\n", True),
+    ("container CLI version 1.0.0\n", True),
+    ("container CLI version 0.10.0 (build: release, commit: unspeci)\n", False),
+    ("container 0.test\n", False),
+    ("", False),
+])
+def test_init_process_only_where_cli_supports_it(recorder, version_output, expect_init):
+    """``--init`` (signal-forwarding PID 1) is added only on CLI 1.x+, so stops
+    don't wait out the grace period behind ``sleep infinity``; older/unknown CLIs keep the old argv."""
+    recorder.version_output = version_output
+    env = apple.AppleContainerEnvironment(image="python:3.11-slim-bookworm")
+    argv = _run_args(recorder)
+    assert ("--init" in argv) is expect_init
+    assert argv[-3:] == ["python:3.11-slim-bookworm", "sleep", "infinity"]
+    env.cleanup()
+
+
+def test_cli_version_probe_is_parsed_and_cached(recorder):
+    recorder.version_output = "container CLI version 1.4.1 (build: release)\n"
+    assert apple._container_cli_version("/usr/bin/container") == (1, 4, 1)
+    recorder.version_output = "container CLI version 0.1.0\n"
+    assert apple._container_cli_version("/usr/bin/container") == (1, 4, 1)
+    assert apple._container_cli_version("/elsewhere/container") == (0, 1, 0)
+
+
 def test_exec_uses_interactive_only_when_stdin_exists(recorder, monkeypatch):
     popen_calls = []
     monkeypatch.setattr(apple, "_popen_bash", lambda cmd, data: popen_calls.append((cmd, data)))
@@ -396,3 +425,15 @@ def test_rewritten_task_ids_do_not_share_persistent_storage(recorder):
     finally:
         for env in environments:
             env.cleanup()
+
+
+@pytest.mark.parametrize('failure', ['nonzero', 'timeout', 'missing'])
+def test_failed_version_probe_does_not_enable_init(recorder, monkeypatch, failure):
+    def probe(*args, **kwargs):
+        if failure == 'timeout':
+            raise subprocess.TimeoutExpired(args[0], 5)
+        if failure == 'missing':
+            raise OSError('unavailable')
+        return subprocess.CompletedProcess(args[0], 1, 'container CLI version 1.4.1', '')
+    monkeypatch.setattr(apple.subprocess, 'run', probe)
+    assert apple._supports_init_process('/usr/bin/container') is False

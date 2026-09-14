@@ -199,9 +199,11 @@ def record_from_fix_result(
         prompt = "[task unavailable: runner failed before trajectory capture]"
     prompt = _require_text(prompt, "task input")
     resolved_harness = str(harness_version or metadata.get("harness_version") or metadata.get("model") or "unknown")
-    fallback_identity: Any = source_identity if task_input_unavailable and source_identity else prompt
-    if task_input_unavailable and source_identity is None:
+    fallback_identity: Any = prompt
+    if task_input_unavailable:
         fallback_identity = trajectory
+        if source_identity is not None:
+            fallback_identity = {"source": source_identity, "trajectory": trajectory}
     fallback_task_id = f"task-{_stable_hex({'harness_version': resolved_harness, 'input': fallback_identity}, 12)}"
     resolved_task_id = str(task_id or result.get("task_id") or fallback_task_id)
     trace_id = _stable_hex({"task_id": resolved_task_id, "trajectory": trajectory}, 32)

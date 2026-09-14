@@ -97,3 +97,17 @@ def test_ingest_assigns_distinct_repeatable_ids_to_trace_less_runner_errors(tmp_
     first_ids = [record.task.task_id for record in first]
     assert len(set(first_ids)) == 2
     assert first_ids == [record.task.task_id for record in second]
+
+    separate_root_ids = []
+    for root_name, error in (("run-a", "sandbox launch failed"), ("run-b", "sandbox teardown failed")):
+        separate_source = tmp_path / root_name / "errors.jsonl"
+        separate_source.parent.mkdir()
+        separate_source.write_text(
+            json.dumps({"completed": False, "error": error, "conversations": []}) + "\n",
+            encoding="utf-8",
+        )
+        separate_archive = PathologyArchive(tmp_path / f"{root_name}.jsonl")
+        assert separate_archive.ingest_fix_results(separate_source.parent, harness_version="factory-v1") == 1
+        separate_root_ids.append(next(iter(separate_archive)).task.task_id)
+
+    assert len(set(separate_root_ids)) == 2

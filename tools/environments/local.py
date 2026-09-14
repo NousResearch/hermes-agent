@@ -468,12 +468,12 @@ def strip_launch_profile_env(env: dict, target_home: "str | Path | None" = None)
     # overlay puts back exactly the ones the target's own sources supply. The administrator-managed
     # .env is NOT residue: its values are policy for every profile (``_apply_managed_env`` applies
     # it last, with override, so it beats the user's own .env) — leave them in place.
-    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, secret_source_names
+    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
     managed_names = {key.upper() for key in managed_dotenv_keys()}
     residue_names = {
         key.upper() for key in
         set(load_env_file(launch_home / ".env")) | set(launch_dotenv_keys())
-        | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(secret_source_names())
+        | set(TERMINAL_CONFIG_ENV_MAP.values()) | set(source_supplied_names())
         if not _is_global_env(key.upper()) or key.upper().startswith("TERMINAL_")} - managed_names
     for key in [k for k in env if k.upper() in residue_names]:
         del env[key]

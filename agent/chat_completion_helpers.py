@@ -1752,9 +1752,13 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
     # Skip entries that resolve to the same backend that just failed — falling back to it loops the failure.
     # See #22548, #62984, #70893.
     from agent.backend_identity import BackendIdentity, should_skip_candidate
-    current_ident = BackendIdentity.build(provider=getattr(agent, "provider", ""),
-        model=getattr(agent, "model", ""), base_url=str(getattr(agent, "base_url", "") or ""))
-    fb_ident = BackendIdentity.build(provider=fb_provider, model=fb_model, base_url=(fb.get("base_url") or ""))
+    from hermes_cli.model_normalize import normalize_model_for_provider
+    current_provider = getattr(agent, "provider", "")
+    current_model = normalize_model_for_provider(getattr(agent, "model", ""), current_provider)
+    candidate_model = normalize_model_for_provider(fb_model, fb_provider)
+    current_ident = BackendIdentity.build(provider=current_provider,
+        model=current_model, base_url=str(getattr(agent, "base_url", "") or ""))
+    fb_ident = BackendIdentity.build(provider=fb_provider, model=candidate_model, base_url=(fb.get("base_url") or ""))
     if should_skip_candidate(fb_ident, current_ident):
         logger.warning(
             "Fallback skip: chain entry %s/%s resolves to the same backend as the current one (%s)",

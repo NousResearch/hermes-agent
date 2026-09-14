@@ -83,6 +83,13 @@ class GatewayTurnMixin:
         )
         skey = self._resolve_session_key_or_none(source, session_key)
 
+        store = getattr(self, "session_store", None)
+        if skey and callable(getattr(type(store), "get_session_metadata", None)):
+            missing = object()
+            index = store.get_session_metadata(skey, "manual_fallback_index", missing)
+            if index is not missing:
+                from gateway.run import _manual_fallback_runtime
+                return _manual_fallback_runtime(index)
         model = _resolve_gateway_model(user_config)
         if skey:
             self._rehydrate_session_model_override(skey)
@@ -193,6 +200,9 @@ class GatewayTurnMixin:
                 "credential_pool", "max_tokens", "capabilities",
             )
         }
+        for key in ("manual_fallback_index", "fallback_model", "has_header_auth", "fallback_service_tier_override"):
+            if key in runtime_kwargs:
+                runtime[key] = runtime_kwargs[key]
         runtime["args"] = list(runtime["args"] or [])
         runtime["capabilities"] = dict(runtime["capabilities"] or {})
         base_request_overrides = dict(runtime_kwargs.get("request_overrides") or {})
@@ -202,6 +212,7 @@ class GatewayTurnMixin:
             "signature": (
                 model, runtime["provider"], runtime["requested_provider"], runtime["base_url"],
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
+                runtime.get("manual_fallback_index"), runtime.get("fallback_service_tier_override"),
             ),
         }
         if getattr(self, "_service_tier", None) != "priority":
@@ -218,7 +229,9 @@ class GatewayTurnMixin:
         route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
         return route
 
-    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
+    def _sync_session_model_from_agent(
+        self, session_id: str, agent: Any, *, manual_fallback: bool = False,
+    ) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
         switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
         uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
@@ -228,6 +241,9 @@ class GatewayTurnMixin:
         if not model:
             return
         runtime = {k: getattr(agent, k, None) for k in ("provider", "base_url", "api_mode")}
+        if manual_fallback:
+            # A configured endpoint can contain credentials; retain it only in the runtime route.
+            runtime.pop("base_url", None)
         runtime["fallback_active"] = bool(getattr(agent, "_fallback_activated", False))
         runtime = {k: v for k, v in runtime.items() if v not in (None, "")}
         try:
@@ -248,7 +264,11 @@ class GatewayTurnMixin:
             if not isinstance(config, dict):
                 config = {}
             gateway_runtime = dict(config.get("gateway_runtime") or {})
-            if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
+            if (
+                row.get("model") == model
+                and all(gateway_runtime.get(k) == v for k, v in runtime.items())
+                and not (manual_fallback and "base_url" in gateway_runtime)
+            ):
                 return
             config["gateway_runtime"] = runtime
             db.update_session_meta(session_id, json.dumps(config), model=model)
@@ -1121,8 +1141,9 @@ class GatewayTurnMixin:
         _hyg_checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"), default=False,
         )
+        from gateway.run import _runtime_kwargs_for_agent_constructor
         _hyg_agent = AIAgent(
-            **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
+            **_runtime_kwargs_for_agent_constructor(_hyg_runtime), model=_hyg_model, max_iterations=4, quiet_mode=True,
             skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
             session_id=session_entry.session_id, session_db=_hyg_session_db,
         )
@@ -1216,7 +1237,7 @@ class GatewayTurnMixin:
             )
             if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
                 await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
-            elif _hyg_runtime.get("api_key"):
+            elif _hyg_runtime.get("api_key") or _hyg_runtime.get("has_header_auth"):
                 # Pass the FULL transcript (tool results included) as the agent loop does: filtering
                 # to user/assistant starved the compressor (tool results are the bulk of context).
                 _hyg_msgs = [m for m in history if m.get("role") in {"user", "assistant", "tool"}]
@@ -1658,7 +1679,7 @@ class GatewayTurnMixin:
                 self._sync_telegram_topic_binding(source, entry, reason=reason)
 
     async def _reset_session_after_compression_exhaustion(
-        self, session_key, session_entry, source, *, require_primary=True,
+        self, session_key, session_entry, source, *, require_primary=True, cleanup_for_manual_reset=False,
     ):
         expected_id = session_entry.session_id
         async def commit():
@@ -1667,6 +1688,16 @@ class GatewayTurnMixin:
             )
             if new_entry is None:
                 raise RuntimeError("Session route changed before compression recovery")
+            if cleanup_for_manual_reset:
+                # /new is a full resource boundary. Keep its teardown inside the settled commit
+                # so failure preserves the old resources and repeated cancellation retains admission.
+                from gateway.slash_commands_session import _reset_process_scoped_tool_state
+                await self._cleanup_old_agent_for_reset(session_key)
+                with suppress(Exception):
+                    from tools.async_delegation import interrupt_for_session
+                    interrupt_for_session(session_key=session_key, reason="session_reset",
+                                          parent_session_id=str(expected_id or ""))
+                _reset_process_scoped_tool_state()
             self._evict_cached_agent(session_key)
             self._clear_conversation_scope(session_key, reason="compression_exhausted_reset")
             try:
@@ -2314,9 +2345,13 @@ class GatewayTurnMixin:
                     logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
+                from gateway.run import _runtime_kwargs_for_agent_constructor
+                runtime = _runtime_kwargs_for_agent_constructor(turn_route["runtime"])
+                if "fallback_model" not in runtime:
+                    runtime["fallback_model"] = self._refresh_fallback_model()
                 agent = AIAgent(
                     model=turn_route["model"],
-                    **turn_route["runtime"],
+                    **runtime,
                     **_checkpoint_agent_kwargs(user_config),
                     max_iterations=max_iterations,
                     quiet_mode=True,
@@ -2338,9 +2373,6 @@ class GatewayTurnMixin:
                         "user_id", "user_id_alt", "user_name", "chat_id", "chat_name", "chat_type", "thread_id",
                     )},
                     session_db=getattr(self._session_db, "_db", self._session_db),
-                    # Reload from disk — do not reuse the startup snapshot.
-                    # See #60955.
-                    fallback_model=self._refresh_fallback_model(),
                 )
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)

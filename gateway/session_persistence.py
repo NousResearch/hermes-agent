@@ -364,6 +364,24 @@ class SessionPersistenceMixin:
         # Compression-ended parent with a newer live child for the same peer: repoint instead of
         # dropping, or queued/resume-pending work vanishes until the next message.
         if recovered_entry is not None and recovered_entry.session_id != entry.session_id:
+            if ("manual_fallback_index" in entry.metadata
+                    and row.get("end_reason") == "compression"):
+                try:
+                    db = self._db_for_key(key)
+                    tip = db.get_compression_tip(entry.session_id)
+                    if tip == recovered_entry.session_id:
+                        child = db.get_session(tip)
+                        peer_fields = ("source", "user_id", "chat_id", "chat_type", "thread_id")
+                        if (child is not None and row.get("session_key") == key == child.get("session_key")
+                                and all(row.get(field) == child.get(field) for field in peer_fields)):
+                            # Only the durable selection follows a verified compression continuation.
+                            # Keep invalid values verbatim so runtime validation still fails closed.
+                            recovered_entry.metadata["manual_fallback_index"] = entry.metadata["manual_fallback_index"]
+                except Exception:
+                    # An indeterminate lineage must not publish a markerless substitute route.
+                    logger.debug("gateway.session: manual compression lineage lookup failed for %r", key,
+                                 exc_info=True)
+                    return None
             logger.warning(
                 "gateway.session: repointing stale sessions.json entry %r from ended %s "
                 "(end_reason=%r) to recovered %s", key, entry.session_id, row["end_reason"],

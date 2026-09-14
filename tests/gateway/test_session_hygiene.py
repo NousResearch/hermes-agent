@@ -1815,3 +1815,40 @@ async def test_hygiene_unwind_records_cooldown(monkeypatch, tmp_path):
         await asyncio.wait_for(asyncio.to_thread(cleanup_done.wait), timeout=2)
     finally:
         db.close()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory", ["hygiene", "manual"])
+async def test_manual_runtime_reaches_real_compression_constructor(tmp_path, factory):
+    from gateway.run import GatewayRunner
+    from unittest.mock import patch
+    from hermes_state import SessionDB, AsyncSessionDB
+    from gateway.session import SessionStore
+    db = SessionDB(db_path=tmp_path / "compression.db")
+    store = SessionStore(tmp_path / "routing", GatewayConfig())
+    store._db = db
+    entry = store.get_or_create_session(SessionSource(platform=Platform.TELEGRAM, chat_id="manual"))
+    runner = object.__new__(GatewayRunner)
+    runner._session_db = AsyncSessionDB(db)
+    runtime = dict(provider="custom", api_key="fixture-manual",
+                   base_url="https://fixture.example/v1", api_mode="chat_completions",
+                   manual_fallback_index=0, has_header_auth=False,
+                   fallback_service_tier_override="normal", fallback_model=[],
+                   request_overrides={"service_tier": "priority", "extra_body": {"keep": True}})
+    agent = None
+    try:
+        with patch("agent.process_bootstrap.OpenAI"), patch("model_tools.get_tool_definitions", return_value=[]), patch("model_tools.check_toolset_requirements", return_value={}):
+            if factory == "hygiene":
+                agent, _ = await runner._hmwa_hygiene_build_agent("gpt-5.5", runtime, entry)
+            else:
+                agent = await runner._build_manual_compression_agent(entry.session_id, "gpt-5.5", runtime)
+        assert agent._fallback_chain == []
+        assert agent._active_fallback_service_tier_override == "normal"
+        wire = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "service_tier" not in wire and wire["extra_body"]["keep"]
+        assert runtime["manual_fallback_index"] == 0
+    finally:
+        if agent:
+            agent.shutdown_memory_provider()
+            agent.close()
+        store.close_all_db_handles()
+        db.close()

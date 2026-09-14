@@ -1118,6 +1118,22 @@ class SessionStore(
                 entry._compression_pause_pending = False
             return True
 
+    def delete_session_metadata(self, session_key: str, key: str, *, expected_session_id: str) -> bool:
+        """Strict primary deletion; publish only after commit, preserving the activity clock."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            data, generation = self._snapshot_routing_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.session_id != expected_session_id:
+                return False
+            if key not in entry.metadata:
+                return True
+            metadata = {k: v for k, v in entry.metadata.items() if k != key}
+            data[session_key] = replace(entry, metadata=metadata).to_dict()
+            self._persist_routing_data(data, generation, require_primary=True)
+            entry.metadata = metadata
+            return True
+
     def commit_manual_compression(
         self, session_key: str, expected_session_id: str, new_session_id: str,
     ) -> bool:
@@ -1200,7 +1216,7 @@ class SessionStore(
             origin=old_entry.origin, platform=old_entry.platform, chat_type=old_entry.chat_type,
             **fields,
         )
-        if require_primary or old_entry.compression_paused:
+        if require_primary or old_entry.compression_paused or "manual_fallback_index" in old_entry.metadata:
             data, generation = self._snapshot_routing_locked()
             if self._entries.get(session_key) is not old_entry:
                 raise RuntimeError("Session route changed before replacement")

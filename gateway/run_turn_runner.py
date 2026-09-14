@@ -1020,12 +1020,15 @@ class TurnRunner:
 
     def _build_fresh_agent(self, turn_route, platform_key, combined_ephemeral, max_iterations,
                            reasoning_config, pr, skip_context_files):
-        from gateway.run import _checkpoint_agent_kwargs
+        from gateway.run import _checkpoint_agent_kwargs, _runtime_kwargs_for_agent_constructor
         ctx = self._ctx
         runner = self._runner
         src = ctx.source
+        runtime = _runtime_kwargs_for_agent_constructor(turn_route["runtime"])
+        if "fallback_model" not in runtime:
+            runtime["fallback_model"] = runner._refresh_fallback_model()
         return ctx.AIAgent(
-            model=turn_route["model"], **turn_route["runtime"], **_checkpoint_agent_kwargs(ctx.user_config),
+            model=turn_route["model"], **runtime, **_checkpoint_agent_kwargs(ctx.user_config),
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
             ephemeral_system_prompt=combined_ephemeral or None,
@@ -1040,9 +1043,6 @@ class TurnRunner:
             chat_id=src.chat_id, chat_name=src.chat_name, chat_type=src.chat_type, thread_id=src.thread_id,
             gateway_session_key=ctx.session_key,
             session_db=getattr(runner._session_db, "_db", runner._session_db),
-            # Reload from disk — do not reuse the startup snapshot.
-            # See #60955.
-            fallback_model=self._runner._refresh_fallback_model(),
             skip_context_files=skip_context_files,
             # Keep the persona even with minimal context: soul identity is one small file.
             load_soul_identity=True,
@@ -1071,7 +1071,10 @@ class TurnRunner:
         # (disk I/O under the lock stalls the idle-sweep watcher and Discord heartbeats). A chain
         # configured after caching must reach the next turn; per-session serialization keeps it safe.
         if found.reused and agent is not None:
-            self._runner._apply_fallback_chain_to_agent(agent, runner._refresh_fallback_model())
+            runtime = turn_route["runtime"]
+            chain = (runtime["fallback_model"] if "fallback_model" in runtime
+                     else runner._refresh_fallback_model())
+            self._runner._apply_fallback_chain_to_agent(agent, chain)
         if found.evicted is not None:
             self._release_evicted_agent(found.evicted)
         if agent is None:
@@ -1607,7 +1610,7 @@ class TurnRunner:
         except Exception:
             logger.debug("Failed to restore thread_id from binding after session split", exc_info=True)
 
-    def _sync_session_after_run(self, agent_history):
+    def _sync_session_after_run(self, agent_history, *, manual_fallback: bool = False):
         """Sync session_id right after run_conversation(): compression can rotate before a follow-up
         model call fails, and the failure return must still point at the compressed child.
         Returns (compacted_in_place, effective_session_id, effective_history_offset)."""
@@ -1655,7 +1658,7 @@ class TurnRunner:
                 ):
                     self._restore_telegram_thread_id_after_split(agent_session_id)
                 runner._sync_telegram_topic_binding(src, entry, reason="agent-run-compression")
-        runner._sync_session_model_from_agent(agent_session_id, agent)
+        runner._sync_session_model_from_agent(agent_session_id, agent, manual_fallback=manual_fallback)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
         # of it; slicing past the pre-compaction length would drop everything.
@@ -1770,7 +1773,9 @@ class TurnRunner:
             "model": getattr(agent, "model", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
         }
-        compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(agent_history)
+        compacted_in_place, effective_session_id, history_offset = self._sync_session_after_run(
+            agent_history, manual_fallback="manual_fallback_index" in turn_route["runtime"],
+        )
         # failure_reason must survive the empty-response path too (TUI billing, transient-failure
         # persistence). compression_deferred (soft lock-contention defer) is distinct from
         # compression_exhausted so the gateway never auto-resets a session a concurrent compressor is

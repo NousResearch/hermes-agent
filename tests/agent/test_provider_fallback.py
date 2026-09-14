@@ -541,3 +541,77 @@ class TestFallbackExtraBodyReResolution:
         agent.request_overrides["temperature"] = 0.2
         self._activate(agent)
         assert agent.request_overrides.get("temperature") == 0.2
+
+def test_manual_entry_alias_is_skipped_before_advancing_to_next_fallback():
+    fbs = [
+        {"provider": "openrouter", "model": "claude-sonnet-4.6"},
+        {"provider": "openai", "model": "gpt-4o"},
+    ]
+    agent = _make_agent(fallback_model=fbs)
+    agent.provider = "openrouter"
+    agent.model = "anthropic/claude-sonnet-4.6"
+    agent.base_url = "https://openrouter.ai/api/v1"
+    resolver = MagicMock(
+        return_value=(_mock_client(base_url="https://api.openai.com/v1"), "gpt-4o")
+    )
+
+    def _normalize(model, provider):
+        if provider == "openrouter" and model == "claude-sonnet-4.6":
+            return "anthropic/claude-sonnet-4.6"
+        return model
+
+    with (
+        patch(
+            "agent.chat_completion_helpers._fallback_entry_unavailable_without_network",
+            return_value=None,
+        ),
+        patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            resolver,
+        ),
+        patch(
+            "hermes_cli.model_normalize.normalize_model_for_provider",
+            side_effect=_normalize,
+        ),
+    ):
+        assert agent._try_activate_fallback() is True
+
+    resolver.assert_called_once()
+    assert resolver.call_args.args[:2] == ("openai",)
+    assert resolver.call_args.kwargs["model"] == "gpt-4o"
+    assert agent._fallback_index == 2
+    assert agent.provider == "openai"
+    assert agent.model == "gpt-4o"
+
+@pytest.mark.parametrize("setup_policy", [None, "normal"])
+def test_manual_policy_preserves_native_setup_fallback(setup_policy, monkeypatch):
+    from types import SimpleNamespace
+    client = SimpleNamespace(api_key="setup-fixture", base_url="https://openrouter.ai/api/v1",
+                             _custom_headers={}, default_headers={}, _default_headers={})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch("model_tools.get_tool_definitions", return_value=[]), patch("model_tools.check_toolset_requirements", return_value={}), patch("agent.process_bootstrap.OpenAI"), patch(
+        "agent.auxiliary_client.resolve_provider_client", side_effect=[(None, None), (client, "gpt-4o")]
+    ):
+        agent = AIAgent(provider="openai", model="gpt-5.5", api_mode="chat_completions",
+                        fallback_model=[dict(provider="openrouter", model="gpt-4o", service_tier_override=setup_policy)],
+                        fallback_service_tier_override="normal", quiet_mode=True,
+                        skip_memory=True, skip_context_files=True,
+                        request_overrides={"service_tier": "priority"})
+    try:
+        assert agent._fallback_activated and agent.provider == "openrouter"
+        assert agent._active_fallback_service_tier_override == setup_policy
+        wire = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert wire.get("service_tier") == (None if setup_policy else "priority")
+    finally:
+        agent.shutdown_memory_provider()
+        agent.close()
+
+
+def test_manual_parameter_appended_without_shifting_positional_callers():
+    import inspect
+    from agent.agent_init import init_agent
+    for fn in (AIAgent.__init__, init_agent):
+        params = list(inspect.signature(fn).parameters)
+        assert params[-1] == "fallback_service_tier_override"
+        assert params[-2] == "capabilities"

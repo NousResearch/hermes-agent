@@ -436,8 +436,105 @@ class TestCronCreateLifecycleBlock:
 # Defense 1: gateway stop/restart refuse inside gateway
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(params=[
+    "descendant", "missing", "stale", "profile-mismatch", "sibling", "own-pid",
+    "marker-only", "cycle", "reused-pid", "unrelated-process", "supervised-own-pid",
+    "malformed-numeric",
+])
+def gateway_process_tree(request, monkeypatch, tmp_path):
+    """Exercise real identity validation and ancestry with fake OS process data."""
+    import gateway.restart as restart
+    import gateway.status as status
+    import hermes_cli.gateway as gw
+
+    case = request.param
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for name in (
+        "_HERMES_GATEWAY", "INVOCATION_ID", "XPC_SERVICE_NAME",
+        "HERMES_S6_SUPERVISED_CHILD", restart.EXTERNAL_GATEWAY_SUPERVISOR_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    if case in {"own-pid", "marker-only", "supervised-own-pid"}:
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    if case in {"marker-only", "supervised-own-pid"}:
+        monkeypatch.setenv("INVOCATION_ID", "test-supervisor")
+
+    current_pid = os.getpid()
+    gateway_pid = current_pid if case in {"own-pid", "supervised-own-pid"} else 424242
+    parents = {current_pid: 424243, 424243: gateway_pid, gateway_pid: 1}
+    if case == "sibling":
+        parents[424243] = 1
+    if case == "cycle":
+        parents[424243] = current_pid
+    parent_calls = []
+
+    def parent_pid(pid):
+        parent_calls.append(pid)
+        return parents.get(pid)
+
+    monkeypatch.setattr(gw, "_get_parent_pid", parent_pid)
+    monkeypatch.setattr(status, "_pid_exists", lambda pid: case != "stale" and pid == gateway_pid)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 200 if case == "reused-pid" else 100)
+    monkeypatch.setattr(
+        status, "_read_process_cmdline",
+        lambda pid: "python unrelated.py" if case == "unrelated-process" else "hermes gateway run",
+    )
+    monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda path: path.exists())
+    record = json.dumps({
+        "pid": gateway_pid, "start_time": 100, "kind": "gateway",
+        "argv": ["hermes", "gateway", "run"],
+        "hermes_home": str(tmp_path / "other-profile" if case == "profile-mismatch" else tmp_path),
+    })
+    if case == "malformed-numeric":
+        record = '{"pid":1e309}'
+    identity_files = [tmp_path / "gateway.pid", tmp_path / "gateway.lock"]
+    if case not in {"missing", "marker-only"}:
+        for path in identity_files:
+            path.write_text(record, encoding="utf-8")
+    before = [path.read_bytes() if path.exists() else None for path in identity_files]
+
+    yield case in {"descendant", "supervised-own-pid"}
+
+    # Refusal probes must not clean stale/mismatched identity files or loop on a cycle.
+    assert [path.read_bytes() if path.exists() else None for path in identity_files] == before
+    assert len(parent_calls) == len(set(parent_calls))
+    if case in {"own-pid", "supervised-own-pid"}:
+        assert parent_calls == []
+
+
 class TestGatewaySelfTargetingGuard:
     """Verify destructive gateway commands refuse inside the gateway."""
+
+    @pytest.mark.parametrize("action", ["stop", "restart", "uninstall"])
+    def test_validated_gateway_ancestry_before_cli_dispatch(
+        self, monkeypatch, gateway_process_tree, action, capsys
+    ):
+        import hermes_cli.gateway as gw
+
+        class ReachedServiceDispatch(Exception):
+            pass
+
+        def service_dispatch(*args, **kwargs):
+            raise ReachedServiceDispatch("gateway command reached service dispatch")
+
+        monkeypatch.setattr(gw, "is_managed", lambda: False)
+        monkeypatch.setattr(gw, "is_termux", lambda: False)
+        monkeypatch.setattr(gw, "find_gateway_pids", lambda: [424242])
+        monkeypatch.setattr(gw, "_guard_named_profile_under_multiplexer", lambda **kwargs: None)
+        monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", service_dispatch)
+        monkeypatch.setattr(gw, "_dispatch_all_via_service_manager_if_s6", service_dispatch)
+        monkeypatch.setattr(gw, "_service_backend", lambda: "launchd")
+        monkeypatch.setattr(gw, "_service_call", service_dispatch)
+        args = Namespace(gateway_command=action, all=False, system=False, force=True)
+
+        if gateway_process_tree:
+            with pytest.raises(SystemExit) as exc:
+                gw.gateway_command(args)
+            assert exc.value.code == 1
+            assert "Refusing" in capsys.readouterr().out
+        else:
+            with pytest.raises(ReachedServiceDispatch):
+                gw.gateway_command(args)
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
         from tools import process_registry
@@ -507,7 +604,7 @@ class TestTerminalToolGatewayLifecycleGuard:
     def _minimal_config(self):
         return {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600}
 
-    def _patch_env(self, monkeypatch, fake_env, *, inside_gateway: bool):
+    def _patch_env(self, monkeypatch, fake_env, *, inside_gateway: bool | None):
         import tools.terminal_tool as tt
         from tools import process_registry
         eid = "default"
@@ -515,10 +612,43 @@ class TestTerminalToolGatewayLifecycleGuard:
         monkeypatch.setattr(tt, "_last_activity", {eid: 0.0})
         monkeypatch.setattr(tt, "_task_env_overrides", {})
         monkeypatch.setattr(tt, "_get_env_config", self._minimal_config)
-        monkeypatch.setattr(
-            process_registry, "_is_supervised_gateway_process",
-            lambda: inside_gateway,
-        )
+        if inside_gateway is not None:
+            monkeypatch.setattr(
+                process_registry, "_is_supervised_gateway_process",
+                lambda: inside_gateway,
+            )
+
+    @pytest.mark.parametrize(("force", "command"), [
+        (False, "hermes gateway restart"),
+        (True, "hermes gateway restart"),
+        (False, "printf ordinary"),
+    ])
+    def test_validated_gateway_ancestry_before_terminal_execution(
+        self, monkeypatch, gateway_process_tree, force, command
+    ):
+        import tools.terminal_tool as tt
+
+        calls = []
+
+        class FakeEnv:
+            env = {}
+
+            def execute(self, command, **kwargs):
+                calls.append(command)
+                return {"output": "", "returncode": 0}
+
+        # Keep the real own-process predicate, identity validator and ancestry walker.
+        self._patch_env(monkeypatch, FakeEnv(), inside_gateway=None)
+        monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: {"approved": True})
+        result = json.loads(tt.terminal_tool(command=command, force=force))
+
+        if gateway_process_tree and command == "hermes gateway restart":
+            assert result["exit_code"] == 1
+            assert "Blocked" in result["error"]
+            assert calls == []
+        else:
+            assert result["exit_code"] == 0
+            assert calls == [command]
 
     @pytest.mark.parametrize("cmd", [
         "systemctl restart hermes-gateway",

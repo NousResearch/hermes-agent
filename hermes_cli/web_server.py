@@ -1375,8 +1375,8 @@ def start_server(
 ):
     """Start the web UI server.
 
-    ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
-    (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
+    ``initial_profile`` preselects the SPA profile and is appended to the auto-opened URL as
+    ``?profile=<name>`` (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
     JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
     bootstrap state, never persisted or exported to children.
@@ -1386,6 +1386,7 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    app.state.initial_profile = str(initial_profile or "")
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).

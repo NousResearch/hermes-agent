@@ -93,9 +93,9 @@ _HEADLESS_MSG = (
 def mount_spa(application: FastAPI):
     """Mount the built SPA; unmatched paths fall back to index.html for client-side routing.
 
-    The session token is injected into index.html via a ``<script>`` tag so the SPA can
-    authenticate without a separate token-dispensing endpoint. Behind a path-prefix reverse
-    proxy (``X-Forwarded-Prefix: /hermes``) the served index.html is rewritten so absolute
+    Runtime bootstrap values are injected into index.html via a ``<script>`` tag so the SPA can
+    authenticate and inherit the profile selected by the dashboard launcher. Behind a path-prefix
+    reverse proxy (``X-Forwarded-Prefix: /hermes``) the served index.html is rewritten so absolute
     asset URLs and the runtime ``__HERMES_BASE_PATH__`` honour that prefix without a rebuild.
 
     A missing WEB_DIST is deliberately NOT a mount-time terminal state: every route copes
@@ -152,12 +152,15 @@ def mount_spa(application: FastAPI):
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
+        initial_profile = str(getattr(application.state, "initial_profile", "") or "")
+        initial_profile_js = json.dumps(initial_profile).replace("</", "<\\/")
         token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
+            f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
             f"</script>"
         )
         if prefix:

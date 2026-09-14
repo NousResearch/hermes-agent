@@ -48,7 +48,9 @@ const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
-const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+const SOURCES_HEADING_RE = /^\s*(?:#{1,6}\s+Sources:?\s*|Sources:\s*)$/i
+const SOURCE_ENTRY_RE = /^\s*\[(\d{1,4})\]\s+<?https?:\/\/\S+/i
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -173,6 +175,41 @@ function autoLinkRawUrls(text: string): string {
   })
 }
 
+function collectCitationSourceIds(text: string): Set<string> {
+  const ids = new Set<string>()
+  let inSources = false
+
+  for (const part of text.split(CODE_FENCE_SPLIT_RE)) {
+    if (/^(?:```|~~~)/.test(part)) {
+      continue
+    }
+
+    for (const line of part.split('\n')) {
+      if (SOURCES_HEADING_RE.test(line)) {
+        inSources = true
+        continue
+      }
+
+      if (!inSources) {
+        continue
+      }
+
+      const sourceMatch = line.match(SOURCE_ENTRY_RE)
+
+      if (sourceMatch?.[1]) {
+        ids.add(sourceMatch[1])
+        continue
+      }
+
+      if (/^\s*#{1,6}\s+\S/.test(line)) {
+        inSources = false
+      }
+    }
+  }
+
+  return ids
+}
+
 // Rewrite filesystem-path links to the renderer's hash-href door (#82140).
 // A plain path/file: href names a file on the AGENT's machine: Streamdown's
 // URL hardening blocks `file:`/`~/` outright, and an absolute path renders
@@ -193,11 +230,18 @@ function routeFileLinksToPreview(text: string): string {
   })
 }
 
-function rewriteProseSegment(segment: string): string {
+function rewriteProseSegment(segment: string, citationSourceIds: Set<string>): string {
   return linkifySessionRefs(
     autoLinkRawUrls(
       routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        segment
+          .replace(/`{3,}/g, '')
+          .replace(LOCAL_PREVIEW_URL_RE, '$1')
+          .replace(CITATION_MARKER_RE, (marker: string, rawIds: string) => {
+            const ids = rawIds.split(',').map(id => id.trim())
+
+            return ids.length > 0 && ids.every(id => citationSourceIds.has(id)) ? marker : ''
+          })
       )
     )
   )
@@ -216,7 +260,7 @@ function rewriteProseSegment(segment: string): string {
  * `startsWith('$')` test, so a prose segment that merely opens with a stray
  * dollar can't be mistaken for math.
  */
-function normalizeVisibleProse(text: string): string {
+function normalizeVisibleProse(text: string, citationSourceIds: Set<string>): string {
   return text
     .split(INLINE_CODE_SPLIT_RE)
     .map(part =>
@@ -224,7 +268,7 @@ function normalizeVisibleProse(text: string): string {
         ? part
         : part
             .split(MATH_SPAN_SPLIT_RE)
-            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment)))
+            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment, citationSourceIds)))
             .join('')
     )
     .join('')
@@ -628,6 +672,7 @@ export function preprocessMarkdown(text: string): string {
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
+  const citationSourceIds = collectCitationSourceIds(strippedEmptyFences)
 
   return strippedEmptyFences
     .split(CODE_FENCE_SPLIT_RE)
@@ -641,7 +686,9 @@ export function preprocessMarkdown(text: string): string {
       // blocks stay intact. The HTML-depth clamp belongs here for the same
       // reason: a fenced block renders as code and never reaches rehype-raw,
       // so escaping tags inside one would corrupt the listing for nothing.
-      return clampHtmlNestingDepth(normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part))))
+      return clampHtmlNestingDepth(
+        normalizeVisibleProse(stripPreviewTargets(normalizeProseMath(part)), citationSourceIds)
+      )
     })
     .join('')
 }

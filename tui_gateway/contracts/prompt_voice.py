@@ -224,9 +224,9 @@ method("prompt.btw", params=SideAgentParams, result=TaskIdResult,
 
 
 class PreviewRestartParams(SessionParams):
-    url: str = ""  # methods_prompt.py:1041 defaults a missing URL before rejecting it
-    cwd: str = ""  # methods_prompt.py:1041 defaults a missing working directory
-    context: str = ""  # methods_prompt.py:1041 defaults a missing console output
+    url: str
+    cwd: str | None = None
+    context: str | None = None  # the preview pane's console output
 
 
 method("preview.restart", params=PreviewRestartParams, result=TaskIdResult,

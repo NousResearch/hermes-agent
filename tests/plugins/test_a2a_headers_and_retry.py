@@ -440,6 +440,164 @@ class TestSendTaskRedirectAllowlist:
         rs.shutdown()
 
 
+
+# ---------------------------------------------------------------------------
+# Streaming path must enforce the same fail-closed redirect policy
+# ---------------------------------------------------------------------------
+
+def _stream_card(url):
+    """Agent card advertising a streaming-capable JSONRPC interface at url."""
+    return {"capabilities": {"streaming": True},
+            "supportedInterfaces": [{"protocolBinding": "JSONRPC", "url": url}]}
+
+
+class TestStreamingRedirectAllowlist:
+    """The SSE streaming POST carries the same credential map as the
+    blocking POST — it must go through _open_url_no_redirect_leak too.
+    Regression for the review round-1 CRITICAL (bare urlopen on the
+    streaming path leaked credentials to cross-origin redirects)."""
+
+    def _spin(self, handler):
+        import http.server
+        import threading
+        s = http.server.HTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+        return s, f"http://127.0.0.1:{s.server_address[1]}"
+
+    def test_streaming_post_pinned_redirect_followed_with_credentials(self):
+        import http.server
+        import json as _json
+
+        seen = {}
+
+        class Pinned(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                seen["auth"] = self.headers.get("Authorization")
+                seen["path"] = self.path
+                frame = _json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+                    "statusUpdate": {"taskId": "t1", "contextId": "c1",
+                                     "status": {"state": protocol.STATE_COMPLETED,
+                                                "message": {"parts": [{"text": "stream-ok"}]}}}}})
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(f"data: {frame}\n\n".encode())
+
+            # urllib converts a redirected POST into a GET on the target;
+            # without do_GET the follow-up dies with 501 before the assert.
+            do_GET = do_POST
+
+            def log_message(self, *a):
+                pass
+
+        class Redirector(http.server.BaseHTTPRequestHandler):
+            pinned_url = None
+
+            def do_GET(self):
+                b = _json.dumps(_stream_card(self.pinned_url)).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", self.pinned_url + "/rpc")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        ps, pinned = self._spin(Pinned)
+        Redirector.pinned_url = pinned
+        rs, redir = self._spin(Redirector)
+        peer = {"url": redir, "timeout": 10,
+                "auth": {"type": "bearer", "token": "tok-x"},
+                "headers": {"CF-Access-Client-Id": "cf-x"},
+                "allowed_rpc_origins": [pinned]}
+        reply, ctx, state = tools._send_task("stream-peer", peer, "hello", "")
+        assert reply == "stream-ok"
+        assert state == protocol.STATE_COMPLETED
+        assert seen["auth"] == "Bearer tok-x", "pinned origin must receive credentials"
+        ps.shutdown()
+        rs.shutdown()
+
+    def test_streaming_post_unpinned_redirect_refused_no_delivery(self):
+        import http.server
+
+        foreign_hits = {"n": 0}
+
+        class Foreign(http.server.BaseHTTPRequestHandler):
+            def _r(self):
+                foreign_hits["n"] += 1
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            do_GET = do_POST = _r
+
+            def log_message(self, *a):
+                pass
+
+        class Redirector(http.server.BaseHTTPRequestHandler):
+            foreign_url = None
+
+            def do_GET(self):
+                b = _json.dumps(_stream_card(self.foreign_url)).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", self.foreign_url + "/steal")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        fs, foreign = self._spin(Foreign)
+        Redirector.foreign_url = foreign
+        rs, redir = self._spin(Redirector)
+        peer = {"url": redir, "timeout": 10,
+                "auth": {"type": "bearer", "token": "tok-x"},
+                "headers": {"CF-Access-Client-Id": "cf-x"}}
+        with pytest.raises(urllib.error.HTTPError) as ei:
+            tools._send_task("stream-peer", peer, "hello", "")
+        assert foreign_hits["n"] == 0, "foreign host must never be contacted"
+        assert "refused" in str(ei.value.reason)
+        fs.shutdown()
+        rs.shutdown()
+
+
+class TestTaskIdScoping:
+    """Deterministic ids only for idempotency-opted peers (round-1 minor)."""
+
+    def _peer(self, extra=None):
+        p = {"url": "http://localhost:9", "timeout": 5, "auth": {},
+             "headers": {}, "capabilities": []}
+        p.update(extra or {})
+        return p
+
+    def test_idempotent_peer_gets_deterministic_id(self, monkeypatch):
+        monkeypatch.setattr(tools, "_load_config", lambda: {})
+        peer = self._peer({"idempotency": True})
+        id1 = tools._task_id_for("ctx-1", "msg", peer)
+        id2 = tools._task_id_for("ctx-1", "msg", peer)
+        assert id1 == id2 == protocol.deterministic_task_id("ctx-1", "msg")
+
+    def test_plain_peer_gets_random_id(self, monkeypatch):
+        monkeypatch.setattr(tools, "_load_config", lambda: {})
+        peer = self._peer()
+        id1 = tools._task_id_for("ctx-1", "msg", peer)
+        id2 = tools._task_id_for("ctx-1", "msg", peer)
+        assert id1 != id2
+        assert id1 != protocol.deterministic_task_id("ctx-1", "msg")
+
 # ---------------------------------------------------------------------------
 # Origin-level allowlist matching
 # ---------------------------------------------------------------------------

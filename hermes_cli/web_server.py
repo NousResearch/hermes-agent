@@ -116,8 +116,6 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     alongside a real gateway or a live pool backend on the same profile home —
     whichever process grabs the lock first wins the tick.
 
-    first wins the tick.
-
     But winning the tick is only safe when no gateway is running. The gateway
     delivers through its live platform adapters (E2EE-capable); this backend
     has none, so any fire it wins from the lock race falls back to standalone

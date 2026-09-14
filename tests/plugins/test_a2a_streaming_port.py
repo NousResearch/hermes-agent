@@ -3,15 +3,15 @@
 The streaming send path (SSE + card gate + zero-frame fallback) is ported
 verbatim from PR #86369 (feat/a2a-streaming-client). One semantic composition
 is deliberate and diverges from the PR branch: fork main owns per-peer
-idempotency (deterministic task_id + opt-in 524 retry). Composed contract:
+idempotency (deterministic task_id + replay-safe fallback). Composed contract:
 
   - Zero-frame stream failure  -> message/send fallback (clean first dispatch)
   - Frames-received stream death -> INDETERMINATE (no fallback) by default;
     falls back ONLY when the peer config asserts ``idempotency: true``
-    (the same replay-safe assertion that gates 524 retry on fork main).
+    (the peer dedupes on resend).
 
 The PR branch treated the opt-in as inert after frames; here it gates the
-replay, exactly as it gates 524 retries. Tests below cover both branches.
+replay. Tests below cover both branches.
 """
 from __future__ import annotations
 
@@ -187,7 +187,8 @@ class TestDeadline:
             return _Resp()
 
         monkeypatch.setattr(tools.time, "monotonic", fake_monotonic)
-        monkeypatch.setattr(tools.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(tools, "_open_url_no_redirect_leak",
+                            lambda req, timeout, allowed_origins=(): fake_urlopen(req, timeout))
         with pytest.raises(tools._A2aTransportError, match="deadline"):
             list(tools._http_post_sse("https://x", {"m": 1}, {}, timeout=30))
 
@@ -376,24 +377,24 @@ class TestNonSseBodyGuard:
     def test_html_body_raises_transport_error(self, monkeypatch):
         """200 + text/html (proxy error page) -> _A2aTransportError."""
         monkeypatch.setattr(
-            tools.urllib.request, "urlopen",
-            lambda req, timeout=None: self._resp(
+            tools, "_open_url_no_redirect_leak",
+            lambda req, timeout, allowed_origins=(): self._resp(
                 b"<html><body>Bad Gateway</body></html>", "text/html"))
         with pytest.raises(tools._A2aTransportError, match="not valid JSON-RPC"):
             list(tools._http_post_sse("https://x", {"m": 1}, {}, timeout=30))
 
     def test_empty_body_raises_transport_error(self, monkeypatch):
         monkeypatch.setattr(
-            tools.urllib.request, "urlopen",
-            lambda req, timeout=None: self._resp(b"", "application/json"))
+            tools, "_open_url_no_redirect_leak",
+            lambda req, timeout, allowed_origins=(): self._resp(b"", "application/json"))
         with pytest.raises(tools._A2aTransportError, match="not valid JSON-RPC"):
             list(tools._http_post_sse("https://x", {"m": 1}, {}, timeout=30))
 
     def test_valid_jsonrpc_body_still_yields(self, monkeypatch):
         """Plain JSON-RPC response on a non-SSE content type still works."""
         monkeypatch.setattr(
-            tools.urllib.request, "urlopen",
-            lambda req, timeout=None: self._resp(
+            tools, "_open_url_no_redirect_leak",
+            lambda req, timeout, allowed_origins=(): self._resp(
                 b'{"jsonrpc": "2.0", "id": 1, "result": {}}', "application/json"))
         frames = list(tools._http_post_sse("https://x", {"m": 1}, {}, timeout=30))
         assert frames == [{"jsonrpc": "2.0", "id": 1, "result": {}}]
@@ -479,7 +480,7 @@ class TestFallbackVisibility:
 
     def test_frames_received_death_with_optin_falls_back(self, caplog, monkeypatch):
         """Port composition: frames-received death + ``idempotency: true``
-        -> deliberate message/send fallback (same replay assertion as 524
+        -> deliberate message/send fallback (dedup on resend assertion as
         retry), logged at WARNING."""
         import logging
 
@@ -621,7 +622,7 @@ class TestIndeterminateOutcome:
 
     def test_resolve_peer_passes_idempotency_through(self, monkeypatch):
         """Fork main's resolver forwards the operator's idempotency assertion
-        (it gates both 524 retry and frames-received stream fallback)."""
+        (it gates the frames-received stream fallback)."""
         monkeypatch.setattr(tools, "_load_config", lambda: {
             "a2a_agents": {
                 "researcher": {"url": "http://p/", "idempotency": True},

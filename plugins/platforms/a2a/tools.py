@@ -215,6 +215,18 @@ def _origin_allowed(candidate: str, peer: dict) -> bool:
     return False
 
 
+
+def _task_id_for(ctx: str, safe_message: str, peer: dict) -> str:
+    """Task id policy: idempotent peers (operator-asserted dedupe) get a
+    deterministic id, so a stream-death fallback resend is replay-safe.
+    Everyone else gets a random id — unconditional determinism would let
+    a peer-side dedup swallow legitimate repeats of an identical message
+    in the same context."""
+    if peer.get("idempotency", False):
+        return protocol.deterministic_task_id(ctx, safe_message)
+    return protocol.new_task_id()
+
+
 def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> tuple[str, str, str]:
     """One SendMessage to a peer -> (reply_text, context_id, state). Raises urllib errors /
     ValueError for the caller to format; handles redaction, audit, persistence, metrics."""
@@ -241,11 +253,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
         card = None
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
-    # Deterministic task_id for idempotent fallback resends: the same
-    # (context, message) pair always produces the same task ID, so a
-    # stream-death fallback hits the peer with an ID it has already seen
-    # and can deduplicate against.
-    task_id = protocol.deterministic_task_id(ctx, safe_message)
+    task_id = _task_id_for(ctx, safe_message, peer)
     # v1.0: contextId lives inside the Message, not at the params top level.
     rpc_body = {"jsonrpc": "2.0", "id": task_id, "method": "SendMessage",
                 "params": {"taskId": task_id,
@@ -276,7 +284,8 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
     if isinstance(card, dict) and (card.get("capabilities") or {}).get("streaming"):
         try:
             return _send_task_stream(agent_label, rpc_url, rpc_body,
-                                     headers, timeout, ctx, rpc_body["id"])
+                                     headers, timeout, ctx, rpc_body["id"],
+                                     allowed_origins=allowed)
         except _A2aTransportError as exc:
             # Zero-frame transport failure: task provably never reached the
             # peer's engine -> message/send is a clean first dispatch.
@@ -313,7 +322,11 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
                 "A2A: streaming connection failed for %s (%s); falling back to message/send",
                 agent_label, exc)
 
-    resp = _http_post_json(rpc_url, rpc_body, headers, timeout, allowed_origins=allowed)
+    try:
+        resp = _http_post_json(rpc_url, rpc_body, headers, timeout, allowed_origins=allowed)
+    except _A2aIndeterminateError as exc:
+        exc.task_id = rpc_body["id"]  # deterministic id IS known here
+        raise
     if "error" in resp:
         raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))
@@ -363,7 +376,8 @@ class _A2aTransportError(ValueError):
         self.frame_count = frame_count
 
 
-def _http_post_sse(url: str, body: dict, headers: dict, timeout: int):
+def _http_post_sse(url: str, body: dict, headers: dict, timeout: int,
+                    allowed_origins: tuple[str, ...] = ()):
     """POST with Accept: text/event-stream and yield decoded SSE data payloads.
 
     Yields each ``data:`` frame's parsed JSON. Malformed data lines are
@@ -390,7 +404,9 @@ def _http_post_sse(url: str, body: dict, headers: dict, timeout: int):
     }
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
     deadline = time.monotonic() + timeout + _STREAM_READ_TIMEOUT_S
-    with urllib.request.urlopen(req, timeout=min(timeout, _STREAM_READ_TIMEOUT_S)) as resp:  # noqa: S310 (configured peers)
+    # Same fail-closed redirect policy as _http_post_json: a 302 from the
+    # peer must never carry the credential map to a foreign origin.
+    with _open_url_no_redirect_leak(req, min(timeout, _STREAM_READ_TIMEOUT_S), allowed_origins) as resp:  # noqa: S310 (configured peers)
         ctype = resp.headers.get("Content-Type", "")
         if not ctype.startswith("text/event-stream"):
             # Peer ignored the stream request; body is a plain JSON-RPC response.
@@ -422,7 +438,8 @@ def _http_post_sse(url: str, body: dict, headers: dict, timeout: int):
 
 
 def _send_task_stream(agent_label: str, rpc_url: str, rpc_body: dict, headers: dict,
-                      timeout: int, ctx: str, task_id: str) -> tuple[str, str, str]:
+                      timeout: int, ctx: str, task_id: str,
+                      allowed_origins: tuple[str, ...] = ()) -> tuple[str, str, str]:
     """Send one SendStreamingMessage and collect the terminal StreamResponse.
 
     Frames are JSON-RPC-wrapped StreamResponse objects (A2A v1.0 §9.4); the
@@ -451,7 +468,7 @@ def _send_task_stream(agent_label: str, rpc_url: str, rpc_body: dict, headers: d
     seen_ctx = ctx
     frame_count = 0
     try:
-        for frame in _http_post_sse(rpc_url, rpc_body, headers, timeout):
+        for frame in _http_post_sse(rpc_url, rpc_body, headers, timeout, allowed_origins):
             if not isinstance(frame, dict):
                 continue
             frame_count += 1

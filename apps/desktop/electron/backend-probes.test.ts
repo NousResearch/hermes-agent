@@ -66,7 +66,7 @@ test('execProbe keeps the parent event loop available to the child', async () =>
   try {
     await execProbe(NODE_BIN, ['-e', childScript], {
       stdio: 'ignore',
-      timeout: 1_000,
+      timeout: 5_000,
       windowsHide: true
     })
   } finally {

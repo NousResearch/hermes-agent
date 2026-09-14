@@ -218,6 +218,11 @@ def _resolve_hermes_bin_for_desktop_entry(
         # crashes when the entry changes while its ShellApp is STARTING
         # (shell_app_dispose assertion). Probe the known locations first;
         # only with no durable wrapper anywhere fall back to the module form.
+        # (Falling through rather than returning is equivalent to
+        # `return rerouted or primary`: the rerun above hides argv[0], so a
+        # non-None rerouted could only come from PATH — which the first call
+        # would already have returned. `primary is None` implies
+        # `rerouted is None`; only the probe below can still find anything.)
         pass
     elif rerouted is not None:
         return rerouted or primary

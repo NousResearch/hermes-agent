@@ -80,6 +80,17 @@ def _found(job):
     return job
 
 
+def _dashboard_cron_owned_by_gateway(profile: str) -> bool:
+    """True while a live gateway owns ``profile``'s cron store (has the adapters)."""
+    try:
+        from hermes_cli.profiles import _check_gateway_running
+
+        _name, home = _cron_profile_home(profile)
+        return bool(_check_gateway_running(Path(home)))
+    except Exception:
+        return False
+
+
 def _list_cron_jobs_sync(profile: str = "all"):
     requested = (profile or "all").strip()
     if requested.lower() != "all":
@@ -172,6 +183,21 @@ def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):
 def _trigger_cron_job_sync(job_id: str, profile: Optional[str] = None):
     selected = _job_profile(job_id, profile)
     job = _found(_call_cron_for_profile(selected, "resolve_job_ref", job_id))
+    deliver = job.get("deliver") or "local"
+    targets = deliver if isinstance(deliver, list) else str(deliver).split(",")
+    continuable_delivery = bool(job.get("attach_to_session")) and any(
+        str(target).strip().lower() not in {"", "local"}
+        for target in targets
+    )
+    if continuable_delivery and _dashboard_cron_owned_by_gateway(selected):
+        queued = _mutate_cron_for_profile(selected, "trigger_job", job["id"])
+        if not queued:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {
+            **queued,
+            "scheduled_for_gateway": True,
+            "execution_mode": "gateway_tick",
+        }
     # Never expose the job as due before claiming it: the built-in ticker and
     # external/manual fire paths share one durable claim, so only one executes
     # this run even racing across processes. Active jobs keep the legacy call

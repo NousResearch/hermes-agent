@@ -13,6 +13,7 @@ import { atom, host } from '@hermes/plugin-sdk'
 
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
+import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
 import type {
   Attachment,
@@ -1231,8 +1232,17 @@ export function groupSpeakerLabel(name?: null | string) {
     return trimmed
   }
 
+  // Live roster rows are sourceScoped (union merge). Titles then live at
+  // connectionId::name via saveBotMeta / mergeServerMeta — looking up the
+  // bare profile name misses them and a cloned display_name "Hermes" wins.
+  const roster = $lastRoster.get()
+  const row = Array.isArray(roster)
+    ? roster.find(bot => bot?.name === trimmed && !bot?.remoteSource) || null
+    : null
+  const meta = row ? botRosterMeta(row, $botMeta.get()) : $botMeta.get()?.[trimmed]
+
   // Bot Mode title (edit dialog) — same first rung as displayName().
-  const title = String($botMeta.get()?.[trimmed]?.title || '').trim()
+  const title = String(meta?.title || '').trim()
 
   if (title) {
     return title
@@ -1241,12 +1251,6 @@ export function groupSpeakerLabel(name?: null | string) {
   // Core profile display_name (`hermes profile rename …` / dashboard) from
   // the ACTIVE gateway's roster row. Source-scoped remote speakers carry
   // their device suffix separately and keep their raw name here.
-  const roster = $lastRoster.get()
-
-  const row = Array.isArray(roster)
-    ? roster.find(bot => bot?.name === trimmed && !bot?.remoteSource && !bot?.sourceScoped)
-    : null
-
   const renamed = typeof row?.display_name === 'string' ? row.display_name.trim() : ''
 
   if (renamed) {

@@ -915,7 +915,6 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // One log entry, rendered exactly as before conversation folding existed.
   const renderEntry = (entry: GroupMessage, index: number) => {
     const isUser = entry.from.kind === 'user'
-    const meta = isUser || entry.from.source ? null : allMeta[entry.from.name]
 
     // Match this speaker back to its member descriptor so display
     // names and disambiguating handles come from the roster (the
@@ -928,6 +927,15 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
             b.name === entry.from.name &&
             (entry.from.source ? (b.connectionLabel || b.connectionId) === entry.from.source : !b.remoteSource)
         ) || null
+
+    // Titles are filed under connectionId::name once the row is
+    // sourceScoped. A bare allMeta[from.name] miss falls through to a
+    // cloned display_name "Hermes".
+    const meta = member
+      ? botRosterMeta(member, allMeta)
+      : isUser || entry.from.source
+        ? null
+        : allMeta[entry.from.name]
 
     const display = isUser
       ? 'You'

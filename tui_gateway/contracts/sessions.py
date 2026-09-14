@@ -610,11 +610,11 @@ class SpawnTreeEntry(Result):
     ``ui-tui/src/app/slash/commands/ops.ts:361``."""
 
     path: str
-    session_id: str
-    started_at: float | None
-    finished_at: float
-    label: str
-    count: int
+    session_id: str = ""
+    started_at: float | None = None
+    finished_at: float = 0
+    label: str = ""
+    count: int = 0
 
 
 class SpawnTreeListResult(Result):

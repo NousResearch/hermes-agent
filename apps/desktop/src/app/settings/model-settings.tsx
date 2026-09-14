@@ -1092,7 +1092,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="__inherit__">{m.autoUseMain}</SelectItem>
+                              <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
                               {REASONING_EFFORT_VALUES.map(value => (
                                 <SelectItem key={value} value={value}>
                                   {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
@@ -1121,6 +1121,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                       {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
                       {!isAuto && current.base_url && (
                         <span className="text-muted-foreground"> · {current.base_url}</span>
+                      )}
+                      {current?.reasoning_effort && (
+                        <span className="text-muted-foreground">
+                          {' · '}
+                          {current.reasoning_effort === 'none'
+                            ? `${m.reasoning} ${m.reasoningOff}`
+                            : (t.shell.modelOptions[current.reasoning_effort as keyof typeof t.shell.modelOptions] ??
+                              current.reasoning_effort)}
+                        </span>
                       )}
                     </span>
                   }

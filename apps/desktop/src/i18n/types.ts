@@ -1150,6 +1150,7 @@ export interface Translations {
       setToMain: string
       change: string
       autoUseMain: string
+      inheritMainEffort: string
       providerDefault: string
       fallbackAdd: string
       fallbackEmpty: string

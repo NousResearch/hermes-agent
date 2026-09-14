@@ -1357,6 +1357,7 @@ export const ru = defineLocale({
       setToMain: 'На основную',
       change: 'Изменить',
       autoUseMain: 'авто · использовать основную модель',
+      inheritMainEffort: 'наследовать · усилие основной модели',
       providerDefault: '(по умолчанию провайдера)',
       fallbackAdd: 'Добавить запасную',
       fallbackEmpty: 'Запасных моделей нет — используется модель по умолчанию, если она не падает.',

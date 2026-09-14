@@ -1147,6 +1147,7 @@ export const ja = defineLocale({
       setToMain: 'メインに設定',
       change: '変更',
       autoUseMain: '自動 · メインモデルを使用',
+      inheritMainEffort: '継承 · メインモデルの推論強度',
       providerDefault: '(プロバイダーのデフォルト)',
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },

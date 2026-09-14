@@ -23,6 +23,79 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
+    # Provider-level rolling-window circuit breaker for the fallback chain: after
+    # `fail_threshold` failures within `window_seconds`, a fallback backend is
+    # skipped for `cooldown_seconds` instead of being retried every turn. Success
+    # clears the window.
+    #
+    # Defaults are deliberately gentle (aligned with the primary's own 60s cooldown
+    # in fallback_cooldown, not 1h): 5 failures within 10 minutes quiesce a backend
+    # for just 2 minutes. A real outage surfaces fast, but a handful of transient
+    # blips over an hour no longer trips anything.
+    #
+    # Auto-follows the project's existing API pool: it is EFFECTIVE whenever a
+    # fallback_providers (or legacy fallback_model) chain is configured, and is
+    # INERT when there is no pool — so a single-provider user can never be
+    # "banned" by it. There is deliberately NO `enabled` default here: leaving it
+    # absent lets the feature auto-activate the moment a pool exists, while
+    # setting it explicitly to `false` in config.yaml acts as a hard kill-switch
+    # even when a pool exists. See agent/provider_circuit_breaker.py.
+    #
+    # `auto_probe` (default false, opt-in) adds half-open self-healing: instead of
+    # waiting out the full cooldown, a quiesced backend is retried with ONE real
+    # attempt after `probe_interval_seconds` (default half the cooldown). A
+    # successful probe recovers immediately; a failed one re-arms a fresh cooldown.
+    # Only useful when ALL providers could be down at once — otherwise the normal
+    # cooldown expiry already recovers without extra traffic.
+    "fallback_circuit_breaker": {
+        "window_seconds": 600,
+        "fail_threshold": 5,
+        "cooldown_seconds": 120,
+        "auto_probe": False,
+        "probe_interval_seconds": 60,
+    },
+    # Credential/key-level cooldown policy for the provider pools (credential_pool).
+    # `mode: strict` (DEFAULT) = upstream behaviour, unchanged: any single failure
+    # immediately benches the offending key (429 -> 1h, 401 -> 5m, sole -> 60s, ...).
+    # `mode: lenient` is OPT-IN rolling-window cooling: a single failure only parks
+    # the key briefly (so the caller rotates away and retries soon) and a key is only
+    # really benched after `fail_threshold` failures within `window_seconds`, with a
+    # growing cooldown. See agent/provider_cooldown.py.
+    "provider_cooldown": {
+        "mode": "strict",
+        # --- lenient-only tuning (ignored while mode=strict) ---
+        "rate_limit": {             # HTTP 429 "rate limit exceeded"
+            "window_seconds": 1800,
+            "fail_threshold": 5,
+            "park_seconds": 30,     # brief rotate-away hold per single failure
+            "base_cooldown_seconds": 300,
+            # curve: "auto" = built-in curve; "custom" = use backoff_multipliers.
+            "curve": "auto",
+            "backoff_multipliers": [1.0],   # 429 default: flat cooldown
+            "max_cooldown_seconds": 0,      # ceiling on the cooldown; 0 = no cap
+            # Probe: after the bench (blackout) elapses the key is still held
+            # for `probe_requests` selections, then ONE probe is allowed. The
+            # bench itself is the (growing) cooldown, so a recharged key is
+            # noticed within a bounded number of calls without hammering a dead one.
+            "probe_requests": 1,
+        },
+        "billing": {                # HTTP 402 / billing "out of quota"
+            # First 402 benches at once (a spent quota won't self-heal).
+            "window_seconds": 3600,
+            "fail_threshold": 1,
+            "park_seconds": 30,
+            "base_cooldown_seconds": 300,
+            # curve: "auto" = built-in curve (x3, x1.5, x1.25, ... -> x1.01);
+            # "custom" = use your own backoff_multipliers below.
+            "curve": "auto",
+            "backoff_multipliers": [3.0, 1.5, 1.25, 1.25, 1.2, 1.15, 1.11, 1.1, 1.01],
+            "max_cooldown_seconds": 0,      # ceiling on the cooldown; 0 = no cap
+            # Probe: after the bench elapses the key must see `probe_requests`
+            # selections before ONE probe is let through. A failure advances the
+            # ladder (a longer bench); only a success (recharge) clears it.
+            "probe_requests": 1,
+        },
+    },
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).

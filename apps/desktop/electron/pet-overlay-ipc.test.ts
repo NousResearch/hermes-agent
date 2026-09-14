@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+
 import type { BrowserWindow } from 'electron'
 import { describe, it, vi } from 'vitest'
 
@@ -31,6 +32,7 @@ describe('pet-overlay-ipc', () => {
     } as unknown as BrowserWindow
 
     let mainFocused = true
+
     const mockMainWindow = {
       isDestroyed: () => false,
       isFocused: () => mainFocused
@@ -44,6 +46,7 @@ describe('pet-overlay-ipc', () => {
     })
 
     const setFocusableHandler = onHandlers.get('hermes:pet-overlay:set-focusable')
+
     assert.ok(setFocusableHandler, 'handler registered for hermes:pet-overlay:set-focusable')
 
     // 1. When main window is focused, pet overlay should become focusable but NOT steal focus

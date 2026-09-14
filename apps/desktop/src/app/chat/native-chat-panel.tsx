@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { atom, computed } from 'nanostores'
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
@@ -58,7 +58,7 @@ export interface CreateNativeChatSessionOptions {
 }
 
 const MAX_PENDING_NATIVE_SESSION_LEASES = 64
-const pendingNativeSessionLeases = new Map<string, () => void>()
+const pendingNativeSessionLeases = new Map<string, { bindingKey: string; release: () => void }>()
 const MAX_NATIVE_ATTACHMENT_SCOPES = 64
 const nativeAttachmentScopes = new Map<string, ComposerAttachmentScope>()
 
@@ -117,10 +117,10 @@ function nativeAttachmentScope(route: NativeChatProfileRoute, storedSessionId: s
   return created
 }
 
-function rememberPendingNativeSessionLease(storedSessionId: string, release: () => void): void {
-  pendingNativeSessionLeases.get(storedSessionId)?.()
+function rememberPendingNativeSessionLease(storedSessionId: string, bindingKey: string, release: () => void): void {
+  pendingNativeSessionLeases.get(storedSessionId)?.release()
   pendingNativeSessionLeases.delete(storedSessionId)
-  pendingNativeSessionLeases.set(storedSessionId, release)
+  pendingNativeSessionLeases.set(storedSessionId, { bindingKey, release })
 
   while (pendingNativeSessionLeases.size > MAX_PENDING_NATIVE_SESSION_LEASES) {
     const oldest = pendingNativeSessionLeases.keys().next().value as string | undefined
@@ -129,26 +129,26 @@ function rememberPendingNativeSessionLease(storedSessionId: string, release: () 
       break
     }
 
-    pendingNativeSessionLeases.get(oldest)?.()
+    pendingNativeSessionLeases.get(oldest)?.release()
     pendingNativeSessionLeases.delete(oldest)
   }
 }
 
 function releasePendingNativeSessionLease(storedSessionId: string): void {
-  const release = pendingNativeSessionLeases.get(storedSessionId)
+  const lease = pendingNativeSessionLeases.get(storedSessionId)
 
-  if (!release) {
+  if (!lease) {
     return
   }
 
   pendingNativeSessionLeases.delete(storedSessionId)
-  release()
+  lease.release()
 }
 
 /** @internal Tests. */
 export function _resetNativeChatSessionLeasesForTests(): void {
-  for (const release of pendingNativeSessionLeases.values()) {
-    release()
+  for (const lease of pendingNativeSessionLeases.values()) {
+    lease.release()
   }
 
   pendingNativeSessionLeases.clear()
@@ -204,7 +204,7 @@ export async function createNativeChatSession(
 
     setSessionOwnerHint(storedSessionId, route)
     const runtimeSessionId = delegate.bindCreatedSession(created, storedSessionId)
-    rememberPendingNativeSessionLease(storedSessionId, releaseRoute)
+    rememberPendingNativeSessionLease(storedSessionId, nativeBindingKey(route, storedSessionId), releaseRoute)
     keepRoute = true
 
     return { route, runtimeSessionId, storedSessionId }
@@ -285,15 +285,26 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
     [route, storedSessionId]
   )
 
+  // The exact binding this panel is bound to: route primitives + stored
+  // session. The runtime atom is keyed on it so a re-bind to another route
+  // resets the runtime instead of driving the previous route's socket.
+  const bindingKey = nativeBindingKey(route, storedSessionId)
+
   const $runtimeId = useMemo(
     () => {
       const candidate = binding.runtimeSessionId?.trim() || ''
-      const canReuseFreshRuntime = Boolean(candidate && pendingNativeSessionLeases.has(storedSessionId))
-      const hasSharedState = Boolean(candidate && $sessionStates.get()[candidate])
 
-      return atom<null | string>(canReuseFreshRuntime || hasSharedState ? candidate : null)
+      // Only a runtime this panel created for THIS exact route can be reused
+      // straight from the binding: its creation lease outlives a close/reopen
+      // until the first durable row. Every other binding starts empty and
+      // resumes through the shared session store (whose warm path reuses a live
+      const canReuseCreatedRuntime = Boolean(
+        candidate && pendingNativeSessionLeases.get(storedSessionId)?.bindingKey === bindingKey
+      )
+
+      return atom<null | string>(canReuseCreatedRuntime ? candidate : null)
     },
-    [binding.runtimeSessionId, storedSessionId]
+    [binding.runtimeSessionId, bindingKey, storedSessionId]
   )
 
   const view = useMemo(() => buildNativeView(storedSessionId, $runtimeId), [$runtimeId, storedSessionId])
@@ -326,24 +337,22 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
     return retainForegroundSessionSurface(route, runtimeId)
   }, [route, runtimeId, storedSessionId])
 
-  // The resume is keyed to the exact binding it belongs to: a panel that is
-  // re-bound while an earlier resume is still in flight must start the NEW
-  // binding's resume instead of leaving itself on "Connecting" forever. A stale
-  // resume that settles later is dropped by its own cleanup.
-  const resumeKey = nativeBindingKey(route, storedSessionId)
-  const resumingKeyRef = useRef<null | string>(null)
-  // eslint-disable-next-line no-restricted-syntax -- in-flight resume latch keyed to the binding, not an atom mirror
+  // The resume is deliberately NOT latched: the effect's own cleanup delimits
+  // an attempt (a binding switch, a delegate revision, a retry), the local flag
+  // drops a result that cleanup already superseded, and the shared resume path
+  // single-flights the session wiring. A latch also swallowed the attempt a
+  // StrictMode remount or a delegate bump had just cancelled, which left the
+  // panel on "Connecting" forever.
   useEffect(() => {
     // The shared delegate is installed by Desktop's normal session wiring. It
     // performs exact-owner resume, transcript hydration, approval restoration
     // and shared state publication without layout/navigation side effects.
-    if (!storedSessionId || $runtimeId.get() || resumingKeyRef.current === resumeKey || !sessionTileDelegate()) {
+    if (!storedSessionId || $runtimeId.get() || !sessionTileDelegate()) {
       return
     }
 
     let cancelled = false
 
-    resumingKeyRef.current = resumeKey
     setError(null)
 
     void sessionTileDelegate()!
@@ -358,16 +367,11 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
           setError(reason instanceof Error ? reason.message : String(reason))
         }
       })
-      .finally(() => {
-        if (resumingKeyRef.current === resumeKey) {
-          resumingKeyRef.current = null
-        }
-      })
 
     return () => {
       cancelled = true
     }
-  }, [$runtimeId, delegateRevision, resumeKey, retryRevision, storedSessionId])
+  }, [$runtimeId, delegateRevision, retryRevision, storedSessionId])
 
   // A durable row means the backend session now survives socket pruning. Until
   // then the creation lease stays alive even if the plugin temporarily unmounts

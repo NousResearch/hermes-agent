@@ -183,6 +183,51 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _read_fleet_restart_marker_expected_sha() -> "str | None":
+    """The pulled SHA recorded in the ``fleet_restart_pending`` marker, if any."""
+    try:
+        text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "expected_sha" and value.strip():
+            return value.strip()
+    return None
+
+
+def _fleet_restart_verified_by_marker_sha() -> bool:
+    """Independent restart verification for a degraded fleet probe (#111272).
+
+    ``collect_fleet_versions()`` swallows every failure, so zero rows with
+    expected runtimes is indistinguishable from health — the update fails
+    closed (exit 1, marker kept). But the restart obligation is provable
+    another way: the pending marker records the pulled ``expected_sha``, and
+    every live gateway stamps its running ``code_sha`` into
+    ``gateway_state.json`` on each status write. True only when the marker
+    carries an expected SHA, at least one profile's ``gateway_state.json``
+    belongs to a live process, and every such live record reports that same
+    SHA — the restarted fleet provably runs the new code, so the marker may be
+    cleared. A live gateway on any other SHA (or no live record at all) stays
+    fail-closed.
+    """
+    expected_sha = _read_fleet_restart_marker_expected_sha()
+    if not expected_sha:
+        return False
+    from gateway.status import read_runtime_status, runtime_status_pid_is_live
+    from hermes_cli.update_receipt import _profile_homes
+    verified_any = False
+    for _profile, home in _profile_homes():
+        with suppress(Exception):
+            record = read_runtime_status(home / "gateway_state.json")
+            if not isinstance(record, dict) or not runtime_status_pid_is_live(record):
+                continue
+            if str(record.get("code_sha") or "") != expected_sha:
+                return False
+            verified_any = True
+    return verified_any
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
@@ -1362,17 +1407,27 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         elif not _fleet_snapshot and _fleet_rows_expected:
             # collect_fleet_versions() swallows every failure, so zero rows with
             # expected runtimes is indistinguishable from health — fail (partial, exit 1).
-            print(
-                # Fleet probe returned zero rows even though at least one gateway runtime was (or may have
-                # been) live pre-update — POSIX restart bookkeeping, the pre-restart PID snapshot, the
-                # pre-update plan inventory, or the Windows pause/resume token all count as that signal.
-                # Every failure path inside collect_fleet_versions() is swallowed via logger.debug(), so an
-                # empty list is indistinguishable from a healthy fleet in the current output. Treat it as
-                # verification failure so the receipt records "partial" and the exit code is 1 (#93406).
-                "\n⚠ Fleet version check returned no rows even though"
-                " gateway runtimes were expected — verification incomplete."
-            )
-            restart.incomplete = True
+            if _fleet_restart_verified_by_marker_sha():
+                # The probe is degraded but the restart is provably complete: the
+                # marker's expected SHA matches the code_sha every live gateway
+                # stamped into gateway_state.json. Don't fail closed on a
+                # verification channel that already answered. (#111272)
+                print(
+                    "\n✓ Fleet version probe returned no rows, but the live"
+                    " gateway(s) report this update's code SHA — restart verified."
+                )
+            else:
+                print(
+                    # Fleet probe returned zero rows even though at least one gateway runtime was (or may have
+                    # been) live pre-update — POSIX restart bookkeeping, the pre-restart PID snapshot, the
+                    # pre-update plan inventory, or the Windows pause/resume token all count as that signal.
+                    # Every failure path inside collect_fleet_versions() is swallowed via logger.debug(), so an
+                    # empty list is indistinguishable from a healthy fleet in the current output. Treat it as
+                    # verification failure so the receipt records "partial" and the exit code is 1 (#93406).
+                    "\n⚠ Fleet version check returned no rows even though"
+                    " gateway runtimes were expected — verification incomplete."
+                )
+                restart.incomplete = True
 
     # Every runtime the PLAN saw must appear in restart bookkeeping; an
     # unaccounted one is a silent miss and escalates like a STALE/DOWN row.

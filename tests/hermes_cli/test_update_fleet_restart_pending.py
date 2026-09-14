@@ -17,6 +17,7 @@ No live gateway, no network. Git and restart are mocked.
 from __future__ import annotations
 
 import json
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -609,3 +610,57 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
     captured = capsys.readouterr()
     assert captured.err == ""
     assert captured.out == ""
+
+
+# ---------------------------------------------------------------------------
+# Marker-SHA restart verification for a degraded fleet probe (#111272)
+# ---------------------------------------------------------------------------
+
+_MARKER_SHA = "4" * 40
+_OTHER_SHA = "5" * 40
+
+
+def _write_live_gateway_state(home, code_sha):
+    """gateway_state.json for a gateway provably alive: this test process's PID.
+
+    No ``start_time`` key, so the PID-reuse guard cannot conflict — a real,
+    unmocked liveness check against the live test process.
+    """
+    (home / "gateway_state.json").write_text(
+        json.dumps({"pid": os.getpid(), "code_sha": code_sha, "gateway_state": "running"}),
+        encoding="utf-8",
+    )
+
+
+def test_marker_expected_sha_round_trip():
+    update_cmd_fleet._write_fleet_restart_pending_marker(expected_sha=_MARKER_SHA)
+    assert update_cmd_fleet._read_fleet_restart_marker_expected_sha() == _MARKER_SHA
+    update_cmd_fleet._clear_fleet_restart_pending_marker()
+    assert update_cmd_fleet._read_fleet_restart_marker_expected_sha() is None
+
+
+def test_degraded_probe_verified_when_live_gateway_reports_marker_sha():
+    # The #111272 scenario: the fleet probe returned no rows, but the restarted
+    # gateway is provably on the pulled SHA — the marker may be cleared.
+    update_cmd_fleet._write_fleet_restart_pending_marker(expected_sha=_MARKER_SHA)
+    _write_live_gateway_state(get_hermes_home(), _MARKER_SHA)
+    assert update_cmd_fleet._fleet_restart_verified_by_marker_sha() is True
+
+
+def test_degraded_probe_stays_fail_closed_on_sha_mismatch():
+    # A live gateway on any other SHA means the restart did NOT land — stay fail-closed.
+    update_cmd_fleet._write_fleet_restart_pending_marker(expected_sha=_MARKER_SHA)
+    _write_live_gateway_state(get_hermes_home(), _OTHER_SHA)
+    assert update_cmd_fleet._fleet_restart_verified_by_marker_sha() is False
+
+
+def test_degraded_probe_stays_fail_closed_without_marker():
+    # No marker means no pulled SHA to verify against.
+    _write_live_gateway_state(get_hermes_home(), _MARKER_SHA)
+    assert update_cmd_fleet._fleet_restart_verified_by_marker_sha() is False
+
+
+def test_degraded_probe_stays_fail_closed_without_live_gateway():
+    # Marker present but no live gateway_state.json — unverifiable, stay fail-closed.
+    update_cmd_fleet._write_fleet_restart_pending_marker(expected_sha=_MARKER_SHA)
+    assert update_cmd_fleet._fleet_restart_verified_by_marker_sha() is False

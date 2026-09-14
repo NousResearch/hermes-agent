@@ -65,6 +65,15 @@ class TestProfileRouteMatching:
             "teams", user_id="aad-456", chat_id="conversation-2",
         )
 
+    def test_sender_route_cannot_cross_the_receiving_bot_boundary(self):
+        route = ProfileRoute(
+            name="owner", platform="telegram", profile="owner",
+            user_id="640466638", bot_profile="team_b",
+        )
+        assert route.matches("telegram", user_id="640466638", adapter_profile="team_b")
+        assert not route.matches("telegram", user_id="640466638", adapter_profile=None)
+        assert not route.matches("telegram", user_id="other", adapter_profile="team_b")
+
     def test_sender_routes_split_one_chat_and_outrank_its_location_route(self):
         routes = parse_profile_routes([
             {"name": "shared", "platform": "teams", "profile": "shared",
@@ -109,15 +118,20 @@ class TestParseProfileRoutes:
         assert (by_name["platform-only"].guild_id, by_name["platform-only"].chat_id,
                 by_name["platform-only"].thread_id) == (None, None, None)
 
-    @pytest.mark.parametrize("blank", ["", "   "])
-    def test_blank_user_id_is_inert_never_a_broader_route(self, blank):
-        # Unlike the location fields, a blank sender does not fall back to "unconstrained".
-        routes = parse_profile_routes([
-            {"name": "blank", "platform": "teams", "profile": "owner", "user_id": blank},
-            {"name": "legacy", "platform": "teams", "profile": "shared"},
-        ])
-        assert match_profile_route(routes, "teams", user_id=blank).name == "legacy"
-        assert match_profile_route(routes, "teams", user_id="anyone").name == "legacy"
+    @pytest.mark.parametrize("invalid", [None, "", "   "])
+    def test_null_or_blank_user_id_rejects_only_that_route(self, invalid, caplog):
+        with caplog.at_level("WARNING", logger="gateway.profile_routing"):
+            routes = parse_profile_routes([
+                {"name": "invalid", "platform": "teams", "profile": "owner", "user_id": invalid},
+                {"name": "missing", "platform": "teams", "profile": "shared"},
+            ])
+        assert [route.name for route in routes] == ["missing"]
+        assert match_profile_route(routes, "teams", user_id="anyone").name == "missing"
+        assert "user_id cannot be null or empty" in caplog.text
+        if isinstance(invalid, str):
+            assert not ProfileRoute(
+                name="direct", platform="teams", profile="owner", user_id=invalid,
+            ).matches("teams", user_id=invalid)
 
     def test_non_int_numeric_ids_warn_instead_of_silently_coercing(self, caplog):
         # #86470 nuance: float/bool stringify to values that can never match
@@ -134,6 +148,23 @@ class TestParseProfileRoutes:
 
 class TestMatchProfileRoute:
 
+    def test_sender_only_route_outranks_the_tightest_location_route(self):
+        routes = parse_profile_routes([
+            {"name": "thread", "platform": "discord", "profile": "thread",
+             "guild_id": "g", "chat_id": "c", "thread_id": "t"},
+            {"name": "sender", "platform": "discord", "profile": "sender", "user_id": "u"},
+            {"name": "sender-chat", "platform": "discord", "profile": "sender-chat",
+             "user_id": "u", "chat_id": "c"},
+        ])
+        assert match_profile_route(
+            routes, "discord", guild_id="g", chat_id="c", thread_id="t", user_id="u",
+        ).profile == "sender-chat"
+        assert match_profile_route(
+            routes, "discord", guild_id="g", chat_id="other", thread_id="t", user_id="u",
+        ).profile == "sender"
+        assert match_profile_route(
+            routes, "discord", guild_id="g", chat_id="c", thread_id="t", user_id="other",
+        ).profile == "thread"
 
     def test_no_match_returns_none(self):
         routes = [
@@ -236,8 +267,6 @@ class TestWhatsAppChatIdIdentityMatching:
 
 class TestGatewayConfigRoundtrip:
     def test_routes_survive_to_dict_from_dict_with_user_id_and_enabled(self):
-        # GatewayConfig serializes routes with asdict(); a field added to ProfileRoute but not
-        # re-read by parse_profile_routes would silently widen or disable routes on reload.
         from gateway.config import GatewayConfig
 
         config = GatewayConfig(profile_routes=parse_profile_routes([
@@ -245,7 +274,9 @@ class TestGatewayConfigRoundtrip:
             {"name": "off", "platform": "teams", "profile": "owner",
              "chat_id": "conversation-1", "enabled": False},
         ]))
-        restored = GatewayConfig.from_dict(config.to_dict()).profile_routes
+        raw = config.to_dict()
+        assert "user_id" not in raw["profile_routes"][1]
+        restored = GatewayConfig.from_dict(raw).profile_routes
 
         assert [(r.name, r.user_id, r.enabled, r.specificity) for r in restored] == [
             ("sender", "aad-456", True, 16), ("off", None, False, 4),

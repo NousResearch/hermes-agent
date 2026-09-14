@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+import weakref
 from contextlib import suppress
 from difflib import SequenceMatcher
 from types import SimpleNamespace
@@ -228,11 +229,14 @@ class GatewayVoiceMixin:
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
             source.user_id = source.user_name = str(user_id)
-            return source
-        return SessionSource(
-            platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-            user_name=str(user_id), chat_type="channel",
-            profile=getattr(adapter, "_owner_profile", None))
+        else:
+            source = SessionSource(
+                platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
+                user_name=str(user_id), chat_type="channel",
+                profile=getattr(adapter, "_owner_profile", None))
+        # Serialization drops transport provenance; auth must still follow the receiving bot.
+        source._transport_adapter_ref = weakref.ref(adapter)
+        return source
 
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str, *, adapter=None
@@ -245,6 +249,10 @@ class GatewayVoiceMixin:
         if not text_ch_id:
             return
         source = self._voice_input_source(adapter, guild_id, user_id, text_ch_id)
+        # Cached source still carries the previous speaker's routed profile.
+        if not self._stamp_routed_profile(source, getattr(adapter, "_owner_profile", None)):
+            logger.warning("Dropping voice input: its profile route targets an unserved profile")
+            return
         # Validate the session owner against the current allowlist before auto-resuming. A session created
         # before TELEGRAM_ALLOWED_USERS (or equivalent) was configured, or before the owner was removed from
         # it, must not silently receive a full agent response on gateway restart just because it has a

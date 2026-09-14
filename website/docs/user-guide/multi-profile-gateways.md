@@ -556,12 +556,32 @@ gateway:
       profile: owner
 ```
 
-Routes are matched most-specific-first (`user_id` > `thread_id` > `chat_id` > `guild_id`),
-all declared fields must hold (AND), and a route keyed on a channel also
-matches threads/forum posts whose parent is that channel. Messages that match
-no route stay on the default/active profile. The routed profile gets the full
-per-profile isolation described above (config, skills, memory, credentials,
-session namespace). Routing works on every platform adapter, not just Discord.
+Routes are matched by additive specificity: `user_id` = 16, `thread_id` = 8,
+`chat_id` = 4, and `guild_id` = 2. Thus `user_id + chat_id` (20) outranks
+`user_id` alone (16), which outranks every location-only route (at most 14).
+All declared fields must hold (AND), equal scores keep declaration order, and a
+route keyed on a channel also matches threads/forum posts whose parent is that
+channel. Messages that match no route stay on the default/active profile. The
+routed profile gets the full per-profile isolation described above (config,
+skills, memory, credentials, session namespace). Routing works on every
+platform adapter, not just Discord.
+
+`user_id` is the **sender** of the inbound message, compared for exact equality. It is only
+as trustworthy as the adapter that reports it, so treat it as an authorization input only on
+platforms whose ingress authenticates the sender. Sender ids are also namespaced per tenant
+on some platforms — a Slack user id is workspace-local — so on a gateway serving more than
+one workspace or server, pair `user_id` with the `guild_id` of that scope (Discord guild,
+Slack workspace, Matrix server) rather than relying on the id alone.
+
+Omitting `user_id` keeps the route unconstrained by sender for backward compatibility.
+Setting it to `null`, an empty string, or whitespace invalidates that route instead of
+broadening it to every sender on the platform.
+
+Sender routing selects a profile; it is not deny-by-default authorization. A sender that
+matches no route falls through to the default/active profile, exactly like an unrouted
+channel. To give one person a privileged profile and everyone else a restricted one, declare
+the privileged sender route first, add a platform-wide catch-all route to the restricted
+profile after it, and keep the platform's own ingress allowlist in place.
 
 A route applies only to messages received by the **default profile's bot**
 unless it names another bot with `bot_profile: <profile>`. Telegram DMs use the

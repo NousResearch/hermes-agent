@@ -4628,20 +4628,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return None
 
         try:
-            img = Image.open(image_path)
-            if img.mode in ("RGBA", "LA", "P"):
-                # Alpha-capable modes: composite onto a white background so
-                # transparency doesn't render as black in the JPEG.
-                background = Image.new("RGB", img.size, (255, 255, 255))
-                if img.mode == "P":
-                    img = img.convert("RGBA")
-                if img.mode in ("RGBA", "LA"):
-                    background.paste(img, mask=img.split()[-1])
+            # Close the source handle before returning: convert()/resize() produce new images, so
+            # the original file object would otherwise stay open until garbage collection.
+            with Image.open(image_path) as src:
+                if src.mode in ("RGBA", "LA", "P"):
+                    # Alpha-capable modes: composite onto a white background so
+                    # transparency doesn't render as black in the JPEG.
+                    background = Image.new("RGB", src.size, (255, 255, 255))
+                    layer = src.convert("RGBA") if src.mode == "P" else src
+                    if layer.mode in ("RGBA", "LA"):
+                        background.paste(layer, mask=layer.split()[-1])
+                    else:
+                        background.paste(layer)
+                    img = background
                 else:
-                    background.paste(img)
-                img = background
-            elif img.mode != "RGB":
-                img = img.convert("RGB")
+                    img = src.convert("RGB")
 
             max_w, max_h = img.size
             max_dim = max(max_w, max_h)

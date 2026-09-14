@@ -5,7 +5,6 @@ When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Model
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import time
-from typing import Optional
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.message_sanitization import matches_reasoning_echo_family

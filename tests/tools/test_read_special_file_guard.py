@@ -26,11 +26,13 @@ class TestSpecialFileKind:
     def test_missing_path(self, tmp_path):
         assert _special_file_kind(tmp_path / "nope") is None
 
+    @pytest.mark.linux_only  # os.mkfifo is POSIX-only
     def test_fifo(self, tmp_path):
         fifo = tmp_path / "p.pipe"
         os.mkfifo(fifo)
         assert "FIFO" in (_special_file_kind(fifo) or "")
 
+    @pytest.mark.linux_only  # socket.AF_UNIX is POSIX-only
     def test_socket(self, tmp_path):
         sock_path = tmp_path / "s.sock"
         s = socket.socket(socket.AF_UNIX)
@@ -40,6 +42,7 @@ class TestSpecialFileKind:
         finally:
             s.close()
 
+    @pytest.mark.linux_only  # os.mkfifo is POSIX-only
     def test_symlink_to_fifo_followed(self, tmp_path):
         fifo = tmp_path / "p.pipe"
         os.mkfifo(fifo)
@@ -47,23 +50,20 @@ class TestSpecialFileKind:
         link.symlink_to(fifo)
         assert "FIFO" in (_special_file_kind(link) or "")
 
+    @pytest.mark.linux_only
     def test_char_device(self):
-        if not os.path.exists("/dev/null"):
-            pytest.skip("no /dev/null")
         assert "character device" in (_special_file_kind("/dev/null") or "")
 
 
 class TestReadFileToolFifoGuard:
-    def test_fifo_read_returns_note_instantly(self, tmp_path, monkeypatch):
-        import time
-
+    @pytest.mark.linux_only  # os.mkfifo is POSIX-only
+    def test_fifo_read_returns_error_without_opening(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         fifo = tmp_path / "live.pipe"
         os.mkfifo(fifo)
-        t0 = time.monotonic()
         result = json.loads(read_file_tool(str(fifo)))
-        assert time.monotonic() - t0 < 5, "guard must not block on the FIFO"
         assert result["success"] is False
+        assert result["error"] == result["note"]
         assert "FIFO" in result["note"]
         assert "no read was attempted" in result["note"]
 
@@ -74,3 +74,16 @@ class TestReadFileToolFifoGuard:
         result = json.loads(read_file_tool(str(f)))
         assert result.get("success", True) is not False
         assert "alpha" in result.get("content", "")
+
+
+def test_special_file_refusal_has_error_key(tmp_path, monkeypatch):
+    from tools import file_tools
+
+    path = tmp_path / "special"
+    path.write_text("unused")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setattr(file_tools, "_special_file_kind", lambda path: "a FIFO")
+    result = json.loads(read_file_tool(str(path)))
+    assert result["success"] is False
+    assert result["error"] == result["note"]
+    assert "no read was attempted" in result["error"]

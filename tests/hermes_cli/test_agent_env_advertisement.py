@@ -18,7 +18,9 @@ envs in engaged multi-session hosts.
 """
 
 import os
+import shutil
 import subprocess
+import sys
 
 from hermes_cli.main import _advertise_agent_env
 
@@ -77,17 +79,27 @@ class TestWrapCommandAdvertisesHarness:
         """Run the wrapped script through real bash both ways."""
         wrapped = self._wrap('echo "AI=$AI_AGENT HERMES=$HERMES_AGENT"')
 
+        # Windows ships ``bash.exe`` as a WSL launcher in System32.  On hosts
+        # without a Linux distribution that launcher only prints an error;
+        # use the installed Git Bash executable for this shell contract test.
+        if sys.platform == "win32":
+            bash = shutil.which("bash.exe", path=r"C:\Program Files\Git\usr\bin")
+            if not bash:
+                self.fail("Git Bash is required for the Windows shell contract test")
+        else:
+            bash = "bash"
+
         clean_env = {k: v for k, v in os.environ.items()
                      if k not in ("AI_AGENT", "HERMES_AGENT")}
         out = subprocess.run(
-            ["bash", "-c", wrapped], capture_output=True, text=True,
+            [bash, "-c", wrapped], capture_output=True, text=True,
             env=clean_env, timeout=30,
         )
         assert f"AI={HARNESS_ID} HERMES=true" in out.stdout
 
         outer_env = dict(clean_env, AI_AGENT="pi", HERMES_AGENT="false")
         out = subprocess.run(
-            ["bash", "-c", wrapped], capture_output=True, text=True,
+            [bash, "-c", wrapped], capture_output=True, text=True,
             env=outer_env, timeout=30,
         )
         assert "AI=pi HERMES=false" in out.stdout

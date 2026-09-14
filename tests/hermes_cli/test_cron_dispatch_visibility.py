@@ -45,6 +45,22 @@ def _catch_up_stamp(late_seconds=1860.0, kind="catch_up"):
 
 
 class TestCronListDispatchLine:
+    def test_inherited_effective_policy_and_grace_are_rendered(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        monkeypatch.setattr("hermes_cli.cron._warn_if_gateway_not_running", lambda: None)
+        monkeypatch.setattr(
+            "cron.jobs._cron_config_number",
+            lambda key, default, cast: False if key == "catch_up_missed" else cast(default),
+        )
+        create_job(prompt="hourly report", schedule="every 1h")
+
+        cron_list()
+
+        out = capsys.readouterr().out
+        assert "skip (config)" in out
+        assert "1800s (schedule)" in out
+
     def test_catch_up_dispatch_rendered(self, tmp_cron_dir, capsys, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.cron._warn_if_gateway_not_running", lambda: None

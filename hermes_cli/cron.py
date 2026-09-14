@@ -218,16 +218,18 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
         ("Dispatch", _dispatch_display(job.get("last_dispatch"))),
         ("Execution", f"{latest_execution.get('status', '?')}  {latest_execution.get('id', '?')}"
          if latest_execution else "")]
+    from cron.jobs import resolve_job_misfire_policy
+    misfire_policy = resolve_job_misfire_policy(job)
+    catch_up = "run once" if misfire_policy["catch_up"] else "skip"
     return [
         ("Name", job.get("name", "(unnamed)")),
         ("Schedule", job.get("schedule_display", job.get("schedule", {}).get("value", "?"))),
         ("Repeat", f"{repeat_info.get('completed', 0)}/{repeat_times}" if repeat_times else "∞"),
         ("Next run", job.get("next_run_at", "?")),
         ("Deliver", deliver if isinstance(deliver, str) else ", ".join(deliver)),
-        ("Catch-up", ("run once" if job["catch_up"] else "skip")
-         if isinstance(job.get("catch_up"), bool) else "inherit cron.catch_up_missed"),
-        ("Grace", f"{job['misfire_grace_seconds']}s (job override)"
-         if isinstance(job.get("misfire_grace_seconds"), int) else "automatic (half cadence, 2m–2h)"),
+        ("Catch-up", f"{catch_up} ({misfire_policy['catch_up_source']})"),
+        ("Grace", f"{misfire_policy['misfire_grace_seconds']}s "
+         f"({misfire_policy['misfire_grace_source']})"),
     ] + [(label, value) for label, value in optional if value]
 
 
@@ -569,7 +571,9 @@ _JOB_ARG_FIELDS = (("name", "name"), ("deliver", "deliver"), ("failure_deliver",
                    ("monitor_script", "monitor_script"), ("monitor_url", "monitor_url"),
                    ("continuity", "continuity"), ("reasoning_effort", "reasoning_effort"),
                    ("catch_up", "catch_up"),
-                   ("misfire_grace_seconds", "misfire_grace_seconds"))
+                   ("misfire_grace_seconds", "misfire_grace_seconds"),
+                   ("inherit_catch_up", "inherit_catch_up"),
+                   ("inherit_misfire_grace", "inherit_misfire_grace"))
 
 
 def _job_api_kwargs(args) -> Dict[str, Any]:

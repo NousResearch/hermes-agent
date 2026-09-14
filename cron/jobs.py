@@ -886,6 +886,22 @@ def _job_catches_up_missed(job: Dict[str, Any]) -> Tuple[bool, str]:
     return bool(enabled), "config"
 
 
+def resolve_job_misfire_policy(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the effective per-job catch-up and grace values with their sources."""
+    catch_up, catch_up_source = _job_catches_up_missed(job)
+    grace_override = job.get("misfire_grace_seconds")
+    if isinstance(grace_override, int) and not isinstance(grace_override, bool) and grace_override >= 0:
+        grace, grace_source = grace_override, "job"
+    else:
+        grace, grace_source = _compute_grace_seconds(job.get("schedule") or {}), "schedule"
+    return {
+        "catch_up": catch_up,
+        "catch_up_source": catch_up_source,
+        "misfire_grace_seconds": grace,
+        "misfire_grace_source": grace_source,
+    }
+
+
 # A recurring dispatch within this many seconds of schedule renders "on time": a busy once-a-minute
 # ticker can slip a couple of minutes — normal cadence, not gateway downtime.
 # See #99879.
@@ -2043,6 +2059,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         _normalize_job_updates(job, updates)
         previous_inference_axes = _normalized_inference_axes(job)
         updated = _apply_skill_fields({**job, **updates})
+        # Explicit update-only inheritance controls arrive as None. Omission never places these
+        # keys in ``updates``, so unrelated edits preserve an existing override.
+        for field in ("catch_up", "misfire_grace_seconds"):
+            if field in updates and updates[field] is None:
+                updated.pop(field, None)
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
         if {"monitor_script", "monitor_url", "no_agent", "script"}.intersection(updates):
@@ -3067,6 +3088,24 @@ def _record_misfire(
     _append_telemetry_record("misfires.jsonl", event, [])
 
 
+def record_claimed_misfire(job: Dict[str, Any]) -> bool:
+    """Persist a late-run audit only after the scheduler has acquired the fire claim."""
+    event = job.pop("_misfire_event", None)
+    if not isinstance(event, dict) or event.get("action") != "ran":
+        return False
+
+    def apply(jobs, _i, stored):
+        stored["last_misfire"] = event
+        save_jobs(jobs)
+        return True
+
+    recorded = bool(_with_job(str(job.get("id", "")), apply, False))
+    if recorded:
+        job["last_misfire"] = event
+        _append_telemetry_record("misfires.jsonl", event, [])
+    return recorded
+
+
 def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
     """Re-anchor accumulated misses; return whether catch-up was explicitly disabled.
 
@@ -3255,9 +3294,19 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
         scan.persist(
             job["id"], last_dispatch=dispatch_stamp,
             pending_slot=pending_slot_stamp(next_run, now))
-        if lateness > _LATE_DISPATCH_TOLERANCE_SECONDS:
-            _record_misfire(
-                d, grace, action="ran", policy_source=_job_catches_up_missed(job)[1])
+        if dispatch_stamp["kind"] != "on_time":
+            # This is a decision snapshot, not a run record. The scheduler persists it only after
+            # claim_job_for_fire() succeeds; submission/claim failures remain truthfully unaudited.
+            job["_misfire_event"] = {
+                "job_id": job.get("id"),
+                "name": d.label,
+                "scheduled_at": d.next_run,
+                "observed_at": scan.now.isoformat(),
+                "lateness_seconds": round(lateness, 1),
+                "grace_seconds": grace,
+                "action": "ran",
+                "policy_source": _job_catches_up_missed(job)[1],
+            }
     return True
 
 

@@ -4,7 +4,7 @@ tools/cronjob_tools.py)."""
 import logging
 from typing import Any, Dict, List, Optional, Union
 
-from cron.jobs import effective_job_state
+from cron.jobs import effective_job_state, resolve_job_misfire_policy
 
 # Logger parity with the origin module.
 logger = logging.getLogger("tools.cronjob_tools")
@@ -391,10 +391,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["context_from"] = external_refs
     if isinstance(job.get("attach_to_session"), bool):
         result["attach_to_session"] = job["attach_to_session"]
-    if isinstance(job.get("catch_up"), bool):
-        result["catch_up"] = job["catch_up"]
-    if isinstance(job.get("misfire_grace_seconds"), int):
-        result["misfire_grace_seconds"] = job["misfire_grace_seconds"]
+    result.update(resolve_job_misfire_policy(job))
     if isinstance(job.get("last_misfire"), dict):
         result["last_misfire"] = job["last_misfire"]
     return result

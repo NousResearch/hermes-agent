@@ -562,6 +562,8 @@ def _action_create(a: Dict[str, Any]) -> str:
     deliver = _normalize_deliver_param(a["deliver"])
     if not a["schedule"]:
         return tool_error("schedule is required for create", success=False)
+    if a["inherit_catch_up"] or a["inherit_misfire_grace"]:
+        return tool_error("inherit controls are update-only", success=False)
     canonical_skills = _canonical_skills(a["skill"], a["skills"])
     _no_agent = bool(a["no_agent"])
     # no_agent=True -> the script IS the job (prompt/skills optional); else prompt or skills.
@@ -836,9 +838,17 @@ def _update_run_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str
         if job.get("state") != "paused":
             updates["state"] = "scheduled"
             updates["enabled"] = True
-    if a["catch_up"] is not None:
+    if a["inherit_catch_up"] and a["catch_up"] is not None:
+        return "catch_up and inherit_catch_up are mutually exclusive."
+    if a["inherit_misfire_grace"] and a["misfire_grace_seconds"] is not None:
+        return "misfire_grace_seconds and inherit_misfire_grace are mutually exclusive."
+    if a["inherit_catch_up"]:
+        updates["catch_up"] = None
+    elif a["catch_up"] is not None:
         updates["catch_up"] = a["catch_up"]
-    if a["misfire_grace_seconds"] is not None:
+    if a["inherit_misfire_grace"]:
+        updates["misfire_grace_seconds"] = None
+    elif a["misfire_grace_seconds"] is not None:
         updates["misfire_grace_seconds"] = a["misfire_grace_seconds"]
     return None
 
@@ -962,6 +972,8 @@ def cronjob(
     failure_deliver: Optional[Union[str, List[str]]] = None,
     catch_up: Optional[bool] = None,
     misfire_grace_seconds: Optional[int] = None,
+    inherit_catch_up: Optional[bool] = None,
+    inherit_misfire_grace: Optional[bool] = None,
     all: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,
@@ -1055,6 +1067,14 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "minimum": 0,
                 "description": "Optional per-job lateness grace in seconds. Omit to use half the cadence, clamped to 120 seconds–2 hours."
             },
+            "inherit_catch_up": {
+                "type": "boolean",
+                "description": "Update only: true clears the per-job catch_up override so the job inherits cron.catch_up_missed."
+            },
+            "inherit_misfire_grace": {
+                "type": "boolean",
+                "description": "Update only: true clears misfire_grace_seconds so grace is derived from the schedule cadence."
+            },
             "deliver": {
                 "type": "string",
                 "description": "Where the job's output is POSTED as a one-way message (the job itself always runs in a fresh session with no chat context). Omit to address the chat/topic this job was created from. Otherwise: 'local' (save only, no delivery), 'all' (every connected home channel, resolved at fire time), 'bot-chat' or 'bot-chat:<profile>' (inject into a Bot Chat as a real message), or platform:chat_id:thread_id (e.g. 'telegram:-1001234567890:17585'). Comma-combine like 'origin,all'."
@@ -1127,7 +1147,8 @@ def check_cronjob_requirements() -> bool:
 _HANDLER_FORWARDED_ARGS = (
     "job_id", "prompt", "schedule", "name", "repeat", "deliver", "failure_deliver", "skill", "skills", "reason",
     "script", "context_from", "continuity", "enabled_toolsets", "workdir", "no_agent", "attach_to_session",
-    "paused_reason", "catch_up", "misfire_grace_seconds", "all")
+    "paused_reason", "catch_up", "misfire_grace_seconds", "inherit_catch_up",
+    "inherit_misfire_grace", "all")
 
 
 def _cronjob_handler(args, **kw):

@@ -112,9 +112,16 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     edit_catch_up.add_argument(
         "--skip-missed", dest="catch_up", action="store_false",
         help="Skip stale occurrences for this job instead of running them late")
-    cron_edit.add_argument(
+    edit_catch_up.add_argument(
+        "--inherit-catch-up", action="store_true",
+        help="Clear the per-job override and inherit cron.catch_up_missed")
+    edit_grace = cron_edit.add_mutually_exclusive_group()
+    edit_grace.add_argument(
         "--misfire-grace-seconds", type=int,
         help="Set the per-job lateness grace in seconds")
+    edit_grace.add_argument(
+        "--inherit-misfire-grace", action="store_true",
+        help="Clear the per-job grace and derive it from the schedule cadence")
     cron_edit.add_argument("--skill", dest="skills", action="append",
         help="Replace the job's skills with this set. Repeat to attach multiple skills.")
     cron_edit.add_argument("--add-skill", dest="add_skills", action="append",

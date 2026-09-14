@@ -41,6 +41,16 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
 
 
+def test_cron_edit_misfire_overrides_can_be_cleared():
+    parser = _build()
+    ns = parser.parse_args([
+        "cron", "edit", "j", "--inherit-catch-up", "--inherit-misfire-grace"])
+    assert ns.inherit_catch_up is True
+    assert ns.inherit_misfire_grace is True
+    assert ns.catch_up is None
+    assert ns.misfire_grace_seconds is None
+
+
 def test_cron_accept_hooks_flag_on_run_and_tick():
     parser = _build()
     # --accept-hooks is suppressed-default; present only when passed.

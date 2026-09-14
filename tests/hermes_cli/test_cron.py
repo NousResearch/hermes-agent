@@ -22,6 +22,29 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 class TestCronCommandLifecycle:
 
+    def test_edit_sets_then_clears_misfire_overrides(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+
+        cron_command(parser.parse_args([
+            "cron", "edit", job["id"], "--skip-missed",
+            "--misfire-grace-seconds", "45",
+        ]))
+        configured = get_job(job["id"])
+        assert configured["catch_up"] is False
+        assert configured["misfire_grace_seconds"] == 45
+
+        cron_command(parser.parse_args([
+            "cron", "edit", job["id"], "--inherit-catch-up",
+            "--inherit-misfire-grace",
+        ]))
+        inherited = get_job(job["id"])
+        assert "catch_up" not in inherited
+        assert "misfire_grace_seconds" not in inherited
+        assert capsys.readouterr().out.count("Updated job") == 2
+
     def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Daily report", schedule="every 1h")
         parser = argparse.ArgumentParser(prog="hermes")

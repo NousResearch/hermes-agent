@@ -954,9 +954,12 @@ Or run `hermes config set cron.catch_up_missed false`. A job can override that d
 ```bash
 hermes cron create '0 7 * * 1-5' 'Prepare the morning brief' --skip-missed --misfire-grace-seconds 1800
 hermes cron edit JOB_ID --catch-up --misfire-grace-seconds 7200
+hermes cron edit JOB_ID --inherit-catch-up --inherit-misfire-grace
 ```
 
-The `cronjob` tool exposes the same `catch_up` and `misfire_grace_seconds` fields. If
+The `cronjob` tool exposes the same `catch_up` and `misfire_grace_seconds` fields;
+on update, `inherit_catch_up=true` and `inherit_misfire_grace=true` clear those
+overrides. If
 neither is set, old and new jobs retain the existing behavior: grace is half the
 period, clamped to 120 seconds–2 hours, and `cron.catch_up_missed` decides whether a
 past-grace occurrence runs once or is skipped. Explicit manual triggers still run.

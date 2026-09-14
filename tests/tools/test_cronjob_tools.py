@@ -246,6 +246,29 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["name"] == "Server Check"
         assert listing["jobs"][0]["state"] == "scheduled"
 
+    def test_policy_overrides_can_return_to_effective_inherited_values(self, monkeypatch):
+        monkeypatch.setattr(
+            "cron.jobs._cron_config_number",
+            lambda key, default, cast: False if key == "catch_up_missed" else cast(default),
+        )
+        created = json.loads(cronjob(
+            action="create", prompt="Check", schedule="every 1h",
+            catch_up=True, misfire_grace_seconds=99))
+
+        updated = json.loads(cronjob(
+            action="update", job_id=created["job_id"],
+            inherit_catch_up=True, inherit_misfire_grace=True))
+
+        assert updated["success"] is True
+        assert updated["job"]["catch_up"] is False
+        assert updated["job"]["catch_up_source"] == "config"
+        assert updated["job"]["misfire_grace_seconds"] == 1800
+        assert updated["job"]["misfire_grace_source"] == "schedule"
+        from cron.jobs import get_job
+        stored = get_job(created["job_id"])
+        assert "catch_up" not in stored
+        assert "misfire_grace_seconds" not in stored
+
     def test_create_with_natural_weekday_schedule(self):
         # The documented "every monday 9am" form must create a real cron job
         # through the tool path, not error out (issue: parser rejected it).

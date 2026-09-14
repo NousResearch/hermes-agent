@@ -475,7 +475,7 @@ def _resolve_job_reasoning_config(job: dict, cfg: dict, model: str) -> dict | No
 from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
-    save_job_output, use_cron_store)
+    record_claimed_misfire, save_job_output, use_cron_store)
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -3645,6 +3645,9 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
     claimed_job["execution_id"] = job["execution_id"]
     claimed_job["_scheduled_instant"] = job.get("_scheduled_instant")
+    if job.get("_misfire_event") is not None:
+        claimed_job["_misfire_event"] = job["_misfire_event"]
+        record_claimed_misfire(claimed_job)
     return run_one_job(claimed_job, adapters=adapters, loop=loop, verbose=verbose)
 
 

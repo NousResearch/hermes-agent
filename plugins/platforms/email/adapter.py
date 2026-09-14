@@ -353,6 +353,12 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
         self._skip_attachments = extra.get("skip_attachments", False)  # platforms.email.skip_attachments
+        # Use BODY.PEEK[] for IMAP FETCH so polling does not mark messages as read on the
+        # server (RFC822 sets \Seen). Opt back into the legacy behaviour with
+        #   platforms:
+        #     email:
+        #       imap_peek: false
+        self._imap_peek = is_truthy_value(extra.get("imap_peek"), default=True)
         # Require an authenticated From: domain (SPF/DKIM/DMARC) before trusting it for authorization
         # (GHSA-rxqh-5572-8m77). Default ON; opt out via require_authenticated_sender: false / EMAIL_TRUST_FROM_HEADER=true.
         if "require_authenticated_sender" in extra:
@@ -532,7 +538,8 @@ class EmailAdapter(BasePlatformAdapter):
                 for uid in (data[0].split() if status == "OK" and data and data[0] else []):
                     if uid in self._seen_uids:
                         continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                    fetch_selector = "(BODY.PEEK[])" if self._imap_peek else "(RFC822)"
+                    status, msg_data = imap.uid("fetch", uid, fetch_selector)
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —

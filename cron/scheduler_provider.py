@@ -71,7 +71,7 @@ def _existing_profile_homes(profile_homes: list) -> list:
         # restart; a raising enumerator keeps this cycle at zero homes rather than killing the ticker.
         try:
             profile_homes = list(profile_homes())
-        except Exception:
+        except BaseException:
             logger.warning("cron profile enumeration failed; skipping this cycle", exc_info=True)
             return []
     return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
@@ -516,11 +516,28 @@ class InProcessCronScheduler(CronScheduler):
             # Worst failure this cycle (fd exhaustion wins); backoff applied once per cycle.
             # See #87644.
             _cycle_exc: BaseException | None = None
-            cycle_homes = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
-            if profile_gate is not None:
-                cycle_homes = [
-                    (name, home) for name, home in cycle_homes if profile_gate(name, home)
+            cycle_homes: list = []
+            try:
+                candidates = [
+                    _profile_entry(e) for e in _existing_profile_homes(profile_homes)
                 ]
+                if profile_gate is not None:
+                    cycle_homes = [
+                        (name, home) for name, home in candidates if profile_gate(name, home)
+                    ]
+                else:
+                    cycle_homes = candidates
+            except BaseException as e:
+                logger.error("Cron profile selection error: %s", e, exc_info=True)
+                try:
+                    record_ticker_error(f"{type(e).__name__}: {e}")
+                except BaseException as status_error:
+                    logger.error(
+                        "Cron profile selection status error: %s", status_error, exc_info=True
+                    )
+                consecutive_failures = _note_tick_failure(e, consecutive_failures)
+                stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))
+                continue
             try:
                 if can_dispatch is not None and not can_dispatch():
                     logger.debug("Cron dispatch paused while gateway drains existing work")
@@ -554,15 +571,21 @@ class InProcessCronScheduler(CronScheduler):
                 consecutive_failures = _note_tick_failure(e, consecutive_failures)
             # Completed cycle: each profile's own outcome; aborted cycle: all beats unsuccessful.
             for _, home in cycle_homes:
-                with _profile_cron_scope(home):
-                    _home_ok = _tick_error is None and str(home) not in _profile_errors
-                    record_ticker_heartbeat(success=_home_ok)
-                    if _home_ok:
-                        clear_ticker_error()
-                    elif str(home) in _profile_errors:
-                        record_ticker_error(_profile_errors[str(home)])
-                    elif _tick_error:
-                        record_ticker_error(_tick_error)
+                try:
+                    with _profile_cron_scope(home):
+                        _home_ok = _tick_error is None and str(home) not in _profile_errors
+                        record_ticker_heartbeat(success=_home_ok)
+                        if _home_ok:
+                            clear_ticker_error()
+                        elif str(home) in _profile_errors:
+                            record_ticker_error(_profile_errors[str(home)])
+                        elif _tick_error:
+                            record_ticker_error(_tick_error)
+                except BaseException as e:
+                    logger.error(
+                        "Cron status projection error for profile at %s: %s", home, e,
+                        exc_info=True,
+                    )
             if ok:
                 consecutive_failures = 0
             stop_event.wait(_backoff_wait_seconds(interval, consecutive_failures))

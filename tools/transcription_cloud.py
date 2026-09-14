@@ -19,8 +19,8 @@ from urllib.parse import urljoin
 from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
-    AZURE_FOUNDRY_STT_MODELS, DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,
-    GROQ_BASE_URL, GROQ_MODELS,
+    AZURE_FOUNDRY_STT_API_VERSION, AZURE_FOUNDRY_STT_MODELS, DEFAULT_GROQ_STT_MODEL,
+    DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
     OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
     _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
 
@@ -37,13 +37,16 @@ def _has_xai_stt_credentials() -> bool:
     return bool(resolve_xai_http_credentials().get("api_key"))
 
 
-def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, log_label: str, body):
+def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, log_label: str, body,
+                        default_query: Optional[Dict[str, str]] = None):
     """Run ``body(client)`` on a fresh OpenAI SDK client (30s timeout, no retries); always closed.
     Errors map to the shared envelope. APIConnectionError is checked before APITimeoutError (its
-    subclass) so timeouts report as connection errors, as they always have."""
+    subclass) so timeouts report as connection errors, as they always have. ``default_query``
+    is appended to every request URL (Azure's legacy routes need ``api-version``)."""
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0,
+                        default_query=default_query)
         try:
             return body(client)
         finally:
@@ -108,7 +111,7 @@ def _transcribe_groq(
 def _transcribe_openai(
     file_path: str, model_name: str, *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, provider_label: str = "openai", language: Optional[str] = None,
-    prompt: Optional[str] = None) -> Dict[str, Any]:
+    prompt: Optional[str] = None, default_query: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Transcribe via the OpenAI ``audio.transcriptions.create`` SDK shape, shared by every
     OpenAI-compatible endpoint (DeepInfra etc.): explicit ``api_key``/``base_url`` skip the
     OpenAI-only auth chain; ``provider_label`` names the response's provider."""
@@ -163,13 +166,21 @@ def _transcribe_openai(
         logger.info("Transcribed %s via %s (%s, %d chars)",
                     Path(file_path).name, provider_label, model_name, len(transcript_text))
         return _ok_result(transcript_text, provider_label)
-    return _with_openai_client(api_key, base_url, file_path, provider_label, _run)
+    return _with_openai_client(api_key, base_url, file_path, provider_label, _run,
+                               default_query=default_query)
 
 
 def _transcribe_azure_foundry(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Transcribe through the configured Azure Foundry v1 endpoint."""
+    """Transcribe through the configured Azure Foundry deployment endpoint.
+
+    Azure's ``/openai/v1`` surface on gus-foundry returns DeploymentNotFound for every audio
+    request (verified live 2026-09-14), so this hits the legacy per-deployment route
+    ``{root}/deployments/{model}/audio/transcriptions?api-version=...`` instead — the same one
+    ``~/hermes/bin/transcribe_audio_dir.py`` has used in production. Bearer auth with the
+    api-key is accepted there, so the plain OpenAI SDK client still works.
+    """
     from tools.transcription_tools import _resolve_stt_language, get_env_value
     api_key = str(get_env_value("AZURE_FOUNDRY_API_KEY") or "").strip()
     base_url = str(get_env_value("AZURE_FOUNDRY_BASE_URL") or "").strip()
@@ -177,9 +188,14 @@ def _transcribe_azure_foundry(
         return _error_result("AZURE_FOUNDRY_API_KEY or AZURE_FOUNDRY_BASE_URL not set")
     if model_name not in AZURE_FOUNDRY_STT_MODELS:
         return _error_result(f"Azure Foundry STT model '{model_name}' is not supported by Hermes")
-    return _transcribe_openai(file_path, model_name, api_key=api_key, base_url=base_url,
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    deployment_url = f"{root}/deployments/{model_name}"
+    return _transcribe_openai(file_path, model_name, api_key=api_key, base_url=deployment_url,
                               provider_label="azure_foundry",
-                              language=language or _resolve_stt_language("azure_foundry"), prompt=prompt)
+                              language=language or _resolve_stt_language("azure_foundry"), prompt=prompt,
+                              default_query={"api-version": AZURE_FOUNDRY_STT_API_VERSION})
 
 
 def _transcribe_mistral(

@@ -180,7 +180,8 @@ class TestTranscribeOpenAI:
         assert "language" not in mock_client.audio.transcriptions.create.call_args.kwargs
 
     def test_azure_foundry_uses_configured_endpoint_and_language_hint(self, monkeypatch, tmp_path):
-        """Azure Foundry STT is OpenAI-v1-compatible but authenticates through its own env vars."""
+        """Azure Foundry STT hits the legacy per-deployment route (the v1 surface rejects audio)
+        with api-version as default_query, authenticating through its own env vars."""
         audio_file = tmp_path / "test.wav"
         audio_file.write_bytes(b"fake audio")
         mock_client = MagicMock()
@@ -197,7 +198,9 @@ class TestTranscribeOpenAI:
 
         assert result == {"success": True, "transcript": "Olá Gus", "provider": "azure_foundry"}
         assert client_cls.call_args.kwargs["api_key"] == "azure-test-key"
-        assert client_cls.call_args.kwargs["base_url"] == "https://gus-foundry.openai.azure.com/openai/v1"
+        assert client_cls.call_args.kwargs["base_url"] == (
+            "https://gus-foundry.openai.azure.com/openai/deployments/gpt-4o-mini-transcribe")
+        assert client_cls.call_args.kwargs["default_query"] == {"api-version": "2024-06-01"}
         assert mock_client.audio.transcriptions.create.call_args.kwargs["language"] == "pt"
 
 

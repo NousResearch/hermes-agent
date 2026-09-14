@@ -10,6 +10,7 @@
  */
 
 import type { ClarifyQuestion } from '@hermes/plugin-sdk'
+import type { CronJobRow } from '@hermes/plugin-sdk'
 
 /**
  * The compact age suffixes the sidebar's session rows render ("now", "m", "h",
@@ -245,33 +246,8 @@ export interface GroupActivityEvent {
   preview?: string
 }
 
-/**
- * A cron job as Bot Mode reads it. Deliberately NOT the core `CronJob` type:
- * the gateway's `cron.manage` payload keys the id as `job_id`, carries the
- * schedule as a plain string rather than a structured object, and splits the
- * error into three separate fields. Reusing the core interface here would
- * typecheck against fields that never arrive.
- */
-export interface RoutineJob {
-  deliver?: string
-  enabled?: boolean
-  job_id: string
-  last_delivery_error?: string
-  last_fire_error?: string
-  last_run_at?: string
-  last_status?: string
-  model?: string
-  /** Prefixed `[bot:<slug>]` so the job can be scoped back to its bot. */
-  name?: string
-  next_run_at?: string
-  paused_reason?: string
-  prompt?: string
-  prompt_preview?: string
-  repeat?: number | string
-  schedule?: string
-  state?: string
-  workdir?: string
-}
+/** `cron.manage {action: 'list'}` row; `name` is prefixed `[bot:<slug>]` so the job scopes back to its bot. */
+export type RoutineJob = CronJobRow
 
 export interface ConnectionRow {
   id: string

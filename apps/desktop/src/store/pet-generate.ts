@@ -1,3 +1,6 @@
+import type { PetDraft, PetGenProvider } from '@hermes/shared'
+
+export type { PetDraft, PetGenProvider }
 import { atom } from 'nanostores'
 
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -74,12 +77,6 @@ export function cleanPetName(prompt: string): string {
   return name || 'Pet'
 }
 
-export interface PetDraft {
-  index: number
-  /** Downscaled PNG data URI preview from the gateway. */
-  dataUri: string
-}
-
 export type PetGenStatus = 'idle' | 'generating' | 'ready' | 'hatching' | 'preview' | 'adopting' | 'error' | 'stale'
 
 /** Live hatch step for the egg screen — which row is being drawn, then compose/save. */
@@ -98,14 +95,6 @@ export const $petGenError = atom<string | null>(null)
 // probed (treat as available so the prompt shows optimistically); the overlay
 // re-probes on open and on return from settings.
 export const $petGenAvailable = atom<boolean | null>(null)
-
-/** A reference-capable image backend the user can pick for generation. */
-export interface PetGenProvider {
-  name: string
-  label: string
-  /** Whether this is the backend's default pick (no override needed). */
-  default: boolean
-}
 
 const PROVIDER_KEY = 'hermes.desktop.petgen.provider'
 const REMIX_CONFIRMED_KEY = 'hermes.desktop.petgen.remixConfirmed'

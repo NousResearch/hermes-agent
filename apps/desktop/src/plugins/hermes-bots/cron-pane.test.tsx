@@ -21,6 +21,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import type { atom } from 'nanostores'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { cronJobRow } from './cron-test-utils'
 import { translateBots } from './i18n-test-helper'
 import type { RoutineJob } from './types'
 
@@ -60,7 +61,13 @@ const { RoutinesPane } = await import('./cron')
 /** The SDK store the pane's owner ladder reads. */
 const $focused = host.state.focusedSessionOwner as unknown as ReturnType<typeof atom>
 
-const job: RoutineJob = { enabled: true, job_id: 'j-1', name: 'Report', schedule: 'every 1h', state: 'scheduled' }
+const job: RoutineJob = cronJobRow({
+  enabled: true,
+  job_id: 'j-1',
+  name: 'Report',
+  schedule: 'every 1h',
+  state: 'scheduled'
+})
 
 function renderPane() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

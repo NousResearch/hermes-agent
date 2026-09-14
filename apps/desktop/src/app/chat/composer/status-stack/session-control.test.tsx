@@ -77,6 +77,12 @@ const sampleGoal = (overrides?: Partial<SessionControlGoal>): SessionControlGoal
   subgoals: ['First criterion', 'Second criterion'],
   title: 'Execute complete work order',
   turns_used: 3,
+  created_at: null,
+  last_reason: null,
+  last_verdict: null,
+  paused_reason: null,
+  updated_at: null,
+  wait_barrier: null,
   ...overrides
 })
 
@@ -95,6 +101,8 @@ const sampleLoop = (overrides?: Partial<SessionControlLoop>): SessionControlLoop
   ticks_fired: 3,
   times: 10,
   until: '',
+  last_stop_reason: null,
+  paused_reason: null,
   ...overrides
 })
 

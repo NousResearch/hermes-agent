@@ -8,6 +8,7 @@
 
 import { atom, host, queryClient, useQuery, useValue } from '@hermes/plugin-sdk'
 import type { JsonValue } from '@hermes/plugin-sdk'
+import type { ProfilesConfigureResult } from '@hermes/plugin-sdk'
 
 import { botsText } from './i18n'
 import { displayName } from './labels'
@@ -306,12 +307,6 @@ interface BotMetaSaveResult {
   serverPersisted: boolean
 }
 
-/** `profiles.configure` reply. Older gateways answer without `applied` at all,
- *  which is what makes the field optional rather than the contract. */
-interface ProfilesConfigureResult {
-  applied?: { ui_meta?: boolean }
-}
-
 export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMeta): Promise<BotMetaSaveResult> {
   const { bot, key, name, route } = botOwner(owner)
   const prevMeta = $botMeta.get()[key] || {}
@@ -368,7 +363,7 @@ export async function saveBotMeta(owner: RosterRow | string, patch: StoredBotMet
           }
         })
 
-    serverRequest = Promise.resolve(request) as Promise<ProfilesConfigureResult>
+    serverRequest = Promise.resolve(request)
   } catch {
     /* older/unavailable gateway — the local fallback remains saved */
   }

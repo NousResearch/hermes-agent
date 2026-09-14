@@ -44,7 +44,7 @@ afterEach(() => {
 })
 
 it('auto-expands only todos and keeps other groups closed as activity arrives', () => {
-  $todosBySession.set({ owner: [{ id: 'todo', content: 'Visible todo', status: 'in_progress' }] })
+  $todosBySession.set({ owner: [{ id: 'todo', content: 'Visible todo', parent: null, status: 'in_progress' }] })
   $goalsBySession.set({ owner: { status: 'active', title: 'Hidden legacy goal', updatedAt: 1 } })
   $backgroundStatusBySession.set({
     owner: [{ id: 'process', type: 'background', state: 'running', title: 'Background process' }]
@@ -91,6 +91,12 @@ it('starts structured goals collapsed and preserves manual queue expansion when 
           status: 'active',
           max_turns: 20,
           turns_used: 1,
+          created_at: null,
+          last_reason: null,
+          last_verdict: null,
+          paused_reason: null,
+          updated_at: null,
+          wait_barrier: null,
           subgoals: ['Criterion'],
           gates: [],
           contract: { outcome: '', verification: '', boundaries: '', constraints: '', stop_when: '' }

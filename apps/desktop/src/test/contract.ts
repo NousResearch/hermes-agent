@@ -9,8 +9,10 @@ import type {
   ClarifySingle,
   CommandsCatalogResult,
   ConnectorRow,
+  GoalSnapshot,
+  HeartbeatSnapshot,
   InflightTurn,
-  McpSetupParams,
+  LoopSnapshot,
   MessageCompletePayload,
   MessageDeltaPayload,
   MoaReferencePayload,
@@ -22,10 +24,13 @@ import type {
   PromptSubmitResult,
   SessionActiveItem,
   SessionCompressResult,
+  SessionControlDispatch,
+  SessionControlSnapshot,
   SessionLiveInfo,
   SessionResumeResult,
   SetupRuntimeCheckResult,
   SetupStatusResult,
+  TodoItem,
   ToolCompletePayload,
   ToolStartPayload,
   TranscriptMessage,
@@ -483,5 +488,78 @@ export const moaReferencePayload = (over: Partial<MoaReferencePayload> = {}): Mo
   text: '',
   index: null,
   count: null,
+  ...over
+})
+
+export const todoItem = (over: Partial<TodoItem> = {}): TodoItem => ({
+  id: '',
+  content: '',
+  status: 'pending',
+  parent: null,
+  ...over
+})
+
+export const goalSnapshot = (over: Partial<GoalSnapshot> = {}): GoalSnapshot => ({
+  title: '',
+  status: 'active',
+  turns_used: 0,
+  max_turns: 0,
+  contract: { outcome: '', verification: '', constraints: '', boundaries: '', stop_when: '' },
+  subgoals: [],
+  gates: [],
+  created_at: null,
+  updated_at: null,
+  paused_reason: null,
+  last_verdict: null,
+  last_reason: null,
+  wait_barrier: null,
+  ...over
+})
+
+export const loopSnapshot = (over: Partial<LoopSnapshot> = {}): LoopSnapshot => ({
+  prompt: '',
+  status: 'active',
+  mode: 'interval',
+  interval_seconds: 0,
+  current_delay: 0,
+  times: 0,
+  until: '',
+  max_ticks: 0,
+  ticks_fired: 0,
+  created_at: 0,
+  last_fired_at: 0,
+  next_due_at: 0,
+  awaiting_response: false,
+  deferred_by_goal: false,
+  paused_reason: null,
+  last_stop_reason: null,
+  ...over
+})
+
+export const heartbeatSnapshot = (over: Partial<HeartbeatSnapshot> = {}): HeartbeatSnapshot => ({
+  prompt: '',
+  status: 'active',
+  interval_seconds: 0,
+  created_at: 0,
+  last_fired_at: 0,
+  fire_count: 0,
+  ...over
+})
+
+export const sessionControlSnapshot = (over: Partial<SessionControlSnapshot> = {}): SessionControlSnapshot => ({
+  goal: null,
+  loop: null,
+  heartbeat: null,
+  revision: '',
+  updated_at: 0,
+  ...over
+})
+
+export const sessionControlDispatch = (over: Partial<SessionControlDispatch> = {}): SessionControlDispatch => ({
+  type: null,
+  output: null,
+  notice: null,
+  message: null,
+  display: null,
   ...over
 })

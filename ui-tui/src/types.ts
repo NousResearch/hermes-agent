@@ -2,10 +2,14 @@ import type {
   ApprovalChoice,
   ClarifyParams,
   CommandCategory,
+  McpServerStatus,
   ProjectInfo,
   SessionLiveInfo,
-  SubagentStatus
+  SubagentStatus,
+  TodoItem
 } from '@hermes/shared/gateway-events'
+
+export type { McpServerStatus, TodoItem }
 
 export interface ActiveTool {
   context?: string
@@ -13,14 +17,6 @@ export interface ActiveTool {
   name: string
   verboseArgs?: string
   startedAt?: number
-}
-
-export interface TodoItem {
-  content: string
-  id: string
-  /** Optional id of another item — renders this as a nested subtask. */
-  parent?: string
-  status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 
 export interface ActivityItem {
@@ -170,15 +166,6 @@ export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 // to the global mode.  Any explicit value still wins for that one section.
 export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
 export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
-
-export interface McpServerStatus {
-  connected: boolean
-  disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed' | 'lazy'
-  name: string
-  tools: number
-  transport: string
-}
 
 /** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
 export type SessionInfo = SessionLiveInfo

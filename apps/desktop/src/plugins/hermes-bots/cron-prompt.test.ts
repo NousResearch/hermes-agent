@@ -16,6 +16,7 @@ import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
 import { isLegacyDelegatedRoutine, normalizedProfileName, routineInputError, routinePrompt } from './cron'
+import { cronJobRow } from './cron-test-utils'
 
 /** Run the delegation command under a `hermes` stub that prints its argv, so
  *  the assertion is what the SHELL passed — not what the string looks like. */
@@ -70,16 +71,20 @@ describe('delegated arguments stay literal shell values', () => {
     const recreated = routinePrompt('research', 'Audit', 'Inspect', 'default')
 
     expect(
-      isLegacyDelegatedRoutine({ job_id: 'x', name: '[bot:research] Audit', prompt_preview: recreated.slice(0, 100) })
+      isLegacyDelegatedRoutine(
+        cronJobRow({ job_id: 'x', name: '[bot:research] Audit', prompt_preview: recreated.slice(0, 100) })
+      )
     ).toBe(false)
   })
 
   it('recognizes a persisted pre-hardening prompt', () => {
     const legacy = 'You are running the scheduled routine "Audit" for agent \'research\'.'
 
-    expect(isLegacyDelegatedRoutine({ job_id: 'x', name: '[bot:research] Audit', prompt_preview: legacy })).toBe(true)
+    expect(
+      isLegacyDelegatedRoutine(cronJobRow({ job_id: 'x', name: '[bot:research] Audit', prompt_preview: legacy }))
+    ).toBe(true)
     // Untagged jobs are not Bot Mode's to pause, whatever their prompt says.
-    expect(isLegacyDelegatedRoutine({ job_id: 'x', name: 'Audit', prompt_preview: legacy })).toBe(false)
+    expect(isLegacyDelegatedRoutine(cronJobRow({ job_id: 'x', name: 'Audit', prompt_preview: legacy }))).toBe(false)
   })
 })
 

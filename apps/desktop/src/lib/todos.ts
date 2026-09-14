@@ -1,15 +1,9 @@
-export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
-
-export interface TodoItem {
-  content: string
-  id: string
-  /** Optional id of another item — renders this as a nested subtask. */
-  parent?: string
-  status: TodoStatus
-}
-
 /** One item from a `merge: true` write. Content is optional so a status-only
  *  patch still applies to an existing row. */
+import type { TodoItem, TodoStatus } from '@hermes/shared'
+
+export type { TodoItem, TodoStatus }
+
 export interface TodoPatch {
   content?: string
   id: string
@@ -35,7 +29,7 @@ function parseArray(value: unknown[]): TodoItem[] {
     const content = String(item.content ?? '').trim()
     const parent = String(item.parent ?? '').trim()
 
-    return id && content ? [{ content, id, status: item.status, ...(parent && parent !== id ? { parent } : {}) }] : []
+    return id && content ? [{ content, id, parent: parent && parent !== id ? parent : null, status: item.status }] : []
   })
 }
 
@@ -168,7 +162,7 @@ export function mergeTodoItems(current: readonly TodoItem[], patch: readonly Tod
     const index = indexById.get(item.id)
 
     if (index === undefined) {
-      next.push({ content: item.content?.trim() || '(no description)', id: item.id, status: item.status })
+      next.push({ content: item.content?.trim() || '(no description)', id: item.id, parent: null, status: item.status })
       indexById.set(item.id, next.length - 1)
 
       continue

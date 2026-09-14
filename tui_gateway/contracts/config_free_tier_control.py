@@ -420,17 +420,41 @@ class WaitBarrierUntil(Result):
     reason: str = ""
 
 
-class WaitBarrierTarget(Result):
-    type: Literal["session", "pid"]
-    target: str | int
+class WaitBarrierSession(Result):
+    type: Literal["session"]
+    target: str
     reason: str = ""
+
+
+class WaitBarrierPid(Result):
+    type: Literal["pid"]
+    target: int
+    reason: str = ""
+
+
+class GoalStatus(WireEnum):
+    """``hermes_cli/goals.py::GoalState.status`` minus ``cleared``, which the snapshot drops."""
+
+    active = "active"
+    paused = "paused"
+    done = "done"
+
+
+class GoalVerdict(WireEnum):
+    """``hermes_cli/goals.py::GoalState.last_verdict``."""
+
+    done = "done"
+    blocked = "blocked"
+    continue_ = "continue"
+    wait = "wait"
+    skipped = "skipped"
 
 
 class GoalSnapshot(Result):
     """``methods_session_control.py::_safe_goal_snapshot`` — the frontend-safe GoalState subset."""
 
     title: str
-    status: str
+    status: GoalStatus
     turns_used: int
     max_turns: int
     contract: GoalContractSnapshot
@@ -439,17 +463,30 @@ class GoalSnapshot(Result):
     created_at: float | None = None
     updated_at: float | None = None
     paused_reason: str | None = None
-    last_verdict: str | None = None
+    last_verdict: GoalVerdict | None = None
     last_reason: str | None = None
-    wait_barrier: WaitBarrierUntil | WaitBarrierTarget | None = Field(default=None, discriminator="type")
+    wait_barrier: WaitBarrierUntil | WaitBarrierSession | WaitBarrierPid | None = Field(default=None, discriminator="type")
+
+
+class LoopStatus(WireEnum):
+    """``hermes_cli/loops.py::LoopState.status`` minus ``cleared``."""
+
+    active = "active"
+    paused = "paused"
+    done = "done"
+
+
+class LoopMode(WireEnum):
+    interval = "interval"
+    self_paced = "self_paced"
 
 
 class LoopSnapshot(Result):
     """``_safe_loop_snapshot`` — persisted LoopState fields, never its route."""
 
     prompt: str
-    status: str
-    mode: str
+    status: LoopStatus
+    mode: LoopMode
     interval_seconds: float
     current_delay: float
     times: int
@@ -465,9 +502,16 @@ class LoopSnapshot(Result):
     last_stop_reason: str | None = None
 
 
+class HeartbeatStatus(WireEnum):
+    """``hermes_cli/heartbeat.py::HeartbeatState.status`` minus ``cleared``."""
+
+    active = "active"
+    paused = "paused"
+
+
 class HeartbeatSnapshot(Result):
     prompt: str
-    status: str
+    status: HeartbeatStatus
     interval_seconds: int
     created_at: float
     last_fired_at: float
@@ -533,7 +577,7 @@ class SessionControlParams(Params):
 class SessionControlDispatch(Result):
     """``_dispatch_envelope`` always serializes all user-visible directive fields."""
 
-    type: str | None
+    type: DispatchType | None
     output: str | None
     notice: str | None
     message: str | None

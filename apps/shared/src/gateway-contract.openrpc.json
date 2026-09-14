@@ -82667,8 +82667,7 @@
             "type": "string"
           },
           "status": {
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/GoalStatus"
           },
           "turns_used": {
             "title": "Turns Used",
@@ -82734,14 +82733,13 @@
           "last_verdict": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/GoalVerdict"
               },
               {
                 "type": "null"
               }
             ],
-            "default": null,
-            "title": "Last Verdict"
+            "default": null
           },
           "last_reason": {
             "anyOf": [
@@ -82760,8 +82758,8 @@
               {
                 "discriminator": {
                   "mapping": {
-                    "pid": "#/components/schemas/WaitBarrierTarget",
-                    "session": "#/components/schemas/WaitBarrierTarget",
+                    "pid": "#/components/schemas/WaitBarrierPid",
+                    "session": "#/components/schemas/WaitBarrierSession",
                     "until": "#/components/schemas/WaitBarrierUntil"
                   },
                   "propertyName": "type"
@@ -82771,7 +82769,10 @@
                     "$ref": "#/components/schemas/WaitBarrierUntil"
                   },
                   {
-                    "$ref": "#/components/schemas/WaitBarrierTarget"
+                    "$ref": "#/components/schemas/WaitBarrierSession"
+                  },
+                  {
+                    "$ref": "#/components/schemas/WaitBarrierPid"
                   }
                 ]
               },
@@ -82795,6 +82796,28 @@
         "title": "GoalSnapshot",
         "type": "object"
       },
+      "GoalStatus": {
+        "description": "``hermes_cli/goals.py::GoalState.status`` minus ``cleared``, which the snapshot drops.",
+        "enum": [
+          "active",
+          "paused",
+          "done"
+        ],
+        "title": "GoalStatus",
+        "type": "string"
+      },
+      "GoalVerdict": {
+        "description": "``hermes_cli/goals.py::GoalState.last_verdict``.",
+        "enum": [
+          "done",
+          "blocked",
+          "continue",
+          "wait",
+          "skipped"
+        ],
+        "title": "GoalVerdict",
+        "type": "string"
+      },
       "HeartbeatSnapshot": {
         "additionalProperties": false,
         "properties": {
@@ -82803,8 +82826,7 @@
             "type": "string"
           },
           "status": {
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/HeartbeatStatus"
           },
           "interval_seconds": {
             "title": "Interval Seconds",
@@ -82834,6 +82856,23 @@
         "title": "HeartbeatSnapshot",
         "type": "object"
       },
+      "HeartbeatStatus": {
+        "description": "``hermes_cli/heartbeat.py::HeartbeatState.status`` minus ``cleared``.",
+        "enum": [
+          "active",
+          "paused"
+        ],
+        "title": "HeartbeatStatus",
+        "type": "string"
+      },
+      "LoopMode": {
+        "enum": [
+          "interval",
+          "self_paced"
+        ],
+        "title": "LoopMode",
+        "type": "string"
+      },
       "LoopSnapshot": {
         "additionalProperties": false,
         "description": "``_safe_loop_snapshot`` \u2014 persisted LoopState fields, never its route.",
@@ -82843,12 +82882,10 @@
             "type": "string"
           },
           "status": {
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/LoopStatus"
           },
           "mode": {
-            "title": "Mode",
-            "type": "string"
+            "$ref": "#/components/schemas/LoopMode"
           },
           "interval_seconds": {
             "title": "Interval Seconds",
@@ -82938,6 +82975,16 @@
         "title": "LoopSnapshot",
         "type": "object"
       },
+      "LoopStatus": {
+        "description": "``hermes_cli/loops.py::LoopState.status`` minus ``cleared``.",
+        "enum": [
+          "active",
+          "paused",
+          "done"
+        ],
+        "title": "LoopStatus",
+        "type": "string"
+      },
       "SessionControlDispatch": {
         "additionalProperties": false,
         "description": "``_dispatch_envelope`` always serializes all user-visible directive fields.",
@@ -82945,13 +82992,12 @@
           "type": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/DispatchType"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Type"
+            ]
           },
           "output": {
             "anyOf": [
@@ -83061,27 +83107,17 @@
         "title": "SessionControlSnapshot",
         "type": "object"
       },
-      "WaitBarrierTarget": {
+      "WaitBarrierPid": {
         "additionalProperties": false,
         "properties": {
           "type": {
-            "enum": [
-              "session",
-              "pid"
-            ],
+            "const": "pid",
             "title": "Type",
             "type": "string"
           },
           "target": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "integer"
-              }
-            ],
-            "title": "Target"
+            "title": "Target",
+            "type": "integer"
           },
           "reason": {
             "default": "",
@@ -83093,7 +83129,32 @@
           "type",
           "target"
         ],
-        "title": "WaitBarrierTarget",
+        "title": "WaitBarrierPid",
+        "type": "object"
+      },
+      "WaitBarrierSession": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "session",
+            "title": "Type",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "target"
+        ],
+        "title": "WaitBarrierSession",
         "type": "object"
       },
       "WaitBarrierUntil": {

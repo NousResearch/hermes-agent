@@ -55,7 +55,7 @@ describe('useSessionStatusPresence', () => {
 
     act(() => {
       $todosBySession.set({
-        [SID]: [{ content: 'task 1', id: '1', status: 'in_progress' }]
+        [SID]: [{ content: 'task 1', id: '1', parent: null, status: 'in_progress' }]
       })
     })
 
@@ -83,7 +83,13 @@ describe('useSessionStatusPresence', () => {
               status: 'active',
               subgoals: [],
               title: 'Structured Goal',
-              turns_used: 1
+              turns_used: 1,
+              created_at: null,
+              last_reason: null,
+              last_verdict: null,
+              paused_reason: null,
+              updated_at: null,
+              wait_barrier: null
             },
             heartbeat: null,
             loop: null,
@@ -121,7 +127,9 @@ describe('useSessionStatusPresence', () => {
               status: 'active',
               ticks_fired: 0,
               times: 5,
-              until: ''
+              until: '',
+              last_stop_reason: null,
+              paused_reason: null
             },
             revision: 'rev-3',
             updated_at: 2000

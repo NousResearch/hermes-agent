@@ -8,7 +8,7 @@ import { messageCompletePayload, toolCompletePayload } from '@/test/contract'
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 
 const SID = 'session-1'
-const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, status })
+const todo = (id: string, status: TodoItem['status']): TodoItem => ({ content: `task ${id}`, id, parent: null, status })
 /** The same item as the wire spells it (`parent` is always present). */
 const wireTodo = (id: string, status: TodoItem['status']) => ({ content: `task ${id}`, id, parent: null, status })
 

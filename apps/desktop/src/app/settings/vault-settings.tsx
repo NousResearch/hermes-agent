@@ -1,4 +1,6 @@
-import type { VaultItem, VaultSource } from '@hermes/shared'
+import type { VaultItem, VaultKind, VaultSource } from '@hermes/shared'
+
+export type { VaultKind }
 import { useStore } from '@nanostores/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -44,11 +46,9 @@ export type { VaultItem, VaultSource }
 
 /** One login source as reported by `vault.sources` — the backend is authoritative for enabled/unlocked. */
 
-export type VaultKind = 'address' | 'login' | 'payment'
 const VAULT_KINDS: readonly VaultKind[] = ['login', 'payment', 'address']
 const IDENTIFIER_TYPES = ['email', 'phone', 'username'] as const
 type IdentifierType = (typeof IDENTIFIER_TYPES)[number]
-
 
 /** Add-dialog prefill from a deep link (`/settings?tab=vault&kind=…`). NEVER secrets. */
 export interface VaultPrefill {

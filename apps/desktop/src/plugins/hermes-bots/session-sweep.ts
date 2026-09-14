@@ -275,11 +275,6 @@ function isBotModeSweepCandidate(row: SweepSessionRow | null | undefined, nowSec
   )
 }
 
-/** `profiles.list` as Bot Mode reads it. */
-interface ProfilesListResult {
-  profiles?: RosterRow[]
-}
-
 /** Ownership-based sweep: the id-based sweep above only covers sessions the
  *  plugin recorded ($botMeta canonical chats, $groupChats member sids), but
  *  Bot Mode sessions are ALSO minted outside the plugin — bot-to-bot CLI
@@ -314,8 +309,9 @@ async function sweepBotProfileSessions(nowSeconds = Date.now() / 1000) {
         name: String(host.state.profile?.get?.() || 'default').trim() || 'default'
       }
 
-      const res = (await requestForBot(activeBot, 'profiles.list', {})) as ProfilesListResult
-      roster = Array.isArray(res?.profiles) ? res.profiles : []
+      const res = await requestForBot(activeBot, 'profiles.list', {})
+      // The route fields a roster row carries are desktop-side; a fresh profiles.list row is local.
+      roster = res.profiles.map(row => ({ name: row.name }))
     } catch {
       return
     }

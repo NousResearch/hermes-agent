@@ -236,7 +236,7 @@ class GatewayModelCommandsMixin:
             # command's snapshot is the first temporary model, not the user's standing override.
             self._claim_one_turn_restore(ctx.session_key, ctx.restore_snapshot)
         elif not picker and hasattr(self, "_pending_one_turn_model_restores"):
-            self._pending_one_turn_model_restores.pop(ctx.session_key, None)
+            self._cancel_one_turn_restore_for_model_switch(ctx.session_key)
         # Non-secret write-through so the override survives a restart (api_key/api_mode are
         # re-resolved on rehydration); a --once override must NOT outlive a restart.
         # Write-through the non-secret parts (model/provider/base_url) to the session store so the override
@@ -321,14 +321,18 @@ class GatewayModelCommandsMixin:
         if error is not None:
             return error
         await self._record_model_switch(result, ctx, source=source, one_turn=one_turn, picker=picker)
-        reply = await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
-        if ctx.reasoning_effort and not one_turn:
+        reasoning_reply = ""
+        if ctx.reasoning_effort:
             # `/model X --reasoning <level>`: same applier as /reasoning, same scope as the pick.
             # The record step already evicted the cached agent, so the pin lands on the rebuild.
             from gateway.run import _platform_config_key
-            reply += "\n" + self._apply_reasoning_selection(
-                ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
-                persist_global=ctx.persist_global)
+            if not one_turn or self._claim_one_turn_reasoning_restore(ctx.session_key):
+                reasoning_reply = self._apply_reasoning_selection(
+                    ctx.session_key, _platform_config_key(source.platform), ctx.reasoning_effort,
+                    persist_global=ctx.persist_global and not one_turn, temporary=one_turn)
+        reply = await self._model_switch_confirmation(result, ctx, one_turn=one_turn, picker=picker)
+        if reasoning_reply:
+            reply += "\n" + reasoning_reply
         return reply
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
@@ -476,7 +480,10 @@ class GatewayModelCommandsMixin:
             ),
             one_turn=request.is_once,
             reasoning_effort=request.reasoning_effort,
-            restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
+            restore_snapshot=(
+                self._snapshot_session_model_override(session_key)
+                if request.is_once else None
+            ),
         )
         ctx.read_config()
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
@@ -572,13 +579,24 @@ class GatewayModelCommandsMixin:
             logger.error("Failed to save config key %s: %s", key_path, e)
             return False
 
-    def _set_reasoning_override(self, session_key: str, value) -> None:
+    def _set_reasoning_override(
+        self, session_key: str, value, *, temporary: bool = False
+    ) -> None:
         """Store (or clear with None) the session reasoning override and drop the cached agent."""
+        if not temporary:
+            state = self._peek_session_state(session_key)
+            snapshot = state.conversation.one_turn_restore if state else None
+            if snapshot and snapshot.get("restore_reasoning"):
+                snapshot.update(
+                    had_reasoning_override=value is not None,
+                    reasoning_override=dict(value) if value is not None else None,
+                )
         self._set_session_reasoning_override(session_key, value)
         self._evict_cached_agent(session_key)
 
     def _apply_reasoning_selection(
         self, session_key: str, platform_key: str, value: str, persist_global: bool = False,
+        temporary: bool = False,
     ) -> str:
         """Apply a /reasoning argument (typed or picked) and return the reply."""
         from hermes_constants import parse_reasoning_effort
@@ -593,9 +611,8 @@ class GatewayModelCommandsMixin:
         if value == "reset":
             if persist_global:
                 return t("gateway.reasoning.reset_global_unsupported")
-            self._set_session_reasoning_override(session_key, None)
+            self._set_reasoning_override(session_key, None, temporary=temporary)
             self._reasoning_config = self._load_reasoning_config()
-            self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
 
         parsed = parse_reasoning_effort(value)
@@ -604,11 +621,11 @@ class GatewayModelCommandsMixin:
         self._reasoning_config = parsed
         if persist_global:
             if self._save_gateway_config_key("agent.reasoning_effort", value):
-                self._set_reasoning_override(session_key, None)
+                self._set_reasoning_override(session_key, None, temporary=temporary)
                 return t("gateway.reasoning.set_global", effort=value)
-            self._set_reasoning_override(session_key, parsed)
+            self._set_reasoning_override(session_key, parsed, temporary=temporary)
             return t("gateway.reasoning.set_global_save_failed", effort=value)
-        self._set_reasoning_override(session_key, parsed)
+        self._set_reasoning_override(session_key, parsed, temporary=temporary)
         return t("gateway.reasoning.set_session", effort=value)
 
     async def _try_send_choice_picker(

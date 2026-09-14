@@ -13,6 +13,7 @@ from gateway.run import GatewayRunner
 
 KEY = "agent:main:telegram:dm:999"
 PRIOR = {"provider": "openrouter", "model": "gpt-4"}
+PRIOR_REASONING = {"enabled": True, "effort": "medium"}
 
 
 def _runner_with_pending_once():
@@ -20,7 +21,14 @@ def _runner_with_pending_once():
     runner._evict_cached_agent = lambda session_key: None
     state = runner._session_state(KEY)
     state.conversation.model_override = {"provider": "moa", "model": "default"}
-    state.conversation.one_turn_restore = {"had_override": True, "override": dict(PRIOR)}
+    state.conversation.reasoning_override = {"enabled": True, "effort": "high"}
+    state.conversation.one_turn_restore = {
+        "had_override": True,
+        "override": dict(PRIOR),
+        "restore_reasoning": True,
+        "had_reasoning_override": True,
+        "reasoning_override": dict(PRIOR_REASONING),
+    }
     return runner, state
 
 
@@ -35,4 +43,5 @@ def test_restore_runs_from_finally_even_when_turn_raises():
             runner._restore_pending_one_turn_model_override(KEY, gen)
 
     assert state.conversation.model_override == PRIOR
+    assert state.conversation.reasoning_override == PRIOR_REASONING
     assert state.conversation.one_turn_restore is None

@@ -403,7 +403,7 @@ class SessionSaveResult(Result):
     """``methods_session.py:1755`` forwards the compute-host's same-route result; TUI reads
     ``file`` at ``ui-tui/src/app/slash/commands/core.ts:557``."""
 
-    file: str | None = None
+    file: str
 
 
 method("session.save", params=SessionSaveParams, result=SessionSaveResult,

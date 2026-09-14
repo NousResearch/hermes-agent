@@ -894,25 +894,25 @@ def main(
         reasoning_disabled (bool): Completely disable reasoning/thinking tokens (default: False)
         prefill_messages_file (str): Path to JSON file containing prefill messages (list of {role, content} dicts)
         max_samples (int): Only process the first N samples from the dataset (optional, processes all if not set)
-        
+
     Examples:
         # Basic usage
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run
-        
+
         # Resume interrupted run
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --resume
-        
+
         # Use specific distribution
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
-        
+
         # With disabled reasoning and max tokens
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
                                --reasoning_disabled --max_tokens=128000
-        
+
         # With prefill messages from file
         python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
                                --prefill_messages_file=configs/prefill_opus.json
-        
+
         # List available distributions
         python batch_runner.py --list_distributions
     """

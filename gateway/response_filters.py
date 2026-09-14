@@ -11,8 +11,22 @@ from typing import Any
 
 # Exact whole-response markers meaning "the agent intentionally chose not to
 # reply". Keep small and explicit; arbitrary empty output remains an
-# error/empty-response path, not silence.
-LIVE_GATEWAY_SILENT_MARKERS = frozenset({"[SILENT]", "SILENT", "NO_REPLY", "NO REPLY"})
+# error/empty-response path, not silence. A lane that does not think in English
+# translates the sentinel rather than dropping it, and the whole control token
+# then reaches the user as content, so the translated forms are carried here
+# too. zh-Hans is the only non-English locale this project ships documentation
+# for, which is where the list stops.
+LIVE_GATEWAY_SILENT_MARKERS = frozenset({
+    "[SILENT]", "SILENT", "NO_REPLY", "NO REPLY",
+    "[静默]", "静默", "[沉默]", "沉默",
+})
+
+# Bracketed markers drive the autonomous lane's prefix rule ("[SILENT] nothing
+# new this tick"). Derived from the set above so a new marker cannot be added to
+# one rule and forgotten in the other.
+_BRACKETED_SILENCE_MARKERS = tuple(
+    sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
+)
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
@@ -70,7 +84,7 @@ def is_autonomous_silence_response(response: Any) -> bool:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
-    return stripped.upper().startswith("[SILENT]") or any(
+    return stripped.upper().startswith(_BRACKETED_SILENCE_MARKERS) or any(
         _canonical_silence_candidate(c) in LIVE_GATEWAY_SILENT_MARKERS for c in (stripped, lines[0], lines[-1])
     )
 

@@ -1261,9 +1261,9 @@ class AIAgent(
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
         else:
-            # observe_call may have raised the identical-call streak halt (hard_stop_enabled, tool-agnostic).
+            # observe_call may have raised the identical-call streak or batch-cycle halt (hard_stop_enabled, tool-agnostic).
             streak_halt = self._tool_guardrails.halt_decision
-            if streak_halt is not None and streak_halt.code == "identical_call_streak_halt":
+            if streak_halt is not None and streak_halt.code in ("identical_call_streak_halt", "identical_cycle_halt"):
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
         if stall_notice:
@@ -1313,7 +1313,8 @@ class AIAgent(
             goal=function_args.get("goal"), context=function_args.get("context"),
             tasks=_strip_model_hidden_task_fields(function_args.get("tasks")),
             max_iterations=function_args.get("max_iterations"), role=function_args.get("role"),
-            background=not (getattr(self, "_delegate_depth", 0) > 0), action=function_args.get("action"),
+            background=not (getattr(self, "_delegate_depth", 0) > 0), images=function_args.get("images"),
+            action=function_args.get("action"),
             subagent_id=function_args.get("subagent_id"), message=function_args.get("message"), parent_agent=self,
         )
 

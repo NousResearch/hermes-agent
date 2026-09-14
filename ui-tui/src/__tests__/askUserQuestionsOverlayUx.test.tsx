@@ -20,7 +20,7 @@ vi.mock('@hermes/ink', async importOriginal => {
 })
 
 import { AskUserQuestionsTool } from '../components/askUserQuestionsTool.js'
-import { stripAnsi } from '../lib/text.js'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { DEFAULT_THEME } from '../theme.js'
 
 const req = {

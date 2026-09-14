@@ -476,6 +476,15 @@ class BaseEnvironment(ABC):
         trigger their FileSyncManager here; bind-mount backends and Local don't."""
         pass
 
+    def _mark_recreated(self) -> None:
+        """Flag that the live container/sandbox was replaced while serving the
+        current command. ``execute`` folds the flag into the result as
+        ``environment_recreated`` so the tool layer can warn the model that
+        background processes died and non-persisted files may be gone —
+        without this the recovery is silent and the model keeps assuming the
+        old workspace state (lobehub/lobehub#19329 class)."""
+        self._recreated_notice_pending = True
+
     # --- Unified execute() ---
     def execute(
         self,
@@ -566,6 +575,9 @@ class BaseEnvironment(ABC):
             {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124}
             if bounded.timed_out else bounded.value)
         self._update_cwd(result)
+        if getattr(self, "_recreated_notice_pending", False):
+            self._recreated_notice_pending = False
+            result["environment_recreated"] = True
         return result
 
     def _kill_spawned_tree(self, spawned) -> None:

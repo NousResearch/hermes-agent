@@ -27,6 +27,7 @@ class TurnFacadeMixin:
         persist_user_display_metadata: Optional[Dict[str, Any]]=None,
         persist_user_platform_id: Optional[str]=None, moa_config: Optional[dict[str, Any]]=None,
         turn_author: Optional[Dict[str, Any]] = None,
+        relay_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # A review shares this session_id for cache parity: fence review startup or interrupt
@@ -94,8 +95,14 @@ class TurnFacadeMixin:
                 parent_session_id=relay_parent_session_id,
                 model=str(getattr(self, "model", None) or ""),
             )
+            relay_turn_kwargs: Dict[str, Any] = {
+                "turn_id": relay_turn_id,
+                "task_id": effective_task_id,
+            }
+            if relay_metadata:
+                relay_turn_kwargs["metadata"] = relay_metadata
             relay_turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
-                relay_lease, turn_id=relay_turn_id, task_id=effective_task_id
+                relay_lease, **relay_turn_kwargs
             )
             # Minimal relay-runtime shims may lack the opt-out flag: default enabled.
             if getattr(relay_turn, "relay_enabled", True):

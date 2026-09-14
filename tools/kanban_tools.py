@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
-from tools.registry import registry, tool_error
+from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import _board_schema_prop, _DESC_TASK_ID_DEFAULT  # KENSEI CUSTOM: schema helper used by restored schemas
 from tools.kanban_tools_schemas import (
@@ -36,9 +36,28 @@ KANBAN_LIST_MAX_LIMIT = 200
 # --- Gating ---
 
 def _profile_has_kanban_toolset() -> bool:
-    # load_config() is mtime-cached and check_fn results are TTL-cached (~30s).
+    from tools.kanban_toolset_context import kanban_toolset_requested
+
+    requested = kanban_toolset_requested()
+    if requested:
+        return True
     try:
-        return "kanban" in load_config().get("toolsets", [])
+        config = load_config()
+        # Preserve the legacy profile-wide opt-in for callers using bundles.
+        if "kanban" in (config.get("toolsets") or []):
+            return True
+        if requested is not None:
+            # Never borrow another platform's opt-in during schema assembly.
+            return False
+        # Offer-time skill discovery has no platform selection. A saved opt-in
+        # makes the playbook relevant; actual schemas still use the scope above.
+        from hermes_cli.tools_config import _get_platform_tools
+
+        platforms = config.get("platform_toolsets") or {}
+        return any(
+            "kanban" in _get_platform_tools(config, platform, include_default_mcp_servers=False)
+            for platform, names in platforms.items() if isinstance(names, list)
+        )
     except Exception:
         return False
 
@@ -72,11 +91,13 @@ def _visible(*, to_env_worker: bool) -> bool:
     return _profile_has_kanban_toolset()
 
 
+@no_cache_check_fn
 def _check_kanban_mode() -> bool:
     """Lifecycle tools: dispatcher workers + profiles with the ``kanban`` toolset."""
     return _visible(to_env_worker=True)
 
 
+@no_cache_check_fn
 def _check_kanban_orchestrator_mode() -> bool:
     """Board-routing tools (kanban_list, kanban_unblock): hidden from task workers."""
     return _visible(to_env_worker=False)
@@ -636,6 +657,9 @@ def _handle_request_review(args: dict, **kw) -> str:
     if metadata is not None:
         metadata = _redact_metadata(metadata)
         _check(metadata is not None, "metadata could not be safely serialized")
+    artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
+    if artifacts:
+        metadata = _merge_artifacts(metadata, artifacts)
     metadata = _stamp_worker_session_metadata(tid, metadata)
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
@@ -649,9 +673,19 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
-        ok, fail_reason = kb.request_review(
-            conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
-            expected_run_id=_worker_run_id(tid), with_reason=True)
+        try:
+            ok, fail_reason = kb.request_review(
+                conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
+                expected_run_id=_worker_run_id(tid), with_reason=True)
+        except kb.ArtifactPreservationError as artifact_err:
+            # Same contract as kanban_complete (#22923): the transition rolled
+            # back, the task is untouched and retryable — say so explicitly or
+            # the model treats the tool_error as terminal.
+            return tool_error(
+                f"kanban_request_review could not preserve the declared artifacts: {artifact_err}. "
+                f"Your task is still in-flight (no state change) and its scratch workspace was "
+                f"kept. Fix the artifact path or storage error, then retry "
+                f"kanban_request_review with the same handoff.")
         _check(ok, f"could not request review for {tid}: "
                    f"{fail_reason or 'unknown id or not in running/ready'}")
         return _ok_landed(kb, conn, tid, "review")

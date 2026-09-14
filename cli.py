@@ -17,7 +17,6 @@ import re
 import atexit
 import errno
 import time
-import uuid
 import textwrap
 from collections import deque
 from dataclasses import dataclass
@@ -34,7 +33,6 @@ os.environ["HERMES_QUIET"] = "1"  # suppress our modules' startup chatter
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from hermes_cli.cli_commands_mixin import CLICommandsMixin
-from hermes_cli.cli_wisdom_mixin import CLIWisdomMixin
 from hermes_cli.cli_billing_mixin import CLIBillingMixin
 from hermes_cli.cli_loops_mixin import CLILoopsMixin
 from hermes_cli.cli_info_mixin import CLIInfoMixin
@@ -52,6 +50,10 @@ from agent.pet import render as pet_render
 
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.application import Application
+try:
+    from prompt_toolkit.enums import EditingMode
+except ImportError:  # partial prompt_toolkit stubs in tests
+    EditingMode = None
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
@@ -167,6 +169,7 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 # ~/.hermes/.env first, project .env as dev fallback; user env files override stale shell exports.
 from hermes_constants import get_hermes_home
+from hermes_state_ids import new_session_id
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import base_url_host_matches, base_url_hostname, fast_safe_load
 
@@ -2154,7 +2157,7 @@ def _terminal_may_leak_cpr() -> bool:
 
     Delayed CPR replies (``ESC[<row>;<col>R`` / visible ``^[[<row>;<col>R``) leak into the status line and
     can freeze input when the reply is slow (#13870 on SSH/slow PTYs). The same race hits local POSIX TTYs
-    under heavy subagent / status-line load — see ``tests/cli/test_cpr_local_leak.py``.
+    under heavy subagent / status-line load — see ``tests/hermes_cli/test_cpr_local_leak.py``.
     """
     return os.environ.get("PROMPT_TOOLKIT_NO_CPR", "") == "1" or sys.platform != "win32"
 
@@ -2308,7 +2311,7 @@ def _build_compact_banner() -> str:
     dim_color = _color("banner_dim", "#B8860B")
 
     if (getattr(_skin, "name", "default") if _skin else "default") == "default":
-        tiny_line = "⚕ NOUS HERMES"
+        tiny_line = "☤ NOUS HERMES"
     else:
         tiny_line = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
     line1 = f"{tiny_line} - AI Agent Framework"
@@ -2538,7 +2541,7 @@ from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 _PASTE_REF_RE = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
 
 
-class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIWisdomMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
+class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin, CLITuiMixin, CLIStatusBarMixin, CLIVoiceMixin, CLIModelSwitchMixin, CLISessionMixin, CLIStreamMixin, CLIModalMixin, CLITerminalMixin, CLIInfoMixin, CLILoopsMixin, CLIChatTurnMixin):
     """Interactive REPL for the Hermes Agent."""
 
     # Seeded -q first message (see _should_seed_interactive); run() re-creates
@@ -2834,7 +2837,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._init_session_store()
         self._pending_title: Optional[str] = None
         self._resumed = bool(resume)
-        self.session_id = resume or f"{self.session_start.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        self.session_id = resume or new_session_id(self.session_start)
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
 
         self._history_file = _hermes_home / ".hermes_history"
@@ -2846,8 +2849,12 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         self._session_db = None
         self._session_db_unavailable = False
         try:
-            from hermes_state import SessionDB
-            self._session_db = SessionDB()
+            # Registry handle, not a bare SessionDB(): goals/loops/heartbeat acquire the same
+            # path a moment later from the REPL thread, and a second writer repeats the full
+            # open (the /proc-wide deleted-WAL scan, ~4k readlinks) while the render thread
+            # holds the GIL — that repeat was the post-banner freeze before the first prompt.
+            from hermes_state_registry import acquire
+            self._session_db = acquire()
         except Exception as e:
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.
@@ -2957,6 +2964,9 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
         self._status_bar_visible = _status_bar_visible_from_display_config(CLI_CONFIG.get("display"))
         self._battery_visible = bool(CLI_CONFIG["display"].get("battery", False))
+        # Vi/vim editing mode for the input composer (display.vim_mode, config-only).
+        # Off by default: prompt_toolkit's standard emacs bindings.
+        self._vim_mode = bool(CLI_CONFIG["display"].get("vim_mode", False))
         # Hide rules + status bar until the next input after a resize, so SIGWINCH cannot
         # stamp a fresh status bar over one the terminal just reflowed into scrollback.
         self._status_bar_suppressed_after_resize = self._resize_recovery_pending = False
@@ -3022,12 +3032,6 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
         set_unlock_prompt_callback(self._vault_unlock_callback)
         set_save_login_prompt_callback(self._vault_save_login_callback)
         set_code_prompt_callback(self._vault_code_callback)
-        try:
-            from tools.computer_use_tool import set_approval_callback as _set_cu_cb
-
-            _set_cu_cb(self._computer_use_approval_callback)
-        except ImportError:
-            pass
         self._tool_callbacks_installed = True
 
     def _ensure_tirith_security(self) -> None:
@@ -3220,6 +3224,7 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             if callable(getattr(cls, name, None)):
                 entry = (name, True)
         return entry
+
     def process_command(self, command: str) -> bool:
         """Dispatch a slash command; returns False to exit the REPL."""
         cmd_lower = command.lower().strip()  # lowercase only for matching; args keep their case
@@ -3466,11 +3471,11 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
 
     def _tui_process_one_input(self, user_input):
         """Route one submitted input: file drop, /resume pick, ! shell, slash command, or a chat turn."""
-        from tools.process_registry_notifications import SubagentNotification
-        notification_preview = user_input if isinstance(user_input, SubagentNotification) else None
+        from tools.process_registry_notifications import TimelineNotification
         user_input, is_voice_input, is_seeded_query = self._tui_unwrap_input(user_input)
         if not user_input:
             return
+        notification_preview = user_input if isinstance(user_input, TimelineNotification) else None
         self._status_bar_suppressed_after_resize = False  # input ends post-resize suppression
 
         submit_images = []
@@ -3768,6 +3773,10 @@ class HermesCLI(CLIProcessNotificationsMixin, CLIAgentSetupMixin, CLICommandsMix
             extra_kw["output"] = _cpr_disabled_output
         if _STEADY_CURSOR is not None:
             extra_kw["cursor"] = _STEADY_CURSOR
+        if EditingMode is not None:
+            # Vi editing mode when display.vim_mode is on.
+            # EMACS is prompt_toolkit's own default, so non-opted-in behaviour is unchanged.
+            extra_kw["editing_mode"] = EditingMode.VI if self._vim_mode else EditingMode.EMACS
         return Application(
             layout=layout,
             key_bindings=kb,

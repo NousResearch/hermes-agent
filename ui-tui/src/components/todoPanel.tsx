@@ -2,7 +2,7 @@ import { Box, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
 import { countPendingTodos } from '../lib/liveProgress.js'
-import { stripAnsi } from '../lib/text.js'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { todoGlyph, todoTone, todoTree } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type { TodoItem } from '../types.js'

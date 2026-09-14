@@ -67,17 +67,27 @@ def _tombstones_db():
 def _open_tombstones():
     import sqlite3
 
-    from cron.ledger import prepare_ledger
+    # KENSEI NOTE: upstream retired cron/ledger.py (helpers folded into the shared
+    # sqlite layer, see e24c8499); this inlines the same setup via open_db so the
+    # fork's replay lane no longer imports a removed module.
+    from cron.jobs import _ensure_cron_dir
+    from hermes_cli.sqlite_util import open_db
 
-    conn = sqlite3.connect(str(_tombstones_db()), timeout=30.0)
-    prepare_ledger(conn, db_label=_TOMBSTONE_DB_LABEL)
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS replay_tombstones (
-             source_execution_id TEXT PRIMARY KEY,
-             replayed_at TEXT NOT NULL
-           )"""
+    path = _tombstones_db()
+    _ensure_cron_dir(path.parent)
+
+    def _initialize_schema(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS replay_tombstones (
+                 source_execution_id TEXT PRIMARY KEY,
+                 replayed_at TEXT NOT NULL
+               )"""
+        )
+
+    return open_db(
+        path, db_label=_TOMBSTONE_DB_LABEL, busy_timeout_ms=30000,
+        synchronous_full=True, initialize=_initialize_schema,
     )
-    return conn
 
 
 def _already_replayed(conn, source_execution_id: str) -> bool:

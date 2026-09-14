@@ -5,7 +5,7 @@ import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { TodoPanel } from '../components/todoPanel.js'
-import { stripAnsi } from '../lib/text.js'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { DEFAULT_THEME } from '../theme.js'
 import type { TodoItem } from '../types.js'
 

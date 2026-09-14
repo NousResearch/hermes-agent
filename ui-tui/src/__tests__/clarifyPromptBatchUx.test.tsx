@@ -22,7 +22,7 @@ vi.mock('@hermes/ink', async importOriginal => {
 vi.mock('../components/textInput.js', () => ({ TextInput: () => null }))
 
 import { ClarifyPrompt } from '../components/prompts.js'
-import { stripAnsi } from '../lib/text.js'
+import { stripAnsi } from '@hermes/shared/ansi'
 import { DEFAULT_THEME } from '../theme.js'
 
 const req = {

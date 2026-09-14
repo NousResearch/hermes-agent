@@ -133,6 +133,31 @@ describe('approval prompt store', () => {
     ])
   })
 
+  it('clears an absent approval without overwriting a newer live request', async () => {
+    const old = { command: 'x', description: 'd', requestId: 'old', sessionId: 's1' }
+    setApprovalRequest(old)
+    await replayPendingApproval({ request: async () => ({ approvals: [] }) }, 's1')
+    expect($approvalRequest.get()).toBeNull()
+
+    setApprovalRequest(old)
+    let resolve!: (value: unknown) => void
+
+    const pending = replayPendingApproval(
+      {
+        request: () =>
+          new Promise(done => {
+            resolve = done
+          })
+      },
+      's1'
+    )
+
+    setApprovalRequest({ ...old, requestId: 'new' })
+    resolve({ approvals: [] })
+    await pending
+    expect($approvalRequest.get()?.requestId).toBe('new')
+  })
+
   it('does not replay a pending approval after the runtime is rejected as gone', async () => {
     const request = vi.fn(async () => {
       throw new JsonRpcGatewayError('session not found', { code: 4001 })

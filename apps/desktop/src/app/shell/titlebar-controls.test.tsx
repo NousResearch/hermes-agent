@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
+import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { ROUTES_AREA } from '../routes'
 
@@ -130,5 +131,41 @@ describe('TitlebarControls fixed clusters', () => {
 
       expect(pluginChrome()).toBeNull()
     })
+  })
+})
+
+describe('titlebar app-action cluster', () => {
+  afterEach(() => {
+    setTitlebarAppActionsSide('right')
+    cleanup()
+  })
+
+  it('defaults settings, layout, and HUD to the right so the left titlebar stays free for tabs', () => {
+    renderControls('/')
+
+    const left = screen.getByLabelText('Window controls')
+    const right = screen.getByLabelText('App controls')
+
+    expect(within(right).getByLabelText('Open settings')).toBeTruthy()
+    expect(within(right).getByLabelText('Layout editor')).toBeTruthy()
+    expect(within(right).getByLabelText('HUD mode')).toBeTruthy()
+
+    expect(within(left).queryByLabelText('Open settings')).toBeNull()
+    expect(within(left).queryByLabelText('Layout editor')).toBeNull()
+    expect(within(left).queryByLabelText('HUD mode')).toBeNull()
+    expect(within(left).getByLabelText(/Hide sidebar|Show sidebar/)).toBeTruthy()
+  })
+
+  it('moves settings, layout, and HUD to the left when the appearance setting says left', () => {
+    setTitlebarAppActionsSide('left')
+    renderControls('/')
+
+    const left = screen.getByLabelText('Window controls')
+    const right = screen.getByLabelText('App controls')
+
+    expect(within(left).getByLabelText('Open settings')).toBeTruthy()
+    expect(within(left).getByLabelText('Layout editor')).toBeTruthy()
+    expect(within(left).getByLabelText('HUD mode')).toBeTruthy()
+    expect(within(right).queryByLabelText('Open settings')).toBeNull()
   })
 })

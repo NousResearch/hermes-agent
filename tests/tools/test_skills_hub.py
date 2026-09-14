@@ -103,6 +103,44 @@ class TestSkillsShGroupings:
         assert len(skills) == 1
         assert skills[0].extra["category"] == "Decision Optimization"
 
+    def test_list_skills_bucket_stamps_category_when_no_sidecar(self):
+        # A tap-level bucket labels every skill when the repo ships no skills.sh.json
+        # grouping — how several repos share one hub category (e.g. science).
+        src = GitHubSource(auth=MagicMock())
+        meta = SkillMeta(
+            name="rdkit", description="d", source="github",
+            identifier="K-Dense-AI/scientific-agent-skills/skills/rdkit", trust_level="community",
+        )
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = [{"type": "dir", "name": "rdkit"}]
+        with patch("tools.skills_hub_github._cached_metas", return_value=None), \
+             patch("tools.skills_hub_github._cache_metas"), \
+             patch.object(src, "_get_skillsh_groupings", return_value=None), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch.object(src, "_github_get", return_value=resp):
+            skills = src._list_skills_in_repo("K-Dense-AI/scientific-agent-skills", "skills/", "science")
+
+        assert len(skills) == 1
+        assert skills[0].extra["category"] == "science"
+
+    def test_list_skills_sidecar_grouping_wins_over_bucket(self):
+        src = GitHubSource(auth=MagicMock())
+        meta = SkillMeta(
+            name="cuopt-developer", description="d", source="github",
+            identifier="NVIDIA/skills/skills/cuopt-developer", trust_level="trusted",
+        )
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = [{"type": "dir", "name": "cuopt-developer"}]
+        with patch("tools.skills_hub_github._cached_metas", return_value=None), \
+             patch("tools.skills_hub_github._cache_metas"), \
+             patch.object(src, "_get_skillsh_groupings",
+                          return_value={"cuopt-developer": "Decision Optimization"}), \
+             patch.object(src, "inspect", return_value=meta), \
+             patch.object(src, "_github_get", return_value=resp):
+            skills = src._list_skills_in_repo("NVIDIA/skills", "skills/", "science")
+
+        assert skills[0].extra["category"] == "Decision Optimization"
+
 # ---------------------------------------------------------------------------
 # GitHubSource.trust_level_for
 # ---------------------------------------------------------------------------
@@ -841,14 +879,7 @@ class TestOptionalSkillSourceMetadata:
         skill_dir = optional_root / "finance" / "3-statement-model"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\n"
-            "name: 3-statement-model\n"
-            "description: test\n"
-            "metadata:\n"
-            "  hermes:\n"
-            "    editorial_name: Three-Statement Model\n"
-            "    editorial_description: Build a linked financial model.\n"
-            "---\n\nBody\n",
+            "---\nname: 3-statement-model\ndescription: test\n---\n\nBody\n",
             encoding="utf-8",
         )
 
@@ -860,8 +891,6 @@ class TestOptionalSkillSourceMetadata:
         assert meta is not None
         assert meta.repo == "NousResearch/hermes-agent"
         assert meta.path == "optional-skills/finance/3-statement-model"
-        assert meta.editorial_name == "Three-Statement Model"
-        assert meta.editorial_description == "Build a linked financial model."
 
     def test_scan_all_accepts_install_prefix_but_rejects_nested_support_skills(self, tmp_path):
         optional_root = tmp_path / "venv" / "lib" / "site-packages" / "optional-skills"

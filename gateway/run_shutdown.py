@@ -893,14 +893,10 @@ class GatewayShutdownMixin:
             source = self._get_cached_session_source(session_key)
         if source is not None:
             return source, source.platform.value, str(source.chat_id), source.thread_id, getattr(source, "profile", None)
-        parts = session_key.split(":")
-        profile = parts[1] if len(parts) >= 5 and parts[0] == "agent" and parts[1] != "main" else None
-        # _parse_session_key only understands the ``agent:main:`` lane; a secondary's key is parsed on
-        # the same shape with its profile carried separately.
-        _parsed = _parse_session_key(":".join(["agent", "main", *parts[2:]]) if profile else session_key)
+        _parsed = _parse_session_key(session_key)
         if not _parsed:
             return None
-        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), profile
+        return None, _parsed["platform"], _parsed["chat_id"], _parsed.get("thread_id"), _parsed.get("profile")
 
     async def _send_shutdown_notice(
         self, adapter, chat_id: str, msg: str, kind: str, platform_str: str, **send_kwargs
@@ -1093,6 +1089,10 @@ class GatewayShutdownMixin:
         live agent (e.g. the user sent ``/new`` and a fresh agent took the slot mid-run, #12029).
         """
         if agent is None or (executor_task is not None and executor_task.done()):
+            return False
+        # Drain/restart already told the chat the task will be interrupted; a "still working"
+        # heartbeat after that notice reads as a contradiction (#10990).
+        if getattr(self, "_draining", False) or getattr(self, "_restart_requested", False):
             return False
         if session_key:
             _hb_state = self._peek_session_state(session_key)
@@ -1388,6 +1388,42 @@ class GatewayShutdownMixin:
         """Active work minus wedged turns — what the restart wait waits on."""
         return max(0, self._active_work_count() - self._wedged_agent_count())
 
+    def _describe_active_work(self) -> list:
+        """One dict per in-flight work unit the restart wait is holding for, so an observer
+        (``hermes update``, ``hermes gateway status``) can name it instead of printing a bare count.
+
+        ``kind`` ∈ ``chat`` (session turn), ``cron`` (job id + external worker pid when the run was
+        handed to a restart-safe scope), ``api`` / ``deferred`` (count only — those sources expose
+        no identity). Best-effort: a source that can't be read is omitted, never raises.
+        """
+        from gateway.run import _AGENT_PENDING_SENTINEL
+        now = time.time()
+        units: list = []
+        for key, state in list(self._sessions_map().items()):
+            agent = state.turn.agent
+            if agent is None:
+                continue
+            unit: dict = {"kind": "chat", "session": key, "pid": os.getpid()}
+            if state.turn.started_ts:
+                unit["elapsed_s"] = round(now - state.turn.started_ts, 1)
+            if agent is not _AGENT_PENDING_SENTINEL:
+                unit["model"] = getattr(agent, "model", None)
+                summary_fn = getattr(agent, "get_activity_summary", None)
+                if callable(summary_fn):
+                    with suppress(Exception):
+                        summary = summary_fn()
+                        unit["current_tool"] = summary.get("current_tool")
+                        unit["idle_s"] = summary.get("seconds_since_activity")
+            units.append(unit)
+        with suppress(Exception):
+            from cron.scheduler import get_running_job_details
+            for job in get_running_job_details():
+                units.append({"kind": "cron", "job_id": job["job_id"], "elapsed_s": job["elapsed_s"],
+                              "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"])})
+        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
+            units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
+        return units
+
     async def _await_active_work_before_restart(self) -> bool:
         """Wait for in-flight work before ``stop()`` so the requesting turn isn't force-interrupted.
 
@@ -1432,8 +1468,9 @@ class GatewayShutdownMixin:
             if (now - last_status_at) >= 30.0:
                 logger.info(
                     "Restart deferred: waiting on %d active work unit(s) "
-                    "(%d wedged and excluded; %.0fs remaining before force drain)",
+                    "(%d wedged and excluded; %.0fs remaining before force drain): %s",
                     self._awaitable_work_count(), self._wedged_agent_count(), deadline - now,
+                    self._describe_active_work(),
                 )
                 self._scale_to_zero_status("draining", "restart wait: status mark failed")
                 last_status_at = now

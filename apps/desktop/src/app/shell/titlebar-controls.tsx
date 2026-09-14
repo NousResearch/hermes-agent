@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
@@ -11,7 +12,6 @@ import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
-import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
@@ -25,6 +25,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import { $unreadSessionCount } from '@/store/session-dot-state'
+import { $titlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
@@ -139,6 +140,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
+  const appActionsSide = useStore($titlebarAppActionsSide)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
 
@@ -196,7 +198,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     tour: 'right-pane-toggle'
   }
 
-  // App actions stay visible beside the left sidebar toggle.
+  // Static system tools — always pinned to the screen's right edge so the
+  // left titlebar stays free for tabs (#107351).
   const systemTools: TitlebarTool[] = [
     {
       actionId: 'nav.settings',
@@ -285,7 +288,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     )
   }
 
-  const visibleLeftTools = [sidebarTool, ...systemTools, ...leftTools, ...tools].filter(tool => !tool.hidden)
+  const visibleLeftTools = (
+    appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools]
+  ).filter(tool => !tool.hidden)
+
+  const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(tool => !tool.hidden) : []
+  const visiblePaneTools = tools.filter(tool => !tool.hidden)
 
   return (
     <>
@@ -293,16 +301,35 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleLeftTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        {titlebarSlots}
+        <Slot area="titleBar.left" />
+        <Slot area="titleBar.center" />
       </div>
+
+      {visiblePaneTools.length > 0 && (
+        <div
+          aria-label={t.shell.appControls}
+          className={cn(
+            titlebarToolClusterClass,
+            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
+          )}
+        >
+          {visiblePaneTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+        </div>
+      )}
 
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
         data-titlebar-cluster="right"
       >
+        {visibleSystemTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
         <TitlebarToolButton navigate={navigate} tool={flipTool} />
         <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
+        <Slot area="titleBar.right" />
       </div>
     </>
   )

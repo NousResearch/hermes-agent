@@ -4,6 +4,7 @@ Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) s
 in ``tools.memory_tool`` and is read lazily."""
 
 import logging
+import os
 import time
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -130,6 +131,13 @@ class MemoryStore:
             # Deduplicate (order-preserving, first occurrence wins).
             entries = list(dict.fromkeys(self._read_file(path)))
             self._set_entries(target, entries)
+            # External writers (MCP bridges, hand edits) can exceed the cap; the limit only fires on
+            # add/replace, so the oversized block would silently ride in the prompt while every later
+            # add is refused with no visible cause (#10877). Warn; never truncate a user's memories.
+            if (count := self._char_count(target)) > (limit := self._char_limit(target)):
+                logger.warning("%s exceeds its char limit on load: %d/%d chars. Entries stay loaded; "
+                               "further additions are blocked until it is back under the limit.",
+                               path.name, count, limit)
             self._system_prompt_snapshot[target] = self._render_block(target, [_sanitize(e, path.name) for e in entries])
 
     @staticmethod
@@ -144,7 +152,22 @@ class MemoryStore:
         if fcntl is None and msvcrt is None:
             yield
             return
-        with open(lock_path, "a+", encoding="utf-8") as fd:
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        raw_fd = os.open(lock_path, flags, 0o600)
+        try:
+            # The creation mode is filtered through the process umask and does
+            # not repair a lock left loose by an older Hermes process. Tighten
+            # the opened inode before acquiring the lock so both cases are
+            # owner-only. Operating on the fd avoids a path-swap window.
+            if hasattr(os, "fchmod"):
+                os.fchmod(raw_fd, 0o600)
+            fd = os.fdopen(raw_fd, "r+", encoding="utf-8")
+        except Exception:
+            os.close(raw_fd)
+            raise
+        with fd:
             def _flock(unlock: bool):
                 if fcntl:
                     fcntl.flock(fd, fcntl.LOCK_UN if unlock else fcntl.LOCK_EX)

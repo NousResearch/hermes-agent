@@ -197,6 +197,32 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     return True
 
 
+# finish_reason wire normalization. Some OpenAI-compatible gateways fronting
+# Gemini backends emit the native uppercase reasons (STOP, MAX_TOKENS); every
+# downstream comparison uses the lowercase OpenAI literals, so an uppercase
+# reason silently skips stop handling and length recovery. Single owner —
+# call at wire intake (transport normalize_response, stream chunk capture),
+# never re-fold at comparison sites.
+_FINISH_REASON_ALIASES = {
+    "max_tokens": "length",  # Gemini-native / Anthropic-style cap reason
+    "end": "stop",  # some gateways' clean-completion spelling
+    "function_call": "tool_calls",  # OpenAI legacy pre-tools spelling
+}
+
+
+def normalize_finish_reason(raw: Any) -> Any:
+    """Fold a wire ``finish_reason`` to the lowercase OpenAI contract value.
+
+    Non-string and empty values pass through unchanged (callers keep their
+    ``or "stop"`` defaults and the Poolside int-reason path); contract values
+    are returned byte-identical.
+    """
+    if not isinstance(raw, str) or not raw:
+        return raw
+    lowered = raw.lower()
+    return _FINISH_REASON_ALIASES.get(lowered, lowered)
+
+
 def serialized_messages_bytes(messages: list) -> int:
     """Exact serialized byte size of ``messages`` (HTTP 413 is a BYTE-size error the token
     estimator, pricing images flat, cannot score). Non-serializable values fall back to

@@ -1,4 +1,5 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
+import type { Usage } from '@hermes/shared/gateway-events'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
@@ -31,7 +32,6 @@ import type {
   SessionInfo,
   SlashCatalog,
   SudoReq,
-  Usage,
   VaultUnlockReq
 } from '../types.js'
 

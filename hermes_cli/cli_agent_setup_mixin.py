@@ -114,6 +114,7 @@ def _tool_calls_summary(tool_calls) -> str:
 _RESUME_EVENT_TEXT = {
     "model_switch": "model changed",
     "async_delegation_complete": "background delegation completed",
+    "process_complete": "background process finished",
     "auto_continue": "resumed interrupted turn"}
 
 def _collect_resume_entries(display_history, disp: dict, clean_assistant):
@@ -142,7 +143,7 @@ def _collect_resume_entries(display_history, disp: dict, clean_assistant):
             continue
         if display_kind in _RESUME_EVENT_TEXT:
             metadata = msg.get("display_metadata") or {}
-            label = metadata.get("display_text") if display_kind == "async_delegation_complete" else None
+            label = metadata.get("display_text") if display_kind in ("async_delegation_complete", "process_complete") else None
             entries.append(("event", _sanitize_display_text(label or _RESUME_EVENT_TEXT[display_kind])))
             continue
         if role == "user":
@@ -376,7 +377,7 @@ class CLIAgentSetupMixin:
         source of truth. True when a provider was configured."""
         from cli import _cprint, logger
         _cprint("")
-        _cprint("⚕ No inference provider is configured yet — let's fix that.")
+        _cprint("☤ No inference provider is configured yet — let's fix that.")
         _cprint("  You'll pick a provider (Nous Portal OAuth is the fastest; "
                 "no API key needed) and a model.")
         try:
@@ -542,8 +543,8 @@ class CLIAgentSetupMixin:
             logger=logger, single_query=getattr(self, "_single_query_mode", False))
         if self._session_db is None:
             try:
-                from hermes_state import SessionDB
-                self._session_db = SessionDB()
+                from hermes_state_registry import acquire
+                self._session_db = acquire()
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
         if (

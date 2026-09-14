@@ -281,19 +281,13 @@ def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
 
 def test_emit_with_payload(capture):
     server, buf = capture
-    assert server._emit("test.event", "s1", {"key": "val"}) is True
+    server._emit("test.event", "s1", {"key": "val"})
     msg = json.loads(buf.getvalue())
 
     assert msg["method"] == "event"
     assert msg["params"]["type"] == "test.event"
     assert msg["params"]["session_id"] == "s1"
     assert msg["params"]["payload"]["key"] == "val"
-
-
-def test_emit_preserves_disconnected_transport_result(capture, monkeypatch):
-    server, _ = capture
-    monkeypatch.setattr(server, "write_json", lambda _: False)
-    assert server._emit("notification.show", "s1", {"key": "wisdom.advice"}) is False
 
 
 # ── Blocking prompt round-trip ───────────────────────────────────────

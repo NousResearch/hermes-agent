@@ -1,6 +1,8 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
+import os
+import stat
 import pytest
 from pathlib import Path
 
@@ -106,6 +108,45 @@ def store(tmp_path, monkeypatch):
     s = MemoryStore(memory_char_limit=500, user_char_limit=300)
     s.load_from_disk()
     return s
+
+
+class TestMemoryFileLockPermissions:
+    def test_new_lock_file_is_owner_only_under_permissive_umask(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        previous_umask = os.umask(0o002)
+        try:
+            with MemoryStore._file_lock(memory_path):
+                pass
+        finally:
+            os.umask(previous_umask)
+
+        lock_path = tmp_path / "MEMORY.md.lock"
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+    def test_existing_loose_lock_file_is_tightened(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path.write_text("", encoding="utf-8")
+        lock_path.chmod(0o664)
+
+        with MemoryStore._file_lock(memory_path):
+            pass
+
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW unavailable")
+    def test_lock_file_symlink_is_refused(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        outside = tmp_path / "outside"
+        outside.write_text("do not touch", encoding="utf-8")
+        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path.symlink_to(outside)
+
+        with pytest.raises(OSError):
+            with MemoryStore._file_lock(memory_path):
+                pass
+
+        assert outside.read_text(encoding="utf-8") == "do not touch"
 
 
 class TestMemoryStoreAdd:
@@ -268,6 +309,26 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+
+class TestMemoryStoreCharLimitOnLoad:
+    @pytest.mark.parametrize("filename, target", [("MEMORY.md", "memory"), ("USER.md", "user")])
+    def test_over_limit_file_loads_but_warns(self, tmp_path, monkeypatch, caplog, filename, target):
+        """An externally written over-budget file is kept (no silent data loss) and named in a
+        warning; an in-budget file loads quietly (#10877)."""
+        import logging
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / filename).write_text("x" * 600, encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+            store.load_from_disk()
+        assert filename in caplog.text and "exceeds" in caplog.text
+        assert len(store._entries_for(target)) == 1
+        caplog.clear()
+        (tmp_path / filename).write_text("short", encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            MemoryStore(memory_char_limit=500, user_char_limit=300).load_from_disk()
+        assert "exceeds" not in caplog.text
 
 
 class TestMemoryStoreSnapshot:

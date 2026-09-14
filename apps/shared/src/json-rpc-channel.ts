@@ -34,18 +34,8 @@ export interface ServerRequest<M extends keyof ServerRequestMap> {
   readonly replayed?: boolean
 }
 
-type ServerRequestMember<M extends keyof ServerRequestMap> = {
-  readonly id: string
-  readonly method: M
-  readonly params: ServerRequestMap[M]['params']
-  readonly sessionId: string | null
-  respond(result: ServerRequestMap[M]['result']): void
-  fail(error: JsonRpcErrorPayload): void
-  readonly replayed?: boolean
-}
-
 /** The per-method server-request union produced by the wire decoder. */
-export type AnyServerRequest = { [M in keyof ServerRequestMap]: ServerRequestMember<M> }[keyof ServerRequestMap]
+export type AnyServerRequest = { [M in keyof ServerRequestMap]: ServerRequest<M> }[keyof ServerRequestMap]
 
 type ServerRequestHandler<M extends keyof ServerRequestMap> = (request: ServerRequest<M>) => void
 

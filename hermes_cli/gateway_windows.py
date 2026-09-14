@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
+_SCHTASKS_TIMEOUT_CODE = 124  # synthetic exit for a wedged schtasks (never a real schtasks code)
 # Patterns in schtasks stderr that mean "fall back to the Startup folder".
 _FALLBACK_PATTERNS = re.compile(
     r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
@@ -136,13 +137,13 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
         )
         return (proc.returncode, proc.stdout or "", proc.stderr or "")
     except subprocess.TimeoutExpired:
-        return (124, "", f"schtasks timed out after {_SCHTASKS_TIMEOUT_S}s")
+        return (_SCHTASKS_TIMEOUT_CODE, "", f"schtasks timed out after {_SCHTASKS_TIMEOUT_S}s")
     except OSError as e:
         return (1, "", f"schtasks invocation failed: {e}")
 
 
 def _should_fall_back(code: int, detail: str) -> bool:
-    return code == 124 or bool(_FALLBACK_PATTERNS.search(detail or ""))
+    return code == _SCHTASKS_TIMEOUT_CODE or bool(_FALLBACK_PATTERNS.search(detail or ""))
 
 
 def _is_access_denied(detail: str) -> bool:
@@ -822,9 +823,12 @@ def _live_gateway_pids(all_profiles: bool = False, home: Path | None = None) -> 
     files (a still-running sibling must not vouch for a per-profile spawn, #110959); otherwise the
     process-table discovery for the active profile or the whole fleet."""
     if home is not None:
-        from gateway.status import get_running_pid
+        # Canonical reader of another home's gateway identity (pid file + runtime record; a
+        # launch-service gateway whose pid file was unlinked is still live). Its cache invalidates
+        # on any pid/lock file change, so a task-spawned child is seen on the next 0.4 s poll.
+        from gateway.status import live_gateway_pid_for_home
 
-        pid = get_running_pid(home / "gateway.pid", cleanup_stale=False)
+        pid = live_gateway_pid_for_home(home)
         return [pid] if pid else []
     from hermes_cli.gateway import find_gateway_pids
 
@@ -1140,53 +1144,58 @@ def _spawn_via_scheduled_task(
     (issue #84185). The Task Scheduler runs the task outside any job holding the calling updater,
     so ``schtasks /Run`` is the only spawn path guaranteed to survive the parent-job teardown.
 
-    ``home`` selects the profile whose task is run and whose ``gateway.pid`` is probed; ``None``
-    means the calling process's own profile, probed across the whole fleet. Callers relaunching a
-    *different* profile (the update restart-watcher) MUST pass its home: task name and gateway
-    ``HERMES_HOME`` are per-profile.
+    ``home`` selects the profile whose task is run and whose identity files are probed; ``None``
+    means the calling process's own profile (pid file + process scan scoped to it -- a sibling
+    profile's autostart must never pass for "the new pid"). Callers relaunching a *different*
+    profile (the update restart-watcher) MUST pass its home: task name and gateway ``HERMES_HOME``
+    are per-profile.
 
     Never writes or re-registers anything: ``/Run`` executes whatever launcher is on disk
     (``_refresh_windows_gateway_launchers`` runs before this on every update).
 
-    Returns ``None`` when no task is registered (the caller may direct-spawn), the confirmed NEW
-    pids when one appears within ``timeout_s`` and survives ``confirm_s``, else ``[]`` — the task
-    fired but nothing new became ready. Only pids absent from the pre-trigger snapshot count: a
-    still-running sibling or a draining pre-update gateway satisfies a fleet-wide readiness poll
-    within seconds (#110959), and returning on it made every caller direct-spawn a second
-    gateway beside the one the task was still booting.
+    Returns ``None`` when the task cannot have fired -- none registered, or ``/Run`` itself failed
+    (disabled task, access denied) -- so the caller may direct-spawn; the confirmed NEW pids when
+    one appears within ``timeout_s`` and survives ``confirm_s``; else ``[]`` -- the task MAY have
+    fired (``/Run`` returned 0, or wedged past its timeout) but nothing new became ready, and a
+    direct spawn beside it would race the port. Only pids absent from the pre-trigger snapshot
+    count: a still-running sibling or a draining pre-update gateway satisfies a fleet-wide
+    readiness poll within seconds (#110959), and returning on it made every caller direct-spawn
+    a second gateway beside the one the task was still booting.
     """
     _assert_windows()
     task_name = get_task_name(home=home)
     if not is_task_registered(task_name=task_name):
         return None
 
-    # Own profile: the fleet-wide process-table probe (its gateway.pid may not be written yet by a
-    # task-launched child); another profile: only that home's identity files vouch.
-    all_profiles = home is None
-    probe_home = None if all_profiles else Path(home)
+    probe_home = None if home is None else Path(home)
     # Snapshot BEFORE triggering so a task-spawned python that becomes visible before /Run
     # returns can never land in the baseline.
     try:
-        pre = set(_live_gateway_pids(all_profiles=all_profiles, home=probe_home))
+        pre = set(_live_gateway_pids(home=probe_home))
     except Exception:
         pre = set()
 
     code, _, _ = _exec_schtasks(["/Run", "/TN", task_name])
+    if code == _SCHTASKS_TIMEOUT_CODE:
+        return []  # wedged /Run: the task may still fire, never spawn beside it
     if code != 0:
-        return []
+        return None
 
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        new = set(_live_gateway_pids(all_profiles=all_profiles, home=probe_home)) - pre
-        if new:
-            confirmed = _confirm_gateway_stable(
-                sorted(new), confirm_s, interval_s, all_profiles=all_profiles, home=probe_home,
-            )
-            confirmed_new = sorted(set(confirmed) & new)
-            if confirmed_new:
-                return confirmed_new
-            continue  # died during confirmation — keep polling until deadline
-        time.sleep(interval_s)
+    # /Run was issued: from here on an exception must read as "task fired, not confirmed" -- an
+    # exception-driven direct spawn would land beside the task's gateway.
+    try:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            new = set(_live_gateway_pids(home=probe_home)) - pre
+            if new:
+                confirmed = _confirm_gateway_stable(sorted(new), confirm_s, interval_s, home=probe_home)
+                confirmed_new = sorted(set(confirmed) & new)
+                if confirmed_new:
+                    return confirmed_new
+                continue  # died during confirmation — keep polling until deadline
+            time.sleep(interval_s)
+    except Exception:
+        logger.debug("gateway readiness poll after schtasks /Run failed", exc_info=True)
     return []
 
 

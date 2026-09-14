@@ -64,3 +64,7 @@ def test_preexisting_pid_never_counts_as_newly_spawned(monkeypatch):
     probes = iter([[9999], [9999], [9999, 10001]])
     monkeypatch.setattr(gateway_windows, "_live_gateway_pids", lambda **kw: next(probes))
     assert gateway_windows._spawn_via_scheduled_task(home="C:\\h", timeout_s=5) == [10001]
+
+    # A failed /Run (disabled task, access denied) provably did not fire: the caller may direct-spawn.
+    monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda *a, **kw: (1, "", "ERROR: Access is denied."))
+    assert gateway_windows._spawn_via_scheduled_task(home="C:\\h", timeout_s=0.05) is None

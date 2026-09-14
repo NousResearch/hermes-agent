@@ -2419,6 +2419,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(
                 tool_call_id=tool_call_id, session_id=agent.session_id or "",
+                gateway_session_key=getattr(agent, "_gateway_session_key", None),
                 turn_id=getattr(agent, "_current_turn_id", "") or "",
                 api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                 enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,

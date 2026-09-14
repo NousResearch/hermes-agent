@@ -42,6 +42,7 @@ def managed_policy(authority, ref):
 
 
 def _bootstrap(authority, ref, row, policy, scope):
+    from gateway.session_ingress import row_turn_author
     from gateway.session_policy import launch_key
     from gateway.session_policy_credentials import recover_config_secrets
     terminal = json.loads(policy.terminal_json)
@@ -57,6 +58,7 @@ def _bootstrap(authority, ref, row, policy, scope):
             'text': row['payload']['text'], 'route': live.route,
             **({'attachments_v1': row['payload']['attachments_v1']} if 'attachments_v1' in row['payload'] else {}),
             'user_id': live.source.user_id, 'chat_id': live.source.chat_id,
+            'turn_author': row_turn_author(policy, row),
             'safe_mode': policy.safe_mode, 'ignore_user_config': policy.ignore_user_config}
 
 

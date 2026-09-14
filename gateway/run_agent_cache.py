@@ -634,7 +634,7 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str) -> None:
+    def _evict_cached_agent(self, session_key: str, *, commit_memory: bool = False) -> None:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -669,10 +669,17 @@ class GatewayAgentCacheMixin:
         # Never tear down an agent that's mid-turn — its client, sandbox and child subagents are in use.
         if agent is None or agent is _AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
             return
-        self._spawn_release_thread(
-            self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
-            session_key=session_key,
-        )
+        if commit_memory:
+            target, args = self._commit_then_release_soft, (agent, session_key, True)
+        else:
+            target, args = self._release_evicted_agent_soft, (agent,)
+        self._spawn_release_thread(target, args, f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
+                                   session_key=session_key)
+
+    def _evict_cached_agent_at_boundary(self, session_key: str) -> None:
+        """Reset and compress end the conversation the provider was tracking, so the old agent's
+        transcript is committed (``on_session_end``) before its clients go; a plain evict is not."""
+        self._evict_cached_agent(session_key, commit_memory=True)
 
     def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool,
                               session_key: Optional[str] = None) -> None:
@@ -711,10 +718,14 @@ class GatewayAgentCacheMixin:
         with _profile_runtime_scope(home or get_hermes_home()):
             target(*args)
 
-    def _commit_memory_before_soft_evict(self, agent: Any, key: str) -> None:
-        """Commit the live transcript to memory providers before resource-only eviction."""
-        # No external memory provider (``_memory_manager`` None) — nothing to commit.
-        if agent is None or not hasattr(agent, "commit_memory_session") or getattr(agent, "_memory_manager", None) is None:
+    def _commit_memory_before_soft_evict(self, agent: Any, key: str, boundary: bool = False) -> None:
+        """Commit the live transcript to memory providers before resource-only eviction. A session
+        boundary (reset, compress) also ends the context engine's session; that engine can run without a provider."""
+        if agent is None or not hasattr(agent, "commit_memory_session"):
+            return
+        has_provider = getattr(agent, "_memory_manager", None) is not None
+        has_engine = boundary and getattr(agent, "context_compressor", None) is not None
+        if not has_provider and not has_engine:
             return
         try:
             messages = getattr(agent, "_session_messages", None)
@@ -726,10 +737,10 @@ class GatewayAgentCacheMixin:
         except Exception as _e:
             logger.debug("Pre-evict memory commit failed for %s: %s", key, _e)
 
-    def _commit_then_release_soft(self, agent: Any, key: str) -> None:
+    def _commit_then_release_soft(self, agent: Any, key: str, boundary: bool = False) -> None:
         """Commit end-of-session memory (if warranted), then soft-release — on the daemon eviction
         thread. Order matters: commit needs the live memory manager before ``release_clients``."""
-        self._commit_memory_before_soft_evict(agent, key)
+        self._commit_memory_before_soft_evict(agent, key, boundary)
         self._release_evicted_agent_soft(agent)
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:

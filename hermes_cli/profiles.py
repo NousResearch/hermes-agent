@@ -808,6 +808,25 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
 
 
+def _strip_multiplex_flag(config_path: Path) -> None:
+    """Multiplexing belongs to the default profile; a clone that keeps the flag would start its
+    own multiplexer (or be refused at boot) the first time it runs a gateway."""
+    if not config_path.is_file():
+        return
+    with contextlib.suppress(Exception):  # creation must not fail over an unreadable copy
+        import yaml
+        from hermes_cli.config import read_user_config_raw
+        cfg = read_user_config_raw(config_path)
+        gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        if "multiplex_profiles" not in cfg and "multiplex_profiles" not in gateway:
+            return
+        cfg.pop("multiplex_profiles", None)
+        gateway.pop("multiplex_profiles", None)
+        if not gateway and "gateway" in cfg:
+            cfg.pop("gateway")
+        config_path.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+
+
 def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
     config files, installed skills (the dashboard's "clone from default" must keep bundled
@@ -820,6 +839,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
         return
     for relpath in _CLONE_CONFIG_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    _strip_multiplex_flag(profile_dir / "config.yaml")
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
         shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)

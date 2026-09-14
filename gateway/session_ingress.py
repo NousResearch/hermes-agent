@@ -21,12 +21,25 @@ async def admit_message(authority, event):
     return await asyncio.shield(waiter)
 
 
+def row_turn_author(policy, row):
+    """Who wrote the admitted input, for memory attribution only: the producer's stamp when it
+    left one, else the forwarded peer bound into the session policy; never grants anything."""
+    payload = row['payload']
+    for key in ('local_automation_v1', 'api_turn_v1'):
+        author = (payload.get(key) or {}).get('turn_author')
+        if author is not None:
+            return author
+    from gateway.session_a2a import forward_author
+    return forward_author(policy)
+
+
 async def execute_admission(authority, ref, row):
     from gateway.session_policy import policy_for_source
     policy = policy_for_source(authority.runner, authority.sessions[ref.session_id].source)
     if policy is not None and policy.source == 'cron':
         from gateway.session_cron import execute
         return await execute(authority, ref, row, policy)
+    local_policy = policy
     from gateway.session_managed_worker import managed_policy, execute_managed
     policy = managed_policy(authority, ref)
     if policy is not None:
@@ -60,7 +73,8 @@ async def execute_admission(authority, ref, row):
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
     is_api = live.source.platform == Platform.API_SERVER
-    author_token = admission_author.set(event.metadata.get('turn_author'))
+    author = event.metadata.get('turn_author')
+    author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
     api_token = api_execution.set(None)
     captured = {}
     result_token = execution_result.set(captured)

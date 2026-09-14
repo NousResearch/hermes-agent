@@ -142,6 +142,60 @@ class TestSetupLogging:
             hermes_home / "logs" / "agent.log"
         ).read_text()
 
+    def test_a_second_home_routes_instead_of_stacking_an_unfiltered_handler(self, hermes_home, tmp_path):
+        """A dashboard or serve backend builds agents for several profiles in ONE process, and each
+        one calls setup_logging for its own home. The second home must get a router — a bare file
+        handler beside the first home's would receive every profile's records."""
+        from logging.handlers import RotatingFileHandler
+
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.setup_logging(hermes_home=profile_home)
+
+        assert not [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)], (
+            "the second home must not add an unfiltered file handler")
+
+        logger = logging.getLogger("agent.conversation_loop.second-home-test")
+        token = set_hermes_home_override(profile_home)
+        try:
+            logger.info("turn of profile b")
+        finally:
+            reset_hermes_home_override(token)
+        logger.info("turn of the launch profile")
+        hermes_logging.flush_log_queue()
+
+        a_log = (hermes_home / "logs" / "agent.log").read_text()
+        b_log = (profile_home / "logs" / "agent.log").read_text()
+        assert "turn of profile b" in b_log and "turn of profile b" not in a_log
+        assert "turn of the launch profile" in a_log and "turn of the launch profile" not in b_log
+
+    def test_setup_for_an_already_routed_home_adds_no_duplicate_writer(self, hermes_home, tmp_path):
+        """Routing already on (multiplexed gateway, Desktop cron ticker): a profile's agent starting
+        up must not add a second writer for its home on top of the router."""
+        from logging.handlers import RotatingFileHandler
+
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_home = tmp_path / "profile-b"
+        profile_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, profile_home]) is True
+        hermes_logging.setup_logging(hermes_home=profile_home)
+
+        assert not [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)]
+        token = set_hermes_home_override(profile_home)
+        try:
+            logging.getLogger("agent.conversation_loop.routed-home-test").info("once please")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        assert (profile_home / "logs" / "agent.log").read_text().count("once please") == 1
+        assert "once please" not in (hermes_home / "logs" / "agent.log").read_text()
+
 
 
 

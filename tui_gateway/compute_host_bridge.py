@@ -113,7 +113,14 @@ def _relay_compute_host_rpc(message: dict) -> bool:
                     session["_review_revision"] = revision
                     session["_review_pending"] = payload.get("pending") is True
                     session["_review_shutdown_timeout_s"] = payload.get("shutdown_timeout_s", 120)
-    if kind in {"clarify.request", "clarify.expire"}:
+    if isinstance(message, dict) and isinstance(message.get("id"), str) and message.get("method") not in (None, "event"):
+        # A server request minted by the child: remember it against its session until it is answered/withdrawn.
+        session = _sessions.get(str((params or {}).get("session_id") or "")) if isinstance(params, dict) else None
+        if session is not None:
+            with _history_lock(session):
+                session["_compute_host_open_request"] = {
+                    "id": message["id"], "method": message["method"], "params": dict(params)}
+    elif kind == "request.cancel":
         session = _sessions.get(str(params.get("session_id") or ""))
         payload = params.get("payload")
         if session is not None and isinstance(payload, dict):

@@ -352,25 +352,6 @@ def _longest_prefix_subsequence(haystack: List[Tuple[Any, ...]], needle: List[Tu
     return 0
 
 
-def _imported_watermark_path(jsonl: Path) -> Path:
-    return jsonl.with_name(jsonl.name + ".imported")
-
-
-def _read_imported_object_count(jsonl: Path) -> Optional[int]:
-    path = _imported_watermark_path(jsonl)
-    if not path.is_file():
-        return None
-    try:
-        n = int(path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        return None
-    return n if n >= 0 else None
-
-
-def _write_imported_object_count(jsonl: Path, n: int) -> None:
-    _imported_watermark_path(jsonl).write_text(f"{n}\n", encoding="utf-8")
-
-
 def _append_diverted_record(db, session_id: str, record: Dict[str, Any]) -> None:
     db.append_message(
         session_id,
@@ -396,11 +377,11 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
     """Replay diverted JSONL into an existing (or newly created) Hermes session.
 
     Does not replace ``state.db``. Opens SessionDB only when applying. Inspect-only
-    prints the path and non-empty line count. Progress is a sidecar watermark
-    (``<jsonl>.imported``) so a later recovery cannot replay rows after the live
-    session has continued. Missing watermark falls back to skipping a prefix that
-    already appears as a contiguous run in the store. Native tool_calls /
-    tool_call_id rows are preserved. Empty unusable lines are skipped.
+    prints the path and non-empty line count. Skip is bound to the destination
+    transcript: a prefix already present as a contiguous run is not appended
+    again, so a rebuilt database or another session can still restore the file,
+    and a retry after a partial apply only writes the missing tail. Native
+    tool_calls / tool_call_id rows are preserved. Empty unusable lines are skipped.
     """
     sid = (session_id or "").strip()
     jsonl = Path(path).expanduser()
@@ -427,19 +408,12 @@ def import_diverted_transcript(session_id: str, path, db=None, *, inspect_only: 
     try:
         if db.get_session(sid) is None:
             db.create_session(sid, "cli")
-        objs = list(_read_json_lines(jsonl))
-        start = _read_imported_object_count(jsonl)
-        if start is None:
-            incoming = [rec for obj in objs if (rec := _diverted_jsonl_record(obj))]
-            existing_ids = [_diverted_record_identity(m) for m in db.get_messages(sid)]
-            incoming_ids = [_diverted_record_identity(r) for r in incoming]
-            skip = _longest_prefix_subsequence(existing_ids, incoming_ids)
-            to_apply = incoming[skip:]
-        else:
-            to_apply = [rec for obj in objs[start:] if (rec := _diverted_jsonl_record(obj))]
-        for record in to_apply:
+        incoming = [rec for obj in _read_json_lines(jsonl) if (rec := _diverted_jsonl_record(obj))]
+        existing_ids = [_diverted_record_identity(m) for m in db.get_messages(sid)]
+        incoming_ids = [_diverted_record_identity(r) for r in incoming]
+        skip = _longest_prefix_subsequence(existing_ids, incoming_ids)
+        for record in incoming[skip:]:
             _append_diverted_record(db, sid, record)
-        _write_imported_object_count(jsonl, len(objs))
         print(f"✓ Replayed diverted transcript into {sid}")
         print(f"  Source: {jsonl}")
         print(f"  Continue it with:  hermes --resume {sid}")

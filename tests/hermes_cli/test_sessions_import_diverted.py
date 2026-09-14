@@ -185,3 +185,101 @@ def test_import_preserves_null_content_tool_call_rows():
         assert result.get("content") == "42"
     finally:
         db.close()
+
+
+def _apply_diverted(jsonl: Path, session_id: str, db=None):
+    from hermes_cli.foreign_sessions import run_sessions_import
+
+    return run_sessions_import(Namespace(
+        from_source="diverted",
+        path=str(jsonl),
+        session_id=session_id,
+        inspect_only=False,
+    ), db=db)
+
+
+def test_import_into_empty_destination_ignores_source_sidecar():
+    """A source-file watermark must not skip restore into another session or rebuilt db."""
+    home = get_hermes_home()
+    jsonl = _write_diverted(
+        home / "sessions" / "shared-divert.jsonl",
+        [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": "B"},
+        ],
+    )
+    db = SessionDB()
+    try:
+        db.create_session("sess-first", "cli")
+    finally:
+        db.close()
+    assert _apply_diverted(jsonl, "sess-first") == "sess-first"
+
+    db = SessionDB()
+    try:
+        db.create_session("sess-second", "cli")
+    finally:
+        db.close()
+    assert _apply_diverted(jsonl, "sess-second") == "sess-second"
+    db = SessionDB()
+    try:
+        pairs = [(m.get("role"), m.get("content")) for m in db.get_messages("sess-second")]
+        assert pairs == [("user", "A"), ("assistant", "B")]
+    finally:
+        db.close()
+
+    recovered = home / "recovered-state.db"
+    db2 = SessionDB(db_path=recovered)
+    try:
+        assert _apply_diverted(jsonl, "sess-first", db=db2) == "sess-first"
+        pairs = [(m.get("role"), m.get("content")) for m in db2.get_messages("sess-first")]
+        assert pairs == [("user", "A"), ("assistant", "B")]
+    finally:
+        db2.close()
+
+
+def test_retry_after_partial_apply_does_not_duplicate():
+    """Committed prefix plus a later source append must apply only the missing tail."""
+    home = get_hermes_home()
+    session_id = "sess-diverted-partial"
+    jsonl = _write_diverted(
+        home / "sessions" / f"{session_id}.jsonl",
+        [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": "B"},
+        ],
+    )
+    db = SessionDB()
+    try:
+        db.create_session(session_id, "cli")
+    finally:
+        db.close()
+    assert _apply_diverted(jsonl, session_id) == session_id
+
+    _write_diverted(
+        jsonl,
+        [
+            {"role": "user", "content": "A"},
+            {"role": "assistant", "content": "B"},
+            {"role": "user", "content": "C"},
+            {"role": "assistant", "content": "D"},
+        ],
+    )
+    db = SessionDB()
+    try:
+        db.append_message(session_id, "user", "C")
+    finally:
+        db.close()
+
+    assert _apply_diverted(jsonl, session_id) == session_id
+    db = SessionDB()
+    try:
+        pairs = [(m.get("role"), m.get("content")) for m in db.get_messages(session_id)]
+        assert pairs == [
+            ("user", "A"),
+            ("assistant", "B"),
+            ("user", "C"),
+            ("assistant", "D"),
+        ]
+    finally:
+        db.close()

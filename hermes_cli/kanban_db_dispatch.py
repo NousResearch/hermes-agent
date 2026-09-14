@@ -110,6 +110,9 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_resource_group_capped: list[tuple[str, str, str, int]] = field(default_factory=list)
+    """``(task_id, assignee, resource_group, current_running_count)`` deferred
+    because another profile assigned to the same resource group is running."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1342,6 +1345,16 @@ def configured_max_in_progress() -> Optional[int]:
     return ival if ival >= 1 else None
 
 
+def configured_profile_resource_groups() -> dict[str, str]:
+    """Read valid resource-affinity rules from the Kanban configuration."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get("profile_resource_groups")
+    except Exception:
+        return {}
+    return _normalize_profile_resource_groups(raw)
+
+
 def count_running_tasks(conn: sqlite3.Connection) -> int:
     """Number of tasks in ``status='running'``.
 
@@ -1396,6 +1409,46 @@ def count_running_tasks_other_boards(board: Optional[str] = None) -> int:
     return total
 
 
+def resource_group_running_other_boards(
+    profile_resource_groups: Mapping[str, str], board: Optional[str] = None,
+) -> dict[str, int]:
+    """Count running profiles in each resource group outside ``board``.
+
+    Resource groups describe host hardware, not a board-local policy. Like the
+    global in-progress cap, their occupancy must include every active board.
+    Broken or unavailable board databases are ignored so affinity remains an
+    opt-in, fail-open constraint.
+    """
+    try:
+        current_path = str(_kb.kanban_db_path(board=board).expanduser().resolve())
+        boards = _kb.list_boards(include_archived=False)
+    except Exception:
+        return {}
+    running: dict[str, int] = {}
+    for meta in boards:
+        slug = meta.get("slug") or _kb.DEFAULT_BOARD
+        try:
+            path = _kb.kanban_db_path(board=slug).expanduser()
+            if str(path.resolve()) == current_path or not path.exists():
+                continue
+            other = _kbc.connect(board=slug)
+            try:
+                rows = other.execute(
+                    "SELECT assignee, COUNT(*) AS n FROM tasks "
+                    "WHERE status = 'running' AND assignee IS NOT NULL GROUP BY assignee"
+                )
+                for row in rows:
+                    resource_group = profile_resource_groups.get(row["assignee"])
+                    if resource_group is not None:
+                        running[resource_group] = running.get(resource_group, 0) + int(row["n"])
+            finally:
+                with contextlib.suppress(Exception):
+                    other.close()
+        except Exception:
+            continue
+    return running
+
+
 def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
     """Classify system memory pressure: ok/elevated/critical/unknown.
 
@@ -1428,6 +1481,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    profile_resource_groups: Optional[dict[str, str]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
@@ -1451,6 +1505,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            profile_resource_groups=profile_resource_groups,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -1487,6 +1542,18 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+def _normalize_profile_resource_groups(value: Any) -> dict[str, str]:
+    """Return valid profile-to-resource-group rules, ignoring bad entries."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        profile.strip(): resource_group.strip()
+        for profile, resource_group in value.items()
+        if isinstance(profile, str) and profile.strip()
+        and isinstance(resource_group, str) and resource_group.strip()
+    }
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -1501,6 +1568,8 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    profile_resource_groups: dict[str, str],
+    resource_group_running: dict[str, int],
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -1522,6 +1591,12 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    resource_group = profile_resource_groups.get(assignee)
+    if resource_group is not None:
+        current = resource_group_running.get(resource_group, 0)
+        if current >= 1:
+            result.skipped_resource_group_capped.append((task_id, assignee, resource_group, current))
+            return False
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -1542,6 +1617,9 @@ def _dispatch_lane_task(
         # ticks re-query from the DB.
         if per_profile_cap is not None and name:
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
+        resource_group = profile_resource_groups.get(name)
+        if resource_group is not None:
+            resource_group_running[resource_group] = resource_group_running.get(resource_group, 0) + 1
 
     if dry_run:
         result.spawned.append((task_id, assignee, ""))
@@ -1760,6 +1838,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    profile_resource_groups: Optional[dict[str, str]] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -1807,10 +1886,25 @@ def _dispatch_once_locked(
             "GROUP BY assignee"
         ):
             per_profile_running[prow["assignee"]] = int(prow["n"])
+    profile_resource_groups = _normalize_profile_resource_groups(profile_resource_groups)
+    resource_group_running = resource_group_running_other_boards(profile_resource_groups, board)
+    if profile_resource_groups:
+        for prow in conn.execute(
+            "SELECT assignee, COUNT(*) AS n FROM tasks "
+            "WHERE status = 'running' AND assignee IS NOT NULL "
+            "GROUP BY assignee"
+        ):
+            resource_group = profile_resource_groups.get(prow["assignee"])
+            if resource_group is not None:
+                resource_group_running[resource_group] = (
+                    resource_group_running.get(resource_group, 0) + int(prow["n"])
+                )
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        profile_resource_groups=profile_resource_groups,
+        resource_group_running=resource_group_running,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
@@ -2362,11 +2456,13 @@ def run_daemon(
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
             max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            profile_resource_groups = configured_profile_resource_groups()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
+                    profile_resource_groups=profile_resource_groups,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

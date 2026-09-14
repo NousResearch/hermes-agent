@@ -59,6 +59,54 @@ def test_cap_2_balances_two_profiles(isolated_kanban_home_with_profiles):
     assert capped_assignees.count("beta") == 1
 
 
+def test_resource_group_prevents_conflicting_profile_spawns(isolated_kanban_home_with_profiles):
+    """Profiles sharing a resource group never receive concurrent workers."""
+    kb = isolated_kanban_home_with_profiles
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    with kbc.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        alpha = kb.create_task(conn, title="research", assignee="alpha")
+        beta = kb.create_task(conn, title="coding", assignee="beta")
+
+    with kbc.connect_closing() as conn:
+        result = kbd.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            profile_resource_groups={"alpha": "gpu0", "beta": "gpu0"},
+        )
+
+    assert [task_id for task_id, _, _ in result.spawned] == [alpha]
+    assert result.skipped_resource_group_capped == [(beta, "beta", "gpu0", 1)]
+
+
+def test_resource_group_counts_running_profiles_on_other_boards(
+    isolated_kanban_home_with_profiles,
+):
+    """A shared GPU stays reserved even when its worker belongs to another board."""
+    kb = isolated_kanban_home_with_profiles
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    kb.create_board("second", name="Second")
+    with kbc.connect(board="second") as conn:
+        running = kb.create_task(conn, title="research", assignee="alpha")
+        assert kb.claim_task(conn, running) is not None
+    with kbc.connect_closing() as conn:
+        beta = kb.create_task(conn, title="coding", assignee="beta")
+        result = kbd.dispatch_once(
+            conn,
+            spawn_fn=_fake_spawn,
+            dry_run=True,
+            profile_resource_groups={"alpha": "gpu0", "beta": "gpu0"},
+        )
+
+    assert not result.spawned
+    assert result.skipped_resource_group_capped == [(beta, "beta", "gpu0", 1)]
+
+
 
 
 def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_profiles):
@@ -100,5 +148,3 @@ def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_pr
     assert len(res2.spawned) == 1
     assert len(res2.skipped_per_profile_capped) == 1
     assert res2.spawned[0][0] != spawned_id  # different task this time
-
-

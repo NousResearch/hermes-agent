@@ -66,6 +66,7 @@ def adapter():
         fetch_channel=AsyncMock(),
         user=SimpleNamespace(id=99999, name="HermesBot"),
     )
+    adapter._allowed_user_ids = {"42"}
     return adapter
 
 
@@ -139,5 +140,34 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     raw_message.remove_reaction.assert_not_awaited()
     # Response should still be sent
     adapter.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_speaker_reaction_fetches_one_bot_reply_and_requests_audio(adapter, monkeypatch):
+    """An authorized speaker reaction reads exactly the reacted-to bot response."""
+    channel = SimpleNamespace(
+        id=123,
+        fetch_message=AsyncMock(return_value=SimpleNamespace(
+            author=SimpleNamespace(id=99999), content="**Visible** reply",
+        )),
+    )
+    adapter._client.get_channel = lambda _id: channel
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="status"))
+    speak = AsyncMock()
+    monkeypatch.setattr(adapter, "_send_tts_reaction_audio", speak)
+    payload = SimpleNamespace(message_id=88, channel_id=123, user_id=42, emoji="🔊")
+
+    assert await adapter._on_tts_reaction(payload) is True
+    assert await adapter._on_tts_reaction(payload) is False
+    adapter.send.assert_awaited_once_with(
+        "123", "🎙️ Generating audio…", reply_to="88", metadata={"non_conversational": True},
+    )
+    speak.assert_awaited_once_with(chat_id="123", text="**Visible** reply", reply_to="88")
+
+
+def test_speaker_reaction_strips_transport_only_media_directives(adapter):
+    assert adapter._visible_tts_reaction_text(
+        "Visible text\n[[audio_as_voice]]\nMEDIA:/tmp/voice-message.ogg\n[[as_document]]"
+    ) == "Visible text"
 
 

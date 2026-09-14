@@ -433,6 +433,87 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
     _check_s6_supervision(f.issues)
 
 
+#: Directories that carry the code a long-lived backend imports at startup; a pull rewrites their
+#: files, so their newest mtime IS the moment the current code landed on this host.
+_STALE_SCAN_DIRS = ("gateway", "tui_gateway", "agent", "tools", "hermes_cli", "cron", "providers")
+#: Top-level modules those processes import (and the version file), scanned alongside the dirs.
+_STALE_SCAN_ROOT_FILES = ("hermes_constants.py", "hermes_state.py", "utils.py", "run_agent.py", "pyproject.toml")
+#: Stat budget: doctor stays interactive even on a cold cache / network mount.
+_STALE_SCAN_CAP = 30_000
+_SKIP_DIR_NAMES = frozenset({"__pycache__", "node_modules", ".git", "venv", ".venv", "release", "dist"})
+
+
+def _newest_source_mtime(project_root: Path) -> float | None:
+    """Newest file mtime among the checkout's core source files; None when nothing is scannable.
+
+    Deliberately mtime, not the HEAD commit time: a pull rewrites the working tree, so a process
+    whose start time predates the newest source file is running code the tree no longer has.
+    """
+    newest: float | None = None
+    seen = 0
+    try:
+        for name in _STALE_SCAN_DIRS:
+            root = project_root / name
+            if not root.is_dir():
+                continue
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in _SKIP_DIR_NAMES]
+                for filename in filenames:
+                    if not filename.endswith(".py"):
+                        continue
+                    seen += 1
+                    if seen > _STALE_SCAN_CAP:
+                        return newest
+                    try:
+                        mtime = os.stat(os.path.join(dirpath, filename)).st_mtime
+                    except OSError:
+                        continue
+                    newest = mtime if newest is None else max(newest, mtime)
+        for filename in _STALE_SCAN_ROOT_FILES:
+            try:
+                mtime = os.stat(project_root / filename).st_mtime
+            except OSError:
+                continue
+            newest = mtime if newest is None else max(newest, mtime)
+    except OSError:
+        return newest
+    return newest
+
+
+@doctor_check()
+def _check_stale_backends(should_fix: bool, f: Finding) -> None:
+    """Flag live Desktop backends still running pre-update code.
+
+    Hermes Desktop REUSES a live ``serve --isolated`` backend across reconnects, so one that
+    predates an in-place update keeps the previous checkout's modules in memory and fails mid-turn
+    with ``agent init failed: cannot import name ...`` — long after the update printed success.
+    ``hermes update`` now recycles these itself; this check exists for the hand-updated checkout,
+    the Desktop that updated on another host, and drift nobody restarted.
+    """
+    from hermes_cli.doctor import PROJECT_ROOT
+    if sys.platform == "win32":  # Windows backends are torn down via taskkill trees, not SIGTERM
+        return
+    reference = _newest_source_mtime(PROJECT_ROOT)
+    if reference is None:
+        return
+    try:
+        from hermes_cli.dashboard_procs import stale_desktop_backend_pids
+        stale = stale_desktop_backend_pids(reference)
+    except Exception:
+        return
+    if not stale:
+        return
+    _section("Stale Backend Processes")
+    pids = ", ".join(str(pid) for pid in stale)
+    check_warn(
+        f"{len(stale)} Desktop backend(s) started before the current code landed",
+        f"(pid {pids} — they keep pre-update modules in memory)",
+    )
+    f.manual_issues.append(
+        f"Restart long-lived Desktop backend(s) {pids}: kill {pids} — Desktop respawns them on the next connect"
+    )
+
+
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Venv entry point and the ~/.local/bin (or $PREFIX/bin) symlink; skipped on Windows."""

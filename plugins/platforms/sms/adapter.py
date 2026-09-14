@@ -9,20 +9,33 @@ validation — required), SMS_INSECURE_NO_SIGNATURE (true disables validation �
 SMS_ALLOWED_USERS (comma-separated E.164), SMS_ALLOW_ALL_USERS, SMS_HOME_CHANNEL (cron).
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import hashlib
 import hmac
 import logging
-import os
 import re
 import urllib.parse
 from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import redact_phone, strip_markdown
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+)
+
+try:
+    import aiohttp
+    from aiohttp import web
+    AIOHTTP_AVAILABLE = True
+except ImportError:  # optional ([messaging] extra)
+    AIOHTTP_AVAILABLE = False
+    aiohttp = None  # type: ignore[assignment]
+    web = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +49,6 @@ _EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 def _twiml_response(status: int = 200):
     """Empty TwiML reply — replies go out via the REST API, never inline TwiML."""
-    from aiohttp import web
-
     return web.Response(text=_EMPTY_TWIML, content_type="application/xml", status=status)
 
 
@@ -54,8 +65,6 @@ def _messages_endpoint(account_sid: str, auth_token: str) -> tuple:
 
 def _twilio_form(from_number: str, to_number: str, body: str):
     """Twilio Messages.json form payload (aiohttp FormData)."""
-    import aiohttp
-
     form_data = aiohttp.FormData()
     form_data.add_field("From", from_number)
     form_data.add_field("To", to_number)
@@ -64,27 +73,19 @@ def _twilio_form(from_number: str, to_number: str, body: str):
 
 
 def _new_session(**kwargs):
-    import aiohttp
-
     return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **kwargs)
-
-
-def _aiohttp_available() -> bool:
-    try:
-        import aiohttp  # noqa: F401
-    except ImportError:
-        return False
-    return True
 
 
 def check_sms_requirements() -> bool:
     """Check if SMS adapter dependencies are available."""
-    return _aiohttp_available() and bool(
+    return AIOHTTP_AVAILABLE and bool(
         _get_scoped_secret("TWILIO_ACCOUNT_SID") and _get_scoped_secret("TWILIO_AUTH_TOKEN"))
 
 
 class SmsAdapter(BasePlatformAdapter):
     """Twilio SMS <-> Hermes: one session per inbound number; replies always from TWILIO_PHONE_NUMBER."""
+    # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
+    serves_profile_prefix: bool = True
 
     MAX_MESSAGE_LENGTH = MAX_SMS_LENGTH
 
@@ -92,19 +93,19 @@ class SmsAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.SMS)
         self._account_sid: str = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
         self._auth_token: str = _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
-        self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
-        self._webhook_port: int = int(os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
-        self._webhook_host: str = os.getenv("SMS_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
-        self._webhook_url: str = os.getenv("SMS_WEBHOOK_URL", "").strip()
+        # Scoped like the sibling reads above: a secondary profile must not send from the default
+        # profile's TWILIO_PHONE_NUMBER (#98738 class).
+        self._from_number: str = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")
+        self._webhook_port: int = int(_get_scoped_secret("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
+        self._webhook_host: str = _get_scoped_secret("SMS_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
+        self._webhook_url: str = _get_scoped_secret("SMS_WEBHOOK_URL", "").strip()
         self._runner = None
-        self._http_session: Optional["aiohttp.ClientSession"] = None
+        self._http_session: Optional[aiohttp.ClientSession] = None
 
     # -- Lifecycle -----------------------------------------------------------
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        from aiohttp import web
-
-        insecure_no_sig = os.getenv("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
+        insecure_no_sig = _get_scoped_secret("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
         fatal = None
         if not self._from_number:
             fatal = "sms_missing_phone_number", "[sms] TWILIO_PHONE_NUMBER not set — cannot send replies"
@@ -131,15 +132,15 @@ class SmsAdapter(BasePlatformAdapter):
         app = web.Application(client_max_size=_TWILIO_WEBHOOK_MAX_BODY_BYTES)
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
         app.router.add_get("/health", lambda _: web.Response(text="ok"))
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, self._webhook_host, self._webhook_port)
-        await site.start()
+        # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/webhooks/twilio.
+        from gateway.platforms.shared_ingress import bind_listener
+        self._runner = await bind_listener(self, app, self._webhook_host, self._webhook_port, "/webhooks/twilio")
         self._http_session = _new_session(trust_env=gateway_trust_env())
         self._running = True
-        logger.info(
-            "[sms] Twilio webhook server listening on %s:%d, from: %s",
-            self._webhook_host, self._webhook_port, redact_phone(self._from_number))
+        if self._runner is not None:
+            logger.info(
+                "[sms] Twilio webhook server listening on %s:%d, from: %s",
+                self._webhook_host, self._webhook_port, redact_phone(self._from_number))
         self._wire_plugin_handlers(None)
         return True
 
@@ -228,7 +229,7 @@ class SmsAdapter(BasePlatformAdapter):
 
     # -- Inbound webhook -----------------------------------------------------
 
-    async def _handle_webhook(self, request) -> "aiohttp.web.Response":
+    async def _handle_webhook(self, request: web.Request) -> web.Response:
         try:
             content_length = request.content_length
             if content_length is not None and content_length > _TWILIO_WEBHOOK_MAX_BODY_BYTES:
@@ -259,7 +260,8 @@ class SmsAdapter(BasePlatformAdapter):
             return _twiml_response()
         logger.info("[sms] inbound from %s -> %s: %s", redact_phone(from_number), redact_phone(to_number), text[:80])
         source = self.build_source(
-            chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number)
+            chat_id=from_number, chat_name=from_number, chat_type="dm", user_id=from_number, user_name=from_number,
+            message_id=message_sid)
         event = MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, raw_message=form, message_id=message_sid)
         # Non-blocking: Twilio expects a fast response
@@ -298,12 +300,12 @@ def _strip_markdown_for_sms(message: str) -> str:
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
     """Out-of-process SMS delivery via the Twilio REST API (standalone_sender_fn contract)."""
     auth_token = getattr(pconfig, "api_key", None) or _get_scoped_secret("TWILIO_AUTH_TOKEN", "")
-    if not _aiohttp_available():
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    if not AIOHTTP_AVAILABLE:
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     account_sid = _get_scoped_secret("TWILIO_ACCOUNT_SID", "")
-    from_number = os.getenv("TWILIO_PHONE_NUMBER", "")
+    from_number = _get_scoped_secret("TWILIO_PHONE_NUMBER", "")  # scoped like account_sid: never the default's number
     if not account_sid or not auth_token or not from_number:
-        return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
+        return send_error("SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)")
     message = _strip_markdown_for_sms(message)
     try:
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
@@ -315,25 +317,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 body = await resp.json()
                 if resp.status >= 400:
                     error_msg = body.get("message", str(body))
-                    return _redacted_error(f"Twilio API error ({resp.status}): {error_msg}")
+                    return send_error(f"Twilio API error ({resp.status}): {error_msg}")
                 return {"success": True, "platform": "sms", "chat_id": chat_id, "message_id": body.get("sid", "")}
     except Exception as e:
-        return _redacted_error(f"SMS send failed: {e}")
+        return send_error(f"SMS send failed: {e}")
 
 
-def _redacted_error(text: str) -> dict:
-    """Error dict with phone numbers redacted by send_message_tool when available."""
-    try:
-        from tools.send_message_tool import _error as _e
-        return _e(text)
-    except Exception:
-        return {"error": text}
+_is_connected = _env_is_connected("TWILIO_ACCOUNT_SID")
 
-
-def _is_connected(config) -> bool:
-    """SMS is connected when Twilio credentials are present (bool(TWILIO_ACCOUNT_SID))."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("TWILIO_ACCOUNT_SID") or "").strip())
 
 
 def register(ctx) -> None:

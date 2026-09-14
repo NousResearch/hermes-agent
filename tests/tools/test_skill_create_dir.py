@@ -12,6 +12,15 @@ from pathlib import Path
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _direct_writes_for_create_dir_routing_tests(monkeypatch):
+    """This module tests create-dir routing, not approval staging."""
+    monkeypatch.setattr(
+        "tools.write_approval.write_approval_enabled",
+        lambda _subsystem: False,
+    )
+
+
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
     """Fresh HERMES_HOME with an empty local skills dir."""

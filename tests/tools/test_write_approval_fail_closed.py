@@ -163,22 +163,25 @@ def test_direct_stage_write_failures_raise(tmp_path, monkeypatch, failure_point)
         blocker.write_text("block mkdir", encoding="utf-8")
         pending = blocker / "pending"
     elif failure_point == "write":
-        original_write_text = type(pending).write_text
+        # stage_write persists via utils.atomic_json_write -> utils._atomic_write, whose
+        # write(f) callback is utils._dump_json; failing that exercises the real temp-file
+        # creation and on-failure cleanup path inside _atomic_write, not just a raise at the
+        # call site.
+        import utils as _utils_mod
 
-        def fail_pending_write(path, *args, **kwargs):
-            if path.name.endswith(".json.tmp"):
-                raise OSError("disposable write failure")
-            return original_write_text(path, *args, **kwargs)
+        def fail_dump_json(*_args, **_kwargs):
+            raise OSError("disposable write failure")
 
-        monkeypatch.setattr(type(pending), "write_text", fail_pending_write)
+        monkeypatch.setattr(_utils_mod, "_dump_json", fail_dump_json)
     else:
-        monkeypatch.setattr(
-            wa.os,
-            "replace",
-            lambda source, destination: (_ for _ in ()).throw(
-                OSError("disposable replace failure")
-            ),
-        )
+        # The replace step is utils.atomic_replace, called as a bare name inside
+        # utils._atomic_write (same module, so patching the module attribute intercepts it).
+        import utils as _utils_mod
+
+        def fail_replace(*_args, **_kwargs):
+            raise OSError("disposable replace failure")
+
+        monkeypatch.setattr(_utils_mod, "atomic_replace", fail_replace)
 
     monkeypatch.setattr(wa, "_pending_dir", lambda subsystem: pending)
     with pytest.raises(wa.PendingWriteError):

@@ -917,6 +917,7 @@ class DockerEnvironment(BaseEnvironment):
             return False
 
         logger.info("Recovery successful — new container %s", (self._container_id or "")[:12])
+        self._mark_recreated()
         return True
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:

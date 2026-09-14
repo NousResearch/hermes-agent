@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli.kanban_db_graph import decompose_triage_task
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
@@ -125,14 +126,6 @@ def _profile_author() -> str:
     return _specify_author("decomposer")
 
 
-def _load_config() -> dict:
-    try:
-        from hermes_cli.config import load_config
-        return load_config() or {}
-    except Exception:
-        return {}
-
-
 def _resolve_profile_from_cfg(cfg: dict, key: str) -> str:
     """``kanban.<key>`` if it names an existing profile, else the active
     default profile — so a task is never stranded for lack of an owner.
@@ -201,7 +194,11 @@ class _Routing:
 
 
 def _load_routing() -> _Routing:
-    cfg = _load_config()
+    from hermes_cli.config import load_config_readonly
+    try:
+        cfg = load_config_readonly()
+    except Exception:  # decompose_task promises ok=False, never a raise, on config trouble
+        cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     roster, valid_names = _build_roster()
     return _Routing(
@@ -275,7 +272,7 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         return DecomposeOutcome(task_id, False, reason)
     try:
         with kbc.connect_closing() as conn:
-            child_ids = kb.decompose_triage_task(
+            child_ids = decompose_triage_task(
                 conn,
                 task_id,
                 root_assignee=routing.orchestrator,
@@ -289,7 +286,7 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         logger.exception("decompose: DB error on task %s", task_id)
         return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
     if child_ids is None:
-        return DecomposeOutcome(task_id, False, "task moved out of triage before decomposition")
+        return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage")
     return DecomposeOutcome(
         task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
     )

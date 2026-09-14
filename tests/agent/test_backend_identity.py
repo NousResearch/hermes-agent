@@ -85,9 +85,23 @@ class TestSameCredentialSurface:
 class TestSameEndpoint:
     def test_same_explicit_url_is_same_endpoint(self):
         a = _id("a", "m1", "http://host:8000/v1/")
-        b = _id("b", "m2", "http://HOST:8000/v1")  # trailing slash + case
+        b = _id("b", "m2", "http://HOST:8000/v1")  # trailing slash + host case
         assert same_endpoint(a, b)
         assert should_skip_candidate(a, b, FailureScope.ENDPOINT)
+
+    def test_path_and_query_case_distinguish_endpoints(self):
+        failed = _id("custom", "m", "https://Example.test/API/v1?token=AbC")
+
+        assert not should_skip_candidate(
+            _id("custom", "m", "https://example.test/api/v1?token=AbC"),
+            failed,
+            FailureScope.ENDPOINT,
+        )
+        assert not should_skip_candidate(
+            _id("custom", "m", "https://example.test/API/v1?token=abc"),
+            failed,
+            FailureScope.ENDPOINT,
+        )
 
     def test_different_urls_are_different_endpoints(self):
         assert not same_endpoint(

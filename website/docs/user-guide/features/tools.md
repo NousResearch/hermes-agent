@@ -231,6 +231,23 @@ process(action="write", session_id="proc_abc123", data="y")  # Send input
 
 PTY mode (`pty=true`) enables interactive CLI tools like Codex and Claude Code.
 
+Completed background commands retain their exit status and captured output in the
+active profile. Resume the conversation that launched the command (or its
+compressed continuation), then use the original `session_id` with
+`process(action="log")` for output and `process(action="poll")` for exit status.
+Unrelated conversations and requests without a bound owning session cannot read
+retained receipts, even with an exact process handle. `process(action="list")`
+also includes retained results for the current task or conversation.
+
+Hermes keeps the newest **64 completed results**, for up to **7 days after
+completion**, under `logs/process-results/` in the profile's Hermes home. Each
+receipt contains at most the existing rolling **200,000-character output tail**,
+with terminal secret-redaction rules always applied, even when live-output
+redaction is disabled. Receipts expire on subsequent
+result reads or writes. Recovery does not rerun commands or replay completion
+notifications. This preserves work that finished while the parent was alive;
+it does not keep unfinished children alive after a timeout or crash.
+
 ## Sudo Support
 
 If a command needs sudo, it behaves like a normal non-interactive shell: it fails with "sudo: a password is required" unless the host has a NOPASSWD sudoers rule configured for the specific commands Hermes needs. Configure that with `visudo` under `/etc/sudoers.d/`, scoped to the commands you actually want automated.

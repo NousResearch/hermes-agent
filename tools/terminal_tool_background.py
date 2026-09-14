@@ -177,6 +177,10 @@ def spawn_background_process(
             result_data["notify_on_complete"] = True
             if proc_session.watcher_platform:
                 _register_completion_watcher(process_registry, proc_session, session_key)
+            from agent.delegation_context import is_delegated_child_context
+            if is_delegated_child_context():
+                result_data["notify_on_complete"] = False
+                result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns
@@ -187,6 +191,13 @@ def spawn_background_process(
             "error": _redact_terminal_error_text(f"Failed to start background process: {e}"),
         }, ensure_ascii=False)
 
+
+_SUBAGENT_NOTIFY_NOTE = (
+    "You are a subagent: this process's completion notice will NOT reach your parent, and the process is killed when "
+    "you finish. Before you finish, either wait for it (process_manage wait), kill it, or hand it to your parent with "
+    "process_manage(action='handoff', session_id=..., data='<purpose>') so the parent receives its completion. For CI "
+    "watchers prefer returning the fact (PR number, SHA) and letting the parent watch."
+)
 
 _YIELDED_NOTE = (
     "The user sent a message while this command was running, so it was moved to the "

@@ -167,6 +167,8 @@ def _last_run_display(job: Dict[str, Any]) -> str:
     last_status = job["last_status"]
     if last_status == "ok":
         return color("ok", Colors.GREEN)
+    if last_status == "delivery_queued":
+        return color("delivery_queued: completion unverified; do not resend", Colors.YELLOW)
     if last_status == "delivery_failed":
         # Agent succeeded but the result never reached the user — not green; last_error is None.
         return color(f"delivery_failed: {job.get('last_delivery_error') or '?'}", Colors.YELLOW)
@@ -216,6 +218,8 @@ def _job_rows(job: Dict[str, Any]) -> List[tuple[str, str]]:
 def _job_warnings(job: Dict[str, Any]) -> List[str]:
     """Delivery / fire warning lines for one job in ``cron list``."""
     lines = []
+    if queued := job.get("last_delivery_queued"):
+        lines.append(f"Delivery queued (completion unverified; do not resend): {queued}")
     if job.get("last_delivery_error"):
         lines.append(f"{color('⚠ Delivery failed:', Colors.YELLOW)} {job['last_delivery_error']}")
     # A live adapter acked the last send but returned no message_id / raw_response
@@ -380,7 +384,7 @@ def _print_ticker_health(pids: list) -> None:
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
-    from hermes_cli.gateway import find_gateway_pids
+    from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
     print()
 
     provider = _active_cron_provider_name()
@@ -402,116 +406,12 @@ def cron_status():
             "due jobs are delivered by an authenticated webhook.)",
             Colors.DIM,
         ))
-        print()
-        _print_active_jobs_summary(list_jobs(include_disabled=False))
-        print()
-        return
-
-    pids = find_gateway_pids()
-    gateway_alive_via_lock = False
-    if not pids:
-        # Same false-alarm class the cronjob tool fixed (#95947): the pid scan
-        # can transiently miss a live gateway (just after a restart) while the
-        # runtime lock — held for exactly the gateway's lifetime — proves the
-        # ticker's process is alive. Only declare "not running" when both the
-        # scan AND the lock say so.
-        try:
-            from gateway.status import get_running_pid, is_gateway_runtime_lock_active
-
-            if is_gateway_runtime_lock_active():
-                gateway_alive_via_lock = True
-                lock_pid = get_running_pid()
-                if lock_pid:
-                    pids = [lock_pid]
-        except Exception:  # noqa: S110 -- status fallback is best-effort
-            pass
-    if pids or gateway_alive_via_lock:
-        # The gateway PROCESS is alive — but the cron ticker THREAD inside it
-        # can die silently, or stay alive while every tick fails. Check both
-        # the liveness heartbeat and the last-successful-tick marker so we
-        # don't report "will fire" when the ticker is dead or failing
-        # (#32612, #32895).
-        from cron.jobs import (
-            get_ticker_heartbeat_age,
-            get_ticker_last_error,
-            get_ticker_success_age,
-            TICKER_INTERVAL_SECONDS,
-        )
-        from cron.scheduler import _is_fd_exhaustion_text as _cron_is_fd_exhaustion_text
-
-        # Allow ~3 missed ticker iterations (+ a little slack) before declaring
-        # trouble. Derived from the shared interval constant so this threshold
-        # tracks the ticker cadence instead of assuming a hardcoded 60s.
-        STALE_AFTER = TICKER_INTERVAL_SECONDS * 3 + 20  # = 200s at the 60s default
-        hb_age = get_ticker_heartbeat_age()
-        ok_age = get_ticker_success_age()
-
-        if hb_age is None:
-            # No heartbeat file means the ticker thread has never started.
-            # This can occur when:
-            # - Gateway is running but not in a profile with cron enabled,
-            # - Gateway was started moments ago (heartbeat is written after startup),
-            # - Or a configuration issue is blocking the ticker from starting at all.
-            print(color(
-                "⚠ Gateway is running but the cron ticker has not reported a heartbeat.",
-                Colors.YELLOW,
-            ))
-            if pids:
-                print(f"  PID: {', '.join(map(str, pids))}")
-            print("  Cron jobs will NOT fire until the ticker writes its first heartbeat.")
-            print("  If the gateway just started, wait ~60s and re-run `hermes cron status`.")
-            print("  If heartbeat never appears, restart: hermes gateway restart")
-        elif hb_age > STALE_AFTER:
-            # No heartbeat at all → the ticker thread is gone.
-            print(color(
-                "⚠ Gateway is running but the cron ticker looks STALLED — "
-                f"no heartbeat for {int(hb_age)}s (expected every ~60s).",
-                Colors.YELLOW,
-            ))
-            if pids:
-                print(f"  PID: {', '.join(map(str, pids))}")
-            print("  Cron jobs may NOT be firing. Restart: hermes gateway restart")
-        elif ok_age is not None and ok_age > STALE_AFTER:
-            # Loop is alive (fresh heartbeat) but no tick has SUCCEEDED in a
-            # long time → ticks are failing every iteration.
-            print(color(
-                "⚠ Gateway and cron ticker are running, but no tick has "
-                f"succeeded in {int(ok_age)}s — ticks may be failing.",
-                Colors.YELLOW,
-            ))
-            if pids:
-                print(f"  PID: {', '.join(map(str, pids))}")
-            last_error = get_ticker_last_error()
-            if last_error:
-                # Show WHY ticks fail — e.g. a root-rewritten jobs.json
-                # (PermissionError) that silently locked out the ticker's
-                # uid for ~14h in the field (#68483), or fd exhaustion
-                # (EMFILE) that used to stall the scheduler invisibly
-                # (#87644).
-                print(color(f"  Last tick error: {last_error}", Colors.RED))
-                if "Permission denied" in last_error:
-                    print(color(
-                        "  Hint: jobs.json may be owned by another user "
-                        "(e.g. rewritten by a root `docker exec hermes "
-                        "hermes cron ...`). Fix ownership to match the "
-                        "gateway user, and prefer `docker exec -u <uid>:<gid>`.",
-                        Colors.YELLOW,
-                    ))
-                elif _cron_is_fd_exhaustion_text(last_error):
-                    print(color(
-                        "  Hint: the ticker hit file-descriptor exhaustion "
-                        "(EMFILE). The scheduler now retries with backoff and "
-                        "attempts fd reclamation, but if the leak persists, "
-                        "restart the gateway to recover scheduling.",
-                        Colors.YELLOW,
-                    ))
-            print("  Check the gateway log for 'Cron tick error'.")
-        else:
-            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-            if pids:
-                print(f"  PID: {', '.join(map(str, pids))}")
-            if hb_age is not None:
-                print(f"  Ticker heartbeat: {int(hb_age)}s ago")
+    elif not find_gateway_pids() and named_profile_served_by_running_multiplexer():
+        # Satellite profile: the default multiplexer's ticker fires this store (same answer as
+        # `_builtin_gateway_liveness`, which `cron list` uses -- the two must not disagree).
+        print(color("✓ Gateway is running via the default-profile multiplexer — it ticks this profile's jobs.",
+                    Colors.GREEN))
+        print(color("  Ticker health is reported by `hermes cron status` on the default profile.", Colors.DIM))
     else:
         pids = find_gateway_pids()
         gateway_alive_via_lock = False
@@ -612,7 +512,7 @@ def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
     issues: List[str] = []
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
-    if last_status and last_status not in {"ok", "delivery_failed"}:
+    if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
         issues.append(f"last run failed: {str(job.get('last_error') or 'unknown error').strip()}")
     if delivery_err := str(job.get("last_delivery_error") or "").strip():
         issues.append(f"last delivery failed: {delivery_err}")
@@ -692,7 +592,10 @@ def cron_create(args):
         action="create", schedule=args.schedule, prompt=args.prompt,
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
-        no_agent=getattr(args, "no_agent", False) or None, **_job_api_kwargs(args))
+        no_agent=getattr(args, "no_agent", False) or None,
+        **({"paused": args.paused, "paused_reason": getattr(args, "paused_reason", None)}
+           if getattr(args, "paused", False) or getattr(args, "paused_reason", None) is not None else {}),
+        **_job_api_kwargs(args))
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
         return 1
@@ -701,7 +604,10 @@ def cron_create(args):
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     _print_job_details(result.get("job", {}))
-    print(f"  Next run: {result['next_run_at']}")
+    if not result.get("job", {}).get("enabled", True):
+        print("  Created PAUSED — resume to schedule, or explicitly run now.")
+    else:
+        print(f"  Next run: {result['next_run_at']}")
     _warn_if_gateway_not_running()
     return 0
 
@@ -876,7 +782,8 @@ _CRON_SUBCOMMANDS = {
     "pause": lambda a: _job_action("pause", a.job_id, "Paused"),
     "resume": lambda a: cron_resume(a),
     "run": lambda a: _job_action("run", a.job_id, "Triggered"),
-    "remove": lambda a: _job_action("remove", a.job_id, "Removed")}
+    "remove": lambda a: _job_action("remove", a.job_id, "Removed"),
+    "resnap": lambda a: _cron_resnap(a)}
 _CRON_SUBCOMMANDS["history"] = _CRON_SUBCOMMANDS["runs"]
 _CRON_SUBCOMMANDS["add"] = _CRON_SUBCOMMANDS["create"]
 _CRON_SUBCOMMANDS["rm"] = _CRON_SUBCOMMANDS["delete"] = _CRON_SUBCOMMANDS["remove"]
@@ -889,5 +796,35 @@ def cron_command(args):
     if handler is not None:
         return handler(args)
     print(f"Unknown cron command: {subcmd}\n"
-          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|runs|doctor|tick]")
+          "Usage: hermes cron [list|create|edit|pause|resume|run|remove|resnap|status|runs|doctor|tick]")
     sys.exit(1)
+
+
+def _cron_resnap(args) -> int:
+    """Handle `hermes cron resnap [job_id] [--all]`."""
+    if bool(getattr(args, "all", False)):
+        result = _cron_api(action="resnap", all=True)
+        if not result.get("success"):
+            print(color(f"Failed to resnap: {result.get('error', 'unknown error')}", Colors.RED))
+            return 1
+        updated = result.get("updated_jobs", [])
+        print(color(f"Resnapped {len(updated)} unpinned job(s) to the current global resolution.", Colors.GREEN))
+        for job in updated:
+            print(f"  • {job.get('name', job.get('job_id'))} ({job.get('job_id')})")
+        if not updated:
+            print("  (no unpinned agent jobs found — nothing to refresh)")
+        return 0
+
+    job_id = getattr(args, "job_id", None)
+    if not job_id:
+        print(color("resnap requires either a <job_id> or --all.", Colors.RED))
+        print("Usage: hermes cron resnap <job_id> | hermes cron resnap --all")
+        return 1
+    result = _cron_api(action="resnap", job_id=job_id)
+    if not result.get("success"):
+        print(color(f"Failed to resnap job: {result.get('error', 'unknown error')}", Colors.RED))
+        return 1
+    job = result.get("job", {})
+    print(color(f"Resnapped job: {job.get('name', job_id)} ({job.get('job_id', job_id)})", Colors.GREEN))
+    print("  Adopted the current global inference resolution; the job remains unpinned and will track future global changes.")
+    return 0

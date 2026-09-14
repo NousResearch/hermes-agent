@@ -7,13 +7,30 @@ prefetch / sync_turn per turn -> tool dispatch -> shutdown, plus optional ``on_*
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def ctx_bound(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Bind ``fn`` to the CALLER's contextvars for another thread/executor. Profile isolation
+    is a ContextVar-scoped HERMES_HOME override plus the per-turn secret scope; a worker started
+    with an empty context silently lands on the default profile (or fails closed on secrets)."""
+    ctx = contextvars.copy_context()
+    return lambda *args, **kwargs: ctx.run(fn, *args, **kwargs)
+
+
+def spawn_context_thread(target: Callable[..., Any], *, name: str, daemon: bool = True,
+                         args: tuple = ()) -> threading.Thread:
+    """Unstarted thread running *target* under the spawner's contextvars (see :func:`ctx_bound`).
+    Every memory-provider background job (prefetch, sync, writer loops) must go through this."""
+    return threading.Thread(target=ctx_bound(target), args=args, name=name, daemon=daemon)
 
 # v1 = best-effort on_pre_compress() with the raw message list; v2 = opt-in fail-closed
 # checkpoint (normalized evidence handoff + strict-mode failure propagation).
@@ -107,8 +124,10 @@ class MemoryProvider(ABC):
     def sync_turn(
         self, user_content: str, assistant_content: str, *,
         session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,
+        turn_author: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far."""
+        """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far.
+        ``turn_author`` (``{"id", "name", "is_bot"}``) is who wrote the user side; the manager sends it only to signatures that accept it."""
 
     @abstractmethod
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -124,7 +143,15 @@ class MemoryProvider(ABC):
     # -- Optional hooks (override to opt in) ---------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
-        """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count."""
+        """Per-turn tick. kwargs may include remaining_tokens, model, platform, tool_count, author_id, author_name,
+        author_is_bot. The author trio names who wrote THIS turn (None, None, False without one): a shared session
+        carries several participants, so a provider keying durable state on identity must read it per turn."""
+
+    def identity_signature(self) -> Dict[str, Any]:
+        """Identity-mapping values that must bust a cached gateway agent when they change (writer identity, alias
+        tables, session-name prefixing). Provider-namespaced keys, JSON-serializable values. The gateway calls this
+        on an uninitialized instance on every inbound message, so keep it cheap and read-only."""
+        return {}
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """End-of-session extraction; fires only at real session boundaries, never per-turn."""

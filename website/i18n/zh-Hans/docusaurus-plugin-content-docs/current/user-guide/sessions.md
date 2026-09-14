@@ -535,18 +535,13 @@ group_sessions_per_user: false
 
 这会将群组/频道恢复为每个房间一个共享 session，保留共享的对话上下文，但也共享 token 费用、中断状态和上下文增长。
 
-### Session 重置策略
+### 会话连续性
 
-**默认情况下 Gateway session 永不自动重置**（`mode: none`）。你可以通过 `config.yaml` 中的 `session_reset` 部分选择启用自动重置：
+Gateway 不会因空闲时间或每日时间边界而重置对话。需要新对话时使用 `/new`
+或 `/reset`；上下文压缩仍会自动运行。旧的 `session_reset` 配置、重置策略覆盖和
+重置计时环境变量均被忽略。缓存中的 agent 可以释放资源，但不会替换持久化对话。
+重启恢复的新鲜度限制仅约束自动继续执行，不会清除用户发送消息时加载的历史。
 
-- **none** — 永不自动重置（默认；上下文由 `/reset` 和压缩管理）
-- **idle** — 在 N 分钟不活跃后重置
-- **daily** — 每天在特定时间重置
-- **both** — 以先到者为准（idle 或 daily）
-
-在 session 自动重置之前，agent 会有一轮机会保存对话中的重要记忆或技能。
-
-有**活跃后台进程**的 session 永远不会自动重置，无论策略如何。
 
 ## 存储位置
 
@@ -576,7 +571,7 @@ state.db 后可安全删除。
 
 ### 自动清理
 
-- Gateway session 根据配置的重置策略自动重置
+- Gateway 会话会持续保留；请使用 `/new` 或 `/reset` 显式开始新会话
 - 重置前，agent 保存即将过期 session 中的记忆和技能
 - 可选自动清理：当 `sessions.auto_prune` 为 `true` 时，在 CLI/gateway 启动时清理早于 `sessions.retention_days`（默认 90）天的已结束 session
 - 实际删除了行的清理操作完成后，如果距离上次成功执行 `VACUUM` 已达到 `sessions.min_vacuum_interval_days`（默认 30）天，`state.db` 会执行 `VACUUM` 以回收磁盘空间（SQLite 在普通 DELETE 后不会缩小文件）

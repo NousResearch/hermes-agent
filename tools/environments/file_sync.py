@@ -162,10 +162,19 @@ class FileSyncManager:
         prev_files = dict(self._synced_files)
         prev_hashes = dict(self._pushed_hashes)
         try:
-            self._push(to_upload, to_delete)
+            # Hash and upload the same bytes: the original may be saved while
+            # the transport is reading it or waiting for remote acknowledgement.
+            with tempfile.TemporaryDirectory(prefix="hermes-sync-push-") as staging:
+                staged_files = []
+                pushed_hashes = {}
+                for index, (host_path, remote_path) in enumerate(to_upload):
+                    staged_path = os.path.join(staging, str(index))
+                    shutil.copy2(host_path, staged_path)
+                    pushed_hashes[remote_path] = _sha256_file(staged_path)
+                    staged_files.append((staged_path, remote_path))
+                self._push(staged_files, to_delete)
             # Commit (all succeeded).
-            for host_path, remote_path in to_upload:
-                self._pushed_hashes[remote_path] = _sha256_file(host_path)
+            self._pushed_hashes.update(pushed_hashes)
             for p in to_delete:
                 new_files.pop(p, None)
                 self._pushed_hashes.pop(p, None)

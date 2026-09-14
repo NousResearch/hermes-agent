@@ -367,7 +367,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         def _handle(tool_name, tool_args, task_id=None):
             from tools.thread_context import _callback_api
 
-            get_approval, _set_approval = _callback_api()
+            (get_approval, _set_a), *_rest = _callback_api()
             seen.append(
                 {
                     "tool": tool_name,

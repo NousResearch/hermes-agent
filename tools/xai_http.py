@@ -49,19 +49,6 @@ def has_xai_credentials() -> bool:
         return False
 
 
-def get_env_value(name: str, default=None):
-    """Read ``name`` from ``~/.hermes/.env`` first, then ``os.environ``.
-
-    Wraps :func:`hermes_cli.config.get_env_value` so tests can patch ``tools.xai_http.get_env_value``.
-    """
-    try:
-        from hermes_cli.config import get_env_value as _hermes_get_env_value
-    except ImportError:
-        return os.environ.get(name, default)
-    value = _hermes_get_env_value(name)
-    return value if value is not None else default
-
-
 def hermes_xai_user_agent() -> str:
     """Return a stable Hermes-specific User-Agent for xAI HTTP calls."""
     try:
@@ -178,11 +165,12 @@ def _resolve_explicit_xai_api_key() -> str:
     (incl. failing closed in a multiplexed gateway turn) is never re-implemented per caller.
     """
     from tools.tool_backend_helpers import resolve_provider_secret
-    return resolve_provider_secret("XAI_API_KEY", "xai", env_getter=get_env_value)
+    return resolve_provider_secret("XAI_API_KEY", "xai")
 
 
 def _xai_base_url_override() -> str:
     """``HERMES_XAI_BASE_URL`` then ``XAI_BASE_URL``, stripped; '' when unset."""
+    from hermes_cli.config import get_env_value
     return str(get_env_value("HERMES_XAI_BASE_URL") or get_env_value("XAI_BASE_URL") or "").strip().rstrip("/")
 
 
@@ -235,6 +223,7 @@ def resolve_xai_http_credentials(
     except Exception:
         pass
 
+    from hermes_cli.config import get_env_value
     api_key = _resolve_explicit_xai_api_key()
     base_url = str(get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
     return {"provider": "xai", "api_key": api_key, "base_url": base_url}

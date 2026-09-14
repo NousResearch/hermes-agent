@@ -2,12 +2,15 @@
 stripping, thread participation tracking, GFM table → bullets, mention-pattern
 compilation, and fence-aware markdown chunking."""
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
 import time
 from pathlib import Path
-
+from typing import Any, MutableMapping, Optional
+from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,27 @@ class MessageDeduplicator:
 
     def clear(self):
         self._seen.clear()
+
+
+async def cancel_task(task: Optional[asyncio.Task]) -> None:
+    """Cancel *task* and wait for it to unwind. ``None``/finished tasks are no-ops; awaiting the
+    current task would deadlock, so a self-cancel only requests cancellation. Exceptions the task
+    dies with are swallowed: at teardown nobody is left to handle them."""
+    if task is None or task.done():
+        return
+    task.cancel()
+    if task is not asyncio.current_task():
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
+def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
+    """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A
+    re-put moves the key to the newest position so live entries outlast stale ones."""
+    store.pop(key, None)
+    store[key] = value
+    while len(store) > cap:
+        del store[next(iter(store))]
 
 
 # Markdown-stripping rules, applied in order: bold, italic, bold/italic underscore,
@@ -554,14 +578,14 @@ class TextBatchAggregator:
         self._batch_delay = batch_delay
         self._split_delay = split_delay
         self._split_threshold = split_threshold
-        self._pending: Dict[str, "MessageEvent"] = {}
+        self._pending: Dict[str, MessageEvent] = {}
         self._pending_tasks: Dict[str, asyncio.Task] = {}
 
     def is_enabled(self) -> bool:
         """Return True if batching is active (delay > 0)."""
         return self._batch_delay > 0
 
-    def enqueue(self, event: "MessageEvent", key: str) -> None:
+    def enqueue(self, event: MessageEvent, key: str) -> None:
         """Add *event* to the pending batch for *key*."""
         chunk_len = len(event.text or "")
         existing = self._pending.get(key)

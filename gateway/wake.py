@@ -35,6 +35,22 @@ def adapter_supports_push(adapter: Any) -> bool:
     return bool(getattr(adapter, "supports_async_delivery", True))
 
 
+class WakeNotAccepted(RuntimeError):
+    """No adapter admission: retry without treating a healthy chat as dead."""
+
+
+async def admit_internal_event(adapter: Any, event: Any) -> None:
+    """Require a concrete adapter admission, not merely a handler returning None.
+
+    The public handler return stays unchanged. This receipt means scheduled/queued,
+    not model execution, authorization of a later turn, or successful outbound delivery.
+    """
+    event._gateway_accepted = False
+    await adapter.handle_message(event)
+    if event._gateway_accepted is not True:
+        raise WakeNotAccepted("internal wake not accepted by adapter")
+
+
 async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source: Any = None) -> None:
     """Deliver a wake turn to the session behind ``adapter``. ``session_id`` is the RAW session id
     (``X-Hermes-Session-Id`` / state.db key) — required for non-push adapters. ``source`` is the
@@ -43,9 +59,9 @@ async def deliver_wake(adapter: Any, *, text: str, session_id: str = "", source:
     if adapter_supports_push(adapter):
         if source is None:
             raise ValueError("deliver_wake: push-capable adapter requires a SessionSource")
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.event import MessageEvent, MessageType
         synth_event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=True)
-        await adapter.handle_message(synth_event)
+        await admit_internal_event(adapter, synth_event)
         return
     if not session_id:
         raise ValueError("deliver_wake: non-push adapter (supports_async_delivery=False) "
@@ -65,6 +81,8 @@ def _delegation_display_metadata(evt: dict) -> dict:
     metadata = {"delegation_id": str(evt.get("delegation_id") or ""), "task_count": task_count,
                 "completed_count": completed_count or task_count - failed_count,
                 "failed_count": failed_count}
+    if evt.get("task_failure_notice"):
+        metadata["delivery_notice"] = f"task_failure:{results[0].get('task_index', '') if results else ''}"
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration
@@ -92,9 +110,22 @@ async def persist_delegation_delivery(adapter: Any, *, text: str, session_id: st
     if db is None:
         raise RuntimeError("persist_delegation_delivery: api_server SessionDB unavailable — "
                            f"cannot persist completion for session {session_id}")
+    # #98619: the parent run may have compressed/rotated between dispatch and this detached
+    # completion — the captured origin id is then a closed parent and the append below is
+    # rejected with CompressionSessionClosedError forever (the watcher retries the same stale
+    # id). Adopt the live continuation tip first, the same canonical resolution
+    # /api/sessions/{id}/messages reads use, so the delivery row lands where the next run and
+    # the messages endpoint both resolve. Fails open to the original id.
+    resolver = getattr(db, "resolve_resume_session_id", None)
+    if callable(resolver):
+        try:
+            resolved = await asyncio.to_thread(resolver, session_id)
+            if resolved:
+                session_id = str(resolved)
+        except Exception:
+            logger.debug("delegation delivery continuation resolve failed for %s", session_id, exc_info=True)
     await asyncio.to_thread(
-        db.append_message, session_id, "user", content=text,
-        display_kind="async_delegation_complete", display_metadata=_delegation_display_metadata(evt or {}),
+        db.append_delegation_delivery, session_id, text, _delegation_display_metadata(evt or {}),
     )
     logger.info(
         "async delegation completion persisted as delivery row for api_server session %s (no wake turn)", session_id

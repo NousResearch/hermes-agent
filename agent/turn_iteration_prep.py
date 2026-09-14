@@ -1,7 +1,7 @@
 """Outer-iteration bookkeeping for the conversation turn loop, in call order:
 ``begin_iteration`` (pending redirect, interrupt / review-budget / iteration-budget exits),
-``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain
-into the newest tool result — never a user message —, run-budget wrap-up notice, tool_call
+``prepare_iteration`` (``agent:step`` callback, skill-nudge counter, pre-API ``/steer`` drain as a
+standalone user row after the newest tool result, run-budget wrap-up notice, tool_call
 argument sanitization, interrupt-scaffold ghost-row drop, role-alternation repair),
 ``announce_api_call`` (verbose summary / quiet spinner) and, after the retry loop,
 ``apply_retry_restarts`` (consumes the ``TurnRetryState`` restart flags). Nothing here
@@ -11,14 +11,74 @@ from __future__ import annotations
 
 import logging
 import random
+import sys
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict
 
 from agent.display import KawaiiSpinner
-from agent.turn_context import reanchor_current_turn_user_idx
+from agent.turn_context_compaction import _reanchor
 
 logger = logging.getLogger("agent.conversation_loop")
+
+ITERATION_BUDGET_WARNING_TEMPLATE = (
+    "[SYSTEM NOTICE — iteration budget checkpoint] You have used {used} of {maximum} "
+    "iterations. Checkpoint durable progress now, then continue the task; do not stop "
+    "solely because of this warning."
+)
+
+
+def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
+    """Append the opt-in one-shot warning to the newest tool result."""
+    import os
+    from agent.delegation_context import is_dispatcher_owned_worker_context
+
+    # Cancellation results still need persistence, but must not urge more work.
+    if getattr(agent, "_interrupt_requested", False):
+        return False
+
+    ratio = getattr(agent, "budget_warning_ratio", None)
+    kanban_worker = (
+        bool(os.environ.get("HERMES_KANBAN_TASK"))
+        and is_dispatcher_owned_worker_context()
+        and "kanban_complete" in getattr(agent, "valid_tool_names", ())
+    )
+    if ratio is None and kanban_worker:
+        ratio = 0.9
+    budget = getattr(agent, "iteration_budget", None)
+    if (
+        ratio is None
+        or budget is None
+        or budget.max_total <= 1
+        or budget.max_total >= sys.maxsize
+        or getattr(agent, "_iteration_budget_warning_injected", False)
+        or budget.used < min(ratio * budget.max_total, budget.max_total - 1)
+    ):
+        return False
+    notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
+        used=budget.used, maximum=budget.max_total
+    )
+    if kanban_worker:
+        notice += (
+            " While tools are still available, call kanban_complete only if all task "
+            "requirements are verified; otherwise persist a kanban_comment handoff and "
+            "continue. A diff or commit alone is not completion evidence."
+        )
+    # Only the current tool-result tail is mutable; an older turn may already be cached.
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+    if (not messages or messages[-1].get("role") != "tool"
+            or messages[-1].get(_DB_PERSISTED_MARKER)):
+        return False
+    message = messages[-1]
+    content = message.get("content", "")
+    if isinstance(content, str):
+        message["content"] = content + f"\n\n{notice}"
+    elif isinstance(content, list) or content is None:
+        message["content"] = [*(content or []), {"type": "text", "text": notice}]
+    else:
+        return False
+    agent._iteration_budget_warning_injected = True
+    return True
 
 
 @dataclass
@@ -29,15 +89,24 @@ class IterationPrep:
     action: str
     messages: Any
     request_logger: Any
+    current_turn_user_idx: Any
 
 
-def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> IterationPrep:
+def prepare_iteration(
+    agent: Any, *, messages: Any, api_call_count: Any, user_message: Any = None, current_turn_user_idx: Any = None,
+) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
-    cache-safe by construction: steer text lands in the newest tool result, the ghost-row
+    cache-safe by construction: steer text is appended as a new (not yet persisted) user row, the ghost-row
     filter only drops hidden scaffold placeholders, and repair runs BEFORE the request build."""
     from agent.conversation_loop import (
         _INTERRUPT_SCAFFOLD_MARKER, _maybe_inject_run_budget_wrapup
     )
+
+    # nous.anthropic_wire=auto: a wire switch decided from the previous response lands here,
+    # before this iteration's request is built and with nothing in flight.
+    if getattr(agent, "_nous_wire_pending", None):
+        from agent.nous_wire import apply_pending_wire_switch
+        apply_pending_wire_switch(agent)
 
     # Fire step_callback for gateway hooks (agent:step event).
     if agent.step_callback is not None:
@@ -50,16 +119,30 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
     if agent._skill_nudge_interval > 0 and "skill_manage" in agent.valid_tool_names:
         agent._iters_since_skill += 1
 
-    # Drain a /steer sent during the last API call into the newest tool message so
-    # it lands THIS iteration. Never put in a user message (breaks alternation).
+    # Nous agent keys live ~1 h and a single turn can run for hours: adopt the keepalive's fresh
+    # key before the one in hand expires (local JWT exp read; no network unless inside the skew)
+    # instead of letting this iteration's request 401. With many agents sharing the hour that
+    # 401 was a storm, and the pool benched the sole credential for all of them.
+    try:
+        agent._adopt_nous_key_before_expiry()
+    except Exception:
+        logger.debug("Nous key pre-expiry adoption failed", exc_info=True)
+
+    # Drain a /steer sent during the last API call so it lands THIS iteration. Delivered as a
+    # standalone user row after the newest tool result (never smeared onto the tool row: that
+    # row is already persisted append-only, so replay would diverge from the live request and
+    # break the prompt cache — same contract as apply_pending_steer_to_tool_results).
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
-        _inject_steer_into_newest_tool_result(agent, messages, _pre_api_steer)
+        _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
 
-    # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, via the
-    # same cache-safe channel as /steer (newest tool result); off with no budget.
+    # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
+    # newest tool result; off with no budget.
     if getattr(agent, "run_budget_seconds", None):
         _maybe_inject_run_budget_wrapup(agent, messages)
+
+    # Appended to the newest tool result; never a synthetic user/system row.
+    _maybe_inject_iteration_budget_warning(agent, messages)
 
     request_logger = getattr(agent, "logger", None) or logger  # same name as the origin module
     # Per-agent validation cursor skips re-parsing tool_call args already validated.
@@ -104,7 +187,23 @@ def prepare_iteration(agent: Any,*, messages: Any, api_call_count: Any) -> Itera
             repaired_seq,
             agent.session_id or "-",
         )
-    return IterationPrep(action="fallthrough", messages=messages, request_logger=request_logger)
+        # The merge shrank the list, so the index recorded at turn start can point past this
+        # turn's user row: prefetch would inject into a historical row and index-settling hosts
+        # (hermes-webui) would write the current turn to the FRONT of the context. Re-anchor as
+        # the compression-restart path does (last verbatim row wins, never a historical copy);
+        # without the text the index cannot be re-derived and is left detectably stale.
+        if user_message is not None:
+            _reanchored_idx = _reanchor(agent, messages, user_message)
+            if _reanchored_idx != current_turn_user_idx:
+                request_logger.info(
+                    "Re-anchored current_turn_user_idx %s -> %s after alternation repair (session=%s)",
+                    current_turn_user_idx, _reanchored_idx, agent.session_id or "-",
+                )
+                current_turn_user_idx = _reanchored_idx
+    return IterationPrep(
+        action="fallthrough", messages=messages, request_logger=request_logger,
+        current_turn_user_idx=current_turn_user_idx,
+    )
 
 
 def _previous_tool_round(messages: Any) -> list:
@@ -130,37 +229,18 @@ def _previous_tool_round(messages: Any) -> list:
     return []
 
 
-def _inject_steer_into_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
-    """Append the steer marker to the newest tool message; with no tool message, put the
-    text back so the post-tool-execution drain delivers it later."""
+def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:
+    """Append the steer marker as a standalone user row after the newest tool message; with no
+    tool message, put the text back so the post-tool-execution drain delivers it later."""
     for _si in range(len(messages) - 1, -1, -1):
         _sm = messages[_si]
         if isinstance(_sm, dict) and _sm.get("role") == "tool":
-            from agent.prompt_builder import format_steer_marker
-            marker = format_steer_marker(steer_text)
-            existing = _sm.get("content", "")
-            if isinstance(existing, str):
-                _sm["content"] = existing + marker
-            else:
-                # Multimodal content blocks — append a text block.
-                with suppress(Exception):
-                    blocks = list(existing) if existing else []
-                    blocks.append({"type": "text", "text": marker})
-                    _sm["content"] = blocks
-            logger.debug(
-                "Pre-API-call steer drain: injected into tool msg at index %d", _si
-            )
+            from agent.prompt_builder import steer_user_row
+            messages.insert(_si + 1, steer_user_row(steer_text))
+            logger.debug("Pre-API-call steer drain: appended user row after tool msg at index %d", _si)
             return
-    _lock = getattr(agent, "_pending_steer_lock", None)
-    if _lock is not None:
-        with _lock:
-            if agent._pending_steer:
-                agent._pending_steer = agent._pending_steer + "\n" + steer_text
-            else:
-                agent._pending_steer = steer_text
-    else:
-        existing = getattr(agent, "_pending_steer", None)
-        agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
+    from agent.agent_runtime_helpers import _requeue_pending_steer
+    _requeue_pending_steer(agent, steer_text)
 
 
 @dataclass
@@ -273,11 +353,8 @@ def begin_iteration(
     # Grace call: budget exhausted but the model gets one more call. Consume the
     # flag so the loop exits after this iteration regardless of outcome.
     if agent._budget_grace_call:
-        # Iteration budget: the LLM is only notified when it actually exhausts the iteration budget
-        # (api_call_count >= max_iterations). At that point we inject ONE message, allow one final API call,
-        # and if the model doesn't produce a text response, force a user-message asking it to summarise. No
-        # intermediate pressure warnings — they caused models to "give up" prematurely on complex tasks
-        # (#7915).
+        # Exhaustion retains one toolless grace call regardless of whether an opt-in
+        # checkpoint was emitted; the warning never extends the hard budget.
         agent._budget_grace_call = False
     elif not agent.iteration_budget.consume():
         _turn_exit_reason = "budget_exhausted"
@@ -298,6 +375,7 @@ class RetryRestartVerdict:
     current_turn_user_idx: Any
     final_response: Any
     retry_count: Any
+    restart_count: Any
     api_call_count: Any
     _preflight_compression_blocked: Any
     _turn_exit_reason: Any
@@ -306,13 +384,20 @@ class RetryRestartVerdict:
 def apply_retry_restarts(
     agent: Any, *, _retry: Any, response: Any, interrupted: Any, messages: Any,
     conversation_history: Any, user_message: Any, api_kwargs: Any, current_turn_user_idx: Any,
-    final_response: Any, retry_count: Any, api_call_count: Any, length_continue_retries: Any,
+    final_response: Any, retry_count: Any, max_retries: Any, api_call_count: Any,
+    restart_count: Any, length_continue_retries: Any,
     _preflight_compression_blocked: Any, _turn_exit_reason: Any,
 ) -> RetryRestartVerdict:
     """Consume the ``TurnRetryState`` restart flags after the retry loop, in the original
     priority order. Refunds the iteration budget/count for restarts that produced no valid
     assistant item; ``restart_with_rebuilt_messages`` is the single consumer that clears
-    ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733)."""
+    ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
+
+    The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
+    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
+    interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
+    forever and hold the turn lease indefinitely."""
+
     from agent.conversation_loop import (
         _HANDOFF_SKIP_FINAL_RESPONSE, _should_skip_model_call_for_reference_handoff
     )
@@ -320,12 +405,30 @@ def apply_retry_restarts(
     def _verdict(action: str) -> RetryRestartVerdict:
         return RetryRestartVerdict(
             action=action, current_turn_user_idx=current_turn_user_idx,
-            final_response=final_response, retry_count=retry_count, api_call_count=api_call_count,
+            final_response=final_response, retry_count=retry_count, restart_count=restart_count,
+            api_call_count=api_call_count,
             _preflight_compression_blocked=_preflight_compression_blocked,
             _turn_exit_reason=_turn_exit_reason,
         )
 
     if _retry.restart_with_redirected_messages:
+        restart_count += 1
+        if restart_count > max_retries:
+            # A redirect/interrupt keeps re-arming this flag: stop refunding the iteration
+            # budget and re-issuing the same logical iteration, or a runaway turn holds the
+            # turn lease indefinitely (redirect restarts previously had no bound).
+            _turn_exit_reason = "redirect_restart_limit_exceeded"
+            logger.warning(
+                "Redirected-message restart limit (%s) exceeded; ending turn instead of "
+                "refunding the iteration budget indefinitely.",
+                max_retries,
+            )
+            # The correction that tripped the cap was never applied; hand it back as the
+            # next user turn (result["pending_steer"]) instead of losing it to clear_interrupt().
+            _unapplied = agent._drain_pending_redirect()
+            if _unapplied:
+                agent.steer(_unapplied)
+            return _verdict("break")
         # Cancelled request produced no valid assistant item: reuse the same logical
         # iteration after the outer loop appends partial context + correction.
         api_call_count -= 1
@@ -363,11 +466,22 @@ def apply_retry_restarts(
         # In-loop compression rebuilt `messages`; re-anchor the current-turn index
         # like the prologue, AFTER the handoff guard (it may re-append this turn's
         # ask). A stale anchor injects prefetch into a historical row.
-        current_turn_user_idx = reanchor_current_turn_user_idx(messages, user_message)
-        agent._persist_user_message_idx = current_turn_user_idx
+        current_turn_user_idx = _reanchor(agent, messages, user_message)
         return _verdict("continue")
 
     if _retry.restart_with_rebuilt_messages:
+        restart_count += 1
+        if restart_count > max_retries:
+            # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
+            # iteration budget and re-issuing, or a runaway turn holds the turn lease
+            # indefinitely (rebuilt restarts previously had no bound).
+            _turn_exit_reason = "rebuilt_restart_limit_exceeded"
+            logger.warning(
+                "Rebuilt-message restart limit (%s) exceeded; ending turn instead of "
+                "refunding the iteration budget indefinitely.",
+                max_retries,
+            )
+            return _verdict("break")
         # A stall/failure escalated to the fallback chain: re-issue against the
         # active fallback provider, refunding budget/count for the stalled attempt.
         api_call_count -= 1

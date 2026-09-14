@@ -210,6 +210,52 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
 
 
 
+def test_claim_clears_stale_last_failure_error(kanban_home, monkeypatch):
+    """A crashed run's ``last_failure_error`` must not leak into a later run's
+    claim. In the native review lane a card cycles through several runs in
+    minutes; if a crash's stamped error text (e.g. "pid N not alive") survives
+    onto the next claim, a later run's unrelated ``kanban_complete``/
+    ``kanban_block`` failure gets misreported using a long-dead run's pid,
+    reading like a claim race instead of the real (and different) failure
+    (#109454)."""
+    import hermes_cli.kanban_db as _kb
+    from hermes_cli import kanban_db_dispatch as _kbd
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kbc.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="native-review-lane", assignee="impl")
+
+        # Implementer claims and requests review.
+        claimed = kb.claim_task(conn, tid, claimer=f"{host}:impl")
+        kb.request_review(
+            conn, tid, summary="done", expected_run_id=claimed.current_run_id,
+        )
+
+        # Reviewer claims the review lane, then crashes.
+        reviewed = kb.claim_review_task(conn, tid, claimer=f"{host}:reviewer")
+        assert reviewed is not None
+        _kbd._set_worker_pid(conn, tid, 266182)
+        crashed = _kbd.detect_crashed_workers(conn)
+        assert tid in crashed
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "review"
+        assert task.last_failure_error and "266182" in task.last_failure_error
+
+        # A fresh reviewer run claims the same card moments later — its own
+        # run must not inherit run 1's stale crash text.
+        reclaimed = kb.claim_review_task(conn, tid, claimer=f"{host}:reviewer2")
+        assert reclaimed is not None
+        task = kb.get_task(conn, tid)
+        assert task.last_failure_error is None, (
+            "a later run's claim must clear a prior run's stale "
+            f"last_failure_error, got {task.last_failure_error!r}"
+        )
+
+
 def test_stale_claim_reclaim_event_records_diagnostic_payload(
     kanban_home, monkeypatch,
 ):

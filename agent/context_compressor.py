@@ -1272,7 +1272,9 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            # #83714: Cut silently without appending '...[truncated]' so the model
+            # is not primed to imitate the truncation marker in subsequent tool calls.
+            return obj[:head_chars] if len(obj) > head_chars else obj
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):

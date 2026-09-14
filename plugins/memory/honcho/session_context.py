@@ -190,14 +190,6 @@ class SessionContextMixin:
             return card or (self._fetch_peer_card(target_peer_id) if target_peer_id else [])
         return self._guarded_session(session_key, _fetch, [], logging.DEBUG, "Failed to fetch peer card from Honcho: %s")
 
-    def _honcho_base_url(self) -> str:
-        """Base URL of the bound Honcho client, or "" when unknown (tests)."""
-        try:
-            base = getattr(self.honcho, "base_url", "")
-        except Exception:
-            return ""
-        return base if isinstance(base, str) else ""
-
     def search_context(self, session_key: str, query: str, max_tokens: int = 800, peer: str = "user") -> str:
         """Hybrid search over raw messages visible from ``peer``'s perspective, all sessions. Snippets
         accumulate until ``max_tokens`` (~4 chars/token) is exhausted. Returns "" when nothing matches;
@@ -209,40 +201,41 @@ class SessionContextMixin:
         peer_id = self._resolve_peer_id(session, peer)
         char_budget = max(200, int(max_tokens) * 4)
         limit = max(3, min(20, char_budget // 300))
+        def _peer_search_fallback() -> Any:
+            # Older Honcho versions lack filters entirely; fall back to peer-authored search.
+            # Direct construction, not _get_or_create_peer: Honcho.peer() is get-or-create
+            # (a write) in the pinned SDK, and this is a read path. Peer(pid, client) is
+            # non-networking in honcho-ai 2.2.0 and is re-resolved inside _guarded_authed so
+            # a 401-triggered client rebuild (which orphans cached SDK objects) is respected.
+            return self._guarded_authed(
+                "peer search", lambda: Peer(peer_id, self.honcho).search(q, limit=limit),
+                None, logging.DEBUG, "Honcho peer search fallback also failed: %s",
+            )
+
         def _retry_peer_id() -> Any:
             # Some API builds (e.g. self-hosted from source) silently return empty for the
-            # peer_perspective filter because the column is not filterable in their schema.
-            # Retry with the peer_id column filter, then with direct peer-object search.
+            # peer_perspective filter because the column is not filterable in their schema;
+            # a reset joined_at visibility window can also empty a query the peer_id filter
+            # still reaches. Retry with the peer_id column filter, then peer-object search.
             retry = self._guarded_authed(
                 "message search (peer_id)", lambda: self.honcho.search(q, filters={"peer_id": peer_id}, limit=limit),
                 _FAILED, logging.DEBUG, "Honcho message search failed (peer_id=%s): %s", peer_id,
             )
-            if retry is _FAILED:
-                # Older Honcho versions lack filters entirely; fall back to peer-authored search.
-                # Direct construction, not _get_or_create_peer: Honcho.peer() is get-or-create
-                # (a write) in the pinned SDK, and this is a read path. Peer(pid, client) is
-                # non-networking in honcho-ai 2.2.0 and is re-resolved inside _guarded_authed so
-                # a 401-triggered client rebuild (which orphans cached SDK objects) is respected.
-                retry = self._guarded_authed(
-                    "peer search", lambda: Peer(peer_id, self.honcho).search(q, limit=limit),
-                    None, logging.DEBUG, "Honcho peer search fallback also failed: %s",
-                )
-            return retry
+            return _peer_search_fallback() if retry is _FAILED else retry
 
-        base_url = self._honcho_base_url()
         messages = self._guarded_authed(
             "message search", lambda: self.honcho.search(q, filters={"peer_perspective": peer_id}, limit=limit),
             _FAILED, logging.DEBUG, "Honcho message search failed (peer_perspective=%s): %s", peer_id,
         )
         if messages is _FAILED:
-            messages = _retry_peer_id()
-        elif messages:
-            # A non-empty perspective result proves the filter works on this server. Remember it
-            # per base_url so genuinely-empty queries stop paying the peer_id double-probe.
-            if base_url:
-                with self._cache_lock:
-                    self._perspective_supported[base_url] = True
-        elif not self._perspective_supported.get(base_url, False):
+            # A raised search keeps the pre-existing error path; the peer_id column retry is a
+            # workaround for empty 200s, and servers that raise here lack filters entirely.
+            messages = _peer_search_fallback()
+        elif not messages:
+            # An empty 200 is not proof of no matches: the filter can be silently unsupported or
+            # miss history outside the peer's visibility window. A non-empty perspective hit
+            # proves the filter worked for that query at that moment; it cannot make later
+            # empties final, so every empty result retries.
             messages = _retry_peer_id()
         if not messages:
             return ""

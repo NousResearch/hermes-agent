@@ -696,6 +696,7 @@ class TestNonAuthFailuresNotRetried:
 
     def test_search_timeout_fails_open_without_refresh(self, monkeypatch):
         from plugins.memory.honcho import session as session_mod
+        from plugins.memory.honcho import session_context as context_mod
 
         class _TimeoutSearchPeer:
             calls = 0
@@ -708,13 +709,16 @@ class TestNonAuthFailuresNotRetried:
         client = MagicMock()
         client.search.side_effect = TimeoutError("request timed out")
         monkeypatch.setattr(session_mod, "get_honcho_client", lambda *a, **k: client)
-        mgr = _make_manager(_TimeoutSearchPeer())
+        peer = _TimeoutSearchPeer()
+        # The fallback constructs Peer directly (no peer get-or-create on the read path).
+        monkeypatch.setattr(context_mod, "Peer", lambda *a, **k: peer)
+        mgr = _make_manager(peer)
         reauths = []
         mgr._force_reauth = lambda: reauths.append(1) or True
 
         assert mgr.search_context("k", "q") == ""
         assert client.search.call_count == 1
-        assert _TimeoutSearchPeer.calls == 1
+        assert peer.calls == 1
         assert reauths == []
 
 

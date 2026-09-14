@@ -115,7 +115,6 @@ class TestPeerLookupHelpers:
         """Older API builds return empty for peer_perspective; retry with peer_id."""
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
-        honcho_client.base_url = "http://self-hosted"
         honcho_client.search.side_effect = [
             [],  # peer_perspective filter unsupported -> silently empty
             [SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1")],
@@ -130,15 +129,12 @@ class TestPeerLookupHelpers:
         second_args, second_kwargs = honcho_client.search.call_args_list[1]
         assert first_kwargs["filters"] == {"peer_perspective": session.user_peer_id}
         assert second_kwargs["filters"] == {"peer_id": session.user_peer_id}
-        # A peer_id result does NOT prove the perspective filter works.
-        assert mgr._perspective_supported.get("http://self-hosted") is None
 
 
     def test_search_context_does_not_retry_when_perspective_returns_results(self):
         """A non-empty perspective result is final; no peer_id double-probe."""
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
-        honcho_client.base_url = "http://test"
         honcho_client.search.return_value = [
             SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1"),
         ]
@@ -149,38 +145,41 @@ class TestPeerLookupHelpers:
         assert honcho_client.search.call_count == 1
         _args, kwargs = honcho_client.search.call_args
         assert kwargs["filters"] == {"peer_perspective": session.user_peer_id}
-        # Non-empty perspective result marks the filter as supported.
-        assert mgr._perspective_supported.get("http://test") is True
 
 
-    def test_search_context_skips_retry_after_perspective_proven(self):
-        """Once perspective proves non-empty on a base_url, empties are final."""
+    def test_search_context_retries_on_empty_after_perspective_hit(self):
+        """A prior non-empty perspective result must not make later empties final.
+
+        Self-hosted Honcho can reset a peer's joined_at visibility window: a query for newer
+        messages hits the perspective filter while a later query for older history returns
+        empty and still needs the peer_id fallback.
+        """
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
-        honcho_client.base_url = "http://test"
+        honcho_client.base_url = "http://self-hosted"  # the removed per-base_url cache keyed off this
         honcho_client.search.side_effect = [
-            [SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1")],
-            [],  # genuinely empty afterwards — must NOT trigger peer_id retry
+            [SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-new", id="m2")],
+            [],  # perspective miss for older history after the visibility reset
+            [SimpleNamespace(content="neuralancer in 2019", peer_id="hermes", session_id="s-old", id="m1")],
         ]
         with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
             first = mgr.search_context(session.key, "neuralancer")
-            second = mgr.search_context(session.key, "nothing")
+            second = mgr.search_context(session.key, "2019")
 
         assert "Robert runs neuralancer" in first
-        assert second == ""
-        assert honcho_client.search.call_count == 2
+        assert "neuralancer in 2019" in second
         filters = [call.kwargs["filters"] for call in honcho_client.search.call_args_list]
         assert filters == [
             {"peer_perspective": session.user_peer_id},
             {"peer_perspective": session.user_peer_id},
+            {"peer_id": session.user_peer_id},
         ]
 
 
     def test_search_context_fallback_never_creates_peer(self):
-        """Fallback uses direct Peer construction; no peer get-or-create on the read path."""
+        """The empty fallback chain must not get-or-create a peer on the read path."""
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
-        honcho_client.base_url = "http://self-hosted"
         honcho_client.search.side_effect = [
             [],  # perspective empty
             [],  # peer_id filter empty
@@ -190,17 +189,18 @@ class TestPeerLookupHelpers:
              patch("plugins.memory.honcho.session_context.Peer") as peer_cls:
             result = mgr.search_context(session.key, "neuralancer")
 
-        # Empty read stays empty; neither the empty yet the error path touches peer creation.
+        # The explicit assertion matters: _guarded() swallows the AssertionError side effect,
+        # so without it a guarded _get_or_create_peer() call would leave this test passing.
         assert result == ""
+        mgr._get_or_create_peer.assert_not_called()
         peer_cls.assert_not_called()
 
 
     def test_search_context_error_fallback_uses_direct_peer(self):
-        """When both filter searches raise, the fallback builds Peer directly."""
+        """A raised perspective search goes straight to the direct-Peer fallback."""
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
-        honcho_client.base_url = "http://self-hosted"
-        honcho_client.search.side_effect = [RuntimeError("boom"), RuntimeError("boom")]
+        honcho_client.search.side_effect = RuntimeError("boom")
         hit = [SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1")]
         mgr._get_or_create_peer = MagicMock(side_effect=AssertionError("peer creation on read path"))
         with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)), \
@@ -209,6 +209,8 @@ class TestPeerLookupHelpers:
             result = mgr.search_context(session.key, "neuralancer")
 
         assert "Robert runs neuralancer" in result
+        assert honcho_client.search.call_count == 1  # no peer_id probe on the error path
+        mgr._get_or_create_peer.assert_not_called()
         peer_cls.assert_called_once_with(session.user_peer_id, honcho_client)
         peer_cls.return_value.search.assert_called_once_with("neuralancer", limit=10)
 

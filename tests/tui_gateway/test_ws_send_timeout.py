@@ -69,3 +69,30 @@ def test_progress_then_final_ordering_preserved_on_healthy_socket():
         ]
 
     asyncio.run(_run())
+
+
+def test_backlog_budget_closes_on_unbounded_accumulation(monkeypatch):
+    """Regression for #108147: stalled first send plus repeated writes must close on backlog budget
+    before the socket-send deadline, so unbounded heap retention is capped."""
+    monkeypatch.setattr("tui_gateway.ws._BACKLOG_MAX_FRAMES", 5, raising=False)
+    monkeypatch.setattr("tui_gateway.ws._BACKLOG_MAX_BYTES", 500, raising=False)
+
+    async def _run() -> None:
+        ws = _StalledWS()
+        transport = WSTransport(ws, asyncio.get_running_loop(), peer="127.0.0.1:1")
+        # First send parks inside send_text, holding _send_lock.
+        first = asyncio.create_task(transport.write_async({"method": "event", "params": {"type": "tool.progress"}}))
+        await asyncio.sleep(0)
+        # Repeated writes must close the connection on backlog budget, not admit every frame.
+        rejected = 0
+        for _ in range(20):
+            if not transport.write({"method": "event", "params": {"type": "reasoning.delta", "payload": {"text": "x" * 200}}}):
+                rejected += 1
+        assert rejected > 0, "at least one write must be rejected before the socket deadline"
+        assert transport.closed, "backlog budget exceeded must latch _closed"
+        await asyncio.sleep(0)  # let the scheduled close task run
+        assert ws.closed_with == [1011], "the socket must close with code 1011 on backlog exceeded"
+        # The stalled first send resolves as False once the socket closes.
+        assert not await first
+
+    asyncio.run(_run())

@@ -1,4 +1,4 @@
-# Plano de Contribuição: Suporte à Lingua Portuguesa do Brasil (pt-BR)
+# Plano de Contribuição: Suporte à Língua Portuguesa do Brasil (pt-BR)
 
 ## Visão Geral
 

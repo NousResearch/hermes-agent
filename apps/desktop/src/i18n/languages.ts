@@ -45,7 +45,7 @@ export const LOCALE_OPTIONS = [
   },
   {
     id: 'pt-br',
-    name: 'Português',
+    name: LOCALE_ENDONYMS['pt-br'],
     englishName: 'Brazilian Portuguese',
     configValue: 'pt-br'
   }

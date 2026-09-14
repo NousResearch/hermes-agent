@@ -1581,9 +1581,13 @@ def set_reasoning_effort(conn: sqlite3.Connection, task_id: str, effort: Optiona
 
 # --- Links ---
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
+    """Link ``parent_id -> child_id``. Returns True when the link gated a
+    ``ready`` child back to ``todo`` (the new parent is not yet terminal), so
+    callers can surface the demotion instead of a silent status flip."""
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    gated = False
     with write_txn(conn):
         missing = _missing_task_ids(conn, [parent_id, child_id])
         if missing:
@@ -1593,13 +1597,26 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         _link(conn, parent_id, child_id)
         # If child was ready but parent is not yet done, demote child to todo.
         if _task_status(conn, parent_id) != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'", (child_id,),
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                (child_id,),
             )
+            gated = cur.rowcount == 1
+            if gated:
+                _append_event(
+                    conn,
+                    child_id,
+                    "dependency_wait",
+                    {"reason": "parent_not_done", "demoted": True, "parent": parent_id},
+                )
         _append_event(
-            conn, child_id, "linked", {"parent": parent_id, "child": child_id},
+            conn,
+            child_id,
+            "linked",
+            {"parent": parent_id, "child": child_id},
         )
         _inherit_notify_subs(conn, child_id, (parent_id,))
+    return gated
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:

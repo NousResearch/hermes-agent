@@ -1691,3 +1691,126 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_fast_worker_completion_before_pid_persist_leaves_no_stale_pid(kanban_home, monkeypatch):
+    """Round-3 deferred production fix: a worker that completes through another
+    connection between spawn_fn returning and _set_worker_pid persisting must
+    not end up with a stale worker_pid on a done task. The unconditional
+    UPDATE in _set_worker_pid is the bug; the fix guards it on status."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
+    monkeypatch.setattr(kb, "_cleanup_worker_tmux", lambda *a, **k: None)
+    spawned = []
+    spawned_hooks: list[dict] = []
+    from hermes_cli.plugins import get_plugin_manager
+    _mgr = get_plugin_manager()
+    _mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(
+        lambda **kw: spawned_hooks.append(kw)
+    )
+
+    def fast_worker(task, workspace, board=None):
+        # complete the task from a second connection BEFORE the dispatcher
+        # persists the pid — the exact race window.
+        spawned.append(task.id)
+        with kb.connect_closing() as other:
+            kb.complete_task(other, task.id, result="done fast")
+        return 4242
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="fast worker", assignee="default")
+        res = kb.dispatch_once(conn, spawn_fn=fast_worker)
+
+        assert spawned == [tid], "spawn path must actually run"
+        assert res.spawned
+        row = _row(conn, tid)
+        assert row["status"] == "done", row
+        # THE INVARIANT: no stale pid residue on a completed task
+        assert row["worker_pid"] is None, row
+        assert row["claim_lock"] is None, row
+        # the ended run keeps no pid either
+        run = conn.execute(
+            "SELECT worker_pid FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        if run is not None:
+            assert run["worker_pid"] is None, dict(run)
+        # and NO "spawned" event exists for this task at all (the pid
+        # never durably landed, so it must never be announced)
+        n_spawned = conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'spawned'",
+            (tid,),
+        ).fetchone()[0]
+        assert n_spawned == 0
+        # and the RFC #58548 lifecycle hook must NOT have fired for a pid
+        # the board refused
+        assert spawned_hooks == [], spawned_hooks
+
+
+def test_set_worker_pid_loses_aba_race_to_replacement_run(kanban_home, monkeypatch):
+    """ABA guard: if the claimed run ended and the task was reclaimed into a
+    NEW run before the old dispatcher persisted its pid, the pid must not
+    land on the replacement attempt (nor emit a spawned event for it)."""
+    monkeypatch.setattr(kb, "_memory_pressure_level", lambda: "ok")
+    monkeypatch.setattr(kb, "_cleanup_worker_tmux", lambda *a, **k: None)
+    holder = {}
+    aba_hooks: list[dict] = []
+    from hermes_cli.plugins import get_plugin_manager
+    _mgr = get_plugin_manager()
+    _mgr._hooks.setdefault("on_kanban_worker_spawned", []).append(
+        lambda **kw: aba_hooks.append(kw)
+    )
+
+    def racing_worker(task, workspace, board=None):
+        holder["old_run"] = task.current_run_id
+        # end our run and start a replacement run (as a reclaiming
+        # dispatcher would), all from a second connection BEFORE the
+        # pid persist
+        import time as _time
+        with kb.connect_closing() as other:
+            kb.complete_task(other, task.id, result="old done")
+            with kb.write_txn(other):
+                now = int(_time.time())
+                cur = other.execute(
+                    "INSERT INTO task_runs (task_id, status, started_at) "
+                    "VALUES (?, 'running', ?)",
+                    (task.id, now),
+                )
+                new_run = cur.lastrowid
+                # the replacement dispatcher has ALREADY persisted its own
+                # pid — this sentinel must survive the old dispatcher's
+                # losing _set_worker_pid
+                other.execute(
+                    "UPDATE tasks SET status='running', current_run_id=?, "
+                    "worker_pid=7777 WHERE id = ?",
+                    (new_run, task.id),
+                )
+                other.execute(
+                    "UPDATE task_runs SET worker_pid=7777 WHERE id = ?",
+                    (new_run,),
+                )
+        return 5555
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(conn, title="aba", assignee="default")
+        res = kb.dispatch_once(conn, spawn_fn=racing_worker)
+        assert res.spawned
+        row = _row(conn, tid)
+        # the replacement dispatcher's pid must SURVIVE untouched —
+        # neither overwritten with 5555 nor erased to NULL
+        assert row["worker_pid"] == 7777, row
+        repl_run = conn.execute(
+            "SELECT worker_pid FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert repl_run is not None and repl_run["worker_pid"] == 7777, dict(repl_run)
+        # no spawned event for the replacement run from the OLD dispatcher
+        n_spawned = conn.execute(
+            "SELECT COUNT(*) FROM task_events "
+            "WHERE task_id = ? AND kind = 'spawned' AND payload LIKE '%5555%'",
+            (tid,),
+        ).fetchone()[0]
+        assert n_spawned == 0
+        # and the lifecycle hook must not have fired for the stale pid
+        assert aba_hooks == [], aba_hooks

@@ -1435,6 +1435,24 @@ patches:
       - scripts/run_tests.sh tests/gateway/test_telegram_approval_buttons.py tests/gateway/test_discord_component_auth.py
     retirement: Remove when upstream ships an equivalent exact-identity PR merge authorization gate with per-request approval correlation across all platform adapters.
 
+  - id: kanban-worker-pid-race-guard
+    kind: core
+    rationale: >-
+      Guard _set_worker_pid against the fast-worker completion race in the
+      Kanban admission kernel: CAS the PID write on (task id, status=running,
+      current_run_id) so a worker that completes before the dispatcher
+      persists its PID causes a zero-write lost race (no compensating NULL
+      that could erase a replacement dispatcher's PID), fire the
+      on_kanban_worker_spawned hook only when the CAS persisted and with the
+      persisted run id, and clear worker_pid atomically on every
+      running-to-non-running transition. Atomic round-4 review: PASS WITH
+      NON-BLOCKING NOTES (run 20260914T075625Z-d19ad821e8dd).
+    paths:
+      - hermes_cli/kanban_db.py
+    tests:
+      - scripts/run_tests.sh tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_worker_lifecycle_hooks.py tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py
+    retirement: Fold into the upstream Kanban admission kernel when the dispatch PID race handling lands upstream.
+
   - id: kanban-dispatch-test-hardening
     kind: operations
     rationale: >-

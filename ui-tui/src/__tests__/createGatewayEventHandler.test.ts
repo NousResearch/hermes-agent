@@ -178,9 +178,9 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
 
     const todos = [
-      { content: 'Gather ingredients', id: 'prep', status: 'completed' },
-      { content: 'Boil water', id: 'boil', status: 'in_progress' },
-      { content: 'Make sauce', id: 'sauce', status: 'pending' }
+      { content: 'Gather ingredients', id: 'prep', parent: null, status: 'completed' },
+      { content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' },
+      { content: 'Make sauce', id: 'sauce', parent: null, status: 'pending' }
     ]
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -260,7 +260,7 @@ describe('createGatewayEventHandler', () => {
 
   it('archives completed todos into transcript flow at end of turn', () => {
     const appended: Msg[] = []
-    const todos = [{ content: 'Serve tiny latte', id: 'serve', status: 'completed' }]
+    const todos = [{ content: 'Serve tiny latte', id: 'serve', parent: null, status: 'completed' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
@@ -278,7 +278,7 @@ describe('createGatewayEventHandler', () => {
 
   it('keeps the current todo list visible when the next message starts', () => {
     const appended: Msg[] = []
-    const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
+    const todos = [{ content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' }]
 
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
@@ -405,7 +405,7 @@ describe('createGatewayEventHandler', () => {
 
   it('clears the visible todo list when the todo tool returns an empty list', () => {
     const appended: Msg[] = []
-    const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
+    const todos = [{ content: 'Boil water', id: 'boil', parent: null, status: 'in_progress' }]
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.complete' } as any)
@@ -1572,14 +1572,16 @@ describe('createGatewayEventHandler', () => {
         payload: {
           context: 'pre',
           name: 'search',
-          todos: [{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }],
+          todos: [{ content: 'pre-interrupt', id: 'todo-1', parent: null, status: 'pending' }],
           tool_id: 't-1'
         },
         type: 'tool.complete'
       } as any)
 
       // Pre-interrupt todos should land in turn state.
-      expect(getTurnState().todos).toEqual([{ content: 'pre-interrupt', id: 'todo-1', status: 'pending' }])
+      expect(getTurnState().todos).toEqual([
+        { content: 'pre-interrupt', id: 'todo-1', parent: null, status: 'pending' }
+      ])
 
       turnController.interruptTurn({
         appendMessage: (msg: Msg) => appended.push(msg),
@@ -1594,7 +1596,7 @@ describe('createGatewayEventHandler', () => {
         payload: {
           context: 'post',
           name: 'browser',
-          todos: [{ content: 'late ghost', id: 'todo-ghost', status: 'pending' }],
+          todos: [{ content: 'late ghost', id: 'todo-ghost', parent: null, status: 'pending' }],
           tool_id: 't-2'
         },
         type: 'tool.complete'

@@ -58,8 +58,25 @@ def _int_param(params: dict, key: str, default: int) -> int:
     """``int(params[key])`` with ``default`` for missing / unparsable values."""
     try:
         return int(params.get(key, default))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _valid_integer_param(key: str):
+    """Reject malformed numeric input before the handler mutates state or starts work."""
+    from pydantic import TypeAdapter, ValidationError
+
+    adapter = TypeAdapter(int | None)
+
+    def decorate(fn):
+        def handler(rid, params: dict, *args):
+            try:
+                adapter.validate_python(params.get(key))
+            except ValidationError:
+                return _err(rid, 4000, f"{key} must be an integer")
+            return fn(rid, params, *args)
+        return handler
+    return decorate
 
 
 def _new_runtime_ids(params: dict) -> tuple[str, str]:
@@ -316,6 +333,7 @@ def _create_overrides(params: dict) -> tuple:
 
 
 @method("session.create")
+@_valid_integer_param("cols")
 def _(rid, params: dict) -> dict:
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
@@ -336,7 +354,7 @@ def _(rid, params: dict) -> dict:
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),
             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
-            "cols": int(params.get("cols", 80)), "created_at": now, "edit_snapshots": {},
+            "cols": _int_param(params, "cols", 80), "created_at": now, "edit_snapshots": {},
             "explicit_cwd": explicit_cwd,
             "history": history, "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
             "seeded": bool(history),  # gates _persist_branch_seed: only create-time history is unpersisted
@@ -435,12 +453,13 @@ def _session_list_by_title(rid, db, title_lookup: str) -> dict:
 
 
 @method("session.list")
+@_valid_integer_param("limit")
 @_with_db(5006, session_scoped=False)
 def _(rid, params: dict, db) -> dict:
     try:
         if title_lookup := _str_param(params, "title"):
             return _session_list_by_title(rid, db, title_lookup)
-        limit = int(params.get("limit", 200) or 200)
+        limit = _int_param(params, "limit", 200) or 200
         # Over-fetch: per-source filtering + tip merging must not leave us short. ``include_hidden`` is for
         # surfaces that OWN hidden sessions (Bots pane, pickers).
         rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"))[:limit]
@@ -1079,6 +1098,7 @@ def _(rid, params: dict, session: dict) -> dict:
 
 
 @method("llm.oneshot")
+@_valid_integer_param("max_tokens")
 def _(rid, params: dict) -> dict:
     """Stateless one-shot LLM request; a live ``session_id`` lends its model, else the ``task`` backend."""
     template = (params.get("template") or "").strip() or None
@@ -1266,6 +1286,7 @@ def _pet_kitty_cells(pet, pet_cfg: dict, state: str, scale: float) -> dict | Non
 
 
 @_pet_method("pet.cells", fail_open=_PET_OFF)
+@_valid_integer_param("cols")
 def _(rid, params: dict) -> dict:
     """Half-block cell frames (``[tr,tg,tb,ta, br,bg,bb,ba]``) for one pet ``state``; ``cols``, ``graphics``."""
     from agent.pet import constants, store
@@ -1278,7 +1299,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"enabled": False})
     state = str(params.get("state") or constants.PetState.IDLE.value)
     scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
-    cols = int(params.get("cols") or 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
+    cols = _int_param(params, "cols", 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
     base = {"enabled": True, "slug": pet.slug, "displayName": pet.display_name, "state": state}
     if params.get("graphics") and (kitty := _pet_kitty_cells(pet, pet_cfg, state, scale)):
         return _ok(rid, {**base, **kitty})
@@ -1437,6 +1458,7 @@ def _pet_pick_provider(params: dict, *, require_references: bool):
 
 
 @_pet_method("pet.generate", scoped=False)
+@_valid_integer_param("count")
 def _(rid, params: dict) -> dict:
     """Candidate base looks for a new pet (draft step; worker pool): ``prompt`` (or a ``referenceImage``
     data URL), ``count`` (≤4), ``style``, ``provider`` → ``{ok, token, drafts:[{index, dataUri}]}``."""
@@ -2143,6 +2165,7 @@ def _legacy_spawn_tree_entry(p, session_dir_name: str) -> dict | None:
 
 
 @method("spawn_tree.list")
+@_valid_integer_param("limit")
 def _(rid, params: dict) -> dict:
     session_id = _str_param(params, "session_id")
     if bool(params.get("cross_session")):
@@ -2159,7 +2182,7 @@ def _(rid, params: dict) -> dict:
                 entry for p in d.glob("*.json")
                 if p.name != _SPAWN_TREE_INDEX and (entry := _legacy_spawn_tree_entry(p, d.name)) is not None)
     entries.sort(key=lambda e: e.get("finished_at") or 0, reverse=True)
-    return _ok(rid, {"entries": entries[:int(params.get("limit") or 50)]})
+    return _ok(rid, {"entries": entries[:(_int_param(params, "limit", 50) or 50)]})
 
 
 @method("spawn_tree.load")
@@ -2179,8 +2202,13 @@ def _(rid, params: dict) -> dict:
 
 # ── terminal / event replay ──────────────────────────────────────────
 @_session_method("terminal.resize")
+@_valid_integer_param("cols")
 def _(rid, params: dict, session: dict) -> dict:
-    session["cols"] = cols = int(params.get("cols", 80))
+    try:
+        cols = int(params.get("cols", 80))
+    except (TypeError, ValueError, OverflowError):
+        return _err(rid, 4000, "cols must be an integer")
+    session["cols"] = cols
     return _ok(rid, {"cols": cols})
 
 

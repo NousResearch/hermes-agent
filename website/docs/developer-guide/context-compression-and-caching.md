@@ -34,6 +34,21 @@ Configure via `hermes plugins` → Provider Plugins → Context Engine, or edit 
 
 For building a context engine plugin, see [Context Engine Plugins](/developer-guide/context-engine-plugin).
 
+## Stalled summary fallback
+
+When the progress watchdog aborts a stalled summary, it retries compression once
+with a pinned fallback route. An explicit `auxiliary.compression.fallback_chain`
+takes precedence. With `provider: auto` (including the default) and no complete
+task-chain route, the watchdog inherits the main `fallback_providers` policy
+(or legacy `fallback_model`). It uses the auxiliary error path's same candidate
+selection, including provider exclusions, health, credentials, and minimum
+context length; no separate compression fallback configuration is required.
+Explicit compression providers do not inherit this main chain on watchdog expiry.
+
+If no eligible route exists or the bounded retry fails, compression is skipped
+without replacing the original context. `/stop` does not start a fallback, and
+the cancelled primary attempt cannot commit after the fallback succeeds.
+
 ## Dual Compression System
 
 Hermes has two separate compression layers that operate independently:

@@ -209,7 +209,7 @@ agent 通过 `IterationBudget` 追踪迭代次数：
 2. 将中间对话轮次摘要为紧凑的摘要内容
 3. 保留最后 N 条消息完整不变（`compression.protect_last_n`，默认：20）
 4. 工具调用/结果消息对保持完整（不拆分）
-5. 生成新的 session 血缘 ID（压缩会创建一个"子" session）
+5. 生成新的 会话继承链 ID（压缩会创建一个"子" session）
 
 ### Session 持久化
 

@@ -94,7 +94,7 @@ model:
   base_url: http://localhost:11434/v1
 ```
 
-Hermes 会将端点、提供商和 base URL 持久化到 `config.yaml`，重启后仍然有效。如果您的本地服务器只加载了一个模型，`/model custom` 会自动检测到它。您也可以在 config.yaml 中设置 `provider: custom` — 这是一个一等提供商，不是其他任何东西的别名。
+Hermes 会将端点、提供商和 base URL 持久化到 `config.yaml`，重启后仍然有效。如果您的本地服务器只加载了一个模型，`/model custom` 会自动检测到它。您也可以在 config.yaml 中设置 `provider: custom` — 这是一个原生支持的提供商，不是其他任何东西的别名。
 
 此方式适用于 Ollama、vLLM、llama.cpp server、SGLang、LocalAI 等。详情请参阅[配置指南](../user-guide/configuration.md)。
 
@@ -416,7 +416,7 @@ cat ~/.hermes/logs/gateway.log | tail -50
 - 检查网关日志：`cat ~/.hermes/logs/gateway.log | tail -50`
 - 对于基于 webhook 的平台（Slack、WhatsApp），确保您的服务器可公开访问
 
-#### 白名单混淆 — 谁可以与 bot 交互？
+#### 白名单配置疑问 — 谁可以与 bot 交互？
 
 **原因：** 授权模式决定谁可以获得访问权限。
 

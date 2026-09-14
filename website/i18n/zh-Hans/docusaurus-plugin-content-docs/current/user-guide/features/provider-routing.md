@@ -120,7 +120,7 @@ provider_routing:
 
 ### 优化吞吐量
 
-适合长文本生成，token 每秒速率至关重要的场景：
+适合长文本生成等非常依赖 token 生成速度的场景：
 
 ```yaml
 provider_routing:

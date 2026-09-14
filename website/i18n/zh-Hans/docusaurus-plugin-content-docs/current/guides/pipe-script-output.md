@@ -14,7 +14,7 @@ description: "使用 `hermes send` 将任意 shell 脚本、cron 任务、CI hoo
 - CI/CD 通知（部署完成、测试失败）
 - 需要将结果推送给你的 cron 脚本
 - 从终端发送一次性消息
-- 将任意工具的输出管道到任意平台（`make | hermes send --to slack:#builds`）
+- 将任意工具的输出通过管道传输到任意平台（`make | hermes send --to slack:#builds`）
 
 该命令复用 `hermes gateway` 已有的凭据和平台适配器，无需维护第二套配置。
 
@@ -200,10 +200,10 @@ hermes send --list --json
 |----------|----------------|---------------------|---------------|----------|
 | `hermes send` | ✅ | ✅ | 否（bot token） | 以下所有场景 |
 | 对各平台直接 `curl` | 各自单独编写 | 手动管理 | 否 | 关键 watchdog |
-| 带 `--deliver` 的 `cron` 任务 | ✅ | ✅ | 否 | 定时 agent 任务 |
-| `send_message` agent 工具 | ✅ | ✅ | 否 | agent 循环内部 |
+| 带 `--deliver` 的 `cron` 任务 | ✅ | ✅ | 否 | 定时智能体任务 |
+| `send_message` 智能体工具 | ✅ | ✅ | 否 | 智能体循环内部 |
 
-`hermes send` 有意保持最简接口。如果需要 agent 决定说什么，请在对话或 cron 任务中使用 `send_message` 工具。如果需要定时运行并生成 LLM 内容，请使用带 `deliver='telegram:...'` 的 `cronjob(action='create', prompt=...)`。如果只需要管道传输原始字符串，直接用 `hermes send`。
+`hermes send` 有意保持最简接口。如果需要让智能体决定要发什么，请在对话或 cron 任务中使用 `send_message` 工具。如果需要定时运行并生成 LLM 内容，请使用带 `deliver='telegram:...'` 的 `cronjob(action='create', prompt=...)`。如果只需要管道传输原始字符串，直接用 `hermes send`。
 
 ---
 

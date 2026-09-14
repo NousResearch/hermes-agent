@@ -12,6 +12,7 @@ import functools
 import hashlib
 import json
 import logging
+import random
 import re
 import threading
 import time
@@ -214,6 +215,26 @@ def _slot_label(slot: dict[str, Any]) -> str:
     label = f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
     effort = str(slot.get("reasoning_effort") or "").strip()
     return f"{label}[reasoning={effort}]" if effort else label
+
+
+def _select_reference_models(
+    reference_models: list[dict[str, Any]], sampling: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Apply ``preset["sampling"]`` to the already ``enabled``-filtered reference pool.
+
+    ``{"mode": "all"}`` (default) is a no-op — every entry runs, matching prior behavior exactly.
+    ``{"mode": "random", "k": N}`` draws N distinct slots via ``random.sample`` (order not
+    preserved as a signal — reference order was never meaningful, results are unordered in the
+    aggregator prompt). ``k`` >= pool size runs the whole pool (no error, no padding). Called once
+    per fan-out (cache MISS), so the draw is stable for that cache entry's lifetime and re-rolls
+    on the next MISS — same cadence the existing ``fanout`` setting already governs.
+    """
+    if not isinstance(sampling, dict) or sampling.get("mode") != "random" or not reference_models:
+        return reference_models
+    k = sampling.get("k")
+    if not isinstance(k, int) or k <= 0 or k >= len(reference_models):
+        return reference_models
+    return random.sample(reference_models, k)
 
 
 def _slot_reasoning_config(slot: dict[str, Any]) -> dict[str, Any] | None:
@@ -783,7 +804,7 @@ def aggregate_moa_context(
     *, user_prompt: str, api_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
     aggregator: dict[str, Any], temperature: float | None = None, aggregator_temperature: float | None = None,
     reference_max_tokens: int | None = None, reference_timeout: float | None = None,
-    degraded_reference_policy: str = "loud", agent: Any = None,
+    degraded_reference_policy: str = "loud", agent: Any = None, sampling: dict[str, Any] | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice (one-shot /moa).
 
@@ -798,6 +819,7 @@ def aggregate_moa_context(
     ``reference_max_tokens`` to both calls here would silently reintroduce that regression.
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
+    reference_models = _select_reference_models(reference_models, sampling)
     reference_outputs = _run_references_parallel(
         reference_models, _reference_messages(api_messages), temperature=temperature,
         max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
@@ -1296,6 +1318,7 @@ class MoAChatCompletions:
         reference_models = [
             slot for slot in (preset.get("reference_models") or []) if slot.get("enabled", True)
         ] if preset.get("enabled", True) else []
+        reference_models = _select_reference_models(reference_models, preset.get("sampling"))
         aggregator = preset.get("aggregator") or {}
         # The MoA path's virtual model/provider have no pricing entry; expose the real slot.
         self.last_aggregator_slot = dict(aggregator) if aggregator else None

@@ -70,3 +70,27 @@ def test_save_env_value_managed_key_rejected(env_homes, capsys):
 # ── bulk save strips managed leaves ──────────────────────────────────────────
 
 
+@pytest.mark.parametrize("assertion", ["managed_leaf", "notice"])
+def test_bulk_merge_save_does_not_restore_existing_managed_leaf(homes, capsys, assertion):
+    import yaml
+
+    from hermes_cli.config import get_config_path, save_config
+
+    config_path = get_config_path()
+    config_path.write_text(
+        "model:\n  default: stale/user-model\nx_unknown:\n  keep: true\n",
+        encoding="utf-8",
+    )
+
+    save_config({"timezone": "Asia/Bangkok"}, merge_existing=True)
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["x_unknown"] == {"keep": True}
+    assert saved["timezone"] == "Asia/Bangkok"
+    # The stale leaf came in via the merge, not the caller's dict, so the
+    # notice only fires if the strip runs after _merge_partial_save.
+    notice = capsys.readouterr().err
+    if assertion == "managed_leaf":
+        assert "model" not in saved or "default" not in saved["model"]
+    else:
+        assert "model.default" in notice

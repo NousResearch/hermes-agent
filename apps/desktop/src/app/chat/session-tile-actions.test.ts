@@ -2,7 +2,7 @@ import { renderHook } from '@testing-library/react'
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { textPart } from '@/lib/chat-messages'
+import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 
 import { MAIN_COMPOSER_SCOPE } from './composer/scope'
@@ -210,6 +210,47 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
     expect($activeSessionId.get()).toBe('foreground-runtime')
+  })
+
+  it('dismisses a failed assistant row together with only its optimistic companion', () => {
+    const messages: ChatMessage[] = [
+      { id: 'stored-user', role: 'user', rowId: 41, parts: [{ type: 'text', text: 'kept' }] },
+      { id: 'stored-answer', role: 'assistant', rowId: 42, parts: [{ type: 'text', text: 'kept answer' }] },
+      { id: 'user-1723000000000-abc123', role: 'user', parts: [{ type: 'text', text: 'failed prompt' }] },
+      {
+        id: 'failed-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'partial result' }],
+        error: 'Connection error.',
+        pending: false
+      }
+    ]
+
+    let state = {
+      ...createClientSessionState(STORED_SESSION_ID),
+      messages
+    }
+
+    setSessionTileDelegate({
+      archiveSession: vi.fn(async () => undefined),
+      branchSession: vi.fn(async () => undefined),
+      deleteSession: vi.fn(async () => undefined),
+      executeSlash: vi.fn(async () => undefined),
+      interruptSession: vi.fn(async () => undefined),
+      resumeTile: vi.fn(async () => RUNTIME_SESSION_ID),
+      submitToSession: vi.fn(async () => undefined),
+      updateSession: vi.fn((_runtimeId, updater) => {
+        state = updater(state)
+
+        return state
+      })
+    })
+
+    const { result } = renderTileActions()
+
+    act(() => result.current.dismissError('failed-assistant'))
+
+    expect(state.messages.map(message => message.id)).toEqual(['stored-user', 'stored-answer'])
   })
 })
 

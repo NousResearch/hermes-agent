@@ -245,9 +245,16 @@ class TestEmbeddedDaemonOverlayFlag:
             cua_backend.subprocess, "Popen", return_value=process,
         ) as popen, patch.object(
             cua_backend.subprocess, "run", return_value=status,
-        ), patch.object(cua_backend.threading, "Thread"):
+        ), patch.object(cua_backend.threading, "Thread"), patch(
+            "tools.computer_use.cua_backend_daemon._resolve_cua_driver_app_path",
+            return_value="/Applications/CuaDriver.app",
+        ), patch(
+            "tools.computer_use.cua_backend_daemon._validate_cua_driver_app_signature",
+        ):
             daemon.start()
 
         command = popen.call_args.args[0]
-        assert command[:2] == ["/usr/bin/cua-driver", "serve"]
+        # On macOS with resolved .app, the command is `/usr/bin/open -n -g -a ...app --args serve ...`;
+        # else `cua-driver serve ...`. Assert on the presence of both `serve` and `--no-overlay`.
+        assert "serve" in command
         assert "--no-overlay" in command

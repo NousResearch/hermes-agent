@@ -67,6 +67,27 @@ def _clear_fleet_restart_pending_marker() -> None:
     _m()._clear_marker_file(_fleet_restart_pending_marker_path(), label="fleet-restart-pending")
 
 
+def _read_fleet_restart_pending_marker() -> dict[str, str] | None:
+    """Parse the marker into ``{key: value}``; ``None`` when it does not exist.
+
+    An existing-but-unreadable marker returns ``{}``: callers must treat that as an
+    obligation they could not inspect, never as an absent marker.
+    """
+    try:
+        text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.debug("Could not read fleet-restart-pending marker: %s", exc)
+        return {}
+    fields: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip():
+            fields[key.strip()] = value.strip()
+    return fields
+
+
 def _current_checkout_sha() -> str | None:
     """Current on-disk checkout HEAD, or None if it cannot be resolved."""
     from hermes_cli.update_cmd import _capture_head_sha, _m
@@ -183,15 +204,93 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _live_gateway_code_shas() -> list[str]:
+    """``code_sha`` reported right now by each gateway we can identify as live.
+
+    Same two sources as ``collect_fleet_versions`` (the control socket's authoritative
+    ``identify`` answer, else the PID-verified ``gateway_state.json`` record), but
+    resilient to that probe's all-or-nothing failure: it swallows exceptions and returns
+    no rows, which is exactly the degraded state #111272 was reported from — a gateway
+    live and serving the pulled code while the inventory came back empty.
+
+    An empty list means "no live gateway identified"; it is never proof of discharge.
+    """
+    shas: list[str] = []
+    try:
+        from gateway.status import read_runtime_status, runtime_status_pid_is_live
+        from hermes_cli.update_cmd import get_hermes_home
+        from hermes_cli.update_receipt import _profile_homes, _socket_identity
+        homes = [("default", get_hermes_home()), *_profile_homes()]
+    except Exception as exc:  # noqa: BLE001 - a failed probe is not evidence of discharge
+        logger.debug("Gateway identity probe unavailable: %s", exc)
+        return shas
+    seen: set[str] = set()
+    for _profile, home in homes:
+        if str(home) in seen:
+            continue
+        seen.add(str(home))
+        try:
+            socket_identity = _socket_identity(home)
+            if socket_identity is not None:
+                shas.append(str(socket_identity[1].get("code_sha") or ""))
+                continue
+            record = read_runtime_status(home / "gateway_state.json")
+            if record and runtime_status_pid_is_live(record):
+                shas.append(str(record.get("code_sha") or ""))
+        except Exception as exc:  # noqa: BLE001 - per-home probe failure, keep the rest
+            logger.debug("Could not read gateway identity from %s: %s", home, exc)
+    return shas
+
+
+def _restart_obligation_is_discharged(marker: dict[str, str]) -> bool:
+    """True when the live fleet proves the pull the marker recorded was restarted.
+
+    The marker remembers the ``expected_sha`` the interrupted update pulled. A gateway
+    that is live *now* and reports that same sha is serving the pulled code, so the
+    restart the obligation was waiting for provably happened — regardless of why the
+    update exited before clearing the marker. Mirrors ``_live_fleet_covers_receipt``:
+    the fleet inventory decides when it returns rows, and the per-gateway identity
+    sources are consulted when it returns none, because "no rows" is ambiguous between
+    "nothing running" and "the probe itself failed" (#111272).
+
+    Discharging is fail-open, so it demands positive identity evidence: a marker that
+    recorded no ``expected_sha``, or that no live gateway can be identified for, stays
+    pending.
+    """
+    expected_sha = str(marker.get("expected_sha") or "").strip()
+    if not expected_sha:
+        return False
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions()
+    except Exception as exc:  # noqa: BLE001 - see above: no rows is not a discharge
+        logger.debug("Fleet version probe failed for the restart marker: %s", exc)
+        fleet = []
+    if fleet:
+        return all(
+            row.get("state") == "current" and row.get("code_sha") == expected_sha
+            for row in fleet
+        )
+    live_shas = _live_gateway_code_shas()
+    return bool(live_shas) and all(sha == expected_sha for sha in live_shas)
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
 
     # The marker has no runtime inventory and may belong to a newer, killed update
-    # than latest.json. An older receipt cannot discharge that unknown obligation.
-    with suppress(OSError):
-        if _fleet_restart_pending_marker_path().is_file():
+    # than latest.json. An older receipt cannot discharge that unknown obligation —
+    # but the sha the marker itself recorded can: the fleet probe comes back with no
+    # rows whenever it fails, the update then exits without clearing the marker, and
+    # merely existing made it warn on every CLI startup forever (#111272). Settle it
+    # on positive identity evidence instead, and keep warning when there is none.
+    marker = _read_fleet_restart_pending_marker()
+    if marker is not None:
+        if not _restart_obligation_is_discharged(marker):
             return True
+        _clear_fleet_restart_pending_marker()
+        return False
     if not _receipt_reports_stale_runtime():
         return False
     return not _live_fleet_covers_receipt(_current_checkout_sha())

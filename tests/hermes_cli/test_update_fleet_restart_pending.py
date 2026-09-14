@@ -27,6 +27,8 @@ import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 import hermes_cli.update_cmd_fleet as update_cmd_fleet
 import hermes_cli.update_cmd_deps as update_cmd_deps
+from hermes_cli import update_receipt
+from gateway import status as gateway_status
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
 
@@ -180,6 +182,91 @@ def test_pending_needed_when_marker_exists():
     assert update_cmd._pending_fleet_restart_needed() is True
     update_cmd._clear_fleet_restart_pending_marker()
     assert update_cmd._pending_fleet_restart_needed() is False
+
+
+def _write_live_gateway_state(code_sha):
+    """Write a ``gateway_state.json`` snapshot into the sandbox HERMES_HOME."""
+    path = get_hermes_home() / "gateway_state.json"
+    path.write_text(
+        json.dumps({"pid": 4242, "gateway_state": "running", "code_sha": code_sha}),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _stub_fleet_probe(monkeypatch, rows):
+    """Force the fleet inventory the caller wants, with runtimes reported as live."""
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda *a, **k: rows)
+    monkeypatch.setattr(update_receipt, "_socket_identity", lambda home: None)
+    monkeypatch.setattr(gateway_status, "runtime_status_pid_is_live", lambda record: True)
+
+
+def test_marker_settled_when_degraded_probe_and_live_gateway_serves_pulled_sha(monkeypatch):
+    """#111272: no fleet rows must not mean "warn forever" when the gateway serves the pull.
+
+    ``collect_fleet_versions`` swallows probe failures and returns no rows, so the update
+    that wrote the marker exits without clearing it even though the gateway it restarted
+    is live on the pulled sha. The marker then warned on every later CLI startup.
+    """
+    pulled_sha = "a" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=pulled_sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    assert marker.is_file()
+    state_path = _write_live_gateway_state(pulled_sha)
+    try:
+        _stub_fleet_probe(monkeypatch, rows=[])
+
+        assert update_cmd._pending_fleet_restart_needed() is False
+        assert not marker.exists()
+        # Settled means silent from now on, not just once.
+        assert update_cmd._pending_fleet_restart_needed() is False
+    finally:
+        state_path.unlink()
+
+
+def test_marker_settled_from_a_current_fleet_row(monkeypatch):
+    pulled_sha = "b" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=pulled_sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    try:
+        _stub_fleet_probe(
+            monkeypatch,
+            rows=[{"profile": "default", "pid": 4242, "state": "current", "code_sha": pulled_sha}],
+        )
+
+        assert update_cmd._pending_fleet_restart_needed() is False
+        assert not marker.exists()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_marker_kept_when_live_gateway_still_serves_pre_update_sha(monkeypatch):
+    """The narrow fix must not blanket-hide a genuinely stale gateway."""
+    pulled_sha, pre_update_sha = "c" * 40, "d" * 40
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=pulled_sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    state_path = _write_live_gateway_state(pre_update_sha)
+    try:
+        _stub_fleet_probe(monkeypatch, rows=[])
+
+        assert update_cmd._pending_fleet_restart_needed() is True
+        assert marker.is_file()
+    finally:
+        state_path.unlink()
+        update_cmd._clear_fleet_restart_pending_marker()
+
+
+def test_marker_kept_when_no_live_gateway_identified(monkeypatch):
+    """An empty probe with no identifiable gateway cannot discharge the obligation."""
+    update_cmd._write_fleet_restart_pending_marker(expected_sha="e" * 40)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    try:
+        _stub_fleet_probe(monkeypatch, rows=[])
+
+        assert update_cmd._pending_fleet_restart_needed() is True
+        assert marker.is_file()
+    finally:
+        update_cmd._clear_fleet_restart_pending_marker()
 
 
 def test_pending_needed_when_unfinished_receipt_runtime_sha_skews(monkeypatch):

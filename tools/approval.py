@@ -864,6 +864,14 @@ def _presence(approval_callback=None) -> tuple:
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
     if _is_single_query_approval_context():
         is_cli = is_gateway = is_ask = False
+    if _is_cron_approval_context():
+        # Cron workers are unattended: nobody can answer an approval card. Presence
+        # vars (HERMES_INTERACTIVE / HERMES_EXEC_ASK) can leak in via any env-passing
+        # launch path — treat them as advisory here so the gate consults
+        # ``approvals.cron_mode`` instead of hanging on a pending card (#110932).
+        # Mirrors the single-query clearing above and the cron exclusion inside
+        # ``_is_gateway_approval_context``.
+        is_cli = is_gateway = is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
 

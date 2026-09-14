@@ -12,7 +12,8 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
-  true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
+  true), MATRIX_APPROVAL_TIMEOUT_SECONDS (approval prompts default to config approvals.timeout,
+  fallback 300; pickers keep 300).
 """
 
 from __future__ import annotations
@@ -290,6 +291,7 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
+    late: bool = False  # reaction arrived after expires_at; forwarded to the agent-side resolver
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
 
@@ -466,6 +468,20 @@ def _env_number(name: str, default, cast):
         return cast(_get_scoped_secret(name, str(default)))
     except ValueError:
         return default
+
+
+def _agent_approval_timeout_seconds() -> int:
+    """Agent-side approval wait (config ``approvals.timeout``) as the default for the Matrix
+    reaction window. The blocked agent thread polls ``approvals.timeout``; a chat-side window
+    that expires EARLIER silently swallows late answers — the adapter marked the prompt expired,
+    never forwarded the choice, and the thread sat blocked until its own deadline (observed:
+    9000s agent wait vs 300s Matrix window = 2.5h hang ending in a fail-closed deny). Keep the
+    two clocks one value; an explicit MATRIX_APPROVAL_TIMEOUT_SECONDS still overrides."""
+    try:
+        from tools.approval_context import _get_approval_timeout
+        return int(_get_approval_timeout())
+    except Exception:
+        return 300  # mirror the tools.approval_context default, fail closed to the old window
 
 
 def _csv_set(raw: Any) -> Set[str]:
@@ -840,7 +856,16 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
         self._approval_prompt_by_session: Dict[str, str] = {}
         self._approval_require_sender: bool = _env_truthy("MATRIX_APPROVAL_REQUIRE_SENDER", "true")
-        self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
+        # Explicit env override wins; otherwise inherit the agent-side approvals.timeout so the
+        # chat window and the blocked-thread deadline cannot silently diverge (see helper).
+        _explicit_timeout = str(_get_scoped_secret("MATRIX_APPROVAL_TIMEOUT_SECONDS", "")).strip()
+        if _explicit_timeout:
+            self._approval_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
+        else:
+            self._approval_timeout_seconds = _agent_approval_timeout_seconds()
+        # Pickers (model/choice) have no blocked agent thread behind them; they keep the
+        # explicit window or the legacy 300s default so stale controls don't stay live for hours.
+        self._picker_timeout_seconds = _env_number("MATRIX_APPROVAL_TIMEOUT_SECONDS", 300, int)
         self._model_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         self._choice_picker_prompts_by_event: Dict[str, _MatrixPickerPrompt] = {}
         # Authz lists: scoped env → this profile's YAML (``allowed_users`` / ``ignore_user_patterns``,
@@ -1557,15 +1582,17 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _send_reaction_prompt(
         self, chat_id: str, text: str, metadata: Optional[dict], make_prompt, registry: dict, emojis,
-        label: str) -> SendResult:
+        label: str, timeout_s: Optional[float] = None) -> SendResult:
         """Send *text*, register ``make_prompt(message_id, requester, expires_at)`` under
-        the resulting event, then seed the bot's reaction controls (recording their IDs)."""
+        the resulting event, then seed the bot's reaction controls (recording their IDs).
+        ``timeout_s`` overrides the window; None uses ``_approval_timeout_seconds``."""
         result = await self.send(chat_id, text, metadata=metadata)
         if not result.success or not result.message_id:
             return result
+        window = self._approval_timeout_seconds if timeout_s is None else timeout_s
         prompt = make_prompt(
             result.message_id, str((metadata or {}).get("requester_user_id") or "") or None,
-            time.monotonic() + max(self._approval_timeout_seconds, 0))
+            time.monotonic() + max(window, 0))
         registry[result.message_id] = prompt
         for emoji in emojis:
             try:
@@ -1636,13 +1663,15 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _send_picker(
         self, chat_id: str, lines: list, choices: dict, session_key: str, on_selected, metadata, registry: dict,
         label: str) -> SendResult:
-        """Send picker *lines*, register a _MatrixPickerPrompt under the event, seed its reactions."""
+        """Send picker *lines*, register a _MatrixPickerPrompt under the event, seed its reactions.
+        Pickers keep the explicit (or legacy 300s) window: unlike an approval, no agent thread
+        blocks on them, so a long approvals.timeout window would leave stale controls live."""
         return await self._send_reaction_prompt(
             chat_id, "\n".join(lines), metadata,
             lambda message_id, requester, expires_at: _MatrixPickerPrompt(
                 chat_id=chat_id, message_id=message_id, session_key=session_key, choices=choices,
                 on_selected=on_selected, requester_user_id=requester, expires_at=expires_at),
-            registry, choices, label)
+            registry, choices, label, timeout_s=self._picker_timeout_seconds)
 
     async def send_choice_picker(
         self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,
@@ -2283,18 +2312,25 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _claim_reaction_prompt(
         self, registry: dict, room_id: str, reacts_to: str, key: str, sender: str, label: str, invalid_text: str,
-        on_expired, choices: Optional[dict] = None) -> tuple[bool, Any, Any]:
+        on_expired, choices: Optional[dict] = None, *, late_ok: bool = False) -> tuple[bool, Any, Any]:
         """Shared gate for reaction prompts: (handled, prompt, selection). handled=False => not our
         prompt; selection=None with handled=True => consumed without action (wrong room, expired,
-        unauthorized reactor, or a key that is not a choice). ``choices`` defaults to ``prompt.choices``."""
+        unauthorized reactor, or a key that is not a choice). ``choices`` defaults to ``prompt.choices``.
+        ``late_ok`` (approvals): a reaction after ``expires_at`` is NOT consumed at the gate — it is
+        flagged ``prompt.late`` and forwarded so the agent-side resolver can still honor it. A chat
+        window that closes before the blocked agent thread must not swallow the answer; the resolver
+        (queue still pending?) is the authority on whether the choice lands.
+        """
         prompt = registry.get(reacts_to)
         if not prompt or prompt.resolved:
             return False, None, None
         if room_id != prompt.chat_id:
             return True, prompt, None
         if self._matrix_prompt_expired(prompt):
-            await on_expired(room_id, reacts_to, prompt)
-            return True, prompt, None
+            if not late_ok:
+                await on_expired(room_id, reacts_to, prompt)
+                return True, prompt, None
+            prompt.late = True
         if not await self._validate_matrix_prompt_reactor(room_id, reacts_to, sender, prompt, label):
             return True, prompt, None
         selection = (prompt.choices if choices is None else choices).get(key)
@@ -2307,7 +2343,7 @@ class MatrixAdapter(BasePlatformAdapter):
         handled, prompt, choice = await self._claim_reaction_prompt(
             self._approval_prompts_by_event, room_id, reacts_to, key, sender, "approval",
             "That reaction is not valid for this approval prompt.", self._expire_matrix_approval_prompt,
-            choices=self._approval_reaction_map)
+            choices=self._approval_reaction_map, late_ok=True)
         if choice is None:
             return handled
         try:
@@ -2318,9 +2354,27 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._approval_prompts_by_event.pop(reacts_to, None)
                 self._approval_prompt_by_session.pop(prompt.session_key, None)
                 logger.info(
-                    "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, prompt.session_key, choice, sender)
+                    "Matrix reaction resolved %d approval(s) for session %s (choice=%s, user=%s%s)",
+                    count, prompt.session_key, choice, sender, ", late" if prompt.late else "")
                 await self._redact_bot_approval_reactions(room_id, prompt)
+                if prompt.late:
+                    await self._send_invalid_reaction_feedback(
+                        room_id, reacts_to,
+                        "⏳ Late approval honored — the command was still waiting. It will run now.")
+            elif prompt.late:
+                # Nothing is waiting: the agent-side wait already timed out (fail-closed deny)
+                # or was resolved elsewhere. Mirrors the Telegram "⌛ Approval expired" tap.
+                prompt.resolved = True
+                self._approval_prompts_by_event.pop(reacts_to, None)
+                self._approval_prompt_by_session.pop(prompt.session_key, None)
+                logger.info(
+                    "Matrix late approval found nothing pending for session %s (choice=%s, user=%s)",
+                    prompt.session_key, choice, sender)
+                await self._redact_bot_approval_reactions(room_id, prompt)
+                await self._send_invalid_reaction_feedback(
+                    room_id, reacts_to,
+                    "⌛ Approval expired — no command was waiting. It already timed out (and was "
+                    "denied) or was resolved elsewhere.")
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
         return True

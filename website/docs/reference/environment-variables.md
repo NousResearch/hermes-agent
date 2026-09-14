@@ -526,7 +526,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `MATRIX_DM_AUTO_THREAD` | Auto-create threads for DM messages in Matrix (default: `false`) |
 | `MATRIX_DM_MENTION_THREADS` | Create a thread when bot is `@mentioned` in a DM (default: `false`) |
 | `MATRIX_APPROVAL_REQUIRE_SENDER` | Require approval/model-picker reactions to come from the original requester when known (default: `true`) |
-| `MATRIX_APPROVAL_TIMEOUT_SECONDS` | Timeout for Matrix reaction approval/model-picker prompts (default: `300`) |
+| `MATRIX_APPROVAL_TIMEOUT_SECONDS` | Timeout for Matrix reaction approval/model-picker prompts (defaults to config `approvals.timeout`, fallback `300`) |
 | `MATRIX_ALLOW_PUBLIC_ROOMS` | Allow Matrix room-creation tools to create public rooms (default: `false`) |
 | `MATRIX_MAX_MEDIA_BYTES` | Maximum Matrix media upload/download size in bytes (default: `104857600`) |
 | `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |

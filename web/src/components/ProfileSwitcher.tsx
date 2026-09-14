@@ -16,16 +16,18 @@ import { cn } from "@/lib/utils";
  * fetchJSON ?profile= injection. Hidden when only one profile exists.
  */
 export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
-  const { profile, currentProfile, profiles, setProfile } = useProfileScope();
+  const { profile, currentProfile, profiles, profileLabels, setProfile } =
+    useProfileScope();
   const { t } = useI18n();
 
+  const currentId = currentProfile || "default";
   const currentDashboardLabel = useMemo(
     () =>
       (t.app.currentProfileOption ?? "this dashboard ({name})").replace(
         "{name}",
-        currentProfile || "default",
+        profileLabels[currentId] ?? currentId,
       ),
-    [currentProfile, t.app.currentProfileOption],
+    [currentId, profileLabels, t.app.currentProfileOption],
   );
 
   if (profiles.length < 2) return null;
@@ -70,7 +72,7 @@ export function ProfileSwitcher({ collapsed }: ProfileSwitcherProps) {
           .filter((name) => name !== currentProfile)
           .map((name) => (
             <SelectOption key={name} value={name}>
-              {name}
+              {profileLabels[name] ?? name}
             </SelectOption>
           ))}
       </Select>

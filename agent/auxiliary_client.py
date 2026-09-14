@@ -3305,7 +3305,8 @@ def _is_auth_error(exc: Exception) -> bool:
     if status == 401:
         return True
     err_lower = str(exc).lower()
-    if "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower():
+    if ("error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
+            or "ide token expired" in err_lower):
         return True
     # xAI returns 403 "unauthenticated:bad-credentials" for expired OAuth tokens — semantically a 401.
     return "bad-credentials" in err_lower and (status == 403 or "unauthenticated" in err_lower)
@@ -3743,14 +3744,32 @@ def _creds_have_api_key(creds: Dict[str, Any]) -> bool:
     return bool(str(creds.get("api_key", "") or "").strip())
 
 
-def _refresh_copilot_credentials() -> bool:
-    from hermes_cli.copilot_auth import _jwt_cache, _token_fingerprint, exchange_copilot_token, resolve_copilot_token
-    raw_token, _source = resolve_copilot_token()
+def _refresh_copilot_credentials(raw_token: Optional[str] = None) -> bool:
+    from hermes_cli.copilot_auth import evict_cached_exchanged_token, exchange_copilot_token, resolve_copilot_token
+    if raw_token is None:
+        raw_token, _source = resolve_copilot_token()
     if not str(raw_token or "").strip():
         return False
-    _jwt_cache.pop(_token_fingerprint(raw_token), None)
-    exchange_copilot_token(raw_token)
-    return True
+    evict_cached_exchanged_token(raw_token)
+    try:
+        exchange_copilot_token(raw_token)
+        return True
+    except Exception as exc:
+        logger.debug("Auxiliary Copilot credential refresh failed: %s", exc)
+        return False
+
+
+def _is_unexchanged_copilot_user_token(api_key: str) -> bool:
+    """True for a raw GitHub App user token (``ghu_``): the exchange degraded to it."""
+    return str(api_key or "").strip().startswith("ghu_")
+
+
+def _copy_copilot_auth(source: Any, target: Any) -> Any:
+    """Preserve Copilot auth ownership across the shared async conversion boundary."""
+    metadata = getattr(source, "_hermes_copilot_auth", None)
+    if metadata is not None:
+        target._hermes_copilot_auth = metadata
+    return target
 
 
 def _refresh_codex_credentials() -> bool:
@@ -4633,9 +4652,9 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if isinstance(sync_client, _AuxProbeClientStub):
         return sync_client, model
     if isinstance(sync_client, CodexAuxiliaryClient):
-        return AsyncCodexAuxiliaryClient(sync_client), model
+        return _copy_copilot_auth(sync_client, AsyncCodexAuxiliaryClient(sync_client)), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
-        return AsyncAnthropicAuxiliaryClient(sync_client), model
+        return _copy_copilot_auth(sync_client, AsyncAnthropicAuxiliaryClient(sync_client)), model
     if isinstance(sync_client, BedrockAuxiliaryClient):
         return AsyncBedrockAuxiliaryClient(sync_client), model
     with contextlib.suppress(ImportError):
@@ -4672,7 +4691,7 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     # Hermes owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.
     async_kwargs.setdefault("max_retries", 0)
-    return AsyncOpenAI(**async_kwargs), model
+    return _copy_copilot_auth(sync_client, AsyncOpenAI(**async_kwargs)), model
 
 
 def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
@@ -5216,6 +5235,13 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
         logger.debug("resolve_provider_client: provider %s has no API key configured (tried: %s)",
                      provider, ", ".join(tried_sources))
         return None, None
+    if provider == "copilot" and _is_unexchanged_copilot_user_token(api_key):
+        # A GitHub App user token (ghu_) is only usable after the Copilot exchange; sent raw it
+        # fails. When the exchange degraded to it, report Copilot unavailable so the task's
+        # fallback chain serves the call instead of a request that cannot succeed.
+        logger.warning("Auxiliary Copilot: token exchange unavailable for a ghu_ token; "
+                       "treating copilot as unavailable")
+        return None, None
     base_url = _to_openai_base_url(raw_base_url)
     # Explicit base_url override: a fallback_model/custom_providers entry pointing a built-in name elsewhere.
     if req.explicit_base_url and provider != "actual":
@@ -5246,6 +5272,13 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     # api_mode handling for any API-key provider (direct OpenAI + codex model) and Anthropic-wire
     # endpoints (api.kimi.com/coding, /anthropic gateways) without per-provider branches.
     client = _wrap_transport(req, client, final_model, raw_base_url, api_key)
+    if provider == "copilot":
+        with contextlib.suppress(Exception):
+            from hermes_cli.copilot_auth import exchanged_token_expiry, resolve_copilot_token
+            raw_token, _source = resolve_copilot_token()
+            expires_at = exchanged_token_expiry(raw_token, api_key)
+            if expires_at is not None:
+                client._hermes_copilot_auth = (raw_token, api_key, expires_at)
     logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
     return _route_client(req, client, final_model)
 
@@ -5604,6 +5637,7 @@ def resolve_vision_provider_client(
     provider: Optional[str] = None, model: Optional[str] = None, *, base_url: Optional[str] = None,
     api_key: Optional[str] = None, async_mode: bool = False,
     main_runtime: Optional[Dict[str, Any]] = None,
+    auth_state: Optional[Dict[str, bool]] = None,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Resolve the client actually used for vision tasks.
 
@@ -5640,6 +5674,7 @@ def resolve_vision_provider_client(
         # Fallback: try without explicit base_url (old behavior)
     client, final_model = _get_cached_client(
         requested, resolved_model, async_mode, api_mode=resolved_api_mode, main_runtime=runtime, is_vision=True,
+        auth_state=auth_state,
     )
     return requested, client, (final_model if client is not None else None)
 
@@ -5911,6 +5946,7 @@ def _get_cached_client(
     provider: str, model: str = None, async_mode: bool = False, base_url: str = None,
     api_key: str = None, api_mode: str = None, main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False, task: Optional[str] = None,
+    auth_state: Optional[Dict[str, bool]] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -5927,6 +5963,7 @@ def _get_cached_client(
         provider, async_mode=async_mode, base_url=base_url, api_key=api_key, api_mode=api_mode,
         main_runtime=main_runtime, is_vision=is_vision, task=task, model=model,
     )
+    stale_copilot: Optional[Tuple[Any, str, str]] = None
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
@@ -5934,11 +5971,32 @@ def _get_cached_client(
                 cached_loop is not None and cached_loop is current_loop and not cached_loop.is_closed()
             )
             if loop_ok:
-                return cached_client, _compat_model(cached_client, model, cached_default)
-            # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
-            # foreign loop stays force-neutered.
-            _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
-            del _client_cache[cache_key]
+                metadata = getattr(cached_client, "_hermes_copilot_auth", None)
+                if isinstance(metadata, tuple) and len(metadata) == 3:
+                    from hermes_cli.copilot_auth import exchanged_token_expiry_fresh
+                    raw_token, _api_token, expires_at = metadata
+                    if not exchanged_token_expiry_fresh(expires_at):
+                        stale_copilot = cached_client, raw_token, _api_token
+                    else:
+                        return cached_client, _compat_model(cached_client, model, cached_default)
+                else:
+                    return cached_client, _compat_model(cached_client, model, cached_default)
+            if stale_copilot is None:
+                # Stale async entry — evict. Only a closed owner loop may be awaited here; a live
+                # foreign loop stays force-neutered.
+                _close_cached_client(cached_client, close_async=cached_loop is not None and cached_loop.is_closed())
+                del _client_cache[cache_key]
+    if stale_copilot is not None:
+        stale_client, raw_token, stale_api_token = stale_copilot
+        from hermes_cli.copilot_auth import fresh_exchanged_token
+        current = fresh_exchanged_token(raw_token)
+        if current is None or current[0] == stale_api_token:
+            if auth_state is not None:
+                auth_state["full_auth_used"] = True
+            if not _refresh_copilot_credentials(raw_token):
+                _evict_cached_client_instance(stale_client)
+                return None, None
+        _evict_cached_client_instance(stale_client)
     # Build outside the lock. For pool-backed providers derive the key from the pool entry:
     # resolve_api_key_provider_credentials prefers env vars, which would bypass pool rotation
     # and retry an exhausted key.
@@ -7178,6 +7236,7 @@ def _resolve_call_client(
     api_key: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], main_runtime: Optional[Dict[str, Any]], async_mode: bool,
+    auth_state: Dict[str, bool],
 ) -> _ResolvedAuxRoute:
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
@@ -7187,20 +7246,21 @@ def _resolve_call_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model, base_url=resolved_base_url or base_url,
             api_key=resolved_api_key or api_key, async_mode=async_mode, main_runtime=main_runtime,
+            auth_state=auth_state,
         )
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
                            resolved_provider)
             effective_provider, client, final_model = resolve_vision_provider_client(
                 provider="auto", model=resolved_model, async_mode=async_mode,
-                main_runtime=main_runtime)
+                main_runtime=main_runtime, auth_state=auth_state)
         if client is not None:
             resolved_provider = effective_provider or resolved_provider
     else:
         client, final_model = _get_cached_client(
             resolved_provider, resolved_model, async_mode=async_mode, base_url=resolved_base_url,
             api_key=resolved_api_key, api_mode=resolved_api_mode, main_runtime=main_runtime,
-            task=task)
+            task=task, auth_state=auth_state)
         effective_provider = _effective_provider_for_client(client, resolved_provider)
         if client is None:
             # Explicit provider with no credentials: honor the task fallback_chain before
@@ -7225,7 +7285,8 @@ def _resolve_call_client(
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client(
-                    "auto", async_mode=async_mode, main_runtime=main_runtime, task=task)
+                    "auto", async_mode=async_mode, main_runtime=main_runtime, task=task,
+                    auth_state=auth_state)
                 effective_provider = _effective_provider_for_client(client, "auto")
     if client is None:
         raise AuxiliaryClientUnavailable(f"No LLM provider configured for task={task} "
@@ -7238,7 +7299,8 @@ _PreparedAuxRequest = NamedTuple("_PreparedAuxRequest", [
     ("resolved_provider", str), ("request_provider", str), ("resolved_model", Optional[str]),
     ("resolved_base_url", Optional[str]), ("resolved_api_key", Optional[str]),
     ("resolved_api_mode", Optional[str]), ("effective_timeout", float),
-    ("effective_extra_body", Dict[str, Any]), ("base_info", str)])
+    ("effective_extra_body", Dict[str, Any]), ("base_info", str),
+    ("full_auth_used", bool)])
 
 
 def _prepare_aux_request(
@@ -7247,7 +7309,7 @@ def _prepare_aux_request(
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
     timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
     extra_headers: Optional[Dict[str, str]], api_mode: Optional[str],
-    route_info: Optional[Dict[str, str]], async_mode: bool,
+    route_info: Optional[Dict[str, str]], async_mode: bool, auth_state: Dict[str, bool],
 ) -> _PreparedAuxRequest:
     """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
     Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
@@ -7263,6 +7325,7 @@ def _prepare_aux_request(
         resolved_provider=resolved_provider, resolved_model=resolved_model,
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
+        auth_state=auth_state,
     )
     effective_timeout = _effective_aux_timeout(task, timeout)
     # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
@@ -7306,7 +7369,7 @@ def _prepare_aux_request(
     return _PreparedAuxRequest(
         client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+        effective_extra_body, base_info, auth_state["full_auth_used"])
 
 
 class _LadderStep(NamedTuple):
@@ -7368,6 +7431,7 @@ _LadderRoute = NamedTuple("_LadderRoute", [
     ("resolved_api_key", Optional[str]), ("resolved_api_mode", Optional[str]),
     ("final_model", Optional[str]), ("main_runtime", Optional[Dict[str, Any]]),
     ("route_info", Optional[Dict[str, str]]), ("timeout", Optional[float]),
+    ("full_auth_used", bool),
 ])
 
 
@@ -7519,10 +7583,20 @@ def _ladder_credential_rungs(
     auth_refresh_provider = _auth_refresh_provider_for_route(
         resolved_provider, route.base_info, _effective_provider_for_client(client, ""))
     if (_is_auth_error(first_err) and auth_refresh_provider not in {"auto", "", None}
-            and not client_is_nous):
+            and not client_is_nous
+            and (auth_refresh_provider != "copilot" or not route.full_auth_used)):
         refresh_kwargs = ({"failed_api_key": getattr(client, "api_key", "")}
                           if auth_refresh_provider == "anthropic" else {})
-        if _refresh_provider_credentials(auth_refresh_provider, **refresh_kwargs):
+        if auth_refresh_provider == "copilot":
+            metadata = getattr(client, "_hermes_copilot_auth", None)
+            refreshed = bool(
+                isinstance(metadata, tuple) and len(metadata) == 3
+                and _refresh_copilot_credentials(metadata[0]))
+            if refreshed:
+                _evict_cached_client_instance(client)
+        else:
+            refreshed = _refresh_provider_credentials(auth_refresh_provider, **refresh_kwargs)
+        if refreshed:
             if auth_refresh_provider != _normalize_aux_provider(resolved_provider):
                 # The stale client is cached under the route label (e.g. "auto"), not the
                 # concrete backend we refreshed.
@@ -7699,6 +7773,7 @@ def _aux_recovery_ladder(
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
     resolved_api_mode: Optional[str], final_model: Optional[str], max_tokens: Optional[int],
     main_runtime: Optional[Dict[str, Any]], route_info: Optional[Dict[str, str]],
+    full_auth_used: bool,
 ):
     """Ordered recovery rungs after the primary request failed (generator): parameter
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
@@ -7708,7 +7783,7 @@ def _aux_recovery_ladder(
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
         resolved_base_url, resolved_api_key, resolved_api_mode, final_model, main_runtime, route_info,
-        kwargs.get("timeout"))
+        kwargs.get("timeout"), full_auth_used)
     resp, first_err, kwargs = yield from _ladder_parameter_rungs(first_err, route, kwargs, max_tokens)
     if first_err is None:
         return resp
@@ -7859,12 +7934,14 @@ def _plan_aux_call(
     runtime snapshot for keying/resolution/retries/fallbacks, so a concurrent /model switch
     can't mix key and client from different runtimes."""
     main_runtime = _normalize_main_runtime(main_runtime)
+    auth_state = {"full_auth_used": False}
     req = _prepare_aux_request(
         task, provider=provider, model=model, base_url=base_url, api_key=api_key,
         main_runtime=main_runtime, messages=messages, temperature=temperature,
         max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
         reasoning_config=reasoning_config, extra_headers=extra_headers,
         api_mode=api_mode, route_info=route_info, async_mode=async_mode,
+        auth_state=auth_state,
     )
     candidate_kwargs = dict(
         task=task, messages=messages, temperature=temperature, max_tokens=max_tokens,
@@ -7915,7 +7992,8 @@ def _start_recovery_ladder(
         resolved_model=req.resolved_model, resolved_base_url=req.resolved_base_url,
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         final_model=req.final_model, max_tokens=retry_kwargs["max_tokens"],
-        main_runtime=retry_kwargs["main_runtime"], route_info=route_info)
+        main_runtime=retry_kwargs["main_runtime"], route_info=route_info,
+        full_auth_used=req.full_auth_used)
 
 
 def _call_llm_impl(

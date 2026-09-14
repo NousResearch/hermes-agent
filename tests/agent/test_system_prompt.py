@@ -835,3 +835,55 @@ class TestConversationStartedTwoLine:
         assert "Conversation started:" not in vol
         assert "as of the last context rebuild" not in vol
 
+
+
+@pytest.fixture(params=["no-tools", "no-hermes-skill", "hermes-skill"])
+def hermes_help_prompt_agent(request, monkeypatch, tmp_path):
+    import agent.system_prompt as system_prompt
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    tools = [] if request.param == "no-tools" else ["skill_view"]
+    name = "hermes-agent" if request.param == "hermes-skill" else "sample"
+    skill_dir = tmp_path / "skills" / "tools" / name
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Sample skill\n---\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP_WITH_SKILL")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS", "HELP_NO_SKILLS")
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value=""),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch("agent.coding_context.coding_system_prompt_parts", return_value=([], [], [])),
+        patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
+        patch("hermes_time.now", return_value=datetime(2026, 1, 2, 9, 0)),
+    ):
+        yield _make_agent(valid_tool_names=tools, run_budget_seconds=None), request.param
+
+
+def test_hermes_help_guidance_disabled_from_config(hermes_help_prompt_agent, tmp_path):
+    from agent.agent_init import _apply_agent_section
+    from hermes_cli.config import load_config_readonly
+
+    agent, _ = hermes_help_prompt_agent
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  hermes_help_guidance: false\n  environment_probe: false\n", encoding="utf-8"
+    )
+    _apply_agent_section(agent, load_config_readonly())
+    assert agent._hermes_help_guidance is False
+    prompt = build_system_prompt(agent)
+    assert "HELP" not in prompt
+    assert "CONTEXT_FILES" in prompt
+
+
+def test_hermes_help_guidance_missing_attribute_keeps_default(hermes_help_prompt_agent):
+    agent, scenario = hermes_help_prompt_agent
+    assert not hasattr(agent, "_hermes_help_guidance")
+    prompt = build_system_prompt(agent)
+    expected = "HELP_WITH_SKILL" if scenario == "hermes-skill" else "HELP_NO_SKILLS"
+    assert expected in prompt
+    assert prompt.count("HELP") == 1
+    agent._hermes_help_guidance = True
+    assert build_system_prompt(agent) == prompt

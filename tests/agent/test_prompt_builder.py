@@ -1213,3 +1213,106 @@ class TestContextFileReadTimeout:
 
         with pytest.raises(FileNotFoundError):
             _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)
+
+
+class TestSkillsIndexInstruction:
+    DEFAULT_INTRO = (
+        "Before replying, scan the skills below. If a skill matches or is even partially relevant to your "
+        "task, you MUST load it with skill_view(name) and follow its instructions. Err on the side of "
+        "loading \u2014 it is always better to have context you don't need than to miss critical steps, pitfalls, "
+        "or established workflows. Skills contain specialized knowledge \u2014 API endpoints, tool-specific "
+        "commands, and proven workflows that outperform general-purpose approaches. Load the skill "
+        "even if you think you could handle the task with basic tools like web_search or terminal. "
+        "Skills also encode the user's preferred approach, conventions, and quality standards for tasks like "
+        "code review, planning, and testing \u2014 load them even for tasks you already know how to do, because "
+        "the skill defines how it should be done here.\n"
+        "If a skill has issues, fix it with skill_manage(action='patch').\n"
+        "After difficult/iterative tasks, offer to save as a skill. If a skill you loaded was missing steps, "
+        "had wrong commands, or needed pitfalls you discovered, update it before finishing."
+    )
+    DEFAULT_OUTRO = "Only proceed without loading a skill if genuinely none are relevant to the task."
+
+    @pytest.mark.parametrize("tools", [None, {"web_search"}, {"terminal"}])
+    def test_default_instruction_is_byte_stable(self, tools):
+        from agent.prompt_builder import _render_skills_index
+
+        intro = self.DEFAULT_INTRO
+        if tools == {"terminal"}:
+            intro = intro.replace("web_search or terminal", "terminal")
+        assert _render_skills_index({"tools": [("sample", "Sample skill")]}, {}, None, tools) == (
+            f"## Skills\n{intro}\n\n"
+            "<available_skills>\n  tools:\n    - sample: Sample skill\n"
+            f"</available_skills>\n\n{self.DEFAULT_OUTRO}"
+        )
+
+    @pytest.mark.parametrize("spec,replace_text,append_text", [
+        ("Additional guidance.", "", "Additional guidance."),
+        ({"replace": "Custom guidance."}, "Custom guidance.", ""),
+        ({"append": "Additional guidance."}, "", "Additional guidance."),
+        ({"replace": "Custom guidance.", "append": "Additional guidance."},
+         "Custom guidance.", "Additional guidance."),
+    ])
+    @pytest.mark.parametrize("compact", [None, frozenset({"tools"})])
+    def test_overrides_preserve_index_and_names_only_note(self, spec, replace_text, append_text, compact):
+        from agent.prompt_builder import _render_skills_index
+
+        categories = {"tools": [("sample", "Sample skill")]}
+        original = _render_skills_index(categories, {}, compact, None)
+        result = _render_skills_index(categories, {}, compact, None, spec)
+        intro = replace_text or self.DEFAULT_INTRO
+        if append_text:
+            intro += f"\n\n{append_text}"
+        assert result.partition("<available_skills>")[0] == f"## Skills\n{intro}\n\n"
+        original_index, original_tail = original.split("<available_skills>")[1].split("</available_skills>")
+        result_index, result_tail = result.split("<available_skills>")[1].split("</available_skills>")
+        assert result_index == original_index
+        expected_tail = original_tail.replace(self.DEFAULT_OUTRO, "") if replace_text else original_tail
+        assert result_tail == expected_tail
+
+    @pytest.mark.parametrize("spec", [
+        None, 42, "", "   ", [], {}, {"replace": 1}, {"append": 1},
+        {"replace": ""}, {"append": ""}, {"replace": None, "append": []},
+    ])
+    def test_malformed_instruction_keeps_defaults(self, spec):
+        from agent.prompt_builder import _render_skills_index
+
+        args = ({"tools": [("sample", "Sample skill")]}, {}, None, None)
+        assert _render_skills_index(*args, index_instruction=spec) == _render_skills_index(*args)
+
+    @pytest.mark.parametrize("real_config", [False, True], ids=["patched-config", "config-yaml"])
+    def test_config_change_rebuilds_cached_index(self, monkeypatch, tmp_path, real_config):
+        import json
+        prompt_builder = importlib.import_module("agent.prompt_builder")
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / "skills" / "tools" / "sample"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: sample\ndescription: Sample skill\n---\n", encoding="utf-8"
+        )
+        config = {}
+        reads = []
+
+        def load_config():
+            reads.append(True)
+            return config
+
+        if not real_config:
+            monkeypatch.setattr(prompt_builder, "load_skills_config", load_config)
+
+        first = prompt_builder.build_skills_system_prompt()
+        snapshot_path = prompt_builder._skills_prompt_snapshot_path()
+        snapshot = snapshot_path.read_bytes()
+        config["index_instruction"] = {"replace": "Custom guidance.", "append": "Additional guidance."}
+        if real_config:
+            (tmp_path / "config.yaml").write_text(json.dumps({"skills": config}), encoding="utf-8")
+
+        second = prompt_builder.build_skills_system_prompt()
+        assert second != first
+        assert second.startswith("## Skills\nCustom guidance.\n\nAdditional guidance.\n\n")
+        assert self.DEFAULT_OUTRO not in second
+        assert "- sample: Sample skill" in first and "- sample: Sample skill" in second
+        assert snapshot_path.read_bytes() == snapshot
+        if not real_config:
+            assert len(reads) == 2

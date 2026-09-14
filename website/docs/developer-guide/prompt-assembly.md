@@ -167,6 +167,50 @@ byte-stable hint for a fixed config, so it lives in the **stable** tier
 alongside the built-in hint and does not break prompt caching — it is
 not a live mid-session mutation of a frozen prompt.
 
+## Customizing skills index instructions
+
+`skills.index_instruction` controls the intro and closing instruction
+rendered by `agent/prompt_builder.py::_render_skills_index`:
+
+```yaml
+skills:
+  index_instruction:
+    replace: "Load skills when they provide relevant task-specific guidance."
+    append: "Follow the user's explicit workflow preferences."
+```
+
+- A string is shorthand for `append`; appended text follows the intro after one blank line.
+- `replace` substitutes the intro and removes the closing instruction.
+- When both are supplied, `append` follows the replacement.
+- Empty or non-string fields are ignored; absent or malformed settings retain the defaults.
+- Index entries and the names-only category note are unchanged.
+
+The default `""` preserves the existing output byte-for-byte.
+`_build_skills_system_prompt_inner` reads the setting once per build via
+`load_skills_config` and includes the resolved intro/outro strings in
+the in-process cache key. The disk snapshot still stores skill entries, not
+guidance. This affects subsequent prompt builds, without mutating a frozen
+conversation prompt.
+
+## Hermes help guidance gate
+
+`agent.hermes_help_guidance` defaults to `true`:
+
+```yaml
+agent:
+  hermes_help_guidance: false
+```
+
+`agent/agent_init.py::_apply_agent_section` stores the default-on gate
+as `agent._hermes_help_guidance`. During
+`agent/system_prompt.py::build_system_prompt_parts`, a false gate omits
+both `HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS` and the slot replacement with
+`HERMES_AGENT_HELP_GUIDANCE`. With the gate enabled or the attribute
+absent, the stable-tier placement and variant selection remain unchanged:
+the skill-based variant requires both `skill_view` and the
+`hermes-agent` entry. The gate is set during agent initialization,
+so changing config does not rewrite an existing conversation prompt.
+
 ## How SOUL.md appears in the prompt
 
 `SOUL.md` lives at `~/.hermes/SOUL.md` and serves as the agent's identity — the very first section of the system prompt. The loading logic in `prompt_builder.py` works as follows:

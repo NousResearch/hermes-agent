@@ -10,7 +10,7 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { deleteSession, type SessionInfo } from '@/hermes'
-import { setSessions } from '@/store/session'
+import { $cronSessions, setSessions } from '@/store/session'
 import { $archivedSessions } from '@/store/sidebar-archive'
 
 import type { ClientSessionState } from '../../../types'
@@ -95,6 +95,7 @@ async function mountHarness(): Promise<Handle> {
 describe('removeSession × archived view store', () => {
   beforeEach(() => {
     setSessions([])
+    $cronSessions.set([])
     $archivedSessions.set([])
     vi.mocked(deleteSession).mockReset()
   })
@@ -102,6 +103,7 @@ describe('removeSession × archived view store', () => {
   afterEach(() => {
     cleanup()
     setSessions([])
+    $cronSessions.set([])
     $archivedSessions.set([])
   })
 
@@ -137,5 +139,28 @@ describe('removeSession × archived view store', () => {
     await act(() => handle.removeSession('arch-1'))
 
     expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('arch-1', 'sage')
+  })
+
+  it('evicts a cron run from its dedicated store and passes its explicit profile', async () => {
+    $cronSessions.set([archivedSession({ archived: false, id: 'cron-run-1', source: 'cron' })])
+    vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+    const handle = await mountHarness()
+    const deleted = await act(() => handle.removeSession('cron-run-1', 'work'))
+
+    expect(deleted).toBe(true)
+    expect(vi.mocked(deleteSession)).toHaveBeenCalledWith('cron-run-1', 'work')
+    expect($cronSessions.get()).toEqual([])
+  })
+
+  it('restores a cron run when the delete RPC fails', async () => {
+    $cronSessions.set([archivedSession({ archived: false, id: 'cron-run-1', source: 'cron' })])
+    vi.mocked(deleteSession).mockRejectedValue(new Error('backend down'))
+
+    const handle = await mountHarness()
+    const deleted = await act(() => handle.removeSession('cron-run-1', 'work'))
+
+    expect(deleted).toBe(false)
+    expect($cronSessions.get().map(session => session.id)).toEqual(['cron-run-1'])
   })
 })

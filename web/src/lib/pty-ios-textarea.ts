@@ -9,6 +9,35 @@ export type PtyTextareaBox =
   | { top: number; height: number; dock?: undefined }
   | { dock: number; top?: undefined; height?: undefined };
 
+export const PTY_HELPER_INK_STYLE_ID = "pty-helper-ink";
+
+/** Survives xterm rewriting the helper's inline style (Safari autocorrect paints black otherwise). */
+export function ensurePtyHelperInkCss(doc: Document): void {
+  if (doc.getElementById(PTY_HELPER_INK_STYLE_ID)) return;
+  const style = doc.createElement("style");
+  style.id = PTY_HELPER_INK_STYLE_ID;
+  style.textContent = [
+    ".xterm textarea.xterm-helper-textarea,.xterm .xterm-helper-textarea{",
+    "color:transparent!important;",
+    "caret-color:transparent!important;",
+    "-webkit-text-fill-color:transparent!important;",
+    "background:transparent!important;",
+    "opacity:0!important;",
+    "text-shadow:none!important;",
+    "text-indent:-9999px!important;",
+    "overflow:hidden!important;",
+    "z-index:-5!important;",
+    "}",
+    ".xterm .composition-view,.xterm .composition-view.active{",
+    "color:transparent!important;",
+    "-webkit-text-fill-color:transparent!important;",
+    "background:transparent!important;",
+    "text-shadow:none!important;",
+    "}",
+  ].join("");
+  (doc.head ?? doc.documentElement).append(style);
+}
+
 export function composerTextareaBox(rows: number, screenHeight: number): PtyTextareaBox {
   const safeRows = Math.max(1, rows);
   const height = screenHeight > 0 ? screenHeight / safeRows : 24;
@@ -56,10 +85,10 @@ export function restorePtyTextareaLayout(
   }
   const height = box?.height ?? 24;
   const top = box?.top ?? 0;
-  textarea.style.opacity = "0.01";
-  textarea.style.color = "transparent";
-  textarea.style.caretColor = "transparent";
-  textarea.style.setProperty("-webkit-text-fill-color", "transparent");
+  textarea.style.opacity = "0";
+  textarea.style.setProperty("color", "transparent", "important");
+  textarea.style.setProperty("caret-color", "transparent", "important");
+  textarea.style.setProperty("-webkit-text-fill-color", "transparent", "important");
   textarea.style.background = "transparent";
   textarea.style.fontSize = `${Math.max(16, height)}px`;
   textarea.style.lineHeight = `${height}px`;
@@ -73,18 +102,20 @@ export function restorePtyTextareaLayout(
   textarea.style.right = "0";
   textarea.style.top = `${top}px`;
   textarea.style.bottom = "auto";
-  textarea.style.zIndex = "2";
+  textarea.style.zIndex = "-5";
   textarea.style.overflow = "hidden";
+  textarea.style.setProperty("text-indent", "-9999px", "important");
   textarea.style.pointerEvents = "auto";
   textarea.style.padding = "0";
   textarea.style.border = "0";
 }
 
 export function preparePtyTextareaForDictation(textarea: HTMLTextAreaElement): void {
-  textarea.setAttribute("autocomplete", "on");
-  textarea.setAttribute("autocorrect", "on");
-  textarea.setAttribute("autocapitalize", "sentences");
-  textarea.setAttribute("spellcheck", "true");
+  ensurePtyHelperInkCss(textarea.ownerDocument);
+  textarea.setAttribute("autocomplete", "off");
+  textarea.setAttribute("autocorrect", "off");
+  textarea.setAttribute("autocapitalize", "off");
+  textarea.setAttribute("spellcheck", "false");
   textarea.setAttribute("enterkeyhint", "send");
   textarea.setAttribute("inputmode", "text");
   textarea.removeAttribute("readonly");
@@ -117,6 +148,11 @@ export function watchPtyTextareaLayout(
   };
   observer = new MutationObserver(apply);
   observer.observe(textarea, { attributes: true, attributeFilter: ["style"] });
+  ensurePtyHelperInkCss(textarea.ownerDocument);
+  textarea.addEventListener("input", apply);
   apply();
-  return () => observer.disconnect();
+  return () => {
+    observer.disconnect();
+    textarea.removeEventListener("input", apply);
+  };
 }

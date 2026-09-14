@@ -4,6 +4,7 @@ import {
 	isViewportPinnedToBottom,
 	parseResumeControlMessage,
 	shouldFollowPtyOutput,
+	shouldRejectViewportJumpToTop,
 } from "./pty-scroll";
 
 describe("isViewportPinnedToBottom", () => {
@@ -49,6 +50,21 @@ describe("shouldFollowPtyOutput", () => {
 
 	it("treats an empty resume param as non-resume", () => {
 		expect(shouldFollowPtyOutput("", true)).toBe(false);
+	});
+});
+
+describe("shouldRejectViewportJumpToTop", () => {
+	it("rejects a sudden jump to the top when the user is not panning", () => {
+		expect(shouldRejectViewportJumpToTop(80, 0, false)).toBe(true);
+	});
+
+	it("allows reaching the top during a one-finger pan", () => {
+		expect(shouldRejectViewportJumpToTop(80, 0, true)).toBe(false);
+	});
+
+	it("allows staying at the top of a short buffer", () => {
+		expect(shouldRejectViewportJumpToTop(0, 0, false)).toBe(false);
+		expect(shouldRejectViewportJumpToTop(2, 0, false)).toBe(false);
 	});
 });
 

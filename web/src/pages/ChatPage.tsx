@@ -71,6 +71,7 @@ import {
   isViewportPinnedToBottom,
   parseResumeControlMessage,
   shouldFollowPtyOutput,
+  shouldRejectViewportJumpToTop,
 } from "@/lib/pty-scroll";
 import { advanceTouchAnchor, isTouchPan, touchLineTravel, touchScrollLines, wheelScrollLines } from "@/lib/pty-touch-scroll";
 import { ptyAboOauthChannelKey, ptyAboOauthParams } from "@/lib/pty-abo-oauth";
@@ -825,6 +826,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let touchOriginY: number | null = null;
     let touchPanning = false;
     let suppressClickAfterPan = false;
+    let lastViewportY = 0;
+    let restoringViewport = false;
     const touchRoot = termWrap ?? host;
     touchRoot.style.touchAction = "none";
     const activeTouch = (list: TouchList) => {
@@ -895,6 +898,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.loadAddon(new WebLinksAddon());
 
     term.open(host);
+    if (coarsePointer) {
+      const viewport = host.querySelector<HTMLElement>(".xterm-viewport");
+      if (viewport) {
+        viewport.style.overflowY = "hidden";
+        viewport.style.overscrollBehavior = "none";
+      }
+    }
     browserInput = installPtyBrowserInput(
       term,
       () =>
@@ -1544,6 +1554,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // we only auto-follow during the resume replay — not their manual
       // review of the backlog (#59591).
       onScrollDisposable = term.onScroll(() => {
+        const nextY = term.buffer.active.viewportY;
+        if (!restoringViewport && shouldRejectViewportJumpToTop(lastViewportY, nextY, touchPanning)) {
+          restoringViewport = true;
+          try {
+            term.scrollToLine(lastViewportY);
+          } catch {
+            /* ignore */
+          } finally {
+            restoringViewport = false;
+          }
+        } else {
+          lastViewportY = nextY;
+        }
         stickToBottomRef.current = isViewportPinnedToBottom(term.buffer.active);
       });
     })();

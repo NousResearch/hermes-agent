@@ -84,6 +84,8 @@ class FakeTerminal {
 
   scrollToBottom() {}
 
+  scrollToLine(_n: number) {}
+
   scrollLines() {}
 
   open(host: HTMLElement) {
@@ -299,9 +301,9 @@ describe("ChatPage", () => {
     await vi.waitFor(() => expect(FakeTerminal.instances).toHaveLength(1));
     const textarea = FakeTerminal.instances[0].textarea;
     expect(textarea.getAttribute("inputmode")).toBe("text");
-    expect(textarea.getAttribute("autocapitalize")).toBe("sentences");
+    expect(textarea.getAttribute("autocorrect")).toBe("off");
     expect(Number.parseFloat(textarea.style.fontSize)).toBeGreaterThanOrEqual(16);
-    expect(Number.parseFloat(textarea.style.opacity)).toBeGreaterThan(0);
+    expect(textarea.style.width).not.toBe("0px");
   });
 
   it("gives an image-bearing paste exclusive ownership while text-only paste reaches the adapter", async () => {

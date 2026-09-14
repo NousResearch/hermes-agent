@@ -69,8 +69,8 @@ export function installPtyBrowserInput(
     if (!preedit) return;
     preedit.textContent = data;
     preedit.classList.toggle('active', Boolean(data));
-    preedit.style.color = term.options.theme?.foreground ?? '#ffffff';
-    preedit.style.webkitTextFillColor = 'transparent';
+    preedit.style.color = "transparent";
+    preedit.style.setProperty("-webkit-text-fill-color", "transparent", "important");
     preedit.style.background = 'transparent';
     preedit.style.left = textarea.style.left;
     preedit.style.top = textarea.style.top;

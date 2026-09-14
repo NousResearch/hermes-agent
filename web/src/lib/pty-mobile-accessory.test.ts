@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACCESSORY_BAR_HEIGHT_PX,
+  accessoryDockBottomPx,
   PTY_ETX,
   dispatchPtyArrowKey,
   mountPtyMobileAccessory,
@@ -23,6 +24,11 @@ describe("mobile PTY accessory", () => {
     expect(terminalBottomReservePx(0, true)).toBe(ACCESSORY_BAR_HEIGHT_PX);
     expect(terminalBottomReservePx(0, false)).toBe(0);
     expect(terminalBottomReservePx(320, false)).toBe(320);
+  });
+
+  it("docks Paste/Ctrl+C on the keyboard, not under it", () => {
+    expect(accessoryDockBottomPx(0)).toBe(0);
+    expect(accessoryDockBottomPx(320)).toBe(320);
   });
 
   it("sends a real interrupt byte for the Ctrl+C button", () => {

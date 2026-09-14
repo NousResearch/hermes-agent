@@ -23,9 +23,9 @@ export function terminalBottomReservePx(
   return inset + (accessoryVisible ? ACCESSORY_BAR_HEIGHT_PX : 0);
 }
 
-/** `position:fixed` is the visual viewport on iOS — sit on the keyboard, not under it. */
-export function accessoryDockBottomPx(_keyboardInsetPx: number): number {
-  return 0;
+/** Layout-viewport `position:fixed` sits under the iOS keyboard — offset by the inset. */
+export function accessoryDockBottomPx(keyboardInsetPx: number): number {
+  return Number.isFinite(keyboardInsetPx) && keyboardInsetPx > 0 ? Math.round(keyboardInsetPx) : 0;
 }
 
 /**

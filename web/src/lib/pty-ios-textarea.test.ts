@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { composerTextareaBox, MOBILE_COMPOSER_HEIGHT_PX, preparePtyTextareaForDictation, restorePtyTextareaLayout, watchPtyTextareaLayout } from "./pty-ios-textarea";
+import { composerTextareaBox, ensurePtyHelperInkCss, MOBILE_COMPOSER_HEIGHT_PX, preparePtyTextareaForDictation, restorePtyTextareaLayout, watchPtyTextareaLayout } from "./pty-ios-textarea";
 
 describe("preparePtyTextareaForDictation", () => {
   it("keeps the helper textarea in the layout so Safari can dictate", () => {
@@ -13,15 +13,16 @@ describe("preparePtyTextareaForDictation", () => {
 
     preparePtyTextareaForDictation(textarea);
 
-    expect(textarea.getAttribute("autocapitalize")).toBe("sentences");
+    expect(textarea.getAttribute("autocorrect")).toBe("off");
+    expect(textarea.getAttribute("spellcheck")).toBe("false");
+    expect(textarea.getAttribute("autocomplete")).toBe("off");
+    expect(textarea.getAttribute("autocapitalize")).toBe("off");
     expect(textarea.getAttribute("inputmode")).toBe("text");
     expect(textarea.getAttribute("enterkeyhint")).toBe("send");
     expect(textarea.readOnly).toBe(false);
     expect(textarea.disabled).toBe(false);
-    expect(Number.parseFloat(textarea.style.opacity)).toBeGreaterThan(0);
     expect(textarea.style.width).not.toBe("0px");
     expect(textarea.style.height).not.toBe("0px");
-    expect(Number.parseFloat(textarea.style.opacity)).toBeGreaterThan(0);
   });
 
   it("sits on the composer row, full width, not the whole terminal", () => {
@@ -41,6 +42,45 @@ describe("preparePtyTextareaForDictation", () => {
     expect(textarea.style.top).toBe("380px");
     expect(textarea.style.height).toBe("20px");
     expect(textarea.style.getPropertyValue("-webkit-text-fill-color")).toBe("transparent");
+  });
+
+  it("keeps helper glyphs invisible after Safari autocorrect paints black fill", () => {
+    const textarea = document.createElement("textarea");
+    document.body.append(textarea);
+    const stop = watchPtyTextareaLayout(textarea, () => composerTextareaBox(20, 400));
+    textarea.style.color = "#000";
+    textarea.style.setProperty("-webkit-text-fill-color", "#000");
+    textarea.value = "Test";
+    textarea.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertReplacementText",
+      data: "Test",
+    }));
+    expect(textarea.style.getPropertyValue("color")).toBe("transparent");
+    expect(textarea.style.getPropertyPriority("color")).toBe("important");
+    expect(textarea.style.getPropertyValue("-webkit-text-fill-color")).toBe("transparent");
+    expect(textarea.style.getPropertyPriority("-webkit-text-fill-color")).toBe("important");
+    expect(textarea.style.textIndent).toBe("-9999px");
+    expect(textarea.style.overflow).toBe("hidden");
+    stop();
+    textarea.remove();
+  });
+
+  it("beats xterm inline black fill so Safari autocorrect cannot paint helper glyphs", () => {
+    const host = document.createElement("div");
+    host.className = "xterm";
+    const textarea = document.createElement("textarea");
+    textarea.className = "xterm-helper-textarea";
+    host.append(textarea);
+    document.body.append(host);
+    ensurePtyHelperInkCss(document);
+    textarea.style.cssText = "opacity:1;color:#000;-webkit-text-fill-color:#000;caret-color:#000";
+    const sheet = document.getElementById("pty-helper-ink");
+    expect(sheet?.textContent).toContain("-webkit-text-fill-color:transparent");
+    expect(sheet?.textContent).toContain("opacity:0");
+    expect(sheet?.textContent).toContain("text-indent:-9999px");
+    expect(getComputedStyle(textarea).opacity).toBe("0");
+    host.remove();
   });
 
   it("docks a visible native composer on the phone so caret and scroll are separate surfaces", () => {

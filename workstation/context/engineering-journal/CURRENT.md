@@ -1,15 +1,94 @@
 # CURRENT — Workstation Engineering Journal
 
-Last updated: 2026-09-12
-Active track: V3.1–V3.4 runtime-hardening contract layer — VALIDATED; **175/175** product contract tests green; product evidence gates open
+Last updated: 2026-09-14
+Active track: Workstation Knowledge Subsystem (Hermes Vault) & V3 Hardening
 Repository: `kevynlucasprofissional-stack/hermes-agent`
 Active feature branch: `main` plus current Workstation working tree
 Journal entries:
 - `v1-1-5-integrated-dogfood-mvp.md` (V1 #1.5 MVP verification)
 - `v2-roadmap-completion.md` (Full roadmap completion: V1.1 and V2)
 - `v3-runtime-hardening-closure.md` (V3.1–V3.4 contract-layer closure)
-Status: 158/158 Workstation Pytest passing, Desktop typecheck passing; broad
-Desktop UI and platform/Electron suites pass after the HW-018 KI-006 closure.
+Status: 175/175 Workstation Pytest passing, Desktop typecheck passing.
+
+## H-048 — Hybrid Kanban must extend canonical Kanban without inheriting Agentic status semantics
+
+Status: EXPERIMENTAL VERTICAL SLICE IMPLEMENTED
+Origin: human + agent shared workspaces
+Date / ref: 2026-09-14 / `feat/workstation-hybrid-kanban`
+
+### Claim and decision
+
+The established Agentic Kanban is a dispatcher-owned execution state machine.
+The requested Trello-like surface is instead a human/agent organization view.
+The accepted seam is therefore additive Hybrid entities in the existing
+per-board `hermes_cli.kanban_db` database, with one domain service shared by
+the authenticated plugin API and agent tool. Hybrid columns have no mapping to
+`tasks.status`, so a Hybrid “Done” move cannot complete an Agentic task.
+
+### Experiment and observed evidence
+
+- Added `hybrid_boards`, `hybrid_columns`, `hybrid_cards` and
+  `hybrid_activity` through the normal idempotent Kanban schema initialization;
+  no SessionDB, BrowserTask, Journal or Electron-local store was created.
+- `hermes_cli.hybrid_kanban` performs all writes in `kanban_db.write_txn`.
+  It uses semantic placement (`before_id`/`after_id`), a negative temporary
+  rank namespace followed by dense canonical reindexing, and optional entity
+  revision checks for stale client commands.
+- The Kanban plugin API and `kanban_hybrid` agent tool call that same service.
+  Activity records `human` or `agent` actor provenance plus available session
+  and source; the Electron view is a cache/projection with post-write
+  invalidation and bounded polling.
+- `python -m pytest tests/hermes_cli/test_hybrid_kanban.py
+  workstation/tests/test_kanban_journal.py -q` passed **9 tests**. It proves
+  persistence after reopening SQLite, ordering repair, stale rejection,
+  human/agent provenance, agent-tool/domain convergence, and that a Hybrid
+  “Done” move leaves an Agentic task outside the terminal state.
+- `npm run typecheck` in `apps/desktop` passed after restoring locked workspace
+  dependencies.
+
+### Deliberate boundary / next experiment
+
+This is not yet a claim of multi-user realtime or a full Trello clone. The
+next hardening slice should add visual activity/card drawer, destructive
+archive policy, horizontal column drag, and Hybrid event invalidation through
+the existing plugin websocket rather than a new realtime service.
+
+## H-047 — Hermes Vault: Local-First Agentic PKM Subsystem (Obsidian-Compatible Knowledge Core)
+
+Status: PLANNED & DESIGNED — architectural specification recorded; roadmap promoted; execution staged
+Origin: workstation knowledge management & human-agent co-authoring
+Date / ref: 2026-09-14 / `main`
+
+### Claim
+
+A personal AI agent's effectiveness multiplies when user and agent share a single, local-first, durable knowledge base. By introducing **Hermes Vault**—a native, Obsidian-compatible Personal Knowledge Management (PKM) subsystem inside Hermes Workstation—the user and agent can co-author plain Markdown files with bidirectional wikilinks (`[[Note]]`), backlinks indexing, YAML frontmatter, and interactive graph views directly in Hermes Desktop.
+
+### Observed evidence & technical alignment
+
+- Analysis of native Obsidian installation (`C:\Program Files\Obsidian`) confirms that Obsidian's foundation is Electron + Chromium + local Markdown files + CodeMirror editor + D3 force-directed graph.
+- Hermes Desktop (`apps/desktop`) shares the identical Electron Chromium foundation and already includes a sophisticated force-directed simulation engine in `apps/desktop/src/app/starmap` (`d3-force`, canvas rendering, physics, zoom, viewport).
+- Hermes Agent already owns rich file inspection, search, and editing capabilities (`read_file`, `write_to_file`, `replace_file_content`, `grep_search`).
+- Creating a native `/vault` route and Vault indexer eliminates the boundary between external note-taking tools and the agent's memory/actions, enabling the agent to synthesize web research, log decisions, link concepts, and maintain maps of content (MOCs) locally with zero vendor lock-in.
+
+### Subsystem architecture
+
+1. **Vault Engine & Local Indexer (`workstation/vault.py` + Desktop IPC/service)**:
+   - Root directory resolution (default `~/.hermes/vault` or user-configured external directory, e.g. an existing Obsidian vault).
+   - Local filesystem watcher for `.md` files.
+   - AST / regex parser for `[[wikilinks]]`, `#tags`, headings (`[[Note#Heading]]`), and YAML frontmatter properties.
+   - In-memory bidirectional link cache (forward links and backlinks index).
+2. **Desktop UI & Editor (`apps/desktop/src/app/vault`)**:
+   - Master-detail file tree explorer + tags panel.
+   - Markdown editor with live preview, syntax highlighting, and callout rendering.
+   - Autocomplete triggers on typing `[[`.
+   - Side panel showing incoming backlinks and metadata properties.
+3. **Knowledge Graph View**:
+   - Visualizing interconnected notes as an interactive graph using the `starmap` force-simulation primitives.
+4. **Agent-Vault Bridge Tools**:
+   - `vault_search(query)`: FTS5 / BM25 search across vault markdown notes.
+   - `vault_read(note)`: Read note content and metadata.
+   - `vault_write(note, content)`: Create or update notes with frontmatter.
+   - `vault_backlinks(note)`: Query references and connected notes.
 
 ## H-046 — Chrome Web Store support is not yet an agentic capability boundary
 

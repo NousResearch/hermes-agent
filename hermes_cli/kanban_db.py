@@ -1524,6 +1524,67 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+
+-- Hybrid boards share this canonical Kanban database but intentionally do
+-- not reuse ``tasks.status``.  Their columns are human-defined workspace
+-- organization, not agent execution states.  The domain service in
+-- ``hermes_cli.hybrid_kanban`` owns all writes and ordering.
+CREATE TABLE IF NOT EXISTS hybrid_boards (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT,
+    archived    INTEGER NOT NULL DEFAULT 0,
+    revision    INTEGER NOT NULL DEFAULT 1,
+    metadata    TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS hybrid_columns (
+    id          TEXT PRIMARY KEY,
+    board_id    TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    position    INTEGER NOT NULL,
+    archived    INTEGER NOT NULL DEFAULT 0,
+    revision    INTEGER NOT NULL DEFAULT 1,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE(board_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS hybrid_cards (
+    id          TEXT PRIMARY KEY,
+    board_id    TEXT NOT NULL,
+    column_id   TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    position    INTEGER NOT NULL,
+    archived    INTEGER NOT NULL DEFAULT 0,
+    revision    INTEGER NOT NULL DEFAULT 1,
+    metadata    TEXT,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    UNIQUE(column_id, position)
+);
+
+CREATE TABLE IF NOT EXISTS hybrid_activity (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    board_id    TEXT NOT NULL,
+    card_id     TEXT,
+    column_id   TEXT,
+    kind        TEXT NOT NULL,
+    actor_type  TEXT NOT NULL,
+    actor_id    TEXT,
+    session_id  TEXT,
+    source      TEXT,
+    payload     TEXT,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_hybrid_columns_board_position ON hybrid_columns(board_id, position);
+CREATE INDEX IF NOT EXISTS idx_hybrid_cards_column_position ON hybrid_cards(column_id, position);
+CREATE INDEX IF NOT EXISTS idx_hybrid_cards_board ON hybrid_cards(board_id);
+CREATE INDEX IF NOT EXISTS idx_hybrid_activity_board ON hybrid_activity(board_id, id);
 """
 
 

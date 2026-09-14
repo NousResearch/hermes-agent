@@ -218,6 +218,41 @@ The LAN, Tailscale, external-extension, memory/perception/drift and Lightpanda M
   - Não há UI dedicada de gerenciamento de extensões no Desktop; a superfície atual é agent/tool + BrowserTask options page.
   - Atualização in-place de uma extensão instalada ainda requer uma transação de runtime de duas versões; o slice atual é estrito para a instalação solicitada e faz rollback quando não consegue verificar a carga.
 
+## Hybrid Kanban — Experimental vertical slice (human + agent shared workspaces)
+
+Hermes Kanban now has two deliberately separate modes under the same canonical
+per-board SQLite owner:
+
+- **Agentic Kanban** remains the existing operational task state machine
+  (`triage` → `ready` → `running` → terminal states), dispatcher, runs,
+  dependencies and Workstation task lineage.
+- **Hybrid Kanban** is a shared human/agent workspace of named boards, columns
+  and cards. Its columns are user organization only: moving a Hybrid card to a
+  column named “Done” never calls `kanban_complete` or dispatches work.
+
+Implemented vertical slice:
+
+- additive `hybrid_*` tables in the canonical `hermes_cli.kanban_db` database;
+- one transaction-backed domain path (`hermes_cli.hybrid_kanban`) for API and
+  agent-tool mutations, with actor/session provenance in `hybrid_activity`;
+- deterministic dense ordering with a private temporary rank namespace to make
+  swaps/reorders atomic under SQLite's unique rank constraints;
+- optimistic-concurrency rejection through `expected_revision` for stale card
+  and column operations;
+- authenticated Kanban plugin API, `kanban_hybrid` agent tool, and an Electron
+  Desktop shared-board page for creating boards/columns/cards, editing Markdown
+  text and dragging cards between columns;
+- restart persistence and Agentic-boundary behavior covered by Python tests.
+
+Hardening remaining:
+
+- card detail activity rendering, archive/delete policy and horizontal column
+  drag/reorder UI;
+- push-based realtime events for Hybrid activity (the current Desktop
+  projection invalidates/refetches every 8 seconds and after mutations);
+- multi-user authorization beyond the existing authenticated Dashboard session
+  boundary, comments/attachments/checklists and external-board connectors.
+
 ## V2.5 — Agent Runtime + System Capability Control Plane — Completed
 
 ### Agent Runtime / Worker Registry — Completed (`workstation/workers.py`)
@@ -806,6 +841,35 @@ Extend Execution Journal toward operational replay/evaluation.
   evidence`; completion should be evidence-backed, not response-backed.
 - Before deployment/promotion, evaluate technical behavior, safety and compatibility
   against a reproducible baseline.
+
+## Workstation Knowledge Subsystem — Hermes Vault (Local-First Agentic PKM)
+
+Hermes Workstation bridges human personal knowledge management and autonomous agent capability into a single shared, local-first medium: **Hermes Vault**. Rather than treating notes as external third-party software, Hermes Desktop exposes a first-class Obsidian-compatible Markdown vault where both the human and the agent co-author notes, link ideas, and navigate knowledge.
+
+### Core Architectural Slices
+
+1. **Vault Engine & Local Indexer (`workstation/vault.py`)**:
+   - Local directory root (default `~/.hermes/vault` or user-selected custom/Obsidian folder).
+   - Real-time filesystem watcher for `.md` documents.
+   - Regex/AST indexer for bidirectional wikilinks (`[[Note Name]]`, `[[Note#Section]]`), `#tags`, and YAML frontmatter properties.
+   - Fast in-memory graph cache (forward references and backlinks index).
+
+2. **Desktop UI & Editor (`apps/desktop/src/app/vault`)**:
+   - First-class `/vault` route in Hermes Desktop.
+   - Master-detail vault explorer with folder tree, search filter, and tag list.
+   - WYSIWYG / Live Preview Markdown editor with syntax highlighting, task lists, KaTeX math, and GitHub alerts / Obsidian Callouts (`> [!NOTE]`).
+   - Typing `[[` triggers auto-complete suggestion for existing notes.
+   - Contextual right rail showing incoming Backlinks and outgoing Links.
+
+3. **Knowledge Graph View**:
+   - Interactive 2D/3D force-directed knowledge graph leveraging the proven `starmap` simulation engine (`d3-force`).
+   - Nodes represent notes and tags; edges represent bidirectional wikilinks.
+   - Interactive zoom, pan, filter by tag, and click-to-open.
+
+4. **Agent-Vault Bridge Tools**:
+   - Model tools for Hermes: `vault_search`, `vault_read`, `vault_create_note`, `vault_append`, and `vault_backlinks`.
+   - Continuous agent synthesis: converting browser research, conversation takeaways, and project decisions into connected notes.
+   - Map of Content (MOC) generator for automated knowledge clustering.
 
 ## V4 radar — optional / evidence-gated explorations
 

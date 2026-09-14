@@ -118,6 +118,35 @@ class TestBlueBubblesMentionGating:
 
 class TestBlueBubblesWebhookParsing:
 
+    @pytest.mark.asyncio
+    async def test_same_message_guid_is_handled_once_across_new_and_updated_events(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        base = {
+            "guid": "MESSAGE-GUID",
+            "text": "received",
+            "handle": {"address": "+155****0100"},
+            "isFromMe": False,
+        }
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {**base, "chats": [{"guid": "iMessage;-;+155****0100"}]},
+        }))
+        await asyncio.sleep(0)
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "updated-message",
+            "data": {**base, "chatIdentifier": "+155****0100"},
+        }))
+        await asyncio.sleep(0)
+
+        assert len(handled) == 1
+        assert handled[0].message_id == "MESSAGE-GUID"
+
     def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {
@@ -323,14 +352,17 @@ class TestBlueBubblesAttachmentSend:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """Webhook registration preserves an explicit loopback address."""
 
-    def test_default_host(self, monkeypatch):
+    def test_default_host_preserves_ipv4_loopback(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
+
+    def test_wildcard_bind_registers_localhost_callback(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="0.0.0.0")
+        assert adapter._webhook_url.startswith("http://localhost:")
 
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):

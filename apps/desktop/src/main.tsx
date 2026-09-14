@@ -27,6 +27,7 @@ import { RootTooltipProvider } from './components/ui/tooltip'
 import { I18nProvider } from './i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
+import { buildRecoverableErrorReport } from './lib/recoverable-error-report'
 import { installRendererAnimationPauseState } from './lib/renderer-loop-pause'
 import { installSelectionCopyColorGuard } from './lib/selection-copy-colors'
 import { ThemeProvider } from './themes/context'
@@ -86,7 +87,27 @@ if (winParam === 'overlay') {
   // animations stop producing frames when nobody can see them.
   installRendererAnimationPauseState()
 
-  createRoot(document.getElementById('root')!).render(
+  createRoot(document.getElementById('root')!, {
+    /* React 19 recovers from an error thrown during a concurrent render by re-rendering the
+       whole root synchronously ("Minified React error #520"). Recovery involves no boundary
+       catch and the console line is minified, so the error that actually threw survives only
+       as `error.cause` — the class is invisible in desktop.log and every occurrence is
+       unattributable. Report it through the renderer-crash channel (#79428) before React
+       discards it. Logging must never take the root down with it. */
+    onRecoverableError: (error, errorInfo) => {
+      try {
+        window.hermesDesktop?.reportRendererError?.(
+          buildRecoverableErrorReport(
+            error,
+            errorInfo,
+            new URLSearchParams(window.location.search).get('win') ?? 'main'
+          )
+        )
+      } catch {
+        // Reporting is best-effort only.
+      }
+    }
+  }).render(
     <StrictMode>
       <RootErrorBoundary>
         <QueryClientProvider client={queryClient}>

@@ -194,8 +194,6 @@ describe('registry gateway WebSocket headers', () => {
       authMode: 'oauth',
       baseUrl: 'https://gateway.example',
       wsUrl: 'wss://gateway.example/api/ws?ticket=stale',
-      // What the registry resolved an omitted/blank connectionId to.
-      connectionId: 'primary-one',
       headers: accessHeaders
     }
 
@@ -204,6 +202,9 @@ describe('registry gateway WebSocket headers', () => {
       ensureBackend: vi.fn(async () => connection),
       mintTicket: vi.fn(async () => 'fresh-ticket'),
       buildTicketUrl: (baseUrl, ticket) => `${baseUrl.replace(/^https:/, 'wss:')}/api/ws?ticket=${ticket}`,
+      // A pooled backend resolves through a shared promise and carries no id
+      // of its own, so the resolver is the only thing that can name it.
+      resolveConnectionId: id => String(id || '').trim() || 'primary-one',
       rememberHeaders: (_wsUrl, _headers, _connection, consumer) => {
         consumers.push(consumer)
       }

@@ -138,9 +138,33 @@ describe('gateway WebSocket cookie forwarding', () => {
 
     expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
 
-    advance(1)
+    // A fresh registration, so this measures the TTL rather than the
+    // consumption the assertion above already performed.
+    await store.register(WS_URL, GATEWAY)
+    advance(60_000)
 
     expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  // The url carries a single-use ticket, so the authority it needed is spent
+  // once the upgrade has taken it.
+  it('consumes the authorization with the upgrade that uses it', async () => {
+    const { store } = createStore()
+
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
+    expect(cookieOn(store, WS_URL)).toBeUndefined()
+  })
+
+  it('does not consume the authorization on a refused request', async () => {
+    const { store } = createStore()
+
+    await store.register(WS_URL, GATEWAY)
+
+    expect(cookieOn(store, WS_URL, 'xhr')).toBeUndefined()
+    expect(cookieOn(store, `${GATEWAY}/api/status`)).toBeUndefined()
+    expect(cookieOn(store, WS_URL)).toBe(EXPECTED)
   })
 
   it('drops authority on sign-out of that gateway', async () => {
@@ -182,6 +206,10 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, oneWs)).toBe('session=one')
     expect(cookieOn(store, twoWs)).toBe('session=two')
 
+    // Each upgrade consumed its authorization, so re-arm before asking what
+    // sign-out takes away -- otherwise the assertions below hold vacuously.
+    await store.register(oneWs, one)
+    await store.register(twoWs, two)
     store.forget(one)
 
     expect(cookieOn(store, oneWs)).toBeUndefined()
@@ -221,6 +249,8 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, pooledWs)).toBe(EXPECTED)
 
     // Sign-out is still partition-wide, so it takes every consumer with it.
+    await store.register(rotated, GATEWAY, 'ws-url:')
+    await store.register(pooledWs, GATEWAY, 'registry:cloud:work')
     store.forget(GATEWAY)
 
     expect(cookieOn(store, rotated)).toBeUndefined()
@@ -259,12 +289,16 @@ describe('gateway WebSocket cookie forwarding', () => {
     expect(cookieOn(store, aWs)).toBe('proxy_session=a-value')
     expect(cookieOn(store, bWs)).toBe('proxy_session=b-value')
 
-    // A read that finds no jar for B must not revoke A either.
-    await store.register('wss://agent-b.example/api/ws?ticket=b2', 'https://agent-c.example')
+    await store.register(aWs, a)
+    await store.register(bWs, b)
+
+    // A read that finds no jar for C must not revoke A either.
+    await store.register('wss://agent-c.example/api/ws?ticket=c', 'https://agent-c.example')
 
     expect(cookieOn(store, aWs)).toBe('proxy_session=a-value')
 
     // Sign-out still empties the shared jar for both.
+    await store.register(aWs, a)
     store.forget(a)
 
     expect(cookieOn(store, aWs)).toBeUndefined()
@@ -422,6 +456,8 @@ describe('gateway WebSocket cookie forwarding', () => {
     )
 
     expect(merged.requestHeaders).toEqual({ 'CF-Access-Client-Id': 'client-id', Cookie: EXPECTED })
+
+    await store.register(WS_URL, GATEWAY)
 
     const appended = store.apply(
       { url: WS_URL, resourceType: 'webSocket' },

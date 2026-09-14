@@ -28,8 +28,9 @@
 //     partition, and a shared remote serves several profiles at one baseUrl,
 //     so another gateway, profile consumer, or descriptor build must not
 //     cancel an in-flight handshake nobody signed out;
-//   - additionally time-bounded, so an upgrade that never happens expires
-//     instead of lingering for the process lifetime, and bounded in count;
+//   - consumed by the upgrade that uses it and additionally time-bounded, so
+//     an upgrade that never happens expires instead of lingering for the
+//     process lifetime, and bounded in count;
 //   - dropped per partition on sign-out, since one jar backs several urls (the
 //     portal and a Cloud agent share the legacy partition, so signing out of
 //     the portal must drop the agent's entry too).
@@ -254,6 +255,14 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
   // The header for a request, or null. Exact url match AND, when Chromium
   // reports one, a `webSocket` resource type. An expired entry is dropped
   // rather than used.
+  //
+  // CONSUMED on use: the authority lasts one upgrade, mirroring the single-use
+  // ticket already in the url. Nothing re-attempts an upgrade with the same
+  // url — every OAuth connect re-mints through freshGatewayWsUrl /
+  // ws-url-for before dialing, and a ticket that has been presented is spent
+  // anyway — so an unconsumed entry could only ever serve a request this
+  // authorization was not granted for. A refusal (wrong resource type,
+  // expired) does not consume.
   const headerFor = (details: RemoteRequestDetails) => {
     const url = details?.url
 
@@ -279,6 +288,8 @@ export function createGatewayWsCookieStore(dependencies: GatewayWsCookieStoreDep
     if (details.resourceType && details.resourceType !== 'webSocket') {
       return null
     }
+
+    entries.delete(url)
 
     return entry.header
   }

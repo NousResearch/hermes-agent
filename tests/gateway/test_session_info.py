@@ -116,6 +116,106 @@ class TestFormatSessionInfo:
         assert "config" in info
         assert "131K" not in info
 
+    def test_channel_override_model_wins_over_global_default(self, runner, tmp_path):
+        """The /new (and auto-reset) banner must report the channel override model, not the
+        global default — the turn would use the override, so the banner must not lie."""
+        from gateway.config import Platform, ChannelOverride, PlatformConfig
+        from gateway.session import SessionSource
+        from types import SimpleNamespace
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="14930030", user_id="u1",
+            thread_id="624616",
+        )
+        runner.config = SimpleNamespace(
+            platforms={
+                Platform.TELEGRAM: SimpleNamespace(
+                    channel_overrides={"624616": ChannelOverride(model="deepseek/deepseek-v4-pro", provider="commandcode")},
+                )
+            }
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: xiaomi/mimo-v2.5\n  provider: commandcode\n",
+            "xiaomi/mimo-v2.5",
+            {"provider": "commandcode", "base_url": "", "api_key": ""},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info(source)
+        assert "deepseek-v4-pro" in info
+        assert "mimo-v2.5" not in info
+        assert "commandcode" in info
+
+    def test_no_override_falls_back_to_global(self, runner, tmp_path):
+        """No matching channel override → the global default still surfaces."""
+        from gateway.config import Platform, PlatformConfig
+        from gateway.session import SessionSource
+        from types import SimpleNamespace
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="14930030", user_id="u1",
+            thread_id="999999",
+        )
+        runner.config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: SimpleNamespace(channel_overrides={})}
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: xiaomi/mimo-v2.5\n  provider: commandcode\n",
+            "xiaomi/mimo-v2.5",
+            {"provider": "commandcode", "base_url": "", "api_key": ""},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info(source)
+        assert "mimo-v2.5" in info
+        assert "commandcode" in info
+
+    def test_plain_dm_chat_no_thread_id_no_override(self, runner, tmp_path):
+        """A normal Telegram DM/group chat has no thread_id and no override: the banner must
+        render exactly as before the fix — global model, no crash, no override leakage."""
+        from gateway.config import Platform, PlatformConfig
+        from gateway.session import SessionSource
+        from types import SimpleNamespace
+
+        # Plain private DM: chat_id set, thread_id=None, no channel_overrides at all.
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="14930030", user_id="u1",
+        )
+        runner.config = SimpleNamespace(
+            platforms={Platform.TELEGRAM: SimpleNamespace(channel_overrides={})}
+        )
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: xiaomi/mimo-v2.5\n  provider: commandcode\n",
+            "xiaomi/mimo-v2.5",
+            {"provider": "commandcode", "base_url": "", "api_key": ""},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info(source)
+        assert "mimo-v2.5" in info
+        assert "commandcode" in info
+        assert "◆ Model:" in info
+        assert "◆ Provider:" in info
+
+    def test_plain_dm_without_config_attr_does_not_crash(self, runner, tmp_path):
+        """A bare runner with no `.config` attribute (test/double edge case) must still render
+        the global model — the override lookup is guarded by getattr."""
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="14930030", user_id="u1")
+        # Deliberately no runner.config set.
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: xiaomi/mimo-v2.5\n  provider: commandcode\n",
+            "xiaomi/mimo-v2.5",
+            {"provider": "commandcode", "base_url": "", "api_key": ""},
+        )
+        with p1, p2, p3:
+            info = runner._format_session_info(source)
+        assert "mimo-v2.5" in info
+        assert "commandcode" in info
+
 
 class TestResetNoticeSessionInfo:
     """#59003: the auto-reset banner must report the serving profile's config,

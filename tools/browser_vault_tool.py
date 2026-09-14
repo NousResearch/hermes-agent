@@ -229,6 +229,8 @@ def browser_vault_list() -> str:
         for meta in metas:
             entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
                      "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
+            if meta.origins and len(meta.origins) > 1:
+                entry["origins"] = list(meta.origins)
             if meta.has_otp or backend.needs_unlock:
                 entry["two_factor"] = "automatic" if meta.has_otp else "automatic if the manager stores a TOTP seed, else the user is asked"
             if meta.identifier:
@@ -438,12 +440,21 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     # ── Origin binding pre-check (cheap early exit; the authoritative check
     # runs synchronously inside the fill script itself) ──────────────────────
-    page_origin = _focus_bound_origin(effective_task_id, str(meta.origin), meta.kind) or _current_page_origin(effective_task_id)
+    allowed_origins = meta.bound_origins() if hasattr(meta, "bound_origins") else ([meta.origin] if meta.origin else [])
+    # Focus the tab that holds the form: try each allowed origin in order.
+    page_origin = None
+    for cand in allowed_origins:
+        focused = _focus_bound_origin(effective_task_id, str(cand), meta.kind)
+        if focused:
+            page_origin = focused
+            break
+    if not page_origin:
+        page_origin = _current_page_origin(effective_task_id)
     if not page_origin:
         return json.dumps(
             {"success": False, "error": "Could not determine the current page origin. Navigate to the login page first."}
         )
-    if page_origin != meta.origin:
+    if page_origin not in allowed_origins:
         return json.dumps(
             {
                 "success": False,
@@ -452,6 +463,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
                     f"Refused: current page origin ({page_origin}) does not match "
                     f"the vault item's bound origin ({meta.origin}). Vault fills "
                     "only run on the exact origin the credential was saved for."
+                    + (f" Allowed origins: {', '.join(allowed_origins)}." if len(allowed_origins) > 1 else "")
                 ),
             }
         )
@@ -505,7 +517,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
 
     try:
         fill_result = _eval_js_secret(
-            effective_task_id, build_fill_js(fills, expected_origin=str(meta.origin), nonce=nonce)
+            effective_task_id, build_fill_js(fills, expected_origin=str(page_origin), nonce=nonce)
         )
     except Exception as exc:
         # Strip any secret material from exception text before surfacing.

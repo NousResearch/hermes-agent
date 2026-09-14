@@ -94,19 +94,23 @@ class BitwardenLoginBackend(LoginBackend):
             if item.get("type") != 1 or not isinstance(item.get("login"), dict):
                 continue
             login = item["login"]
-            origin = None
+            origins: List[str] = []
+            seen: set[str] = set()
             for uri in login.get("uris") or []:
                 try:
-                    origin = normalize_origin(str(uri.get("uri") or ""))
-                    break
+                    o = normalize_origin(str(uri.get("uri") or ""))
                 except Exception:
                     continue
-            if not origin:
+                if o not in seen:
+                    seen.add(o)
+                    origins.append(o)
+            if not origins:
                 continue
+            origin = origins[0]
             username = str(login.get("username") or "").strip() or None
             out.append(VaultItemMeta(
                 id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("name") or origin),
-                origin=origin, created_at=str(item.get("creationDate") or ""),
+                origin=origin, origins=origins, created_at=str(item.get("creationDate") or ""),
                 identifier_type="username" if username else None, identifier=username))
         return out
 

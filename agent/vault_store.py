@@ -167,6 +167,15 @@ class VaultItemMeta:
     identifier_type: Optional[str] = None
     identifier: Optional[str] = None
     has_otp: bool = False  # a TOTP seed is stored: 2FA codes can be minted without asking the user
+    origins: Optional[List[str]] = None  # all bound origins; origin is the primary (first) for compat
+
+    def bound_origins(self) -> List[str]:
+        """All origins this item is bound to (exact-origin security, no wildcard)."""
+        if self.origins:
+            return list(self.origins)
+        if self.origin:
+            return [self.origin]
+        return []
 
     def to_dict(self) -> Dict[str, Any]:
         out = {
@@ -176,6 +185,9 @@ class VaultItemMeta:
             "origin": self.origin,
             "created_at": self.created_at,
         }
+        # Expose full origin set when the backend bound more than one URL.
+        if self.origins and len(self.origins) > 1:
+            out["origins"] = list(self.origins)
         if self.identifier is not None:
             out["identifier"] = self.identifier
             out["identifier_type"] = self.identifier_type

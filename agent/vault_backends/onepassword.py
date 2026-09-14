@@ -105,13 +105,14 @@ class OnePasswordLoginBackend(LoginBackend):
         out: List[VaultItemMeta] = []
         for item in raw if isinstance(raw, list) else []:
             urls = [str(u["href"]) for u in item.get("urls") or [] if isinstance(u, dict) and u.get("href")]
-            origin = _first_origin(urls)
-            if not origin:
+            origins = _collect_origins(urls)
+            if not origins:
                 continue
+            origin = origins[0]
             username = str(item.get("additional_information") or "").strip() or None
             out.append(VaultItemMeta(
                 id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origin),
-                origin=origin, created_at=str(item.get("created_at") or ""),
+                origin=origin, origins=origins, created_at=str(item.get("created_at") or ""),
                 identifier_type="username" if username else None, identifier=username))
         return out
 
@@ -129,6 +130,20 @@ class OnePasswordLoginBackend(LoginBackend):
         except Exception:
             return None
         return code if code.isdigit() else None
+
+
+def _collect_origins(urls: List[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for u in urls:
+        try:
+            o = normalize_origin(u)
+        except Exception:
+            continue
+        if o not in seen:
+            seen.add(o)
+            out.append(o)
+    return out
 
 
 def _first_origin(urls: List[str]) -> Optional[str]:

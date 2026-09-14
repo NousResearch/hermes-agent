@@ -740,7 +740,21 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
                                           target_model or model_cfg.get("default", ""), opencode_by_model=True)
     base_url = _finalize_base_url(provider, api_mode, base_url)
     api_key = _actual_local_key(provider, creds.get("api_key", ""), base_url)
-    return _runtime(provider, api_mode, base_url, api_key, source=creds.get("source", "env"), requested_provider=requested_provider)
+    # Mirror the explicit-runtime ladder fix: when the resolved env/config key is itself a
+    # member of this provider's pool, attach that pool so a 429/402 can rotate to the next
+    # key. Without this, a session that starts while every pool entry is in cooldown
+    # (``_resolve_from_pool`` -> ``pool.select()`` returned None) runs on a bare env key and
+    # can never rotate — it burns max_retries on the dead key and aborts the turn.
+    credential_pool = None
+    try:
+        _pool = load_pool(provider)
+    except Exception:
+        _pool = None
+    if _pool is not None and _pool.has_credentials():
+        if any(entry.runtime_api_key == api_key for entry in _pool.entries()):
+            credential_pool = _pool
+    return _runtime(provider, api_mode, base_url, api_key, source=creds.get("source", "env"),
+                    requested_provider=requested_provider, credential_pool=credential_pool)
 
 
 # ── the resolution ladder ──────────────────────────────────────────────────────────────────

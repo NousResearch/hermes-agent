@@ -85,21 +85,28 @@ def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
     # Same terminal policy the gateway binds per turn: a docker-configured profile
     # must never resolve the launch process's pinned env. Failure → refusal scope.
     from tools.terminal_scope import install_profile_terminal_scope
+    from tools.write_safe_root_scope import install_profile_write_safe_root_scope
     scopes.terminal = install_profile_terminal_scope(home, env_overlay=overlay)
+    scopes.write_safe_root = install_profile_write_safe_root_scope(home)
     return scopes
 
 
 def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
-    """Release terminal → secret → home. Each reset is independent: a failing terminal reset must
-    not leave the previous profile's secrets / HERMES_HOME installed for the next body in this
-    context (a fail-open scope leak on the teardown path). The first failure is re-raised after
-    every scope has been released."""
+    """Release terminal → write-safe-root → secret → home. Each reset is independent: a failing
+    terminal reset must not leave the previous profile's secrets / HERMES_HOME installed for the
+    next body in this context (a fail-open scope leak on the teardown path). The first failure is
+    re-raised after every scope has been released."""
     if scopes is None:
         return
     from tools.terminal_scope import reset_terminal_scope
+    from tools.write_safe_root_scope import reset_write_safe_root_scope
     first_error: BaseException | None = None
-    for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
-                         (scopes.home, reset_hermes_home_override)):
+    for token, reset in (
+        (scopes.terminal, reset_terminal_scope),
+        (scopes.write_safe_root, reset_write_safe_root_scope),
+        (scopes.secret, reset_secret_scope),
+        (scopes.home, reset_hermes_home_override),
+    ):
         if token is None:
             continue
         try:

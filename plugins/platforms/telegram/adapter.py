@@ -1938,6 +1938,14 @@ class TelegramAdapter(BasePlatformAdapter):
         cap) up to MAX_NETWORK_RETRIES, then retryable-fatal so the supervisor restarts the gateway."""
         if self._teardown_started or self.has_fatal_error:
             return
+        if self._looks_like_connect_timeout(error):
+            message = (
+                "Telegram polling reconnect hit a TCP connect timeout; rebuilding the adapter "
+                "to refresh both request pools and network paths.")
+            await self._go_fatal_network(
+                message, "[%s] %s Last error: %s", self.name, message,
+                _redact_telegram_error_text(error))
+            return
         MAX_NETWORK_RETRIES = 10
         BASE_DELAY = 5
         MAX_DELAY = 60

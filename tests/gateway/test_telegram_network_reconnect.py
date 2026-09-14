@@ -112,6 +112,25 @@ async def test_retry_exhaustion_queues_reconnect_before_child_disconnect(tmp_pat
     assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 0
 
 
+@pytest.mark.asyncio
+async def test_connect_timeout_rebuilds_adapter_instead_of_reusing_application():
+    """A failed TCP connect after a route change requires a fresh request stack."""
+    adapter = _make_adapter()
+    adapter._notify_fatal_error = AsyncMock()
+    adapter._app = MagicMock()
+    adapter._app.updater.start_polling = AsyncMock()
+
+    class ConnectTimeout(Exception):
+        pass
+
+    await adapter._handle_polling_network_error(ConnectTimeout("connection attempt timed out"))
+
+    assert adapter.fatal_error_code == "telegram_network_error"
+    assert adapter.fatal_error_retryable is True
+    adapter._notify_fatal_error.assert_awaited_once()
+    adapter._app.updater.start_polling.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Connection pool drain tests (PR #16466 salvage)
 # ---------------------------------------------------------------------------

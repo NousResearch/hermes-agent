@@ -15,6 +15,33 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 
+def _truncate_command_output(output: str) -> str:
+    """Cap projected command output to the configured tool-output limit.
+
+    Codex app-server runs shell commands through its own runtime, so command
+    output is projected here rather than passing through
+    ``tools/terminal_tool.py`` (which already truncates via
+    ``get_max_bytes()``). Without this cap a single large result -- e.g. a
+    repo-wide ``grep`` returning hundreds of KB -- lands in the conversation
+    history at full size, saturating the model context window and forcing
+    near-constant compression (context loss). Mirror terminal_tool's
+    head+tail truncation so behaviour is consistent across runtimes.
+    """
+    from tools.tool_output_limits import get_max_bytes
+
+    max_chars = get_max_bytes()
+    if len(output) <= max_chars:
+        return output
+    head_chars = int(max_chars * 0.4)  # errors often appear early
+    tail_chars = max_chars - head_chars  # keep the most recent output
+    omitted = len(output) - head_chars - tail_chars
+    truncated_notice = (
+        f"\n\n... [OUTPUT TRUNCATED - {omitted} chars omitted "
+        f"out of {len(output)} total] ...\n\n"
+    )
+    return output[:head_chars] + truncated_notice + output[-tail_chars:]
+
+
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
     """Stable tool_call id: the codex item id, else a hash so replay keeps prefix caches valid."""
     return f"codex_{item_type}_{item_id or hashlib.sha256(f'{item_type}'.encode()).hexdigest()[:16]}"
@@ -105,6 +132,7 @@ class CodexEventProjector:
     def _command_spec(item: dict) -> tuple[str, str, dict, str]:
         args = {"command": item.get("command") or "", "cwd": item.get("cwd") or ""}
         output = item.get("aggregatedOutput") or ""
+        output = _truncate_command_output(output)
         exit_code = item.get("exitCode")
         if exit_code is not None and exit_code != 0:
             output = f"[exit {exit_code}]\n{output}"

@@ -29,3 +29,21 @@ test('concurrent serve checks share one pending probe and retain its negative re
     probe.mockRestore()
   }
 })
+
+test('a probe that fails by timeout is not cached, so the next check re-probes', async () => {
+  const probe = vi
+    .spyOn(probes, 'execProbe')
+    .mockRejectedValueOnce(Object.assign(new Error('timed out'), { killed: true }))
+    .mockResolvedValueOnce(undefined)
+
+  const supportsServe = createBackendServeSupportResolver('/unused', () => {})
+  const backend = { command: '/unused/hermes', args: ['serve'] }
+
+  try {
+    assert.equal(await supportsServe(backend), false)
+    assert.equal(await supportsServe(backend), true)
+    assert.equal(probe.mock.calls.length, 2)
+  } finally {
+    probe.mockRestore()
+  }
+})

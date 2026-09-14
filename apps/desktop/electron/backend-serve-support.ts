@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 import { sourceDeclaresServe } from './backend-command'
-import { execProbe, PROBE_TIMEOUT_MS } from './backend-probes'
+import { execProbe, isTimeoutError, PROBE_TIMEOUT_MS } from './backend-probes'
 
 interface ServeCandidate {
   command?: string | null
@@ -21,7 +21,9 @@ interface ServeCandidate {
 // Fast path: read the runtime's own dashboard.py (instant, covers managed
 // installs, dev checkouts, and the Windows venv). Fallback: probe the CLI once
 // (covers a bare `hermes` resolved from PATH with no known source root). Result
-// is cached per resolved runtime so we probe at most once per backend.
+// is cached per resolved runtime so we probe at most once per backend — except
+// a probe that failed by timeout, which is evicted so the next start re-probes
+// rather than pinning a cold-AV false negative for the process lifetime.
 //
 // One cache per desktop runtime context; source inspection precedes a CLI probe.
 export function createBackendServeSupportResolver(hermesHome: string, rememberLog: (message: string) => void) {
@@ -43,7 +45,11 @@ export function createBackendServeSupportResolver(hermesHome: string, rememberLo
 
       if (backend.root) {
         try {
-          const src = fs.readFileSync(path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'), 'utf8')
+          const src = await fs.promises.readFile(
+            path.join(backend.root, 'hermes_cli', 'subcommands', 'dashboard.py'),
+            'utf8'
+          )
+
           supported = sourceDeclaresServe(src)
         } catch {
           supported = null // source unreadable — fall through to the probe
@@ -72,7 +78,14 @@ export function createBackendServeSupportResolver(hermesHome: string, rememberLo
             windowsHide: true
           })
           supported = true
-        } catch {
+        } catch (err) {
+          // A timeout says nothing about the runtime, only about this machine
+          // right now (cold AV scan, slow disk). Evict so the next call
+          // re-probes; a genuine "unknown subcommand" exit stays cached.
+          if (isTimeoutError(err) && cache.get(key) === pending) {
+            cache.delete(key)
+          }
+
           supported = false
         }
       }

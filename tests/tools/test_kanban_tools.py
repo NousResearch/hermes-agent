@@ -638,19 +638,18 @@ def test_worker_lifecycle_through_tools(worker_env):
 
 
 def test_kanban_guidance_prompt_size_bounded():
-    """KANBAN_GUIDANCE is injected into every kanban-capable process's system
-    prompt and resolved once at agent init, so its size is a per-worker token
-    tax paid on every spawn. Bound it as an invariant, not a change-detector:
-    the ceiling (8000 chars, roughly 2000 tokens) leaves headroom above the
-    current ~6.2k chars for tight additions, while catching accidental bloat
-    (pasted docs, duplicated sections) before it ships to every worker.
+    """Keep the always-injected lifecycle compact.
+
+    The guidance is a per-worker tax.  A 3500-character ceiling preserves the
+    task lifecycle and orchestration invariants while preventing operational
+    runbooks and examples from creeping back into every worker prompt.
     """
     from agent.prompt_builder import KANBAN_GUIDANCE
 
-    assert len(KANBAN_GUIDANCE) < 8000, (
+    assert len(KANBAN_GUIDANCE) < 3500, (
         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars; it is injected into "
-        "every kanban worker's system prompt — trim it or consciously re-bound "
-        "this invariant with justification."
+        "every kanban worker's system prompt — move detail to an on-demand "
+        "skill or card body."
     )
 
 

@@ -27,6 +27,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # the evolving preview — tool-start lines (default on) and thinking snippets (opt-in).
     "streaming_single_message_activity": True,
     "streaming_single_message_thinking": False,
+    "streaming_single_message_4096_split": False,
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "long_running_notifications": True,
@@ -162,6 +163,7 @@ _NORMALISERS: dict[str, Any] = {
     "streaming_single_message": _norm_bool,
     "streaming_single_message_activity": _norm_bool,
     "streaming_single_message_thinking": _norm_bool,
+    "streaming_single_message_4096_split": _norm_bool,
     "interim_assistant_messages": _norm_bool,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,

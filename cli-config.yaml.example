@@ -1750,6 +1750,13 @@ display:
   streaming_single_message_activity: true
   streaming_single_message_thinking: false
 
+  # Over-limit split policy for the single message (Telegram's 4096 text limit):
+  #   true:  cut the preview into ≤4096 messages as it fills (several long messages)
+  #   false: default — don't cut mid-turn; page only at turn end when the text really
+  #          overflows (short replies never split)
+  # Per-platform override: display.platforms.telegram.streaming_single_message_4096_split
+  streaming_single_message_4096_split: false
+
   # Natural mid-turn assistant updates.
   # On gateway platforms, when true, completed assistant status messages are
   # sent as separate chat messages. On the Desktop app, when true, mid-turn

@@ -2510,6 +2510,9 @@ class GatewayTurnMixin:
         _single_message_thinking = _single_message_per_turn and bool(resolve_display_setting(
             _user_config, _platform_key, "streaming_single_message_thinking", False,
         ))
+        _single_message_4096_split = _single_message_per_turn and bool(resolve_display_setting(
+            _user_config, _platform_key, "streaming_single_message_4096_split", False,
+        ))
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor, buffer_only=_buffer_only,
@@ -2518,6 +2521,7 @@ class GatewayTurnMixin:
             single_message_per_turn=_single_message_per_turn,
             single_message_activity=_single_message_activity,
             single_message_thinking=_single_message_thinking,
+            single_message_4096_split=_single_message_4096_split,
         )
         return _consumer_cfg, _pause_typing_before_finalize
 

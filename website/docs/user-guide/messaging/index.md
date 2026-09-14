@@ -804,6 +804,8 @@ With streaming enabled (`streaming.enabled` / `display.platforms.telegram.stream
 
 While that mode is active, a transient **activity overlay** can ride inside the same message: tool-start lines (default on; disable with `streaming_single_message_activity: false`) and thinking snippets (opt-in, `streaming_single_message_thinking: true`) render under a `---` rule beneath the evolving text, and are replaced the moment real text arrives — the final message never contains them.
 
+Over-limit handling follows `streaming_single_message_4096_split`: `true` cuts the preview into several ≤4096-character messages as it fills; the default `false` leaves the live message uncut and pages only at completion, when the text genuinely overflows — nothing is lost, pagination just arrives at the end (rich-eligible content first rides the platform's 32,768-character rich cap).
+
 ### Progress bubble cleanup (opt-in)
 
 Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:

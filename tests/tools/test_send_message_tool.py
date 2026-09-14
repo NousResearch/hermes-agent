@@ -472,6 +472,89 @@ class TestSendTelegramMediaDelivery:
 # ---------------------------------------------------------------------------
 
 
+class TestSendToPlatformGoogleChatMedia:
+    """google_chat is a media-capable chunked platform: live-gateway text+media and
+    media-only sends deliver natively through the adapter's media APIs (same generic
+    route as other plugin platforms); offline, text falls back to the plugin's
+    standalone sender and media is dropped -- never a hard refusal of the whole send."""
+
+    class _Adapter:
+        """Plain class so _send_live_adapter_media's class-method check passes."""
+
+        def __init__(self):
+            self.text_sends = []
+            self.media_sends = []
+
+        async def send(self, chat_id, content, metadata=None):
+            self.text_sends.append((chat_id, content))
+            return SimpleNamespace(success=True, message_id="t1", error=None)
+
+        async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, metadata=None):
+            self.media_sends.append((chat_id, image_path, caption))
+            return SimpleNamespace(success=True, message_id="m1", error=None)
+
+    @pytest.mark.asyncio
+    async def test_text_plus_media_delivers_natively_when_live(self, tmp_path, monkeypatch):
+        img = tmp_path / "photo.png"
+        img.write_text("fake image")
+        adapter = self._Adapter()
+        gc = Platform("google_chat")
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: SimpleNamespace(adapters={gc: adapter}))
+
+        from tools.send_message_tool import _send_to_platform
+        result = await _send_to_platform(gc, SimpleNamespace(extra={}), "spaces/S",
+                                         "hello", media_files=[(str(img), False)])
+
+        assert result["success"] is True
+        assert result["media_delivered"] is True
+        # Short text + one captionable file rides as the attachment caption.
+        assert adapter.media_sends == [("spaces/S", str(img), "hello")]
+
+    @pytest.mark.asyncio
+    async def test_media_only_send_delivers_when_live(self, tmp_path, monkeypatch):
+        """Media-only (empty text) must not hit the generic "media not supported"
+        rejection; the chunked route engages and delivers via the adapter."""
+        img = tmp_path / "photo.png"
+        img.write_text("fake image")
+        adapter = self._Adapter()
+        gc = Platform("google_chat")
+        monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: SimpleNamespace(adapters={gc: adapter}))
+
+        from tools.send_message_tool import _send_to_platform
+        result = await _send_to_platform(gc, SimpleNamespace(extra={}), "spaces/S",
+                                         "", media_files=[(str(img), False)])
+
+        assert result["success"] is True
+        assert result["media_delivered"] is True
+        assert adapter.media_sends == [("spaces/S", str(img), None)]
+        assert adapter.text_sends == []
+
+    @pytest.mark.asyncio
+    async def test_offline_media_send_falls_back_to_standalone_text(self, monkeypatch):
+        """Offline (no live gateway) follows the plugin-platform behaviour: text goes to
+        the standalone sender; media is dropped rather than refusing the whole send."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+        standalone = AsyncMock(return_value={"success": True, "message_id": "s1"})
+        entry = PlatformEntry(
+            name="google_chat", label="Google Chat", adapter_factory=lambda cfg: None,
+            check_fn=lambda: True, standalone_sender_fn=standalone,
+        )
+        platform_registry.register(entry)
+        try:
+            monkeypatch.setattr("gateway.run._gateway_runner_ref", lambda: None)
+            from tools.send_message_tool import _send_to_platform
+            result = await _send_to_platform(
+                Platform("google_chat"), SimpleNamespace(extra={}), "spaces/S", "hi",
+                media_files=[("/tmp/opencode/photo.png", False)])
+        finally:
+            platform_registry.unregister("google_chat")
+
+        assert result["success"] is True
+        standalone.assert_called_once()
+        assert standalone.call_args.args[1] == "spaces/S"
+        assert standalone.call_args.args[2] == "hi"
+
+
 class TestSendToPlatformChunking:
     def test_long_message_is_chunked(self):
         """Messages exceeding the platform limit are split into multiple sends."""

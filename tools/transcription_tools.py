@@ -403,7 +403,8 @@ def _read_block_error(file_path: str) -> Optional[Dict[str, Any]]:
 
 
 def _transcribe_prepared_audio(
-    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None,
+    *, provider: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a validated audio file with the configured STT provider. ``model`` overrides the
     config default; ``source`` is a caller-surface label (``"gateway"``, ``"voice_mode"``) forwarded
     to the ``pre_transcription`` hook only."""
@@ -415,7 +416,7 @@ def _transcribe_prepared_audio(
     stt_config = _load_stt_config()
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
-    provider = _get_provider(stt_config)
+    provider = _get_provider(stt_config) if provider is None else str(provider).strip().lower()
     with ExitStack() as cleanup:
         if not _is_local_stt_provider(provider, stt_config):
             error = _validate_audio_file_size(Path(file_path))
@@ -532,6 +533,17 @@ def transcribe_audio(
     file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
     label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
+    return _transcribe_audio_with_provider(file_path, model, source)
+
+
+def _transcribe_audio_with_provider(
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None,
+    *, provider: Optional[str] = None) -> Dict[str, Any]:
+    """Use native validation/preprocessing with an optional call-local backend.
+
+    An explicit provider selects one backend, retaining its configured credential
+    and endpoint ownership. It never activates configured fallbacks.
+    """
     # Secret-store refusal runs before ANY validation so the error names the real reason.
     blocked = _read_block_error(file_path)
     if blocked:
@@ -546,8 +558,15 @@ def transcribe_audio(
     if prep_error or prepared_path is None:
         return prep_error or _error_result("Audio preprocessing did not produce a file for transcription.")
     try:
-        return (_validate_audio_file(prepared_path, enforce_size_limit=False)
-                or _transcribe_prepared_audio(prepared_path, model, source))
+        error = _validate_audio_file(prepared_path, enforce_size_limit=False)
+        if error:
+            return error
+        if provider is None:
+            return _transcribe_prepared_audio(prepared_path, model, source)
+        try:
+            return _transcribe_prepared_audio(prepared_path, model, source, provider=provider)
+        except Exception as exc:
+            return _error_result(f"Transcription failed: {exc}", provider=provider)
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)

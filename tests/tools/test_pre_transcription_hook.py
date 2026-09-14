@@ -612,3 +612,35 @@ def test_real_hook_merger_preserves_prompt_presence(monkeypatch, results, expect
         prompt="generic", source="gateway",
     )
     assert legacy == (model, language, prompt)
+
+
+@pytest.mark.parametrize("hook_prompt", ["hook vocabulary", ""])
+def test_override_preserves_native_hooks_and_source(monkeypatch, tmp_path, hook_prompt):
+    from copy import deepcopy
+
+    audio = _make_audio(tmp_path)
+    config = {"provider": "local", "prompt": "configured vocabulary",
+              "fallback_providers": ["groq"], "cloud_trim_silence": False,
+              "openai": {"api_key": "test-key"}}
+    original = deepcopy(config)
+    captured = _fake_hooks(monkeypatch, [{
+        "prompt": hook_prompt, "language": "fr", "file_path": "/forbidden.wav",
+    }])
+    client = MagicMock()
+    client.audio.transcriptions.create.return_value = "Bonjour"
+    with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+         patch("tools.transcription_tools._HAS_OPENAI", True), \
+         patch("openai.OpenAI", return_value=client):
+        result = transcription_tools._transcribe_audio_with_provider(
+            audio, "whisper-1", source="discord", provider="openai",
+        )
+    assert result["success"] is True
+    assert captured["hook_name"] == "pre_transcription"
+    assert captured["kwargs"]["provider"] == "openai"
+    assert captured["kwargs"]["source"] == "discord"
+    assert captured["kwargs"]["prompt"] == "configured vocabulary"
+    kwargs = client.audio.transcriptions.create.call_args.kwargs
+    assert kwargs["file"].name == audio
+    assert kwargs["language"] == "fr"
+    assert kwargs.get("prompt", "") == hook_prompt
+    assert config == original

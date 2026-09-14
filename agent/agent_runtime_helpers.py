@@ -2722,7 +2722,8 @@ def _pair_tool_calls_positionally(messages: List[Dict[str, Any]]) -> List[Dict[s
     # The transcript may end right after an unanswered assistant turn.
     _flush_unanswered_stubs()
     if dropped:
-        _ra().logger.debug("Pre-call sanitizer: removed %d positionally orphaned tool result(s)", dropped)
+        # Losing real tool output must be visible in errors.log.
+        _ra().logger.warning("Pre-call sanitizer: removed %d positionally orphaned tool result(s)", dropped)
     if stubs:
         _ra().logger.debug(
             "Pre-call sanitizer: added %d stub tool result(s) for "

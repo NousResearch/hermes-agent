@@ -1256,6 +1256,33 @@ def test_sanitize_stubs_call_unanswered_positionally_even_if_result_exists_elsew
     assert "late result" not in [m.get("content", "") for m in out]
 
 
+def test_sanitize_warns_when_real_tool_results_are_dropped(caplog):
+    """Dropping a real tool result destroys content the model asked for.
+    The repair is required for strict providers, but the loss must be
+    visible at WARNING (errors.log), not only at DEBUG where nobody sees
+    it while the model silently answers from a stub."""
+    import logging
+
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _tool_result("call_A"),                    # before its call: dropped
+        _assistant_with_call("call_A", content=""),
+        _tool_result("call_A"),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="run_agent"):
+        out = sanitize_api_messages(list(messages))
+
+    assert any(
+        "positionally orphaned tool result" in r.message
+        for r in caplog.records if r.levelno == logging.WARNING
+    )
+    tools = [m for m in out if m.get("role") == "tool"]
+    assert len(tools) == 1 and tools[0]["tool_call_id"] == "call_A"
+
+
 def test_sanitize_drops_result_appearing_before_its_call():
     """A tool result that precedes its declaring assistant message is a
     positional orphan — strict providers reject 'role=tool' messages that

@@ -138,8 +138,13 @@ def _apply_output_transform_hook(command, output, returncode, task_id, env_type)
     Replacements are still subject to the output limit applied afterwards."""
     with _quiet("transform_terminal_output hook"):
         from hermes_cli.lifecycle import invoke_hook
-        results = invoke_hook("transform_terminal_output", command=command, output=output,
-                              returncode=returncode, task_id=task_id or "", env_type=env_type)
+        from tools.approval_context import _approval_tool_call_id
+        kwargs = dict(command=command, output=output, returncode=returncode,
+                      task_id=task_id or "", env_type=env_type)
+        # Concurrent terminal calls in one turn must gate per call, not collapse into one.
+        if _approval_tool_call_id.get():
+            kwargs["tool_call_id"] = _approval_tool_call_id.get()
+        results = invoke_hook("transform_terminal_output", **kwargs)
         output = next((r for r in results if isinstance(r, str)), output)
     return output
 

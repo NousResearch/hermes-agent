@@ -17,7 +17,12 @@ import {
   captureNewChatSource,
   ensureGatewayAgent,
   normalizeProfileKey,
+ HEAD
   openGatewayAgent,
+
+  recordLastProfile,
+  setActiveProfile,
+  7100b851c7 (fix(desktop): restore lastProfileByConnection on gateway switch (#110819))
   refreshActiveProfile,
   requestFreshSession
 } from '@/store/profile'
@@ -432,6 +437,8 @@ export async function selectConnection(connectionId: string, options: SelectConn
         $showAllProfiles.set(false)
       }
 
+      recordLastProfile(connectionId, targetProfile)
+      setActiveProfile(targetProfile)
       $newChatProfile.set(targetProfile)
       captureNewChatSource()
       requestFreshSession()

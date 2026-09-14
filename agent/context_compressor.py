@@ -3704,10 +3704,22 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Infer a compact focus hint from the most recent real user turns."""
         candidates: list[str] = []
         for msg in reversed(messages):
-            # display_kind notices are operational traffic, not user intent.
-            if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg) or msg.get("display_kind"):
+            if msg.get("role") != "user" or cls._is_synthetic_compression_user_turn(msg):
                 continue
-            text = _redact_compaction_text(_content_text_for_contains(msg.get("content")).strip())
+            display_kind = msg.get("display_kind")
+            # display_kind notices are operational traffic, not user intent — except a /steer row,
+            # which carries full user authority (mirrors _is_actionable_user_turn).
+            if display_kind and display_kind != STEER_DISPLAY_KIND:
+                continue
+            if display_kind == STEER_DISPLAY_KIND:
+                # A steer row's raw content is wrapped in an out-of-band marker meant for the
+                # model, not a human-readable focus hint — unwrap it the way the TUI history
+                # projection does.
+                from agent.conversation_compression import _extract_steer_text_from_message
+                raw_text = _extract_steer_text_from_message(msg) or ""
+            else:
+                raw_text = _content_text_for_contains(msg.get("content")).strip()
+            text = _redact_compaction_text(raw_text)
             if not text:
                 continue
             text = " ".join(text.split())

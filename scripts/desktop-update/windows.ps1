@@ -926,15 +926,15 @@ public static class HermesUpdateJob {
         ProcessInformation pi = new ProcessInformation();
         try {
             job = CreateJobObject(IntPtr.Zero, null);
-            if (job == IntPtr.Zero) throw new InvalidOperationException("CreateJobObject failed");
+            if (job == IntPtr.Zero) throw new InvalidOperationException("CreateJobObject failed (error " + Marshal.GetLastWin32Error() + ")");
             SecurityAttributes sa = new SecurityAttributes();
             sa.Length = Marshal.SizeOf(typeof(SecurityAttributes));
             sa.InheritHandle = true;
             if (!CreatePipe(out outRead, out outWrite, ref sa, 0) ||
                 !CreatePipe(out errRead, out errWrite, ref sa, 0))
-                throw new InvalidOperationException("CreatePipe failed");
+                throw new InvalidOperationException("CreatePipe failed (error " + Marshal.GetLastWin32Error() + ")");
             if (!SetHandleInformation(outRead, 1, 0) || !SetHandleInformation(errRead, 1, 0))
-                throw new InvalidOperationException("SetHandleInformation failed");
+                throw new InvalidOperationException("SetHandleInformation failed (error " + Marshal.GetLastWin32Error() + ")");
 
             StartupInfo si = new StartupInfo();
             si.Size = Marshal.SizeOf(typeof(StartupInfo));
@@ -945,10 +945,11 @@ public static class HermesUpdateJob {
             StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
             if (!CreateProcess(executable, commandLine, IntPtr.Zero, IntPtr.Zero, true,
                     0x00000004 | 0x08000000, IntPtr.Zero, null, ref si, out pi))
-                throw new InvalidOperationException("CreateProcess failed");
+                throw new InvalidOperationException("CreateProcess failed (error " + Marshal.GetLastWin32Error() + ")");
             if (!AssignProcessToJobObject(job, pi.Process)) {
+                int assignErr = Marshal.GetLastWin32Error();
                 TerminateProcess(pi.Process, 1);
-                throw new InvalidOperationException("AssignProcessToJobObject failed");
+                throw new InvalidOperationException("AssignProcessToJobObject failed (error " + assignErr + ")");
             }
 
             Process process = Process.GetProcessById(pi.ProcessId);
@@ -965,7 +966,7 @@ public static class HermesUpdateJob {
             CloseHandle(outWrite); outWrite = IntPtr.Zero;
             CloseHandle(errWrite); errWrite = IntPtr.Zero;
             if (ResumeThread(pi.Thread) == 0xffffffff)
-                throw new InvalidOperationException("ResumeThread failed");
+                throw new InvalidOperationException("ResumeThread failed (error " + Marshal.GetLastWin32Error() + ")");
             return new StartedProcess { Process = process, StandardOutput = stdout, StandardError = stderr, Job = job };
         } catch {
             if (pi.Process != IntPtr.Zero) TerminateProcess(pi.Process, 1);
@@ -1062,6 +1063,9 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         $env:PYTHONUTF8 = "1"
         $env:PYTHONUNBUFFERED = "1"
         $started = [HermesUpdateJob]::StartAssigned($Exe, $arguments)
+    } catch {
+        Write-HandoffLog ("{0}!| step launch failed: {1}" -f $Tag, $_.Exception.Message)
+        return @{ Code = 1; Output = $_.Exception.Message; TreeQuiesced = $true; StartedAfterJobAssignment = $false }
     } finally {
         if ($null -eq $savedPythonIoEncoding) { Remove-Item Env:PYTHONIOENCODING -ErrorAction SilentlyContinue } else { $env:PYTHONIOENCODING = $savedPythonIoEncoding }
         if ($null -eq $savedPythonUtf8) { Remove-Item Env:PYTHONUTF8 -ErrorAction SilentlyContinue } else { $env:PYTHONUTF8 = $savedPythonUtf8 }
@@ -1604,15 +1608,22 @@ try {
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
-    $retryPolicyPath = Join-Path $PSScriptRoot "retry-policy.ps1"
-    if (Test-Path -LiteralPath $retryPolicyPath) {
-        . $retryPolicyPath
-        $shouldRetry = Test-HermesUpdateShouldRetry -ExitCode $res.Code -InstallRoot $InstallRoot
-    } else {
-        # The child may have swapped to a checkout without the companion policy
-        # while this older script is still running in memory. Preserve the
-        # previous fail-closed behavior instead of calling an undefined function.
-        Write-HandoffLog "retry policy is unavailable after checkout swap; using legacy retry rules"
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } elseif ($InstallRoot) { Join-Path $InstallRoot "scripts\desktop-update" } else { "" }
+    $retryPolicyPath = if ($scriptDir) { Join-Path $scriptDir "retry-policy.ps1" } else { "" }
+    $shouldRetry = $false
+    try {
+        if ($retryPolicyPath -and (Test-Path -LiteralPath $retryPolicyPath)) {
+            . $retryPolicyPath
+            $shouldRetry = Test-HermesUpdateShouldRetry -ExitCode $res.Code -InstallRoot $InstallRoot
+        } else {
+            # The child may have swapped to a checkout without the companion policy
+            # while this older script is still running in memory. Preserve the
+            # previous fail-closed behavior instead of calling an undefined function.
+            Write-HandoffLog "retry policy is unavailable after checkout swap; using legacy retry rules"
+            $shouldRetry = $res.Code -ne 0 -and $res.Code -ne 2
+        }
+    } catch {
+        Write-HandoffLog "WARNING: could not evaluate retry policy: $($_.Exception.Message); using legacy retry rules"
         $shouldRetry = $res.Code -ne 0 -and $res.Code -ne 2
     }
     if ($shouldRetry) {
@@ -1646,6 +1657,7 @@ try {
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $verifyCode = "import hermes_cli.main; from hermes_cli.desktop_update_verify import verify_windows_desktop_update; verify_windows_desktop_update()"
         $verify = Invoke-HermesStep $pythonExe @("-c", $verifyCode) "verify"
+        Write-HandoffLog "verify exit code: $($verify.Code)"
         if ($verify.Code -ne 0) {
             $finalCode = 8
             $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."
@@ -1665,6 +1677,18 @@ try {
         $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
     }
     exit $finalCode
+} catch {
+    $script:UnhandledException = $_
+    $exMsg = $_.Exception.Message
+    $stack = $_.ScriptStackTrace
+    Write-HandoffLog ("CRITICAL: unhandled error in hand-off: {0}`n{1}" -f $exMsg, $stack)
+    if ($null -ne $res -and $res.Code -eq 0) {
+        $finalCode = 8
+        $finalMsg = "Update completed (exit 0), but post-update step failed: $exMsg. Check logs\desktop-update-handoff.log."
+    } else {
+        $finalCode = if ($null -ne $res -and $res.Code) { $res.Code } else { 1 }
+        $finalMsg = "Update failed: $exMsg. Check logs\desktop-update-handoff.log."
+    }
 } finally {
     # Truth ordering (sibling contract to posix.sh finish()):
     #   1. durable result + marker removal (the relaunched Desktop consumes
@@ -1685,6 +1709,13 @@ try {
         Show-ErrorFinale $finalMsg
         Close-ProgressWindow
     } else {
+        if ($null -ne $script:UnhandledException -and $finalMsg -eq "update did not complete") {
+            $finalMsg = if ($null -ne $res -and $res.Code -eq 0) {
+                "Update completed (exit 0), but post-update step failed: $($script:UnhandledException.Exception.Message). Check logs\desktop-update-handoff.log."
+            } else {
+                "Update failed: $($script:UnhandledException.Exception.Message). Check logs\desktop-update-handoff.log."
+            }
+        }
         Write-Result ($finalCode -eq 0) $finalCode $finalMsg
         Remove-MarkerIfOwned
         if ($finalCode -ne 0) {

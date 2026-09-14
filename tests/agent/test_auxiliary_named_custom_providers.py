@@ -1,6 +1,7 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
 import json
+import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -478,3 +479,104 @@ class TestResolveProviderClientMainRuntimeCustom:
         assert model == "explicit-model"
         assert "explicit.example.com" in str(client.base_url)
         assert client.api_key == "sk-explicit"
+
+
+class TestBareNamedAuxCredentialChain:
+    """#109595: a bare-named custom provider pinned by auxiliary.<task> must keep its
+    credential and extra_headers through the sync→async rebuild that async_call_llm uses."""
+
+    CFG = {
+        "model": {"provider": "hermes-bifrost", "default": "glm-5.3-flash"},
+        "providers": {
+            "hermes-bifrost": {
+                "base_url": "http://127.0.0.1:18088/openai/v1",
+                "api_mode": "chat_completions",
+                # sys.executable keeps the mint portable (the old "/bin/echo" form was POSIX-only);
+                # double quotes survive both POSIX sh and Windows cmd.
+                "key_cmd": f'"{sys.executable}" -c "print(\'vk-test-1234\')"',
+                # Exactly the names a naive name-based rebuild filter used to drop: a configured
+                # bearer, a custom agent string, and OpenAI routing values (#109595 review).
+                "extra_headers": {
+                    "Authorization": "Bearer vk-configured-auth",
+                    "User-Agent": "hermes-aux-test/1.0",
+                    "OpenAI-Organization": "org-aux-test",
+                    "x-bf-eh-x-opencode-session": "hermes-opsman",
+                },
+            },
+        },
+        "auxiliary": {
+            "vision": {"provider": "hermes-bifrost", "model": "qwen-3.8-flash"},
+            "compression": {"provider": "hermes-bifrost", "model": "qwen-3.8-flash"},
+        },
+    }
+
+    def _assert_configured_headers_survive(self, client):
+        """Assert on the headers the SDK actually builds for a request (transport-level), not
+        just the client's default_headers mapping. The SDK merges ``_custom_headers`` last, so
+        these also prove precedence: the configured values override the SDK's own
+        Authorization/User-Agent even though a key_cmd provider is attached."""
+        from openai._models import FinalRequestOptions
+
+        built = client._build_headers(
+            FinalRequestOptions(method="post", url="/chat/completions", json_data={"stream": False}))
+        assert built["authorization"] == "Bearer vk-configured-auth"
+        assert built["user-agent"] == "hermes-aux-test/1.0"
+        assert built["openai-organization"] == "org-aux-test"
+        assert built["x-bf-eh-x-opencode-session"] == "hermes-opsman"
+
+    def test_async_resolve_keeps_key_cmd_provider(self, tmp_path):
+        """async resolve must carry the key_cmd token provider, not the empty .api_key snapshot.
+
+        AsyncOpenAI awaits its provider before every request, so the assertion runs the SDK's
+        real refresh: a dropped provider leaves ``api_key`` unset and an unwrapped sync
+        provider raises TypeError on await."""
+        import asyncio
+
+        _write_config(tmp_path, self.CFG)
+        from agent.auxiliary_client import resolve_vision_provider_client
+        _prov, client, model = resolve_vision_provider_client(async_mode=True)
+        assert client is not None
+        provider = getattr(client, "_api_key_provider", None)
+        assert callable(provider), "async client lost the key_cmd token provider (#109595)"
+        asyncio.run(client._refresh_api_key())
+        assert client.api_key == "vk-test-1234"
+
+    def test_initial_async_resolution_keeps_configured_headers(self, tmp_path):
+        """Initial async resolution must keep every configured header — including the
+        Authorization/User-Agent/OpenAI-* names a name-based filter wrongly dropped."""
+        _write_config(tmp_path, self.CFG)
+        from agent.auxiliary_client import resolve_vision_provider_client
+        _prov, client, _model = resolve_vision_provider_client(async_mode=True)
+        assert client is not None
+        self._assert_configured_headers_survive(client)
+
+    def test_same_provider_rebuild_keeps_configured_headers(self, tmp_path):
+        """The same-provider sync→async rebuild (transient-retry path) keeps the configured headers."""
+        _write_config(tmp_path, self.CFG)
+        from agent.auxiliary_client import resolve_vision_provider_client, _to_async_client
+        _prov, sync_client, model = resolve_vision_provider_client(async_mode=False)
+        async_client, _ = _to_async_client(sync_client, model, is_vision=True)
+        self._assert_configured_headers_survive(async_client)
+
+    def test_fallback_candidate_rebuild_keeps_configured_headers(self, tmp_path):
+        """The recovery-ladder fallback path rebuilds a sync candidate through the same
+        ``_to_async_client``; a text aux client stands in for the ladder's fb_client."""
+        _write_config(tmp_path, self.CFG)
+        from agent.auxiliary_client import get_text_auxiliary_client, _to_async_client
+        fb_client, fb_model = get_text_auxiliary_client("compression")
+        async_client, _ = _to_async_client(fb_client, fb_model or "")
+        self._assert_configured_headers_survive(async_client)
+
+    def test_text_task_async_chain_keeps_provider(self, tmp_path):
+        """The generic text-task path (get_text_auxiliary_client) has the same rebuild."""
+        import asyncio
+
+        _write_config(tmp_path, self.CFG)
+        from agent.auxiliary_client import get_text_auxiliary_client
+        client, model = get_text_auxiliary_client("compression")
+        from agent.auxiliary_client import _to_async_client
+        async_client, _ = _to_async_client(client, model)
+        provider = getattr(async_client, "_api_key_provider", None)
+        assert callable(provider), "sync→async rebuild dropped the key_cmd provider (#109595)"
+        asyncio.run(async_client._refresh_api_key())
+        assert async_client.api_key == "vk-test-1234"

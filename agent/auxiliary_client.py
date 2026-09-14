@@ -4336,7 +4336,22 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     if _client_declares(sync_client, "HERMES_SKIP_ASYNC_WRAP"):
         return sync_client, model
     sync_base_url = str(sync_client.base_url)
-    async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
+    # key_cmd/Entra credentials live in the SDK's per-request provider slot — ``.api_key`` stays
+    # "" until the first request refreshes it. Rebuilding AsyncOpenAI from ``.api_key`` alone
+    # drops the provider and every async aux call goes out with no Authorization header (#109595).
+    # The sync client's provider is ``Callable[[], str]`` while AsyncOpenAI awaits its provider
+    # (``Callable[[], Awaitable[str]]``) — forward it wrapped via asyncio.to_thread, otherwise the
+    # first async request crashes with "object str can't be used in 'await' expression".
+    _key_provider = getattr(sync_client, "_api_key_provider", None)
+    if callable(_key_provider):
+        import asyncio
+
+        def _async_key_provider(_sync_provider=_key_provider):
+            return asyncio.to_thread(_sync_provider)
+
+        async_kwargs = {"api_key": _async_key_provider, "base_url": sync_base_url}
+    else:
+        async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):
@@ -4349,6 +4364,24 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         except Exception:
             inferred = ""
         headers = _endpoint_default_headers(sync_base_url, inferred, is_vision=is_vision, xai=True)
+    # Named-custom entries lift user extra_headers onto the sync client's default_headers; the
+    # rebuild would drop them — carry the explicitly configured mapping across (#109595). The
+    # SDK's ``_custom_headers`` is exactly what the client was constructed with, so taking it
+    # whole (rather than inferring SDK ownership from header names) preserves configured
+    # Authorization/User-Agent/OpenAI-* credentials and routing values that named entries are
+    # allowed to set. The SDK merges custom headers last, so they keep precedence over both the
+    # endpoint defaults above and the bearer minted by the key provider.
+    _configured_headers = getattr(sync_client, "_custom_headers", None)
+    if _configured_headers is None:
+        # Non-SDK-shaped client: conservatively filter the merged default_headers view.
+        _sdk_owned_keys = {"accept", "content-type", "user-agent", "authorization"}
+        _sync_user_headers = {
+            k: v for k, v in dict(getattr(sync_client, "default_headers", None) or {}).items()
+            if str(k).lower() not in _sdk_owned_keys and not str(k).lower().startswith(("x-stainless", "openai-"))
+        }
+    else:
+        _sync_user_headers = dict(_configured_headers)
+    headers = {**(headers or {}), **_sync_user_headers}
     if headers:
         async_kwargs["default_headers"] = headers
     _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
@@ -4721,11 +4754,14 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     return None, None
 
 
-def _named_custom_openai_wire_client(custom_base: str, custom_key: Any):
+def _named_custom_openai_wire_client(custom_base: str, custom_key: Any, extra_headers: Optional[Dict[str, str]] = None):
     """Plain OpenAI client on the /v1 equivalent of a named custom entry's base URL."""
     _clean_base, _dq = _extract_url_query_params(_to_openai_base_url(custom_base))
     _extra = {"default_query": _dq} if _dq else {}
     _headers = _apply_user_default_headers(None)
+    if isinstance(extra_headers, dict) and extra_headers:
+        # The entry's extra_headers (gateway routing tags etc.) must reach the wire (#109595).
+        _headers = {**(_headers or {}), **{str(k): str(v) for k, v in extra_headers.items()}}
     if _headers:
         _extra["default_headers"] = _headers
     return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
@@ -4786,7 +4822,9 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
             return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key), final_model)
         return _route_client(
             req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base, is_oauth=False), final_model)
-    client = _named_custom_openai_wire_client(custom_base, custom_key)
+    _entry_headers = custom_entry.get("extra_headers")
+    client = _named_custom_openai_wire_client(
+        custom_base, custom_key, extra_headers=_entry_headers if isinstance(_entry_headers, dict) else None)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
         client = CodexAuxiliaryClient(client, final_model)

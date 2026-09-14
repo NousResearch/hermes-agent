@@ -314,6 +314,57 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert moved == ["proc_reader_live"]
 
 
+def test_reader_waits_past_early_stdout_eof_before_publishing_completion(registry, monkeypatch):
+    """Closing stdout is not process completion; the reader must still reap the child."""
+
+    class _EarlyEofStdout:
+        def read(self, _n):
+            return ""
+
+    class _StillRunningProcess:
+        stdout = _EarlyEofStdout()
+
+        def __init__(self):
+            self.returncode = None
+            self.wait_timeouts = []
+
+        def wait(self, timeout=None):
+            self.wait_timeouts.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("render", timeout)
+            self.returncode = 0
+            return 0
+
+    session = _make_session(sid="proc_early_eof")
+    session.process = _StillRunningProcess()
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: None)
+
+    registry._reader_loop(session)
+
+    assert session.process.wait_timeouts == [None]
+    assert session.exited is True
+    assert session.exit_code == 0
+
+
+def test_failed_reader_wait_does_not_publish_false_completion(registry, monkeypatch):
+    """A failed reap must leave the session running for later reconciliation."""
+    session = _make_session(sid="proc_wait_failed")
+    moved = []
+    monkeypatch.setattr(registry, "_move_to_finished", lambda _s: moved.append(_s.id))
+
+    registry._finish_reader(
+        session,
+        MagicMock(decode=MagicMock(return_value="")),
+        lambda _text: None,
+        "Process",
+        MagicMock(side_effect=OSError("wait failed")),
+        lambda: None,
+    )
+
+    assert session.exited is False
+    assert moved == []
+
+
 # =========================================================================
 # Incremental UTF-8 decoding across chunk boundaries
 # (ported from openclaw/openclaw#112325)

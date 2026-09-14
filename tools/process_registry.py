@@ -1161,11 +1161,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
         finally:
             self._finish_reader(
                 session, decoder, _append_chunk, "Process",
-                lambda: session.process.wait(timeout=5), lambda: session.process.returncode)
+                session.process.wait, lambda: session.process.returncode)
 
     def _finish_reader(self, session, decoder, append, label, wait, exit_code) -> None:
         """Reader-thread teardown: flush the decoder (a truncated multibyte tail becomes
-        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit."""
+        one U+FFFD instead of vanishing), reap the child (no zombies), record the exit.
+
+        A process may close stdout long before it exits.  The reader owns a dedicated
+        daemon thread, so it must keep waiting rather than publish a false completion
+        and discard the only ``Popen`` handle that can reap the child.
+        """
         with suppress(Exception):
             tail = decoder.decode(b"", final=True)
             if tail:
@@ -1173,7 +1178,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         try:
             wait()
         except Exception as e:
-            logger.debug("%s wait timed out or failed: %s", label, e)
+            logger.warning("%s wait failed; leaving process tracked: %s", label, e)
+            return
         self._finish_exited(session, exit_code())
 
     @staticmethod

@@ -1272,12 +1272,30 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # PTY reads can split a multibyte UTF-8 character across chunks just like pipe reads — hold partial
         # sequences until the rest arrives. (Ported from openclaw/openclaw#112325.)
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        # Programs in a PTY can block waiting for replies to device-status / window-size /
+        # cursor-position / DEC private-mode queries. Answer the bounded set and strip the
+        # queries from captured output. POSIX only: Windows ConPTY is a real console host that
+        # answers itself (and pywinpty yields str chunks, not bytes).
+        responder = None
+        if not _IS_WINDOWS:
+            from tools.pty_query_responder import PtyQueryResponder
+            responder = PtyQueryResponder(rows=30, cols=120)
         try:
             while pty.isalive():
                 try:
                     chunk = pty.read(4096)
                     if chunk:
                         # ptyprocess returns bytes; pywinpty returns str
+                        if responder is not None and isinstance(chunk, bytes):
+                            chunk, replies = responder.process(chunk)
+                            if replies:
+                                try:
+                                    pty.write(replies)
+                                except Exception:
+                                    logger.debug(
+                                        "PTY query response write failed",
+                                        exc_info=True,
+                                    )
                         text = chunk if isinstance(chunk, str) else decoder.decode(chunk)
                         if text:
                             self._ingest_output(session, text)
@@ -1285,6 +1303,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     break
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
+        if responder is not None:
+            # A query prefix split across the final reads is plain output after all.
+            tail = decoder.decode(responder.flush())
+            if tail:
+                self._ingest_output(session, tail)
         self._finish_reader(
             session, decoder, lambda t: self._ingest_output(session, t), "PTY",
             pty.wait, lambda: pty.exitstatus if hasattr(pty, 'exitstatus') else -1)
@@ -1312,6 +1335,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
+        # Release the retained Popen/PTY handles now: otherwise every
+        # finished-but-unpruned session keeps its stdout pipe (or PTY master)
+        # FD open until FINISHED_TTL_SECONDS elapses, and heavy background
+        # churn can exhaust the gateway's FD limit. On the reader-thread path
+        # the pipe is already at EOF; on the kill/reconcile paths the reader
+        # may still be draining — its next read raises on the closed stream
+        # and the loop exits, dropping at most the unread tail of a process
+        # that was just killed. poll()/wait()/read_log() serve from the
+        # buffered ``output_buffer``, never from the pipe.
+        self._release_finished_handles(session)
         self._write_checkpoint()
         if was_running and session.notify_on_complete:
             notification = {
@@ -1339,6 +1372,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "completion_reason": session.completion_reason,
             "termination_source": session.termination_source,
         }
+
+    def _release_finished_handles(self, session: ProcessSession):
+        """Close a finished session's OS handles (Popen pipes / PTY master).
+
+        Best-effort and idempotent: the session may have no local Popen (env
+        backends, detached recovery), or the handles may already be closed by
+        the reader loop / kill path. Closing a Popen's stream objects does not
+        kill anything — the child has already exited — it only releases the
+        parent's pipe FDs, which is exactly the retained-resource leak.
+        """
+        proc = session.process
+        if proc is not None:
+            for stream in (proc.stdout, proc.stderr, proc.stdin):
+                if stream is not None:
+                    with suppress(OSError, ValueError):  # a stdin flush can hit EPIPE
+                        stream.close()
+        if session._pty is not None:
+            # ptyprocess/pywinpty close() is idempotent (``closed`` flag) and
+            # closes the master fd exactly once; it raises only if the child
+            # ignores SIGKILL, which we don't want to surface on the finish path.
+            with suppress(Exception):
+                session._pty.close()
 
     # ----- Query Methods -----
 
@@ -1673,10 +1728,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return result
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
-        """Block until the process exits, the timeout elapses, or the user interrupts.
+        """Block until the process exits, the timeout elapses, the user interrupts, or a
+        mid-turn user message (steer/redirect → ``request_yield``) releases the wait.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
-        from tools.interrupt import is_interrupted as _is_interrupted
+        from tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
 
         try:
             max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -1708,6 +1764,16 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 result = {
                     "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
                     "note": "User sent a new message -- wait interrupted"}
+            elif _consume_yield(threading.current_thread().ident):
+                # A steer/redirect landed mid-turn: redirect() asks tool workers to YIELD so
+                # the user's message is delivered instead of parked behind this wait. The
+                # process is untouched and still notify-tracked; the model should read the
+                # steer text and respond, not re-issue the wait (kimi-code#3697 class).
+                result = {
+                    "status": "interrupted", "command": session.command, "output": _output_tail(session, 1000),
+                    "process_running": True,
+                    "note": ("User sent a new message -- wait released; the process is still "
+                             "running and you will be notified on exit. Respond to the user now.")}
             if result is not None:
                 if timeout_note:
                     result["timeout_note"] = timeout_note
@@ -1939,6 +2005,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
             ]
         result = []
         for s in all_sessions:
+            # List-only refreshes must observe child exit even while descendants
+            # keep the capture pipe open; retain the existing completion owner.
+            self._reconcile_local_exit(s)
             entry = {
                 "session_id": s.id,
                 "command": s.command[:200],
@@ -2064,6 +2133,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if over_cap and (survivors := [sid for sid in self._finished if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
         for sid in expired:
+            # Belt-and-suspenders handle release: sessions normally arrive in
+            # _finished via _move_to_finished(), which already released their
+            # Popen/PTY handles — but any session inserted into _finished
+            # directly (defensive paths, historical checkpoints) would
+            # otherwise carry its OS handles to the grave unreleased. The
+            # release is idempotent, so double-closing is safe.
+            self._release_finished_handles(self._finished[sid])
             del self._finished[sid]
         # Belt-and-suspenders against module-lifetime growth: forget consumed /
         # poll-observed marks for any session no longer tracked at all.

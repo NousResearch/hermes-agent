@@ -98,6 +98,9 @@ class ModelAssignment(BaseModel):
     provider: str
     model: str
     task: str = ""
+    # Auxiliary only. Omitted → the task's override is left alone; explicit null → cleared
+    # (inherit the main agent's effort); a level → set. ``model_fields_set`` tells the two apart.
+    reasoning_effort: Optional[str] = None
     # Custom/local endpoint URL + key, honored on main AND auxiliary slots: the runtime resolvers
     # read model.base_url / auxiliary.<task>.base_url (+ .api_key) and ignore OPENAI_BASE_URL.
     base_url: str = ""
@@ -407,6 +410,9 @@ class ProfileCreate(BaseModel):
     clone_from: Optional[str] = None
     clone_from_default: bool = False  # legacy clients; new ones send clone_from explicitly
     clone_all: bool = False
+    # Opt-in: also copy the source's messaging channels (bot tokens, allowlists, platform sections).
+    # Default False — a copied bot credential makes two profiles collide over one bot.
+    clone_channels: bool = False
     no_skills: bool = False
     description: Optional[str] = None
     provider: Optional[str] = None

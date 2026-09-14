@@ -15,6 +15,7 @@ import queue
 import random
 import re
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -23,7 +24,6 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from agent.message_sanitization import _sanitize_surrogates
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
@@ -53,6 +53,7 @@ from hermes_state_dbfile import (
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
+from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
     _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
 )
@@ -143,11 +144,6 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     return False
 
 
-def _scrub_surrogates(value: Any) -> Any:
-    """Replace lone surrogates in text (sqlite3 raises UnicodeEncodeError, aborting the whole write)."""
-    return _sanitize_surrogates(value) if isinstance(value, str) else value
-
-
 # Billing buckets that aren't a routable provider identity: a session that persisted only
 # one of these (never ran /model) falls back to the config default. Shared by
 # session_gateway_runtime and tui_gateway.server so they cannot drift.
@@ -216,6 +212,65 @@ def _ensure_test_isolation(db_path: Path) -> None:
                 f"child process, export {_STATE_DB_GUARD_BYPASS_ENV}=1 in "
                 "its environment."
             )
+
+
+def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
+    """Create/tighten a writable state database and its sidecars to 0600.
+
+    SQLite otherwise creates ``state.db``, ``-wal``, and ``-shm`` according to
+    the process umask (commonly 0644 under 0022). Read-only SessionDB
+    attachments never call this helper and remain observational.
+
+    Existing files are tightened with ``chmod(2)`` on the path: opening the
+    file and closing that descriptor would drop every POSIX ``fcntl`` lock the
+    process holds on its inode — including the locks of an already-open SQLite
+    connection to the same database. A lock-losing close in one process lets a
+    sibling's connection take the shared-memory DMS exclusively at its own
+    close, checkpoint, and unlink the sidecars while long-lived holders
+    (gateway, desktop ``hermes serve``) keep using the deleted inodes.
+    """
+    if os.name == "nt":
+        return
+
+    main_path = db_path
+    if create_main:
+        # O_EXCL: only a brand-new inode gets a descriptor. Opening an existing
+        # file here and closing it would drop this process's POSIX locks on it.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        try:
+            fd = os.open(main_path, flags, 0o600)
+        except FileExistsError:
+            pass
+        except IsADirectoryError:
+            # Not a database file at all; sqlite3.connect() raises the
+            # canonical error for this, and a directory leaks no row data.
+            return
+        else:
+            os.close(fd)
+
+    for path in (
+        main_path,
+        db_path.with_name(db_path.name + "-wal"),
+        db_path.with_name(db_path.name + "-shm"),
+    ):
+        # fchmod on an fd of a pre-existing file cannot be used here: close(fd)
+        # would release this process's POSIX locks on that inode, stripping the
+        # locks of any live SQLite connection to the same database. chmod(2)
+        # never opens the file, so it leaves the lock state untouched.
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(st.st_mode):
+            # Refuse a planted symlink exactly like O_NOFOLLOW would.
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        os.chmod(path, 0o600)
 
 
 # Openings of the background-review harness prompts (agent/background_review.py).
@@ -338,7 +393,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin,
+    SessionMessagesMixin, SessionRewindMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -625,6 +680,9 @@ class SessionDB(
             # Unknown -> reads queue on the writer lock (slow but correct) instead of racing SQLITE_BUSY
             # on a file that may really be in rollback-journal mode.
             self._wal_active = mode == "wal" and _on_disk_journal_mode(conn) == "wal"
+            # Existing WAL/SHM files may predate the main-file hardening;
+            # normalize any sidecars that became visible during WAL setup.
+            _secure_state_db_files(self.db_path)
             apply_database_pragmas(conn, db_label="state.db")
             conn.execute("PRAGMA foreign_keys=ON")
             self._fts_cjk_loaded = load_fts5_cjk_extension(conn)
@@ -637,6 +695,9 @@ class SessionDB(
         # Refuse before sqlite3.connect (under the startup lock) so we cannot mint
         # a replacement WAL while a live writer still holds a deleted sidecar inode.
         refuse_deleted_wal_generation(self.db_path)
+        # Create/tighten the main database before sqlite3.connect() so a
+        # permissive process umask can never expose a fresh profile store.
+        _secure_state_db_files(self.db_path, create_main=True)
         self._conn = self._open_writer_conn()
         self._init_schema()
 

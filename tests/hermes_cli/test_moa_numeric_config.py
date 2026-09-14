@@ -1,5 +1,6 @@
 """Malformed numeric MoA settings must degrade to defaults, not break the CLI or JSON."""
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -33,3 +34,23 @@ def test_moa_list_tolerates_nonfinite_fanout(tmp_path, fanout):
     normalized = normalize_moa_config({"fanout": fanout})
     assert normalized["fanout"] == normalize_moa_config({})["fanout"]
 
+
+@pytest.mark.parametrize("temperature", [float("nan"), float("inf"), float("-inf"), "NaN", "inf", "-inf"])
+def test_nonfinite_temperatures_do_not_escape_into_json(temperature):
+    raw = {
+        "reference_temperature": temperature,
+        "aggregator_temperature": temperature,
+    }
+    normalized = normalize_moa_config(raw)
+    assert normalized["reference_temperature"] is None
+    assert normalized["aggregator_temperature"] is None
+    json.dumps(normalized, allow_nan=False)
+
+    finite = normalize_moa_config({
+        "reference_temperature": 0,
+        "aggregator_temperature": "0.75",
+        "fanout": {"mode": "every_n", "n": "3.0"},
+    })
+    assert finite["reference_temperature"] == 0
+    assert finite["aggregator_temperature"] == 0.75
+    assert finite["fanout"] == "every_n:3"

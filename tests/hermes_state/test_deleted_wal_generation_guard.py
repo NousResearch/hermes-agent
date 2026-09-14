@@ -7,6 +7,7 @@ fail closed on both the open and write paths instead of creating the second
 generation.
 """
 
+import errno
 import gc
 import os
 import sqlite3
@@ -160,8 +161,10 @@ def test_iter_holders_ignores_live_unhashed_dentry(tmp_path, force_wal, monkeypa
         db.close()
 
 
-def test_iter_holders_ignores_descriptor_closed_during_scan(tmp_path, monkeypatch):
-    """A descriptor gone after ``readlink`` cannot hold a retired generation."""
+@pytest.mark.parametrize("vanish_errno", [errno.ENOENT, errno.ESRCH])
+def test_iter_holders_ignores_descriptor_closed_during_scan(tmp_path, monkeypatch, vanish_errno):
+    """A descriptor (ENOENT) or its whole process (ESRCH) gone after ``readlink``
+    cannot hold a retired generation."""
     path = tmp_path / "state.db"
     wal = Path(str(path) + "-wal")
     wal.write_bytes(b"current generation")
@@ -172,6 +175,14 @@ def test_iter_holders_ignores_descriptor_closed_during_scan(tmp_path, monkeypatc
         "_iter_proc_fd_targets",
         lambda: iter([(os.getpid(), str(wal) + " (deleted)", str(vanished_fd))]),
     )
+    real_stat = os.stat
+
+    def stat_vanished(target, *args, **kwargs):
+        if str(target) == str(vanished_fd):
+            raise OSError(vanish_errno, os.strerror(vanish_errno), str(target))
+        return real_stat(target, *args, **kwargs)
+
+    monkeypatch.setattr(hermes_state_dbfile.os, "stat", stat_vanished)
 
     assert iter_deleted_sqlite_sidecar_holders(path) == []
 

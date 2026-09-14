@@ -10,6 +10,7 @@ call time, so tests that monkeypatch ``hermes_state.<name>`` keep intercepting.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -165,11 +166,12 @@ def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
     names — the guard keeps failing closed."""
     try:
         fd_stat = os.stat(fd_path)
-    except FileNotFoundError:
-        # The descriptor was closed after /proc was read. It cannot keep a
-        # retired generation alive, so do not turn this scan race into a halt.
-        return False
-    except OSError:
+    except OSError as exc:
+        # ENOENT: the descriptor was closed after /proc was read. ESRCH: the whole
+        # process exited mid-scan. Neither can keep a retired generation alive, so
+        # do not turn this scan race into a refusal (mirrors hermes_state_holders).
+        if exc.errno in (errno.ENOENT, errno.ESRCH):
+            return False
         return True
     return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
 

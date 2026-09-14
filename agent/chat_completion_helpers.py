@@ -38,8 +38,8 @@ from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (
-    _sanitize_structure_non_ascii, _sanitize_structure_surrogates, _sanitize_surrogates,
-    _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
+    _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
+    sanitize_outbound_kwargs,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -2015,8 +2015,8 @@ def _managed_summary_call(agent, api_request_id: str, request, callback, *, retr
 def _summary_text(agent, response, **normalize_kwargs) -> str:
     normalized = agent._get_transport().normalize_response(response, **normalize_kwargs)
     if normalized.tool_calls:
-        # The summary request carries tools (cache lineage), but this path never executes a
-        # call; log so a tool-only response that lands in the empty-summary retry is diagnosable.
+        # No summary path executes tool calls; log so a tool-only response that falls into the
+        # empty-summary retry is diagnosable.
         logger.warning("Iteration summary emitted tool calls; discarding them")
     return (normalized.content or "").strip()
 
@@ -2046,16 +2046,14 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
 
 
 def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
-    # Same builder as the main loop so the summary keeps the cached prefix (tools, prompt_cache_key,
-    # xAI alias, Moonshot sanitization). Do not omit tools or force tool_choice="none" here:
-    # SGLang renders the prompt with tools=None in that mode and the KV prefix diverges.
+    # Same kwargs builder as the main loop so the summary keeps the cached prefix (tools,
+    # prompt_cache_key, xAI alias, Moonshot sanitization). Do not omit tools or force
+    # tool_choice="none" here: SGLang renders the prompt with tools=None in that mode and the KV
+    # prefix diverges. (cache_control breakpoint decoration is not re-applied on this path.)
     summary_kwargs = agent._build_api_kwargs(api_messages)
-    # Same outbound chokepoint as turn_api_request: the summary now carries ``tools``, and on
-    # cache-planned routes the main loop scrubbed a deep copy, so ``agent.tools`` may still hold
-    # the lone surrogates / non-ASCII bytes the provider 400s on (#50959 class).
-    _sanitize_structure_surrogates(summary_kwargs)
-    if agent._force_ascii_payload:
-        _sanitize_structure_non_ascii(summary_kwargs)
+    # The summary now carries ``tools``; on cache-planned routes the main loop scrubbed a deep
+    # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
+    sanitize_outbound_kwargs(agent, summary_kwargs)
 
     def _attempt(retry_count: int) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")

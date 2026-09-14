@@ -39,6 +39,7 @@ def test_plugins_manage_install_success():
         enable=False,
         catalog_name=None,
         ref=None,
+        allow_caution=False,
     )
 
 
@@ -73,6 +74,41 @@ def test_plugins_manage_install_failure():
 
     assert "error" in resp
     assert "Git clone failed" in resp["error"]["message"]
+    assert "data" not in resp["error"]
+
+
+def test_plugins_manage_install_scan_block_carries_verdict_and_findings():
+    """A scan block is an error whose ``data`` carries the verdict + findings, so the desktop dialog can
+    render them and offer "Install anyway" for ``caution`` instead of a dead end."""
+    finding = {
+        "pattern_id": "sudo_usage", "severity": "high", "category": "privilege_escalation",
+        "file": "setup.sh", "line": 3, "description": "uses sudo (privilege escalation)",
+    }
+    blocked = {
+        "ok": False, "error": "Security scan blocked plugin install: Requires confirmation",
+        "scan_blocked": True, "scan_verdict": "caution", "scan_findings": [finding],
+    }
+    with patch("hermes_cli.plugins_cmd.dashboard_install_plugin", return_value=blocked):
+        resp = server.handle_request(
+            {"id": "1", "method": "plugins.manage", "params": {"action": "install", "identifier": "owner/plugin"}}
+        )
+
+    assert resp["error"]["code"] == 5026
+    assert "Requires confirmation" in resp["error"]["message"]
+    assert resp["error"]["data"] == {"scan_blocked": True, "scan_verdict": "caution", "scan_findings": [finding]}
+
+
+def test_plugins_manage_install_allow_caution_threads_through():
+    """"Install anyway" accepts the caution verdict only; it is not a ``force`` (which also replaces an
+    existing install)."""
+    with patch("hermes_cli.plugins_cmd.dashboard_install_plugin", return_value={"ok": True}) as install:
+        server.handle_request(
+            {"id": "1", "method": "plugins.manage",
+             "params": {"action": "install", "identifier": "owner/plugin", "allow_caution": True}}
+        )
+
+    assert install.call_args.kwargs["allow_caution"] is True
+    assert install.call_args.kwargs["force"] is False
 
 
 def test_plugins_manage_install_catalog_name_only():
@@ -101,6 +137,7 @@ def test_plugins_manage_install_catalog_name_only():
         enable=False,
         catalog_name="weather-plugin",
         ref=None,
+        allow_caution=False,
     )
 
 

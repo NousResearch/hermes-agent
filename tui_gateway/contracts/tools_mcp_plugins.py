@@ -572,7 +572,8 @@ class PluginsAction(WireEnum):
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
-    (+ ``force``, ``enable``, ``ref``); ``update``: ``name``."""
+    (+ ``force``, ``enable``, ``ref``, ``allow_caution`` — accept a caution scan verdict, the CLI's
+    "Install anyway"); ``update``: ``name``."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -583,6 +584,7 @@ class PluginsManageParams(ProfileParams):
     catalog_name: str | None = None
     force: bool | None = None
     ref: str | None = None
+    allow_caution: bool | None = None
 
 
 class AgentPluginRow(Result):

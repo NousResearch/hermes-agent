@@ -17907,7 +17907,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name``.",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``, ``allow_caution`` \u2014 accept a caution scan verdict, the CLI's\n\"Install anyway\"); ``update``: ``name``.",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18020,6 +18020,18 @@
             ],
             "default": null,
             "title": "Ref"
+          },
+          "allow_caution": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Caution"
           }
         },
         "title": "PluginsManageParams",

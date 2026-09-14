@@ -638,7 +638,7 @@ Three verdicts, matching Cowork's pass/warn/fail:
 | Verdict | Behavior |
 |---|---|
 | **safe** | Installs normally, no extra output |
-| **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`) |
+| **caution** | Findings are shown; you confirm `Install anyway? [y/N]` (or pass `--force`). Hermes Desktop lists the findings in the install dialog with an **Install anyway** button |
 | **dangerous** | Blocked. `--force` does **not** override |
 
 On `hermes plugins update`, a dangerous verdict on the updated tree

@@ -483,6 +483,11 @@ export interface Translations {
         agentFailed: string
         desktopFailed: string
         missingEnv: (vars: string) => string
+        scanCautionHeading: string
+        scanCautionIntro: string
+        scanDangerousHeading: string
+        scanDangerousIntro: string
+        installAnyway: string
       }
     }
     vault: {

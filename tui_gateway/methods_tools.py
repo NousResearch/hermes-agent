@@ -1407,14 +1407,23 @@ def _plugins_toggle(rid, params):
 def _plugins_install(rid, params):
     # ``catalog_name`` alone installs a curated entry at its pinned SHA (resolved server-side, kill list
     # enforced, no bypass) — same contract as the dashboard endpoint.
+    # ``allow_caution`` is the GUI's "Install anyway" for a ``caution`` scan verdict (the CLI's ``[y/N]``
+    # prompt); a scan block answers with the verdict + findings in ``error.data`` so the client can
+    # render them and offer that step instead of a dead end. ``dangerous`` carries no override.
     ident = (params.get("identifier") or params.get("repo") or "").strip()
     catalog_name = str(params.get("catalog_name") or "").strip()
     if not ident and not catalog_name:
         return _err(rid, 4019, "plugins.install requires 'identifier', 'repo', or 'catalog_name'")
     result = _tools_mod("hermes_cli.plugins_cmd").dashboard_install_plugin(
         ident, force=bool(params.get("force")), enable=params.get("enable", True), catalog_name=catalog_name or None,
-        ref=str(params.get("ref") or "").strip() or None)
-    return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "install failed")
+        ref=str(params.get("ref") or "").strip() or None, allow_caution=bool(params.get("allow_caution")))
+    if result.get("ok"):
+        return _ok(rid, result)
+    data = None
+    if result.get("scan_blocked"):
+        data = {"scan_blocked": True, "scan_verdict": result.get("scan_verdict"),
+                "scan_findings": result.get("scan_findings") or []}
+    return _err(rid, 5026, result.get("error") or "install failed", data)
 
 
 def _plugins_update(rid, params):
@@ -1443,7 +1452,8 @@ def _(rid, params: dict) -> dict:
     """TUI Plugins Hub backend (shares primitives with ``hermes plugins`` / the dashboard):
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
-    default True); ``update`` re-pins a catalog install to the current catalog SHA."""
+    default True, ``allow_caution`` accepts a caution scan verdict; a scan block returns the verdict and
+    findings in ``error.data``); ``update`` re-pins a catalog install to the current catalog SHA."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 

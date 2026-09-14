@@ -22,7 +22,7 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { type AgentPluginScanFinding, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -37,6 +37,19 @@ import { runGatewayRestart } from '@/store/system-actions'
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
+
+/** The install-time security scan refused the agent half. A `caution` verdict
+ *  can be accepted with "Install anyway" (the CLI's `[y/N]` prompt, sent as
+ *  `allow_caution`); `dangerous` never can, exactly as `--force` cannot. */
+type ScanBlock = { verdict: string; findings: AgentPluginScanFinding[] }
+
+const SEVERITY_ORDER = ['critical', 'high', 'medium', 'low']
+
+const severityRank = (severity: string) => {
+  const index = SEVERITY_ORDER.indexOf(severity)
+
+  return index === -1 ? SEVERITY_ORDER.length : index
+}
 
 export function PluginInstallModal() {
   const request = useStore($pluginInstallRequest)
@@ -60,6 +73,7 @@ export function PluginInstallModal() {
   const [pinRef, setPinRef] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+  const [scanBlock, setScanBlock] = useState<ScanBlock | null>(null)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
@@ -73,6 +87,7 @@ export function PluginInstallModal() {
     setPinRef('')
     setInstalling(false)
     setInstallError(null)
+    setScanBlock(null)
   }, [])
 
   const applyLegacyHint = useCallback((payload: PluginInstallRequest, detected: ProbeResult) => {
@@ -176,6 +191,13 @@ export function PluginInstallModal() {
 
   const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
 
+  // Worst first, so the reason for the verdict is the first row the user reads.
+  const scanFindings = useMemo(
+    () =>
+      scanBlock ? [...scanBlock.findings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity)) : [],
+    [scanBlock]
+  )
+
   const handleClose = () => {
     if (installing) {
       return
@@ -185,7 +207,7 @@ export function PluginInstallModal() {
     closePluginInstallRequest()
   }
 
-  const handleInstall = async () => {
+  const handleInstall = async ({ allowCaution = false }: { allowCaution?: boolean } = {}) => {
     if (!request || !probe?.ok || installing) {
       return
     }
@@ -198,6 +220,7 @@ export function PluginInstallModal() {
 
     setInstalling(true)
     setInstallError(null)
+    setScanBlock(null)
 
     const errors: string[] = []
     const successes: string[] = []
@@ -209,6 +232,7 @@ export function PluginInstallModal() {
           identifier: request.repo,
           force: forceReinstall,
           enable: enableAgent,
+          allowCaution,
           catalogName: request.catalogName,
           ref: pinRefTrimmed || undefined,
           profile: request.profile
@@ -236,6 +260,13 @@ export function PluginInstallModal() {
           for (const warning of result.warnings ?? []) {
             notify({ kind: 'warning', message: warning })
           }
+        } else if (result.scanBlocked) {
+          // Stop before the desktop half: nothing of an unreviewed package
+          // should land. The findings render in the dialog; a `caution`
+          // verdict gets "Install anyway", which re-runs this with allowCaution.
+          setScanBlock({ verdict: result.scanVerdict ?? 'dangerous', findings: result.scanFindings ?? [] })
+
+          return
         } else {
           errors.push(result.error || m.agentFailed)
         }
@@ -514,6 +545,39 @@ export function PluginInstallModal() {
               </div>
             )}
 
+            {scanBlock && (
+              <div
+                className="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)]"
+                role="alert"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <div className="min-w-0 space-y-1">
+                    <div className="font-medium text-foreground">
+                      {scanBlock.verdict === 'caution' ? m.scanCautionHeading : m.scanDangerousHeading}
+                    </div>
+                    <p className="text-(--ui-text-secondary)">
+                      {scanBlock.verdict === 'caution' ? m.scanCautionIntro : m.scanDangerousIntro}
+                    </p>
+                  </div>
+                </div>
+                {scanFindings.length > 0 && (
+                  <ul className="max-h-40 space-y-1 overflow-y-auto border-t border-amber-500/20 pt-2 font-mono text-(--ui-text-secondary)">
+                    {scanFindings.map((finding, index) => (
+                      <li className="break-all" key={`${finding.file}:${finding.line}:${finding.pattern_id}:${index}`}>
+                        <span
+                          className={severityRank(finding.severity) <= 1 ? 'font-medium text-foreground' : undefined}
+                        >
+                          {finding.severity}
+                        </span>
+                        {` · ${finding.pattern_id} · ${finding.file}:${finding.line} · ${finding.description}`}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+
             {installError && (
               <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 whitespace-pre-wrap text-[length:var(--conversation-caption-font-size)] text-destructive">
                 {installError}
@@ -530,9 +594,13 @@ export function PluginInstallModal() {
             <Button disabled={!repoInput.trim()} form="plugin-repository-form" type="submit">
               {m.reviewRepository}
             </Button>
+          ) : scanBlock?.verdict === 'caution' ? (
+            <Button disabled={busy} onClick={() => void handleInstall({ allowCaution: true })}>
+              {installing ? m.installing : m.installAnyway}
+            </Button>
           ) : (
             <Button
-              disabled={busy || phase !== 'ready' || !probe?.ok || pinRefInvalid}
+              disabled={busy || phase !== 'ready' || !probe?.ok || pinRefInvalid || scanBlock !== null}
               onClick={() => void handleInstall()}
             >
               {installing ? m.installing : m.install}

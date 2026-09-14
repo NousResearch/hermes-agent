@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
+from hermes_cli.fs_remove import rmtree_force
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted, named_profile_is_deleted
 
@@ -1148,44 +1149,6 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
     print(f"✓ Stopped {len(pids)} profile backend process(es)")
 
 
-def _rmtree_make_writable(func, path, exc):
-    """onexc/onerror handler: add +w on PermissionError so rmtree can proceed. Covers NixOS-
-    style read-only copies where the path itself (0444) or its parent (0555) isn't writable."""
-    # onexc(func, path, exc_instance) on 3.12+; onerror(func, path, exc_info_tuple) on 3.11.
-    if isinstance(exc, tuple):
-        exc = exc[1]
-    if not isinstance(exc, PermissionError):
-        raise
-    for target in (path, os.path.dirname(path)):  # parent needed for unlink/rmdir
-        if target:
-            with contextlib.suppress(OSError):
-                os.chmod(target, os.stat(target).st_mode | stat.S_IWUSR)
-    func(path)
-
-
-def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
-    """``shutil.rmtree`` with a short retry loop: a just-terminated process can leave in-flight
-    writes (SQLite -wal/-shm checkpoints, sandbox temp files) landing after rmtree walked
-    past a directory — ENOTEMPTY on POSIX, transient PermissionError on Windows."""
-    attempts = 3
-    last_exc: OSError | None = None
-    for attempt in range(attempts):
-        try:
-            try:
-                shutil.rmtree(profile_dir, onexc=onexc_handler)
-            except TypeError:  # ``onexc`` is 3.12+; 3.11 has ``onerror``
-                shutil.rmtree(profile_dir, onerror=onexc_handler)
-            return
-        except OSError as e:
-            last_exc = e
-            if not profile_dir.exists():
-                return
-            if attempt < attempts - 1:
-                time.sleep(0.3 * (attempt + 1))
-    if last_exc is not None:
-        raise last_exc
-
-
 def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapper_path: Optional[Path]) -> None:
     """Show what ``delete_profile`` is about to remove."""
     model, provider = _read_config_model(profile_dir)
@@ -1271,7 +1234,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     # 4. Remove profile directory
     remove_error: Exception | None = None
     try:
-        _rmtree_with_retry(profile_dir, _rmtree_make_writable)
+        rmtree_force(profile_dir)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")

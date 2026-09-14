@@ -515,6 +515,76 @@ class TestMCPInitialConnectionRetry:
         asyncio.get_event_loop().run_until_complete(_run())
 
 
+    def test_interactive_oauth_login_makes_one_connection_attempt(self):
+        """A browser PKCE login must not be duplicated by the initial-connect retries."""
+        from tools.mcp_tool import MCPServerTask
+        from tools.mcp_tool_server_run import SINGLE_LOGIN_ATTEMPT_KEY
+
+        async def _run():
+            server = MCPServerTask("oauth-once")
+            attempts = 0
+
+            async def fail(self_inner, config):
+                nonlocal attempts
+                attempts += 1
+                raise ConnectionError("callback not completed")
+
+            with patch.object(MCPServerTask, '_run_stdio', fail), \
+                 patch('tools.mcp_tool_common._jittered', lambda s: 0.01):
+                await asyncio.wait_for(
+                    server.run({"command": "fake", SINGLE_LOGIN_ATTEMPT_KEY: True}), timeout=5)
+
+            assert attempts == 1
+            assert server._error is not None
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_only_a_probe_inside_an_interactive_login_is_marked_single_attempt(self):
+        """The marker comes from the login probe, never from the ambient OAuth context, so a
+        long-lived server started under a forced-interactive parent keeps its retries."""
+        from hermes_cli import mcp_config
+        from tools.mcp_oauth import force_interactive_oauth
+        from tools.mcp_tool_server_run import SINGLE_LOGIN_ATTEMPT_KEY
+
+        seen = []
+
+        async def fake_connect(name, config):
+            seen.append(dict(config))
+            raise ConnectionError("stop after capturing the config")
+
+        with patch("tools.mcp_tool_discovery._connect_server", fake_connect), \
+             patch.object(mcp_config, "_resolve_mcp_server_config", lambda c: c):
+            with pytest.raises(Exception):
+                mcp_config._probe_single_server("srv", {"command": "fake"}, connect_timeout=2)
+            with force_interactive_oauth(), pytest.raises(Exception):
+                mcp_config._probe_single_server("srv", {"command": "fake"}, connect_timeout=2)
+
+        assert SINGLE_LOGIN_ATTEMPT_KEY not in seen[0]
+        assert seen[1][SINGLE_LOGIN_ATTEMPT_KEY] is True
+
+    def test_without_an_interactive_login_initial_connect_still_retries(self):
+        from tools.mcp_tool import MCPServerTask
+
+        async def _run():
+            server = MCPServerTask("retries")
+            attempts = 0
+
+            async def fail_then_stop(self_inner, config):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 2:
+                    server._shutdown_event.set()
+                raise ConnectionError("transient failure")
+
+            with patch.object(MCPServerTask, '_run_stdio', fail_then_stop), \
+                 patch('tools.mcp_tool_common._jittered', lambda s: 0.01):
+                await asyncio.wait_for(server.run({"command": "fake"}), timeout=5)
+
+            assert attempts >= 2
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+
 # ---------------------------------------------------------------------------
 # Fix: drain pending tasks before closing the MCP loop
 # ---------------------------------------------------------------------------

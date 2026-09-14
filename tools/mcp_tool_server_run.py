@@ -13,6 +13,9 @@ from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
 
+# Set by hermes_cli.mcp_config._probe_single_server on a probe run inside an interactive OAuth login.
+SINGLE_LOGIN_ATTEMPT_KEY = "_single_oauth_login_attempt"
+
 logger = logging.getLogger("tools.mcp_tool")
 
 
@@ -338,6 +341,15 @@ class MCPServerRunMixin:
 
     async def _on_initial_connect_error(self, exc: Exception, root: BaseException,
                                         failure_class: str, budget: "_RetryBudget") -> bool:
+        if self._config.get(SINGLE_LOGIN_ATTEMPT_KEY):
+            # A user-initiated OAuth login probe owns one PKCE state and one callback listener.
+            # Retrying before its callback completes opens a second consent screen, and the first
+            # tab's callback then fails the state check. One attempt; the user can log in again.
+            # Long-lived servers never carry the key, so their startup resilience is unchanged.
+            logger.info("MCP server '%s': interactive OAuth login failed on its single connection "
+                        "attempt: %s: %s", self.name, type(root).__name__, root)
+            self._publish_error(exc)
+            return False
         if failure_class == "permanent":
             # Deterministic failure (bad command, non-MCP URL, 401/403): park at once; auth
             # failures park (not return) so the task can pick up fresh tokens later.

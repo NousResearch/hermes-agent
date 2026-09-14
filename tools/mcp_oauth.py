@@ -224,6 +224,12 @@ def force_interactive_oauth():
     return _contextvar_set(_oauth_interactive_forced, True)
 
 
+def interactive_oauth_forced() -> bool:
+    """True inside ``force_interactive_oauth()``: a user-initiated login is running (``hermes mcp
+    login``, dashboard or TUI re-auth), on this thread or the MCP event-loop thread it drives."""
+    return bool(_oauth_interactive_forced.get())
+
+
 def suppress_interactive_oauth():
     """Disable stdin-based OAuth prompts for the current context; ContextVar-based so a
     background-discovery thread's suppression reaches the coroutine on the MCP event-loop thread.

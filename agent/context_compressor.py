@@ -1892,13 +1892,28 @@ def match_model_override(model: str, mapping: "Mapping[str, object] | None", pro
     return best[2] if best else ""
 
 
-def parse_model_threshold_tokens(raw: object) -> "dict[str, int]":
+@dataclass(frozen=True)
+class ModelTokenRules:
+    """Validated ``compression.threshold_tokens_by_model``, split by action.
+
+    ``caps`` hold ``mode: "compress"`` entries that lower the trigger;
+    ``warns`` hold ``mode: "warn"`` entries that only surface a notice when
+    the session crosses the line — they never clamp the trigger.
+    """
+
+    caps: Dict[str, int]
+    warns: Dict[str, int]
+
+
+def parse_model_threshold_tokens(raw: object) -> ModelTokenRules:
     """Validate a ``compression.threshold_tokens_by_model`` config mapping.
 
-    Returns a ``{model-substring: absolute token cap}`` dict. Entries with
-    blank keys, non-string keys, or non-positive/non-integer values are
-    dropped with a warning so a malformed config can never silently zero a
-    threshold.
+    Each value is either an absolute token cap (``int``) or a mapping
+    ``{cap: <tokens>, mode: "compress"|"warn"}`` — ``mode`` defaults to
+    ``"compress"`` so ``{cap: N}`` is the hard-cap spelling. Entries with
+    blank keys, non-string keys, bad shapes, unknown modes, or
+    non-positive/non-integer caps are dropped with a warning so a malformed
+    config can never silently zero a threshold.
 
     Non-string keys are rejected rather than stringified because YAML parses
     a bare ``4.6:`` as a float, and ``str(4.6)`` is a two-digit substring that
@@ -1912,8 +1927,9 @@ def parse_model_threshold_tokens(raw: object) -> "dict[str, int]":
                 "compression.threshold_tokens_by_model must be a mapping, got %s — ignored",
                 type(raw).__name__,
             )
-        return {}
-    out: dict[str, int] = {}
+        return ModelTokenRules({}, {})
+    caps: dict[str, int] = {}
+    warns: dict[str, int] = {}
     for key, val in raw.items():
         if not isinstance(key, str):
             logger.warning(
@@ -1923,27 +1939,45 @@ def parse_model_threshold_tokens(raw: object) -> "dict[str, int]":
             )
             continue
         skey = key.strip()
-        try:
-            ival = int(val)  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            logger.warning(
-                "compression.threshold_tokens_by_model[%r]: %r is not an int — dropped",
-                skey, val,
-            )
-            continue
         if not skey:
             logger.warning(
                 "compression.threshold_tokens_by_model: blank key — dropped",
             )
             continue
+        mode = "compress"
+        cap_raw = val
+        if isinstance(val, dict):
+            mode = str(val.get("mode") or "compress").strip().lower()
+            if mode not in ("compress", "warn"):
+                logger.warning(
+                    "compression.threshold_tokens_by_model[%r]: mode %r must be "
+                    "\"compress\" or \"warn\" — dropped",
+                    skey, val.get("mode"),
+                )
+                continue
+            cap_raw = val.get("cap")
+        if isinstance(cap_raw, bool):
+            logger.warning(
+                "compression.threshold_tokens_by_model[%r]: %r is a bool, not a token count — dropped",
+                skey, cap_raw,
+            )
+            continue
+        try:
+            ival = int(cap_raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            logger.warning(
+                "compression.threshold_tokens_by_model[%r]: %r is not an int — dropped",
+                skey, cap_raw,
+            )
+            continue
         if ival <= 0:
             logger.warning(
                 "compression.threshold_tokens_by_model[%r]: cap %r must be > 0 — dropped",
-                skey, val,
+                skey, cap_raw,
             )
             continue
-        out[skey] = ival
-    return out
+        (warns if mode == "warn" else caps)[skey] = ival
+    return ModelTokenRules(caps, warns)
 
 
 def resolve_model_threshold(
@@ -2295,6 +2329,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._last_compression_telemetry = self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
         self._reset_proactive_prune_rearm()
+        # A new session must not inherit the warn-line latch from the old one.
+        self._warn_line_latch = None
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
@@ -2643,6 +2679,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self._persist_fallback_compression_streak()
             # Cooldowns are scoped to the failed model/provider; a switch gets an immediate attempt.
             self._clear_compression_failure_cooldown()
+            # A warn line fired for the old route must not suppress the new one's first crossing.
+            self._warn_line_latch = None
         self._verify_compaction_cleared_threshold = self._last_compression_made_progress = False
         # Runway was computed against the previous model's trigger; clear the durable copy too.
         self._reset_proactive_prune_rearm()
@@ -2778,6 +2816,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None,
         model_threshold_tokens: dict[str, int] | None = None, threshold_tokens_cap: Any = None,
+        model_threshold_warn_tokens: dict[str, int] | None = None, warning_callback: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
@@ -2795,6 +2834,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # compression.threshold_tokens_by_model — no config reads on the
         # apply path. Applied after the small-context floor, lower-only.
         self.model_threshold_tokens = model_threshold_tokens or {}
+        # Warn-only siblings (mode: "warn" entries): crossing one emits a
+        # notice via warning_callback and never lowers the trigger. The
+        # callback is the agent's user-facing warning channel; unset falls
+        # back to the log (tests, plugin-built compressors).
+        self.model_threshold_warn_tokens = model_threshold_warn_tokens or {}
+        self._warning_callback = warning_callback
+        # Latch: warn once per (model, provider, key) crossing; re-arms when
+        # real usage drops back under the line or the route changes.
+        self._warn_line_latch: "tuple[str, str, str] | None" = None
         # Raw config value, before override/floor; fallback when switching to a model with no override.
         self._config_threshold_percent = threshold_percent
         self._base_threshold_percent = resolve_model_threshold(model, self.model_thresholds, threshold_percent, provider)
@@ -2879,8 +2927,54 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self.last_completion_tokens = usage.get("completion_tokens", 0)
         self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
         self._apply_real_prompt_verdict()
+        self._check_model_warn_line()
         # Consume the flag once real usage arrives even without prompt_tokens, so it can't stay armed.
         self._verify_compaction_cleared_threshold = self.awaiting_real_usage_after_compression = False
+
+    def _check_model_warn_line(self) -> None:
+        """Fire a ``mode: "warn"`` line once per crossing.
+
+        Warn entries in ``compression.threshold_tokens_by_model`` surface a
+        notice when the provider-billed prompt size crosses their line but
+        never lower the trigger — the user keeps a very long session on
+        purpose and decides in the moment. The latch re-arms once real usage
+        drops back under the line (e.g. after /compress) or the route
+        changes (``update_model``).
+        """
+        warns = self.model_threshold_warn_tokens
+        if not warns or not self.model or self.last_prompt_tokens <= 0:
+            return
+        key = match_model_override(self.model, warns, self.provider)
+        if not key:
+            self._warn_line_latch = None
+            return
+        line = warns[key]
+        # Same defensive sign guard the cap path applies to its lookups:
+        # every in-repo writer goes through the parser, but a direct-set map
+        # must not raise mid-update_from_response.
+        if isinstance(line, bool) or not isinstance(line, int) or line <= 0:
+            self._warn_line_latch = None
+            return
+        if self.last_prompt_tokens < line:
+            self._warn_line_latch = None
+            return
+        latch = (self.model, self.provider, key)
+        if self._warn_line_latch == latch:
+            return
+        self._warn_line_latch = latch
+        message = (
+            f"⚠️ Session is at ~{self.last_prompt_tokens:,} tokens on '{self.model}' — "
+            f"past the {line:,}-token line set for '{key}' (warn mode: nothing was "
+            f"compressed). If this route bills more past its long-context point, that "
+            f"request paid the higher rate; /compress drops back under the line."
+        )
+        if self._warning_callback is not None:
+            try:
+                self._warning_callback(message)
+            except Exception:
+                logger.debug("warn-line callback failed", exc_info=True)
+        elif not self.quiet_mode:
+            logger.warning("%s", message)
 
     def _apply_real_prompt_verdict(self) -> None:
         """Pair the real prompt count with its rough estimate and judge the armed compaction verdict."""

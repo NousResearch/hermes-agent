@@ -868,7 +868,16 @@ class TestWebhookApprovalExclusion:
         assert "unattended platform" in result["message"]
         assert "approvals.unattended_mode" in result["message"]
 
-    def test_cron_honors_permanent_dangerous_pattern_key(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "approved_key",
+        [
+            "script execution via heredoc",
+            r"(python[23]?|perl|ruby|node)\s+<<",
+        ],
+    )
+    def test_cron_honors_permanent_dangerous_pattern_aliases(
+        self, monkeypatch, approved_key
+    ):
         import tools.approval as approval_mod
 
         self._isolate(monkeypatch)
@@ -876,7 +885,7 @@ class TestWebhookApprovalExclusion:
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
         monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
-        monkeypatch.setattr(approval_mod, "_permanent_approved", {"script execution via heredoc"})
+        monkeypatch.setattr(approval_mod, "_permanent_approved", {approved_key})
         monkeypatch.setattr(
             "tools.tirith_security.check_command_security",
             lambda _command: {"action": "allow", "findings": [], "summary": ""},
@@ -885,6 +894,31 @@ class TestWebhookApprovalExclusion:
         result = approval_mod.check_all_command_guards("python - <<'PY'\npass\nPY", "local")
 
         assert result["approved"] is True
+
+    def test_cron_does_not_honor_session_only_pattern_key(self, monkeypatch):
+        import tools.approval as approval_mod
+
+        session_key = "test-cron-session"
+        self._isolate(monkeypatch)
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
+        monkeypatch.setattr(approval_mod, "_permanent_approved", set())
+        monkeypatch.setattr(approval_mod, "_session_approved", {})
+        approval_mod.approve_session(session_key, "script execution via heredoc")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+
+        result = approval_mod.check_all_command_guards(
+            "python - <<'PY'\npass\nPY", "local"
+        )
+
+        assert result["approved"] is False
+        assert "script execution via heredoc" in result["message"]
 
     def test_webhook_dangerous_command_approves_when_opted_in(self, monkeypatch):
         """approvals.unattended_mode: approve restores the old auto-approve path."""

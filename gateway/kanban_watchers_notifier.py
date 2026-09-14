@@ -367,6 +367,26 @@ def _fmt_changes_requested(ev, n) -> tuple:
     return msg, None, reason_text
 
 
+def _fmt_block_loop_detected(ev, n) -> tuple:
+    """Re-blocked for the same cause past the limit and routed to `triage`.
+
+    It emits no blocked/status event, so ping loudly here. A repeated-block
+    circuit breaker establishes that orchestration attention is needed; it
+    does NOT establish that a human decision or owner input exists. Use
+    neutral orchestration wording unless the block was typed as a genuine
+    owner-input request (`needs_input`, the only kind that carries a concrete
+    question for the owner).
+    """
+    kind = _payload(ev, "kind")
+    decision = kind == "needs_input"
+    msg = (
+        f"🛑 {n.head} routed to TRIAGE — "
+        f"{'needs a human decision' if decision else 'for orchestration attention'}"
+        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+    )
+    return msg, None, None
+
+
 # archived / unblocked are claimed (so the cursor advances past them) but
 # intentionally silent (no formatter), and excluded from _WAKE_KINDS so they
 # never wake the creator.
@@ -383,13 +403,7 @@ _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "status": lambda ev, n: (f"🔄 {n.head} → {_payload(ev, 'status') or ''}", None, None),
     "review_requested": _fmt_review_requested,
     "changes_requested": _fmt_changes_requested,
-    # Re-blocked for the same cause past the limit and routed to `triage` for a
-    # human. It emits no blocked/status event, so ping loudly here.
-    "block_loop_detected": lambda ev, n: (
-        f"🛑 {n.head} routed to TRIAGE — needs a human decision"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}",
-        None, None,
-    ),
+    "block_loop_detected": _fmt_block_loop_detected,
 }
 
 

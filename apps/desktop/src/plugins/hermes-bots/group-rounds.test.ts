@@ -243,6 +243,27 @@ describe('round lifecycle', () => {
     expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(false)
   })
 
+  it('does not retry an ambiguous submit from prequeued same-thread or cross-thread sends', async () => {
+    let reject!: (error: Error) => void
+    const held = new Promise<string>((_resolve, fail) => { reject = fail })
+    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Failure', members, 'first')!
+    await drain(() => room.gateway.calls.length < 1)
+    room.rounds.sendToGroupChat('Failure', members, 'queued same-thread', thread)
+    room.rounds.sendToGroupChat('Failure', members, 'queued other-thread')
+    reject(new Error('Ambiguous admission failure'))
+    await settle(room, 'Failure')
+    await drain(() => false)
+    expect(room.gateway.calls).toHaveLength(1)
+    expect(room.chat.$groupChats.get().Failure.watermarks).toEqual({})
+
+    room.rounds.sendToGroupChat('Failure', members, '@research explicitly retry', thread)
+    await settle(room, 'Failure')
+    expect(room.gateway.calls).toHaveLength(2)
+    expect(room.gateway.calls[1].prompt).toMatch(/first[\s\S]*queued same-thread[\s\S]*explicitly retry/)
+  })
+
   it('treats a failed member turn as a pass, not a room error', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {

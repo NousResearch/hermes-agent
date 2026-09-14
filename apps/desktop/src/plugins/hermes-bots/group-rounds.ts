@@ -418,7 +418,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
+export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string, failedMembers = new Set<string>()) {
   const binding = followGroupChat(group, name => {
     group = name
   })
@@ -433,7 +433,7 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
     members,
     thread,
     startEpoch,
-    failedMembers: new Set<string>(),
+    failedMembers,
     binding,
     isCurrent
   }
@@ -731,6 +731,7 @@ export function sendToGroupChat(
 }
 
 interface GroupChatDrive {
+  failedMembers: Set<string>
   pending: Map<string, GroupMember[]>
   binding: ReturnType<typeof followGroupChat>
 }
@@ -744,6 +745,8 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
   const active = groupChatDrives.get(key)
 
   if (active?.binding.isLive()) {
+    // Only a new user action AFTER failure authorizes another attempt.
+    active.failedMembers.clear()
     active.pending.set(thread, members)
 
     return
@@ -756,16 +759,19 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
     groupChatDrives.set(key, drive)
   })
 
-  const drive: GroupChatDrive = { pending: new Map([[thread, members]]), binding }
+  const drive: GroupChatDrive = { pending: new Map([[thread, members]]), failedMembers: new Set(), binding }
   groupChatDrives.set(key, drive)
+  // Queued threads share the activity epoch, so draining one cannot hide
+  // unresolved failures from the preceding thread. Stop still invalidates it.
+  updateGroupChat(group, room => ({ ...room, epoch: (room.epoch || 0) + 1 }))
 
   void (async () => {
     try {
       while (binding.isLive() && drive.pending.size) {
         const [nextThread, nextMembers] = drive.pending.entries().next().value!
         drive.pending.delete(nextThread)
-        updateGroupChat(group, room => ({ ...room, epoch: (room.epoch || 0) + 1, running: true }))
-        await runGroupChatRounds(group, nextMembers, nextThread)
+        updateGroupChat(group, room => ({ ...room, running: true }))
+        await runGroupChatRounds(group, nextMembers, nextThread, drive.failedMembers)
       }
     } catch {
       if (binding.isLive()) {

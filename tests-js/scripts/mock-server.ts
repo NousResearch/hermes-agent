@@ -31,6 +31,9 @@ import { pathToFileURL } from 'node:url'
 export const MOCK_REPLY = 'Hello from the mock inference server! The full boot chain is working.'
 
 export interface MockServerOptions {
+  /** Choose distinct replies from the latest input without replaying history. */
+  replyForPrompt?: (prompt: string) => string
+
   /** Pause the matching stream after its first token for session-switch E2E coverage. */
   holdFirstStreamForPrompt?: string
 /** Pause the first completion whose request JSON contains this text. */
@@ -692,13 +695,15 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             return
           }
 
+          const reply = options.replyForPrompt?.(userText) ?? MOCK_REPLY
+
           if (stream) {
             const holdThisStream = Boolean(
               options.holdFirstStreamForPrompt && typeof lastUserMessage?.content === 'string' &&
                 lastUserMessage.content.includes(options.holdFirstStreamForPrompt),
             )
 
-            streamTextResponse(res, model, MOCK_REPLY, holdThisStream || holdThisCompletion ? () => {
+            streamTextResponse(res, model, reply, holdThisStream || holdThisCompletion ? () => {
               if (holdThisCompletion) {
                 heldCompletionCount++
               }
@@ -711,9 +716,9 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
             if (holdThisCompletion) {
               heldCompletionCount++
               resolveHeldStreamStarted?.()
-              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, MOCK_REPLY))
+              void heldStreamReleased.then(() => nonStreamingTextResponse(res, model, reply))
             } else {
-              nonStreamingTextResponse(res, model, MOCK_REPLY)
+              nonStreamingTextResponse(res, model, reply)
             }
           }
         })

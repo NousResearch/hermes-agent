@@ -432,7 +432,7 @@ async function submitGroupTurnPrompt(
 // timeout alone silently dropped long real turns: a 7-minute research run
 // timed out at 3 minutes, read as a pass, and its finished result never
 // reached the room (db's Aug 2026 report).
-const GROUP_TURN_HARD_CAP_MS = 20 * 60000
+export const GROUP_TURN_HARD_CAP_MS = 20 * 60000
 
 /** Mirror a member's pending prompt — clarify question OR command approval —
  *  from its resume snapshot into the room store, keyed
@@ -1069,7 +1069,11 @@ export async function harvestStrandedGroupReply(group: string, member: GroupMemb
         strandedThread
       )
       updateGroupChat(group, (r: GroupChatRoom) => {
-        r.watermarks[`${strandedThread}::${memberKey}`] = r.log.length
+        const markKey = `${strandedThread}::${memberKey}`
+
+        if (r.watermarks[markKey] === r.log.length - 1) {
+          r.watermarks[markKey] = r.log.length
+        }
 
         return r
       })

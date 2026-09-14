@@ -230,6 +230,19 @@ describe('round lifecycle', () => {
     expect(posted.length).toBeLessThanOrEqual(room.chat.GROUP_CHAT_MAX_MESSAGES)
   })
 
+  it('does not retry ambiguous member admission in later rounds or continuations', async () => {
+    const room = await loadRoom({ turn: ({ profile }) => {
+      if (profile === 'builder') { throw new Error('Ambiguous admission failure') }
+
+      return '@builder please investigate'
+    } })
+
+    room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research start')
+    await settle(room, 'Failure')
+    expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
+    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(false)
+  })
+
   it('treats a failed member turn as a pass, not a room error', async () => {
     const room = await loadRoom({
       turn: ({ profile }) => {
@@ -292,6 +305,25 @@ describe('round lifecycle', () => {
 })
 
 describe('per-member delta', () => {
+  it('retained-log trimming cannot acknowledge messages appended during inference', async () => {
+    let release!: (reply: string) => void
+    const held = new Promise<string>(resolve => { release = resolve })
+    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+    const members = [MEMBERS[0]]
+    const thread = room.rounds.sendToGroupChat('Trim', members, 'delivered')!
+    await drain(() => room.gateway.calls.length < 1)
+
+    for (let i = 0; i < 100; i++) {
+      room.chat.appendGroupChatEntry('Trim', { kind: 'user', name: 'You' }, `unseen-${i}`, thread)
+    }
+
+    release('(pass)')
+    await settle(room, 'Trim')
+    expect(room.chat.$groupChats.get().Trim.watermarks[`${thread}::research`]).toBe(0)
+    await room.rounds.runGroupChatRounds('Trim', members, thread)
+    expect(room.gateway.calls.at(-1)?.prompt).toContain('unseen-99')
+  })
+
   it('feeds a second send only the NEW messages', async () => {
     const room = await loadRoom()
     const member: GroupMember[] = [{ name: 'research', title: '' }]

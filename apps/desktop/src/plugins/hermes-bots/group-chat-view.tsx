@@ -710,6 +710,23 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents: GroupActivityEntry[] = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  // A later "settled" event must not hide a member that failed to answer.
+  // Successful completion for that member clears its unresolved warning.
+  const unresolvedFailures = new Map<string, GroupActivityEntry>()
+
+  for (const event of activityEvents) {
+    const key = event.member || ''
+
+    if (event.kind === 'failed' || event.kind === 'timed-out') {
+      unresolvedFailures.set(key, event)
+    } else if (event.kind === 'replied' || event.kind === 'passed' || event.kind === 'delivered') {
+      unresolvedFailures.delete(key)
+    }
+  }
+
+  const summaryActivity = !room.running && unresolvedFailures.size
+    ? [...unresolvedFailures.values()].at(-1)!
+    : latestActivity
 
   // #94570 shell rewired onto the real primitive (#91868/#94569): the button
   // must stop the ROUND, not just spray per-member interrupts — without the
@@ -735,8 +752,8 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
-          {latestActivity ? (
-            <span className="min-w-0 flex-1 truncate">{`${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`}</span>
+          {summaryActivity ? (
+            <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}>{`${groupActivityLabel(summaryActivity)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (

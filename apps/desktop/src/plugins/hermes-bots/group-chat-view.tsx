@@ -63,7 +63,6 @@ import {
   $groupChatWorkspace,
   $groupClarify,
   $groupNeedsYou,
-  groupSpeakerLabel,
   groupThreadOf,
   scheduleGroupChatServerSync,
   setGroupChatImage,
@@ -1153,7 +1152,7 @@ export function GroupChatWorkspace({ group, members, onBack, visible = true }: G
               {roomClarifies.length
                 ? b.group.waitingForAnswer
                 : room.turn
-                  ? b.group.memberThinking(groupSpeakerLabel(room.turn))
+                  ? b.group.memberThinking(displayName(room.turn, botRosterMeta(room.turn, allMeta)))
                   : b.group.roomWorking}
             </div>
           ) : null}

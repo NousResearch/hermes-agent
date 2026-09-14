@@ -74,11 +74,11 @@ class ValidationReport:
 def _requires_hermes_spec_valid(spec: str) -> bool:
     """Strictly validate a ``requires_hermes`` spec.
 
-    Unlike :func:`hermes_cli.plugins._version_satisfies` (permissive at load
+    Unlike :func:`hermes_cli.plugins_manifest.version_satisfies` (permissive at load
     time), validation REJECTS clauses whose version segment doesn't parse —
     a typo'd spec should fail admission, not silently gate nothing.
     """
-    from hermes_cli.plugins import _VERSION_COMPARATOR_RE, _version_tuple
+    from hermes_cli.plugins_manifest import _VERSION_COMPARATOR_RE, _version_tuple
 
     for clause in spec.split(","):
         clause = clause.strip()

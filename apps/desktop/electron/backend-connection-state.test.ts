@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { createBackendConnectionState } from './backend-connection-state'
-import { resolveProfileApiRequest } from './connection-config'
+import { resolveProfileApiRequest, resolveProfileBackendRoute } from './connection-config'
 
 type FakeProcess = { id: string }
 
@@ -114,20 +114,35 @@ test('remembering another startup profile cannot retarget config reads or saves 
   state.setPromise(attempt, Promise.resolve('default-backend'))
   rememberedProfile = 'writer'
 
+  // The launched profile must still reuse the primary rather than occupying
+  // a second pool slot for the same home after the preference moves.
+  assert.equal(
+    resolveProfileBackendRoute('default', {
+      primaryProfile: state.getProfile() || rememberedProfile
+    }).backend,
+    'primary'
+  )
+
   for (const method of ['GET', 'PUT']) {
-    assert.deepEqual(resolveProfileApiRequest('writer', '/api/config', {
-      primaryProfile: state.getProfile() || rememberedProfile,
-      requestMethod: method,
-    }), { backendProfile: null, requestPath: '/api/config?profile=writer' })
+    assert.deepEqual(
+      resolveProfileApiRequest('writer', '/api/config', {
+        primaryProfile: state.getProfile() || rememberedProfile,
+        requestMethod: method
+      }),
+      { backendProfile: null, requestPath: '/api/config?profile=writer' }
+    )
   }
 
   state.invalidate()
   state.startAttempt(rememberedProfile)
   assert.equal(state.getProfile(), 'writer')
-  assert.deepEqual(resolveProfileApiRequest('writer', '/api/config', {
-    primaryProfile: state.getProfile() || rememberedProfile,
-    requestMethod: 'PUT',
-  }), { backendProfile: null, requestPath: '/api/config' })
+  assert.deepEqual(
+    resolveProfileApiRequest('writer', '/api/config', {
+      primaryProfile: state.getProfile() || rememberedProfile,
+      requestMethod: 'PUT'
+    }),
+    { backendProfile: null, requestPath: '/api/config' }
+  )
 })
 
 test('only the current backend lifecycle can clear the captured primary profile', () => {
@@ -154,4 +169,27 @@ test('only the current backend lifecycle can clear the captured primary profile'
   assert.equal(state.getProfile(), 'remote-profile')
   assert.equal(state.clearPromiseForAttempt(remote), true)
   assert.equal(state.getProfile(), null)
+})
+
+test('distinguishes a pending connection attempt from a cached settled descriptor', async () => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  const connection = deferred<string>()
+  const attempt = state.startAttempt()
+
+  state.setPromise(attempt, connection.promise)
+  assert.equal(state.getPendingPromise(), connection.promise)
+  assert.equal(state.getProfile(), 'default')
+
+  connection.resolve('https://remote.example')
+  await connection.promise
+  await Promise.resolve()
+
+  assert.equal(state.getPromise(), connection.promise)
+  assert.equal(state.getPendingPromise(), null)
+  // Settling only ends the pending work; the descriptor still owns its home.
+  assert.equal(state.getProfile(), 'default')
+
+  state.invalidate()
+  assert.equal(state.getProfile(), null)
+  assert.equal(state.getPendingPromise(), null)
 })

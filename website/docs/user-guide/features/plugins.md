@@ -191,6 +191,30 @@ plugin; choose a new exact commit explicitly with
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 
+The same pin is available in Hermes Desktop: **Skills → Plugins → Install from
+Git** has a *Pin to commit* field that takes the full 40-character SHA, and the
+plugins list shows a `pinned @ <sha8>` badge on every pinned install so a team
+can confirm everyone is running the same commit. `hermes plugins list` prints
+the pin in its Source column (`git pinned@<sha8>`). Pins work for private
+repositories too, through the same stored credentials described below.
+
+### Installing from a private repository
+
+`hermes plugins install` clones non-interactively (it never prompts for a
+username or password), so a private repo needs a credential Hermes can find on
+its own. For an `https://` source it tries, in order:
+
+1. `GITHUB_TOKEN` or `GH_TOKEN` from your `.env` (GitHub hosts only).
+2. The `gh` CLI's login (`gh auth login`), GitHub hosts only.
+3. Your git credential helper (`git credential fill`) for that host — works for
+   GitLab, Bitbucket and self-hosted servers if a credential is already stored.
+
+The credential is sent as a one-shot HTTP header for that install or update;
+it is never written into the plugin's `.git/config` or the install metadata.
+SSH sources (`git@host:owner/repo.git`) authenticate through your ssh-agent as
+before. The same resolution applies to `hermes plugins update`, catalog MCP
+installs from git, and profile distributions fetched from a git URL.
+
 ### What the allow-list does NOT gate
 
 Several categories of plugin bypass `plugins.enabled` — they're part of Hermes' built-in surface and would break basic functionality if gated off by default:
@@ -268,13 +292,13 @@ When you upgrade to a version of Hermes that has opt-in plugins (config schema v
 
 ## Available hooks
 
-Plugins can register the 26 lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](/user-guide/features/hooks#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
+Plugins can register the 27 lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](/user-guide/features/hooks#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
 
 | Descriptive category | Shipped hooks |
 |---|---|
 | **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `pre_transcription` |
-| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
@@ -373,8 +397,8 @@ deep links never auto-install, and agent-plugin installs go through the same
 `hermes plugins install`.
 
 Hybrid repos (agent + desktop halves in one repo) use one link and one
-dialog. The same modal is reachable without a link via **Settings → Plugins →
-Install from Git**. Legacy `hermes://plugin-agent/…` and
+dialog. The same modal is reachable without a link via **Capabilities →
+Plugins → Install from Git**. Legacy `hermes://plugin-agent/…` and
 `hermes://plugin-desktop/…` URLs route into the same dialog. In dev builds
 (`npm run dev`) the scheme is `hermes-dev://`.
 
@@ -618,7 +642,18 @@ Three verdicts, matching Cowork's pass/warn/fail:
 | **dangerous** | Blocked. `--force` does **not** override |
 
 On `hermes plugins update`, a dangerous verdict on the updated tree
-disables the plugin until you review the findings and re-enable it.
+disables the plugin until you review the findings and re-enable it. A
+dangerous block names the critical findings that caused it (e.g.
+`1 critical of 42 findings (destructive_root_rm)`), so a single blocking
+line is not hidden behind the total.
+
+Top-level test trees (`tests/`, `test/`, `testing/`, `spec/`, `specs/`,
+`fixtures/` at the plugin root) are still scanned — a plugin's `__init__.py`
+can import from them, so they are runtime code — but a critical finding
+there is capped at **caution**: their fixtures deliberately hold hostile
+strings to prove the plugin rejects them, so it asks for confirmation and
+`--force` overrides it instead of blocking the install outright. The same
+finding in any other file (`setup.sh`, `src/spec/…`) is still **dangerous**.
 
 Scanning is on by default; disable it in `config.yaml`:
 

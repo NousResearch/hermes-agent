@@ -179,7 +179,10 @@ export const ko = defineLocale({
       errorTitle: 'MCP 서버에 연결할 수 없습니다',
       errorMessage: name => `${name} MCP 상태 확인에 실패했습니다.`,
       signIn: '로그인',
-      view: '보기'
+      view: '보기',
+      disable: '비활성화',
+      disabledMessage: name => `${name} MCP가 비활성화되었습니다. 기능 → MCP에서 언제든 다시 활성화할 수 있습니다.`,
+      disableFailed: name => `${name} MCP를 비활성화할 수 없습니다.`
     },
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT에는 ELEVENLABS_API_KEY가 필요합니다.',
@@ -213,7 +216,11 @@ export const ko = defineLocale({
       transcriptionFailed: '음성 전사 실패',
       transcriptionUnavailable: '음성 전사를 아직 사용할 수 없습니다.',
       tryRecordingAgain: '다시 녹음해 보세요.',
-      unavailable: '음성 사용 불가'
+      unavailable: '음성 사용 불가',
+      liveEnded: '실시간 음성 세션이 종료되었습니다',
+      liveError: '실시간 음성',
+      liveDelegationFailed: 'Hermes에 요청을 전달할 수 없습니다',
+      liveUnavailable: reason => `GPT-Live 음성 대화를 사용할 수 없습니다: ${reason}. 음성 인식(STT)을 사용합니다.`
     },
     native: {
       approvalTitle: '승인이 필요합니다',
@@ -259,7 +266,7 @@ export const ko = defineLocale({
       '터미널에서 `hermes debug share --nous`를 실행할 수도 있습니다. 업로드 없이 보고서를 출력하려면 `hermes debug share --local`을 실행하세요.',
     handoffLead: '다음 채널에서 문의를 이어가세요:',
     links: {
-      github: 'GitHub Issues',
+      github: 'GitHub 이슈',
       portal: 'Nous Portal 지원',
       discord: 'Discord'
     }
@@ -429,11 +436,12 @@ export const ko = defineLocale({
       about: '정보',
       billing: '결제',
       notifications: '알림',
-      plugins: '플러그인'
+      vault: '비밀번호 및 로그인'
     },
     plugins: {
       title: '데스크톱 플러그인',
-      blurb: '앱에 포함되거나 desktop-plugins 폴더에 추가된 플러그인입니다. 비활성화하면 즉시 해제됩니다.',
+      blurb:
+        '앱을 확장하는 플러그인입니다. 앱 전체에 한 번 설치되며 연결한 프로필, 게이트웨이, 컴퓨터와 관계없이 적용됩니다. 앱에 포함되거나 desktop-plugins 폴더에 추가되며, 켜기·끄기는 즉시 적용됩니다.',
       count: n => `${n}개 설치됨`,
       openFolder: '플러그인 폴더 열기',
       rescan: '다시 검색',
@@ -447,12 +455,6 @@ export const ko = defineLocale({
         disk: '디스크',
         runtime: '런타임'
       },
-      agent: {
-        title: '에이전트 플러그인',
-        movedToCapabilities:
-          '에이전트 플러그인은 기능 화면에서 프로필별로 관리합니다. 설치 목록, 켜기/끄기, 플러그인 카탈로그를 그곳에서 이용하세요.',
-        openCapabilities: '기능 → 플러그인 열기'
-      },
       installModal: {
         title: '플러그인 설치',
         description: '설치하기 전에 이 저장소에 포함된 내용을 확인하세요.',
@@ -460,7 +462,7 @@ export const ko = defineLocale({
         includesHeading: '패키지 구성',
         agentLabel: '에이전트 플러그인',
         desktopLabel: '데스크톱 UI',
-        agentTargetLocal: profile => `${profile} 백엔드에 설치됩니다 (~/.hermes/plugins/)`,
+        agentTargetLocal: (profile, dir) => `${profile} 백엔드에 설치됩니다 (${dir})`,
         agentTargetRemote: profile => `연결된 ${profile} 백엔드에 설치됩니다`,
         desktopTarget: '이 앱의 로컬 desktop-plugins 폴더에 설치됩니다',
         desktopOnlyNote: '데스크톱 전용 패키지는 백엔드 에이전트 플러그인을 설치하지 않습니다.',
@@ -495,7 +497,13 @@ export const ko = defineLocale({
         restartToApply: '플러그인을 적용하려면 게이트웨이를 다시 시작하세요.',
         restartNow: '게이트웨이 다시 시작',
         missingEnvAction: '설정하기',
-        alreadyInstalled: name => `${name}은(는) 이미 설치되어 있습니다.`
+        alreadyInstalled: name => `${name}은(는) 이미 설치되어 있습니다.`,
+        desktopTargetFromPackage: '위 패키지에서 이 앱으로 불러옵니다. 모든 프로필에 동일하게 적용됩니다.',
+        pinToCommit: '커밋 고정 (선택 사항)',
+        pinToCommitPlaceholder: '전체 40자리 커밋 SHA',
+        pinToCommitHint:
+          '이 SHA를 설치하면 누구나 같은 코드를 사용합니다. 다시 고정할 때까지 플러그인 업데이트는 차단됩니다. 최신 커밋을 설치하려면 비워 두세요.',
+        pinToCommitInvalid: '전체 40자리 커밋 SHA를 입력하세요. 브랜치와 태그는 사용할 수 없습니다.'
       },
       agentHalfMissing: '에이전트 구성 요소가 설치되지 않음',
       agentHalfMissingTip:
@@ -637,10 +645,11 @@ export const ko = defineLocale({
       reactionsDesc: 'iMessage처럼 메시지에 이모지로 반응합니다. Hermes도 내 메시지에 반응할 수 있습니다.',
       tipsTitle: '앱 도움말',
       tipsDesc:
-        '앱의 특정 부분을 가리키는 작은 말풍선입니다. 대기 중 가끔 표시되며, 도움이 될 때 Hermes가 표시하기도 합니다. 닫은 도움말은 다시 표시되지 않습니다.',
-      tipsReset: (count: number) => `닫은 도움말 ${count}개 다시 표시`,
+        '앱과 Hermes가 가끔 도움말을 표시합니다. 각 도움말은 한 번씩 표시됩니다. 처음 사용한 날부터 30일이 지나면 자동으로 꺼지며, 다시 켤 수 있습니다.',
+      tipsReset: (count: number) => `도움말 ${count}개 다시 표시`,
       toursTitle: '기능 둘러보기',
-      toursDesc: '화면을 어둡게 하고 각 단계를 강조하며 Hermes가 앱 사용법을 안내합니다.',
+      toursDesc:
+        'Hermes가 각 단계를 강조하며 앱 사용법을 안내합니다. 처음 사용한 날부터 30일이 지나면 자동으로 꺼지며, 다시 켤 수 있습니다.',
       composerPopoutTitle: '떠 있는 입력창',
       composerPopoutDesc: '입력창을 고정 영역 밖으로 끌어낼 수 있습니다. 끄면 입력창이 하단에 고정됩니다.',
       vibeHeartsTitle: '하트 효과',
@@ -710,7 +719,13 @@ export const ko = defineLocale({
         noneAvailable: '지금 켤 수 있는 펫이 없습니다.',
         turnOnFailed: '펫을 켜지 못했습니다.',
         turnOffFailed: '펫을 끄지 못했습니다.'
-      }
+      },
+      appActionsTitle: '앱 작업 버튼',
+      appActionsDesc:
+        '제목 표시줄에서 설정, 레이아웃, HUD 버튼의 위치를 정합니다. 오른쪽에 두면 왼쪽에 탭을 위한 공간이 생깁니다.',
+      appActionsLeft: '왼쪽',
+      appActionsRight: '오른쪽',
+      themeSearchPlaceholder: '내 테마 또는 VS Code Marketplace 검색…'
     },
     fieldLabels: {
       model: '기본 모델',
@@ -810,7 +825,10 @@ export const ko = defineLocale({
       'delegation.maxConcurrentChildren': '병렬 서브에이전트',
       'delegation.childTimeoutSeconds': '서브에이전트 시간 초과',
       'delegation.reasoningEffort': '서브에이전트 추론 노력',
-      'updates.nonInteractiveLocalChanges': '앱 내 업데이트 시 로컬 변경 처리'
+      'updates.nonInteractiveLocalChanges': '앱 내 업데이트 시 로컬 변경 처리',
+      'voice.voiceChatMode': '음성 대화 모드',
+      'voice.gptLive.voice': 'GPT-Live 음성',
+      'voice.gptLive.instructions': 'GPT-Live 페르소나'
     },
     fieldDescriptions: {
       model: '입력기에서 다른 모델을 선택하지 않는 한 새 채팅에 사용됩니다.',
@@ -864,7 +882,12 @@ export const ko = defineLocale({
       'delegation.maxConcurrentChildren': '동시에 실행할 수 있는 서브에이전트 수입니다.',
       'delegation.childTimeoutSeconds': '서브에이전트가 응답 없이 대기하는 최대 시간(초)입니다.',
       'delegation.reasoningEffort':
-        '서브에이전트의 추론 강도입니다. minimal(최소)부터 high(높음)까지. 강도가 높을수록 응답 품질이 향상되지만 시간과 비용이 증가합니다.'
+        '서브에이전트의 추론 강도입니다. minimal(최소)부터 high(높음)까지. 강도가 높을수록 응답 품질이 향상되지만 시간과 비용이 증가합니다.',
+      'voice.voiceChatMode':
+        'chained: 아래 공급자를 사용해 음성 인식 → Hermes → 음성 합성 순서로 처리합니다. gpt-live: 하나의 전이중 OpenAI 음성 모델(gpt-live-1)이 동시에 듣고 말하며 모든 실제 요청을 Hermes에 전달합니다. 선택한 모델이 전체 도구 세트로 응답합니다. OpenAI API 키가 필요하며, 음성 처리에는 분당 $0.05가 청구됩니다.',
+      'voice.gptLive.voice': 'GPT-Live 모드에서 사용할 음성입니다. 사용자 지정 음성 ID도 사용할 수 있습니다.',
+      'voice.gptLive.instructions':
+        '실시간 음성 페르소나의 말투, 속도, 언어에 관한 추가 지침입니다. Hermes는 자체 시스템 프롬프트를 유지합니다.'
     },
     about: {
       heading: 'Hermes Desktop',
@@ -930,7 +953,8 @@ export const ko = defineLocale({
       attachmentSizeDesc:
         '데스크톱이 미리 보기와 이미지 첨부를 위해 불러올 로컬 파일의 최대 크기(MB)입니다. 기본값은 16입니다. 이미지가 아닌 원격 첨부 파일은 별도의 256MB 한도를 사용합니다. 매우 높게 설정하면 파일 전체가 메모리에 로드되어 앱이 멈추거나 종료될 수 있습니다.',
       attachmentSizeUnit: 'MB',
-      attachmentSizeLabel: '최대 미리 보기 / 이미지 로드 크기(MB)'
+      attachmentSizeLabel: '최대 미리 보기 / 이미지 로드 크기(MB)',
+      showOptions: '옵션 표시'
     },
     quickEntry: {
       enabledTitle: '빠른 입력',
@@ -1351,7 +1375,11 @@ export const ko = defineLocale({
           label: '큐레이터',
           hint: '스킬 사용 검토'
         }
-      }
+      },
+      inheritMainEffort: '상속 · 기본 모델의 추론 수준',
+      moaTitle: '에이전트 혼합(MoA)',
+      moaPreset: '프리셋',
+      moaAggregator: '응답 통합 모델'
     },
     localModels: {
       title: '로컬 모델',
@@ -1380,9 +1408,7 @@ export const ko = defineLocale({
         'speed-gated-quality':
           '더 높은 품질의 모델도 이 기기에 들어가지만 메모리 대역폭 때문에 응답이 너무 느려집니다. 빠른 속도를 유지하는 가장 좋은 모델입니다.',
         'fastest-resident':
-          '이 하드웨어에서 최대 속도에 도달하는 모델은 없습니다. 이 모델은 GPU 메모리 안에서 전부 실행되면서 최대 속도에 가장 근접합니다.',
-        'least-painful-spilled':
-          'GPU 메모리에 전부 들어가는 모델이 없습니다. 시스템 RAM을 사용하는 모델 중 가장 잘 실행됩니다.'
+          '이 하드웨어에서 최대 속도에 도달하는 모델은 없습니다. 이 모델은 GPU 메모리 안에서 전부 실행되면서 최대 속도에 가장 근접합니다.'
       },
       downloaded: '다운로드됨',
       downloadAction: size => `다운로드 · ${size}`,
@@ -1395,7 +1421,7 @@ export const ko = defineLocale({
       quickstartDetailReady: model =>
         `한 번의 클릭으로 ${model}을(를) 새 대화의 기본 모델로 설정합니다. 모든 작업은 이 기기에서 실행됩니다.`,
       quickstartAction: '자동 설정',
-      quickstartConfigure: '설정…',
+      quickstartConfigure: '직접 선택',
       quickstartDoneToast: model => `${model} 설정 완료 — 새 대화는 이 기기에서 실행됩니다.`,
       quickstartFailed: '로컬 모델 설정 실패',
       quickstartStageEngine: '엔진',
@@ -1467,7 +1493,11 @@ export const ko = defineLocale({
       deleteAction: '모델 삭제',
       deleteConfirm: model => `디스크에서 ${model}을(를) 삭제할까요?`,
       deleted: model => `${model} 삭제 완료.`,
-      deleteFailed: '삭제 실패'
+      deleteFailed: '삭제 실패',
+      noRecommendationTitle: '이 기기에 자동으로 추천할 모델이 없습니다',
+      noRecommendationDetail:
+        '자동 설정에는 GPU 메모리나 통합 메모리에 전부 들어가는 추천 모델이 필요합니다. 아래에서 직접 모델을 선택하거나 더 많은 모델을 찾아볼 수 있습니다.',
+      noRecommendationAction: '모델 찾아보기'
     },
     providers: {
       connectAccount: '계정 연결',
@@ -1666,6 +1696,114 @@ export const ko = defineLocale({
       HERMES_TOOL_PROGRESS_MODE: '(사용 중단) 대신 config.yaml의 display.tool_progress를 사용하세요',
       SUDO_PASSWORD:
         '루트 접근이 필요한 터미널 명령용 sudo 비밀번호; 명시적 빈 문자열로 설정하면 프롬프트 없이 빈 값으로 시도'
+    },
+    vault: {
+      title: '비밀번호 및 로그인',
+      blurb:
+        '“GitHub에 로그인해 줘”라고 말하면 에이전트가 대신 로그인합니다. 로그인 페이지를 처음 만나면 그 자리에서 로그인 정보를 요청하며, 다음부터는 자동으로 로그인합니다. 비밀번호는 이 기기에 암호화되어 저장되고 페이지에 직접 입력되므로 모델에 노출되지 않습니다.',
+      count: n => `${n}개 저장됨`,
+      loadFailed: '저장된 항목을 불러오지 못했습니다',
+      empty: '아직 저장된 항목이 없습니다',
+      emptyDesc:
+        '여기에 미리 추가할 필요는 없습니다. 에이전트에게 사이트 로그인을 요청하면 그 자리에서 로그인 정보를 한 번만 묻습니다. 미리 입력하려면 추가를 누르세요.',
+      add: '추가',
+      addTitle: '로그인 정보, 카드 또는 주소 추가',
+      addDescription: '이 기기에 암호화하여 저장합니다. 비밀번호는 에이전트에 노출되지 않습니다.',
+      added: '저장했습니다.',
+      adding: '저장 중…',
+      addConfirm: '저장',
+      kindField: '유형',
+      kinds: {
+        login: '로그인 정보',
+        payment: '결제 카드',
+        address: '주소'
+      },
+      labelField: '이름',
+      labelPlaceholder: '예: GitHub 업무용 계정',
+      labelRequired: '이름을 입력하세요.',
+      originField: '사이트 주소',
+      originPlaceholder: 'https://github.com',
+      originPlaceholderCheckout: 'https://shop.example.com',
+      originInvalid: 'https://example.com과 같은 올바른 URL을 입력하세요.',
+      identifierTypeField: '로그인 ID 유형',
+      identifierTypes: {
+        email: '이메일',
+        phone: '전화번호',
+        username: '사용자 이름'
+      },
+      identifierField: '로그인 ID',
+      identifierShown: identifier => identifier,
+      passwordField: '비밀번호',
+      loginFieldsRequired: '로그인 ID와 비밀번호를 입력하세요.',
+      cardNumberField: '카드 번호',
+      cardNameField: '카드에 표시된 이름',
+      expMonthField: '유효기간 월',
+      expYearField: '유효기간 연도',
+      cvcField: 'CVC',
+      postalField: '우편번호',
+      addressLine1Field: '기본 주소',
+      addressLine2Field: '상세 주소',
+      cityField: '도시',
+      stateField: '주 / 지역',
+      countryField: '국가',
+      optional: '(선택 사항)',
+      createdOn: date => `${date}에 추가됨`,
+      deleteAction: '저장된 항목 삭제',
+      otpField: '인증 앱 설정 키',
+      otpPlaceholder: 'Base32 비밀 키 또는 otpauth:// 링크',
+      otpHint: '사이트에서 2단계 인증을 켤 때 표시되는 “설정 키”입니다. 저장하면 Hermes가 인증 코드를 직접 생성합니다.',
+      twoFactorBadge: '2단계 인증 자동 입력',
+      deleteTitle: '이 항목을 삭제할까요?',
+      deleteDescription: label => `“${label}” 항목을 삭제합니다. 이 작업은 되돌릴 수 없습니다.`,
+      deleteConfirm: '삭제',
+      sources: {
+        title: '비밀번호 관리자',
+        blurb:
+          '설치된 비밀번호 관리자를 자동으로 찾습니다. 에이전트가 처음으로 로그인 정보를 가져와야 할 때 잠금 해제를 요청합니다(세션당 한 번). 메모리에는 세션 토큰만 유지되며, 마스터 비밀번호와 로그인 정보는 에이전트에 노출되지 않습니다.',
+        toggleFailed: '비밀번호 관리자 설정을 변경하지 못했습니다',
+        notInstalled: name => `찾지 못했습니다. ${name} 명령줄 도구를 설치하고 로그인하면 Hermes가 자동으로 찾습니다.`,
+        disabledDesc: '비밀번호 관리자를 찾았지만 Hermes에서 사용하도록 설정되지 않았습니다.',
+        lockedDesc:
+          '비밀번호 관리자를 찾았습니다. 로그인 정보가 필요하면 에이전트가 잠금 해제를 요청합니다. 지금 해제할 수도 있습니다.',
+        unlockedDesc:
+          '이 세션에서 잠금이 해제되었습니다. 30분 동안 사용하지 않거나 Hermes를 종료하면 자동으로 잠깁니다.',
+        statusLocked: '잠김',
+        statusNotDetected: '찾지 못함',
+        statusOff: '꺼짐',
+        statusUnlocked: '잠금 해제됨',
+        unlock: '잠금 해제',
+        unlocking: '잠금 해제 중…',
+        lock: '잠그기',
+        unlocked: name => `이 세션에서 ${name}의 잠금을 해제했습니다.`,
+        unlockTitle: name => `${name} 잠금 해제`,
+        unlockDescription:
+          '마스터 비밀번호를 입력하세요. 이 기기의 비밀번호 관리자에 전달한 뒤 즉시 폐기하며, 저장하거나 로그에 기록하거나 에이전트에 노출하지 않습니다.',
+        masterPasswordPlaceholder: '마스터 비밀번호'
+      }
+    },
+    uninstallSection: {
+      dangerZone: '주의가 필요한 작업',
+      confirmUninstall: '제거 확인',
+      uninstallHermes: 'Hermes 제거'
+    },
+    poolLimits: {
+      warmBotBackendsAria: '대기 중인 봇 백엔드',
+      warmBotBackendsTitle: '대기 중인 봇 백엔드',
+      backendIdleTimeoutAria: '백엔드 유휴 제한 시간(밀리초)',
+      backendIdleTimeoutTitle: '백엔드 유휴 제한 시간'
+    },
+    customEndpoints: {
+      title: '사용자 지정 엔드포인트',
+      deleteEndpoint: '엔드포인트 삭제',
+      emptyDescription: '아래에서 OpenAI 호환 엔드포인트를 추가하세요.',
+      emptyTitle: '사용자 지정 엔드포인트가 없습니다',
+      namePlaceholder: 'Axet Proxy',
+      contextPlaceholder: '자동'
+    },
+    computerUse: {
+      accessibility: '손쉬운 사용',
+      screenRecording: '화면 기록',
+      driverHealth: '드라이버 상태'
     }
   },
   skills: {
@@ -1725,7 +1863,7 @@ export const ko = defineLocale({
     skillArchivedTitle: '스킬 보관됨',
     skillArchivedMessage: 'hermes curator restore 명령으로 복원할 수 있습니다.',
     plugins: {
-      empty: '이 프로필에 설치된 에이전트 플러그인이 없습니다',
+      empty: '이 프로필에 설치된 에이전트 플러그인이 없습니다.',
       emptyHint: '아래 카탈로그에서 검토된 플러그인을 찾아 한 번의 클릭으로 설치하세요.',
       loadFailed: '에이전트 플러그인을 불러오지 못했습니다',
       toggleFailed: name => `${name}의 활성화 상태를 변경하지 못했습니다`,
@@ -1744,7 +1882,31 @@ export const ko = defineLocale({
       updateToPin: sha => `${sha}(으)로 업데이트`,
       updateFailed: name => `${name}을(를) 업데이트하지 못했습니다`,
       updated: name =>
-        `${name}을(를) 카탈로그의 현재 고정 커밋으로 업데이트했습니다. 적용하려면 게이트웨이를 다시 시작하세요.`
+        `${name}을(를) 카탈로그의 현재 고정 커밋으로 업데이트했습니다. 적용하려면 게이트웨이를 다시 시작하세요.`,
+      agentTitle: '에이전트 플러그인',
+      agentBlurb: '선택한 프로필의 에이전트에 도구, 훅, 공급자를 추가합니다. 게이트웨이를 다시 시작하면 적용됩니다.',
+      pageBlurb:
+        '플러그인마다 한 행이 표시됩니다. 플러그인은 이 앱, 에이전트 또는 둘 다 확장할 수 있으며 각 구성 요소를 따로 켜고 끌 수 있습니다.',
+      halfDesktop: '데스크톱',
+      halfDesktopHint: '이 앱에 적용되며 모든 프로필에서 동일',
+      halfAgent: '에이전트',
+      halfAgentIn: (profile: string) => `${profile}의 에이전트`,
+      defaultProfile: 'Hermes (기본)',
+      kindAgent: '에이전트',
+      kindDesktop: '데스크톱',
+      kindBoth: '에이전트 + 데스크톱',
+      installAgentHere: '여기에 설치',
+      installAgentHereTip: (profile: string) =>
+        `데스크톱 구성 요소는 이 앱에 로드되었지만 에이전트 구성 요소는 ${profile}에 설치되지 않았습니다. 해당 프로필에 설치하세요.`,
+      installAgentHereNoOrigin:
+        '이 프로필에 에이전트 구성 요소가 설치되지 않았습니다. 패키지를 수동으로 복사했고 카탈로그 항목이나 Git 원격 저장소도 없어 여기서는 설치할 수 없습니다. 프로필에 해당 폴더를 복사하거나 Git에서 다시 설치하세요.',
+      desktopHalfPending: '복사 중…',
+      desktopHalfPendingTip:
+        '이 패키지의 데스크톱 구성 요소가 아직 앱에 복사되지 않았습니다. 다시 검색을 누르거나 앱을 다시 시작하세요.',
+      emptyAll: '아직 플러그인이 없습니다.',
+      pinnedProvenance: (sha: string) =>
+        `커밋 ${sha}에 고정되어 있습니다. 새 고정 커밋으로 다시 설치하기 전에는 업데이트할 수 없습니다.`,
+      pinnedBadge: (sha: string) => `고정 @ ${sha}`
     },
     officialCatalog: '설치 가능',
     officialPill: '공식',
@@ -2012,7 +2174,7 @@ export const ko = defineLocale({
     ageDays: days => `${days}일 전`,
     durationSeconds: seconds => `${seconds}초`,
     durationMinutes: (minutes, seconds) => `${minutes}분 ${seconds}초`,
-    tokens: value => `${value} tok`,
+    tokens: value => `${value} 토큰`,
     extendedTranscript: '확장 대화 기록',
     transcriptTruncated: '최근 16 KiB 표시 중',
     transcriptUnavailable: '실시간 대화 기록을 사용할 수 없습니다',
@@ -2126,7 +2288,7 @@ export const ko = defineLocale({
       },
       skills: {
         title: '스킬과 도구',
-        detail: '스킬, 도구 세트, 공급자 활성화'
+        detail: '스킬, 도구, MCP 서버 및 플러그인'
       },
       messaging: {
         title: '메시징',
@@ -2240,7 +2402,11 @@ export const ko = defineLocale({
       actionFailed: name => `${name} 시작 실패`,
       running: '실행 중...',
       viewLog: '작업 로그'
-    }
+    },
+    sharedGatewayRestartTitle: '공유 게이트웨이를 다시 시작할까요?',
+    sharedGatewayRestartDescription: bots => `이 기기의 모든 봇이 다시 연결됩니다: ${bots}`,
+    sharedGatewayRestartConfirm: '모두 다시 시작',
+    sharedGatewayRestarted: count => `공유 게이트웨이를 다시 시작했습니다 (봇 ${count}개)`
   },
   messaging: {
     search: '메시징 검색...',
@@ -2391,7 +2557,7 @@ export const ko = defineLocale({
         help: '권장. 쉼표로 구분된 Mattermost 사용자 ID.'
       },
       MATRIX_HOMESERVER: {
-        label: 'Homeserver URL',
+        label: '홈서버 URL',
         placeholder: 'https://matrix.org'
       },
       MATRIX_ACCESS_TOKEN: {
@@ -2430,7 +2596,44 @@ export const ko = defineLocale({
         help: '권장. 쉼표로 구분된 전화번호 또는 WhatsApp ID.'
       }
     },
-    platformIntro: {}
+    platformIntro: {},
+    sharedListenerUrl: '공유 게이트웨이 수신 주소:',
+    appliedLive: '실행 중인 게이트웨이에 적용되었습니다.',
+    connectingLive: '실행 중인 게이트웨이가 새 자격 증명으로 연결 중입니다.',
+    restartNeeded: '저장되었습니다. 새 설정을 적용하려면 메시징 게이트웨이를 다시 시작하세요.',
+    restartNow: '지금 다시 시작',
+    restarting: '다시 시작 중…',
+    restartFailedManual: '게이트웨이를 다시 시작하지 못했습니다. 수동으로 다시 시작하고 게이트웨이 로그를 확인하세요.',
+    telegramQr: {
+      title: 'Telegram 봇 연결 방법 선택',
+      subtitle: '두 방법 모두 직접 관리하는 봇을 연결하며 자격 증명은 이 Hermes 설치에만 저장합니다.',
+      quickSetup: '빠른 설정',
+      recommended: '권장',
+      quickHelp:
+        'QR 코드를 스캔하고 Telegram에서 확인하세요. Hermes가 봇을 만들고 Telegram 사용자 ID를 자동으로 감지합니다.',
+      createWithQr: 'QR 코드로 만들기',
+      starting: '시작 중…',
+      replaceWarning:
+        'Telegram 자격 증명이 이미 설정되어 있습니다. 새 QR 설정이나 봇 토큰을 저장하면 현재 봇이 교체됩니다.',
+      scanHint: '휴대폰의 Telegram 앱으로 스캔하거나 이 컴퓨터에서 링크를 여세요.',
+      waiting: 'Telegram 응답 대기 중…',
+      expiresIn: remaining => `만료까지 ${remaining}`,
+      expired: '만료됨',
+      openTelegram: 'Telegram 열기',
+      ready: '봇 생성됨',
+      allowedUsers: '허용된 사용자',
+      ownerDetected: '소유자 감지됨',
+      addAtLeastOne: 'Telegram 사용자 ID를 하나 이상 추가하세요.',
+      userIdPlaceholder: 'Telegram 사용자 ID',
+      add: '추가',
+      numericOnly: '허용된 Telegram 사용자 ID는 숫자로만 입력해야 합니다.',
+      saveAndRestart: '저장하고 다시 시작',
+      applying: '저장 중…',
+      pairingExpired: 'Telegram 페어링이 만료되었습니다. 새 QR 설정으로 다시 시도하세요.',
+      stillWaiting: detail => `Telegram 응답을 계속 기다리고 있습니다. 다음 오류 후 다시 시도합니다: ${detail}`,
+      savedRestarting: 'Telegram 설정이 저장되었습니다. 게이트웨이 다시 시작 중…',
+      savedRestartFailed: detail => `Telegram 설정은 저장되었지만 게이트웨이를 다시 시작하지 못했습니다${detail}`
+    }
   },
   webhooks: {
     search: '웹훅 검색...',
@@ -2569,7 +2772,7 @@ export const ko = defineLocale({
     refreshing: '프로필 새로 고침 중',
     default: '기본',
     skills: count => `스킬 ${count}개`,
-    env: 'env',
+    env: '환경 변수',
     defaultBadge: '기본',
     rename: '이름 변경',
     renameMenu: '이름 변경…',
@@ -3182,7 +3385,15 @@ export const ko = defineLocale({
         description: '선택한 코드가 어떻게 작동하는지 안내하고 핵심 파일을 연결합니다.',
         text: '이것이 어떻게 작동하는지 설명하고 핵심 파일을 알려주세요.'
       }
-    }
+    },
+    voiceEngine: '음성 대화 엔진',
+    voiceEngineChained: '음성 인식(STT) + Hermes 음성',
+    voiceEngineLive: 'GPT-Live (동시 양방향 음성, Hermes에 작업 위임)',
+    voiceEngineLiveNeedsKey: 'OpenAI API 키 필요',
+    voiceEngineChangeFailed: '음성 대화 엔진을 변경할 수 없습니다',
+    voiceEngineChainedShort: '음성 인식',
+    voiceEngineLiveShort: 'GPT-Live',
+    hiddenQueued: '설정 메모'
   },
   statusStack: {
     agents: '에이전트',
@@ -3564,7 +3775,7 @@ export const ko = defineLocale({
     reopenVerification: '확인 페이지 다시 열기',
     copy: '복사',
     defaultModel: '기본 모델',
-    freeTier: '무료 등급',
+    freeTier: '무료 요금제',
     pro: 'Pro',
     free: '무료',
     price: (input, output) => `입력 ${input} / 출력 ${output} Mtok당`,
@@ -3587,7 +3798,7 @@ export const ko = defineLocale({
     pro: 'Pro',
     proNeedsSubscription: 'Pro 모델에는 유료 Nous 구독이 필요합니다.',
     free: '무료',
-    freeTier: '무료 등급',
+    freeTier: '무료 요금제',
     priceTitle: '백만 토큰당 입력 / 출력 가격',
     wasPrice: '기존 가격'
   },
@@ -3704,7 +3915,7 @@ export const ko = defineLocale({
       subagents: count => `서브에이전트 ${count}개`,
       failed: count => `${count}개 실패`,
       running: count => `${count}개 실행 중`,
-      cron: 'Cron',
+      cron: '예약 작업',
       openCron: 'Cron 작업 열기',
       webhooks: '웹훅',
       openWebhooks: '웹훅 열기',
@@ -3747,7 +3958,8 @@ export const ko = defineLocale({
       openModelPicker: '모델 선택기 열기',
       modelPinned: '직접 고정한 모델입니다. 새 대화는 설정의 기본값 대신 이 모델을 사용합니다',
       modelTitle: (provider, model) => `모델 · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      toggleFreeTier: '무료 요금제'
     }
   },
   rightSidebar: {
@@ -3918,7 +4130,7 @@ export const ko = defineLocale({
     newSessionTab: '새 세션 탭',
     newTab: '새 탭',
     pluginDisabled: pluginId => `"${pluginId}" 플러그인 비활성화됨`,
-    pluginDisabledBody: '설정 → 플러그인에서 다시 활성화하면 패널을 복원할 수 있습니다.',
+    pluginDisabledBody: '기능 → 플러그인에서 다시 활성화하면 패널을 복원할 수 있습니다.',
     missingPane: paneId => `패널 없음: ${paneId}`,
     editTitle: '레이아웃',
     editHint: '레이아웃을 선택하거나 패널을 영역 간에 드래그하세요.',
@@ -4263,7 +4475,33 @@ export const ko = defineLocale({
     sudoPlaceholder: 'sudo 비밀번호',
     secretTitle: '비밀 필요',
     secretDesc: 'Hermes가 계속하기 위해 자격 증명이 필요합니다.',
-    secretPlaceholder: '비밀 값'
+    secretPlaceholder: '비밀 값',
+    vaultUnlockSendFailed: '마스터 비밀번호를 보낼 수 없습니다',
+    vaultUnlockTitle: name => `${name} 잠금 해제`,
+    vaultUnlockDesc: name =>
+      `에이전트가 ${name}에 저장된 로그인 정보로 사이트에 로그인하려고 합니다. 이 세션에서 잠금을 해제하려면 마스터 비밀번호를 입력하세요. 비밀번호는 이 기기의 ${name}에 직접 전달되며 저장되거나 에이전트에 표시되지 않습니다.`,
+    vaultUnlockPlaceholder: '마스터 비밀번호',
+    vaultUnlockKeepLocked: '잠금 유지',
+    vaultUnlockConfirm: '잠금 해제',
+    vaultSaveSendFailed: '로그인 정보를 저장할 수 없습니다',
+    vaultSaveTitle: site => `${site} 로그인 정보를 저장할까요?`,
+    vaultSaveDesc: origin =>
+      `Hermes가 ${origin}의 로그인 페이지에 도착했지만 저장된 로그인 정보가 없습니다. 여기에서 한 번 입력하면 이 기기에 암호화되어 저장되고 페이지에 자동으로 입력됩니다. 모델에는 비밀번호가 전달되지 않습니다.`,
+    vaultSaveIdentifierLabel: '이메일 또는 사용자 이름',
+    vaultSaveIdentifierPlaceholder: 'you@example.com',
+    vaultSavePasswordPlaceholder: '비밀번호',
+    vaultSaveFootnote: '설정 → 비밀번호 및 로그인에서 저장된 로그인 정보를 관리하세요.',
+    vaultSaveDecline: '저장 안 함',
+    vaultSaveConfirm: '저장하고 로그인',
+    vaultCodeSendFailed: '인증 코드를 보낼 수 없습니다',
+    vaultCodeTitle: site => `${site} 인증 코드`,
+    vaultCodeDesc: site =>
+      `${site}에서 문자 메시지, 이메일 또는 인증 앱의 일회용 코드를 요청합니다. 여기에 입력하면 Hermes가 페이지에 코드를 입력합니다. 모델에는 코드가 전달되지 않습니다.`,
+    vaultCodeLabel: '인증 코드',
+    vaultCodeFootnote:
+      '도움말: 설정 → 비밀번호 및 로그인에서 이 로그인 정보와 함께 인증 앱 키를 저장하면 Hermes가 인증 코드를 자동으로 입력합니다.',
+    vaultCodeSkip: '건너뛰기',
+    vaultCodeConfirm: '코드 입력'
   },
   desktop: {
     audioReadFailed: '녹음된 오디오를 읽을 수 없습니다',
@@ -4340,7 +4578,12 @@ export const ko = defineLocale({
       systemNote: platform => `↻ ${platform}(으)로 전달됨 — 언제든 여기서 이어갈 수 있습니다.`,
       failed: error => `전달 실패: ${error}`,
       timedOut: '게이트웨이 응답 대기 시간이 초과되었습니다. `hermes gateway`가 실행 중인가요?'
-    }
+    },
+    poolSlotTimeoutBody:
+      '로컬 프로필 백엔드의 실행 슬롯을 모두 사용 중입니다. 설정 → 고급에서 대기 상태로 유지할 봇 백엔드 수를 늘리거나, 사용하지 않는 백엔드가 종료된 후 다시 시도하세요.',
+    poolSlotTimeoutOpenSettings: '고급 설정 열기',
+    pastedContent: '붙여넣은 내용',
+    pasteAttachFailed: '붙여넣은 텍스트를 첨부할 수 없습니다'
   },
   tips: {
     close: '이 팁 다시 표시하지 않기',
@@ -4411,5 +4654,96 @@ export const ko = defineLocale({
       description: '모바일 사이드바를 표시합니다.',
       toggle: open => `사이드바 ${open ? '표시' : '숨기기'}`
     }
+  },
+  connectors: {
+    title: '앱 연결하기',
+    connect: '연결',
+    skip: '나중에',
+    cancel: '대기 중단',
+    retry: '다시 시도',
+    grant: '다시 연결',
+    connected: '연결됨',
+    checking: '앱 확인 중…',
+    waitingSignIn: '로그인 완료를 기다리는 중…',
+    notConnected: '연결되지 않음',
+    notAvailable: '사용할 수 없음',
+    startWith: count => `연결된 앱 ${count}개로 작업 시작`,
+    startWithout: '앱 연결 없이 시작',
+    skipped: '건너뜀',
+    disabled: '사용할 수 없음',
+    failed: '연결하지 못했습니다',
+    needsAuth: '접근 권한 만료됨',
+    opening: '로그인 페이지 여는 중…',
+    waiting: '브라우저에서 연결을 완료하세요…',
+    timeout: '아직 승인을 기다리고 있습니다.',
+    keepWaiting: '계속 기다리기',
+    refresh: '상태 새로 고침',
+    statusError: '연결 상태를 확인하지 못했습니다. 새로 고침을 시도하세요.',
+    connectError: '인증을 시작하지 못했습니다. 다시 시도하세요.',
+    unavailable: '이 세션에서는 커넥터를 사용할 수 없습니다.',
+    ownerMissing: '연결을 관리하려면 이 대화를 다시 여세요.',
+    search: '앱 찾기',
+    empty: '일치하는 앱이 없습니다',
+    disclaimer: '앱 연결은 선택 사항입니다. Hermes가 사용하길 원하는 앱만 승인하세요.',
+    connectTitle: app => `${app}에 연결할까요?`,
+    describe: app => `Hermes는 브라우저에서 ${app}에 로그인하며, 앱의 정보를 읽기 전에 먼저 확인을 요청합니다.`,
+    execution: '커넥터 도구'
+  },
+  handoffTour: {
+    profileTitle: '첫 작업은 default 프로필에서 실행됩니다',
+    profileText:
+      '이 프로필 바에서 프로필을 전환할 수 있습니다. 지금 강조된 default 프로필에 작업 세션이 있습니다. 다른 하나인 setup 프로필에는 시작 안내 대화가 있습니다.',
+    sessionsTitle: '각 프로필은 별도의 세션을 유지합니다',
+    sessionsText:
+      '이 목록은 default 프로필의 세션입니다. 새 세션을 만들면 현재 선택한 프로필에서 시작됩니다. 프로필 바에서 프로필을 바꾸면 목록도 함께 바뀝니다.',
+    stayTitle: '클릭 한 번으로 Hermes의 도움을 받으세요',
+    stayText:
+      '도움이 필요할 때마다 setup 프로필로 전환해 Welcome to Hermes 대화를 여세요. 언제든 그곳에서 다시 볼 수 있습니다.'
+  },
+  guidedGreeting: {
+    line: '반가워요. 저는 Hermes예요. 2분 정도만 함께 설정을 마치고, 원하시는 작업을 바로 시작해 볼게요.\n\n먼저, 어떻게 불러 드리면 될까요?',
+    nameSuggestion: (name: string) => `(원하시면 ${name}님이라고 불러 드릴 수도 있어요.)`
+  },
+  freeTier: {
+    providerRowTitle: 'Nous · 무료 요금제',
+    providerRowPitch: 'Nous 계정으로 로그인하면 더 많은 모델과 도구를 사용할 수 있습니다.',
+    readyTitle: 'Hermes가 준비되었습니다.',
+    readyCaption: '무료 · 커넥터 포함',
+    begin: '시작',
+    signInInstead: 'Nous 계정으로 로그인하기',
+    otherProviders: '다른 공급자',
+    stripTitle: '이제 무료 Nous 추론과 커넥터를 사용할 수 있습니다.',
+    stripBody: '모델 선택기를 열어 사용해 보거나 Nous 계정으로 로그인하세요.',
+    openModelPicker: '모델 선택기 열기',
+    dismiss: '닫기',
+    providerName: 'Nous',
+    statusLabel: model => `Nous · ${model}`,
+    signIn: '로그인',
+    signInHeading: 'Nous 계정으로 로그인하면 더 많은 모델과 도구를 사용할 수 있습니다.',
+    settingUp: '무료 추론 설정 중…',
+    codeBody: '브라우저에 이 코드를 입력해 로그인을 완료하세요.',
+    copyLink: '링크 복사',
+    doNotShare: '이 코드를 다른 사람과 공유하지 마세요.',
+    waiting: '로그인 대기 중…',
+    finishingHeading: '로그인 마무리 중…',
+    finishingBody: '브라우저에서 승인되었습니다. 계정 토큰을 가져오는 중입니다.',
+    signedInAs: email => `${email} 계정으로 로그인됨`,
+    signedIn: '로그인되었습니다.',
+    completedBody: '이제 계정에서 추론과 도구를 사용할 수 있습니다.',
+    defaultModel: '기본 모델',
+    change: '변경',
+    done: '완료',
+    notNow: '나중에',
+    tryAgain: '다시 시도',
+    startAgain: '다시 시작',
+    didNotComplete: '로그인이 완료되지 않았습니다',
+    rejectedBody: '브라우저에서 로그인이 거부되었습니다. 무료 요금제를 계속 사용합니다.',
+    supersededBody: '새 로그인 코드가 발급되어 이 코드는 더 이상 사용할 수 없습니다.',
+    timedOutHeading: '로그인 시간 초과',
+    timedOutBody: '제시간에 코드를 사용하지 않았습니다. 무료 요금제를 계속 사용합니다.',
+    retiredBody: '무료 요금제 이용 정보가 이미 사용되었거나 만료되었습니다. 다음 시작 시 새로 설정됩니다.',
+    errorBody: '로그인이 완료되지 않았습니다. 다시 시도하세요.',
+    alreadySignedInHeading: '이미 로그인되어 있습니다.',
+    alreadySignedInBody: '이 Hermes는 이미 Nous 계정으로 로그인되어 있습니다.'
   }
 })

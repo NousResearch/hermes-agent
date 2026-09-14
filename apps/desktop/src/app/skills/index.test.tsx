@@ -63,6 +63,11 @@ vi.mock('react-router', async importOriginal => ({
   useNavigate: () => navigateSpy
 }))
 
+// Import at module scope (after the hoisted vi.mock calls) so the heavy
+// component-tree transform is paid during collection, not billed against the
+// first test's testTimeout — same flake class as messaging/index.test.tsx.
+const { SkillsView } = await import('./index')
+
 function toolset(overrides: Record<string, unknown> = {}) {
   return {
     name: 'web',
@@ -77,7 +82,6 @@ function toolset(overrides: Record<string, unknown> = {}) {
 }
 
 async function renderSkills(locale: Locale = 'en', route = '/skills?tab=toolsets') {
-  const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
@@ -119,11 +123,11 @@ afterEach(() => {
   queryClient.clear()
 })
 
-// SkillsView is a heavy module: the first test pays the whole dynamic-import
-// cost, and the file legitimately runs ~14s on CI runners — right against the
-// global 15s per-test budget, so slow runners cascade-fail all 11 tests
-// (2× in a row on PR #93612, plus a main run the same hour). Give this file
-// headroom; the tests are not slow individually.
+// SkillsView is a heavy module (import cost now paid at module scope above,
+// during collection) but the file still legitimately runs ~14s on CI runners —
+// right against the global 15s per-test budget, so slow runners cascade-fail
+// all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
+// Give this file headroom; the tests are not slow individually.
 describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   it('shows Korean toolset descriptions and falls back for unknown toolsets', async () => {
     getToolsets.mockResolvedValue([
@@ -202,7 +206,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -248,7 +251,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -292,7 +294,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -319,7 +320,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
 
     // The picker is expanded by default — the hub iframe is live on mount.
-    expect(document.querySelector('iframe')).toBeTruthy()
+    expect(window.document.querySelector('iframe')).toBeTruthy()
 
     await act(async () => {
       window.dispatchEvent(
@@ -343,12 +344,11 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // eagerly mounted hub is exactly the Capabilities lag bug.
     await renderSkills() // ?tab=toolsets
     await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    expect(document.querySelector('iframe')).toBeNull()
+    expect(window.document.querySelector('iframe')).toBeNull()
     cleanup()
 
     // Embedded mode drives tabs through local state (the route hooks are
     // mocked here), starting on Skills: the picker mounts with the tab.
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -359,7 +359,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    const iframe = document.querySelector('iframe')
+    const iframe = window.document.querySelector('iframe')
     expect(iframe).toBeTruthy()
     expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
 
@@ -369,7 +369,7 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Tools/ }))
     })
-    const kept = document.querySelector('iframe')
+    const kept = window.document.querySelector('iframe')
     expect(kept).toBeTruthy()
     expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
   })
@@ -407,7 +407,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // the live surface pointed at ITS backend — the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -521,7 +520,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>

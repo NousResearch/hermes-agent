@@ -392,14 +392,6 @@ _CONNECTION_ERROR_MARKERS = (
     r"cannot\s+connect", r"failed\s+to\s+establish", r"could\s+not\s+connect")
 _GATEWAY_CONNECTION_ERROR_RE = re.compile("(" + "|".join(_CONNECTION_ERROR_MARKERS) + ")", re.IGNORECASE)
 
-_GATEWAY_SECRET_PATTERNS = (
-    re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{12,}\b"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), re.compile(r"\bxapp-\d+-[A-Za-z0-9\-]{20,}\b"),
-    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{20,}\b"), re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
-    re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"))
-
-
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -544,26 +536,11 @@ def _gateway_loop_exception_handler(
 
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
-    """Secret redaction before text can leave the gateway.
+    """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
+    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed). See #23810."""
+    from agent.redact import redact_for_egress
 
-    Shared ``redact_sensitive_text`` with ``force=True`` (holds even when ``security.redact_secrets`` is off);
-    ``_GATEWAY_SECRET_PATTERNS`` is a second pass so redaction degrades gracefully if that import fails.
-
-    Delegates to the authoritative ``agent.redact.redact_sensitive_text`` — the same Tirith-grade redactor
-    already applied to logs, tool output, and approval-command prompts — so the outbound chat path masks the
-    full credential set the startup banner promises ("chat responses are scrubbed before delivery"), not a
-    divergent subset. See #23810.
-    """
-    redacted = str(text or "")
-    try:
-        from agent.redact import redact_sensitive_text
-
-        redacted = redact_sensitive_text(redacted, force=True)
-    except Exception:
-        pass  # fail-soft: the local pattern pass below still runs rather than leaking raw text to chat
-    for pattern in _GATEWAY_SECRET_PATTERNS:
-        redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
-    return redacted
+    return redact_for_egress(text)
 
 
 def _redact_approval_command(cmd: "str | None") -> str:
@@ -1159,18 +1136,23 @@ def _csv_or_list_to_set(raw: Any) -> set[str]:
     return {part.strip() for part in str(raw).split(",") if part.strip()}
 
 
-def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
+def _slack_ignored_channels_from_gateway_config(config: Any, adapter: Any = None) -> set[str]:
     """Return Slack channels that the generic gateway must never dispatch.
 
-    Duplicates the adapter's drop as a fail-safe so bypasses can't reach auth, pairing or sessions."""
-    platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
+    Duplicates the adapter's drop as a fail-safe so bypasses can't reach auth, pairing or sessions.
+    ``adapter`` is the source's routed adapter: under multiplex ``config`` is the DEFAULT profile's
+    GatewayConfig, so a secondary Slack bot's list lives only in its adapter's ``extra``."""
     raw = None
-    if platform_cfg is not None:
+    if adapter is not None:
+        raw = (getattr(getattr(adapter, "config", None), "extra", None) or {}).get("ignored_channels")
+    platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
+    if raw is None and platform_cfg is not None and adapter is None:
         raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
     if raw is None:
-        # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra.
-        # See #46925.
-        raw = os.getenv("SLACK_IGNORED_CHANNELS") or None
+        # Top-level ``slack.ignored_channels`` arrives via the plugin's YAML→env bridge, not PlatformConfig.extra
+        # (#46925); scoped read so a secondary never inherits the default profile's list (first-writer env).
+        from gateway.platforms._shared import platform_gate_env as _platform_gate_env
+        raw = _platform_gate_env("SLACK_IGNORED_CHANNELS") or None
     return _csv_or_list_to_set(raw)
 
 
@@ -1179,10 +1161,11 @@ def _slack_parent_channel_id(chat_id: Any) -> str:
     return str(chat_id).split(":", 1)[0] if chat_id else ""
 
 
-def _is_slack_ignored_channel(config: Any, chat_id: Any) -> bool:
-    """Check the generic Slack gateway blacklist for channel or thread IDs."""
+def _is_slack_ignored_channel(config: Any, chat_id: Any, adapter: Any = None) -> bool:
+    """Check the generic Slack gateway blacklist for channel or thread IDs (``adapter`` = the source's
+    routed adapter, whose ``extra`` is authoritative for a secondary profile)."""
     channel_id = _slack_parent_channel_id(chat_id)
-    ignored = _slack_ignored_channels_from_gateway_config(config)
+    ignored = _slack_ignored_channels_from_gateway_config(config, adapter)
     return bool(channel_id and ("*" in ignored or channel_id in ignored))
 
 
@@ -1267,18 +1250,10 @@ def _build_gateway_agent_history(
                 entry.pop("api_content", None)  # prefix rewrite: the sidecar no longer matches
             agent_history.append(entry)
 
-    # Strip interrupted tool-call tails so the LLM doesn't re-execute tools killed mid-flight.
-    agent_history = strip_interrupted_tool_tails(agent_history)
-
-    # Strip a dangling assistant(tool_calls) tail (SIGKILL-mid-tool-call); else the model re-issues it forever.
-    # Strip a dangling assistant(tool_calls) tail with no tool answers — the signature of a SIGKILL
-    # mid-tool-call (e.g. the tool itself ran `docker restart`/`kill` and took the gateway down before the
-    # result was persisted). Without this the model re-issues the unanswered call on resume and loops the
-    # restart forever (#49201).
-    agent_history = strip_dangling_tool_call_tail(agent_history)
-
-    # Strip expired dangerous-confirmation phrases; replayed, a follow-up could read as a fresh confirmation.
-    agent_history = strip_stale_dangerous_confirmations(agent_history, now=time.time())
+    # Keep gateway resume byte-identical to the TUI resume and send paths. The
+    # canonicalizer owns interrupted-block, dangling-tail, and stale-confirmation
+    # cleanup together so a middle-of-history rewrite cannot break the prefix cache.
+    agent_history = canonicalize_replay_history(agent_history)
 
     observed_context = "\n".join(observed_group_context).strip() or None
     return agent_history, observed_context
@@ -1351,9 +1326,9 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
 # Tool output may hold literal MEDIA: examples (docs, logs); only deliberate media producers may auto-append.
 _AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool", "image_generate"}
 
-# Replay-tail sanitization lives in agent/replay_cleanup.py so every resume surface shares one implementation.
-from agent.replay_cleanup import (  # noqa: E402
-    strip_interrupted_tool_tails, strip_dangling_tool_call_tail, strip_stale_dangerous_confirmations)
+# Replay-history canonicalization lives in agent/replay_cleanup.py so every resume
+# surface and the send path share one implementation.
+from agent.replay_cleanup import canonicalize_replay_history  # noqa: E402
 
 
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
@@ -1599,7 +1574,12 @@ def _reload_runtime_env_preserving_config_authority() -> None:
 
 
 def _bridge_max_turns_from_config(home: "Path") -> None:
-    """Re-bridge agent.max_turns (+ sessions.*) per turn; managed overlay applies or it reverts."""
+    """Re-bridge agent.max_turns (+ sessions.*) per turn; managed overlay applies or it reverts.
+    Skipped inside a served secondary's scope: the env slots are the launch profile's and
+    hermes_state reads the routed profile's ``sessions.*`` from its own config under scope."""
+    from gateway.platforms._shared import profile_scoped
+    if profile_scoped():
+        return
     config_path = home / 'config.yaml'
     if not config_path.exists():
         return
@@ -1614,9 +1594,20 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
 def _current_max_iterations() -> int:
     """Return the per-turn iteration budget after runtime env refresh; ``resolve_turn_limit`` maps
     ``agent.max_turns: none``/``unlimited`` (bridged as a string) to the unlimited sentinel, not an
-    ``int()`` crash."""
+    ``int()`` crash. A routed profile (HERMES_HOME override, multiplexed turns) reads ITS
+    ``agent.max_turns`` straight from config: the ``HERMES_MAX_ITERATIONS`` bridge is one process-wide
+    slot holding the launch profile's value, so every secondary would inherit the default's budget."""
     _reload_runtime_env_preserving_config_authority()
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    override = get_hermes_home_override()
+    if override:
+        config_path = Path(override) / 'config.yaml'
+        try:
+            cfg = _load_bridge_config(config_path) if config_path.exists() else {}
+        except Exception:
+            cfg = {}
+        agent_cfg = cfg.get("agent")
+        return _resolve_turn_limit(agent_cfg.get("max_turns") if isinstance(agent_cfg, dict) else None)
     return _resolve_turn_limit(os.getenv("HERMES_MAX_ITERATIONS"))
 
 
@@ -1628,11 +1619,6 @@ class MultiplexConfigError(RuntimeError):
     startup guard instead of being treated as retryable adapter-connect noise."""
 
 
-class SecondaryPortBindingConfigError(MultiplexConfigError):
-    """A secondary profile enabled a port-binding platform: the default profile owns the single shared
-    listener (/p/<profile>/), so this is always a misconfiguration and is skipped, not fatal."""
-
-
 class HygieneTurnHoldExceeded(Exception):
     """Hygiene-compression turn-hold budget elapsed mid-stream. Availability boundary, not a failure:
     must NOT take the idle-timeout path (AGENT_COMPRESSION_TIMEOUT, "no output", failure cooldown)."""
@@ -1641,8 +1627,24 @@ class HygieneTurnHoldExceeded(Exception):
 def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Return the authoritative profile set for one multiplex gateway config."""
     from hermes_cli.profiles import profiles_to_serve
-    return list(profiles_to_serve(
-        multiplex=True, profile_allowlist=getattr(config, "multiplex_profile_allowlist", None)))
+    return list(profiles_to_serve(multiplex=True))
+
+
+def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
+    """Profile homes the in-process ticker visits under multiplex: the served set PLUS the
+    process-active profile: ``profiles_to_serve`` lists default + every live named profile, but a
+    ``--profile <name>`` multiplexer's own profile may sit outside ``profiles/`` (custom
+    HERMES_HOME). Adapter startup already skips ``active``."""
+    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+
+    homes = _multiplex_profile_homes(config)
+    active = get_active_profile_name() or "default"
+    if any(name == active for name, _home in homes):
+        return homes
+    try:
+        return homes + [(active, get_profile_dir(active))]
+    except Exception:
+        return homes
 
 
 def _enable_multiplex_log_routing(config: object) -> bool:
@@ -1798,18 +1800,25 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
     Under multiplex, run it once per served profile inside that profile's ``_profile_runtime_scope`` and
     carry the scope into the executor thread with ``copy_context()`` (the same shape as
     ``_run_in_executor_with_context``). See #95518.
+
+    No gateway run can complete a browser OAuth flow (nobody watches its stdout; on Windows its
+    DEVNULL stdin even passes ``isatty``), so discovery runs with interactive OAuth suppressed — the
+    same gate the CLI's background discovery uses. An expired token then parks the server with an
+    actionable ``hermes mcp login`` warning instead of opening an authorize tab.
     """
+    from tools.mcp_oauth import suppress_interactive_oauth
     from tools.mcp_tool_discovery import discover_mcp_tools
     loop = asyncio.get_running_loop()
-    if not getattr(config, "multiplex_profiles", False):
-        await loop.run_in_executor(None, discover_mcp_tools)
-        return
-    for profile_name, profile_home in _multiplex_profile_homes(config):
-        try:
-            with _profile_runtime_scope(Path(profile_home)):
-                await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
-        except Exception:
-            logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
+    with suppress_interactive_oauth():
+        if not getattr(config, "multiplex_profiles", False):
+            await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            return
+        for profile_name, profile_home in _multiplex_profile_homes(config):
+            try:
+                with _profile_runtime_scope(Path(profile_home)):
+                    await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
+            except Exception:
+                logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
 
 def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
@@ -2011,19 +2020,10 @@ def _bridge_config_to_env(_cfg: dict) -> None:
 
 
 def _load_bridge_config(config_path: Path) -> dict:
-    """Raw config read for the presence-sensitive env bridge, with the managed overlay applied. Raw (not
-    defaults-merged) so only keys the user wrote are bridged, else all of DEFAULT_CONFIG would be
-    exported; the overlay applies BEFORE bridging so pinned values win in env too."""
-    from hermes_cli.config import _expand_env_vars, read_user_config_raw
-    cfg = _expand_env_vars(read_user_config_raw(config_path))
-    if not isinstance(cfg, dict):
-        cfg = {}
-    try:
-        from hermes_cli import managed_scope
-        cfg = managed_scope.apply_managed_overlay(cfg)
-    except Exception:
-        pass
-    return cfg
+    """Effective USER config (no defaults) for the presence-sensitive env bridge: only keys the user
+    or the managed layer wrote get bridged, else all of DEFAULT_CONFIG would be exported."""
+    from hermes_cli.config_effective import load_user_config_effective
+    return load_user_config_effective(config_path)
 
 
 _config_path = _hermes_home / 'config.yaml'
@@ -2089,7 +2089,8 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
 from gateway.config import (
     ChannelOverride, Platform, GatewayConfig, PlatformConfig, _getenv, load_gateway_config)
 from gateway.session import (
-    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key)
+    AsyncSessionStore, SessionStore, SessionSource, SessionContext, build_session_key,
+    profile_from_session_key_namespace)
 # Telegram topic routing (#22773, regression fixed #52060): a
 # ``telegram:<positive_chat_id>:<numeric_thread_id>`` cron target is ambiguous — a forum-style topic in a
 # private chat and a genuine Bot API channel Direct-Messages topic share the same shape and need OPPOSITE
@@ -2106,8 +2107,8 @@ from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.run_voice import GatewayVoiceMixin
 from gateway.run_adapters import GatewayAdapterLifecycleMixin
 from gateway.run_topics import GatewayTopicThreadsMixin
-from gateway.run_turn import GatewayTurnMixin
-from gateway.run_shutdown import GatewayShutdownMixin, _exit_with_failure_verdict, _resolve_gateway_exit_verdict
+from gateway.run_turn import GatewayTurnMixin, is_context_overflow_failure_result
+from gateway.run_shutdown import GatewayShutdownMixin, _resolve_gateway_exit_verdict
 from gateway.run_busy import GatewayBusySessionMixin
 from gateway.run_config_loaders import GatewayConfigLoadersMixin
 from gateway.run_startup import GatewayStartupMixin
@@ -2116,6 +2117,7 @@ from gateway.run_notifications import GatewayNotificationsMixin
 from gateway.run_inbound import GatewayInboundMixin
 from gateway.run_goals import GatewayGoalsMixin
 from gateway.run_agent_cache import GatewayAgentCacheMixin
+from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
     _reply_anchor_for_event,
@@ -2374,17 +2376,19 @@ def _try_resolve_fallback_provider() -> dict | None:
     """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
-        # Canonical loader so managed overlay / ${VAR} expansion reach the fallback chain.
-        cfg = _load_gateway_runtime_config()
+        cfg = _load_gateway_config()
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
         for entry in fb_list:
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"), explicit_base_url=entry.get("base_url"),
                     explicit_api_key=resolve_entry_api_key(entry))
+                # Named custom entries resolve to the bare "custom" billing class; persist the configured
+                # identity so UI/billing rows match the manual-switch path (#98739).
+                runtime["provider"] = effective_runtime_provider(entry, runtime)
                 # Log the config `provider`, not the runtime category (Ollama would log "openrouter").
                 logger.info(
                     # Log the literal `provider` key from config, not the resolved runtime category — an
@@ -2529,6 +2533,7 @@ def _dequeue_pending_event(adapter, session_key: str) -> MessageEvent | None:
 _INTERRUPT_REASON_STOP = "Stop requested"
 _INTERRUPT_REASON_RESET = "Session reset requested"
 _INTERRUPT_REASON_TIMEOUT = "Execution timed out (inactivity)"
+_INTERRUPT_REASON_EVICTED = "Session ended while the turn was running"
 _INTERRUPT_REASON_SSE_DISCONNECT = "SSE client disconnected"
 _INTERRUPT_REASON_GATEWAY_SHUTDOWN = "Gateway shutting down"
 _INTERRUPT_REASON_GATEWAY_RESTART = "Gateway restarting"
@@ -2662,7 +2667,8 @@ def _watch_gateway_turn_inactivity(
 _CONTROL_INTERRUPT_MESSAGES = frozenset({
     _INTERRUPT_REASON_STOP.lower(), _INTERRUPT_REASON_RESET.lower(),
     _INTERRUPT_REASON_TIMEOUT.lower(), _INTERRUPT_REASON_SSE_DISCONNECT.lower(),
-    _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(), _INTERRUPT_REASON_GATEWAY_RESTART.lower()})
+    _INTERRUPT_REASON_EVICTED.lower(), _INTERRUPT_REASON_GATEWAY_SHUTDOWN.lower(),
+    _INTERRUPT_REASON_GATEWAY_RESTART.lower()})
 
 
 def _is_control_interrupt_message(message: Optional[str]) -> bool:
@@ -2778,51 +2784,18 @@ def _gateway_config_home() -> Path:
 
 
 def _load_gateway_config(config_path: "Path | None" = None) -> dict:
-    """Load and parse a gateway config.yaml, returning {} on any error (fail-open).
-    Defaults to the active gateway home (``_hermes_home`` monkeypatches apply); multiplexers pass a path.
+    """The effective user config.yaml (managed overlay, ``${VAR}`` expansion, model-key canon; no
+    DEFAULT_CONFIG merge) — ``{}`` on any error (fail-open). Defaults to the active gateway home
+    (``_hermes_home`` monkeypatches apply); multiplexers pass a path.
     """
     if config_path is None:
         config_path = _gateway_config_home() / 'config.yaml'
-    raw: dict = {}
-    used_canonical = False
     try:
-        from hermes_cli.config import get_config_path, read_raw_config
-        # Fast path via shared cache when the path is canonical; else direct read (test monkeypatches).
-        if config_path == get_config_path():
-            raw = read_raw_config()
-            used_canonical = True
+        from hermes_cli.config_effective import load_user_config_effective
+        return load_user_config_effective(config_path)
     except Exception:
-        pass
-
-    if not used_canonical:
-        try:
-            if config_path.exists():
-                import yaml
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    raw = yaml.safe_load(f) or {}
-        except Exception:
-            logger.debug("Could not load gateway config from %s", config_path)
-            raw = {}
-
-    # Neither read_raw_config() nor yaml.safe_load carries the managed merge; overlay on both paths.
-    try:
-        from hermes_cli import managed_scope
-        raw = managed_scope.apply_managed_overlay(raw if isinstance(raw, dict) else {})
-    except Exception:
-        pass
-    if not isinstance(raw, dict):
+        logger.debug("Could not load gateway config from %s", config_path, exc_info=True)
         return {}
-    # Canonicalize model-id aliases (model.name/model.model → model.default) and migrate stale root
-    # provider/base_url: the gateway bypasses load_config(), else ``model: {name: <id>}`` is empty.
-    try:
-        # The gateway bypasses load_config() (it reads raw YAML for speed), so the normalization that
-        # load_config() applies must be replayed here or the gateway would resolve an empty model for
-        # ``model: {name: <id>}`` configs while the CLI resolves it correctly. See issue #34500. Fail-open.
-        from hermes_cli.config import _normalize_root_model_keys
-        raw = _normalize_root_model_keys(raw)
-    except Exception:
-        pass
-    return raw
 
 
 def _checkpoint_agent_kwargs(config: dict | None) -> dict:
@@ -2840,18 +2813,6 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
         "checkpoint_max_snapshots": cp_cfg.get("max_snapshots", defaults["max_snapshots"]),
         "checkpoint_max_total_size_mb": cp_cfg.get("max_total_size_mb", defaults["max_total_size_mb"]),
         "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
-
-
-def _load_gateway_runtime_config() -> dict:
-    """Load gateway config for runtime reads, expanding supported ``${VAR}`` refs.
-    Expansion failures are deliberately NOT swallowed: an unexpanded dict would mask the bug fixed here.
-    """
-    cfg = _load_gateway_config()
-    if not isinstance(cfg, dict) or not cfg:
-        return {}
-    from hermes_cli.config import _expand_env_vars
-    expanded = _expand_env_vars(cfg)
-    return expanded if isinstance(expanded, dict) else {}
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
@@ -2906,13 +2867,28 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+_PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
 def _parse_session_key(session_key: str) -> "dict | None":
-    """Parse a session key (``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
-    For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id`` is omitted.
+    """Parse a session key (``agent:{ns}:{platform}:{chat_type}:{chat_id}[:{extra}...]``).
+
+    ``{ns}`` is ``main`` for the default profile, ``main~`` for a profile literally named ``main``
+    (``gateway.session._session_key_namespace``), or a named-profile id (profile ids match
+    ``[a-z0-9][a-z0-9_-]{0,63}`` — never contain ``:`` — so a plain split stays unambiguous).
+    For group/channel sessions the suffix may be a user_id, not a thread_id, so ``thread_id``
+    is omitted. Named profiles are reported as ``profile``; ``main`` keys keep their historical
+    shape exactly (no ``profile`` key) so equality assertions on parsed dicts stay stable.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if (
+        len(parts) >= 5
+        and parts[0] == "agent"
+        and (parts[1] in ("main", "main~") or _PROFILE_ID_KEY_RE.match(parts[1]))
+    ):
         result = {"platform": parts[2], "chat_type": parts[3], "chat_id": parts[4]}
+        if parts[1] != "main":
+            result["profile"] = profile_from_session_key_namespace(parts[1])
         if len(parts) > 5 and parts[3] in {"dm", "thread"}:
             result["thread_id"] = parts[5]
         return result
@@ -3026,8 +3002,13 @@ def _normalize_empty_agent_response(
     non-failed turn -- this is the silent-drop pattern observed after ``/stop`` where the next user message
     hits a stale generation token and returns an empty result, leaving the platform with nothing to send.
     (#31884)
+
+    A failed context-overflow turn whose ``final_response`` is only the raw provider envelope
+    (``HTTP 400: {...}``) is rewritten too: returned unchanged, chat sanitizers turn it into a
+    generic provider-failed reply and the user never sees /compact. Curated agent text survives.
     """
-    if response:
+    is_overflow = is_context_overflow_failure_result(agent_result, history_len)
+    if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
         return response
     if agent_result.get("failed"):
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
@@ -3045,9 +3026,7 @@ def _normalize_empty_agent_response(
                 "⚠️ Session storage was temporarily unavailable, so this "
                 "turn was stopped to protect your conversation history. "
                 "Your message should already be saved — please send it again in a moment.")
-        if any(p in error_str for p in (
-                "context", "token", "too large", "too long", "exceed", "payload")) or (
-                "400" in error_str and history_len > 50):
+        if is_overflow:
             return (
                 "⚠️ Session too large for the model's context window.\n"
                 "Use /compact to compress the conversation, or /reset to start fresh.")
@@ -3277,7 +3256,7 @@ class GatewayRunner(
     GatewayVoiceMixin, GatewayAdapterLifecycleMixin, GatewayTopicThreadsMixin, GatewayTurnMixin,
     GatewayShutdownMixin, GatewayBusySessionMixin, GatewayConfigLoadersMixin, GatewayStartupMixin,
     GatewaySessionWatchersMixin, GatewayNotificationsMixin, GatewayInboundMixin, GatewayGoalsMixin,
-    GatewayAgentCacheMixin):
+    GatewayAgentCacheMixin, GatewayProfileReconcileMixin):
     """Main gateway controller: manages adapter lifecycles, routes messages to/from the agent."""
 
     # Class-level defaults so partial construction in tests doesn't blow up on attribute access.
@@ -3461,11 +3440,8 @@ class GatewayRunner(
         # to one session_id (switch_session's many-to-one mapping), which routing-key guards cannot see.
         self._turn_leases = SessionTurnLeaseRegistry()
         # Stall-notified keys clear when pending clears / activity resumes / conversation boundary.
-        # Tokens for held turn leases, keyed by (routing key, run generation) so release is granted per-turn
-        # and a stale unwind can never free a newer turn's lease (#28686 ownership lesson). Held turn-lease
-        # tokens live on SessionState.turn.lease_token / .lease_generation (the old dict was keyed (routing
-        # key, generation) so a stale unwind could never free a newer turn's lease — the generation field
-        # preserves that ownership check, #28686). Runner-level queued interrupt text lives on
+        # Held turn-lease tokens live on SessionState.turn.lease_tokens keyed by run generation, so a
+        # stale unwind can never free a newer turn's lease (#28686). Runner-level queued interrupt text lives on
         # SessionState.persistent.pending_command_text (NOTE: distinct from the adapter-level
         # _pending_messages Dict[str, MessageEvent] in gateway/platforms/base.py, which shares the legacy
         # name). Last successfully-resolved (non-empty) model, keyed by session. Used as a fallback when a
@@ -3631,10 +3607,11 @@ class GatewayRunner(
         # ``pairing_store``: global/default store (CLI, callers without profile context); ``pairing_stores``:
         # per-profile map ``authz_mixin._is_user_authorized`` routes through (one whitelist per profile).
         from gateway.pairing import PairingStore
-        from gateway.hooks import HookRegistry
+        from gateway.hooks import ProfileHookRegistries
         self.pairing_store = PairingStore()
         self.pairing_stores: Dict[str, "PairingStore"] = {}
-        self.hooks = HookRegistry()
+        # One HookRegistry per served profile home, resolved from the active scope at emit time.
+        self.hooks = ProfileHookRegistries()
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
         # Per-(guild,user) transcript dedup: the voice/STT pipeline can emit one utterance twice.
@@ -3879,9 +3856,13 @@ class GatewayRunner(
         return "restarting" if self._restart_requested else "shutting down"
 
     def _update_runtime_status(self, gateway_state: Optional[str] = None, exit_reason: Optional[str] = None) -> None:
+        # ``active_work`` names each unit only while draining — that is when an observer (``hermes
+        # update``) needs to know WHAT holds the gateway open; a per-turn write would be wasted I/O.
+        active_work = self._describe_active_work() if gateway_state == "draining" else None
         _write_runtime_status_quiet(
             gateway_state=gateway_state, exit_reason=exit_reason,
-            restart_requested=self._restart_requested, active_agents=self._active_work_count())
+            restart_requested=self._restart_requested, active_agents=self._active_work_count(),
+            active_work=active_work)
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json`` at every turn boundary.
@@ -3961,11 +3942,19 @@ class GatewayRunner(
                 return self._is_user_authorized(source)
             return self._is_user_authorized(source, allow_adapter_delegation=False)
 
-        authorization_home = getattr(source, "_authorization_profile_home", None)
-        if authorization_home is not None:
-            with _profile_runtime_scope(Path(authorization_home)):
-                return _check()
-        return _check()
+        return self._under_authorization_profile(source, _check)
+
+    def _admit_bot_message_for_source(self, source: SessionSource) -> bool:
+        """Count a bot message under the profile that authorized it, so the guard's peek, count and
+        config all read the transport profile's ``gateway.bot_loop_guard``."""
+        return self._under_authorization_profile(source, lambda: self._admit_bot_message(source))
+
+    def _under_authorization_profile(self, source: SessionSource, check):
+        authorization_home = self._authorization_home_for_source(source)
+        if authorization_home is None:
+            return check()
+        with _profile_runtime_scope(Path(authorization_home)):
+            return check()
 
     def _cache_session_source(self, session_key: str, source) -> None:
         if not session_key or source is None:
@@ -4229,11 +4218,6 @@ class GatewayRunner(
         ("memory", "provider"), ("checkpoints", "enabled"), ("checkpoints", "max_snapshots"),
         ("checkpoints", "max_total_size_mb"), ("checkpoints", "max_file_size_mb"))
 
-    _HONCHO_CACHE_BUSTING_KEYS = (
-        "honcho.peer_name", "honcho.ai_peer", "honcho.pin_peer_name", "honcho.runtime_peer_prefix",
-        "honcho.user_peer_aliases")
-    _HONCHO_CACHE_BUSTING_MEMO: dict[tuple[str, int | None], dict[str, Any]] = {}
-
     @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
         """Reset per-turn state on a cached agent before a new turn starts.
@@ -4257,23 +4241,32 @@ class GatewayRunner(
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
 
-    def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
+    def _profile_name_for_source(
+        self, source: SessionSource, adapter_profile: Optional[str] = None,
+    ) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes (most specific wins).
-        ``None`` = default/active profile. Gated on ``multiplex_profiles``, since the scoped run only
-        activates under multiplexing; otherwise keys would be profile-namespaced while the agent ran in
-        ``agent:main``."""
+        ``None`` = default/active profile (or, for a secondary adapter, its own profile — the caller
+        stamps it). Gated on ``multiplex_profiles``, since the scoped run only activates under
+        multiplexing; otherwise keys would be profile-namespaced while the agent ran in ``agent:main``.
+        ``adapter_profile`` is the profile owning the receiving bot; only routes declaring it as
+        ``bot_profile`` apply (#104933)."""
         config = getattr(self, "config", None)
         if not getattr(config, "multiplex_profiles", False):
             return None
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
+        if adapter_profile is None:
+            # Sources built outside ``build_source`` may still carry the receiving adapter as provenance.
+            owner = self._transport_owner(source) if callable(getattr(source, "_transport_adapter_ref", None)) else None
+            if isinstance(owner, tuple):
+                adapter_profile = owner[1]
         from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         try:
             matched = match_profile_route(
                 routes, platform=source.platform.value, guild_id=getattr(source, "guild_id", None),
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None))
+                parent_chat_id=getattr(source, "parent_chat_id", None), adapter_profile=adapter_profile)
         except Exception:
             logger.warning(
                 "Profile route matching failed for %s/%s, falling back to default",
@@ -4558,6 +4551,7 @@ def _start_gateway_housekeeping(
     """Background thread for gateway-only periodic chores (NOT cron). Separate from the cron trigger
     so chores run under any ``CronScheduler`` provider (external scale-to-zero has no 60s loop).
     Cadences are ticks of ``interval``; inner gates own the real cadence."""
+    from gateway.run_profile_reconcile import _mcp_config_reconciler
     chores: list[tuple[int, str, Any]] = []
     if adapters is not None or runner is not None:
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
@@ -4576,7 +4570,8 @@ def _start_gateway_housekeeping(
         (60, "Org sync pull tick", _housekeeping_org_skill_sync),
         (60, "Auto-archive tick", _housekeeping_auto_archive),
         (1, "Deferred FTS retry tick", _housekeeping_deferred_fts_retry),
-        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim)]
+        (1, "gateway housekeeping memory trim", _housekeeping_memory_trim),
+        (1, "MCP config reconcile", _mcp_config_reconciler(runner))]
 
     logger.info("Gateway housekeeping started (interval=%ds)", interval)
     tick_count = 0
@@ -5053,8 +5048,24 @@ async def _start_gateway_start_control_socket(runner):
                 "pausing": accepted, "already_stopping": not accepted,
                 "pid": os.getpid(), "drain_timeout": _drain}
 
+        def _rescan_profiles_handler() -> dict:
+            """``hermes profile create/delete`` asks the multiplexer to reconcile ``profiles/`` now
+            (the watcher also rescans periodically). Runs on the socket executor: marshal onto the loop
+            and wait briefly so the caller learns whether the profile is served."""
+            if not getattr(runner.config, "multiplex_profiles", False):
+                return {"multiplex": False, "served_profiles": runner.served_profile_names()}
+            future = asyncio.run_coroutine_threadsafe(
+                runner.reconcile_served_profiles(reason="control-socket"), _main_loop)
+            try:
+                # Bounded: a token-less create reconciles in milliseconds; a credential-add whose adapter
+                # connect outlasts this keeps running and the caller sees ``pending`` (not an error).
+                return {"multiplex": True, **future.result(timeout=5.0)}
+            except concurrent.futures.TimeoutError:
+                return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
+
         _control_server = GatewayControlServer(
-            verb_handlers={"pause-for-update": _pause_for_update_handler})
+            verb_handlers={"pause-for-update": _pause_for_update_handler,
+                           "rescan-profiles": _rescan_profiles_handler})
         if not await _control_server.start():
             _control_server = None
         else:
@@ -5077,17 +5088,21 @@ def _start_gateway_start_cron_and_housekeeping(runner):
         resolve_cron_scheduler(), multiplex_profiles=multiplex_cron)
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
-    # Multiplex: tell the ticker which profile homes to tick, else secondary profiles' jobs never run.
+    # Multiplex: tell the ticker which profile homes to tick (else secondary profiles' jobs never
+    # run, #69377), including a ``--profile <name>`` multiplexer's OWN store.
     if isinstance(cron_provider, InProcessCronScheduler) and multiplex_cron:
         try:
-            profile_homes = _multiplex_profile_homes(runner.config)
+            profile_homes = _cron_tick_profile_homes(runner.config)
             if profile_homes:
-                cron_start_kwargs["profile_homes"] = profile_homes
+                # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while
+                # the multiplexer runs gets its jobs fired without a restart (hot-serve).
+                cron_start_kwargs["profile_homes"] = lambda: _cron_tick_profile_homes(runner.config)
                 # Per-profile adapters so each profile's cron output goes via its own bot, not the default's.
                 cron_start_kwargs["profile_adapters"] = getattr(runner, "_profile_adapters", None)
-                # runner.adapters belongs to "default"; naming it keeps the ticker from routing a secondary's
-                # cron through the default bot (even before that profile's adapter connects).
-                cron_start_kwargs["default_profile"] = "default"
+                # runner.adapters belongs to the LAUNCH profile (``default``, or the ``--profile``
+                # name); naming it keeps the ticker from routing a secondary's cron through that bot
+                # and lets a named multiplexer's own jobs reuse its live adapters.
+                cron_start_kwargs["default_profile"] = runner._primary_profile_name
                 logger.info(
                     "Cron scheduler will tick %d profile(s) under multiplex: %s", len(profile_homes),
                     [p[0] if isinstance(p, tuple) else p for p in profile_homes])
@@ -5150,8 +5165,6 @@ async def _start_gateway_shutdown_tail(
         stop_nous_auth_keepalive()
 
     _best_effort(_stop_keepalive)
-    if _exit_with_failure_verdict(runner):
-        return False
 
     # Never join(): an in-flight cron delivery is a coroutine on THIS loop; a sync join would drop it.
     # Stop cron scheduler + housekeeping cleanly. These MUST be awaited cooperatively, not join()ed. A cron
@@ -5174,6 +5187,8 @@ async def _start_gateway_shutdown_tail(
     with suppress(Exception):
         await _shutdown_mcp_servers_nonblocking()
 
+    # The failure verdict comes AFTER the cooperative teardown: returning early here leaked the
+    # cron ticker + housekeeping threads (and open MCP connections) for embedded callers (#12175).
     return _resolve_gateway_exit_verdict(runner, _signal_initiated_shutdown[0])
 
 

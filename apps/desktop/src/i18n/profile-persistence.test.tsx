@@ -10,16 +10,17 @@ import type { HermesApiRequest } from '@/global'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { I18nProvider, useI18n } from './context'
+import type { Locale } from './types'
 
-function Probe() {
+function Probe({ target = 'ko' }: { target?: Locale }) {
   const { locale, isLoadingConfig, isSavingLocale, setLocale } = useI18n()
 
   return (
     <>
       <span data-testid="locale">{locale}</span>
       <span data-testid="ready">{String(!isLoadingConfig && !isSavingLocale)}</span>
-      <button onClick={() => void setLocale('ko')} type="button">
-        한국어
+      <button onClick={() => void setLocale(target)} type="button">
+        {target === 'ko' ? '한국어' : 'English'}
       </button>
     </>
   )
@@ -28,6 +29,7 @@ function Probe() {
 describe('language persistence through the real renderer config API', () => {
   let directory: string
   let pauseRead: (() => Promise<void>) | undefined
+  let machineLocale: string | undefined
   const configPath = (connection: string, profile: string) => join(directory, `${connection}-${profile}.json`)
 
   const readConfig = (connection: string, profile: string): HermesConfigRecord =>
@@ -36,6 +38,7 @@ describe('language persistence through the real renderer config API', () => {
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), 'hermes-korean-config-'))
     pauseRead = undefined
+    machineLocale = undefined
 
     for (const connection of ['local', 'remote']) {
       for (const profile of ['default', 'writer']) {
@@ -52,21 +55,40 @@ describe('language persistence through the real renderer config API', () => {
     // Only replace the native transport boundary. The provider, API helpers,
     // scope resolver and config merge run unchanged; persistence is real disk I/O.
     vi.stubGlobal('hermesDesktop', {
+      getMachineProfile: async () => ({ locale: machineLocale }),
       api: async (request: HermesApiRequest) => {
-        expect(request.path).toBe('/api/config')
+        const url = new URL(request.path, 'http://hermes.test')
+        expect(url.pathname).toBe('/api/config')
         const connection = request.connectionId || 'local'
         const profile = request.profile || 'default'
 
         if (request.method === 'PUT') {
-          writeFileSync(
-            configPath(connection, profile),
-            JSON.stringify((request.body as { config: HermesConfigRecord }).config)
-          )
+          const saved: HermesConfigRecord = structuredClone((request.body as { config: HermesConfigRecord }).config)
+          const display = saved.display as Record<string, unknown>
+          const previousDisplay = readConfig(connection, profile).display
+          const languageWasExplicit = Object.hasOwn(previousDisplay ?? {}, 'language')
+
+          // Match the backend's sparse writer: existing explicit keys survive,
+          // while a first choice of default English needs preserve_language.
+          if (
+            display?.language === 'en' &&
+            !languageWasExplicit &&
+            url.searchParams.get('preserve_language') !== 'true'
+          ) {
+            delete display.language
+          }
+
+          writeFileSync(configPath(connection, profile), JSON.stringify(saved))
 
           return { ok: true }
         }
 
         const config = readConfig(connection, profile)
+
+        if (url.searchParams.get('include_defaults') !== 'false') {
+          config.display = { language: 'en', ...(config.display as Record<string, unknown>) }
+        }
+
         const wait = pauseRead
         pauseRead = undefined
         await wait?.()
@@ -155,4 +177,35 @@ describe('language persistence through the real renderer config API', () => {
     })
     await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ko'))
   })
+
+  it.each(['local', 'remote'])(
+    'infers an unset locale without saving, then remembers explicit English on %s',
+    async connection => {
+      machineLocale = 'ko-KR'
+      writeFileSync(configPath(connection, 'writer'), JSON.stringify({ display: { skin: 'mono' } }))
+      setApiRequestConnection(connection)
+      setApiRequestProfile('writer')
+
+      const view = render(
+        <I18nProvider>
+          <Probe target="en" />
+        </I18nProvider>
+      )
+
+      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('ko'))
+      expect(readConfig(connection, 'writer').display).toEqual({ skin: 'mono' })
+
+      fireEvent.click(screen.getByRole('button', { name: 'English' }))
+      await waitFor(() => expect(readConfig(connection, 'writer').display).toEqual({ language: 'en', skin: 'mono' }))
+      view.unmount()
+      render(
+        <I18nProvider>
+          <Probe />
+        </I18nProvider>
+      )
+      await waitFor(() => expect(screen.getByTestId('ready').textContent).toBe('true'))
+      expect(screen.getByTestId('locale').textContent).toBe('en')
+      expect(readConfig(connection, 'default').display).toEqual({ language: 'en', skin: `${connection}-default` })
+    }
+  )
 })

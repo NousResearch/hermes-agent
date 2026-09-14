@@ -1,3 +1,5 @@
+import type { ModelOptionProvider, ModelOptionsResponse } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react'
@@ -21,9 +23,10 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { isSubmitEnter } from '@/lib/ime'
+import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
-import { DEFAULT_REASONING_EFFORT, reasoningEffortLabel } from '@/lib/reasoning-effort'
+import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -40,17 +43,9 @@ import {
 } from '@/store/model-visibility'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
 import { $defaultReasoningEffort } from '@/store/session'
-import type { LocalModelLoadProgress, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import type { LocalModelLoadProgress } from '@/types/hermes'
 
 import { type FastControl, ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
-
-/** Whether a catalog row represents the session's current provider. Custom
- *  providers report the canonical `custom:<key>` identity from `model.options`
- *  while the row's slug is the bare config key, so exact slug equality never
- *  matches — check the row's alias set too (#87035). */
-function isCurrentProvider(provider: ModelOptionProvider, currentProvider: string): boolean {
-  return provider.slug === currentProvider || (provider.aliases?.includes(currentProvider) ?? false)
-}
 
 // Lets the host dropdown (model-pill, a kanban field trigger, …) hand the panel
 // a way to dismiss itself so clicking a model row commits + closes, while the
@@ -352,14 +347,10 @@ export function ModelCatalogMenu({
   const rowIsCurrent = (row: KbRow) =>
     row.kind === 'moa'
       ? current.provider === 'moa' && row.preset === current.model
-      : isCurrentProvider(row.provider, current.provider) &&
+      : catalogProviderMatches(row.provider, current.provider) &&
         (row.family.id === current.model || row.family.fastId === current.model)
 
-  const autoIndex = q
-    ? kbRows.length > 0
-      ? 0
-      : -1
-    : kbRows.findIndex(row => rowIsCurrent(row) || (row.kind === 'family' && row.family.fastId === current.model))
+  const autoIndex = q ? (kbRows.length > 0 ? 0 : -1) : kbRows.findIndex(row => rowIsCurrent(row))
 
   const kbIndex = kbOverride !== null && kbOverride < kbRows.length ? kbOverride : autoIndex
   const kbActiveKey = kbIndex >= 0 ? kbRows[kbIndex].key : null
@@ -387,7 +378,7 @@ export function ModelCatalogMenu({
       return
     }
 
-    if (!rowIsCurrent(row) && row.family.fastId !== current.model) {
+    if (!rowIsCurrent(row)) {
       void selectFamily(row.family, row.provider)
     }
 
@@ -424,7 +415,7 @@ export function ModelCatalogMenu({
             event.preventDefault()
             event.stopPropagation()
             stepKb(event.key === 'ArrowDown' ? 1 : -1)
-          } else if (event.key === 'Enter') {
+          } else if (isSubmitEnter(event)) {
             event.preventDefault()
             event.stopPropagation()
             commitKbRow()
@@ -494,7 +485,7 @@ export function ModelCatalogMenu({
                     // The active id may be the base or its -fast sibling; either
                     // way this one family row represents both.
                     const activeId =
-                      isCurrentProvider(group.provider, current.provider) &&
+                      catalogProviderMatches(group.provider, current.provider) &&
                       (current.model === family.id || current.model === family.fastId)
                         ? current.model
                         : null
@@ -752,7 +743,7 @@ function groupModels(
     // stable curated order, so selecting a model can't shuffle the list. While
     // SEARCHING the pin is skipped: a query means "show me matches".
     const activeId =
-      !q && isCurrentProvider(provider, current.provider) && current.model
+      !q && catalogProviderMatches(provider, current.provider) && current.model
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 

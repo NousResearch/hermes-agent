@@ -597,6 +597,23 @@ def _neutralize_kanban_memory_guard(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_git_safe_directory_read(request, monkeypatch):
+    """Skip the ``git config --get-all safe.directory`` pre-read in ``noninteractive_git_env()``.
+
+    Many tests fake ``subprocess.run``/``Popen`` with a fixed sequence of expected git calls;
+    the pre-read is an extra spawn that would trip them. Tests of the carve-out itself opt in
+    with ``@pytest.mark.real_safe_directory``.
+    """
+    if request.node.get_closest_marker("real_safe_directory"):
+        return
+    try:
+        from hermes_cli import _subprocess_compat
+    except Exception:
+        return
+    monkeypatch.setattr(_subprocess_compat, "_user_safe_directories", lambda base_env: [], raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_webbrowser(monkeypatch):
     """Record browser-open attempts instead of opening real browser windows."""
     import webbrowser as _webbrowser
@@ -803,7 +820,7 @@ def _state_db_write_guard(request, monkeypatch):
 # ``_methods`` dict at import time and keeps per-session state in module
 # globals (sessions, child-run registry, config cache, DB handle). The
 # canonical per-file process isolation above hides any leakage, but a direct
-# multi-file invocation (``pytest tests/tui_gateway/ tests/test_tui_gateway_server.py``,
+# multi-file invocation (``pytest tests/tui_gateway/ tests/tui_gateway/test_tui_gateway_server.py``,
 # or plain ``pytest tests/``) shares one interpreter: a test that stubs
 # ``_methods["slash.exec"]`` or leaves an active-session lease behind breaks
 # unrelated tests in later files. This fixture snapshots the cheap-to-copy
@@ -1047,7 +1064,7 @@ def _wal_is_usable() -> bool:
 # Same class of incident as the live-system guard above, different primitive:
 # a test run spoke the string "partial answer complete" out of the developer's
 # speakers. That string is a test fixture
-# (``tests/test_tui_gateway_server.py``'s fake ``final_response``), and the
+# (``tests/tui_gateway/test_tui_gateway_server.py``'s fake ``final_response``), and the
 # route it took is fully in-process — no leaked shell variable required:
 #
 #   1. ``test_voice_toggle_tts_branch_also_carries_record_key`` drives the
@@ -1159,6 +1176,11 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_GATEWAY_LOOKALIKE_MARK}: the test spawns and reaps its own stub "
         "child whose argv matches the gateway runtime matcher; only the "
         "real-gateway spawn check is lifted, os.kill stays guarded.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "real_safe_directory: run the real `git config --get-all safe.directory` pre-read in "
+        "noninteractive_git_env() (autouse fixture otherwise stubs it to no entries).",
     )
     config.addinivalue_line(
         "markers",
@@ -1744,25 +1766,15 @@ def _audio_playback_guard(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate_computer_use_approval_state():
-    """Reset computer-use approval globals after every test.
+    """Reset the computer-use explicit approval callback after every test.
 
-    ``tools.computer_use.tool`` keeps three module-globals for the CLI
-    approval flow: ``_approval_callback`` (set by the CLI console on init)
-    plus the per-session unlock stores ``_always_allow`` /
-    ``_session_auto_approve``. A test that installs a callback — or drives
-    CLI init far enough that the real one is registered — and does not reset
-    it poisons every later computer-use test in the same process:
-
-    * a leaked callback that raises (dead UI/queue infra, or a stale
-      two-argument signature — the real contract is ``(action, args,
-      summary)``) turns into ``verdict = "deny"`` in ``_request_approval``,
-      so dispatch tests fail with an empty backend call list;
-    * a leaked callback that blocks (the real CLI one waits on an answer
-      queue) hangs the whole single-process run forever — pytest-timeout is
-      the only thing that can cut it.
-
-    Both symptoms are order-dependent: the affected files pass in isolation
-    and only fail in full-suite runs. Teardown-only, so tests that install
+    ``tools.computer_use.tool._approval_callback`` is a module-global handed to
+    the shared approval gate as its explicit callback, where it takes precedence
+    over the per-thread terminal one. A test that installs it and does not
+    reset it poisons every later computer-use test in the same process: a
+    leaked callback that raises becomes a deny, a leaked one that blocks (the
+    real CLI one waits on an answer queue) hangs the whole single-process run.
+    Both symptoms are order-dependent. Teardown-only, so tests that install
     their own callback keep it for their own duration.
     """
     yield
@@ -1770,9 +1782,6 @@ def _isolate_computer_use_approval_state():
         from tools.computer_use import tool as _cu_tool
 
         _cu_tool.set_approval_callback(None)
-        with _cu_tool._approval_lock:
-            _cu_tool._always_allow.clear()
-            _cu_tool._session_auto_approve.clear()
     except Exception:
         pass
 

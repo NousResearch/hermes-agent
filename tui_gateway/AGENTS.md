@@ -24,13 +24,16 @@ is the facade with the method/event catalog; methods live in `methods_*.py` sibl
 `event_publisher.py` / `event_replay.py`. Desktop reaches the same server over WebSocket via
 `apps/shared` (`JsonRpcGatewayClient`). New RPC = a new `methods_<topic>.py` or an entry in an
 existing topical sibling, registered in the table — no `if method == ...` chain (root shape rules).
+New event = a new key in `apps/shared/src/gateway-events.ts::GatewayEventMap` + `BACKEND_EVENT_NAMES`
+AND `apps/shared/src/gateway-events.json`; `tests/tui_gateway/test_gateway_event_contract.py` (emitter
+side) and `apps/shared/src/gateway-events.test.ts` (type side) both fail when either drifts.
 
 ## Key surfaces
 
 | Surface | Ink component | Gateway method / event |
 |---|---|---|
 | Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → `message.delta` / `message.complete` |
-| Tool activity | `thinking.tsx` | `tool.start` / `tool.progress` / `tool.complete` |
+| Tool activity | `thinking.tsx` | `tool.start` / `tool.generating` / `tool.complete` |
 | Approvals | `prompts.tsx` | `approval.request` → `approval.respond` |
 | Clarify / sudo / secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify.respond`, `sudo.respond`, `secret.respond` |
 | Session picker | `sessionPicker.tsx` | `session.list` / `session.resume` |
@@ -43,9 +46,10 @@ existing topical sibling, registered in the table — no `if method == ...` chai
 
 `subagent.list({session_id})` returns `{subagents, delegations}` for the calling
 transport's live session. Live child records are pinned to the exact session
-record and transport. Authenticated live reattachment transfers that exact generation's
-child authority to the new transport (also for late child registration and surviving
-viewers); foreign or retired generations remain inaccessible. `last_tool` is the last started tool, not an in-flight
+record and transport. Child authority is resolved at RPC time against the owning session's
+LIVE transport slot, so every authenticated reattach path (prompt.submit, queued drain,
+resume, activate, viewer failover) carries it with no registry bookkeeping — never add a
+per-record transport sync at an attach site; foreign or retired generations remain inaccessible. `last_tool` is the last started tool, not an in-flight
 indicator. Async completion units are not agents and lack exact generation authority;
 `delegations` remains an empty array for wire compatibility. No dispatch context,
 results, callbacks, or routing keys are sent. Clients hydrate from this snapshot

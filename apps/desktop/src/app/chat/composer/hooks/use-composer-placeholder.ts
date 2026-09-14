@@ -3,8 +3,6 @@ import { useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { resetBrowseState } from '@/store/composer-input-history'
 
-import { pickPlaceholder } from '../composer-utils'
-
 interface UseComposerPlaceholderOptions {
   disabled: boolean
   reconnecting: boolean
@@ -20,12 +18,11 @@ interface UseComposerPlaceholderOptions {
  */
 export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: UseComposerPlaceholderOptions): string {
   const { t } = useI18n()
-  const newSessionPlaceholders = t.composer.newSessionPlaceholders
-  const followUpPlaceholders = t.composer.followUpPlaceholders
-
-  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
-  )
+  // Keep the choice, rather than its translated text, so locale changes update
+  // the hint without re-rolling it or changing a persisted session's starter.
+  const [selection, setSelection] = useState(() => ({ followUp: Boolean(sessionId), sample: Math.random() }))
+  const placeholders = selection.followUp ? t.composer.followUpPlaceholders : t.composer.newSessionPlaceholders
+  const restingPlaceholder = placeholders[Math.floor(selection.sample * placeholders.length)]
 
   const prevSessionIdRef = useRef(sessionId)
 
@@ -45,8 +42,8 @@ export function useComposerPlaceholder({ disabled, reconnecting, sessionId }: Us
     }
 
     resetBrowseState(prev)
-    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+    setSelection({ followUp: Boolean(sessionId), sample: Math.random() })
+  }, [sessionId])
 
   // When the transport is disabled it's because the gateway isn't open.
   // Distinguish a cold start ("Starting Hermes...") from a dropped connection

@@ -77,7 +77,7 @@ export function getApiRequestProfile(): null | string {
 // that dial their own backend (pluginSocket) resolve it through the SAME
 // source of truth those paths maintain for $connection. That makes the plugin
 // socket follow registry-agent activations too, not just profile switches.
-// Same no-store-import contract as _apiProfile (avoids a cycle).
+// Same no-store-import contract as the profile scope (avoids a cycle).
 export function setApiRequestConnection(connectionId: null | string): void {
   $apiRequestScope.setKey('connectionId', connectionId || null)
 }
@@ -92,6 +92,25 @@ export function connectionScoped(): { connectionId?: string } {
   const connectionId = $apiRequestScope.get().connectionId
 
   return connectionId ? { connectionId } : {}
+}
+
+// Whether the window's primary connection is the local pool. Pushed from
+// store/session's setConnection (same no-store-import contract as the profile scope)
+// so api/ helpers can name the backend an UNTAGGED request lands on without
+// importing the heavy session store — which would close a module cycle
+// through @/hermes.
+let _apiLocalMode = false
+
+export function setApiRequestLocalMode(local: boolean): void {
+  _apiLocalMode = local
+}
+
+/** The connection an ambient (untagged) request is served by: the registry
+ *  tag when one is active, else `'local'` for the local pool. Identity only —
+ *  never send this as a request pin (an explicit `'local'` bypasses Electron's
+ *  legacy per-profile remote overrides). */
+export function ambientOwnerConnectionId(): string | undefined {
+  return getApiRequestConnection() ?? (_apiLocalMode ? 'local' : undefined)
 }
 
 /** Send a REST request to the renderer's active registry source. Request-level

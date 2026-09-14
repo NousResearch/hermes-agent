@@ -16,14 +16,14 @@ import {
   launchDesktop,
   type MockBackendFixture,
   waitForAppReady,
-  writeMockProviderConfig,
+  writeMockProviderConfig
 } from './fixtures'
 import { collectErrorBanners, type ElectronApplication, expect, type Page, test } from './test'
 
 const { load } = createRequire(import.meta.url)('js-yaml') as { load: (text: string) => unknown }
 
 const { prepareWindowForInput } = createRequire(import.meta.url)(
-  '../../../tests/install/e2e-assets/window-input.cjs',
+  '../../../tests/install/e2e-assets/window-input.cjs'
 ) as { prepareWindowForInput: (app: ElectronApplication, page: Page) => Promise<void> }
 
 test.use({ actionTimeout: 30_000, navigationTimeout: 30_000 })
@@ -53,13 +53,13 @@ for (const initialProfile of ['default', 'writer'] as const) {
 
     for (const [home, language] of [
       [sandbox.hermesHome, 'en'],
-      [writerHome, initialProfile === 'writer' ? 'ko-KR' : 'en'],
+      [writerHome, initialProfile === 'writer' ? 'ko-KR' : 'en']
     ]) {
       writeMockProviderConfig(
         home,
         mock.url,
         `  language: ${language}\n  skin: mono`,
-        `terminal:\n  cwd: ${JSON.stringify(workspace)}\napprovals:\n  mode: smart`,
+        `terminal:\n  cwd: ${JSON.stringify(workspace)}\napprovals:\n  mode: smart`
       )
     }
 
@@ -71,7 +71,7 @@ for (const initialProfile of ['default', 'writer'] as const) {
       MOCK_API_KEY: 'e2e-mock-key',
       HERMES_DESKTOP_CWD: workspace,
       HOME: osHome,
-      USERPROFILE: osHome,
+      USERPROFILE: osHome
     })
 
     // A caller can set HERMES_DESKTOP_PYTHON to a provisioned interpreter;
@@ -91,13 +91,17 @@ for (const initialProfile of ['default', 'writer'] as const) {
 
     const attachProfileState = async (name: string) => {
       await testInfo.attach(name, {
-        body: JSON.stringify({
-          step: currentStep,
-          startup: JSON.parse(readFileSync(activeProfilePath, 'utf8')).profile,
-          defaultLanguage: readConfig(sandbox.hermesHome).display.language,
-          writerLanguage: readConfig(writerHome).display.language,
-        }, null, 2),
-        contentType: 'application/json',
+        body: JSON.stringify(
+          {
+            step: currentStep,
+            startup: JSON.parse(readFileSync(activeProfilePath, 'utf8')).profile,
+            defaultLanguage: readConfig(sandbox.hermesHome).display.language,
+            writerLanguage: readConfig(writerHome).display.language
+          },
+          null,
+          2
+        ),
+        contentType: 'application/json'
       })
     }
 
@@ -116,9 +120,26 @@ for (const initialProfile of ['default', 'writer'] as const) {
       await expect(page.locator('html')).toHaveAttribute('dir', 'ltr')
     }
 
+    const expectKoreanComposer = async () => {
+      const input = page.locator('[contenteditable="true"][data-placeholder]')
+      // Check actual resting copy; translated startup/reconnect hints do not count.
+      const starters = [
+        '무엇을 만드시나요?',
+        'Hermes에게 작업을 지시하세요',
+        '무엇을 생각하고 계신가요?',
+        '필요한 것을 설명하세요',
+        '무엇을 처리할까요?',
+        '무엇이든 물어보세요',
+        '목표부터 시작하세요'
+      ]
+      await expect.poll(async () => starters.includes((await input.getAttribute('data-placeholder')) ?? '')).toBe(true)
+    }
+
     const selectDefault = async () => {
       // The default home pill is translated after the Korean choice.
-      await rail(page).getByRole('button', { name: /^(Switch to default|default\(으\)로 전환)$/ }).click()
+      await rail(page)
+        .getByRole('button', { name: /^(Switch to default|default\(으\)로 전환)$/ })
+        .click()
       await expectLanguage('en')
     }
 
@@ -126,6 +147,23 @@ for (const initialProfile of ['default', 'writer'] as const) {
       const writer = rail(page).getByRole('button', { name: 'writer', exact: true })
       await writer.click()
       await expect(writer).toHaveAttribute('aria-pressed', 'true', { timeout: 60_000 })
+    }
+
+    const chooseLanguage = async (language: 'en' | 'ko') => {
+      await page.evaluate(() => {
+        window.location.hash = '#/settings?tab=config:appearance'
+      })
+      await page.getByRole('button', { name: /^(Switch language|언어 전환)$/ }).click()
+      const label = language === 'ko' ? '한국어' : 'English'
+      await page.getByRole('dialog').getByRole('combobox').fill(label)
+      const option = page.getByRole('option', { name: new RegExp(label) })
+      await expect(option).toBeVisible()
+      const bounds = await option.boundingBox()
+      expect(bounds).not.toBeNull()
+      await page.mouse.move(bounds!.x + bounds!.width / 2, bounds!.y + bounds!.height / 2)
+      await option.click()
+      await expectLanguage(language)
+      await expect.poll(() => readConfig(writerHome).display.language).toBe(language)
     }
 
     try {
@@ -137,7 +175,9 @@ for (const initialProfile of ['default', 'writer'] as const) {
           await selectWriter()
         })
         await step('Search the language picker and save Korean', async () => {
-          await page.evaluate(() => { window.location.hash = '#/settings?tab=config:appearance' })
+          await page.evaluate(() => {
+            window.location.hash = '#/settings?tab=config:appearance'
+          })
           await page.getByRole('button', { name: 'Switch language', exact: true }).click()
           await page.getByPlaceholder('Search languages…', { exact: true }).fill('한국어')
           const korean = page.getByRole('option', { name: /한국어/ })
@@ -152,15 +192,19 @@ for (const initialProfile of ['default', 'writer'] as const) {
           await expect(page.getByRole('button', { name: '언어 전환', exact: true })).toBeEnabled()
           await testInfo.attach('korean-appearance-after-save', {
             body: await page.screenshot({ timeout: 5_000 }),
-            contentType: 'image/png',
+            contentType: 'image/png'
           })
-          await page.evaluate(() => { window.location.hash = '#/settings?tab=keybinds' })
+          await page.evaluate(() => {
+            window.location.hash = '#/settings?tab=keybinds'
+          })
           await expect(page.getByRole('heading', { name: '키보드 단축키', exact: true })).toBeVisible()
           await testInfo.attach('korean-keybinds', {
             body: await page.screenshot({ timeout: 5_000 }),
-            contentType: 'image/png',
+            contentType: 'image/png'
           })
-          await page.evaluate(() => { window.location.hash = '#/skills?tab=toolsets' })
+          await page.evaluate(() => {
+            window.location.hash = '#/skills?tab=toolsets'
+          })
           const toolsetSearch = page.getByPlaceholder('도구 세트 검색...', { exact: true })
           await expect(toolsetSearch).toBeVisible()
           await toolsetSearch.fill('terminal')
@@ -169,19 +213,33 @@ for (const initialProfile of ['default', 'writer'] as const) {
           await terminalDescription.click()
           await testInfo.attach('korean-capabilities', {
             body: await page.screenshot({ timeout: 5_000 }),
-            contentType: 'image/png',
+            contentType: 'image/png'
           })
-          await page.evaluate(() => { window.location.hash = '#/' })
+          await page.evaluate(() => {
+            window.location.hash = '#/'
+          })
+        })
+        await step('Keep an explicit English choice on disk, then restore Korean', async () => {
+          await chooseLanguage('en')
+          await chooseLanguage('ko')
+          await page.evaluate(() => {
+            window.location.hash = '#/'
+          })
         })
       } else {
         await step('Load the saved Korean alias from the startup writer profile', async () => {
           await expectLanguage('ko')
-          await expect(rail(page).getByRole('button', { name: 'writer', exact: true })).toHaveAttribute('aria-pressed', 'true')
+          await expect(rail(page).getByRole('button', { name: 'writer', exact: true })).toHaveAttribute(
+            'aria-pressed',
+            'true'
+          )
         })
       }
 
       await step('Verify profile languages and unrelated settings on disk', async () => {
-        await expect.poll(() => readConfig(writerHome).display.language).toBe(initialProfile === 'writer' ? 'ko-KR' : 'ko')
+        await expect
+          .poll(() => readConfig(writerHome).display.language)
+          .toBe(initialProfile === 'writer' ? 'ko-KR' : 'ko')
         expect(readConfig(sandbox.hermesHome).display.language).toBe('en')
 
         for (const home of [sandbox.hermesHome, writerHome]) {
@@ -196,6 +254,7 @@ for (const initialProfile of ['default', 'writer'] as const) {
         await selectWriter()
         await expectLanguage('ko')
         expect(await collectErrorBanners(page)).toEqual([])
+        await expectKoreanComposer()
       })
       await attachProfileState('profile-state-before-restart')
 
@@ -208,11 +267,16 @@ for (const initialProfile of ['default', 'writer'] as const) {
         await launch()
       })
       await step('Verify Korean writer is restored after the full restart', async () => {
-        await expect(rail(page).getByRole('button', { name: 'writer', exact: true })).toHaveAttribute('aria-pressed', 'true', { timeout: 60_000 })
+        await expect(rail(page).getByRole('button', { name: 'writer', exact: true })).toHaveAttribute(
+          'aria-pressed',
+          'true',
+          { timeout: 60_000 }
+        )
         await expectLanguage('ko')
+        await expectKoreanComposer()
         await testInfo.attach('korean-writer-after-restart', {
           body: await page.screenshot({ timeout: 5_000 }),
-          contentType: 'image/png',
+          contentType: 'image/png'
         })
         expect(readConfig(sandbox.hermesHome).display.language).toBe('en')
         await selectDefault()
@@ -225,11 +289,17 @@ for (const initialProfile of ['default', 'writer'] as const) {
       // backend URLs, environment variables or complete configuration files.
       const diagnostics = await Promise.allSettled([
         attachProfileState('profile-state-at-failure'),
-        ...(page && !page.isClosed() ? [
-          page.screenshot({ timeout: 5_000 }).then(body => testInfo.attach('failure-window', { body, contentType: 'image/png' })),
-          page.locator('body').ariaSnapshot({ timeout: 5_000 }).then(body =>
-            testInfo.attach('failure-accessible-dom', { body, contentType: 'text/plain' })),
-        ] : []),
+        ...(page && !page.isClosed()
+          ? [
+              page
+                .screenshot({ timeout: 5_000 })
+                .then(body => testInfo.attach('failure-window', { body, contentType: 'image/png' })),
+              page
+                .locator('body')
+                .ariaSnapshot({ timeout: 5_000 })
+                .then(body => testInfo.attach('failure-accessible-dom', { body, contentType: 'text/plain' }))
+            ]
+          : [])
       ])
 
       for (const result of diagnostics) {

@@ -9,7 +9,8 @@ def escape_xml_attr(val: Any) -> str:
     """Escape XML attribute value preventing attribute breakout."""
     s = str(val) if val is not None else ""
     return (
-        s.replace("&", "&amp;")
+        s
+        .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
         .replace('"', "&quot;")
@@ -20,11 +21,7 @@ def escape_xml_attr(val: Any) -> str:
 def escape_xml_content(val: Any) -> str:
     """Escape XML text content preventing premature tag closure and tag injection."""
     s = str(val) if val is not None else ""
-    return (
-        s.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-    )
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def render_capsule(

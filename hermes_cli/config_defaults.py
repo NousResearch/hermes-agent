@@ -11,7 +11,14 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
     reasoning_effort=False omits that key (MoA blocks configure depth per slot);
     ``extra`` keys are appended after the standard ones.
     """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
+    d = {
+        "provider": "auto",
+        "model": "",
+        "base_url": "",
+        "api_key": "",
+        "timeout": timeout,
+        "extra_body": {},
+    }
     if reasoning_effort:
         d["reasoning_effort"] = ""
     d.update(extra)
@@ -255,7 +262,6 @@ DEFAULT_CONFIG = {
         # non-positive poll) warn and fall back to defaults. See agent/turn_liveness.py.
         "turn_liveness": {"timeout_s": 600.0, "poll_s": 15.0},
     },
-
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
@@ -316,16 +322,16 @@ DEFAULT_CONFIG = {
         "vercel_runtime": "node24",  # vercel_sandbox backend only: node24 | node22 | python3.13
         # Container limits (docker, singularity, modal, daytona, vercel_sandbox; not local/ssh).
         "container_cpu": 1,
-        "container_memory": 5120,       # MB (default 5GB)
-        "container_disk": 51200,        # MB (default 50GB)
-        "container_persistent": True,   # Persist filesystem across sessions
+        "container_memory": 5120,  # MB (default 5GB)
+        "container_disk": 51200,  # MB (default 50GB)
+        "container_persistent": True,  # Persist filesystem across sessions
         # Docker volume mounts, "host_path:container_path" (docker -v syntax), e.g.
         # ["/home/user/.hermes/cache/documents:/output"]. For gateway MEDIA delivery, write to
         # /output/... inside Docker and emit the host-visible path in MEDIA:, not the container one.
         "docker_volumes": [],
         "docker_mount_cwd_to_workspace": False,  # mount host cwd at /workspace (weakens isolation)
         "docker_network": True,  # false = --network=none, no network access from commands
-        "docker_extra_args": [],        # Extra flags passed verbatim to docker run
+        "docker_extra_args": [],  # Extra flags passed verbatim to docker run
         # /dev/shm size for the Docker sandbox. Docker's 64 MB default silently breaks
         # Chromium/Playwright and PyTorch DataLoader workers; tmpfs is lazily allocated so the
         # higher ceiling is free until used. "" or "0" = omit the flag (Docker default).
@@ -345,11 +351,10 @@ DEFAULT_CONFIG = {
         # Applies to non-local backends (SSH); local is opt-in via TERMINAL_LOCAL_PERSISTENT env.
         "persistent_shell": True,
     },
-
     "web": {
-        "backend": "",           # shared fallback — applies to both search and extract
-        "search_backend": "",    # per-capability override for web_search (e.g. "searxng")
-        "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
+        "backend": "",  # shared fallback — applies to both search and extract
+        "search_backend": "",  # per-capability override for web_search (e.g. "searxng")
+        "extract_backend": "",  # per-capability override for web_extract (e.g. "native")
         # per-page char budget for web_extract; larger pages truncate, full text kept in cache/web
         "extract_char_limit": 15000,
         # Keyless free-tier ring: with NO web backend configured or keyed, web_search/web_extract
@@ -376,7 +381,6 @@ DEFAULT_CONFIG = {
         # ("mysite.dev" also covers "preview.mysite.dev"). localhost/private IPs always exempt.
         "cache_exempt_hosts": [],
     },
-
     "browser": {
         # "" = Browser Use mode when the browser-use CLI (or uvx) is available, else built-in tools
         # (Camofox setups always keep built-in tools: no CDP surface); "browser-use" = force one
@@ -517,19 +521,24 @@ DEFAULT_CONFIG = {
         # Unattended gateway/cron platforms hard-stop by default (nobody can /stop a model that
         # ignores warnings); interactive cli/tui/desktop/acp stay warning-only.
         "non_interactive_hard_stop_enabled": True,
-        "warn_after": {"exact_failure": 2, "same_tool_failure": 3, "idempotent_no_progress": 2},
+        "warn_after": {
+            "exact_failure": 2,
+            "same_tool_failure": 3,
+            "idempotent_no_progress": 2,
+        },
         "hard_stop_after": {
-            "exact_failure": 5, "same_tool_failure": 8, "idempotent_no_progress": 5
+            "exact_failure": 5,
+            "same_tool_failure": 8,
+            "idempotent_no_progress": 5,
         },
         # Per-turn hard ceilings for runaway-prone tools; counters reset every turn, always on
         # regardless of the thresholds above. Dozens of searches/subagents in ONE turn is already
         # pathological, hence low defaults. 0 = unlimited.
         "loop_caps": {
-            "max_web_searches": 50,   # web_search calls per turn
-            "max_subagents": 50,      # subagents spawned per turn
+            "max_web_searches": 50,  # web_search calls per turn
+            "max_subagents": 50,  # subagents spawned per turn
         },
     },
-
     "compression": {
         "enabled": True,
         # checkpoint_required: fail closed before lossy compaction unless an active memory provider
@@ -547,13 +556,13 @@ DEFAULT_CONFIG = {
         # threshold and this count. Clamped to the model's context length.
         "threshold_tokens": None,
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
-        "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
+        "target_ratio": 0.20,  # fraction of threshold to preserve as recent tail
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked
         # digests, anchor index, verbatim user messages and session_search pointers in the summary
         # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =
         # 0.20×threshold verbatim tail (100-240K tokens on big windows).
         "tail_mode": "lean",
-        "protect_last_n": 20,         # minimum recent messages kept uncompressed
+        "protect_last_n": 20,  # minimum recent messages kept uncompressed
         # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
         # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
         "min_tail_user_messages": 1,
@@ -656,21 +665,25 @@ DEFAULT_CONFIG = {
     # pareto-code router knob, applied only when model.model is "openrouter/pareto-code"; higher =
     # stronger/pricier coders, 0.65 = mid-tier, "" = let OpenRouter pick the strongest. Docs:
     # openrouter.ai/docs/guides/routing/routers/pareto-router
-    "openrouter": {"response_cache": True, "response_cache_ttl": 300, "min_coding_score": 0.65},
+    "openrouter": {
+        "response_cache": True,
+        "response_cache_ttl": 300,
+        "min_coding_score": 0.65,
+    },
     "bedrock": {  # AWS Bedrock; only used when model.provider is "bedrock".
         "region": "",  # empty = AWS_REGION env var → us-east-1
         "discovery": {
-            "enabled": True,           # auto-discover models via ListFoundationModels
-            "provider_filter": [],     # restrict to these providers, e.g. ["anthropic", "amazon"]
+            "enabled": True,  # auto-discover models via ListFoundationModels
+            "provider_filter": [],  # restrict to these providers, e.g. ["anthropic", "amazon"]
             "refresh_interval": 3600,  # cache discovery results (seconds)
         },
         # Bedrock Guardrails: create one in the console, then set ID and version.
         # https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html
         "guardrail": {
             "guardrail_identifier": "",  # e.g. "abc123def456"
-            "guardrail_version": "",     # e.g. "1" or "DRAFT"
+            "guardrail_version": "",  # e.g. "1" or "DRAFT"
             "stream_processing_mode": "async",  # "sync" | "async"
-            "trace": "disabled",         # "enabled" | "disabled" | "enabled_full"
+            "trace": "disabled",  # "enabled" | "disabled" | "enabled_full"
         },
     },
     # Auxiliary model config — provider/model per side task. provider "auto" = auto-detect;
@@ -711,11 +724,17 @@ DEFAULT_CONFIG = {
         # are ignored. Compression: raise timeout for local models.
         "compression": _aux(120),
         "skills_hub": _aux(30),
-        "approval": _aux(30),   # classifier — a fast/cheap model is recommended
+        "approval": _aux(30),  # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
         # delegation.provider pins. "auto" + "" = main agent's model. api_mode forces transport:
         # chat_completions | anthropic_messages | codex_responses.
-        "review": {"provider": "auto", "model": "", "base_url": "", "api_key": "", "api_mode": ""},
+        "review": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "api_mode": "",
+        },
         "mcp": _aux(30),
         # prefer_fast_model opts in to the provider fast tier; auto otherwise = main model.
         "title_generation": {
@@ -739,12 +758,14 @@ DEFAULT_CONFIG = {
         # kanban_decomposer emits a JSON graph of child tasks (more tokens).
         "triage_specifier": _aux(120),
         "kanban_decomposer": _aux(180),
-        "profile_describer": _aux(60),   # 1-2 sentence profile blurb; short, cheap
-        "goal_judge": _aux(60),          # /goal satisfaction + contract drafting; JSON calls
+        "profile_describer": _aux(60),  # 1-2 sentence profile blurb; short, cheap
+        "goal_judge": _aux(60),  # /goal satisfaction + contract drafting; JSON calls
         # Curator skill-usage review can take minutes on reasoning models (umbrellas over hundreds
         # of skills); route cheaper via `hermes model` → auxiliary → Curator.
         "curator": _aux(600),
-        "monitor": _aux(60),   # important-mail 0-10 scorer; high-volume, small model fine
+        "monitor": _aux(
+            60
+        ),  # important-mail 0-10 scorer; high-volume, small model fine
         # Post-turn self-improvement fork (save memory / patch skill). "auto" = main model replaying
         # the full conversation (warm cache); other models replay a compact digest (~3-5x cheaper).
         # enabled=false skips auto spawns (/refine still works). max_input_tokens caps the SUM of
@@ -760,16 +781,15 @@ DEFAULT_CONFIG = {
         "moa_reference": _aux(900, reasoning_effort=False),
         "moa_aggregator": _aux(900, reasoning_effort=False),
     },
-
     "display": {
         "compact": False,
         "personality": "",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume.
-        "resume_exchanges": 10,            # max user+assistant pairs to show
-        "resume_max_user_chars": 300,      # truncate user message text
-        "resume_max_assistant_chars": 200, # truncate non-last assistant text
-        "resume_max_assistant_lines": 3,   # truncate non-last assistant lines
+        "resume_exchanges": 10,  # max user+assistant pairs to show
+        "resume_max_user_chars": 300,  # truncate user message text
+        "resume_max_assistant_chars": 200,  # truncate non-last assistant text
+        "resume_max_assistant_lines": 3,  # truncate non-last assistant lines
         # Skip tool-call-only assistant entries in the recap so it isn't dominated by `[2 tool
         # calls: ...]` lines; False shows them inline.
         "resume_skip_tool_only": True,
@@ -792,7 +812,7 @@ DEFAULT_CONFIG = {
         # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
-        "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
+        "bell_on_prompt": False,  # bell when a blocking prompt opens (clarify/approval/sudo)
         # Stream reasoning live before the response; otherwise thinking models show only a spinner
         # for tens of seconds.
         "show_reasoning": True,
@@ -808,7 +828,7 @@ DEFAULT_CONFIG = {
         # (final raw only) | "error" (raw only on non-zero exit) | "off".
         "background_process_notifications": "concise",
         "streaming": False,
-        "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
+        "timestamps": False,  # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
         "final_response_markdown": "strip",  # render | strip | raw
         # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
@@ -820,7 +840,7 @@ DEFAULT_CONFIG = {
         "cli_rebuild_scrollback_on_redraw": False,
         # Print a one-line summary of resolved modal prompts (approval/clarify) to scrollback.
         "persist_prompts": True,
-        "inline_diffs": True,     # inline diff previews for write_file/patch/skill_manage
+        "inline_diffs": True,  # inline diff previews for write_file/patch/skill_manage
         # Append a one-line advisory to the final response when a write_file/patch failed this turn
         # and was never superseded by a successful write to the same path (catches "half the
         # parallel patches failed, model claims success").
@@ -832,8 +852,8 @@ DEFAULT_CONFIG = {
         # truncated stream, pending tool result, iteration/budget limit) instead of the bare
         # "(empty)" sentinel.
         "turn_completion_explainer": True,
-        "show_cost": False,       # $ cost in the status bar
-        "battery": False,         # battery read-out first in status bar; no-op w/o battery
+        "show_cost": False,  # $ cost in the status bar
+        "battery": False,  # battery read-out first in status bar; no-op w/o battery
         # Focus view (/focus): display-only. Pins tool_progress to "off", reports per-turn
         # hidden-line count, pins a "focus" status segment. focus_saved_tool_progress holds the mode
         # /focus off restores. Never affects what the model sees (focus_view.py).
@@ -924,7 +944,7 @@ DEFAULT_CONFIG = {
         # CLI/TUI/desktop, managed with `hermes pets`. No effect on prompt caching.
         "pet": {
             "enabled": False,
-            "slug": "",   # active pet slug in get_hermes_home()/pets/; empty → first installed
+            "slug": "",  # active pet slug in get_hermes_home()/pets/; empty → first installed
             # auto (detect kitty/iTerm2/sixel, else unicode half-blocks) | kitty | iterm | sixel |
             # unicode | off
             "render_mode": "auto",
@@ -934,7 +954,6 @@ DEFAULT_CONFIG = {
             "unicode_cols": 0,  # Hard override for terminal column width; 0 = derive from scale.
         },
     },
-
     "dashboard": {
         # Visual theme: "default" | "midnight" | "ember" | "mono" | "cyberpunk" | "rose"
         "theme": "default",
@@ -1003,7 +1022,6 @@ DEFAULT_CONFIG = {
         # = reconstruct from headers.
         "public_url": "",
     },
-
     "privacy": {
         "redact_pii": False,  # hash user IDs and strip phone numbers from LLM context
     },
@@ -1058,7 +1076,7 @@ DEFAULT_CONFIG = {
         },
         "neutts": {
             "ref_audio": "",  # path to reference voice audio (empty = bundled default)
-            "ref_text": "",   # path to reference voice transcript (empty = bundled default)
+            "ref_text": "",  # path to reference voice transcript (empty = bundled default)
             "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
             "device": "cpu",  # cpu, cuda, or mps
         },
@@ -1075,7 +1093,6 @@ DEFAULT_CONFIG = {
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for TTS only
         },
     },
-
     "stt": {
         "enabled": True,
         # Echo the raw transcript of gateway voice messages back as a 🎙️ message.
@@ -1131,7 +1148,6 @@ DEFAULT_CONFIG = {
             # optional "base_url" key overrides DEEPINFRA_BASE_URL for STT only
         },
     },
-
     "voice": {
         # How the Desktop voice conversation is wired:
         #   chained  — STT → Hermes turn → TTS (the stt.* / tts.* providers below)
@@ -1204,9 +1220,7 @@ DEFAULT_CONFIG = {
             "keyword": "jarvis",
         },
     },
-
     "human_delay": {"mode": "off", "min_ms": 800, "max_ms": 2500},
-
     # Context engine — how the context window is managed near the token limit. "compressor" =
     # built-in lossy summarization; or a plugin name (e.g. "lcm") installed in
     # plugins/context_engine/<name>/ or ~/.hermes/plugins/.
@@ -1228,8 +1242,8 @@ DEFAULT_CONFIG = {
         # true = foreground writes prompt inline; background writes are staged (/memory
         # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
         "write_approval": False,
-        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
-        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        "memory_char_limit": 2200,  # ~800 tokens at 2.75 chars/token
+        "user_char_limit": 1375,  # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
         "nudge_interval": 10,
         # External memory provider plugin (empty = built-in only); only ONE at a time: "openviking",
@@ -1344,8 +1358,10 @@ DEFAULT_CONFIG = {
                     {"provider": "openai-codex", "model": "gpt-5.5"},
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
-                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
-
+                "aggregator": {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-opus-4.8",
+                },
                 "enabled": True,
             }
         },
@@ -1353,7 +1369,7 @@ DEFAULT_CONFIG = {
     # Skills — external skill directories shared across tools/agents. Paths are expanded (~, ${VAR})
     # and resolved; read-only — creation goes to ~/.hermes/skills/ unless create_dir redirects it.
     "skills": {
-        "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        "external_dirs": [],  # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Where skill_manage-created skills go (empty = profile-local dir). When set, new skills
         # land here AND agent-facing instructions name this path; expanded (~, ${VAR}), relative to
         # HERMES_HOME, scanned alongside the local dir.
@@ -1389,7 +1405,6 @@ DEFAULT_CONFIG = {
         # See #79686.
         "ledger": True,
     },
-
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
     # long-unused skills stale, archives (never deletes) obsolete ones, optionally consolidates
     # overlaps via a forked aux-model agent. Inactivity-triggered from session start, no cron
@@ -1422,7 +1437,6 @@ DEFAULT_CONFIG = {
     "honcho": {},
     # IANA timezone (e.g. "Asia/Kolkata", "America/New_York"). Empty = server-local time.
     "timezone": "",
-
     "slack": {
         "require_mention": True,  # require @mention to respond in channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
@@ -1434,7 +1448,6 @@ DEFAULT_CONFIG = {
         "thread_require_mention": False,  # require @mention in thread replies too
         "channel_prompts": {},  # per-channel ephemeral system prompts
     },
-
     "discord": {
         "require_mention": True,  # require @mention to respond in server channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
@@ -1508,11 +1521,9 @@ DEFAULT_CONFIG = {
             ],
         },
     },
-
     "whatsapp": {
         # reply_prefix: None = built-in "☤ *Hermes Agent*" header; "" disables; \n allowed.
     },
-
     "telegram": {
         "reactions": False,  # add 👀/✅/❌ reactions to messages during processing
         # per-chat/topic ephemeral system prompts (topics inherit from parent group)
@@ -1527,14 +1538,12 @@ DEFAULT_CONFIG = {
             "rich_drafts": False,
         },
     },
-
     "mattermost": {
         "require_mention": True,  # require @mention to respond in channels
         "free_response_channels": "",  # comma-separated channel IDs answered without mention
         "allowed_channels": "",  # if set, ONLY respond in these channel IDs (whitelist)
         "channel_prompts": {},  # per-channel ephemeral system prompts
     },
-
     "matrix": {
         "require_mention": True,  # require @mention to respond in rooms
         "free_response_rooms": "",  # comma-separated room IDs answered without mention
@@ -1648,7 +1657,6 @@ DEFAULT_CONFIG = {
         # the base set (restricted/audited/air-gapped environments).
         "allow_lazy_installs": True,
     },
-
     "cron": {
         "catch_up_missed": True,  # False skips recurring misses beyond the local grace window.
         # Let cron-spawned agents use the cronjob toolset (the "cron-librarian" pattern). Off by
@@ -1859,9 +1867,9 @@ DEFAULT_CONFIG = {
         "connectors": {"enabled": True},
     },
     "logging": {  # File logging to ~/.hermes/logs/: agent.log captures INFO+, errors.log WARNING+.
-        "level": "INFO",       # minimum level for agent.log: DEBUG, INFO, WARNING
-        "max_size_mb": 5,      # max size per log file before rotation
-        "backup_count": 3,     # rotated backups to keep
+        "level": "INFO",  # minimum level for agent.log: DEBUG, INFO, WARNING
+        "max_size_mb": 5,  # max size per log file before rotation
+        "backup_count": 3,  # rotated backups to keep
     },
     # Remote model-catalog manifest: curated OpenRouter / Nous Portal model lists fetched from this
     # URL (falls back to the in-repo snapshot on network failure), so picker lists update without a
@@ -1895,7 +1903,6 @@ DEFAULT_CONFIG = {
     "models_dev": {
         "url": "",  # empty = default https://models.dev/api.json
     },
-
     "network": {
         # Force IPv4. With broken/unreachable IPv6, Python tries AAAA first and hangs for the full
         # TCP timeout before falling back. True skips IPv6 entirely.
@@ -1917,7 +1924,8 @@ DEFAULT_CONFIG = {
             "export_interval_seconds": 60,
             "logs_export_interval_seconds": 5,
             "resource_attributes": {
-                "service.name": "hermes-gateway", "deployment.environment.name": "production"
+                "service.name": "hermes-gateway",
+                "deployment.environment.name": "production",
             },
         },
         # OTLP destination. headers_env maps header names to ENVIRONMENT VARIABLE NAMES (never
@@ -1955,7 +1963,12 @@ DEFAULT_CONFIG = {
         "loop_watchdog_probe_timeout_s": 10.0,
         "loop_watchdog_max_strikes": 3,
         # Bot-to-bot loop guard: admitted bot messages per conversation before a cooldown.
-        "bot_loop_guard": {"enabled": True, "max_events": 20, "window_seconds": 300, "cooldown_seconds": 600},
+        "bot_loop_guard": {
+            "enabled": True,
+            "max_events": 20,
+            "window_seconds": 300,
+            "cooldown_seconds": 600,
+        },
         # Startup-liveness watchdog: stdlib-only daemon thread armed at process entry that
         # hard-exits 75 if the loop isn't live within the deadline. Armed before config loads, so
         # run_gateway() bridges these to HERMES_STARTUP_WATCHDOG / HERMES_STARTUP_WATCHDOG_TIMEOUT_S
@@ -1997,7 +2010,11 @@ DEFAULT_CONFIG = {
         # `max_gap_seconds` apart (floored by `window_seconds`) chain, and after `max_restarts`
         # auto-resume is SKIPPED for that boot (inbound messages still served). Gap-based chaining
         # also catches SLOW ~150s crash cycles. max_restarts=0 disables.
-        "restart_loop_guard": {"max_restarts": 3, "window_seconds": 60, "max_gap_seconds": 300},
+        "restart_loop_guard": {
+            "max_restarts": 3,
+            "window_seconds": 60,
+            "max_gap_seconds": 300,
+        },
         # Respawn-storm circuit breaker (complements restart_loop_guard): counts (re)starts in a
         # sliding window and sleeps an exponential backoff before booting so a crash-looping
         # supervisor can't hammer the process. max_starts <= 0 disables. Env escape hatches:
@@ -2094,7 +2111,6 @@ DEFAULT_CONFIG = {
         # Minimum hours between auto-maintenance runs (tracked in state.db state_meta, shared across
         # processes).
         "min_interval_hours": 24,
-
         # Notice about the compact FTS layout (reclaims ~60%+ of state.db). OPT-IN: legacy indexes
         # stay until `hermes sessions optimize-storage` runs, since the rebuild is disk-heavy on
         # large DBs. advise = `hermes update` prints a one-line notice with reclaimable size when a
@@ -2140,12 +2156,10 @@ DEFAULT_CONFIG = {
             "endpoint": "https://telemetry.nousresearch.com/v1/telemetry",
         },
     },
-
     "doctor": {
         # Per-probe timeout (seconds) for `hermes doctor --live` real-call probes.
         "live_probe_timeout": 10,
     },
-
     "updates": {
         # Passive version/banner checks only; explicit `hermes update --check` remains enabled.
         "check": True,
@@ -2222,15 +2236,15 @@ DEFAULT_CONFIG = {
     # headless sessions (cron, webhook, API) never prompt and see them as locked.
     "vault": {
         "onepassword": {
-            "enabled": False,       # `op` CLI: Login items with a website URL become fillable handles.
-            "account": "",          # account shorthand for `op --account`; empty = default account.
-            "binary_path": "",      # absolute path to op; empty = PATH.
+            "enabled": False,  # `op` CLI: Login items with a website URL become fillable handles.
+            "account": "",  # account shorthand for `op --account`; empty = default account.
+            "binary_path": "",  # absolute path to op; empty = PATH.
             # Env var holding a service-account token (headless auth, no unlock prompt). Unset = prompt.
             "service_account_token_env": "OP_SERVICE_ACCOUNT_TOKEN",
         },
         "bitwarden": {
-            "enabled": False,       # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
-            "binary_path": "",      # absolute path to bw; empty = PATH.
+            "enabled": False,  # `bw` CLI (Password Manager, not Secrets Manager); run `bw login` once first.
+            "binary_path": "",  # absolute path to bw; empty = PATH.
         },
     },
     "secrets": {
@@ -2281,7 +2295,6 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold": 5,
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
-
     "computer_use": {
         # cua-driver's upstream PostHog telemetry defaults ON; Hermes sets
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
@@ -2378,7 +2391,6 @@ DEFAULT_CONFIG = {
             "max_attempts": 2,  # Crash-loop breaker: max automatic re-runs of one interrupted turn.
         },
     },
-
     "nous": {
         # Upper bound (seconds) on the Nous auth keepalive tick, which derives from the
         # server-issued credential lifetime (raising above it has no effect). 0 disables the
@@ -2442,16 +2454,30 @@ def _category(category, password, advanced):
     ``url``/``help``/``tools`` are only written when passed; ``password=None`` omits the key;
     ``advanced`` is only written when true. Key order matches the plain ``_env`` entries.
     """
-    def make(description, prompt, url=_OMIT, *, help=_OMIT, tools=_OMIT, password=password,
-             advanced=advanced):
+
+    def make(
+        description,
+        prompt,
+        url=_OMIT,
+        *,
+        help=_OMIT,
+        tools=_OMIT,
+        password=password,
+        advanced=advanced,
+    ):
         d = {"description": description, "prompt": prompt}
-        d.update((k, v) for k, v in (("help", help), ("url", url), ("tools", tools)) if v is not _OMIT)
+        d.update(
+            (k, v)
+            for k, v in (("help", help), ("url", url), ("tools", tools))
+            if v is not _OMIT
+        )
         if password is not None:
             d["password"] = password
         d["category"] = category
         if advanced:
             d["advanced"] = True
         return d
+
     return make
 
 
@@ -2477,15 +2503,30 @@ OPTIONAL_ENV_VARS = {
     "HERMES_ANON_API_SECRET": _env(
         "Shared secret for the Nous free-tier sign-up endpoints while they are in their gated "
         "integration phase (not needed once the gate is removed)",
-        "Nous free-tier shared secret (leave empty unless given one)", password=True,
-        category="provider", advanced=True),
-    "OPENROUTER_API_KEY": _env("OpenRouter API key (for vision, web scraping helpers, and MoA)",
-        "OpenRouter API key", url="https://openrouter.ai/keys", password=True, tools=["vision_analyze"],
-        category="provider", advanced=True),
-    "GOOGLE_API_KEY": _prov("Google AI Studio API key (also recognized as GEMINI_API_KEY)",
-        "Google AI Studio API key", "https://aistudio.google.com/app/apikey"),
-    "GEMINI_API_KEY": _prov("Google AI Studio API key (alias for GOOGLE_API_KEY)", "Gemini API key",
-        "https://aistudio.google.com/app/apikey"),
+        "Nous free-tier shared secret (leave empty unless given one)",
+        password=True,
+        category="provider",
+        advanced=True,
+    ),
+    "OPENROUTER_API_KEY": _env(
+        "OpenRouter API key (for vision, web scraping helpers, and MoA)",
+        "OpenRouter API key",
+        url="https://openrouter.ai/keys",
+        password=True,
+        tools=["vision_analyze"],
+        category="provider",
+        advanced=True,
+    ),
+    "GOOGLE_API_KEY": _prov(
+        "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
+        "Google AI Studio API key",
+        "https://aistudio.google.com/app/apikey",
+    ),
+    "GEMINI_API_KEY": _prov(
+        "Google AI Studio API key (alias for GOOGLE_API_KEY)",
+        "Gemini API key",
+        "https://aistudio.google.com/app/apikey",
+    ),
     "GEMINI_BASE_URL": _base_url("Google AI Studio", "Gemini"),
     "VERTEX_CREDENTIALS_PATH": _prov(
         "Path to a Google Cloud service account JSON for Vertex AI (Gemini). Vertex uses "
@@ -2493,404 +2534,842 @@ OPTIONAL_ENV_VARS = {
         "tokens from. Falls back to GOOGLE_APPLICATION_CREDENTIALS, then to ADC (gcloud auth "
         "application-default login). Set project/region under vertex: in config.yaml.",
         "Vertex service account JSON path (leave empty to use ADC / "
-        "GOOGLE_APPLICATION_CREDENTIALS)", "https://cloud.google.com/iam/docs/keys-create-delete",
-        password=False),
+        "GOOGLE_APPLICATION_CREDENTIALS)",
+        "https://cloud.google.com/iam/docs/keys-create-delete",
+        password=False,
+    ),
     "XAI_API_KEY": _prov("xAI API key", "xAI API key", "https://console.x.ai/"),
     "XAI_BASE_URL": _base_url("xAI"),
-    "NVIDIA_API_KEY": _prov("NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
-        "NVIDIA NIM API key", "https://build.nvidia.com/"),
+    "NVIDIA_API_KEY": _prov(
+        "NVIDIA NIM API key (build.nvidia.com or local NIM endpoint)",
+        "NVIDIA NIM API key",
+        "https://build.nvidia.com/",
+    ),
     "NVIDIA_BASE_URL": _prov(
         "NVIDIA NIM base URL override (e.g. http://localhost:8000/v1 for local NIM)",
-        "NVIDIA NIM base URL (leave empty for default)", None, password=False),
-    "LM_API_KEY": _prov("LM Studio bearer token for auth-enabled local servers",
-        "LM Studio API key / bearer token", None),
+        "NVIDIA NIM base URL (leave empty for default)",
+        None,
+        password=False,
+    ),
+    "LM_API_KEY": _prov(
+        "LM Studio bearer token for auth-enabled local servers",
+        "LM Studio API key / bearer token",
+        None,
+    ),
     "LM_BASE_URL": _base_url("LM Studio"),
-    "GLM_API_KEY": _prov("Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
-        "Z.AI / GLM API key", "https://z.ai/"),
-    "ZAI_API_KEY": _prov("Z.AI API key (alias for GLM_API_KEY)", "Z.AI API key", "https://z.ai/"),
-    "Z_AI_API_KEY": _prov("Z.AI API key (alias for GLM_API_KEY)", "Z.AI API key", "https://z.ai/"),
+    "GLM_API_KEY": _prov(
+        "Z.AI / GLM API key (also recognized as ZAI_API_KEY / Z_AI_API_KEY)",
+        "Z.AI / GLM API key",
+        "https://z.ai/",
+    ),
+    "ZAI_API_KEY": _prov(
+        "Z.AI API key (alias for GLM_API_KEY)", "Z.AI API key", "https://z.ai/"
+    ),
+    "Z_AI_API_KEY": _prov(
+        "Z.AI API key (alias for GLM_API_KEY)", "Z.AI API key", "https://z.ai/"
+    ),
     "GLM_BASE_URL": _base_url("Z.AI / GLM"),
-    "KIMI_API_KEY": _prov("Kimi / Moonshot API key", "Kimi API key",
-        "https://platform.moonshot.cn/"),
+    "KIMI_API_KEY": _prov(
+        "Kimi / Moonshot API key", "Kimi API key", "https://platform.moonshot.cn/"
+    ),
     "KIMI_BASE_URL": _base_url("Kimi / Moonshot", "Kimi"),
-    "KIMI_CN_API_KEY": _prov("Kimi / Moonshot China API key", "Kimi (China) API key",
-        "https://platform.moonshot.cn/"),
-    "STEPFUN_API_KEY": _prov("StepFun Step Plan API key", "StepFun Step Plan API key",
-        "https://platform.stepfun.com/"),
+    "KIMI_CN_API_KEY": _prov(
+        "Kimi / Moonshot China API key",
+        "Kimi (China) API key",
+        "https://platform.moonshot.cn/",
+    ),
+    "STEPFUN_API_KEY": _prov(
+        "StepFun Step Plan API key",
+        "StepFun Step Plan API key",
+        "https://platform.stepfun.com/",
+    ),
     "STEPFUN_BASE_URL": _base_url("StepFun Step Plan"),
-    "ARCEEAI_API_KEY": _prov("Arcee AI API key", "Arcee AI API key", "https://chat.arcee.ai/"),
+    "ARCEEAI_API_KEY": _prov(
+        "Arcee AI API key", "Arcee AI API key", "https://chat.arcee.ai/"
+    ),
     "ARCEE_BASE_URL": _base_url("Arcee AI", "Arcee"),
-    "GMI_API_KEY": _prov("GMI Cloud API key", "GMI Cloud API key", "https://www.gmicloud.ai/"),
+    "GMI_API_KEY": _prov(
+        "GMI Cloud API key", "GMI Cloud API key", "https://www.gmicloud.ai/"
+    ),
     "GMI_BASE_URL": _base_url("GMI Cloud"),
-    "ACTUAL_API_KEY": _prov("Actual Computer inference key (ac_...)",
-        "Actual Computer inference key", "https://actual.inc/user/keys"),
-    "FIREWORKS_API_KEY": _prov("Fireworks AI API key", "Fireworks AI API key",
-        "https://app.fireworks.ai/settings/users/api-keys"),
-    "MINIMAX_API_KEY": _prov("MiniMax API key (international)", "MiniMax API key",
-        "https://www.minimax.io/"),
+    "ACTUAL_API_KEY": _prov(
+        "Actual Computer inference key (ac_...)",
+        "Actual Computer inference key",
+        "https://actual.inc/user/keys",
+    ),
+    "FIREWORKS_API_KEY": _prov(
+        "Fireworks AI API key",
+        "Fireworks AI API key",
+        "https://app.fireworks.ai/settings/users/api-keys",
+    ),
+    "MINIMAX_API_KEY": _prov(
+        "MiniMax API key (international)", "MiniMax API key", "https://www.minimax.io/"
+    ),
     "MINIMAX_BASE_URL": _base_url("MiniMax"),
-    "MINIMAX_CN_API_KEY": _prov("MiniMax API key (China endpoint)", "MiniMax (China) API key",
-        "https://www.minimaxi.com/"),
+    "MINIMAX_CN_API_KEY": _prov(
+        "MiniMax API key (China endpoint)",
+        "MiniMax (China) API key",
+        "https://www.minimaxi.com/",
+    ),
     "MINIMAX_CN_BASE_URL": _base_url("MiniMax (China)"),
-    "DEEPSEEK_API_KEY": _prov("DeepSeek API key for direct DeepSeek access", "DeepSeek API Key",
-        "https://platform.deepseek.com/api_keys", advanced=False),
-    "DEEPSEEK_BASE_URL": _prov("Custom DeepSeek API base URL (advanced)", "DeepSeek Base URL", "",
-        password=False, advanced=False),
-    "DASHSCOPE_API_KEY": _prov("Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
-        "DashScope API Key", "https://modelstudio.console.alibabacloud.com/", advanced=False),
+    "DEEPSEEK_API_KEY": _prov(
+        "DeepSeek API key for direct DeepSeek access",
+        "DeepSeek API Key",
+        "https://platform.deepseek.com/api_keys",
+        advanced=False,
+    ),
+    "DEEPSEEK_BASE_URL": _prov(
+        "Custom DeepSeek API base URL (advanced)",
+        "DeepSeek Base URL",
+        "",
+        password=False,
+        advanced=False,
+    ),
+    "DASHSCOPE_API_KEY": _prov(
+        "Alibaba Cloud DashScope API key (Qwen + multi-provider models)",
+        "DashScope API Key",
+        "https://modelstudio.console.alibabacloud.com/",
+        advanced=False,
+    ),
     "DASHSCOPE_BASE_URL": _prov(
         "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
-        "DashScope Base URL", "", password=False),
+        "DashScope Base URL",
+        "",
+        password=False,
+    ),
     "HERMES_QWEN_BASE_URL": _prov(
         "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
-        "Qwen Portal base URL (leave empty for default)", None, password=False),
-    "OPENCODE_ZEN_API_KEY": _prov("OpenCode Zen API key (pay-as-you-go access to curated models)",
-        "OpenCode Zen API key", "https://opencode.ai/auth"),
+        "Qwen Portal base URL (leave empty for default)",
+        None,
+        password=False,
+    ),
+    "OPENCODE_ZEN_API_KEY": _prov(
+        "OpenCode Zen API key (pay-as-you-go access to curated models)",
+        "OpenCode Zen API key",
+        "https://opencode.ai/auth",
+    ),
     "COMMANDCODE_API_KEY": _prov(
         "CommandCode API key (GOAT/Pro/Max/Provider plans — 30+ models via one key)",
-        "CommandCode API key", "https://commandcode.ai/studio/"),
+        "CommandCode API key",
+        "https://commandcode.ai/studio/",
+    ),
     "OPENCODE_ZEN_BASE_URL": _base_url("OpenCode Zen"),
-    "OPENCODE_GO_API_KEY": _prov("OpenCode Go API key ($10/month subscription for open models)",
-        "OpenCode Go API key", "https://opencode.ai/auth"),
+    "OPENCODE_GO_API_KEY": _prov(
+        "OpenCode Go API key ($10/month subscription for open models)",
+        "OpenCode Go API key",
+        "https://opencode.ai/auth",
+    ),
     "OPENCODE_GO_BASE_URL": _base_url("OpenCode Go"),
     "HF_TOKEN": _prov(
         "Hugging Face token for Inference Providers (20+ open models via router.huggingface.co)",
-        "Hugging Face Token", "https://huggingface.co/settings/tokens", advanced=False),
+        "Hugging Face Token",
+        "https://huggingface.co/settings/tokens",
+        advanced=False,
+    ),
     "HF_BASE_URL": _base_url("Hugging Face Inference Providers", "HF"),
-    "OLLAMA_API_KEY": _prov("Ollama Cloud API key (ollama.com — cloud-hosted open models)",
-        "Ollama Cloud API key", "https://ollama.com/settings"),
-    "OLLAMA_BASE_URL": _prov("Ollama Cloud base URL override (default: https://ollama.com/v1)",
-        "Ollama base URL (leave empty for default)", None, password=False),
+    "OLLAMA_API_KEY": _prov(
+        "Ollama Cloud API key (ollama.com — cloud-hosted open models)",
+        "Ollama Cloud API key",
+        "https://ollama.com/settings",
+    ),
+    "OLLAMA_BASE_URL": _prov(
+        "Ollama Cloud base URL override (default: https://ollama.com/v1)",
+        "Ollama base URL (leave empty for default)",
+        None,
+        password=False,
+    ),
     "XIAOMI_API_KEY": _prov(
         "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, "
-        "mimo-v2-omni, mimo-v2-flash)", "Xiaomi MiMo API Key", "https://platform.xiaomimimo.com",
-        advanced=False),
+        "mimo-v2-omni, mimo-v2-flash)",
+        "Xiaomi MiMo API Key",
+        "https://platform.xiaomimimo.com",
+        advanced=False,
+    ),
     "XIAOMI_BASE_URL": _prov(
         "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
-        "Xiaomi base URL (leave empty for default)", None, password=False),
-    "UPSTAGE_API_KEY": _prov("Upstage API key for Solar LLM models", "Upstage API Key",
-        "https://console.upstage.ai/api-keys", advanced=False),
-    "UPSTAGE_BASE_URL": _prov("Upstage base URL override (default: https://api.upstage.ai/v1)",
-        "Upstage base URL (leave empty for default)", None, password=False),
-    "AWS_REGION": _prov("AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
-        "AWS Region", "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
-        password=False),
-    "AWS_PROFILE": _prov("AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
-        "AWS Profile", None, password=False),
-    "AZURE_FOUNDRY_API_KEY": _prov("Azure Foundry API key for custom Azure endpoints",
-        "Azure Foundry API Key", "https://ai.azure.com/", advanced=False),
+        "Xiaomi base URL (leave empty for default)",
+        None,
+        password=False,
+    ),
+    "UPSTAGE_API_KEY": _prov(
+        "Upstage API key for Solar LLM models",
+        "Upstage API Key",
+        "https://console.upstage.ai/api-keys",
+        advanced=False,
+    ),
+    "UPSTAGE_BASE_URL": _prov(
+        "Upstage base URL override (default: https://api.upstage.ai/v1)",
+        "Upstage base URL (leave empty for default)",
+        None,
+        password=False,
+    ),
+    "AWS_REGION": _prov(
+        "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
+        "AWS Region",
+        "https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html",
+        password=False,
+    ),
+    "AWS_PROFILE": _prov(
+        "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
+        "AWS Profile",
+        None,
+        password=False,
+    ),
+    "AZURE_FOUNDRY_API_KEY": _prov(
+        "Azure Foundry API key for custom Azure endpoints",
+        "Azure Foundry API Key",
+        "https://ai.azure.com/",
+        advanced=False,
+    ),
     "AZURE_FOUNDRY_BASE_URL": _prov(
         "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
-        "Azure Foundry base URL", None, password=False),
+        "Azure Foundry base URL",
+        None,
+        password=False,
+    ),
     # ── Tool API keys ──
-    "EXA_API_KEY": _tool("Exa API key for AI-native web search and contents", "Exa API key",
-        "https://exa.ai/", tools=["web_search", "web_extract"]),
-    "PARALLEL_API_KEY": _tool("Parallel API key for AI-native web search and extract",
-        "Parallel API key", "https://parallel.ai/", tools=["web_search", "web_extract"]),
-    "FIRECRAWL_API_KEY": _tool("Firecrawl API key for web search and scraping", "Firecrawl API key",
-        "https://firecrawl.dev/", tools=["web_search", "web_extract"]),
-    "FIRECRAWL_API_URL": _tool("Firecrawl API URL for self-hosted instances (optional)",
-        "Firecrawl API URL (leave empty for cloud)", None, password=False, advanced=True),
+    "EXA_API_KEY": _tool(
+        "Exa API key for AI-native web search and contents",
+        "Exa API key",
+        "https://exa.ai/",
+        tools=["web_search", "web_extract"],
+    ),
+    "PARALLEL_API_KEY": _tool(
+        "Parallel API key for AI-native web search and extract",
+        "Parallel API key",
+        "https://parallel.ai/",
+        tools=["web_search", "web_extract"],
+    ),
+    "FIRECRAWL_API_KEY": _tool(
+        "Firecrawl API key for web search and scraping",
+        "Firecrawl API key",
+        "https://firecrawl.dev/",
+        tools=["web_search", "web_extract"],
+    ),
+    "FIRECRAWL_API_URL": _tool(
+        "Firecrawl API URL for self-hosted instances (optional)",
+        "Firecrawl API URL (leave empty for cloud)",
+        None,
+        password=False,
+        advanced=True,
+    ),
     "FIRECRAWL_GATEWAY_URL": _tool(
         "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
-        "Firecrawl gateway URL (leave empty to derive from domain)", None, password=False,
-        advanced=True),
+        "Firecrawl gateway URL (leave empty to derive from domain)",
+        None,
+        password=False,
+        advanced=True,
+    ),
     "TOOL_GATEWAY_URL": _tool(
         "Exact shared tool-gateway origin for on-origin vendors and media uploads (optional)",
-        "Shared tool-gateway URL (leave empty to derive from domain)", None,
-        password=False, advanced=True),
+        "Shared tool-gateway URL (leave empty to derive from domain)",
+        None,
+        password=False,
+        advanced=True,
+    ),
     "CONNECTOR_GATEWAY_URL": _tool(
         "Exact connector-gateway origin for the connectors API (optional)",
-        "Connector-gateway URL (leave empty to derive from domain)", None,
-        password=False, advanced=True),
+        "Connector-gateway URL (leave empty to derive from domain)",
+        None,
+        password=False,
+        advanced=True,
+    ),
     "TOOL_GATEWAY_DOMAIN": _tool(
         "Shared tool-gateway domain suffix for Nous Subscribers only, used to derive vendor "
         "hosts, e.g. nousresearch.com -> firecrawl-gateway.nousresearch.com",
-        "Tool-gateway domain suffix", None, password=False, advanced=True),
+        "Tool-gateway domain suffix",
+        None,
+        password=False,
+        advanced=True,
+    ),
     "TOOL_GATEWAY_SCHEME": _tool(
         "Shared tool-gateway URL scheme for Nous Subscribers only, used to derive vendor hosts "
-        "(`https` by default, set `http` for local gateway testing)", "Tool-gateway URL scheme",
-        None, password=False, advanced=True),
+        "(`https` by default, set `http` for local gateway testing)",
+        "Tool-gateway URL scheme",
+        None,
+        password=False,
+        advanced=True,
+    ),
     "TOOL_GATEWAY_USER_TOKEN": _tool(
         "Explicit Nous Subscriber access token for tool-gateway requests (optional; otherwise "
-        "read from the Hermes auth store)", "Tool-gateway user token", None, advanced=True),
+        "read from the Hermes auth store)",
+        "Tool-gateway user token",
+        None,
+        advanced=True,
+    ),
     "TAVILY_API_KEY": _tool(
         "Tavily API key for AI-native web search and extract (optional — keyless works when "
-        "Tavily is selected)", "Tavily API key", "https://app.tavily.com/home",
-        tools=["web_search", "web_extract"]),
+        "Tavily is selected)",
+        "Tavily API key",
+        "https://app.tavily.com/home",
+        tools=["web_search", "web_extract"],
+    ),
     "PERPLEXITY_API_KEY": _tool(
         "Perplexity API key for the Search API web backend (ranked results + query-relevant page "
-        "snippets)", "Perplexity API key", "https://www.perplexity.ai/account/api",
-        tools=["web_search", "web_extract"]),
+        "snippets)",
+        "Perplexity API key",
+        "https://www.perplexity.ai/account/api",
+        tools=["web_search", "web_extract"],
+    ),
     "KEENABLE_API_KEY": _tool(
         "Keenable API key for fast independent-index web search and page fetch (optional — "
-        "keyless free tier works without it)", "Keenable API key", "https://keenable.ai",
-        tools=["web_search", "web_extract"]),
-    "SEARXNG_URL": _tool("URL of your SearXNG instance for free self-hosted web search",
-        "SearXNG URL (e.g. http://localhost:8080)", "https://searxng.github.io/searxng/",
-        tools=["web_search"], password=False),
+        "keyless free tier works without it)",
+        "Keenable API key",
+        "https://keenable.ai",
+        tools=["web_search", "web_extract"],
+    ),
+    "SEARXNG_URL": _tool(
+        "URL of your SearXNG instance for free self-hosted web search",
+        "SearXNG URL (e.g. http://localhost:8080)",
+        "https://searxng.github.io/searxng/",
+        tools=["web_search"],
+        password=False,
+    ),
     "BRAVE_SEARCH_API_KEY": _tool(
         "Brave Search API subscription token (free tier: 2,000 queries/mo)",
-        "Brave Search subscription token", "https://brave.com/search/api/", tools=["web_search"]),
+        "Brave Search subscription token",
+        "https://brave.com/search/api/",
+        tools=["web_search"],
+    ),
     "BROWSERBASE_API_KEY": _tool(
         "Browserbase API key for cloud browser (optional — local browser works without this)",
-        "Browserbase API key", "https://browserbase.com/",
-        tools=["browser_navigate", "browser_click"]),
+        "Browserbase API key",
+        "https://browserbase.com/",
+        tools=["browser_navigate", "browser_click"],
+    ),
     "BROWSERBASE_PROJECT_ID": _tool(
         "Browserbase project ID (optional — only needed for cloud browser)",
-        "Browserbase project ID", "https://browserbase.com/",
-        tools=["browser_navigate", "browser_click"], password=False),
+        "Browserbase project ID",
+        "https://browserbase.com/",
+        tools=["browser_navigate", "browser_click"],
+        password=False,
+    ),
     "BROWSER_USE_API_KEY": _tool(
         "Browser Use API key for cloud browser (optional — local browser works without this)",
-        "Browser Use API key", "https://browser-use.com/",
-        tools=["browser_navigate", "browser_click"]),
+        "Browser Use API key",
+        "https://browser-use.com/",
+        tools=["browser_navigate", "browser_click"],
+    ),
     "FIRECRAWL_BROWSER_TTL": _tool(
         "Firecrawl browser session TTL in seconds (optional, default 300)",
-        "Browser session TTL (seconds)", tools=["browser_navigate", "browser_click"],
-        password=False),
+        "Browser session TTL (seconds)",
+        tools=["browser_navigate", "browser_click"],
+        password=False,
+    ),
     "AGENT_BROWSER_ENGINE": _env(
         "Local browser engine: auto (default Chrome), lightpanda (faster, no screenshots; Browser Use mode "
-        "spawns lightpanda serve), chrome", "Browser engine (auto/lightpanda/chrome)",
+        "spawns lightpanda serve), chrome",
+        "Browser engine (auto/lightpanda/chrome)",
         url="https://lightpanda.io/docs/run-locally/installation/one-liner",
-        tools=["browser_exec", "browser_navigate", "browser_snapshot", "browser_click", "browser_vision"],
-        password=False, category="tool", advanced=True),
+        tools=[
+            "browser_exec",
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_click",
+            "browser_vision",
+        ],
+        password=False,
+        category="tool",
+        advanced=True,
+    ),
     "CAMOFOX_URL": _tool(
         "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
-        "Camofox server URL", "https://github.com/jo-inc/camofox-browser",
-        tools=["browser_navigate", "browser_click"], password=False),
+        "Camofox server URL",
+        "https://github.com/jo-inc/camofox-browser",
+        tools=["browser_navigate", "browser_click"],
+        password=False,
+    ),
     "CAMOFOX_API_KEY": _tool(
         "Optional bearer token sent as Authorization header to a remote/authenticated Camofox "
-        "server", "Camofox API key", "https://github.com/jo-inc/camofox-browser",
-        tools=["browser_navigate", "browser_click"], advanced=True),
-    "FAL_KEY": _tool("FAL API key for image and video generation", "FAL API key", "https://fal.ai/",
-        tools=["image_generate", "video_generate"]),
-    "KREA_API_KEY": _tool("Krea API key for Krea 2 image generation (Medium + Large)",
-        "Krea API key", "https://www.krea.ai/settings/api-tokens", tools=["image_generate"]),
+        "server",
+        "Camofox API key",
+        "https://github.com/jo-inc/camofox-browser",
+        tools=["browser_navigate", "browser_click"],
+        advanced=True,
+    ),
+    "FAL_KEY": _tool(
+        "FAL API key for image and video generation",
+        "FAL API key",
+        "https://fal.ai/",
+        tools=["image_generate", "video_generate"],
+    ),
+    "KREA_API_KEY": _tool(
+        "Krea API key for Krea 2 image generation (Medium + Large)",
+        "Krea API key",
+        "https://www.krea.ai/settings/api-tokens",
+        tools=["image_generate"],
+    ),
     "VOICE_TOOLS_OPENAI_KEY": _tool(
         "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
-        "OpenAI API Key (for Whisper STT + TTS)", "https://platform.openai.com/api-keys",
-        tools=["voice_transcription", "openai_tts"]),
+        "OpenAI API Key (for Whisper STT + TTS)",
+        "https://platform.openai.com/api-keys",
+        tools=["voice_transcription", "openai_tts"],
+    ),
     "ELEVENLABS_API_KEY": _tool(
         "ElevenLabs API key for premium text-to-speech voices and Scribe transcription",
-        "ElevenLabs API key", "https://elevenlabs.io/",
-        tools=["elevenlabs_tts", "voice_transcription"]),
-    "MISTRAL_API_KEY": _tool("Mistral API key for Voxtral TTS and transcription (STT)",
-        "Mistral API key", "https://console.mistral.ai/"),
+        "ElevenLabs API key",
+        "https://elevenlabs.io/",
+        tools=["elevenlabs_tts", "voice_transcription"],
+    ),
+    "MISTRAL_API_KEY": _tool(
+        "Mistral API key for Voxtral TTS and transcription (STT)",
+        "Mistral API key",
+        "https://console.mistral.ai/",
+    ),
     "PORCUPINE_ACCESS_KEY": _tool(
         "Picovoice access key for the Porcupine 'Hey Hermes' wake word engine (optional; "
-        "openWakeWord is the free default)", "Picovoice access key",
-        "https://console.picovoice.ai/"),
-    "GITHUB_TOKEN": _tool("GitHub token for Skills Hub (higher API rate limits, skill publish)",
-        "GitHub Token", "https://github.com/settings/tokens"),
+        "openWakeWord is the free default)",
+        "Picovoice access key",
+        "https://console.picovoice.ai/",
+    ),
+    "GITHUB_TOKEN": _tool(
+        "GitHub token for Skills Hub (higher API rate limits, skill publish)",
+        "GitHub Token",
+        "https://github.com/settings/tokens",
+    ),
     # ── Bundled skills (opt-in) ── category="skill" (not "tool") so the sandbox env blocklist in
     # tools/environments/local.py does NOT rewrite them; skills need them passed through to curl
     # via tools/env_passthrough.py.
-    "NOTION_API_KEY": _skill("Notion integration token (used by the `notion` skill)",
-        "Notion API key", "https://www.notion.so/my-integrations"),
-    "LINEAR_API_KEY": _skill("Linear personal API key (used by the `linear` skill)",
-        "Linear API key", "https://linear.app/settings/account/security"),
-    "AIRTABLE_API_KEY": _skill("Airtable personal access token (used by the `airtable` skill)",
-        "Airtable API key", "https://airtable.com/create/tokens"),
-    "TENOR_API_KEY": _skill("Tenor API key for GIF search (used by the `gif-search` skill)",
-        "Tenor API key", "https://developers.google.com/tenor/guides/quickstart"),
+    "NOTION_API_KEY": _skill(
+        "Notion integration token (used by the `notion` skill)",
+        "Notion API key",
+        "https://www.notion.so/my-integrations",
+    ),
+    "LINEAR_API_KEY": _skill(
+        "Linear personal API key (used by the `linear` skill)",
+        "Linear API key",
+        "https://linear.app/settings/account/security",
+    ),
+    "AIRTABLE_API_KEY": _skill(
+        "Airtable personal access token (used by the `airtable` skill)",
+        "Airtable API key",
+        "https://airtable.com/create/tokens",
+    ),
+    "TENOR_API_KEY": _skill(
+        "Tenor API key for GIF search (used by the `gif-search` skill)",
+        "Tenor API key",
+        "https://developers.google.com/tenor/guides/quickstart",
+    ),
     # ── Honcho ──
-    "HONCHO_API_KEY": _tool("Honcho API key for AI-native persistent memory", "Honcho API key",
-        "https://app.honcho.dev", tools=["honcho_context"]),
-    "HONCHO_BASE_URL": _tool("Base URL for self-hosted Honcho instances (no API key needed)",
-        "Honcho base URL (e.g. http://localhost:8000)", password=None),
+    "HONCHO_API_KEY": _tool(
+        "Honcho API key for AI-native persistent memory",
+        "Honcho API key",
+        "https://app.honcho.dev",
+        tools=["honcho_context"],
+    ),
+    "HONCHO_BASE_URL": _tool(
+        "Base URL for self-hosted Honcho instances (no API key needed)",
+        "Honcho base URL (e.g. http://localhost:8000)",
+        password=None,
+    ),
     # ── Hindsight ──
-    "HINDSIGHT_API_KEY": _tool("Hindsight API key for graph-aware persistent memory",
-        "Hindsight API key", "https://hindsight.vectorize.io", tools=["hindsight_recall"]),
+    "HINDSIGHT_API_KEY": _tool(
+        "Hindsight API key for graph-aware persistent memory",
+        "Hindsight API key",
+        "https://hindsight.vectorize.io",
+        tools=["hindsight_recall"],
+    ),
     "HINDSIGHT_API_URL": _tool(
         "Base URL for the Hindsight API (default: https://api.hindsight.vectorize.io)",
-        "Hindsight API URL", password=None, advanced=True),
+        "Hindsight API URL",
+        password=None,
+        advanced=True,
+    ),
     # ── Supermemory ──
-    "SUPERMEMORY_API_KEY": _tool("Supermemory API key for conversation-scoped persistent memory",
-        "Supermemory API key", "https://supermemory.ai", tools=["supermemory_search"]),
+    "SUPERMEMORY_API_KEY": _tool(
+        "Supermemory API key for conversation-scoped persistent memory",
+        "Supermemory API key",
+        "https://supermemory.ai",
+        tools=["supermemory_search"],
+    ),
     # ── Mem0 ──
-    "MEM0_API_KEY": _tool("Mem0 Platform API key for semantic persistent memory", "Mem0 API key",
-        "https://app.mem0.ai", tools=["mem0_search"]),
+    "MEM0_API_KEY": _tool(
+        "Mem0 Platform API key for semantic persistent memory",
+        "Mem0 API key",
+        "https://app.mem0.ai",
+        tools=["mem0_search"],
+    ),
     # ── RetainDB ──
-    "RETAINDB_API_KEY": _tool("RetainDB API key for persistent memory", "RetainDB API key",
-        "https://retaindb.com", tools=["retaindb_search"]),
+    "RETAINDB_API_KEY": _tool(
+        "RetainDB API key for persistent memory",
+        "RetainDB API key",
+        "https://retaindb.com",
+        tools=["retaindb_search"],
+    ),
     "RETAINDB_BASE_URL": _tool(
         "Base URL for self-hosted RetainDB instances (default: https://api.retaindb.com)",
-        "RetainDB base URL", password=None, advanced=True),
+        "RetainDB base URL",
+        password=None,
+        advanced=True,
+    ),
     # ── ByteRover ──
-    "BRV_API_KEY": _tool("ByteRover API key (optional, for cloud sync — local-first by default)",
-        "ByteRover API key", "https://app.byterover.dev", tools=["brv_query"]),
+    "BRV_API_KEY": _tool(
+        "ByteRover API key (optional, for cloud sync — local-first by default)",
+        "ByteRover API key",
+        "https://app.byterover.dev",
+        tools=["brv_query"],
+    ),
     # ── OpenViking ──
-    "OPENVIKING_API_KEY": _tool("OpenViking API key (leave blank for local dev mode)",
-        "OpenViking API key", tools=["viking_search"]),
-    "OPENVIKING_ENDPOINT": _tool("OpenViking server URL (default: http://127.0.0.1:1933)",
-        "OpenViking endpoint", password=None, advanced=True),
+    "OPENVIKING_API_KEY": _tool(
+        "OpenViking API key (leave blank for local dev mode)",
+        "OpenViking API key",
+        tools=["viking_search"],
+    ),
+    "OPENVIKING_ENDPOINT": _tool(
+        "OpenViking server URL (default: http://127.0.0.1:1933)",
+        "OpenViking endpoint",
+        password=None,
+        advanced=True,
+    ),
     # ── Langfuse observability ──
-    "HERMES_LANGFUSE_PUBLIC_KEY": _tool("Langfuse project public key (pk-lf-...)",
-        "Langfuse public key", "https://cloud.langfuse.com", password=False),
-    "HERMES_LANGFUSE_SECRET_KEY": _tool("Langfuse project secret key (sk-lf-...)",
-        "Langfuse secret key", "https://cloud.langfuse.com"),
-    "HERMES_LANGFUSE_BASE_URL": _tool("Langfuse server URL (default: https://cloud.langfuse.com)",
-        "Langfuse server URL (leave empty for cloud.langfuse.com)", None, password=False,
-        advanced=True),
+    "HERMES_LANGFUSE_PUBLIC_KEY": _tool(
+        "Langfuse project public key (pk-lf-...)",
+        "Langfuse public key",
+        "https://cloud.langfuse.com",
+        password=False,
+    ),
+    "HERMES_LANGFUSE_SECRET_KEY": _tool(
+        "Langfuse project secret key (sk-lf-...)",
+        "Langfuse secret key",
+        "https://cloud.langfuse.com",
+    ),
+    "HERMES_LANGFUSE_BASE_URL": _tool(
+        "Langfuse server URL (default: https://cloud.langfuse.com)",
+        "Langfuse server URL (leave empty for cloud.langfuse.com)",
+        None,
+        password=False,
+        advanced=True,
+    ),
     # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": _msg(
         "Complete Telegram bot token created by @BotFather (numeric bot ID followed by a colon "
-        "and secret)", "Telegram bot token", "https://t.me/BotFather", password=True),
+        "and secret)",
+        "Telegram bot token",
+        "https://t.me/BotFather",
+        password=True,
+    ),
     "TELEGRAM_ALLOWED_USERS": _msg(
         "Optional comma-separated numeric Telegram user IDs allowed immediately; leave blank to "
-        "approve new users through DM pairing", "Allowed Telegram user IDs (comma-separated)",
-        "https://t.me/userinfobot"),
+        "approve new users through DM pairing",
+        "Allowed Telegram user IDs (comma-separated)",
+        "https://t.me/userinfobot",
+    ),
     "TELEGRAM_PROXY": _msg(
         "Proxy URL for Telegram connections (overrides HTTPS_PROXY). Supports http://, "
-        "https://, socks5://", "Telegram proxy URL (optional)"),
-    "DISCORD_BOT_TOKEN": _msg("Discord bot token from Developer Portal", "Discord bot token",
-        "https://discord.com/developers/applications", password=True),
-    "DISCORD_ALLOWED_USERS": _msg("Comma-separated Discord user IDs allowed to use the bot",
-        "Allowed Discord user IDs (comma-separated)", None),
+        "https://, socks5://",
+        "Telegram proxy URL (optional)",
+    ),
+    "DISCORD_BOT_TOKEN": _msg(
+        "Discord bot token from Developer Portal",
+        "Discord bot token",
+        "https://discord.com/developers/applications",
+        password=True,
+    ),
+    "DISCORD_ALLOWED_USERS": _msg(
+        "Comma-separated Discord user IDs allowed to use the bot",
+        "Allowed Discord user IDs (comma-separated)",
+        None,
+    ),
     "DISCORD_REPLY_TO_MODE": _msg(
         "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first "
         "message only, default), 'all' (reply on every chunk)",
-        "Discord reply mode (off/first/all)", None),
+        "Discord reply mode (off/first/all)",
+        None,
+    ),
     "SLACK_BOT_TOKEN": _msg(
         "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
         "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
         "im:history, im:read, im:write, mpim:history, mpim:read, users:read, files:read, "
-        "files:write", "Slack Bot Token (xoxb-...)", "https://api.slack.com/apps",
-        help=("In your Slack app, add the required bot scopes, install the app to the workspace, "
-        "then copy OAuth & Permissions > Bot User OAuth Token."), password=True),
+        "files:write",
+        "Slack Bot Token (xoxb-...)",
+        "https://api.slack.com/apps",
+        help=(
+            "In your Slack app, add the required bot scopes, install the app to the workspace, "
+            "then copy OAuth & Permissions > Bot User OAuth Token."
+        ),
+        password=True,
+    ),
     "SLACK_APP_TOKEN": _msg(
         "Slack app-level token (xapp-) for Socket Mode. Get from Basic Information → App-Level "
         "Tokens. Also ensure Event Subscriptions include: message.im, message.channels, "
-        "message.groups, message.mpim, app_mention", "Slack App Token (xapp-...)",
+        "message.groups, message.mpim, app_mention",
+        "Slack App Token (xapp-...)",
         "https://api.slack.com/apps",
-        help=("In your Slack app, enable Socket Mode, then create Basic Information > App-Level "
-        "Tokens with the connections:write scope."), password=True),
+        help=(
+            "In your Slack app, enable Socket Mode, then create Basic Information > App-Level "
+            "Tokens with the connections:write scope."
+        ),
+        password=True,
+    ),
     "SLACK_ALLOWED_USERS": _msg(
         "Comma-separated Slack member IDs allowed to use Hermes, e.g. U01ABC2DEF3. Without "
-        "this, Slack may connect but deny messages by default.", "Allowed Slack member IDs",
+        "this, Slack may connect but deny messages by default.",
+        "Allowed Slack member IDs",
         "https://api.slack.com/apps",
-        help=("In Slack, open your profile, choose More or the three-dot menu, then Copy member "
-        "ID. Add multiple IDs comma-separated.")),
-    "MATTERMOST_URL": _msg("Mattermost server URL (e.g. https://mm.example.com)",
-        "Mattermost server URL", "https://mattermost.com/deploy/"),
-    "MATTERMOST_TOKEN": _msg("Mattermost bot token or personal access token",
-        "Mattermost bot token", None, password=True),
-    "MATTERMOST_ALLOWED_USERS": _msg("Comma-separated Mattermost user IDs allowed to use the bot",
-        "Allowed Mattermost user IDs (comma-separated)", None),
+        help=(
+            "In Slack, open your profile, choose More or the three-dot menu, then Copy member "
+            "ID. Add multiple IDs comma-separated."
+        ),
+    ),
+    "MATTERMOST_URL": _msg(
+        "Mattermost server URL (e.g. https://mm.example.com)",
+        "Mattermost server URL",
+        "https://mattermost.com/deploy/",
+    ),
+    "MATTERMOST_TOKEN": _msg(
+        "Mattermost bot token or personal access token",
+        "Mattermost bot token",
+        None,
+        password=True,
+    ),
+    "MATTERMOST_ALLOWED_USERS": _msg(
+        "Comma-separated Mattermost user IDs allowed to use the bot",
+        "Allowed Mattermost user IDs (comma-separated)",
+        None,
+    ),
     "MATTERMOST_REQUIRE_MENTION": _msg(
         "Require @mention in Mattermost channels (default: true). Set to false to respond to "
-        "all messages.", "Require @mention in channels", None),
+        "all messages.",
+        "Require @mention in channels",
+        None,
+    ),
     "MATTERMOST_FREE_RESPONSE_CHANNELS": _msg(
         "Comma-separated Mattermost channel IDs where bot responds without @mention",
-        "Free-response channel IDs (comma-separated)", None),
-    "MATRIX_HOMESERVER": _msg("Matrix homeserver URL (e.g. https://matrix.example.org)",
-        "Matrix homeserver URL", "https://matrix.org/ecosystem/servers/"),
-    "MATRIX_ACCESS_TOKEN": _msg("Matrix access token (preferred over password login)",
-        "Matrix access token", None, password=True),
-    "MATRIX_USER_ID": _msg("Matrix user ID (e.g. @hermes:example.org)",
-        "Matrix user ID (@user:server)", None),
+        "Free-response channel IDs (comma-separated)",
+        None,
+    ),
+    "MATRIX_HOMESERVER": _msg(
+        "Matrix homeserver URL (e.g. https://matrix.example.org)",
+        "Matrix homeserver URL",
+        "https://matrix.org/ecosystem/servers/",
+    ),
+    "MATRIX_ACCESS_TOKEN": _msg(
+        "Matrix access token (preferred over password login)",
+        "Matrix access token",
+        None,
+        password=True,
+    ),
+    "MATRIX_USER_ID": _msg(
+        "Matrix user ID (e.g. @hermes:example.org)",
+        "Matrix user ID (@user:server)",
+        None,
+    ),
     "MATRIX_ALLOWED_USERS": _msg(
         "Comma-separated Matrix user IDs allowed to use the bot (@user:server format)",
-        "Allowed Matrix user IDs (comma-separated)", None),
+        "Allowed Matrix user IDs (comma-separated)",
+        None,
+    ),
     "MATRIX_REQUIRE_MENTION": _msg(
         "Require @mention in Matrix rooms (default: true). Set to false to respond to all "
-        "messages.", "Require @mention in rooms (true/false)", None, advanced=True),
+        "messages.",
+        "Require @mention in rooms (true/false)",
+        None,
+        advanced=True,
+    ),
     "MATRIX_FREE_RESPONSE_ROOMS": _msg(
         "Comma-separated Matrix room IDs where bot responds without @mention",
-        "Free-response room IDs (comma-separated)", None, advanced=True),
-    "MATRIX_AUTO_THREAD": _msg("Auto-create threads for messages in Matrix rooms (default: true)",
-        "Auto-create threads in rooms (true/false)", None, advanced=True),
-    "MATRIX_DM_AUTO_THREAD": _msg("Auto-create threads for DM messages in Matrix (default: false)",
-        "Auto-create threads in DMs (true/false)", None, advanced=True),
+        "Free-response room IDs (comma-separated)",
+        None,
+        advanced=True,
+    ),
+    "MATRIX_AUTO_THREAD": _msg(
+        "Auto-create threads for messages in Matrix rooms (default: true)",
+        "Auto-create threads in rooms (true/false)",
+        None,
+        advanced=True,
+    ),
+    "MATRIX_DM_AUTO_THREAD": _msg(
+        "Auto-create threads for DM messages in Matrix (default: false)",
+        "Auto-create threads in DMs (true/false)",
+        None,
+        advanced=True,
+    ),
     "MATRIX_DEVICE_ID": _msg(
         "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
-        "Matrix device ID (stable across restarts)", None, advanced=True),
+        "Matrix device ID (stable across restarts)",
+        None,
+        advanced=True,
+    ),
     "MATRIX_RECOVERY_KEY": _msg(
         "Matrix recovery key for cross-signing verification after device key rotation (from "
-        "Element: Settings → Security → Recovery Key)", "Matrix recovery key", None, password=True,
-        advanced=True),
+        "Element: Settings → Security → Recovery Key)",
+        "Matrix recovery key",
+        None,
+        password=True,
+        advanced=True,
+    ),
     "BLUEBUBBLES_SERVER_URL": _msg(
         "BlueBubbles server URL for iMessage integration (e.g. http://192.168.1.10:1234)",
-        "BlueBubbles server URL", "https://bluebubbles.app/"),
+        "BlueBubbles server URL",
+        "https://bluebubbles.app/",
+    ),
     "BLUEBUBBLES_PASSWORD": _msg(
         "BlueBubbles server password (from BlueBubbles Server → Settings → API)",
-        "BlueBubbles server password", None, password=True),
+        "BlueBubbles server password",
+        None,
+        password=True,
+    ),
     "BLUEBUBBLES_ALLOWED_USERS": _msg(
         "Comma-separated iMessage addresses (email or phone) allowed to use the bot",
-        "Allowed iMessage addresses (comma-separated)", None),
-    "BLUEBUBBLES_ALLOW_ALL_USERS": _msg("Allow all BlueBubbles users without allowlist",
-        "Allow All BlueBubbles Users", password=None),
-    "QQ_APP_ID": _msg("QQ Bot App ID from QQ Open Platform (q.qq.com)", "QQ App ID",
-        "https://q.qq.com", password=None),
-    "QQ_CLIENT_SECRET": _msg("QQ Bot Client Secret from QQ Open Platform", "QQ Client Secret",
-        password=True),
-    "QQ_ALLOWED_USERS": _msg("Comma-separated QQ user IDs allowed to use the bot",
-        "QQ Allowed Users", password=None),
-    "QQ_GROUP_ALLOWED_USERS": _msg("Comma-separated QQ group IDs allowed to interact with the bot",
-        "QQ Group Allowed Users", password=None),
-    "QQ_ALLOW_ALL_USERS": _msg("Allow all QQ users without an allowlist (true/false)",
-        "Allow All QQ Users", password=None),
-    "QQBOT_HOME_CHANNEL": _msg("Default QQ channel/group for cron delivery and notifications",
-        "QQ Home Channel", password=None),
-    "QQBOT_HOME_CHANNEL_NAME": _msg("Display name for the QQ home channel", "QQ Home Channel Name",
-        password=None),
-    "QQ_SANDBOX": _msg("Enable QQ sandbox mode for development testing (true/false)",
-        "QQ Sandbox Mode", password=None),
-    "IRC_SERVER": _msg("IRC server hostname (e.g. irc.libera.chat)", "IRC server", None),
+        "Allowed iMessage addresses (comma-separated)",
+        None,
+    ),
+    "BLUEBUBBLES_ALLOW_ALL_USERS": _msg(
+        "Allow all BlueBubbles users without allowlist",
+        "Allow All BlueBubbles Users",
+        password=None,
+    ),
+    "QQ_APP_ID": _msg(
+        "QQ Bot App ID from QQ Open Platform (q.qq.com)",
+        "QQ App ID",
+        "https://q.qq.com",
+        password=None,
+    ),
+    "QQ_CLIENT_SECRET": _msg(
+        "QQ Bot Client Secret from QQ Open Platform", "QQ Client Secret", password=True
+    ),
+    "QQ_ALLOWED_USERS": _msg(
+        "Comma-separated QQ user IDs allowed to use the bot",
+        "QQ Allowed Users",
+        password=None,
+    ),
+    "QQ_GROUP_ALLOWED_USERS": _msg(
+        "Comma-separated QQ group IDs allowed to interact with the bot",
+        "QQ Group Allowed Users",
+        password=None,
+    ),
+    "QQ_ALLOW_ALL_USERS": _msg(
+        "Allow all QQ users without an allowlist (true/false)",
+        "Allow All QQ Users",
+        password=None,
+    ),
+    "QQBOT_HOME_CHANNEL": _msg(
+        "Default QQ channel/group for cron delivery and notifications",
+        "QQ Home Channel",
+        password=None,
+    ),
+    "QQBOT_HOME_CHANNEL_NAME": _msg(
+        "Display name for the QQ home channel", "QQ Home Channel Name", password=None
+    ),
+    "QQ_SANDBOX": _msg(
+        "Enable QQ sandbox mode for development testing (true/false)",
+        "QQ Sandbox Mode",
+        password=None,
+    ),
+    "IRC_SERVER": _msg(
+        "IRC server hostname (e.g. irc.libera.chat)", "IRC server", None
+    ),
     "IRC_CHANNEL": _msg("IRC channel to join (e.g. #hermes)", "IRC channel", None),
-    "IRC_NICKNAME": _msg("Bot nickname on IRC (default: hermes-bot)", "IRC nickname", None),
-    "IRC_SERVER_PASSWORD": _msg("IRC server password (if required)", "IRC server password", None,
-        password=True, advanced=True),
-    "IRC_NICKSERV_PASSWORD": _msg("NickServ password for nick identification", "NickServ password",
-        None, password=True, advanced=True),
+    "IRC_NICKNAME": _msg(
+        "Bot nickname on IRC (default: hermes-bot)", "IRC nickname", None
+    ),
+    "IRC_SERVER_PASSWORD": _msg(
+        "IRC server password (if required)",
+        "IRC server password",
+        None,
+        password=True,
+        advanced=True,
+    ),
+    "IRC_NICKSERV_PASSWORD": _msg(
+        "NickServ password for nick identification",
+        "NickServ password",
+        None,
+        password=True,
+        advanced=True,
+    ),
     "GATEWAY_ALLOW_ALL_USERS": _msg(
         "Allow all users to interact with messaging bots (true/false). Default: false.",
-        "Allow all users (true/false)", None, advanced=True),
+        "Allow all users (true/false)",
+        None,
+        advanced=True,
+    ),
     "API_SERVER_ENABLED": _msg(
         "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open "
-        "WebUI, LobeChat, etc. to connect.", "Enable API server (true/false)", None, advanced=True),
+        "WebUI, LobeChat, etc. to connect.",
+        "Enable API server (true/false)",
+        None,
+        advanced=True,
+    ),
     "API_SERVER_KEY": _msg(
         "Bearer token for API server authentication. Required whenever the API server is "
-        "enabled; server refuses to start without it.", "API server auth key", None, password=True,
-        advanced=True),
-    "API_SERVER_PORT": _msg("Port for the API server (default: 8642).", "API server port", None,
-        advanced=True),
+        "enabled; server refuses to start without it.",
+        "API server auth key",
+        None,
+        password=True,
+        advanced=True,
+    ),
+    "API_SERVER_PORT": _msg(
+        "Port for the API server (default: 8642).",
+        "API server port",
+        None,
+        advanced=True,
+    ),
     "API_SERVER_HOST": _msg(
         "Host/bind address for the API server (default: 127.0.0.1). API_SERVER_KEY is still "
-        "required even on loopback binds.", "API server host", None, advanced=True),
+        "required even on loopback binds.",
+        "API server host",
+        None,
+        advanced=True,
+    ),
     "API_SERVER_MODEL_NAME": _msg(
         "Model name advertised on /v1/models. Defaults to the profile name (or 'hermes-agent' "
         "for the default profile). Useful for multi-user setups with OpenWebUI.",
-        "API server model name", None, advanced=True),
+        "API server model name",
+        None,
+        advanced=True,
+    ),
     "GATEWAY_PROXY_URL": _msg(
         "URL of a remote Hermes API server to forward messages to (proxy mode). When set, the "
         "gateway handles platform I/O only — all agent work is delegated to the remote server. "
         "Use for Docker E2EE containers that relay to a host agent. Also configurable via "
         "gateway.proxy_url in config.yaml.",
-        "Remote Hermes API server URL (e.g. http://192.168.1.100:8642)", None, advanced=True),
+        "Remote Hermes API server URL (e.g. http://192.168.1.100:8642)",
+        None,
+        advanced=True,
+    ),
     "GATEWAY_PROXY_KEY": _msg(
         "Bearer token for authenticating with the remote Hermes API server (proxy mode). Must "
-        "match the API_SERVER_KEY on the remote host.", "Remote API server auth key", None,
-        password=True, advanced=True),
+        "match the API_SERVER_KEY on the remote host.",
+        "Remote API server auth key",
+        None,
+        password=True,
+        advanced=True,
+    ),
     "WEBHOOK_ENABLED": _msg(
         "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
-        "Enable webhooks (true/false)", None),
-    "WEBHOOK_PORT": _msg("Port for the webhook HTTP server (default: 8644).", "Webhook port", None),
+        "Enable webhooks (true/false)",
+        None,
+    ),
+    "WEBHOOK_PORT": _msg(
+        "Port for the webhook HTTP server (default: 8644).", "Webhook port", None
+    ),
     "WEBHOOK_SECRET": _msg(
         "Global HMAC secret for webhook signature validation (overridable per route in "
-        "config.yaml).", "Webhook secret", None, password=True),
+        "config.yaml).",
+        "Webhook secret",
+        None,
+        password=True,
+    ),
     # ── Agent settings ── (MESSAGING_CWD is gone: use terminal.cwd in config.yaml, which the
     # gateway bridges to TERMINAL_CWD.)
     "SUDO_PASSWORD": _setting(
         "Sudo password for terminal commands requiring root access; set to an explicit empty "
-        "string to try empty without prompting", "Sudo password", None, password=True),
+        "string to try empty without prompting",
+        "Sudo password",
+        None,
+        password=True,
+    ),
     # HERMES_TOOL_PROGRESS_MODE (deprecated; use display.tool_progress) is intentionally NOT listed:
     # this dict feeds user-facing surfaces (dashboard keys page, setup checklists), so deprecated
     # knobs stay in config._EXTRA_ENV_KEYS only. HERMES_TOOL_PROGRESS is unsupported.
     "HERMES_PREFILL_MESSAGES_FILE": _setting(
         "Path to JSON file with ephemeral prefill messages for few-shot priming",
-        "Prefill messages file path", None),
+        "Prefill messages file path",
+        None,
+    ),
     "HERMES_EPHEMERAL_SYSTEM_PROMPT": _setting(
         "Ephemeral system prompt injected at API-call time (never persisted to sessions)",
-        "Ephemeral system prompt", None),
+        "Ephemeral system prompt",
+        None,
+    ),
 }

@@ -24,6 +24,7 @@ logger = logging.getLogger("hermes.plugins.context_engine.jit")
 try:
     from agent.context_engine import ContextEngine
 except ImportError:
+
     class ContextEngine:  # type: ignore[no-redef]
         name: str = "jit"
         last_prompt_tokens: int = 0
@@ -42,10 +43,14 @@ except ImportError:
         def should_compress(self, prompt_tokens: int = None) -> bool:
             return False
 
-        def compress(self, messages: List[Dict[str, Any]], **kwargs: Any) -> List[Dict[str, Any]]:
+        def compress(
+            self, messages: List[Dict[str, Any]], **kwargs: Any
+        ) -> List[Dict[str, Any]]:
             return messages
 
-        def select_context(self, request_messages: List[Dict[str, Any]], **kwargs: Any) -> List[Dict[str, Any]]:
+        def select_context(
+            self, request_messages: List[Dict[str, Any]], **kwargs: Any
+        ) -> List[Dict[str, Any]]:
             return request_messages
 
 
@@ -69,7 +74,9 @@ def is_jit_engine_active() -> bool:
     return _JIT_ENGINE_ACTIVE or os.environ.get("HERMES_CONTEXT_ENGINE") == "jit"
 
 
-def update_latest_capsule(session_id: str, capsule: str, scope: str = "general") -> None:
+def update_latest_capsule(
+    session_id: str, capsule: str, scope: str = "general"
+) -> None:
     global _LATEST_CAPSULE_CACHE
     _LATEST_CAPSULE_CACHE = {
         "session_id": session_id,
@@ -84,7 +91,8 @@ def get_latest_capsule(session_id: str, max_age_seconds: float = 60.0) -> Option
     if (
         _LATEST_CAPSULE_CACHE.get("capsule")
         and _LATEST_CAPSULE_CACHE.get("session_id") == session_id
-        and (time.time() - _LATEST_CAPSULE_CACHE.get("timestamp", 0.0)) < max_age_seconds
+        and (time.time() - _LATEST_CAPSULE_CACHE.get("timestamp", 0.0))
+        < max_age_seconds
     ):
         return _LATEST_CAPSULE_CACHE["capsule"]
     return None
@@ -132,7 +140,9 @@ class JitContextEngine(ContextEngine):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         return False
 
-    def compress(self, messages: List[Dict[str, Any]], **kwargs: Any) -> List[Dict[str, Any]]:
+    def compress(
+        self, messages: List[Dict[str, Any]], **kwargs: Any
+    ) -> List[Dict[str, Any]]:
         return messages
 
     def select_context(
@@ -165,7 +175,9 @@ class JitContextEngine(ContextEngine):
         sys_content = sys_msg.get("content", "") or ""
         if capsule:
             if "<ONA_CONTEXT" in sys_content:
-                sys_content = re.sub(r"<ONA_CONTEXT[\s\S]*?</ONA_CONTEXT>", capsule.strip(), sys_content)
+                sys_content = re.sub(
+                    r"<ONA_CONTEXT[\s\S]*?</ONA_CONTEXT>", capsule.strip(), sys_content
+                )
             else:
                 sys_content = f"{sys_content.rstrip()}\n\n{capsule.strip()}"
         sys_msg["content"] = sys_content
@@ -264,7 +276,7 @@ class JitContextEngine(ContextEngine):
 
         user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
         if not user_indices:
-            sliced = [dict(m) for m in messages[-keep_turns * 2:]]
+            sliced = [dict(m) for m in messages[-keep_turns * 2 :]]
         elif len(user_indices) <= keep_turns:
             sliced = [dict(m) for m in messages]
         else:
@@ -278,13 +290,15 @@ class JitContextEngine(ContextEngine):
         for m in sliced:
             if m.get("role") == "user" and isinstance(m.get("content"), str):
                 if "<ONA_CONTEXT" in m["content"]:
-                    m["content"] = re.sub(r"<ONA_CONTEXT[\s\S]*?</ONA_CONTEXT>", "", m["content"]).strip()
+                    m["content"] = re.sub(
+                        r"<ONA_CONTEXT[\s\S]*?</ONA_CONTEXT>", "", m["content"]
+                    ).strip()
 
         return sliced
 
     def _prune_tool_outputs(self, messages: List[Dict[str, Any]]) -> None:
         """Truncate massive tool dumps from both older turns and current turn.
-        
+
         Preserves valid tool-call / result pairing: tool_call_id, role, and name are NEVER modified.
         """
         user_indices = [i for i, m in enumerate(messages) if m.get("role") == "user"]
@@ -296,15 +310,19 @@ class JitContextEngine(ContextEngine):
                 if not isinstance(content, str):
                     continue
 
-                is_older_turn = (last_user_idx != -1 and i < last_user_idx)
-                max_chars = self.max_older_tool_chars if is_older_turn else self.max_current_tool_chars
+                is_older_turn = last_user_idx != -1 and i < last_user_idx
+                max_chars = (
+                    self.max_older_tool_chars
+                    if is_older_turn
+                    else self.max_current_tool_chars
+                )
 
                 if len(content) > max_chars:
                     turn_desc = "older turn" if is_older_turn else "current turn"
                     m["content"] = (
-                        content[:max_chars // 2]
+                        content[: max_chars // 2]
                         + f"\n... [tool output truncated by JIT context engine ({len(content)} chars, {turn_desc})] ...\n"
-                        + content[-(max_chars // 4):]
+                        + content[-(max_chars // 4) :]
                     )
 
     def to_dict(self) -> Dict[str, Any]:

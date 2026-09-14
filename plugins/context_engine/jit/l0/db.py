@@ -73,7 +73,7 @@ def get_db(db_path: Optional[str | Path] = None) -> sqlite3.Connection:
     target_path = Path(db_path) if db_path else get_default_db_path()
     if str(target_path) != ":memory:":
         target_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     conn = sqlite3.connect(str(target_path), timeout=5.0)
     conn.row_factory = sqlite3.Row
     if str(target_path) != ":memory:":

@@ -56,7 +56,9 @@ def ensure_session(
 
 
 def get_session_cwd(conn: sqlite3.Connection, session_id: str) -> Optional[str]:
-    cursor = conn.execute("SELECT last_cwd FROM sessions WHERE session_id = ?", (session_id,))
+    cursor = conn.execute(
+        "SELECT last_cwd FROM sessions WHERE session_id = ?", (session_id,)
+    )
     row = cursor.fetchone()
     return row["last_cwd"] if row else None
 
@@ -77,7 +79,9 @@ def append_event(
     content_hash = compute_content_hash(content)
     authority = get_authority_for_role(origin, role)
 
-    cursor = conn.execute("SELECT last_seq FROM sessions WHERE session_id = ?", (session_id,))
+    cursor = conn.execute(
+        "SELECT last_seq FROM sessions WHERE session_id = ?", (session_id,)
+    )
     row = cursor.fetchone()
     seq = (row["last_seq"] if row else 0) + 1
 
@@ -86,7 +90,19 @@ def append_event(
         INSERT INTO events (event_id, session_id, seq, turn_id, origin, role, content, content_hash, authority, effective_at, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (event_id, session_id, seq, turn_id, origin, role, content, content_hash, authority, now, now),
+        (
+            event_id,
+            session_id,
+            seq,
+            turn_id,
+            origin,
+            role,
+            content,
+            content_hash,
+            authority,
+            now,
+            now,
+        ),
     )
 
     if fact_key and fact_value:
@@ -96,7 +112,17 @@ def append_event(
             INSERT INTO overlay (entry_id, session_id, kind, key, value, source_event_id, seq, authority, created_at, updated_at)
             VALUES (?, ?, 'statement', ?, ?, ?, ?, ?, ?, ?)
             """,
-            (entry_id, session_id, fact_key, fact_value, event_id, seq, authority, now, now),
+            (
+                entry_id,
+                session_id,
+                fact_key,
+                fact_value,
+                event_id,
+                seq,
+                authority,
+                now,
+                now,
+            ),
         )
 
     conn.execute(
@@ -107,7 +133,9 @@ def append_event(
     return event_id, seq
 
 
-def get_active_overlays(conn: sqlite3.Connection, session_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+def get_active_overlays(
+    conn: sqlite3.Connection, session_id: str, limit: int = 10
+) -> List[Dict[str, Any]]:
     cursor = conn.execute(
         "SELECT entry_id, kind, key, value, authority FROM overlay WHERE session_id = ? AND status = 'active' ORDER BY seq DESC LIMIT ?",
         (session_id, limit),

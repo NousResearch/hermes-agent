@@ -38,6 +38,7 @@ def _configured_budget_values() -> tuple[int, int, int, int]:
     )
     try:
         from hermes_cli.config import load_config_readonly
+
         data = load_config_readonly()
         block = data.get("tool_budget") if isinstance(data, dict) else None
         if not isinstance(block, dict):
@@ -84,7 +85,10 @@ class BudgetConfig:
         if tool_name.startswith(MCP_TOOL_PREFIX):
             return min(self.mcp_result_size, self.default_result_size)
         from tools.registry import registry
-        registry_value = registry.get_max_result_size(tool_name, default=self.default_result_size)
+
+        registry_value = registry.get_max_result_size(
+            tool_name, default=self.default_result_size
+        )
         if registry_value == float("inf"):
             return registry_value
         return min(registry_value, self.default_result_size)
@@ -115,9 +119,12 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     200K-char turn budget (~50K tokens), can by itself approach or exceed the whole window and force an
     oversized request (#23767).
     """
-    configured_result_size, configured_turn_budget, configured_preview_size, mcp_result_size = (
-        _configured_budget_values()
-    )
+    (
+        configured_result_size,
+        configured_turn_budget,
+        configured_preview_size,
+        mcp_result_size,
+    ) = _configured_budget_values()
     if not context_length or context_length <= 0:
         if (
             configured_result_size == DEFAULT_RESULT_SIZE_CHARS
@@ -136,7 +143,9 @@ def budget_for_context_window(context_length: int | None) -> BudgetConfig:
     return BudgetConfig(
         default_result_size=max(
             _MIN_RESULT_SIZE_CHARS,
-            min(int(window_chars * _PER_RESULT_WINDOW_FRACTION), configured_result_size),
+            min(
+                int(window_chars * _PER_RESULT_WINDOW_FRACTION), configured_result_size
+            ),
         ),
         turn_budget=max(
             _MIN_TURN_BUDGET_CHARS,

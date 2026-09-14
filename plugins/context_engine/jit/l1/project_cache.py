@@ -30,7 +30,9 @@ def get_project_summary(
     vdir = (
         Path(vault_dir)
         if vault_dir
-        else Path(os.environ.get("HERMES_VAULT_DIR", Path.home() / "Documents" / "Wojciech"))
+        else Path(
+            os.environ.get("HERMES_VAULT_DIR", Path.home() / "Documents" / "Wojciech")
+        )
     )
     candidates = [
         vdir / "projects" / f"{norm}.md",
@@ -42,7 +44,11 @@ def get_project_summary(
             try:
                 text = cand.read_text(encoding="utf-8")
                 # Extract first meaningful section or first 300 chars
-                lines = [line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")]
+                lines = [
+                    line.strip()
+                    for line in text.splitlines()
+                    if line.strip() and not line.startswith("#")
+                ]
                 summary = " ".join(lines[:4])
                 if len(summary) > 400:
                     summary = summary[:397] + "..."
@@ -61,7 +67,11 @@ def get_project_summary(
             if scand.exists() and scand.is_file():
                 try:
                     text = scand.read_text(encoding="utf-8")
-                    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")]
+                    lines = [
+                        line.strip()
+                        for line in text.splitlines()
+                        if line.strip() and not line.startswith("#")
+                    ]
                     summary = " ".join(lines[:3])
                     if len(summary) > 300:
                         summary = summary[:297] + "..."

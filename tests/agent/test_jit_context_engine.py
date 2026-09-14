@@ -32,7 +32,10 @@ def test_jit_compiles_non_empty_capsule_without_external_plugins(tmp_path):
     engine.session_id = "test_session_isolated"
 
     capsule = engine._resolve_capsule(
-        incoming_message={"role": "user", "content": "Implement project boocco feature with strict compliance."},
+        incoming_message={
+            "role": "user",
+            "content": "Implement project boocco feature with strict compliance.",
+        },
         history_messages=[],
     )
 
@@ -60,7 +63,10 @@ def test_jit_bounds_current_turn_tool_output_and_preserves_tool_call_id():
                 {
                     "id": "call_read_large_cfg_987",
                     "type": "function",
-                    "function": {"name": "read_file", "arguments": '{"path": "huge.txt"}'},
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path": "huge.txt"}',
+                    },
                 }
             ],
         },
@@ -104,7 +110,9 @@ def test_non_jit_ollama_16k_still_enforces_safety_floor():
 
     err = _ollama_context_limit_error(non_jit_agent, request_tokens=5000)
     assert err is not None
-    assert "Ollama loaded `qwen3.8:9b` with only 16,384 tokens of runtime context" in err
+    assert (
+        "Ollama loaded `qwen3.8:9b` with only 16,384 tokens of runtime context" in err
+    )
     assert "context.engine: jit" in err
 
     # 2. JIT mock agent
@@ -149,7 +157,10 @@ def test_jit_obsidian_ssot_integration(tmp_path):
     projects_dir = tmp_path / "projects"
     projects_dir.mkdir(parents=True)
     doc = projects_dir / "boocco.md"
-    doc.write_text("# Boocco Project\nNext.js booking SaaS for salons with Supabase backend.", encoding="utf-8")
+    doc.write_text(
+        "# Boocco Project\nNext.js booking SaaS for salons with Supabase backend.",
+        encoding="utf-8",
+    )
 
     summary = get_project_summary("boocco", vault_dir=str(tmp_path))
     assert summary is not None
@@ -170,22 +181,49 @@ def test_jit_context_selection_never_breaks_tool_pairing():
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
-                {"id": "call_2", "type": "function", "function": {"name": "search_files", "arguments": "{}"}},
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": "{}"},
+                },
+                {
+                    "id": "call_2",
+                    "type": "function",
+                    "function": {"name": "search_files", "arguments": "{}"},
+                },
             ],
         },
-        {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": "file contents line 1\nline 2"},
-        {"role": "tool", "tool_call_id": "call_2", "name": "search_files", "content": "search results match 1"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "read_file",
+            "content": "file contents line 1\nline 2",
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_2",
+            "name": "search_files",
+            "content": "search results match 1",
+        },
         {"role": "assistant", "content": "Both tools executed."},
         {"role": "user", "content": "Query 3 (current turn huge tool)"},
         {
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"id": "call_3", "type": "function", "function": {"name": "run_command", "arguments": "{}"}},
+                {
+                    "id": "call_3",
+                    "type": "function",
+                    "function": {"name": "run_command", "arguments": "{}"},
+                },
             ],
         },
-        {"role": "tool", "tool_call_id": "call_3", "name": "run_command", "content": "OUTPUT " * 2000},
+        {
+            "role": "tool",
+            "tool_call_id": "call_3",
+            "name": "run_command",
+            "content": "OUTPUT " * 2000,
+        },
     ]
 
     selected = engine.select_context(messages)
@@ -205,4 +243,3 @@ def test_jit_context_selection_never_breaks_tool_pairing():
             if m["tool_call_id"] == "call_3":
                 assert len(m["content"]) < 4000
                 assert "truncated by JIT context engine" in m["content"]
-

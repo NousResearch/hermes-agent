@@ -41,7 +41,12 @@ def compile_context(
         epoch += 1
         conn.execute(
             "UPDATE sessions SET active_scope = ?, scope_epoch = ?, updated_at = ? WHERE session_id = ?",
-            (resolved_scope, epoch, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), session_id),
+            (
+                resolved_scope,
+                epoch,
+                time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                session_id,
+            ),
         )
         conn.commit()
         curr_scope = resolved_scope

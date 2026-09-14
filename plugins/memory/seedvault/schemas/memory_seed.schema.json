@@ -162,6 +162,11 @@
             "type": "integer",
             "minimum": 0,
             "description": "Size of the artifact in bytes (stored in blob index, duplicated here for quick reference)"
+          },
+          "lineage_id": {
+            "type": "string",
+            "default": "",
+            "description": "Phase 9 version-chain key. Normalized absolute path for file-backed artifacts (writing the same path twice = two versions of one lineage), or an agent-chosen slug from the 'artifact: <slug>' tag convention for ephemeral artifacts. Empty string when no lineage is derivable — such artifacts never participate in version chains."
           }
         },
         "additionalProperties": false

@@ -52,16 +52,113 @@ class CommitGate:
         The seed_id parameter excludes self-matches: when a blob was
         written at extraction time with the same seed_id, it's not a
         duplicate — it's the same seed's own artifact.
+
+        Phase 9 orphan handling: when the index entry's owner seed no
+        longer exists in the vault (deleted/never-committed), the entry is
+        an orphan — it is re-pointed at the current caller (force_claim)
+        and NOT treated as a duplicate. Without this, a dead seed would
+        permanently block identical content from re-entering the vault.
         """
         if not blob_hash:
             return None
         meta = self.vault.blob_store.get_blob_metadata(blob_hash)
         if meta is not None:
             existing_seed_id = meta.get("seed_id", "")
-            # Don't count it as a duplicate if it's the same seed
             if existing_seed_id and existing_seed_id != seed_id:
+                # Orphan check: does the owner seed still exist?
+                if self.vault.get_seed(existing_seed_id) is None:
+                    # Dead owner — hand the blob over to the caller
+                    self.vault.blob_store.force_claim_blob(blob_hash, seed_id)
+                    logger.info(
+                        "SeedVault: blob %s re-pointed from dead seed %s to %s",
+                        blob_hash[:12], existing_seed_id, seed_id,
+                    )
+                    return None
                 return existing_seed_id
         return None
+
+    # -- Lineage versioning (Phase 9) -----------------------------------------
+
+    def check_lineage_noop(self, seed: Dict[str, Any]) -> bool:
+        """Hash-check-first guard: is this an unchanged re-save? (Phase 9)
+
+        When the seed carries a lineage_id, compare its blob hash to the
+        CURRENT head of that lineage. If identical, this is a no-op save —
+        no new version, no status change, no manifest bump.
+
+        Returns True when the commit should be skipped as a no-op.
+        """
+        lineage_id = self._seed_lineage_id(seed)
+        if not lineage_id:
+            return False
+        arts = seed.get("artifacts", [])
+        if not arts:
+            return False
+        new_hash = arts[0].get("blob_hash", "")
+        if not new_hash:
+            return False
+
+        candidates = self.vault.find_lineage_candidates(lineage_id, exclude_seed_id=seed.get("id", ""))
+        # Only ACTIVE versions count as the lineage head — superseded ones
+        # are history. (Multiple active heads shouldn't happen, but if the
+        # chain was manipulated, comparing against any active version is
+        # the conservative choice.)
+        for sid in candidates:
+            meta = self.vault._manifest.get("seeds", {}).get(sid, {})
+            if meta.get("status") != "active":
+                continue
+            old_seed = self.vault.get_seed(sid)
+            if not old_seed:
+                continue
+            for art in old_seed.get("artifacts", []):
+                if art.get("blob_hash") == new_hash:
+                    return True
+        return False
+
+    def _seed_lineage_id(self, seed: Dict[str, Any]) -> str:
+        """Extract the lineage_id from a seed's artifacts (Phase 9)."""
+        for art in seed.get("artifacts", []):
+            lid = art.get("lineage_id", "")
+            if lid:
+                return lid
+        return ""
+
+    def _commit_lineage(self, seed: Dict[str, Any]) -> List[str]:
+        """Run lineage-based supersession for an artifact seed (Phase 9).
+
+        Finds active artifact seeds in the same lineage and supersedes them
+        via the existing supersede_seeds() mechanism (triggered by lineage
+        equality instead of primary-tag equality). Adds `supersedes`
+        meristem edges, same as prose supersession.
+
+        Returns the list of old seed IDs that were superseded.
+        """
+        lineage_id = self._seed_lineage_id(seed)
+        if not lineage_id:
+            return []
+        candidates = self.vault.find_lineage_candidates(
+            lineage_id, exclude_seed_id=seed.get("id", "")
+        )
+        # Filter to ACTIVE versions only — already-superseded versions stay
+        # superseded (their superseded_by grows), matching prose semantics
+        # where find_superseded_candidates includes superseded seeds but the
+        # lineage chain should reflect the actual version history head.
+        active = []
+        for sid in candidates:
+            meta = self.vault._manifest.get("seeds", {}).get(sid, {})
+            if meta.get("status") == "active":
+                active.append(sid)
+        if not active:
+            return []
+        superseded = self.vault.supersede_by_lineage(
+            seed["id"], lineage_id, old_seed_ids=active
+        )
+        for old_id in superseded:
+            seed.setdefault("meristems", []).append({
+                "type": "supersedes",
+                "target": old_id,
+            })
+        return superseded
 
     def stage1_validate(self, seed: Dict[str, Any], skip_dedup: bool = False) -> tuple[bool, str]:
         """Deterministic validation. Returns (passed, reason).
@@ -117,6 +214,16 @@ class CommitGate:
         candidates: list[str] = []  # supersession candidates (prose seeds only)
 
         if is_artifact_seed:
+            # Phase 9: hash-check-first — an identical re-save to a lineage
+            # head is a no-op (no new version, no status change, no manifest
+            # bump). Per Roland's explicit direction in the Phase 9 spec.
+            if self.check_lineage_noop(seed):
+                logger.info(
+                    "SeedVault: artifact seed %s is an unchanged re-save "
+                    "(lineage head hash match) — no-op",
+                    seed.get("id", "?"),
+                )
+                return False, "noop: identical to lineage head (hash match)"
             # Check for exact-hash duplicate
             for art in artifacts:
                 blob_hash = art.get("blob_hash", "")
@@ -177,6 +284,13 @@ class CommitGate:
                     "type": "supersedes",
                     "target": old_id,
                 })
+
+        # Phase 9: lineage-based supersession for artifact seeds — point the
+        # existing supersede_seeds() trigger at lineage equality. Runs BEFORE
+        # write_seed so the new version's `supersedes` meristem edges are
+        # persisted in the same file write.
+        if is_artifact_seed:
+            self._commit_lineage(seed)
 
         # Write seed
         if not self.vault.write_seed(seed):

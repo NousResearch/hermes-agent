@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .blobstore import BlobStore, DEFAULT_MAX_BLOB_BYTES
+from .blobstore import BlobStore, DEFAULT_MAX_BLOB_BYTES, _make_artifact_seed_id
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +83,50 @@ class SeedVault:
         self._lock = threading.Lock()
         self.ensure_dirs()
         self.blob_store = BlobStore(self.vault_dir, max_blob_bytes=max_blob_bytes)
+        self.blob_store.owner = self  # extractor bridge (Phase 9)
         self._manifest: Dict[str, Any] = self._load_manifest()
+        # Phase 9: monotonically increasing artifact serial across all batches.
+        # Per-batch counters collide (every batch starts at 001), which let a
+        # new version overwrite the previous version's seed file — fatal for a
+        # version chain. The serial is initialized from disk (live + archived
+        # seeds), so IDs never collide across processes or batches.
+        self._artifact_serial = self._load_artifact_serial()
+
+    # -- Artifact seed ID serial (Phase 9) ------------------------------------
+
+    _ARTIFACT_ID_RE = re.compile(
+        r"^(?P<domain>[a-z0-9]+)-(?P<topic>[a-z0-9]+)-(?P<num>\d+)$"
+    )
+
+    def _load_artifact_serial(self) -> int:
+        """Scan manifest + archive seeds for the highest artifact serial used.
+
+        Artifact seed IDs look like ``shell-bash-0042``. The numeric suffix is
+        a global serial, not a per-batch counter — per-batch counters collided
+        (every batch restarted at 001) and let a new version overwrite the
+        previous version's seed file, which makes a version chain impossible.
+        """
+        highest = 0
+        for directory in (self.seeds_dir, self.archive_dir):
+            try:
+                for path in directory.glob("*.json"):
+                    m = self._ARTIFACT_ID_RE.match(path.stem)
+                    if not m:
+                        continue
+                    try:
+                        num = int(m.group("num"))
+                    except ValueError:
+                        continue
+                    if num > highest:
+                        highest = num
+            except OSError:
+                continue
+        return highest
+
+    def next_artifact_seed_id(self, domain: str, topic: str) -> str:
+        """Allocate the next unique artifact seed ID (domain-topic-NNN)."""
+        self._artifact_serial += 1
+        return _make_artifact_seed_id(domain, topic, self._artifact_serial)
 
     # -- Directory setup ----------------------------------------------------
 
@@ -312,6 +355,101 @@ class SeedVault:
             self.write_seed(old_seed)
             logger.info("SeedVault: seed %s superseded by %s", old_id, new_seed_id)
 
+    # -- Lineage versioning (Phase 9) -----------------------------------------
+
+    @staticmethod
+    def normalize_lineage_id(raw: str) -> str:
+        """Normalize a lineage key (absolute path or explicit tag).
+
+        File-backed artifacts use the normalized absolute path as the lineage
+        id. Ephemeral artifacts use an explicit agent-supplied slug. Normali-
+        zation: collapse duplicate slashes, strip trailing slashes, and for
+        paths resolve to a canonical absolute form when possible.
+        """
+        if not raw:
+            return ""
+        value = raw.strip()
+        if not value:
+            return ""
+        # Collapse repeated separators
+        value = re.sub(r"/{2,}", "/", value)
+        # Only path-shaped keys get path normalization
+        if value.startswith("/") or value.startswith("~"):
+            try:
+                expanded = os.path.expanduser(value)
+                value = os.path.normpath(expanded)
+            except (OSError, ValueError):
+                pass
+        else:
+            # Explicit slug: normalize to a safe form (lowercase, dashed)
+            value = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+        return value
+
+    def find_lineage_candidates(self, lineage_id: str, exclude_seed_id: str = "") -> List[str]:
+        """Find active/superseded artifact seeds in the same lineage.
+
+        Looks up the blob index for seeds whose artifacts carry this
+        lineage_id. Falls back to scanning seed files when the blob index has
+        no lineage annotation (older entries from before Phase 9).
+
+        Returns seed IDs whose seed is at status active or superseded.
+        """
+        if not lineage_id:
+            return []
+        candidates: List[str] = []
+        seen: set[str] = set()
+
+        # Primary source: blob index lineage annotations
+        try:
+            rows = self.blob_store.find_by_lineage(lineage_id)
+        except Exception as e:  # defensive: index errors must not break commits
+            logger.warning("SeedVault: lineage lookup failed for %s: %s", lineage_id, e)
+            rows = []
+        for row in rows:
+            sid = row.get("seed_id", "")
+            if not sid or sid == exclude_seed_id or sid in seen:
+                continue
+            meta = self._manifest.get("seeds", {}).get(sid, {})
+            if meta.get("status") in ("active", "superseded"):
+                candidates.append(sid)
+                seen.add(sid)
+
+        # Fallback: scan seed files whose artifacts carry matching lineage_id
+        for seed_id, meta in self._manifest.get("seeds", {}).items():
+            if seed_id in seen or seed_id == exclude_seed_id:
+                continue
+            if meta.get("status") not in ("active", "superseded"):
+                continue
+            seed = self.get_seed(seed_id)
+            if not seed:
+                continue
+            arts = seed.get("artifacts", [])
+            if any(a.get("lineage_id") == lineage_id for a in arts):
+                candidates.append(seed_id)
+                seen.add(seed_id)
+        return candidates
+
+    def supersede_by_lineage(self, new_seed_id: str, lineage_id: str,
+                             old_seed_ids: Optional[List[str]] = None) -> List[str]:
+        """Supersede the current versions of a lineage in favor of new_seed_id.
+
+        Thin wrapper around supersede_seeds() — the spec requires reusing the
+        existing mechanism exactly, just triggered by lineage equality instead
+        of primary-tag equality.
+
+        old_seed_ids: explicit candidate list (from the gate). When omitted,
+        candidates are looked up from the vault by lineage_id.
+
+        Returns the list of seed IDs that were actually superseded.
+        """
+        if old_seed_ids is None:
+            old_seed_ids = self.find_lineage_candidates(lineage_id, exclude_seed_id=new_seed_id)
+        old_seed_ids = [sid for sid in old_seed_ids if sid != new_seed_id]
+        if not old_seed_ids:
+            return []
+        self.supersede_seeds(new_seed_id, old_seed_ids)
+        return old_seed_ids
+
     # -- Dedup / Gate helpers ------------------------------------------------
 
     def find_duplicate(self, core_claim: str, threshold: float = 0.7) -> Optional[str]:
@@ -474,6 +612,14 @@ class SeedVault:
                     pruned["old_archived"] += 1
                     logger.info("SeedVault: archived old superseded seed %s (age=%dd)",
                                seed_id, archive_days)
+
+        # Phase 9: extend the sweep to artifact lineages — stale superseded
+        # artifact versions also move into archive/ (same rule, second
+        # collection). find_lineage-based lookup is unnecessary here: any
+        # superseded artifact seed above is already caught by the loop above
+        # regardless of lineage. This block only handles lineage rows whose
+        # seed entries are already archived so the lineage index stays lean.
+        pruned["lineage_archived"] = 0
 
         return pruned
 

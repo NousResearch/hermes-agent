@@ -20,6 +20,7 @@ import pytest
 
 import hermes_state
 import hermes_state_wal
+from hermes_cli import sqlite_runtime as _sqlite_runtime
 from hermes_state import SessionDB, format_session_db_unavailable, get_last_init_error
 from hermes_state_wal import WalUnsupportedError, apply_wal_with_fallback
 
@@ -93,10 +94,17 @@ def _reset_wal_fallback_warned_paths():
 
 @pytest.fixture(autouse=True)
 def _assume_fixed_sqlite(monkeypatch):
-    """NFS-fallback tests assume a SQLite build without the WAL-reset bug."""
+    """NFS-fallback tests assume a SQLite build without the WAL-reset bug.
+
+    Both hermes_state_wal's own copy (apply_wal_with_fallback's WAL-enable decision) and
+    hermes_cli.sqlite_runtime's copy (ensure_safe_sqlite_writer's post-fallback refusal) must
+    agree, or a genuinely vulnerable dev/CI SQLite build still gets refused after WAL is
+    enabled under the first patch alone.
+    """
     monkeypatch.setattr(
         hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
     )
+    monkeypatch.setattr(_sqlite_runtime, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False)
     hermes_state_wal._wal_reset_bug_warned_paths.clear()
     yield
     hermes_state_wal._wal_reset_bug_warned_paths.clear()

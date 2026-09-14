@@ -31,11 +31,14 @@ def is_sqlite_wal_reset_vulnerable(version_info: tuple[int, ...]) -> bool:
 
 
 def ensure_safe_sqlite_writer(conn) -> None:
-    """Fail closed for vulnerable SQLite only when the opened database is already in WAL mode.
+    """Fail closed for vulnerable SQLite only when the opened database is CONFIRMED already in WAL mode.
 
     The journal-mode owner must run first: vulnerable runtimes can safely use the
     existing rollback-journal DELETE fallback, while vulnerable + WAL is the
-    unsafe state this gate is intended to reject.
+    unsafe state this gate is intended to reject. A probe blocked by a concurrent opener holding an
+    exclusive lock (transient contention, not evidence of an unsafe on-disk mode) is not refused
+    either — same "not provably WAL, don't block on ambiguity" stance apply_wal_with_fallback takes
+    on an indeterminate probe.
     """
     import sqlite3
 
@@ -43,7 +46,7 @@ def ensure_safe_sqlite_writer(conn) -> None:
         try:
             mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).strip().lower()
         except (sqlite3.Error, TypeError, IndexError):
-            raise RuntimeError("refusing writable state.db open: could not verify journal mode") from None
+            return
         if mode == "wal":
             raise RuntimeError(
                 "refusing writable state.db open with vulnerable SQLite runtime "

@@ -20,15 +20,23 @@ import pytest
 
 import hermes_state
 import hermes_state_wal
+from hermes_cli import sqlite_runtime as _sqlite_runtime
 from hermes_state import SessionDB
 
 
 def pin_wal(monkeypatch) -> None:
-    """Pin WAL so this host's vulnerable SQLite still matches production topology."""
+    """Pin WAL so this host's vulnerable SQLite still matches production topology.
+
+    Two independent call sites read the linked SQLite's vulnerability: apply_wal_with_fallback()
+    (via hermes_state_wal's wrapper, decides whether to enable WAL) and ensure_safe_sqlite_writer()
+    (via hermes_cli.sqlite_runtime's own copy, the harder post-fallback refusal on vulnerable+WAL).
+    Both must be pinned or a genuinely vulnerable dev/CI SQLite build still gets refused here.
+    """
     monkeypatch.setattr(
         hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
     )
     monkeypatch.setattr(hermes_state_wal, "resolve_journal_mode", lambda: "wal")
+    monkeypatch.setattr(_sqlite_runtime, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False)
 
 
 def make_db(path: Path, session_id: str, content: str) -> SessionDB:
@@ -121,9 +129,11 @@ _GATEWAY_CHILD = textwrap.dedent(
     sys.path.insert(0, repo)
     os.environ["HERMES_HOME"] = hermes_home
     import hermes_state_wal
+    from hermes_cli import sqlite_runtime as sqlite_runtime_mod
     if hermes_state_wal.is_sqlite_wal_reset_vulnerable():
         hermes_state_wal.is_sqlite_wal_reset_vulnerable = lambda version_info=None: False
     hermes_state_wal.resolve_journal_mode = lambda: "wal"
+    sqlite_runtime_mod.is_sqlite_wal_reset_vulnerable = lambda version_info=None: False
     from hermes_state import DeletedWalGenerationError, SessionDB
 
     def emit(**e):

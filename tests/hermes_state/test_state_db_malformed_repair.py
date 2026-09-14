@@ -25,6 +25,7 @@ import pytest
 import hermes_state
 import hermes_state_repair
 import hermes_state_wal
+from hermes_cli import sqlite_runtime as _sqlite_runtime
 from hermes_state import SessionDB, is_malformed_db_error
 from hermes_state_repair import repair_state_db_schema
 
@@ -669,6 +670,9 @@ def _configure_journal_mode(monkeypatch, tmp_path, mode) -> None:
     monkeypatch.setattr(
         hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: False,
     )
+    # ensure_safe_sqlite_writer's post-fallback refusal reads its own copy of this flag
+    # (hermes_cli.sqlite_runtime, kept dependency-free from hermes_state_wal); both must agree.
+    monkeypatch.setattr(_sqlite_runtime, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
 
 
 def test_repair_restores_configured_wal_after_surgery(
@@ -720,6 +724,7 @@ def test_repair_restore_matches_canonical_on_vulnerable_sqlite(
     monkeypatch.setattr(
         hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda **kwargs: True
     )
+    monkeypatch.setattr(_sqlite_runtime, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: True)
     _build_healthy_db(db_path)
     conn = sqlite3.connect(str(db_path))
     conn.execute("PRAGMA journal_mode=DELETE")

@@ -4608,11 +4608,21 @@ class TestApplyWalProbe:
 
     @pytest.fixture(autouse=True)
     def _assume_fixed_sqlite(self, monkeypatch):
-        """These cases cover the fixed-SQLite WAL path (not the #69784 gate)."""
+        """These cases cover the fixed-SQLite WAL path (not the #69784 gate).
+
+        Both hermes_state_wal's own copy (apply_wal_with_fallback's WAL-enable decision) and
+        hermes_cli.sqlite_runtime's copy (ensure_safe_sqlite_writer's post-fallback refusal) must
+        agree, or a genuinely vulnerable dev/CI SQLite build still gets refused after WAL is
+        enabled under the first patch alone.
+        """
         import hermes_state
+        from hermes_cli import sqlite_runtime as sqlite_runtime_mod
 
         monkeypatch.setattr(
             hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
+        )
+        monkeypatch.setattr(
+            sqlite_runtime_mod, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
         )
 
 
@@ -6057,9 +6067,16 @@ class TestPerformancePragmasEndToEnd:
         # Local venvs may bundle a WAL-reset-vulnerable SQLite (e.g. 3.46.0),
         # which would silently disable WAL and skip the per-thread reader
         # path. Force WAL eligibility so _get_read_conn is truly exercised
-        # (established pattern used by the WAL tests above).
+        # (established pattern used by the WAL tests above). Both copies of the vulnerability
+        # flag must be pinned: hermes_state_wal's (apply_wal_with_fallback's WAL-enable decision)
+        # and hermes_cli.sqlite_runtime's (ensure_safe_sqlite_writer's post-fallback refusal).
+        from hermes_cli import sqlite_runtime as sqlite_runtime_mod
         monkeypatch.setattr(
             hermes_state_wal, "is_sqlite_wal_reset_vulnerable",
+            lambda version_info=None: False,
+        )
+        monkeypatch.setattr(
+            sqlite_runtime_mod, "is_sqlite_wal_reset_vulnerable",
             lambda version_info=None: False,
         )
         home = tmp_path / "hermes_home"

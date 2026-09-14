@@ -84,8 +84,14 @@ def test_schema_init_preserves_shared_state_db_journal_mode(tmp_path):
         conn.close()
 
 
-def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
-    """Schema initialization must not replace an existing WAL mode."""
+def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path, monkeypatch):
+    """Schema initialization must not replace an existing WAL mode.
+
+    Orthogonal to WAL-reset-vulnerable-runtime handling (ensure_safe_sqlite_writer):
+    pin not-vulnerable so this test's result doesn't depend on the interpreter's linked SQLite.
+    """
+    from hermes_cli import sqlite_runtime as sqlite_runtime_mod
+    monkeypatch.setattr(sqlite_runtime_mod, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
     conn = sqlite3.connect(tmp_path / "state.db")
     try:
         assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
@@ -105,7 +111,13 @@ def test_schema_init_preserves_shared_state_db_wal_mode(tmp_path):
 def test_connect_preserves_wal_and_applies_macos_durability_barriers(
     tmp_path, monkeypatch
 ):
-    """Each ledger connection must carry the macOS write barriers."""
+    """Each ledger connection must carry the macOS write barriers.
+
+    Orthogonal to WAL-reset-vulnerable-runtime handling (ensure_safe_sqlite_writer):
+    pin not-vulnerable so this test's result doesn't depend on the interpreter's linked SQLite.
+    """
+    from hermes_cli import sqlite_runtime as sqlite_runtime_mod
+    monkeypatch.setattr(sqlite_runtime_mod, "is_sqlite_wal_reset_vulnerable", lambda *a, **k: False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seed = sqlite3.connect(tmp_path / "state.db")
     try:

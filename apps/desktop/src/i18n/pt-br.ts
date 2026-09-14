@@ -532,9 +532,9 @@ mcp: 'Pesquisar servidores MCP...',
 sessions: 'Pesquisar sessões arquivadas...'
     },
 modeOptions: {
-light: { label: 'Light', description: 'Bright desktop surfaces' },
-dark: { label: 'Dark', description: 'Low-glare workspace' },
-system: { label: 'System', description: 'Follow OS appearance' }
+light: { label: 'Claro', description: 'Superfícies claras no desktop' },
+dark: { label: 'Escuro', description: 'Espaço de trabalho com baixo reflexo' },
+system: { label: 'Sistema', description: 'Seguir a aparência do SO' }
     },
     appearance: {
       title: 'Aparência',
@@ -574,10 +574,10 @@ translucencyTintTitle: 'Tonalidade',
 translucencyFadeTitle: 'Desvanecimento',
 translucencyFrostTitle: 'Fosco',
 translucencyFrost: {
-        'under-window': 'Deep',
-popover: 'Soft',
-titlebar: 'Bright',
-header: 'Glare'
+        'under-window': 'Profundo',
+popover: 'Suave',
+titlebar: 'Brilhante',
+header: 'Reflexo'
       },
 translucencyScopeTitle: 'Área',
 translucencyScope: {
@@ -598,24 +598,24 @@ embedsTitle: 'Visualizações Integradas',
 embedsAsk: 'Perguntar',
 embedsAlways: 'Sempre',
 embedsOff: 'Desativado',
-embedsReset: (count: number) => `Reset ${count} allowed ${count === 1 ? 'service' : 'services'}`,
+embedsReset: (count: number) => `Redefinir ${count} serviço${count === 1 ? ' permitido' : 's permitidos'}`,
 product: 'Produto',
 productDesc: 'Atividade de ferramentas amigável com resumos concisos.',
 technical: 'Técnico',
 technicalDesc: 'Inclui argumentos reais, resultados puros e detalhes técnicos.',
 themeTitle: 'Tema',
 themeDesc: 'Apenas paletas do desktop. O modo selecionado é aplicado por cima.',
-themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
-installTitle: 'Install from VS Code',
+themeProfileNote: profile => `Salvo para o perfil ${profile} — cada perfil mantém seu próprio tema.`,
+installTitle: 'Instalar do VS Code',
       installDesc:
-        'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',
+        'Cole o ID de uma extensão do Marketplace (ex. dracula-theme.theme-dracula) para converter seu tema de cores em uma paleta de desktop.',
 installPlaceholder: 'publisher.extension',
-installButton: 'Install',
-installing: 'Installing…',
-installError: 'Could not install that theme.',
-installed: name => `Installed “${name}”.`,
-removeTheme: 'Remove theme',
-      importedBadge: 'Imported',
+installButton: 'Instalar',
+installing: 'Instalando…',
+installError: 'Não foi possível instalar esse tema.',
+installed: name => `Instalado “${name}”.`,
+removeTheme: 'Remover tema',
+      importedBadge: 'Importado',
 pet: {
 title: 'Mascote',
         intro:

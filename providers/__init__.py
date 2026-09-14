@@ -47,6 +47,11 @@ _ALIASES: dict[str, str] = {}
 _PROVIDER_LIST_CACHE: list[ProviderProfile] | None = None
 _discovered = False
 
+# These APIs accept a ``vendor/model`` identifier while the request is sent to
+# the aggregator. A target provider can have stricter message-shape support
+# than the aggregator's generic OpenAI-compatible transport profile.
+_AGGREGATOR_MODEL_PREFIX_PROVIDERS = frozenset({"openrouter"})
+
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
     Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
@@ -81,6 +86,29 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     if profile is None and isinstance(name, str) and name.lower().startswith("custom:"):
         profile = _REGISTRY.get("custom")
     return profile
+
+
+def routed_model_rejects_vision_tool_messages(provider: str, model: str) -> bool:
+    """Whether an active route or its aggregator-targeted model rejects image tool parts.
+
+    ``openrouter`` sends vendor-prefixed model IDs (for example,
+    ``xiaomi/mimo-v2.5``), but its own profile cannot describe every routed
+    provider's tool-message compatibility. Preserve the transport profile as
+    the default and consult a registered target profile only for known
+    aggregators. Missing or unrecognized identities deliberately fail open.
+    """
+    provider_name = str(provider or "").strip().lower()
+    profile = get_provider_profile(provider_name)
+    if profile is not None and profile.supports_vision_tool_messages is False:
+        return True
+    if provider_name not in _AGGREGATOR_MODEL_PREFIX_PROVIDERS:
+        return False
+
+    target_name, separator, _ = str(model or "").strip().partition("/")
+    if not separator or not target_name:
+        return False
+    target_profile = get_provider_profile(target_name.strip().lower())
+    return target_profile is not None and target_profile.supports_vision_tool_messages is False
 
 
 def list_providers() -> list[ProviderProfile]:

@@ -5,11 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesApi from '@/hermes'
 import { $freeTierSignIn, openFreeTierSignIn } from '@/store/free-tier-sign-in'
 
-const openExternalLink = vi.fn()
-
-vi.mock('@/lib/external-link', () => ({
-  openExternalLink: (href: string) => openExternalLink(href)
-}))
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
+let openExternal: ReturnType<typeof vi.fn>
 
 const pollOAuthSession = vi.fn()
 const requestGateway = vi.fn(async () => ({ available: true, has_guest: true }))
@@ -36,6 +34,8 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
 
 beforeEach(() => {
   vi.spyOn(window, 'open').mockReturnValue(null)
+  openExternal = vi.fn().mockResolvedValue(undefined)
+  desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
 })
 
 afterEach(() => {
@@ -44,6 +44,12 @@ afterEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
   vi.useRealTimers()
+
+  if (initialHermesDesktop) {
+    desktopWindow.hermesDesktop = initialHermesDesktop
+  } else {
+    delete desktopWindow.hermesDesktop
+  }
 })
 
 describe('FreeTierSignInDialog', () => {
@@ -84,7 +90,7 @@ describe('FreeTierSignInDialog', () => {
     expect(screen.getByText('Hermes-4-405B')).toBeTruthy()
   })
 
-  it('opens the sign-in URL through the validated external opener', async () => {
+  it('opens the sign-in URL in the OS browser', async () => {
     const url = 'https://portal.example/claim?code=ABCD-EFGH'
     $freeTierSignIn.set({
       code: 'ABCD-EFGH',
@@ -109,6 +115,6 @@ describe('FreeTierSignInDialog', () => {
       fireEvent.click(screen.getByText(url))
     })
 
-    expect(openExternalLink).toHaveBeenCalledWith(url)
+    expect(openExternal).toHaveBeenCalledWith(url)
   })
 })

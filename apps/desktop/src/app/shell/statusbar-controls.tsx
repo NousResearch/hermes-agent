@@ -15,7 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { ContribRender } from '@/contrib/react/boundary'
 import { useI18n } from '@/i18n'
-import { openExternalLink } from '@/lib/external-link'
+import { ExternalLink as ExternalLinkAnchor } from '@/lib/external-link'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
 import {
@@ -294,23 +294,14 @@ const StatusbarItemView = memo(function StatusbarItemView({
                     }}
                   >
                     {menuItem.href ? (
-                      <a
+                      <ExternalLinkAnchor
                         className="inline-flex w-full items-center gap-2"
                         href={menuItem.href}
-                        onClick={event => {
-                          // Raw anchors never leave Electron (window-open is
-                          // denied unconditionally) — route through the
-                          // audited opener like every other external link.
-                          event.preventDefault()
-                          event.stopPropagation()
-                          openExternalLink(menuItem.href!)
-                        }}
-                        rel="noreferrer"
-                        target="_blank"
+                        native
                       >
                         {menuItem.icon}
                         <span className="truncate">{menuItem.label}</span>
-                      </a>
+                      </ExternalLinkAnchor>
                     ) : (
                       <>
                         {menuItem.icon}
@@ -340,22 +331,24 @@ const StatusbarItemView = memo(function StatusbarItemView({
   }
 
   if (item.href || item.variant === 'link') {
+    // An href-less 'link' variant renders as plain text: there is nothing to
+    // open, so it must not pose as an anchor (a raw anchor no-ops in
+    // Electron anyway — window-open is denied unconditionally).
+    const body = item.href ? (
+      <ExternalLinkAnchor
+        className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+        href={item.href}
+        native
+      >
+        {content}
+      </ExternalLinkAnchor>
+    ) : (
+      <span className={cn(STATUSBAR_ACTION_CLASS, item.className)}>{content}</span>
+    )
+
     return (
       <Tip label={tooltipLabel}>
-        <a
-          className={cn(STATUSBAR_ACTION_CLASS, item.className)}
-          href={item.href}
-          onClick={event => {
-            // Same dead-anchor class as above: route through the opener.
-            event.preventDefault()
-            event.stopPropagation()
-            openExternalLink(item.href!)
-          }}
-          rel="noreferrer"
-          target="_blank"
-        >
-          {content}
-        </a>
+        {body}
       </Tip>
     )
   }

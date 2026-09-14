@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
 
-const openExternalLink = vi.fn()
+const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const initialHermesDesktop = desktopWindow.hermesDesktop
+let openExternal: ReturnType<typeof vi.fn>
 
-vi.mock('@/lib/external-link', () => ({
-  openExternalLink: (href: string) => openExternalLink(href)
-}))
+beforeEach(() => {
+  openExternal = vi.fn().mockResolvedValue(undefined)
+  desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+})
 
 const { CredentialDocsLink } = await import('./credential-key-ui')
 
@@ -23,15 +26,21 @@ function renderLink(href: string) {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+
+  if (initialHermesDesktop) {
+    desktopWindow.hermesDesktop = initialHermesDesktop
+  } else {
+    delete desktopWindow.hermesDesktop
+  }
 })
 
 describe('CredentialDocsLink (provider API-key docs)', () => {
-  it('opens the docs URL through the validated external opener', () => {
+  it('opens the docs URL in the OS browser', () => {
     const docsUrl = 'https://openrouter.ai/keys'
     renderLink(docsUrl)
 
     fireEvent.click(screen.getByRole('link'))
 
-    expect(openExternalLink).toHaveBeenCalledWith(docsUrl)
+    expect(openExternal).toHaveBeenCalledWith(docsUrl)
   })
 })

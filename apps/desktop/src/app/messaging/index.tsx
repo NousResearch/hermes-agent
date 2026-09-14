@@ -24,7 +24,7 @@ import {
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
-import { openExternalLink } from '@/lib/external-link'
+import { ExternalLink as ExternalLinkAnchor } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink, RefreshCw, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -782,25 +782,16 @@ function PlatformDetail({
         {platform.docs_url && (
           <div className="mt-3">
             <Button asChild size="sm" variant="textStrong">
-              <a
-                href={platform.docs_url}
-                onClick={event => {
-                  // Route through the validated external opener instead of
-                  // letting Electron resolve the anchor. A packaged build's
-                  // empty/relative href resolves to the app's own
-                  // index.html file path, which shell.openPath then fails to
-                  // open ("file not found"). Plugin platforms (Teams, etc.)
-                  // ship no docs_url, so this guard + handler keeps the
-                  // button from ever pointing at a local bundle path.
-                  event.preventDefault()
-                  openExternalLink(platform.docs_url)
-                }}
-                rel="noreferrer"
-                target="_blank"
-              >
+              {/* Canonical external anchor (native = OS browser): a raw anchor
+                  never leaves Electron (window-open is denied), and a packaged
+                  build's empty/relative href would resolve to the app's own
+                  index.html. Plugin platforms (Teams, etc.) ship no docs_url,
+                  so the guard keeps the button from ever pointing at a local
+                  bundle path. */}
+              <ExternalLinkAnchor href={platform.docs_url} native>
                 {m.openSetupGuide}
                 <ExternalLink className="size-3.5" />
-              </a>
+              </ExternalLinkAnchor>
             </Button>
           </div>
         )}
@@ -987,21 +978,9 @@ function MessagingField({
           {field.url && (
             <Tip label={m.openDocs}>
               <Button asChild className="size-8 shrink-0" variant="ghost">
-                <a
-                  href={field.url}
-                  onClick={event => {
-                    // Same handler as the setup-guide link above: a raw
-                    // anchor never leaves Electron (window-open is denied),
-                    // so route the field docs URL through the opener.
-                    event.preventDefault()
-                    event.stopPropagation()
-                    openExternalLink(field.url!)
-                  }}
-                  rel="noreferrer"
-                  target="_blank"
-                >
+                <ExternalLinkAnchor href={field.url} native>
                   <ExternalLink className="size-3.5" />
-                </a>
+                </ExternalLinkAnchor>
               </Button>
             </Tip>
           )}

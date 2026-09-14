@@ -11,10 +11,14 @@ import subprocess
 import pytest
 
 
-pytestmark = pytest.mark.skipif(
-    os.getenv("HERMES_RUN_APPLE_CONTAINER_INTEGRATION") != "1",
-    reason="set HERMES_RUN_APPLE_CONTAINER_INTEGRATION=1 on macOS 26 ARM64",
-)
+pytestmark = [
+    pytest.mark.macos_only,
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        os.getenv("HERMES_RUN_APPLE_CONTAINER_INTEGRATION") != "1",
+        reason="set HERMES_RUN_APPLE_CONTAINER_INTEGRATION=1 on macOS 26 ARM64",
+    ),
+]
 
 
 def _sha256(path) -> str:

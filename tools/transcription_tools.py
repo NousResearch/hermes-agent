@@ -331,7 +331,9 @@ def _replace_cached_model_on_cpu(model_name: str):
     """Load *model_name* on CPU/int8 and make it the cached singleton."""
     global _local_model, _local_model_name
     from faster_whisper import WhisperModel
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    # local_files_only=True: the same model was loadable moments ago, so the HF cache has it;
+    # this reload must not block on a Hub revision lookup on Hub-unreachable hosts (#111072).
+    model = WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=True)
     with _local_model_lock:
         _local_model, _local_model_name = model, model_name
     return model

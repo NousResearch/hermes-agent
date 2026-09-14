@@ -120,14 +120,75 @@ def _get_idle_unload_seconds(local_cfg: Dict[str, Any]) -> int:
     return max(_config_number(local_cfg, "unload_after_idle_seconds", 0, int), 0)
 
 
+# snapshot_download's LocalEntryNotFoundError has two distinguishable faces: the offline
+# (local_files_only=True) cache miss says outgoing traffic "has been disabled", while the
+# online-lookup failure wraps the network error with a "Got:" prefix and asks the user to
+# check their internet connection. The markers below separate the two paths in
+# _load_local_whisper_model (#111072).
+_HUB_CACHE_MISS_MARKER = "outgoing traffic has been disabled"
+
+# Substrings identifying an unreachable/unusable Hugging Face Hub on the download path: the
+# connection errors snapshot_download wraps, plus the mirror+Xet trap where the Xet CAS
+# bridge ignores HF_ENDPOINT and answers 401 Unauthorized (#111072).
+_HUB_UNREACHABLE_MARKERS = (
+    "Please check your internet connection",
+    "Got: ConnectTimeout", "Got: ReadTimeout", "Got: ConnectionError", "Got: Timeout",
+    "Connection refused", "Network is unreachable", "Name or service not known",
+    "Temporary failure in name resolution", "Failed to resolve", "Max retries exceeded",
+    "cas-server.xethub.hf.co",
+)
+
+
+def _looks_like_hub_cache_miss(exc: BaseException) -> bool:
+    """Heuristic: did the cache-only load fail *only* because the model is absent from the local
+    HF cache? Anything else (invalid model size, CUDA errors, …) must propagate untouched."""
+    return _HUB_CACHE_MISS_MARKER in str(exc)
+
+
+def _hub_download_hint(model_name: str, exc: BaseException) -> str:
+    """Actionable error for hosts that cannot reach huggingface.co (#111072)."""
+    return (f"could not fetch the local STT model '{model_name}' from huggingface.co: {exc}. "
+            "If this network cannot reach huggingface.co, point the download at a mirror by "
+            "setting HF_ENDPOINT=https://hf-mirror.com, and set HF_HUB_DISABLE_XET=1 as well "
+            "(the Xet CDN ignores HF_ENDPOINT and fails with 401 Unauthorized through a mirror).")
+
+
 def _load_local_whisper_model(model_name: str, device: str = "auto", compute_type: str = "auto"):
+    """Load faster-whisper cache-first, with graceful CUDA → CPU fallback.
+
+    huggingface_hub's ``snapshot_download`` performs a network revision lookup *before*
+    consulting the local cache, so on hosts where huggingface.co is unreachable a fully
+    cached model still silently stalls for minutes on every cold start, and a cold cache
+    surfaces a bare ConnectTimeout (#111072). Load with ``local_files_only=True`` first —
+    zero network when the model is cached — and only fall back to the online path on a
+    cache miss; if that path cannot reach the Hub either, raise an error naming the
+    ``HF_ENDPOINT`` / ``HF_HUB_DISABLE_XET`` escape hatches.
+
+    ``device`` / ``compute_type`` default to ``"auto"`` so the historical behaviour is unchanged; pass
+    explicit values from ``stt.local.device`` / ``stt.local.compute_type`` to pin a configuration (#9088).
+    """
+    try:
+        return _load_whisper_model_with_cuda_fallback(model_name, device, compute_type, local_files_only=True)
+    except Exception as exc:
+        if not _looks_like_hub_cache_miss(exc):
+            raise
+        logger.info("faster-whisper model '%s' is not fully cached locally — downloading from the Hub",
+                    model_name)
+    try:
+        return _load_whisper_model_with_cuda_fallback(model_name, device, compute_type, local_files_only=False)
+    except Exception as exc:
+        if any(marker in str(exc) for marker in _HUB_UNREACHABLE_MARKERS):
+            raise RuntimeError(_hub_download_hint(model_name, exc)) from exc
+        raise
+
+
+def _load_whisper_model_with_cuda_fallback(
+    model_name: str, device: str, compute_type: str, *, local_files_only: bool
+):
     """Load faster-whisper with graceful CUDA → CPU fallback. ``device="auto"`` picks CUDA
     whenever the ctranslate2 wheel ships CUDA libs, even on hosts without the NVIDIA runtime (WSL2,
     headless servers): try the requested config first; on a CUDA library load failure fall back to
     CPU + int8. Pass ``stt.local.device`` / ``compute_type`` to pin.
-
-    ``device`` / ``compute_type`` default to ``"auto"`` so the historical behaviour is unchanged; pass
-    explicit values from ``stt.local.device`` / ``stt.local.compute_type`` to pin a configuration (#9088).
     """
     force_cpu = _should_force_faster_whisper_cpu()
     if force_cpu:
@@ -138,15 +199,15 @@ def _load_local_whisper_model(model_name: str, device: str = "auto", compute_typ
     if force_cpu:
         logger.info("Apple Silicon/Rosetta detected — loading faster-whisper on CPU "
                     "(int8) to avoid native device autodetection crashes")
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=local_files_only)
     try:
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
+        return WhisperModel(model_name, device=device, compute_type=compute_type, local_files_only=local_files_only)
     except Exception as exc:
         if not _looks_like_cuda_lib_error(exc):
             raise
         logger.warning("faster-whisper CUDA load failed (%s) — falling back to CPU (int8). "
                        "Install the NVIDIA CUDA runtime (libcublas/libcudnn) to use GPU.", exc)
-        return WhisperModel(model_name, device="cpu", compute_type="int8")
+        return WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=local_files_only)
 
 
 # Silence-hallucination hardening for local faster-whisper (whisper decodes junk like

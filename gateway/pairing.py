@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import secrets
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -21,7 +20,7 @@ from typing import Optional
 
 from gateway.whatsapp_identity import expand_whatsapp_aliases, normalize_whatsapp_identifier
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
-from utils import atomic_replace
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +278,7 @@ def _load_json_file(path: Path) -> dict:
 
 
 def _save_json_file(path: Path, data: dict) -> None:
-    _secure_write(path, json.dumps(data, indent=2, ensure_ascii=False))
+    atomic_json_write(path, data, mode=0o600)
 
 
 def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional[Path] = None) -> None:
@@ -303,24 +302,6 @@ def _migrate_split_pairing_dirs(*, home: Optional[Path] = None, active: Optional
         merged.update(current)
         if merged != current:
             _save_json_file(active / src.name, merged)
-
-
-def _secure_write(path: Path, data: str) -> None:
-    """Write 0600 via temp file + atomic rename so readers never see a partial file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, path)
-        with contextlib.suppress(OSError):  # Windows doesn't support chmod the same way
-            os.chmod(path, 0o600)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
 
 
 def _is_hashed_entry(entry) -> bool:

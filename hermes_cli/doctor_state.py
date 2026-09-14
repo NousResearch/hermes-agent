@@ -27,15 +27,11 @@ def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
     """Return the effective memory section used by doctor diagnostics."""
     from hermes_cli.doctor import HERMES_HOME
     try:
-        from hermes_cli.config import _expand_env_vars, read_user_config_raw
+        from hermes_cli.config_effective import load_user_config_effective
         config_path = (hermes_home if hermes_home is not None else HERMES_HOME) / "config.yaml"
         if not config_path.exists():
             return {}
-        config = _expand_env_vars(read_user_config_raw(config_path))
-        with warn_on_error(""):
-            from hermes_cli import managed_scope
-            config = managed_scope.apply_managed_overlay(config)
-        section = config.get("memory") if isinstance(config, dict) else None
+        section = load_user_config_effective(config_path).get("memory")
         return section if isinstance(section, dict) else {}
     except Exception:
         return {}

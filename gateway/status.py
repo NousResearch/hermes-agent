@@ -402,9 +402,11 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     home_lc = str(profile_home).lower().replace("\\", "/")
     if profile_name is not None and profile_name != "default":
         return profile_flag_value(command_lc) == profile_name.lower() or f"hermes_home={home_lc}" in command_lc
-    # Default profile: accept unless argv names another profile or a conflicting explicit
-    # HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually arrives via the env).
-    if "--profile " in command_lc or " -p " in command_lc:
+    # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
+    # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
+    # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
+    # arrives via the env).
+    if profile_flag_value(command_lc) is not None:
         return False
     return not ("hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc)
 
@@ -801,7 +803,7 @@ def _coerce_session_store(session_store: Any) -> dict[str, str]:
 
 def write_runtime_status(
     *, gateway_state: Any = _UNSET, exit_reason: Any = _UNSET, restart_requested: Any = _UNSET,
-    active_agents: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
+    active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
@@ -832,6 +834,8 @@ def write_runtime_status(
         ("gateway_state", gateway_state, None), ("exit_reason", exit_reason, None),
         ("restart_requested", restart_requested, bool),
         ("active_agents", active_agents, parse_active_agents),
+        # Named in-flight units (see GatewayShutdownMixin._describe_active_work); None clears.
+        ("active_work", active_work, lambda v: list(v) if v else None),
         # Multiplexed profiles; absent/empty for a single-profile gateway.
         ("served_profiles", served_profiles, lambda v: list(v or [])),
         ("session_store", session_store, _coerce_session_store),
@@ -1087,6 +1091,23 @@ def get_runtime_status_running_pid(
     if not _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
         return None
     return pid
+
+
+def live_gateway_pid_for_home(home: Path) -> Optional[int]:
+    """Verified PID of the gateway owned by ``home`` (pid file + runtime lock first, then the runtime
+    status record), or None. Every reader of another home's gateway identity goes through this so
+    they all prove the same thing: the PID passes the start-time reuse guard, its live command line is
+    a gateway's belonging to ``home``, and the record is not ``stopped``. Bare PID existence is not
+    identity -- a stale record whose PID was recycled by an unrelated process lent it ``served_profiles``
+    and put phantom gateways into the update inventory (#109680) -- while a launch-service gateway whose
+    ``gateway.pid`` was unlinked is still live (#110166). Never unlinks ``home``'s identity files."""
+    home = Path(home)
+    # Cached: dashboard surfaces poll this for every served profile; the cache invalidates on any
+    # pid/lock file change, so a stopped or replaced gateway is seen at once.
+    pid = get_running_pid_cached(home / "gateway.pid", cleanup_stale=False)
+    if pid is not None:
+        return pid
+    return get_runtime_status_running_pid(read_runtime_status(home / "gateway_state.json"), expected_home=home)
 
 
 def remove_pid_file() -> None:

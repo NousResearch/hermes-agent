@@ -750,35 +750,100 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 # ``postgresql://{user}`` f-string templates). See issue #43025.
 _ENV_DUMP_COMMANDS = frozenset({"env", "printenv", "set", "export", "declare"})
 
-# Commands that read file contents to stdout. A ``.env`` target is a credential
-# dump (per AGENTS.md ``.env`` holds only secrets), so the ENV pass must run.
+# Commands that read file contents to stdout, plus the filter readers (``grep``/``awk``/``sed``)
+# the model reaches for on config files. A secret-bearing target (``.env`` per AGENTS.md,
+# a shell rc/profile, Hermes' own ``config.yaml`` where ``hermes mcp add --env`` writes
+# tokens) is a credential dump, so the ENV/YAML assignment pass must run. Arbitrary
+# ``config.yaml`` / source files stay on the code_file path (``MAX_TOKENS: 100``).
 _FILE_READ_COMMANDS = frozenset({
     "cat", "head", "tail", "type", "bat", "less", "more", "nl",
-    "zcat", "tac", "view", "batcat",
+    "zcat", "tac", "view", "batcat", "grep", "awk", "sed",
 })
+_SHELL_RC_BASENAMES = frozenset({
+    ".bashrc", ".bash_profile", ".bash_login", ".profile",
+    ".zshrc", ".zprofile", ".zlogin", ".zshenv",
+})
+# Filter readers take a PATTERN/program as their first positional; only the operands after
+# it are files, so ``grep .bashrc app.py`` must not gate on the pattern.
+_PATTERN_FIRST_COMMANDS = frozenset({"grep", "awk", "sed"})
+_HERMES_HOME_PREFIXES = ("$HERMES_HOME/", "${HERMES_HOME}/")
+# ``$HOME/.hermes/config.yaml`` keeps the ``.hermes`` segment, so stripping the prefix is
+# enough to gate it; ``~/`` already survives the ``$``-bearing-path bail-out.
+_HOME_PREFIXES = ("$HOME/", "${HOME}/")
 
 
 def _command_segments(command: str) -> list[str]:
-    """Pipeline/sequence segments of a shell command, stripped, empties dropped."""
-    return [seg.strip() for seg in re.split(r"[|;&]+", command) if seg.strip()]
+    """Pipeline/sequence segments, split only on unquoted ``| ; &`` so an
+    ``awk '{print $1; print $2}'`` program or ``grep 'foo|bar'`` pattern stays one
+    segment. Backslash is not an escape (Windows ``C:\\Users\\...``)."""
+    segments: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    for ch in command:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch in "|;&":
+            seg = "".join(buf).strip()
+            if seg:
+                segments.append(seg)
+            buf = []
+            continue
+        buf.append(ch)
+    seg = "".join(buf).strip()
+    if seg:
+        segments.append(seg)
+    return segments
 
 
-def _command_reads_env_file(command: str | None) -> bool:
-    """True if ``command`` reads a ``.env``-style file (by basename) to stdout.
-    Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
-    .env)``, ``sed``/``awk``) are not detected, matching ``is_env_dump_command``."""
-    if not command:
+def _is_secret_file_arg(arg: str) -> bool:
+    """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
+    ``.hermes`` directory or ``$HERMES_HOME`` (never arbitrary YAML)."""
+    path = arg.strip("\"'").replace("\\", "/")
+    hermes_home = False
+    for prefix in _HERMES_HOME_PREFIXES:
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            hermes_home = True
+            break
+    for prefix in _HOME_PREFIXES:
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            break
+    if "$" in path:
+        return False
+    parts = [part.lower() for part in path.split("/") if part]
+    if not parts:
+        return False
+    if parts[-1] in _ENV_FILE_BASENAMES or parts[-1] in _SHELL_RC_BASENAMES:
+        return True
+    return parts[-1] == "config.yaml" and (hermes_home or ".hermes" in parts[:-1])
+
+
+def _command_reads_secret_file(command: str | None) -> bool:
+    """True if ``command`` reads a secret-bearing file (see ``_is_secret_file_arg``) to
+    stdout. Defense-in-depth, not a boundary: indirect reads (``sudo cat .env``, ``$(cat
+    .env)``, unresolved variable paths) are not detected, matching ``is_env_dump_command``."""
+    if not command or not isinstance(command, str):
         return False
     for seg in _command_segments(command):
         tokens = seg.split()  # not shlex: it mangles Windows paths (``C:\Users\...\.env``)
-        if not tokens or tokens[0] not in _FILE_READ_COMMANDS:
+        if not tokens:
             continue
-        for arg in tokens[1:]:
-            if arg.startswith("-"):
-                continue
-            basename = arg.strip("\"'").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            if basename.lower() in _ENV_FILE_BASENAMES:
-                return True
+        reader = tokens[0].rsplit("/", 1)[-1].lower()
+        if reader not in _FILE_READ_COMMANDS:
+            continue
+        positional = [arg for arg in tokens[1:] if not arg.startswith("-")]
+        if reader in _PATTERN_FIRST_COMMANDS:
+            positional = positional[1:]
+        if any(_is_secret_file_arg(arg) for arg in positional):
+            return True
     return False
 
 
@@ -797,13 +862,36 @@ def is_env_dump_command(command: str | None) -> bool:
     return False
 
 
+REDACTION_UNAVAILABLE = "[redaction-unavailable]"
+# The opaque branch needs a 20-char floor (the floor the gateway/A2A sweeps always had): without it the
+# English word "bearer" turns "the bearer of bad news" into "Bearer [redacted] bad news" on every chat
+# reply. The bracket branch folds an already-masked residue ("Bearer [redacted-jwt]") to one marker.
+_BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+(?:\[[^\]]+\]|[A-Za-z0-9._~+/-]{20,}=*)", re.IGNORECASE)
+
+
+def redact_for_egress(text: str) -> str:
+    """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
+    telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
+    sweep, because a ``Bearer <opaque>`` value with no vendor prefix carries no shape the prefix
+    matcher can key on. Fails CLOSED: if the redactor raises, the raw text is never returned."""
+    text = str(text or "")
+    try:
+        text = redact_sensitive_text(text, force=True)
+    except Exception:
+        return REDACTION_UNAVAILABLE
+    if "earer" in text:
+        text = _BEARER_RESIDUE_RE.sub("Bearer [redacted]", text)
+    return text
+
+
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:
-    """Single redaction policy for ALL terminal-output surfaces: the ENV-assignment
-    pass runs only when ``command`` is an env dump or reads a ``.env`` file
-    (otherwise code_file=True avoids false positives on source/config dumps)."""
+    """Single redaction policy for ALL terminal-output surfaces: the ENV/YAML-assignment
+    pass runs only when ``command`` is an env dump or reads a secret-bearing file (``.env``,
+    shell rc, Hermes ``config.yaml``); otherwise code_file=True avoids false positives on
+    source/config dumps."""
     if not output:
         return output
-    code_file = not (is_env_dump_command(command) or _command_reads_env_file(command))
+    code_file = not (is_env_dump_command(command) or _command_reads_secret_file(command))
     return redact_sensitive_text(output, force=force, code_file=code_file)
 
 

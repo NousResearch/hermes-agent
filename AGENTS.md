@@ -252,7 +252,7 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (`_SLASH_DISPATCH` in `cli.py`, `_command_handler_table` in the gateway are the shape).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API; external compat is handled ONCE by the compat layer, not per PR.
-- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`, `docs/`,
+- **Moving a symbol means fixing its docs in the same PR:** grep `website/docs`,
   `skills/`, and every `AGENTS.md` for the old `path.py` + symbol (23 doc files went stale
   after the refactor). `evals/codebase_navigability/static_metrics.py <tree> <label>` measures
   file/function/CC/elif distributions before/after a large PR in ~2 min.
@@ -330,7 +330,12 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
   `HERMES_TEST_FILE_RETRIES=0` disables). Pass-on-retry is green but printed under `⚠ FLAKY`
   with both outputs — a bug to fix, not noise. Timing tests must not assume a quiet runner:
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races.
-- **Placement:** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
+- **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
+  `tests/agent/`, `tests/hermes_state/`, `tests/gateway/relay/`, ...); installer/updater script tests
+  under `tests/scripts/{install,desktop_update}/`. Only tests of root-level modules (`batch_runner`,
+  `utils`, `hermes_constants`, packaging) sit directly in `tests/`. No issue numbers in filenames —
+  cite the issue in the module docstring (`test_89315_x.py` → `test_x.py`, "Regression for #89315").
+- **Placement (CI lanes):** `scripts/ci/classify_changes.py` picks jobs by changed files. A Python test
   asserting about `package.json`, `package-lock.json`, `tsconfig.json`, or `.ts/.tsx/.js/
   .mjs/.cjs` sources will not run on a JS-only PR (green on PR, red on `main` where the
   classifier fails open). Such tests belong in the vitest suite, not `tests/*.py`.

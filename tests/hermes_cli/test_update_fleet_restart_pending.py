@@ -690,6 +690,63 @@ def test_successful_receipt_with_pre_update_plan_shas_does_not_retrigger(
     assert update_cmd._pending_fleet_restart_needed() is False
 
 
+@pytest.mark.parametrize(("dashboard_gone", "pending"), [(False, True), (True, False)])
+def test_stale_receipt_settles_after_recorded_dashboard_incarnation_is_gone(
+    monkeypatch, dashboard_gone, pending
+):
+    disk_sha = "n" * 40
+    old_sha = "o" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(
+        update_cmd_fleet,
+        "_recorded_incarnation_is_gone",
+        lambda _runtime: dashboard_gone,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [
+            {
+                "profile": "default",
+                "pid": 3,
+                "code_sha": disk_sha,
+                "state": "current",
+            }
+        ],
+    )
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "outcome": "success",
+                "exit_code": 0,
+                "plan": {
+                    "runtimes": [
+                        {
+                            "kind": "dashboard",
+                            "profile": "default",
+                            "pid": 1,
+                            "detail": {"create_time": 1.0},
+                        }
+                    ]
+                },
+                "fleet": [
+                    {
+                        "profile": "default",
+                        "pid": 2,
+                        "code_sha": old_sha,
+                        "state": "current",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is pending
+
+
 def test_successful_command_boundary_receipt_without_fleet_does_not_retrigger(
     monkeypatch,
 ):

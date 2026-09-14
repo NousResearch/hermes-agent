@@ -2090,6 +2090,20 @@ class GatewayTurnMixin:
             return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
         return nullcontext()
 
+    def _media_delivery_scope_for_source(self, source: SessionSource):
+        """Home + terminal-policy scope for validating a turn's MEDIA / local-file paths on the
+        adapter's delivery side, which runs after the routed turn scope was reset.
+
+        Docker path translation (``platforms/base.py::_translate_docker_container_media_path``)
+        infers the producing container from the ACTIVE profile (``get_active_profile_name``) and the
+        scope-aware ``TERMINAL_DOCKER_VOLUMES``; without this a secondary's ``MEDIA:/output/x.png``
+        resolves against the default profile's sandbox and mounts (#109024). No secret hydration:
+        path validation reads no credentials and this runs on the event loop."""
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        return _profile_runtime_scope(self._resolve_profile_home_for_source(source), {})
+
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, resolved inside the profile serving ``source``.
 
@@ -2338,6 +2352,7 @@ class GatewayTurnMixin:
             from tools.mcp_tool_discovery import discover_mcp_tools
             from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
             from tools.mcp_tool_agent import reprobe_tool_availability
+            from tools.mcp_tool_scope import _key_name
             from tools.registry import registry
 
             reload_scope = registry.current_scope_key() if multiplex else None
@@ -2345,16 +2360,19 @@ class GatewayTurnMixin:
             def _scoped_server_names() -> set:
                 with _lock:
                     return {
-                        name for name in _servers
-                        if _server_visible_in_scope(name, reload_scope)
+                        _key_name(key) for key in _servers
+                        if _server_visible_in_scope(key, reload_scope)
                     }
 
             old_servers = _scoped_server_names()
             await self._run_in_executor_with_context(lambda: shutdown_mcp_servers(scope=reload_scope))
             # Explicit reload also re-probes tool availability (check_fn).
             reprobe_tool_availability()
-            # Reconnect by discovering tools (reads config.yaml fresh).
-            new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
+            # Reconnect by discovering tools (reads config.yaml fresh). A chat command cannot finish
+            # a browser OAuth flow either: an expired token parks with a `hermes mcp login` hint.
+            from tools.mcp_oauth import suppress_interactive_oauth
+            with suppress_interactive_oauth():
+                new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
 
             connected_servers = _scoped_server_names()
             if reload_scope is not None:
@@ -2568,8 +2586,35 @@ class GatewayTurnMixin:
 
         full_response = ""
         _start = time.time()
+        saw_done = False
+
+        def _consume_sse_line(line: str) -> bool:
+            """Parse one SSE line into full_response; True when the terminal ``[DONE]`` was seen.
+
+            Malformed frames (bad JSON, ``choices: [null]``, non-dict deltas) are skipped —
+            one bad chunk must not abort the whole stream."""
+            nonlocal full_response
+            line = line.strip()
+            if not line.startswith("data: "):
+                return False
+            data = line[6:]
+            if data.strip() == "[DONE]":
+                return True
+            try:
+                choices = json.loads(data).get("choices") or []
+                content = choices[0].get("delta", {}).get("content", "") if choices else ""
+            except (json.JSONDecodeError, TypeError, AttributeError, IndexError):
+                return False
+            if content:
+                full_response += content
+                if _stream_consumer:
+                    _stream_consumer.on_delta(content)
+            return False
+
         try:
-            _timeout = ClientTimeout(total=0, sock_read=1800)
+            # sock_connect bounds the TCP connect phase so an unreachable proxy host
+            # (DNS fail, firewall, remote down) fails fast instead of hanging on the OS default.
+            _timeout = ClientTimeout(total=0, sock_read=1800, sock_connect=30)
             async with _AioClientSession(timeout=_timeout) as session:
                 async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
                     if resp.status != 200:
@@ -2579,28 +2624,35 @@ class GatewayTurnMixin:
 
                     buffer = ""
                     async for chunk in resp.content.iter_any():
+                        if saw_done:
+                            # A buggy upstream that holds the connection open after [DONE]
+                            # would otherwise block us for up to sock_read seconds.
+                            break
                         if not _run_still_current():
                             return _stale_result("stream")
                         buffer += chunk.decode("utf-8", errors="replace")
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if not line.startswith("data: "):
-                                continue
-                            data = line[6:]
-                            if data.strip() == "[DONE]":
+                            if _consume_sse_line(line):
+                                saw_done = True
                                 break
-                            try:
-                                choices = json.loads(data).get("choices", [])
-                            except json.JSONDecodeError:
-                                continue
-                            content = choices[0].get("delta", {}).get("content", "") if choices else ""
-                            if content:
-                                full_response += content
-                                if _stream_consumer:
-                                    _stream_consumer.on_delta(content)
                         if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
                             raise ValueError("Proxy SSE stream exceeded max buffer size without a line boundary")
+                    # The final SSE frame may not be newline-terminated: flush the residual
+                    # buffer after EOF instead of silently dropping its content.
+                    if not saw_done and buffer:
+                        saw_done = _consume_sse_line(buffer)
+                    if not saw_done:
+                        # Clean EOF without [DONE] — the upstream dropped the response
+                        # mid-stream. Keep any partial text but say so instead of
+                        # presenting the truncation as a complete answer.
+                        logger.warning(
+                            "Proxy SSE stream from %s ended without [DONE] — response may be truncated "
+                            "(%d chars received)", proxy_url, len(full_response),
+                        )
+                        if not full_response:
+                            return self._proxy_error_result(
+                                "⚠️ Proxy connection closed before the response completed")
         except asyncio.CancelledError:
             raise
         except Exception as e:

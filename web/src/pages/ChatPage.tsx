@@ -44,10 +44,12 @@ import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
   PTY_RECONNECT_INPUT_MESSAGE,
+  PTY_RECONNECT_MAX_ATTEMPTS,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
   PTY_RESUME_SANITIZE_WINDOW_MS,
   PTY_TICKET_TIMEOUT_MS,
   type PtyConnectionState,
+  ptyReconnectDelayMs,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
 } from "@/lib/pty-reconnect";
@@ -1151,9 +1153,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (reconnectTimerRef.current) {
         return;
       }
-      const attempt = Math.min(reconnectAttemptRef.current + 1, 5);
+      const attempt = Math.min(reconnectAttemptRef.current + 1, PTY_RECONNECT_MAX_ATTEMPTS);
       reconnectAttemptRef.current = attempt;
-      const delayMs = Math.min(250 * 2 ** (attempt - 1), 3000);
+      const delayMs = ptyReconnectDelayMs(attempt);
       setBanner(null);
       setLastCloseCode(code);
       setPtyState("reconnecting");

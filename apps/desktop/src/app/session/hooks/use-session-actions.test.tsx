@@ -42,8 +42,10 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $turnStartedAt,
+  _resetSessionOwnerHintsForTests,
   getSessionOwnerHint,
   knownSessionOwner,
+  ownerLookupSessionRows,
   sessionMatchesStoredId,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
@@ -63,11 +65,18 @@ import {
   setResumeFailedSessionId,
   setSelectedStoredSessionId,
   setSessions,
-  setTurnStartedAt
+  setTurnStartedAt,
+  setUnlistedSessionOwnerRows
 } from '@/store/session'
+import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { $removedSessionIds, $sessionMutationsInFlight } from '@/store/session-removal'
 import { requestForSessionProfile, type SessionProfileRoute } from '@/store/session-request-router'
-import { $sessionTiles, sessionTileOwnerRoute } from '@/store/session-states'
+import {
+  $sessionTiles,
+  knownOwnerForSession,
+  requestForOwnedSession,
+  sessionTileOwnerRoute
+} from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -4096,8 +4105,14 @@ describe('createBackendSessionForSend workspace target', () => {
 describe('openNewSessionTile workspace target', () => {
   afterEach(() => {
     cleanup()
+    $profiles.set([])
+    $newChatProfile.set(null)
+    $activeGatewayProfile.set('default')
     $projectScope.set(ALL_PROJECTS)
     $projectTree.set([])
+    $sessionTiles.set([])
+    setConnection(null)
+    setSessions([])
     vi.restoreAllMocks()
   })
 
@@ -4138,6 +4153,199 @@ describe('openNewSessionTile workspace target', () => {
     })
 
     expect(createParams).not.toHaveProperty('cwd')
+  })
+
+  it('keeps an unlisted named local legacy-profile tile owned by its bare profile', async () => {
+    const storedSessionId = 'stored-unlisted-omar'
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    setConnection({ mode: 'local' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return {
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: storedSessionId
+        } as never
+      }
+
+      throw new Error(`Unexpected ambient RPC: ${method}`)
+    })
+    vi.mocked(requestGatewayForProfile).mockResolvedValue({ control: {} } as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { listed: false, profile: 'omar' })
+    })
+
+    expect(requestGateway).toHaveBeenCalledWith('session.create', expect.any(Object))
+    expect(vi.mocked(requestGatewayForAgent)).not.toHaveBeenCalled()
+    expect($sessions.get().some(session => sessionMatchesStoredId(session, storedSessionId))).toBe(false)
+    expect($sessionTiles.get()).toContainEqual(expect.objectContaining({ ownerProfile: 'omar', storedSessionId }))
+    expect(knownOwnerForSession(storedSessionId)).toBe('omar')
+
+    await expect(
+      requestForOwnedSession(storedSessionId, requestGateway, 'session.control.read', {
+        session_id: RUNTIME_SESSION_ID
+      })
+    ).resolves.toEqual({ control: {} })
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'omar',
+      'session.control.read',
+      { session_id: RUNTIME_SESSION_ID },
+      undefined,
+      undefined
+    )
+  })
+
+  it('records the draft profile owner when tab-strip create omits profile', async () => {
+    const storedSessionId = 'stored-unlisted-draft-omar'
+    $profiles.set([{ name: 'default' }, { name: 'omar' }] as never)
+    $newChatProfile.set('omar')
+    $activeGatewayProfile.set('default')
+    setConnection({ mode: 'local' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return {
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: storedSessionId
+        } as never
+      }
+
+      throw new Error(`Unexpected ambient RPC: ${method}`)
+    })
+    vi.mocked(requestGatewayForProfile).mockResolvedValue({ control: {} } as never)
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await act(async () => {
+      await handle!.openNewSessionTile('center', { listed: false })
+    })
+
+    expect($sessionTiles.get()).toContainEqual(expect.objectContaining({ ownerProfile: 'omar', storedSessionId }))
+    expect(knownOwnerForSession(storedSessionId)).toBe('omar')
+
+    await expect(
+      requestForOwnedSession(storedSessionId, requestGateway, 'session.control.read', {
+        session_id: RUNTIME_SESSION_ID
+      })
+    ).resolves.toEqual({ control: {} })
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'omar',
+      'session.control.read',
+      { session_id: RUNTIME_SESSION_ID },
+      undefined,
+      undefined
+    )
+  })
+})
+
+describe('openNewSessionTile unlisted owner (#102792)', () => {
+  const STORED_UNLISTED = 'stored-unlisted-102792'
+
+  function createRequestGateway(stored: string = STORED_UNLISTED) {
+    return vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return {
+          info: { cwd: '', model: 'test-model', skills: {}, tools: {} },
+          session_id: RUNTIME_SESSION_ID,
+          stored_session_id: stored
+        } as never
+      }
+
+      return {} as never
+    })
+  }
+
+  async function readyHandle(requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>) {
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    return handle!
+  }
+
+  beforeEach(() => {
+    setSessions([])
+    setMessagingSessions([])
+    setCronSessions([])
+    setUnlistedSessionOwnerRows([])
+    _resetSessionOwnerHintsForTests()
+    $profiles.set(profiles('default', 'omar'))
+    $activeGatewayProfile.set('omar')
+    $sessionTiles.set([])
+  })
+
+  afterEach(() => {
+    cleanup()
+    setSessions([])
+    setMessagingSessions([])
+    setCronSessions([])
+    setUnlistedSessionOwnerRows([])
+    _resetSessionOwnerHintsForTests()
+    $profiles.set([])
+    $activeGatewayProfile.set('default')
+    $sessionTiles.set([])
+    vi.restoreAllMocks()
+  })
+
+  it('records the ambient-profile owner for an unlisted tile created on the null (legacy ambient) route', async () => {
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    // The draft stays out of the visible sidebar list ...
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(false)
+    // ... but its owner still resolves on the row rung (bare ambient profile),
+    // so the tile's immediate session.resume passes the fail-closed gate.
+    const owner = knownSessionOwner(ownerLookupSessionRows(), STORED_UNLISTED)
+    expect(owner).toBe('omar')
+    expect(() =>
+      assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: STORED_UNLISTED })
+    ).not.toThrow()
+    expect($sessionTiles.get().some(t => t.storedSessionId === STORED_UNLISTED)).toBe(true)
+  })
+
+  it('resolves the ephemeral runtime id through the stub for session.control.read without hitting ambient', async () => {
+    const handle = await readyHandle(createRequestGateway())
+
+    await act(async () => {
+      await handle.openNewSessionTile('center', { listed: false, route: null })
+    })
+
+    // The composer banner calls with the ephemeral runtime id, not the stored
+    // id — it must see the same bare ambient profile as the stored-id rung.
+    expect(knownOwnerForSession(RUNTIME_SESSION_ID)).toBe('omar')
+
+    const ambient = vi.fn(async () => ({}) as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValue({ control: {} } as never)
+
+    await expect(
+      requestForOwnedSession(RUNTIME_SESSION_ID, ambient, 'session.control.read', {
+        session_id: RUNTIME_SESSION_ID
+      })
+    ).resolves.toEqual({ control: {} })
+
+    // Bare profile routes through the profile-pool door, never ambient ...
+    expect(ambient).not.toHaveBeenCalled()
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
+      'omar',
+      'session.control.read',
+      expect.objectContaining({ session_id: RUNTIME_SESSION_ID }),
+      undefined,
+      undefined
+    )
+    // ... and the draft stays out of the sidebar.
+    expect($sessions.get().some(s => sessionMatchesStoredId(s, STORED_UNLISTED))).toBe(false)
   })
 })
 describe('selectSidebarItem', () => {

@@ -37,7 +37,9 @@ from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
-from agent.message_sanitization import (_sanitize_surrogates, _repair_tool_call_arguments)
+from agent.message_sanitization import (
+    _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
+)
 from agent.reasoning_summaries import separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
@@ -2831,7 +2833,7 @@ class _StreamingCall(StreamingWaitMonitor):
             delta = choice.delta
             # Read finish_reason/usage BEFORE any content-shape `continue`: the SSE-echo
             # guard can swallow a merged finish chunk (vLLM standalone ':' tokens).
-            finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+            finish_reason = _normalize_finish_reason(getattr(choice, "finish_reason", None)) or finish_reason
             if hasattr(chunk, "usage") and chunk.usage:
                 usage_obj = chunk.usage
 
@@ -2948,9 +2950,11 @@ class _StreamingCall(StreamingWaitMonitor):
                 _dropped_names)
             return _build_partial_stream_stub(
                 role, full_content, full_reasoning, model_name, usage_obj, dropped_tool_names=_dropped_names or None)
-        if finish_reason is None and content_parts and not tool_calls_acc and usage_obj is None:
-            # Text-only drop: otherwise the partial text is stamped "stop" and the next step is
-            # lost. A usage object proves the provider finished (include_usage's final chunk).
+        if finish_reason is None and (content_parts or reasoning_parts) and not tool_calls_acc and usage_obj is None:
+            # Text-only (or reasoning-only) drop: otherwise the partial text is stamped "stop"
+            # and the next step is lost — for reasoning-only, the clean-stop promotion in
+            # finish_text_response would then surface a truncated thought as the answer.
+            # A usage object proves the provider finished (include_usage's final chunk).
             logger.warning(
                 "Stream ended with no finish_reason after delivering text with no tool calls; treating as a mid-stream drop.")
             return _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj)

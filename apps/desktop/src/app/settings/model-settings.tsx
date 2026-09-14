@@ -1,3 +1,5 @@
+import type { ModelOptionProvider } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -21,13 +23,11 @@ import type {
   AuxiliaryTaskAssignment,
   MoaConfigResponse,
   MoaModelSlot,
-  ModelOptionProvider,
   StaleAuxAssignment
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
-import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@/lib/reasoning-effort'
 import { cn } from '@/lib/utils'
 import { setMainModelAssignment } from '@/store/cron-model-impact'
 import { notifyError, readableError } from '@/store/notifications'
@@ -165,7 +165,9 @@ export function staleAuxAssignments(
     .filter(entry => {
       const p = (entry.provider ?? '').toLowerCase()
 
-      return p && p !== 'auto' && p !== main && !entry.local_endpoint
+      // 'main' is a backend alias meaning "follow the current main provider"
+      // (auxiliary_client._normalize_aux_provider), so it can never be a stale pin.
+      return p && p !== 'auto' && p !== 'main' && p !== main && !entry.local_endpoint
     })
     .map(entry => ({ task: entry.task, provider: entry.provider, model: entry.model }))
 }
@@ -235,7 +237,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
   const setConfig = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
   const [applying, setApplying] = useState(false)
   const [editingAuxTask, setEditingAuxTask] = useState<null | string>(null)
-  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string }>({ model: '', provider: '' })
+
+  const [auxDraft, setAuxDraft] = useState<{ model: string; provider: string; reasoningEffort: string }>({
+    model: '',
+    provider: '',
+    reasoningEffort: '__inherit__'
+  })
+
   // Aux slots reported stale by the backend immediately after a main-model
   // switch (provider differs from the new main). Cleared on next switch/reset.
   const [switchStaleAux, setSwitchStaleAux] = useState<StaleAuxAssignment[]>([])
@@ -757,6 +765,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           {
             model: auxDraft.model,
             provider: auxDraft.provider,
+            reasoning_effort: auxDraft.reasoningEffort === '__inherit__' ? null : auxDraft.reasoningEffort,
             scope: 'auxiliary',
             task,
             ...endpointForProvider(auxDraft.provider)
@@ -782,7 +791,8 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
         current?.provider && current.provider !== 'auto' ? current.provider : (mainModel?.provider ?? '')
 
       const initialModel = current?.model || mainModel?.model || ''
-      setAuxDraft({ provider: initialProvider, model: initialModel })
+      const initialReasoningEffort = current?.reasoning_effort ?? '__inherit__'
+      setAuxDraft({ provider: initialProvider, model: initialModel, reasoningEffort: initialReasoningEffort })
       setEditingAuxTask(task)
     },
     [auxiliary, mainModel]
@@ -1033,47 +1043,76 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   }
                   below={
                     isEditing && (
-                      <div className="mt-2 flex flex-wrap items-center gap-2 pt-1">
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
-                          value={auxDraft.provider}
-                        >
-                          <SelectTrigger className={cn('min-w-32', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.provider} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {providerOptions.map(provider => (
-                              <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
-                                {provider.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Select
-                          onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
-                          value={auxDraft.model}
-                        >
-                          <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                            <SelectValue placeholder={m.model} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                              <SelectItem key={model} value={model}>
-                                {model}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Button
-                          disabled={!auxDraft.provider || !auxDraft.model || applying}
-                          onClick={() => void applyAuxiliaryDraft(meta.key)}
-                          size="sm"
-                        >
-                          {applying ? m.applying : t.common.apply}
-                        </Button>
-                        <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
-                          {t.common.cancel}
-                        </Button>
+                      <div className="mt-2 grid gap-2 pt-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, provider: value, model: '' }))}
+                            value={auxDraft.provider}
+                          >
+                            <SelectTrigger
+                              aria-label={`${copy.label} provider`}
+                              className={cn('min-w-32', CONTROL_TEXT)}
+                            >
+                              <SelectValue placeholder={m.provider} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {providerOptions.map(provider => (
+                                <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+                                  {provider.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                            value={auxDraft.model}
+                          >
+                            <SelectTrigger aria-label={`${copy.label} model`} className={cn('min-w-48', CONTROL_TEXT)}>
+                              <SelectValue placeholder={m.model} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
+                                <SelectItem key={model} value={model}>
+                                  {model}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="text-muted-foreground">{m.reasoning}</span>
+                          <Select
+                            onValueChange={value => setAuxDraft(prev => ({ ...prev, reasoningEffort: value }))}
+                            value={auxDraft.reasoningEffort}
+                          >
+                            <SelectTrigger
+                              aria-label={`${copy.label} reasoning effort`}
+                              className={cn('min-w-32', CONTROL_TEXT)}
+                            >
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__inherit__">{m.inheritMainEffort}</SelectItem>
+                              {REASONING_EFFORT_VALUES.map(value => (
+                                <SelectItem key={value} value={value}>
+                                  {value === 'none' ? m.reasoningOff : t.shell.modelOptions[value]}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            disabled={!auxDraft.provider || !auxDraft.model || applying}
+                            onClick={() => void applyAuxiliaryDraft(meta.key)}
+                            size="sm"
+                          >
+                            {applying ? m.applying : t.common.apply}
+                          </Button>
+                          <Button onClick={() => setEditingAuxTask(null)} size="sm" variant="ghost">
+                            {t.common.cancel}
+                          </Button>
+                        </div>
                       </div>
                     )
                   }
@@ -1082,6 +1121,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                       {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
                       {!isAuto && current.base_url && (
                         <span className="text-muted-foreground"> · {current.base_url}</span>
+                      )}
+                      {current?.reasoning_effort && (
+                        <span className="text-muted-foreground">
+                          {' · '}
+                          {current.reasoning_effort === 'none'
+                            ? `${m.reasoning} ${m.reasoningOff}`
+                            : (t.shell.modelOptions[current.reasoning_effort as keyof typeof t.shell.modelOptions] ??
+                              current.reasoning_effort)}
+                        </span>
                       )}
                     </span>
                   }
@@ -1099,7 +1147,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
       </section>
       {moa && currentMoaPreset && (
         <section>
-          <SectionHeading icon={Cpu} title="Mixture of Agents" />
+          <SectionHeading icon={Cpu} title={m.moaTitle} />
           <p className="mb-2 text-xs text-muted-foreground">
             Configure named presets that appear as models under the Mixture of Agents provider. The aggregator is the
             acting model.
@@ -1107,7 +1155,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <Select onValueChange={setSelectedMoaPreset} value={selectedMoaPreset || moa.default_preset}>
               <SelectTrigger className={cn('min-w-40', CONTROL_TEXT)}>
-                <SelectValue placeholder="Preset" />
+                <SelectValue placeholder={m.moaPreset} />
               </SelectTrigger>
               <SelectContent>
                 {Object.keys(moa.presets).map(name => (
@@ -1368,7 +1416,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile }: ModelSetting
                   {currentMoaPreset.aggregator.provider} · {currentMoaPreset.aggregator.model}
                 </span>
               }
-              title="Aggregator"
+              title={m.moaAggregator}
             />
           </div>
         </section>

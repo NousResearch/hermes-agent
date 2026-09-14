@@ -298,7 +298,9 @@ def get_toolset(name: str, *, include_registry: bool = True) -> Optional[Dict[st
         # Plugin toolset; shown as its MCP server alias when one exists.
         registry_toolset = name
         alias = _display_alias(name, _get_registry_toolset_aliases())
-        description = f"MCP server '{alias}' tools" if alias else f"Plugin toolset: {name}"
+        description = f"MCP server '{alias}' tools" if alias else (
+            registry.get_plugin_toolset_description(name) or f"Plugin toolset: {name}"
+        )
     else:
         registry_toolset = registry.get_toolset_alias_target(name)
         if not registry_toolset:

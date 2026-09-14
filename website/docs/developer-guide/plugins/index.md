@@ -530,6 +530,38 @@ def register(ctx):
 - `ctx.get_config()` / `ctx.set_config()` access only this plugin's settings namespace; `ctx.state` stores plugin-owned runtime data under the active profile.
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
+### Session-owned tools
+
+Use `ctx.session_toolset()` when a gateway client supplies tools for one live
+conversation. Register the complete catalog before dispatching the session's
+first message, then dispose the handle when the client disconnects:
+
+```python
+tools = ctx.session_toolset(
+    session_key,
+    name="client-tools",
+    description="Functions supplied by this connected client",
+    direct=True,
+)
+tools.register_tool(
+    "lookup_order",
+    schema=LOOKUP_ORDER_SCHEMA,
+    handler=lookup_order,
+    is_async=True,
+)
+try:
+    await run_session()
+finally:
+    tools.dispose()
+```
+
+Hermes adds the generated toolset only to the matching gateway session and
+rejects an invocation carrying any other gateway session key. `direct=True`
+keeps these active client callbacks in the model's native tools array instead
+of deferring them behind Tool Search. Tool membership freezes when Hermes first
+resolves the session's schema; later registration raises an error so a cached
+conversation prefix cannot silently change.
+
 **`dispatch_tool` example — a slash command that runs a tool:**
 
 ```python

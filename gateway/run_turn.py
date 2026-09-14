@@ -2162,7 +2162,13 @@ class GatewayTurnMixin:
             pts = dict(user_config.get("platform_toolsets") or {})
             pts[platform_key] = [str(x) for x in override]
             user_config = {**user_config, "platform_toolsets": pts}
-        return sorted(_get_platform_tools(user_config, platform_key))
+        enabled = _get_platform_tools(user_config, platform_key)
+        session_key = self._session_key_for_source(source)
+        if session_key:
+            from hermes_cli.plugin_session_toolsets import session_toolset_names
+            from tools.registry import registry
+            enabled.update(session_toolset_names(session_key, scope=registry.current_scope_key()))
+        return sorted(enabled)
 
     def _resolve_turn_toolsets(self, user_config: dict, source: "SessionSource", platform_key: str):
         """``(enabled_toolsets, disabled_toolsets)`` for an agent run on ``source``."""

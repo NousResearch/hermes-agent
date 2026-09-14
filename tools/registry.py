@@ -175,6 +175,7 @@ class ToolEntry:
     description: str
     emoji: str
     max_result_size_chars: int | float | None = None
+    owner_session_key: Optional[str] = None
     # Zero-arg callable whose dict is shallow-merged onto the schema at every get_definitions()
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
@@ -384,6 +385,10 @@ class ToolRegistry:
         self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
+        # Profile-scoped plugin toolsets that remain in the model's native
+        # tools array. Session ownership is enforced by the host wrapper.
+        self._direct_toolsets: Dict[str, Set[str]] = {}
+        self._plugin_toolset_descriptions: Dict[str, Dict[str, str]] = {}
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
@@ -479,6 +484,45 @@ class ToolRegistry:
     def get_toolset_alias_target(self, alias: str) -> Optional[str]:
         with self._lock:
             return self._toolset_aliases.get(alias)
+
+    def register_session_toolset(
+        self, toolset: str, description: str, *, direct: bool, scope: str,
+    ) -> None:
+        """Register host-managed metadata for a session-owned plugin toolset."""
+        with self._lock:
+            self._plugin_toolset_descriptions.setdefault(scope, {})[toolset] = description
+            if direct:
+                self._direct_toolsets.setdefault(scope, set()).add(toolset)
+            self._generation += 1
+
+    def deregister_session_toolset(self, toolset: str, *, scope: str) -> None:
+        """Remove previously registered session-toolset metadata."""
+        with self._lock:
+            descriptions = self._plugin_toolset_descriptions.get(scope)
+            if descriptions is not None:
+                descriptions.pop(toolset, None)
+                if not descriptions:
+                    self._plugin_toolset_descriptions.pop(scope, None)
+            names = self._direct_toolsets.get(scope)
+            if names is not None:
+                names.discard(toolset)
+                if not names:
+                    self._direct_toolsets.pop(scope, None)
+            self._generation += 1
+
+    def get_plugin_toolset_description(
+        self, toolset: str, *, scope: Optional[str] = None,
+    ) -> Optional[str]:
+        """Description registered for a dynamic plugin toolset, if any."""
+        with self._lock:
+            return self._plugin_toolset_descriptions.get(
+                scope or self.current_scope_key(), {}
+            ).get(toolset)
+
+    def is_direct_toolset(self, toolset: str, *, scope: Optional[str] = None) -> bool:
+        """Whether *toolset* is direct in the active profile."""
+        with self._lock:
+            return toolset in self._direct_toolsets.get(scope or self.current_scope_key(), set())
 
     # ---- Registration ------------------------------------------------
 
@@ -603,7 +647,7 @@ class ToolRegistry:
         check_fn: Callable = None, requires_env: list = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None, override: bool = False,
-        scope: Optional[str] = None):
+        scope: Optional[str] = None, owner_session_key: Optional[str] = None):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -667,6 +711,7 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
+                owner_session_key=owner_session_key,
                 dynamic_schema_overrides=dynamic_schema_overrides)
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
@@ -830,6 +875,9 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        gateway_session_key = kwargs.pop("gateway_session_key", None)
+        if entry.owner_session_key is not None and gateway_session_key != entry.owner_session_key:
+            return tool_error("Session-owned tool invoked outside its owning session")
         try:
             if entry.is_async:
                 from model_tools import _run_async

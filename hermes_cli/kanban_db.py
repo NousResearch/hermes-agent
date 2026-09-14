@@ -2303,6 +2303,7 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
     """
     now = int(time.time())
     reclaimed = 0
+    release_stale_claims._last_reclaimed_task_ids = []  # type: ignore[attr-defined]
     host_prefix = _host_prefix()
     stale = conn.execute(
         "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
@@ -2357,6 +2358,7 @@ def release_stale_claims(conn: sqlite3.Connection, *, signal_fn=None) -> int:
                 },
             )
             reclaimed += 1
+            release_stale_claims._last_reclaimed_task_ids.append(row["id"])  # type: ignore[attr-defined]
         # Post-commit observer; every non-reclaim branch ``continue``d above.
         if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
             _fire_kanban_lifecycle_hook(
@@ -2617,6 +2619,10 @@ def complete_task(
     _clear_failure_counter(conn, task_id)
     recompute_ready(conn)  # separate txn so children see ``done``
     _cleanup_workspace(conn, task_id)
+    # Resource cleanup is separate from workspace cleanup so Docker leases are
+    # reconciled even when the worker never produced a handoff artifact.
+    from hermes_cli.kanban_db_dispatch import _cleanup_worker_resource_lease
+    _cleanup_worker_resource_lease(conn, task_id, run_id)
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
         _fire_task_hook("kanban_task_completed", _done_task, task_id, run_id, summary=handoff_summary)
@@ -2939,6 +2945,7 @@ def block_task(
     so a forever-flaky task escalates. True on any transition."""
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
+    dependency_hook = kind == "dependency"
     with write_txn(conn):
         cur_row = conn.execute(
             "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?", (task_id,),
@@ -2971,11 +2978,13 @@ def block_task(
         )
         _append_event(conn, task_id, event_kind, payload, run_id=run_id)
         blocked_task = get_task(conn, task_id)
-        if kind == "dependency":
+        if dependency_hook:
             # Historical ordering: the dependency lane fires inside the txn.
             _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
-            return True
-    _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
+    from hermes_cli.kanban_db_dispatch import _cleanup_worker_resource_lease
+    _cleanup_worker_resource_lease(conn, task_id, run_id)
+    if not dependency_hook:
+        _fire_task_hook("kanban_task_blocked", blocked_task, task_id, run_id, reason=reason)
     return True
 
 

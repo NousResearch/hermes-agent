@@ -412,7 +412,10 @@ _SPECS = [
         _arg("--event-retention-days", type=int, default=30,
              help="Delete task_events older than N days for terminal tasks (default: 30)"),
         _arg("--log-retention-days", type=int, default=30, help="Delete worker log files older than N days (default: 30)"),
-    ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
+        _arg("--resources", action="store_true", help="Reconcile task/run-owned Docker resources instead of workspace retention"),
+        _arg("--dry-run", action="store_true", help="With --resources, report candidates without deleting anything"),
+        _json_flag(help="Emit resource reconciliation as JSON"),
+    ], help="Garbage-collect archived-task workspaces, old events, old logs, or owned resources"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",
          description=(

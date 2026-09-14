@@ -110,4 +110,30 @@ describe('VirtualSessionList', () => {
     expect(scroller?.className).toContain('overflow-y-auto')
     expect(scroller?.className).not.toContain('overscroll-contain')
   })
+
+  it('remeasures cached rows when Inbox card mode changes', () => {
+    const props = {
+      activeSessionId: null,
+      onArchiveSession: noop,
+      onDeleteSession: noop,
+      onResumeSession: noop,
+      onTogglePin: noop,
+      onToggleUnread: noop,
+      pinned: false,
+      rows,
+      sortable: false
+    }
+
+    const { rerender } = render(<VirtualSessionList {...props} card={false} />)
+
+    virtualizer.measure.mockClear()
+    rerender(<VirtualSessionList {...props} card />)
+
+    expect(virtualizer.measure).toHaveBeenCalledOnce()
+
+    virtualizer.measure.mockClear()
+    rerender(<VirtualSessionList {...props} card={false} />)
+
+    expect(virtualizer.measure).toHaveBeenCalledOnce()
+  })
 })

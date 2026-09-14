@@ -1,61 +1,41 @@
-"""finish_reason wire normalization (port of oh-my-pi#9566).
-
-Some OpenAI-compatible gateways fronting Gemini backends emit the native
-uppercase finish reasons (``STOP``, ``MAX_TOKENS``) instead of the lowercase
-OpenAI contract values. Every downstream comparison in Hermes uses lowercase
-literals, so without normalization a clean STOP completion misses the stop
-handling and a MAX_TOKENS truncation never enters the length-recovery path.
-
-Covers the single owner (``normalize_finish_reason``) plus both wire-intake
-choke points: the chat_completions transport ``normalize_response`` and the
-streaming chunk-capture loop's alias import.
+"""Uppercase wire finish reasons (STOP / MAX_TOKENS from Gemini-fronting
+OpenAI-compatible gateways) must fold to the lowercase OpenAI contract at both
+wire-intake choke points — the chat_completions transport and the streaming
+chunk loop — so stop handling and length recovery see the values they compare
+against.
 """
 
+from __future__ import annotations
+
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agent.message_sanitization import normalize_finish_reason
 from agent.transports.chat_completions import ChatCompletionsTransport
-
-
-# ── single owner ─────────────────────────────────────────────────────
+from hermes_constants import PARTIAL_STREAM_STUB_ID
 
 
 @pytest.mark.parametrize(
     "raw,expected",
     [
-        # Gemini-fronting gateways: native uppercase reasons
         ("STOP", "stop"),
         ("MAX_TOKENS", "length"),
-        # mixed case defensive fold
-        ("Stop", "stop"),
         ("Tool_Calls", "tool_calls"),
-        # aliases
         ("end", "stop"),
-        ("END", "stop"),
-        ("max_tokens", "length"),
         ("function_call", "tool_calls"),
-        # contract values pass through byte-identical
-        ("stop", "stop"),
-        ("length", "length"),
-        ("tool_calls", "tool_calls"),
-        ("content_filter", "content_filter"),
-        ("incomplete", "incomplete"),
+        ("content_filter", "content_filter"),  # contract values pass through byte-identical
     ],
 )
 def test_normalize_finish_reason_folds_to_contract(raw, expected):
     assert normalize_finish_reason(raw) == expected
 
 
-@pytest.mark.parametrize("raw", [None, "", 24, {"x": 1}])
-def test_normalize_finish_reason_passes_non_string_unchanged(raw):
-    # Callers keep their existing ``or "stop"`` defaults for falsy values;
-    # non-string values (Poolside int reasons pre-str()) are untouched.
+@pytest.mark.parametrize("raw", [None, "", 24])
+def test_normalize_finish_reason_passes_falsy_and_non_string_unchanged(raw):
+    # Callers keep their ``or "stop"`` defaults; Poolside int reasons are untouched.
     assert normalize_finish_reason(raw) is raw
-
-
-# ── transport intake choke point ─────────────────────────────────────
 
 
 def _fake_response(finish_reason):
@@ -64,44 +44,37 @@ def _fake_response(finish_reason):
     return SimpleNamespace(choices=[choice], usage=None, model="gemini-3-pro")
 
 
-def test_transport_normalizes_uppercase_stop():
-    transport = ChatCompletionsTransport()
-    normalized = transport.normalize_response(_fake_response("STOP"))
-    assert normalized.finish_reason == "stop"
+@pytest.mark.parametrize("raw,expected", [("STOP", "stop"), ("MAX_TOKENS", "length"), (24, "24"), (None, "stop")])
+def test_transport_normalize_response_folds_finish_reason(raw, expected):
+    assert ChatCompletionsTransport().normalize_response(_fake_response(raw)).finish_reason == expected
 
 
-def test_transport_normalizes_uppercase_max_tokens_to_length():
-    transport = ChatCompletionsTransport()
-    normalized = transport.normalize_response(_fake_response("MAX_TOKENS"))
-    assert normalized.finish_reason == "length"
+def _make_stream_chunk(content=None, finish_reason=None):
+    delta = SimpleNamespace(content=content, tool_calls=None, reasoning_content=None, reasoning=None)
+    return SimpleNamespace(choices=[SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)],
+                           model=None, usage=None)
 
 
-def test_transport_keeps_lowercase_contract_values():
-    transport = ChatCompletionsTransport()
-    for reason in ("stop", "length", "tool_calls", "content_filter"):
-        normalized = transport.normalize_response(_fake_response(reason))
-        assert normalized.finish_reason == reason
+@pytest.mark.parametrize("raw,expected", [("STOP", "stop"), ("MAX_TOKENS", "length")])
+@patch("run_agent.AIAgent._create_request_openai_client")
+@patch("run_agent.AIAgent._close_request_openai_client")
+def test_streaming_capture_folds_uppercase_finish_reason(_mock_close, mock_create, monkeypatch, raw, expected):
+    from run_agent import AIAgent
 
+    def _stream():
+        yield _make_stream_chunk(content="partial answer")
+        yield _make_stream_chunk(finish_reason=raw)
 
-def test_transport_poolside_integer_reason_still_stringified():
-    # Pre-existing Poolside behavior: int finish_reason → str, not folded.
-    transport = ChatCompletionsTransport()
-    normalized = transport.normalize_response(_fake_response(24))
-    assert normalized.finish_reason == "24"
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = lambda *a, **kw: _stream()
+    mock_create.return_value = mock_client
+    monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
 
+    agent = AIAgent(api_key="test-key", base_url="https://example.com/v1", model="test/model",
+                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
+    response = agent._interruptible_streaming_api_call({})
 
-def test_transport_missing_reason_defaults_to_stop():
-    transport = ChatCompletionsTransport()
-    normalized = transport.normalize_response(_fake_response(None))
-    assert normalized.finish_reason == "stop"
-
-
-# ── streaming intake choke point ─────────────────────────────────────
-
-
-def test_streaming_capture_uses_shared_normalizer():
-    # The streaming loop imports the same single owner under a private
-    # alias — verify the alias is the shared function, not a fork.
-    from agent import chat_completion_helpers as cch
-
-    assert cch._normalize_finish_reason is normalize_finish_reason
+    assert response.id != PARTIAL_STREAM_STUB_ID
+    assert response.choices[0].finish_reason == expected

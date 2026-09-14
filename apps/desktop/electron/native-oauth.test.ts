@@ -23,6 +23,7 @@ import {
   parseStoredTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
+  resolveNativeLoginProvider,
   statusSupportsNativeFlow,
   tokenNeedsRefresh
 } from './native-oauth'
@@ -87,39 +88,39 @@ test('resolveLoginStrategy picks native only when advertised and not forced', ()
 
 // --- provider-aware strategy ---
 
-test('resolveLoginStrategy returns embedded when every provider supports password', () => {
+test('resolveLoginStrategy uses native login for one password provider', () => {
   const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
   const providers = [{ name: 'basic', supportsPassword: true }]
 
-  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'embedded')
+  assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
 })
 
-test('resolveLoginStrategy returns embedded for all-password even without native_pkce in auth_flows', () => {
+test('resolveLoginStrategy keeps embedded login without native_pkce', () => {
   const statusBody = { auth_required: true, auth_flows: ['cookie'] }
   const providers = [{ name: 'basic', supportsPassword: true }]
 
   assert.equal(resolveLoginStrategy(statusBody, { providers }), 'embedded')
 })
 
-test('resolveLoginStrategy returns native for native_pkce gateway with non-password provider', () => {
+test('resolveLoginStrategy uses native login for one OAuth provider', () => {
   const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
-  const providers = [{ name: 'nous', displayName: 'Nous Research', supportsPassword: false }]
+  const providers = [{ name: 'github', displayName: 'GitHub', supportsPassword: false }]
 
   assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
 })
 
-test('resolveLoginStrategy returns native for a mixed provider deployment', () => {
+test('resolveLoginStrategy uses native login for one OAuth provider with a password fallback', () => {
   const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
 
   const providers = [
     { name: 'basic', supportsPassword: true },
-    { name: 'nous', supportsPassword: false }
+    { name: 'github', supportsPassword: false }
   ]
 
   assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
 })
 
-test('resolveLoginStrategy preserves existing behavior when providers are empty or missing', () => {
+test('resolveLoginStrategy preserves auth_flows behavior when providers are empty or missing', () => {
   const gated = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
   const legacy = { auth_required: true, auth_flows: ['cookie'] }
 
@@ -133,8 +134,58 @@ test('resolveLoginStrategy ignores providers with no name', () => {
   const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
   const providers = [{ supportsPassword: true }]
 
-  // The unnamed provider is filtered out — still falls through to auth_flows.
   assert.equal(resolveLoginStrategy(statusBody, { providers }), 'native')
+})
+
+test('resolveLoginStrategy uses embedded login when multiple password providers need a chooser', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+
+  const options = {
+    providers: [
+      { name: 'basic-work', supportsPassword: true },
+      { name: 'basic-personal', supportsPassword: true }
+    ]
+  }
+
+  assert.equal(resolveLoginStrategy(statusBody, options), 'embedded')
+})
+
+test('resolveLoginStrategy uses embedded login when multiple OAuth providers need a chooser', () => {
+  const statusBody = { auth_required: true, auth_flows: ['cookie', 'native_pkce'] }
+
+  const options = {
+    providers: [
+      { name: 'github', supportsPassword: false },
+      { name: 'google', supportsPassword: false }
+    ]
+  }
+
+  assert.equal(resolveLoginStrategy(statusBody, options), 'embedded')
+})
+
+test('resolveNativeLoginProvider mirrors the server auto-selection rules', () => {
+  const cases = [
+    { providers: [{ name: 'basic', supportsPassword: true }], expected: 'basic' },
+    {
+      providers: [
+        { name: 'basic', supportsPassword: true },
+        { name: 'github', supportsPassword: false }
+      ],
+      expected: 'github'
+    },
+    {
+      providers: [
+        { name: 'github', supportsPassword: false },
+        { name: 'google', supportsPassword: false }
+      ],
+      expected: undefined
+    },
+    { providers: [], expected: undefined }
+  ]
+
+  for (const { providers, expected } of cases) {
+    assert.equal(resolveNativeLoginProvider(providers), expected)
+  }
 })
 
 // --- URL building ---

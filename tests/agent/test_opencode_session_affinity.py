@@ -60,3 +60,15 @@ def test_auxiliary_calls_share_the_main_turn_session_key():
         assert "x-opencode-session" not in (other.get("extra_headers") or {})
     finally:
         aux._RUNTIME_MAIN_CONTEXT.reset(token)
+
+
+def test_iteration_limit_summary_carries_the_session_header():
+    """The max-iterations recap is a chat-completions request like any other."""
+    from agent.chat_completion_helpers import _iteration_summary_chat_kwargs
+
+    agent = _agent("opencode-go", "glm-5", "https://opencode.ai/zen/go/v1")
+    kwargs = _iteration_summary_chat_kwargs(agent, _MSGS)
+    assert kwargs["extra_headers"]["x-opencode-session"] == "sess-affinity-1"
+
+    other = _agent("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1")
+    assert "x-opencode-session" not in (_iteration_summary_chat_kwargs(other, _MSGS).get("extra_headers") or {})

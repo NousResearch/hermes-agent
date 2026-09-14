@@ -2064,7 +2064,14 @@ def _iteration_summary_chat_kwargs(agent, api_messages: list) -> dict:
                 extra_body["plugins"] = [{"id": "pareto-router", "min_coding_score": _ps}]
     if extra_body:
         summary_kwargs["extra_body"] = extra_body
-    return summary_kwargs
+    # Same relay-affinity invariant as build_api_kwargs(): the max-iterations recap is a real
+    # OpenCode request, so an OpenCode target must carry x-opencode-session or the relay answers
+    # 400 MissingSessionID and the recap is replaced by the error text.
+    from agent.opencode_affinity import merge_opencode_session_headers
+    return merge_opencode_session_headers(
+        summary_kwargs, getattr(agent, "provider", None), getattr(agent, "base_url", None),
+        getattr(agent, "session_id", None),
+    )
 
 
 def _summary_text(agent, response, **normalize_kwargs) -> str:

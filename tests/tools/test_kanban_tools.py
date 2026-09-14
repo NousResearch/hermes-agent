@@ -1230,3 +1230,23 @@ def test_attach_url_happy_path_public_host(worker_env, default_url_guard, monkey
         assert Path(atts[0].stored_path).read_bytes() == payload
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("cleared", [False, True])
+def test_created_card_uses_task_local_session_or_null(worker_env, monkeypatch, cleared):
+    from gateway.session_context import set_session_vars, clear_session_vars
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    monkeypatch.setenv("HERMES_SESSION_ID", "stale-sibling")
+    tokens = set_session_vars(session_id="current-session")
+    try:
+        if cleared:
+            clear_session_vars(tokens)
+        result = json.loads(kt._handle_create({"title": "child", "assignee": "peer"}))
+        assert result["ok"], result
+        with kbc.connect() as conn:
+            task = kb.get_task(conn, result["task_id"])
+            assert task.session_id == (None if cleared else "current-session")
+    finally:
+        clear_session_vars(tokens)

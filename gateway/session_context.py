@@ -188,10 +188,23 @@ NON_MESSAGING_SESSION_SURFACES = frozenset({
 })
 
 
+def resolve_session_platform_hint() -> str:
+    """A bound session platform wins over process hints; clearing masks stale session env."""
+    value = _SESSION_PLATFORM.get()
+    if value is not _UNSET:
+        return value or os.getenv("HERMES_PLATFORM") or ""
+    return os.getenv("HERMES_PLATFORM") or os.getenv("HERMES_SESSION_PLATFORM") or ""
+
+
+def resolve_session_source_hint(default: str = "cli") -> str:
+    """Use the task-local source, including an explicit clear, before process env."""
+    return get_session_env("HERMES_SESSION_SOURCE") or default
+
+
 def session_is_messaging_surface() -> bool:
     """Whether this turn is delivered over a human messaging channel (checks
     ``HERMES_PLATFORM``, then the session platform, then the session source)."""
-    platform = os.getenv("HERMES_PLATFORM") or get_session_env("HERMES_SESSION_PLATFORM", "")
+    platform = resolve_session_platform_hint()
     idents = (platform, get_session_env("HERMES_SESSION_SOURCE", ""))
     idents = (str(v or "").strip().lower() for v in idents)
     return any(ident and ident not in NON_MESSAGING_SESSION_SURFACES for ident in idents)

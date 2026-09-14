@@ -1193,15 +1193,11 @@ def _skill_should_show(
 
 
 def _current_session_platform_hint() -> str:
-    """Active platform without importing the gateway package on CLI startup."""
-    platform = os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM")
-    if platform:
-        return platform
-    get_session_env = getattr(sys.modules.get("gateway.session_context"), "get_session_env", None)
-    try:
-        return (get_session_env("HERMES_SESSION_PLATFORM") if get_session_env else "") or ""
-    except Exception:
-        return ""
+    """Prefer a loaded task-local resolver without importing the gateway on cold CLI startup."""
+    resolve = getattr(sys.modules.get("gateway.session_context"), "resolve_session_platform_hint", None)
+    if resolve is not None:
+        return resolve()
+    return os.environ.get("HERMES_PLATFORM") or os.environ.get("HERMES_SESSION_PLATFORM") or ""
 
 
 def build_skills_system_prompt(

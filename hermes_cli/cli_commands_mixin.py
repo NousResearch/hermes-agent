@@ -6,6 +6,7 @@ the helpers/handlers via ``from cli import ...`` — cli.py imports this module 
 
 from __future__ import annotations
 
+from gateway.session_context import resolve_session_source_hint
 import argparse
 import atexit
 import importlib
@@ -1384,7 +1385,7 @@ class CLICommandsMixin:
         # even after the parent is re-ended with a different end_reason.
         try:
             self._session_db.create_session(
-                session_id=new_session_id, source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                session_id=new_session_id, source=resolve_session_source_hint(),
                 model=self.model, parent_session_id=parent_session_id,
                 model_config={"max_iterations": self.max_turns, "reasoning_config": self.reasoning_config,
                               "_branched_from": parent_session_id})

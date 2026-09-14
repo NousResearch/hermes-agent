@@ -153,11 +153,8 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
     try:
         from hermes_cli.config import load_config
         skills_cfg = load_config().get("skills", {})
-        resolved_platform = platform or os.getenv("HERMES_PLATFORM")
-        if not resolved_platform:
-            with suppress(Exception):
-                from gateway.session_context import get_session_env
-                resolved_platform = get_session_env("HERMES_SESSION_PLATFORM") or ""
+        from gateway.session_context import resolve_session_platform_hint
+        resolved_platform = platform or resolve_session_platform_hint()
         platform_disabled = None
         if resolved_platform:
             platform_disabled = cfg_get(skills_cfg, "platform_disabled", resolved_platform)

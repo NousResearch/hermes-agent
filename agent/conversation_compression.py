@@ -10,6 +10,7 @@ one pass per session at a time (durable lock) but sessions run concurrently, so 
 
 from __future__ import annotations
 
+from gateway.session_context import resolve_session_source_hint
 import concurrent.futures
 import contextlib
 import copy
@@ -2985,7 +2986,7 @@ def _publish_rotated_compaction(
     from agent.context_compressor import _DB_PERSISTED_MARKER
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
-        source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"), model=agent.model,
+        source=agent.platform or resolve_session_source_hint(), model=agent.model,
         model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,

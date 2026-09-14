@@ -868,6 +868,24 @@ class TestWebhookApprovalExclusion:
         assert "unattended platform" in result["message"]
         assert "approvals.unattended_mode" in result["message"]
 
+    def test_cron_honors_permanent_dangerous_pattern_key(self, monkeypatch):
+        import tools.approval as approval_mod
+
+        self._isolate(monkeypatch)
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
+        monkeypatch.setattr(approval_mod, "_permanent_approved", {"script execution via heredoc"})
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+
+        result = approval_mod.check_all_command_guards("python - <<'PY'\npass\nPY", "local")
+
+        assert result["approved"] is True
+
     def test_webhook_dangerous_command_approves_when_opted_in(self, monkeypatch):
         """approvals.unattended_mode: approve restores the old auto-approve path."""
         import tools.approval as approval_mod

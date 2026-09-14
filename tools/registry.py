@@ -206,6 +206,14 @@ class _PluginOverridePolicy:
         self.allowed = bool(allowed)
 
 
+@dataclass(eq=False, frozen=True, slots=True)
+class _SessionToolsetMetadata:
+    """Identity-bearing metadata for one session-toolset generation."""
+
+    description: str
+    direct: bool
+
+
 _OVERRIDE_DENIED_MSG = (
     "Plugin module {owner!r} cannot override built-in tool {name!r} "
     "without operator opt-in (allow_tool_override).")
@@ -438,10 +446,9 @@ class ToolRegistry:
         self._plugin_module_scopes: Dict[str, Set[Optional[str]]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
-        # Profile-scoped plugin toolsets that remain in the model's native
-        # tools array. Session ownership is enforced by the host wrapper.
-        self._direct_toolsets: Dict[str, Set[str]] = {}
-        self._plugin_toolset_descriptions: Dict[str, Dict[str, str]] = {}
+        # Profile-scoped plugin toolsets. The record identity makes teardown
+        # generation-safe when a session reconnects under the same name.
+        self._session_toolset_metadata: Dict[str, Dict[str, _SessionToolsetMetadata]] = {}
         # MCP refresh mutates while other threads read: serialize writes, snapshot reads.
         self._lock = threading.RLock()
         # Bumped on every mutation; get_tool_definitions memoizes against it.
@@ -540,42 +547,45 @@ class ToolRegistry:
 
     def register_session_toolset(
         self, toolset: str, description: str, *, direct: bool, scope: str,
-    ) -> None:
+    ) -> _SessionToolsetMetadata:
         """Register host-managed metadata for a session-owned plugin toolset."""
+        metadata = _SessionToolsetMetadata(description=description, direct=bool(direct))
         with self._lock:
-            self._plugin_toolset_descriptions.setdefault(scope, {})[toolset] = description
-            if direct:
-                self._direct_toolsets.setdefault(scope, set()).add(toolset)
+            self._session_toolset_metadata.setdefault(scope, {})[toolset] = metadata
             self._generation += 1
+        return metadata
 
-    def deregister_session_toolset(self, toolset: str, *, scope: str) -> None:
-        """Remove previously registered session-toolset metadata."""
+    def deregister_session_toolset(
+        self, toolset: str, metadata: _SessionToolsetMetadata, *, scope: str,
+    ) -> bool:
+        """Remove metadata only while *metadata* is still the current generation."""
         with self._lock:
-            descriptions = self._plugin_toolset_descriptions.get(scope)
-            if descriptions is not None:
-                descriptions.pop(toolset, None)
-                if not descriptions:
-                    self._plugin_toolset_descriptions.pop(scope, None)
-            names = self._direct_toolsets.get(scope)
-            if names is not None:
-                names.discard(toolset)
-                if not names:
-                    self._direct_toolsets.pop(scope, None)
+            registered = self._session_toolset_metadata.get(scope)
+            if registered is None or registered.get(toolset) is not metadata:
+                return False
+            registered.pop(toolset)
+            if not registered:
+                self._session_toolset_metadata.pop(scope, None)
             self._generation += 1
+            return True
 
     def get_plugin_toolset_description(
         self, toolset: str, *, scope: Optional[str] = None,
     ) -> Optional[str]:
         """Description registered for a dynamic plugin toolset, if any."""
         with self._lock:
-            return self._plugin_toolset_descriptions.get(
+            metadata = self._session_toolset_metadata.get(
                 scope or self.current_scope_key(), {}
             ).get(toolset)
+            return metadata.description if metadata is not None else None
 
     def is_direct_toolset(self, toolset: str, *, scope: Optional[str] = None) -> bool:
         """Whether *toolset* is direct in the active profile."""
         with self._lock:
-            return toolset in self._direct_toolsets.get(scope or self.current_scope_key(), set())
+            metadata = self._session_toolset_metadata.get(
+                scope or self.current_scope_key(), {}
+            ).get(toolset)
+            return bool(metadata and metadata.direct)
 
     # ---- Registration ------------------------------------------------
 

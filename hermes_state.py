@@ -865,6 +865,8 @@ class SessionDB(
                 f"in flight (a session-teardown path called close() before "
                 f"this worker finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
+        if self._wal_active:  # a reopened writer is a live generation holder like the first open
+            self._wal_lock_guard = _lockguard.hold(self.db_path)
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
@@ -1330,10 +1332,12 @@ class SessionDB(
         """
         if self._quarantine_reason() is not None:
             return
-        if self._wal_lock_guard:
-            _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
         try:
             with self._lock:
+                if self._conn is None:
+                    return  # closed underneath the timer: nothing to checkpoint, nothing to re-guard
+                if self._wal_lock_guard:
+                    _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])

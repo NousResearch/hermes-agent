@@ -295,10 +295,12 @@ def _iter_darwin_sidecar_holders(db_path) -> List[Tuple[int, str]]:
     path for the vnode, while ``os.path.abspath`` does not resolve symlinks -- a textual compare
     of the two silently misses every sidecar under a symlinked prefix (on macOS ``/var`` itself)."""
     base = os.path.realpath(os.path.abspath(os.fspath(db_path)))
-    watched = {os.path.normcase(path): path for path in (base + "-wal", base + "-shm")}
+    # APFS/HFS+ are case-insensitive by default and libproc reports the pathname as the opener
+    # spelled it; ``os.path.normcase`` is the identity on darwin, so fold case here.
+    watched = {path.casefold(): path for path in (base + "-wal", base + "-shm")}
     holders: List[Tuple[int, str]] = []
     for pid, _fd, target, identity in _iter_darwin_fd_targets():
-        literal = watched.get(os.path.normcase(target))
+        literal = watched.get(target.casefold())
         if literal is not None and _identity_is_truly_unlinked(identity, literal):
             holders.append((pid, target))
     return holders

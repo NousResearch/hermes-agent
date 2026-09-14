@@ -309,6 +309,11 @@ _SPECS = [
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,
+        _arg("--takeover", action="store_true",
+             help="Explicit cross-host takeover: also durably retires the prev-worker-alive "
+                  "guard's evidence for the task's latest closed run, after you have confirmed "
+                  "out-of-band that the previous worker is genuinely gone. Without this, the "
+                  "guard's cross-host hold recurs on the next dispatch tick and re-escalates."),
     ], help="Return blocked/scheduled tasks to ready, or todo while parents remain open"),
     _cmd("request-review", [
         _TASK_ID,
@@ -324,6 +329,13 @@ _SPECS = [
     _cmd("reopen-review", [
         _TASK_IDS,
         _reason("Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons."),
+        _arg("--takeover", action="store_true",
+             help="Explicit cross-host takeover: also durably retires the prev-worker-alive "
+                  "guard's evidence for the task's latest closed run, after you have confirmed "
+                  "out-of-band that the previous worker is genuinely gone. The review lane never "
+                  "reaches 'blocked' on its own (block_task cannot touch a review row), so a stuck "
+                  "review-lane card's guard evidence survives an ordinary reopen-review untouched "
+                  "and holds again on the next dispatch tick without this."),
     ], help="Send one or more review tasks back for changes (review -> ready/todo)"),
     _cmd("promote", [
         _TASK_ID,

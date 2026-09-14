@@ -72,7 +72,8 @@ _STATIC_FEATURE_FLAGS = {
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
-    "session_key_header": "X-Hermes-Session-Key"}
+    "session_key_header": "X-Hermes-Session-Key",
+    "workspace_header": "X-Hermes-Workspace"}
 # /v1/capabilities "endpoints" table: name -> (method, path).
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
@@ -779,7 +780,11 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id"}
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, X-Hermes-Session-Id, "
+        "X-Hermes-Workspace"
+    ),
+}
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
@@ -1004,8 +1009,12 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any], keys: List[str], *, context: Optional[Dict[str, Any]] = None,
+) -> str:
     subset = {k: body.get(k) for k in keys}
+    if context:
+        subset.update(context)
     return hashlib.sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
@@ -1574,6 +1583,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # Cap on session headers: above any realistic channel id, safe for Honcho / state.db.
     _MAX_SESSION_HEADER_LEN = 256
+    _MAX_WORKSPACE_HEADER_LEN = 4096
     # Source stamped on every session row this platform owns (also hardwired in
     # _bind_api_server_session and _create_agent) so peer lookups can filter on it.
     _SESSION_SOURCE = "api_server"
@@ -1647,6 +1657,32 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if len(raw) > self._MAX_SESSION_HEADER_LEN:
             return None, _invalid_request("Session key too long")
         return raw, None
+
+    def _parse_workspace_header(
+        self, request: "web.Request"
+    ) -> tuple[Optional[str], Optional["web.Response"]]:
+        """Extract ``X-Hermes-Workspace`` as an existing absolute directory."""
+        raw = request.headers.get("X-Hermes-Workspace", "").strip()
+        if not raw:
+            return None, None
+        if re.search(r"[\r\n\x00]", raw) or len(raw) > self._MAX_WORKSPACE_HEADER_LEN:
+            return None, web.json_response(
+                _openai_error("Invalid workspace header", code="invalid_workspace"), status=400)
+        try:
+            workspace = Path(raw).expanduser()
+            if not workspace.is_absolute():
+                raise ValueError
+            workspace = workspace.resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            return None, web.json_response(
+                _openai_error(
+                    "X-Hermes-Workspace must be an existing absolute directory",
+                    code="invalid_workspace"), status=400)
+        if not workspace.is_dir():
+            return None, web.json_response(
+                _openai_error("X-Hermes-Workspace must be a directory", code="invalid_workspace"),
+                status=400)
+        return str(workspace), None
 
     # -- Session DB -------------------------------------------------------------------
 
@@ -3583,7 +3619,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def _bind_api_server_session(
         *, chat_id: str = "", session_key: str = "", session_id: str = "", profile: str = "",
         browser_control_principal: str = "", browser_control_transport_family: str = "",
-        session_history_delivery: str = "") -> list:
+        session_history_delivery: str = "", cwd: str = "") -> list:
         """Bind an API turn with push disabled and history delivery default-denied.
 
         Only routes whose continuation reads SessionDB may pass "1". An omitted
@@ -3593,11 +3629,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         reach ``HERMES_SESSION_PROFILE``: the persistent-Docker container key is derived from it, so an
         unbound profile collapses every profile's turns onto the default sandbox (#96370)."""
         from gateway.session_context import set_session_vars
+        session_cwd = cwd
+        if not session_cwd and session_id:
+            from tools.terminal_tool import get_session_cwd
+
+            session_cwd = get_session_cwd(session_id) or ""
+        if session_cwd and session_id:
+            from tools.terminal_tool import record_session_cwd
+
+            # API sessions share the default terminal environment, so updating
+            # its cwd here would move another session's active workspace.
+            record_session_cwd(session_id, session_cwd)
         return set_session_vars(
             platform="api_server", chat_id=chat_id, session_key=session_key, session_id=session_id,
             profile=profile, browser_control_principal=browser_control_principal,
             browser_control_transport_family=browser_control_transport_family,
-            async_delivery=False, cron_session="", session_history_delivery=session_history_delivery)
+            cwd=session_cwd, async_delivery=False, cron_session="",
+            session_history_delivery=session_history_delivery)
 
     def _turn_runtime_metadata(
         self, agent: Any, *, route: Optional[Dict[str, Any]], requested_runtime: Optional[Dict[str, Any]],
@@ -3667,7 +3715,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
         tool_complete_callback=None, agent_ref: Optional[list] = None, active_run_id: Optional[str] = None,
-        gateway_session_key: Optional[str] = None, requested_model: Optional[str] = None,
+        gateway_session_key: Optional[str] = None, workspace_cwd: Optional[str] = None,
+        requested_model: Optional[str] = None,
         requested_provider: Optional[str] = None, model_options: Optional[Dict[str, Any]] = None,
         route: Optional[Dict[str, Any]] = None, session_model: Optional[str] = None,
         requested_runtime: Optional[Dict[str, Any]] = None, route_source: str = "global",
@@ -3696,7 +3745,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     session_id=session_id or "", profile=request_profile or "",
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,
-                    session_history_delivery=session_history_delivery)
+                    session_history_delivery=session_history_delivery, cwd=workspace_cwd or "")
                 agent = None
                 try:
                     agent = self._create_agent(

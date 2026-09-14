@@ -3187,72 +3187,74 @@ def _launch_external_cron_worker(job: dict) -> bool:
     )
     from cron.scheduler_provider import routed_profile_fire
     from hermes_cli.env_loader import hydrate_profile_secret_sources
-    from tools.environments.local import build_subprocess_env, restore_managed_env, strip_launch_profile_env
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
         systemd_user_bus_env,
     )
 
-    context_token = (
-        set_multiplex_context(True) if routed_profile_fire() and not is_multiplex_active() else None
-    )
+    # A fire routed to another profile is multiplexed at this handoff even when the process flag is
+    # off (the desktop ticker is not a multiplexer): the payload says so, and the worker env is built
+    # under that context so the scrub and the launch-residue strip both apply. The context is set
+    # for exactly the env build; nothing else here reads it.
+    multiplex_active = is_multiplex_active() or routed_profile_fire()
     try:
-        try:
-            require_restart_safe_scope = bool(
-                (load_config_readonly().get("cron") or {}).get("require_restart_safe_scope", False)
-            )
-        except Exception:
-            require_restart_safe_scope = False
-        multiplex_active = is_multiplex_active()
-        dispatch = restart_safe_gateway_child_argv(
-            command,
-            unit_suffix=f"cron-{job_id}-exec-{execution_id}",
-            require_restart_safe_scope=require_restart_safe_scope,
+        require_restart_safe_scope = bool(
+            (load_config_readonly().get("cron") or {}).get("require_restart_safe_scope", False)
         )
-        if dispatch.mode == "in_process":
-            return False
+    except Exception:
+        require_restart_safe_scope = False
+    dispatch = restart_safe_gateway_child_argv(
+        command,
+        unit_suffix=f"cron-{job_id}-exec-{execution_id}",
+        require_restart_safe_scope=require_restart_safe_scope,
+    )
+    if dispatch.mode == "in_process":
+        return False
 
-        if mark_execution_handoff_pending(execution_id) is None:
-            raise RuntimeError(
-                "cron execution claim changed before external worker handoff"
+    if mark_execution_handoff_pending(execution_id) is None:
+        raise RuntimeError(
+            "cron execution claim changed before external worker handoff"
+        )
+
+    _ensure_cron_dir(handoff_dir)
+    try:
+        handoff_dir.chmod(0o700)
+    except OSError:
+        pass
+    fd = os.open(payload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as payload_file:
+            json.dump(
+                {
+                    "job": job,
+                    "profile_home": str(_get_hermes_home().resolve()),
+                    "multiplex_active": multiplex_active,
+                },
+                payload_file,
             )
+            payload_file.flush()
+            os.fsync(payload_file.fileno())
+    except BaseException:
+        payload_path.unlink(missing_ok=True)
+        raise
 
-        _ensure_cron_dir(handoff_dir)
-        try:
-            handoff_dir.chmod(0o700)
-        except OSError:
-            pass
-        fd = os.open(payload_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as payload_file:
-                json.dump(
-                    {
-                        "job": job,
-                        "profile_home": str(_get_hermes_home().resolve()),
-                        "multiplex_active": multiplex_active,
-                    },
-                    payload_file,
-                )
-                payload_file.flush()
-                os.fsync(payload_file.fileno())
-        except BaseException:
-            payload_path.unlink(missing_ok=True)
-            raise
-
-        profile_home = _get_hermes_home().resolve()
-        hydrate_profile_secret_sources(profile_home)
-        secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
-        try:
-            worker_env = restore_managed_env(strip_launch_profile_env(build_subprocess_env(
-                scrub_secrets=multiplex_active,
-                inherit_profile_home=True,
-                extra={"HERMES_HOME": str(profile_home)},
-            )))
-        finally:
-            reset_secret_scope(secret_token)
+    profile_home = _get_hermes_home().resolve()
+    hydrate_profile_secret_sources(profile_home)
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    context_token = set_multiplex_context(True) if multiplex_active and not is_multiplex_active() else None
+    try:
+        # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
+        # import, and strip_launch_profile_env leaves managed keys in place.
+        worker_env = strip_launch_profile_env(build_subprocess_env(
+            scrub_secrets=multiplex_active,
+            inherit_profile_home=True,
+            extra={"HERMES_HOME": str(profile_home)},
+        ))
     finally:
         if context_token is not None:
             reset_multiplex_context(context_token)
+        reset_secret_scope(secret_token)
     worker_env = systemd_user_bus_env(worker_env)
     try:
         process = subprocess.Popen(

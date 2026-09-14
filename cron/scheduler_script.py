@@ -356,15 +356,16 @@ def _run_job_script(
         # then overlay the installed scope, then sanitize, so routed values pass the same scrub /
         # passthrough rules as any other. No-op outside multiplex or for the launch profile's own
         # fires; the parent process is never mutated.
-        from agent.secret_scope import current_secret_scope
+        from agent.secret_scope import current_secret_scope, is_multiplex_active
         from tools.environments.local import restore_managed_env, strip_launch_profile_env
         base = strip_launch_profile_env(dict(os.environ))
-        scope = current_secret_scope()
-        if scope:
-            base.update(scope)
-        # Administrator-managed values keep their precedence over the routed profile's own .env, exactly
-        # as they do in the launch process (``_apply_managed_env`` applies them last, with override).
-        restore_managed_env(base)
+        if is_multiplex_active():
+            # Single-profile: the scope IS os.environ, so overlaying it would only re-sanitize
+            # values the child already inherits byte-identical.
+            base.update(current_secret_scope() or {})
+            # Administrator-managed values keep their precedence over the routed profile's own .env,
+            # exactly as they do in the launch process (``_apply_managed_env`` applies them last).
+            restore_managed_env(base)
         env = build_subprocess_env(base=base)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.

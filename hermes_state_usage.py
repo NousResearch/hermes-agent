@@ -386,8 +386,10 @@ class SessionUsageMixin:
 
     def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
         """Tokens and spend across the whole store (one scan), so the sidebar total does not
-        shrink with paging. Spend prefers the billed figure over the estimate."""
-        where = ["parent_session_id IS NULL", "message_count >= ?"]
+        shrink with paging. Spend prefers the billed figure over the estimate. Includes
+        compression-lineage children: the post-rotation segments of a compressed conversation
+        carry its ongoing spend, and summing roots only undercounted every compressed chat."""
+        where = ["message_count >= ?"]
         params: List[Any] = [min_message_count]
         if not include_archived:
             where.append("COALESCE(archived, 0) = 0")

@@ -1983,9 +1983,21 @@ def get_plugin_context_engine():
 
 
 def get_plugin_command_handler(name: str) -> Optional[Callable]:
-    """Return the handler for a plugin-registered slash command, or ``None``."""
-    entry = _ensure_plugins_discovered()._plugin_commands.get(name)
-    return entry["handler"] if entry else None
+    """Return the handler for a plugin-registered slash command, or ``None``.
+
+    Underscore/hyphen tolerant: the gateway hyphen-normalizes typed commands
+    before plugin dispatch (gateway/run_inbound.py) while plugins may register
+    either spelling (Discord accepts underscores natively), so both forms must
+    resolve. Exact match wins.
+    """
+    commands = _ensure_plugins_discovered()._plugin_commands
+    for candidate in dict.fromkeys(
+        (name, name.replace("_", "-"), name.replace("-", "_"))
+    ):
+        entry = commands.get(candidate)
+        if entry:
+            return entry["handler"]
+    return None
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

@@ -1458,6 +1458,72 @@ class TestResolveGatewayLiveness:
         assert seen["expected_home"] == profile_dir
 
 
+class TestPidExists:
+    """_pid_exists must corroborate psutil "dead" verdicts (#110352).
+
+    A transient ``/proc/<pid>/stat`` read failure surfaces through psutil
+    as ``STATUS_ZOMBIE`` or ``NoSuchProcess`` while the process is alive;
+    reporting False books a live worker dead and the kanban dispatcher
+    reclaims the still-running card. Dead verdicts now fall through to
+    the platform probe, which a live pid still answers.
+    """
+
+    def test_transient_zombie_status_on_live_pid_reports_alive(self, monkeypatch):
+        import psutil
+
+        monkeypatch.setattr(
+            psutil,
+            "Process",
+            lambda _pid: SimpleNamespace(status=lambda: psutil.STATUS_ZOMBIE),
+        )
+
+        assert status._pid_exists(os.getpid()) is True
+
+    def test_no_such_process_race_on_live_pid_reports_alive(self, monkeypatch):
+        import psutil
+
+        def _raise(_pid):
+            raise psutil.NoSuchProcess(_pid)
+
+        monkeypatch.setattr(psutil, "Process", _raise)
+
+        assert status._pid_exists(os.getpid()) is True
+
+    def test_confirmed_dead_pid_still_reports_dead(self):
+        # Almost certainly unallocated: corroborated by both probes.
+        assert status._pid_exists(999999999) is False
+
+    @pytest.mark.skipif("linux" not in sys.platform,
+                        reason="zombie detection relies on /proc")
+    def test_real_zombie_still_reports_dead(self):
+        """A genuinely dead-but-unreaped pid must keep reporting dead.
+
+        The #42126 systemd ``--replace`` hang returns if a real zombie
+        ever answers True, so the corroboration path has to preserve it.
+        """
+        import subprocess as _sp
+
+        proc = _sp.Popen(
+            ["sleep", "3600"],
+            stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+        )
+        pid = proc.pid
+        try:
+            os.kill(pid, 9)
+            time.sleep(0.3)
+            with open(f"/proc/{pid}/status") as f:
+                state_line = next(
+                    (l for l in f if l.startswith("State:")), ""
+                )
+            assert "Z" in state_line, f"expected zombie, got {state_line!r}"
+            assert status._pid_exists(pid) is False
+        finally:
+            try:
+                proc.wait(timeout=1)
+            except Exception:
+                pass
+
+
 def test_strict_gateway_identity_returns_none_for_confirmed_absence(tmp_path):
     assert status.get_running_pid_identity_strict(tmp_path / "gateway.pid") is None
 

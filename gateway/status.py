@@ -584,16 +584,21 @@ def _pid_exists(pid: int) -> bool:
             # gateway. Treating a zombie as alive makes ``--replace`` wait for the old PID to die (it never
             # does, until its parent reaps it), then abort with exit 1 — a silent crash loop under systemd
             # ``Restart=always``, which respawns the gateway before reaping the previous process (issue
-            # #42126). Report zombies as dead so the takeover proceeds. Best-effort: any failure to read
-            # status (partial/stub psutil, access denied, transient race) falls through to the authoritative
-            # ``pid_exists()`` below rather than raising.
-            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
-                return False
+            # #42126). Report zombies as dead so the takeover proceeds.
+            #
+            # But neither psutil "dead" verdict is self-verifying: a transient ``/proc/<pid>/stat``
+            # read failure also surfaces as ``STATUS_ZOMBIE`` or ``NoSuchProcess`` while the process
+            # is alive, and a False here books a live worker dead (the kanban dispatcher reclaims the
+            # still-running card — issue #110352). Corroborate either verdict with the platform probe
+            # below: a live pid answers it, a real zombie does not (POSIX ``_posix_is_zombie`` /
+            # Windows ``WaitForSingleObject``). Other read failures (partial/stub psutil, access
+            # denied) keep the historical fallthrough to ``pid_exists()``.
+            if psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+                return bool(psutil.pid_exists(pid))
         except getattr(psutil, "NoSuchProcess", ()):
-            return False
+            pass  # Dead pid — or a lost read race on a live one; the platform probe decides.
         except Exception:
-            pass
-        return bool(psutil.pid_exists(pid))
+            return bool(psutil.pid_exists(pid))
     except ImportError:
         pass  # Fall through to stdlib fallback.
     if _IS_WINDOWS:

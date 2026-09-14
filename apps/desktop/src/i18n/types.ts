@@ -163,6 +163,10 @@ export interface Translations {
     revealExplorer: string
     revealFileManager: string
     revealInSidebar: string
+    newFile: string
+    newFolder: string
+    createFailed: string
+    deleteRemoteBody: string
     copyPath: string
     copyRelativePath: string
     download: string

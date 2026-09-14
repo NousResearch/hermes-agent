@@ -1,4 +1,6 @@
 import base64
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -116,3 +118,258 @@ def test_fs_endpoints_require_auth(tmp_path):
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+
+
+def test_fs_create_file_and_directory(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+
+    file_response = client.post("/api/fs/create", json={"path": str(parent / "notes.md"), "directory": False})
+    dir_response = client.post("/api/fs/create", json={"path": str(parent / "subdir"), "directory": True})
+
+    assert file_response.status_code == 200
+    assert (parent / "notes.md").is_file()
+    assert file_response.json()["isDirectory"] is False
+    assert dir_response.status_code == 200
+    assert (parent / "subdir").is_dir()
+    assert dir_response.json()["isDirectory"] is True
+
+
+def test_fs_create_refuses_existing_and_missing_parent(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    (parent / "taken.txt").write_text("x")
+
+    existing = client.post("/api/fs/create", json={"path": str(parent / "taken.txt")})
+    missing_parent = client.post("/api/fs/create", json={"path": str(parent / "no" / "such" / "file")})
+
+    assert existing.status_code == 409
+    assert missing_parent.status_code == 400
+    assert not (parent / "no").exists()
+
+
+def test_fs_rename_same_parent_collision_guard(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "a.txt").write_text("a")
+    (root / "b.txt").write_text("b")
+
+    moved = client.post("/api/fs/rename", json={"path": str(root / "a.txt"), "name": "c.txt"})
+    collision = client.post("/api/fs/rename", json={"path": str(root / "b.txt"), "name": "c.txt"})
+    escape = client.post("/api/fs/rename", json={"path": str(root / "b.txt"), "name": "../escape.txt"})
+    missing = client.post("/api/fs/rename", json={"path": str(root / "ghost.txt"), "name": "x.txt"})
+
+    assert moved.status_code == 200
+    assert moved.json()["path"] == str(root / "c.txt")
+    assert (root / "c.txt").read_text() == "a"
+    assert collision.status_code == 409
+    assert escape.status_code == 400
+    assert not (tmp_path / "escape.txt").exists()
+    assert missing.status_code == 404
+
+
+def test_fs_rename_accepts_directory(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "olddir").mkdir(parents=True)
+
+    response = client.post("/api/fs/rename", json={"path": str(root / "olddir"), "name": "newdir"})
+
+    assert response.status_code == 200
+    assert (root / "newdir").is_dir()
+    assert not (root / "olddir").exists()
+
+
+def test_fs_delete_file_dir_and_recursive_guard(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "deep.txt").write_text("d")
+    (root / "leaf.txt").write_text("l")
+
+    dir_without_recursive = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub"), "recursive": False}
+    )
+    file_delete = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "leaf.txt")})
+    dir_recursive = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub"), "recursive": True}
+    )
+    missing = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "ghost.txt")})
+
+    assert dir_without_recursive.status_code == 409
+    assert file_delete.status_code == 200
+    assert not (root / "leaf.txt").exists()
+    assert dir_recursive.status_code == 200
+    assert not (root / "sub").exists()
+    assert missing.status_code == 404
+
+
+def test_fs_delete_empty_directory_without_recursive(client, tmp_path):
+    root = tmp_path / "project"
+    (root / "empty").mkdir(parents=True)
+
+    response = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "empty"), "recursive": False})
+
+    assert response.status_code == 200
+    assert not (root / "empty").exists()
+
+
+def test_fs_delete_refuses_managed_root(monkeypatch, client, tmp_path):
+    from hermes_cli import web_server_files
+    from hermes_cli.web_routers import files as files_router
+
+    locked = tmp_path / "managed-root"
+    locked.mkdir()
+
+    monkeypatch.setattr(
+        files_router,
+        "_managed_files_policy",
+        lambda request, **kwargs: web_server_files.ManagedFilesPolicy(
+            default_path=locked, locked_root=locked, can_change_path=False
+        ),
+    )
+
+    response = client.request("DELETE", "/api/fs/delete", json={"path": str(locked), "recursive": True})
+
+    assert response.status_code == 400
+    assert locked.exists()
+
+
+def test_fs_mutation_refuses_symlinked_parent(client, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "sentinel.txt").write_text("keep")
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+
+    create = client.post("/api/fs/create", json={"path": str(root / "link" / "evil.txt"), "directory": False})
+    rename = client.post("/api/fs/rename", json={"path": str(root / "link" / "sentinel.txt"), "name": "moved.txt"})
+    delete = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "link" / "sentinel.txt"), "recursive": False}
+    )
+
+    assert create.status_code == 400
+    assert rename.status_code == 400
+    assert delete.status_code == 400
+    # Nothing was created/renamed/deleted outside the project tree.
+    assert not (outside / "evil.txt").exists()
+    assert (outside / "sentinel.txt").read_text() == "keep"
+    assert not (outside / "moved.txt").exists()
+
+
+def test_fs_delete_refuses_ancestor_of_managed_root(monkeypatch, client, tmp_path):
+    from hermes_cli import web_server_files
+    from hermes_cli.web_routers import files as files_router
+
+    locked = tmp_path / "opt-data"
+    locked.mkdir()
+    (locked / "keep.txt").write_text("keep")
+
+    monkeypatch.setattr(
+        files_router,
+        "_managed_files_policy",
+        lambda request, **kwargs: web_server_files.ManagedFilesPolicy(
+            default_path=locked, locked_root=locked, can_change_path=False
+        ),
+    )
+
+    # Deleting an ANCESTOR of the locked root with recursive must be refused:
+    # a naive `target == locked_root` guard would let rmtree(ancestor) remove
+    # the locked /opt/data underneath it.
+    response = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(tmp_path), "recursive": True}
+    )
+
+    assert response.status_code == 400
+    assert (locked / "keep.txt").exists()
+
+
+def test_fs_create_file_atomically_refuses_existing(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    (parent / "taken.txt").write_text("precious")
+
+    # The same-body call twice: os.open(O_CREAT|O_EXCL) makes this a hard 409 —
+    # Path.touch() would have silently succeeded and clobbered the content.
+    for _ in range(2):
+        response = client.post("/api/fs/create", json={"path": str(parent / "taken.txt"), "directory": False})
+
+    assert response.status_code == 409
+    assert (parent / "taken.txt").read_text() == "precious"
+
+
+def test_fs_mutation_refuses_dot_components(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "sub").mkdir()
+    (root / "sub" / "keep.txt").write_text("keep")
+    (root / "sentinel.txt").write_text("sentinel")
+
+    # A trailing `..` would resolve the delete target to the PARENT directory —
+    # `rmtree('/project/sub/..')` removes /project, escaping the selected tree.
+    delete = client.request(
+        "DELETE", "/api/fs/delete", json={"path": str(root / "sub" / ".."), "recursive": True}
+    )
+    create = client.post("/api/fs/create", json={"path": str(root / "sub" / ".." / "evil.txt")})
+    rename = client.post("/api/fs/rename", json={"path": str(root / "sub" / "keep.txt"), "name": "../../escape.txt"})
+
+    assert delete.status_code == 400
+    assert create.status_code == 400
+    assert rename.status_code == 400
+    # Nothing outside the selected folder was created or removed.
+    assert (root / "sentinel.txt").read_text() == "sentinel"
+    assert (tmp_path / "evil.txt").exists() is False
+    assert (root / "sub" / "keep.txt").read_text() == "keep"
+
+
+def test_fs_delete_and_rename_handle_dangling_symlink(client, tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "broken").symlink_to(root / "missing-target")
+
+    # exists() follows the referent so a dangling link reports missing; the
+    # mutation targets the LINK itself, so both must still succeed (200).
+    renamed = client.post("/api/fs/rename", json={"path": str(root / "broken"), "name": "broken2"})
+
+    assert renamed.status_code == 200
+    assert renamed.json()["path"] == str(root / "broken2")
+    assert (root / "broken2").is_symlink()
+    assert not (root / "broken").exists()
+
+    deleted = client.request("DELETE", "/api/fs/delete", json={"path": str(root / "broken2")})
+    assert deleted.status_code == 200
+    assert not (root / "broken2").exists()
+
+
+def test_fs_create_file_uses_0666_base_mode(client, tmp_path):
+    parent = tmp_path / "project"
+    parent.mkdir()
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+
+    response = client.post("/api/fs/create", json={"path": str(parent / "notes.md")})
+
+    assert response.status_code == 200
+    # 0o666 base masked by the umask → 0644 (never the 0755 an 0o777 default
+    # open() would produce for new text files).
+    mode = stat.S_IMODE((parent / "notes.md").stat().st_mode)
+    assert mode == 0o666 & ~current_umask
+
+
+def test_fs_delete_never_removes_filesystem_root(client, tmp_path):
+    response = client.request("DELETE", "/api/fs/delete", json={"path": "/", "recursive": True})
+
+    assert response.status_code == 400
+
+
+def test_fs_mutations_require_auth(client, tmp_path):
+    unauthenticated = TestClient(web_server.app)
+    parent = tmp_path / "project"
+    parent.mkdir()
+
+    create_response = unauthenticated.post("/api/fs/create", json={"path": str(parent / "x.txt")})
+    rename_response = unauthenticated.post("/api/fs/rename", json={"path": str(parent / "x.txt"), "name": "y.txt"})
+    delete_response = unauthenticated.request("DELETE", "/api/fs/delete", json={"path": str(parent / "x.txt")})
+
+    assert create_response.status_code == 401
+    assert rename_response.status_code == 401
+    assert delete_response.status_code == 401

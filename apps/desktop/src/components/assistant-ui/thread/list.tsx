@@ -213,6 +213,7 @@ interface ThreadMessageListProps {
   loadingIndicator?: ReactNode
   sessionId?: string | null
   sessionKey?: string | null
+  scrollProfile?: string
 }
 
 // Group each user message with the assistant turn(s) that follow it so the
@@ -403,6 +404,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   emptyPlaceholder,
   loadingIndicator,
   sessionId = null,
+  scrollProfile,
   sessionKey
 }) => {
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
@@ -496,6 +498,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // load in progress, not a reading position anyone chose — never anchor to it.
   const loadSettledRef = useRef(false)
   const cancelRestoreRef = useRef<(() => void) | null>(null)
+  const jumpRestoreRef = useRef<(() => void) | null>(null)
   const isRunning = useAuiState(s => s.thread.isRunning)
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
@@ -516,7 +519,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       return
     }
 
-    restoreFromBottomRef.current = el.scrollHeight - el.scrollTop
+    // Deferred content can grow before the library follows it. Preserve the
+    // bottom intent instead of anchoring that temporary gap as a reading offset.
+    restoreFromBottomRef.current =
+      liveScrollStateRef.current.kind === 'bottom' ? el.clientHeight : el.scrollHeight - el.scrollTop
   }, [scrollRef])
 
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
@@ -618,7 +624,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => () => resetPublishedThreadScroll({ paneVisible }), [paneVisible])
 
   // Floating jump button (outside this subtree) → return to the bottom.
-  useEffect(() => onScrollToBottomRequest(() => void scrollToBottom(), sessionId), [scrollToBottom, sessionId])
+  useEffect(
+    () =>
+      onScrollToBottomRequest(() => {
+        if (jumpRestoreRef.current) jumpRestoreRef.current()
+        else void scrollToBottom()
+      }, sessionId),
+    [scrollToBottom, sessionId]
+  )
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
   // the same to any window): rAF and ResizeObserver may have been frozen, so
@@ -675,6 +688,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // highlight, the budget backfill) changes scrollHeight WITHOUT a scroll
   // event, so a scroll-only cache records a stale offset (the gap #70478's
   // review threads flagged). Both legs write stateFromMetrics(el).
+  // Bind persistence to this transcript, not whichever Bot most recently
+  // changed the global profile. Visibility changes do not transfer ownership.
+  const [scrollOwner, setScrollOwner] = useState(() => ({
+    sessionKey,
+    profile: scrollProfile,
+    storageKey: threadScrollStorageKey(scrollProfile)
+  }))
+  if (scrollOwner.sessionKey !== sessionKey || scrollOwner.profile !== scrollProfile) {
+    setScrollOwner({ sessionKey, profile: scrollProfile, storageKey: threadScrollStorageKey(scrollProfile) })
+  }
+  const scrollStorageKey = scrollOwner.storageKey
+  const restoredStorageKeyRef = useRef(scrollStorageKey)
+
   const liveScrollStateRef = useRef<ThreadScrollState>(THREAD_SCROLL_BOTTOM)
   // Key the restore loop has already applied to the current transcript — the
   // record gate: an instance records only the state it actually showed under
@@ -711,7 +737,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // settled gate — a close mid-settle must not persist transient clamped
   // metrics.
   useEffect(() => {
-    const storageKey = threadScrollStorageKey()
+    const storageKey = scrollStorageKey
 
     const flush = () => {
       if (sessionKey && loadSettledRef.current && restoredContentKeyRef.current === sessionKey) {
@@ -722,7 +748,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     window.addEventListener('beforeunload', flush)
 
     return () => window.removeEventListener('beforeunload', flush)
-  }, [sessionKey])
+  }, [scrollStorageKey, sessionKey])
 
   // Reset the cap and restore the remembered scroll state on mount + every
   // session switch (messages swap in place on a long-lived runtime, so
@@ -766,10 +792,16 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     // Cleanup belongs to the subscription owner, not the newly active globals.
-    const storageKey = threadScrollStorageKey()
-    const sessionSwitched = settleKeyRef.current !== sessionKey
+    const storageKey = scrollStorageKey
+    const sessionSwitched = settleKeyRef.current !== sessionKey || restoredStorageKeyRef.current !== storageKey
+    restoredStorageKeyRef.current = storageKey
 
-    const plan = planThreadScrollRestore(restoredContentKeyRef.current, sessionKey, hasGroups, loadSettledRef.current)
+    const plan = planThreadScrollRestore(
+      sessionSwitched ? undefined : restoredContentKeyRef.current,
+      sessionKey,
+      hasGroups,
+      loadSettledRef.current
+    )
 
     restoredContentKeyRef.current = plan.gate
 
@@ -812,7 +844,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const remembered = sessionKey ? getThreadScrollPosition(sessionKey, storageKey) : undefined
-    const target = remembered ?? THREAD_SCROLL_BOTTOM
+    let target = remembered ?? THREAD_SCROLL_BOTTOM
 
     // The previous session's parting state must not leak into this one: from
     // here every scroll/RO event describes the restored session.
@@ -884,9 +916,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     // Quiet frames are not layout completion: deferred Markdown and intrinsic
     // row measurements can change height after the initial settle. Retain the
-    // restored offset through those resizes until input or a live run takes over.
+    // restored target through those resizes until input or a live run takes over.
+    // Bottom needs the same protection: the library follows on the next frame,
+    // but a switch in this frame would otherwise persist the temporary gap.
     const resizeObserver = new ResizeObserver(() => {
-      if (target.kind === 'offset' && loadSettledRef.current) {
+      if (loadSettledRef.current) {
         el.scrollTop = threadScrollTargetTop(target, el)
         liveScrollStateRef.current = threadScrollStateFromMetrics(el)
       }
@@ -921,7 +955,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       }
     }
 
-    const unsubscribeJump = onScrollToBottomRequest(cancelRestore, sessionId)
+    jumpRestoreRef.current = () => {
+      cancelRestore()
+      // A jump replaces reading intent, including an in-flight prepend anchor.
+      // Re-arm resize protection: deferred markdown may grow after this click.
+      target = THREAD_SCROLL_BOTTOM
+      restoreFromBottomRef.current = null
+      liveScrollStateRef.current = target
+      loadSettledRef.current = true
+      el.scrollTop = threadScrollTargetTop(target, el)
+      if (contentRef.current) resizeObserver.observe(contentRef.current)
+      void scrollToBottom('instant')
+    }
     el.addEventListener('wheel', onWheel, { passive: true })
     el.addEventListener('pointerdown', cancelRestore, { passive: true })
     el.addEventListener('keydown', cancelRestore)
@@ -929,14 +974,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     return () => {
       cancelRestoreRef.current = null
       resizeObserver.disconnect()
-      unsubscribeJump()
+      jumpRestoreRef.current = null
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('pointerdown', cancelRestore)
       el.removeEventListener('keydown', cancelRestore)
       cancelAnimationFrame(rafId)
       record()
     }
-  }, [contentRef, hasGroups, paneVisible, scrollRef, scrollToBottom, sessionId, sessionKey, stopScroll])
+  }, [contentRef, hasGroups, paneVisible, scrollRef, scrollStorageKey, scrollToBottom, sessionKey, stopScroll])
 
   // A thread can mount with a run already active, without a runStart event.
   useEffect(() => {

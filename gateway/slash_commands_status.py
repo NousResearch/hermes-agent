@@ -80,11 +80,13 @@ def _quiet_sync(call, default=None):
         return default
 
 
-def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
+def _status_model_route(
+    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
+):
     """``(model, provider, context_used, context_total)`` for /status.
 
-    Order: live/cached agent route -> persisted dominant route -> SessionDB row -> gateway config
-    (only loaded when something is still missing).
+    Order: live/cached agent route -> active session override -> persisted recent route ->
+    SessionDB row -> gateway config (only loaded when something is still missing).
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
@@ -96,6 +98,8 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
+    routes.append((_clean_str(active_override.get("model")),
+                   _clean_str(active_override.get("provider"))))
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider"))))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
@@ -231,10 +235,13 @@ class GatewayStatusCommandsMixin:
             session_entry.session_id
         )
         # Prefer the live or cached agent (actual runtime route + context compressor); fall back
-        # to SessionDB metadata + last_prompt_tokens so /status stays useful between turns.
+        # to an active /model override, then SessionDB metadata + last_prompt_tokens so /status
+        # stays useful between turns. Rehydrate first so this precedence survives gateway restarts.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
+        self._rehydrate_session_model_override(session_key)
+        active_override = self._session_model_override(session_key) or {}
         model_name, provider_name, context_used, context_total = _status_model_route(
-            status_agent, persisted_route, session_row, session_entry
+            status_agent, active_override, persisted_route, session_row, session_entry
         )
 
         fields = build_status_fields(
@@ -308,7 +315,7 @@ class GatewayStatusCommandsMixin:
             _int_value(session_row.get(k))
             for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
         )
-        route = await _quiet(lambda: db.get_dominant_session_model_route(session_id))
+        route = await _quiet(lambda: db.get_recent_session_model_route(session_id))
         return title, session_row, db_total_tokens, route if isinstance(route, dict) else {}
 
     @staticmethod
@@ -605,14 +612,14 @@ class GatewayStatusCommandsMixin:
         return t("gateway.usage.no_data")
 
     async def _persisted_billing_route(self, source):
-        """``(provider, base_url)`` from the SessionDB row / dominant route when no agent is resident."""
+        """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""
         async def _rows():
             entry = await self.async_session_store.get_or_create_session(source)
             persisted = await self._session_db.get_session(entry.session_id) or {}
-            route = await self._session_db.get_dominant_session_model_route(entry.session_id)
+            route = await self._session_db.get_recent_session_model_route(entry.session_id)
             return persisted, route if isinstance(route, dict) else {}
-        persisted, dominant = await _quiet(_rows, ({}, {}))
-        row = dominant if dominant.get("billing_provider") else persisted
+        persisted, recent = await _quiet(_rows, ({}, {}))
+        row = recent if recent.get("billing_provider") else persisted
         return row.get("billing_provider"), row.get("billing_base_url")
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

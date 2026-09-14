@@ -2783,6 +2783,65 @@ class TestHandleMaxIterations:
         kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert "reasoning" not in kwargs.get("extra_body", {})
 
+    def test_summary_uses_ordinary_tools_and_prompt_cache_key(self, agent):
+        """The terminal summary follows the ordinary request's cache lineage."""
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=""),
+            _mock_response(content="Summary"),
+        ]
+        agent.base_url = "https://api.openai.com/v1"
+        agent.provider = "openai"
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+        ordinary = agent._build_api_kwargs(
+            [{"role": "system", "content": agent._cached_system_prompt}, *messages]
+        )
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        summaries = [call.kwargs for call in agent.client.chat.completions.create.call_args_list]
+        assert result == "Summary"
+        assert len(summaries) == 2
+        assert all(summary["tools"] == ordinary["tools"] for summary in summaries)
+        assert all(summary["prompt_cache_key"] == ordinary["prompt_cache_key"] for summary in summaries)
+        assert all(summary.get("tool_choice") == ordinary.get("tool_choice") for summary in summaries)
+        assert all(summary["model"] == ordinary["model"] for summary in summaries)
+        assert all(summary["messages"][0] == ordinary["messages"][0] for summary in summaries)
+
+    def test_summary_request_scrubs_surrogates_in_tool_schema(self, agent):
+        """The summary rides the same outbound surrogate chokepoint as the main loop (#50959 class)."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        agent.tools = [{"type": "function", "function": {
+            "name": "web_search", "description": "lone surrogate \ud83d here",
+            "parameters": {"type": "object", "properties": {}},
+        }}]
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
+
+        assert result == "Summary"
+        sent = agent.client.chat.completions.create.call_args.kwargs
+        description = sent["tools"][0]["function"]["description"]
+        assert "\ud83d" not in description
+        description.encode("utf-8")  # a provider serializes this; lone surrogates raise here
+
+    def test_summary_tool_call_only_response_retries_once(self, agent, caplog):
+        """A tool-only summary is never executed: it is logged, reads as empty, and gets one retry."""
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="", tool_calls=[_mock_tool_call()]),
+            _mock_response(content="Summary"),
+        ]
+        agent._cached_system_prompt = "You are helpful."
+
+        with caplog.at_level(logging.WARNING, logger="agent.chat_completion_helpers"):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "do stuff"}], 60,
+            )
+
+        assert result == "Summary"
+        assert agent.client.chat.completions.create.call_count == 2
+        assert "emitted tool calls" in caplog.text
+
     def test_summary_request_removes_orphan_tool_result(self, agent):
         """Regression: max-iterations summary request must NOT contain
         orphan tool results (tool_call_id with no matching assistant tool_call)."""
@@ -3490,8 +3549,8 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 2
 
-    def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
-        """Reasoning-only responses no longer trigger compression — prefill then accepted."""
+    def test_reasoning_only_local_clean_stop_returns_immediately(self, agent):
+        """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         agent.compression_enabled = True
@@ -3505,7 +3564,6 @@ class TestRunConversation:
             {"role": "assistant", "content": "old answer"},
         ]
 
-        # 6 responses: original + 2 prefill + 3 retries after prefill exhaustion
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp] * 6),
             patch.object(agent, "_compress_context") as mock_compress,
@@ -3517,26 +3575,18 @@ class TestRunConversation:
 
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        # The bare "(empty)" sentinel is never delivered for reasoning-only
-        # exhaustion: the labeled reasoning excerpt (which may contain the
-        # answer) replaces it at the terminal. See
-        # test_empty_terminal_reasoning_surface.py; #34452's explainer still
-        # covers the truly-empty case.
-        assert result["final_response"] != "(empty)"
-        assert "only internal reasoning" in result["final_response"]
-        assert "reasoning only" in result["final_response"]
-        assert result["turn_exit_reason"] == "empty_response_exhausted"
-        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
+        assert result["final_response"] == "reasoning only"
+        assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
+        assert result["api_calls"] == 1
 
-    def test_reasoning_only_response_prefill_then_empty(self, agent):
-        """Structured reasoning-only triggers prefill (2), then retries (3), then (empty)."""
+    def test_reasoning_only_response_returns_on_first_call(self, agent):
+        """Structured reasoning-only clean stops bypass the empty-response ladder."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        # 6 responses: 1 original + 2 prefill + 3 retries after prefill exhaustion
         agent.client.chat.completions.create.side_effect = [empty_resp] * 6
         with (
             patch.object(agent, "_persist_session"),
@@ -3545,13 +3595,8 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        # Reasoning-only exhaustion delivers the labeled reasoning excerpt
-        # instead of the bare "(empty)" sentinel (see
-        # test_empty_terminal_reasoning_surface.py).
-        assert result["final_response"] != "(empty)"
-        assert "only internal reasoning" in result["final_response"]
-        assert "structured reasoning answer" in result["final_response"]
-        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
+        assert result["final_response"] == "structured reasoning answer"
+        assert result["api_calls"] == 1
 
 
     def test_truly_empty_response_stops_after_repeated_empty(self, agent):

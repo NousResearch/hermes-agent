@@ -25,6 +25,15 @@ EXCLUDED_DIRS = {
     ".git", "__pycache__", "node_modules", ".venv", "venv",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox"}
 
+# Top-level test trees ARE scanned (``plugins_loader`` sets ``submodule_search_locations``
+# to the plugin root, so ``from .tests import evil`` runs whatever lives there), but a
+# critical found under one is capped at ``high``: fixtures deliberately hold hostile
+# strings to prove the plugin rejects them, and an un-overridable ``dangerous`` made
+# such plugins uninstallable and taught authors to obfuscate their own tests (#89610).
+# The cap keeps the verdict at ``caution`` — blocked by default, ``--force`` overridable.
+# Root-level names only: ``src/spec/handler.py`` is runtime code and gets no cap.
+TEST_TREE_DIRS = {"tests", "test", "testing", "spec", "specs", "fixtures"}
+
 # Code files, where "reads an env secret" / "HTTP call with a key" is normal (requires_env).
 CODE_FILE_EXTENSIONS = {".py", ".js", ".ts", ".sh", ".bash", ".rb", ".pl", ".php"}
 
@@ -69,13 +78,24 @@ def _finding(pattern_id: str, severity: str, category: str, file: str, match: st
 def _filter_findings(findings: List[Finding], rel_path: str) -> List[Finding]:
     """Apply plugin-specific exemptions and severity remaps to raw findings."""
     is_code = Path(rel_path).suffix.lower() in CODE_FILE_EXTENSIONS
+    in_test_tree = Path(rel_path).parts[0] in TEST_TREE_DIRS
     out: List[Finding] = []
     for f in findings:
         if is_code and f.pattern_id in CODE_EXEMPT_PATTERN_IDS:
             continue
         f.severity = SEVERITY_REMAP.get(f.pattern_id) or f.severity
+        if in_test_tree and f.severity == "critical":
+            f.severity = "high"
         out.append(f)
     return out
+
+
+def _dangerous_findings_summary(findings: List[Finding]) -> str:
+    """Describe the critical findings that made a plugin install dangerous."""
+    critical = [finding for finding in findings if finding.severity == "critical"]
+    pattern_ids = sorted({finding.pattern_id for finding in critical})
+    names = f" ({', '.join(pattern_ids)})" if pattern_ids else ""
+    return f"{len(critical)} critical of {len(findings)} findings{names}"
 
 
 def _check_plugin_structure(plugin_dir: Path) -> List[Finding]:
@@ -155,7 +175,7 @@ def should_allow_plugin_install(
             return True, f"Force-installed despite caution verdict ({n} findings)"
         return None, f"Requires confirmation (caution verdict, {n} findings)"
     return False, (
-        f"Blocked (dangerous verdict, {n} findings). "
+        f"Blocked (dangerous verdict, {_dangerous_findings_summary(result.findings)}). "
         f"--force does not override a dangerous verdict.")
 
 

@@ -156,11 +156,48 @@ def _run_confirm_and_apply(cli, target, *args) -> None:
         target(*args)
 
 
+def _picker_reasoning_rows() -> list[tuple[str, str]]:
+    """``(value, label)`` rows for the picker's effort step: the canonical ladder, the off state,
+    then a keep-current row (empty value = leave the effort alone)."""
+    from hermes_constants import VALID_REASONING_EFFORTS
+    rows = [(lvl, lvl) for lvl in VALID_REASONING_EFFORTS]
+    rows.append(("none", "none (disable reasoning)"))
+    rows.append(("", "Keep current effort"))
+    return rows
+
+
+def _picker_offers_reasoning(provider_data: dict, model: str) -> bool:
+    """False only when the inventory's capability map says the picked model has no reasoning
+    control; unknown capabilities keep the step (a no-op dial beats hiding a real one)."""
+    caps = (provider_data or {}).get("capabilities")
+    entry = caps.get(model) if isinstance(caps, dict) else None
+    return not (isinstance(entry, dict) and entry.get("reasoning") is False)
+
+
+def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> None:
+    """Apply a ``--reasoning <level>`` that rode along with a model pick. Runs AFTER the swap: the
+    agent's ``switch_model`` re-resolves ``reasoning_config`` from config.yaml, so an earlier write
+    would be clobbered. Session-scoped unless the pick itself persists (``--global``)."""
+    from cli import CLI_CONFIG, _cprint, _parse_reasoning_config, save_config_value
+    parsed = _parse_reasoning_config(effort)
+    if parsed is None:
+        return
+    cli.reasoning_config = parsed
+    if cli.agent is not None:
+        cli.agent.reasoning_config = parsed
+    saved = persist_global and save_config_value("agent.reasoning_effort", effort)
+    if saved:
+        CLI_CONFIG.setdefault("agent", {})["reasoning_effort"] = effort
+    _cprint(f"    Reasoning effort: {effort}" + (" (saved to config)" if saved else ""))
+
+
 def _commit_model_switch(
-    cli, result, *, persist_global: bool, one_turn: bool = False, picker: bool = False) -> None:
+    cli, result, *, persist_global: bool, one_turn: bool = False, picker: bool = False,
+    reasoning_effort: str = "") -> None:
     """Stage + swap, print the summary, persist (session row unless --once; config on --global).
     ``picker``: tolerate context-resolution errors and label the config write "(--global)"; the
-    typed path additionally records the one-turn restore snapshot."""
+    typed path additionally records the one-turn restore snapshot. ``reasoning_effort`` (from
+    ``--reasoning`` or the picker's effort step) is applied after the swap."""
     from cli import HermesCLI, _cprint
     old_model = cli.model
     snapshot = cli._snapshot_model_runtime() if one_turn else None
@@ -169,6 +206,8 @@ def _commit_model_switch(
     if not picker:
         cli._pending_one_turn_model_restore = snapshot
     _print_switch_summary(cli, result, old_model, one_turn=one_turn, strict_context=not picker)
+    if reasoning_effort:
+        _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
@@ -194,6 +233,7 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
         providers = build_models_payload(
             ctx, probe_custom_providers=force_refresh,
             probe_current_custom_provider=not force_refresh,
+            capabilities=True,  # the effort step hides itself on reasoning-free routes
         )["providers"]
     except Exception:
         providers = []
@@ -204,6 +244,8 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
         _cprint("  /model <name> --global               switch model and persist as default")
         _cprint("  /model <name> --once                 switch for the next turn only")
         _cprint("  /model <name> --session              switch for this session only")
+        _cprint("  /model <name> --provider <slug>      switch provider + model")
+        _cprint("  /model <name> --reasoning <level>    switch and set reasoning effort")
         _cprint("  /model --provider <slug>             switch provider")
         _cprint("  /model --refresh                     re-fetch live model lists")
         return
@@ -421,11 +463,13 @@ class CLIModelSwitchMixin:
         if not getattr(result, "success", False):
             return True
         try:
-            from hermes_cli.model_selection_guards import combined_selection_warning
+            from hermes_cli.model_selection_guards import (
+                combined_selection_warning, selection_context_for_agent)
             warning = combined_selection_warning(
                 result.new_model, provider=result.target_provider,
                 base_url=result.base_url or self.base_url or "",
-                api_key=result.api_key or self.api_key or "", model_info=result.model_info)
+                api_key=result.api_key or self.api_key or "", model_info=result.model_info,
+                selection_context=selection_context_for_agent(getattr(self, "agent", None)))
         except Exception:
             warning = None
         if warning is None:
@@ -438,14 +482,14 @@ class CLIModelSwitchMixin:
         return self._normalize_slash_confirm_choice(raw, choices) == "once"
 
     def _confirm_and_apply_model_switch_result(
-        self, result, persist_global: bool, custom_providers=None) -> None:
+        self, result, persist_global: bool, custom_providers=None, reasoning_effort: str = "") -> None:
         from cli import _cprint
         try:
             if result.success and not self._confirm_expensive_model_switch(result):
                 _cprint("  Model switch cancelled.")
                 return
             self._apply_model_switch_result(
-                result, persist_global, custom_providers=custom_providers)
+                result, persist_global, custom_providers=custom_providers, reasoning_effort=reasoning_effort)
         except Exception as exc:
             _cprint(f"  ✗ Model selection failed: {exc}")
 
@@ -459,6 +503,7 @@ class CLIModelSwitchMixin:
         agent = getattr(self, "agent", None)
         return {
             **_runtime_fields(self),
+            "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
             "agent_primary_runtime": copy.deepcopy(
                 getattr(agent, "_primary_runtime", None)
             ) if agent is not None else None}
@@ -471,10 +516,15 @@ class CLIModelSwitchMixin:
         for key in _RUNTIME_FIELDS:
             if key in snapshot:
                 setattr(self, key, snapshot.get(key))
+        # `/model X --reasoning high --once` must not leave the effort behind with the model.
+        if "reasoning_config" in snapshot:
+            self.reasoning_config = snapshot["reasoning_config"]
 
         agent = getattr(self, "agent", None)
         if agent is None:
             return
+        if "reasoning_config" in snapshot:
+            agent.reasoning_config = snapshot["reasoning_config"]
         primary = snapshot.get("agent_primary_runtime")
         if primary and hasattr(agent, "_restore_primary_runtime"):
             try:
@@ -492,6 +542,8 @@ class CLIModelSwitchMixin:
                     api_key=snapshot.get("api_key", ""), base_url=snapshot.get("base_url", ""),
                     api_mode=snapshot.get("api_mode", ""),
                     capabilities=snapshot.get("capabilities"))
+                if "reasoning_config" in snapshot:
+                    agent.reasoning_config = snapshot["reasoning_config"]
             except Exception as exc:
                 logger.warning("CLI one-turn model restore failed: %s", exc)
 
@@ -572,14 +624,15 @@ class CLIModelSwitchMixin:
         return True
 
     def _apply_model_switch_result(
-        self, result, persist_global: bool, custom_providers=None) -> None:
+        self, result, persist_global: bool, custom_providers=None, reasoning_effort: str = "") -> None:
         """Picker-path commit (see _commit_model_switch)."""
         from cli import _cprint
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return
         _merge_preflight_warning(self, result, custom_providers)
-        _commit_model_switch(self, result, persist_global=persist_global, picker=True)
+        _commit_model_switch(self, result, persist_global=persist_global, picker=True,
+                             reasoning_effort=reasoning_effort)
 
     def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
         state = self._model_picker_state
@@ -632,14 +685,38 @@ class CLIModelSwitchMixin:
                     explicit_provider=provider_data.get("slug"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"))
-                # Capture before close — picker state is cleared on close.
-                _picker_custom_provs = state.get("custom_provs")
-                self._close_model_picker()
-                _run_confirm_and_apply(
-                    self, self._confirm_and_apply_model_switch_result,
-                    result, persist_global, _picker_custom_provs)
+                if result.success and _picker_offers_reasoning(provider_data, result.new_model):
+                    # Third step: effort for the picked model (skipped for routes the catalog
+                    # marks reasoning-free). Rows come from the canonical level set.
+                    state.update(stage="reasoning", switch_result=result, selected=0, _scroll_offset=0)
+                    self._invalidate(min_interval=0.0)
+                    return
+                self._commit_picker_result(result, persist_global)
                 return
             self._close_model_picker()
+        if stage == "reasoning":
+            rows = _picker_reasoning_rows()
+            result = state.get("switch_result")
+            if selected == len(rows):  # ← Back to the model list
+                state.update(stage="model", selected=0, _scroll_offset=0, switch_result=None)
+                self._invalidate(min_interval=0.0)
+                return
+            if selected > len(rows) or result is None:
+                self._close_model_picker()
+                return
+            self._commit_picker_result(result, persist_global, reasoning_effort=rows[selected][0])
+
+    def _commit_picker_result(self, result, persist_global: bool, reasoning_effort: str = "") -> None:
+        """Close the picker and run the confirm+apply sequence for ``result``."""
+        state = self._model_picker_state or {}
+        # Capture before close — picker state is cleared on close.
+        _picker_custom_provs = state.get("custom_provs")
+        self._close_model_picker()
+        # The effort is appended only when picked: stubs/tests pin the historical arity.
+        extra = (reasoning_effort,) if reasoning_effort else ()
+        _run_confirm_and_apply(
+            self, self._confirm_and_apply_model_switch_result,
+            result, persist_global, _picker_custom_provs, *extra)
 
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model.
@@ -651,6 +728,7 @@ class CLIModelSwitchMixin:
           /model <name> --session             — switch for this session only (explicit)
           /model <name> --global              — switch and persist to config.yaml
           /model <name> --provider <provider> — switch provider + model
+          /model <name> --reasoning <level>   — switch and set reasoning effort in one step
           /model --provider <provider>        — switch to provider, auto-detect model
 
         Switches are session-scoped unless ``model.persist_switch_by_default`` or ``--global``.
@@ -701,19 +779,21 @@ class CLIModelSwitchMixin:
             _cprint(f"  ✗ {result.error_message}")
             return
         _merge_preflight_warning(self, result, custom_provs)
+        extra = (request.reasoning_effort,) if request.reasoning_effort else ()
         _run_confirm_and_apply(
             self, self._confirm_and_apply_cli_model_switch,
-            result, persist_global, one_turn, custom_provs)
+            result, persist_global, one_turn, custom_provs, *extra)
 
     def _confirm_and_apply_cli_model_switch(
-        self, result, persist_global: bool, one_turn: bool, custom_provs=None) -> None:
+        self, result, persist_global: bool, one_turn: bool, custom_provs=None, reasoning_effort: str = "") -> None:
         """Confirm an expensive model switch and apply it (typed /model path). Runs on a worker
         thread when the TUI is active (see _run_confirm_and_apply) so the modal can render."""
         from cli import _cprint
         if not self._confirm_expensive_model_switch(result):
             _cprint("  Model switch cancelled.")
             return
-        _commit_model_switch(self, result, persist_global=persist_global, one_turn=one_turn)
+        _commit_model_switch(self, result, persist_global=persist_global, one_turn=one_turn,
+                             reasoning_effort=reasoning_effort)
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.

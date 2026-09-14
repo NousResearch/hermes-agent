@@ -31,6 +31,10 @@ def served_root(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(root))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     import hermes_constants
+    import gateway.status as status
+    # Liveness is a verified identity; this pytest process passes as the default gateway only by
+    # wearing a gateway command line.
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
     return root
 

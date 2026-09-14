@@ -1130,10 +1130,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         watchdog off with no log line — indistinguishable from "the watchdog missed it".
         An explicit ``0`` is an intentional opt-out and stays silent.
         """
+        # This knob gates one dimension inside the health check, not the probe's startup
+        # guard, so an unusable value leaves ack-age/latency guarding (see _read_websocket_health).
+        scope = (
+            "the event-silence dimension of the websocket liveness probe"
+            if key == "websocket_event_max_silence_seconds"
+            else "the websocket liveness probe"
+        )
         logger.warning(
             "[%s] Discord liveness knob %s=%r is not a usable positive number; "
-            "the websocket liveness probe is disabled by this value",
-            self.name, key, raw,
+            "%s is disabled by this value",
+            self.name, key, raw, scope,
         )
 
     def _liveness_knob(self, key: str, default: Any, cast: type, *, env_key: Optional[str] = None):

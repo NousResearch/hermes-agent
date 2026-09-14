@@ -210,8 +210,16 @@ def _resolve_hermes_bin_for_desktop_entry(
         sys.argv[0] = original_argv0
 
     if not primary:
-        return primary
-    if rerouted is not None:
+        # No launcher resolvable from argv[0]/PATH (e.g. a cold relaunch):
+        # do NOT return None here — that skipped the durable-wrapper probe
+        # below and persisted the module form with a checkout-absolute
+        # interpreter, which differs from what the DE-launched form renders.
+        # Any content change rewrites hermes.desktop, and gnome-shell 50.x
+        # crashes when the entry changes while its ShellApp is STARTING
+        # (shell_app_dispose assertion). Probe the known locations first;
+        # only with no durable wrapper anywhere fall back to the module form.
+        pass
+    elif rerouted is not None:
         return rerouted or primary
 
     # argv[0] was checkout-internal AND PATH had no `hermes` — common in stripped systemd user

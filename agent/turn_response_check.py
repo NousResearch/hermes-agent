@@ -120,6 +120,16 @@ def check_api_response(
         resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
         logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
 
+    # Remember the member that actually answered (proxies echo the routed
+    # member in response.model, not the requested combo). Powers the
+    # `routed_model` footer field; session-scoped by construction.
+    try:
+        _resp_model = getattr(response, "model", None) if response is not None else None
+        if _resp_model:
+            agent._last_routed_model = str(_resp_model)
+    except Exception:
+        pass
+
     response_invalid, error_details = validate_response_shape(agent, response)
     if response_invalid:
         _iv = retry_invalid_response(

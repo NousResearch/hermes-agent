@@ -95,21 +95,23 @@ def _http_get_json(url: str, headers: dict, timeout: int,
         return json.loads(resp.read().decode("utf-8"))
 
 
-# Retry budget for Cloudflare 524 (origin timeout) on blocking POST, when the
-# peer has opted in. A 524 means the proxy gave up on the response, NOT that
-# the origin failed — the peer may have already executed the task. Retrying a
-# mutating send on a 524 is only safe when the peer deduplicates requests,
-# which the operator asserts per peer via `idempotency: true` in the peer
-# config. Default: no retry — the indeterminate outcome propagates.
-_POST_MAX_RETRIES = 3
+
+
+
+class _A2aIndeterminateError(Exception):
+    """A 524 (origin timeout) — the peer may have executed the task, but the
+    response was lost. Mutating sends are NEVER auto-retried on this class:
+    without a proven server-side idempotency contract a replay could execute
+    the task twice. The caller surfaces the indeterminate outcome; recovery
+    composes with explicit task-identity polling (upstream #94880) instead."""
 
 
 def _http_post_json(url: str, body: dict, headers: dict, timeout: int,
-                    retry_524: bool = False,
                     allowed_origins: tuple[str, ...] = ()) -> dict:
     data = json.dumps(body).encode("utf-8")
     # Custom peer headers are operator-controlled but Content-Type and
-    # A2A-Version are protocol-owned and must not be clobbered.
+    # A2A-Version are protocol-owned and must not be clobbered; a config typo
+    # would otherwise cause peer rejection or protocol-version mismatches.
     # User-Agent stays overridable (some proxies filter user agents).
     hdrs = {
         "User-Agent": "Hermes-A2A/1.0",
@@ -119,23 +121,16 @@ def _http_post_json(url: str, body: dict, headers: dict, timeout: int,
     }
     req = urllib.request.Request(url, data=data, headers=hdrs, method="POST")
 
-    attempts = _POST_MAX_RETRIES if retry_524 else 1
-    for attempt in range(attempts):
-        try:
-            with _open_url_no_redirect_leak(req, timeout, allowed_origins) as resp:  # noqa: S310 (configured peers)
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            if (retry_524 and e.code == 524 and attempt < attempts - 1):
-                # Exponential backoff: 1s, 2s, 4s. Safe as a blocking sleep:
-                # plugin tools run on worker threads, never the event loop.
-                logger.warning(
-                    "A2A: 524 from %s (origin may have completed the task); "
-                    "peer opted into idempotent retry, backing off %.0fs",
-                    url, 2 ** attempt)
-                time.sleep(2 ** attempt)
-                continue
-            raise
-    raise RuntimeError("A2A retry loop exited without a result")  # pragma: no cover
+    try:
+        with _open_url_no_redirect_leak(req, timeout, allowed_origins) as resp:  # noqa: S310 (configured peers)
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 524:
+            raise _A2aIndeterminateError(
+                f"peer origin timed out behind its proxy (HTTP 524); the task "
+                f"may have executed — outcome indeterminate, not retried"
+            ) from e
+        raise
 
 
 def _fetch_card(base_url: str, headers: dict, timeout: int,
@@ -235,9 +230,9 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
             "A2A: peer '%s' custom headers override the derived Authorization "
             "header — deliberate proxy auth schemes only",
             agent_label)
-    # Operator asserts this peer dedupes on message identity, making 524
-    # retries and stream-fallback resends safe. Without it, a 524 (origin
-    # may have completed the task) is surfaced, never retried.
+    # Operator asserts this peer dedupes on message identity, making the
+    # stream-death message/send fallback resend safe. Without it, a stream
+    # that died after frames is surfaced as indeterminate, never resent.
     idempotency = bool(peer.get("idempotency", False))
     allowed = tuple(_allowed_rpc_origins(peer))
     try:
@@ -246,9 +241,10 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
         card = None
     ctx = context_id or protocol.new_context_id()
     safe_message = security.redact_outbound(message)
-    # Deterministic task_id for idempotent retries: the same (context, message)
-    # pair always produces the same task ID, so a 524/stream-fallback retry
-    # hits the peer with an ID it has already seen and can deduplicate against.
+    # Deterministic task_id for idempotent fallback resends: the same
+    # (context, message) pair always produces the same task ID, so a
+    # stream-death fallback hits the peer with an ID it has already seen
+    # and can deduplicate against.
     task_id = protocol.deterministic_task_id(ctx, safe_message)
     # v1.0: contextId lives inside the Message, not at the params top level.
     rpc_body = {"jsonrpc": "2.0", "id": task_id, "method": "SendMessage",
@@ -286,7 +282,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
             # peer's engine -> message/send is a clean first dispatch.
             # Frames-received death: outcome INDETERMINATE (peer may have
             # executed). Fall back only when the operator asserted
-            # idempotency for this peer (same contract as 524 retry);
+            # idempotency for this peer (dedup on resend);
             # otherwise return an explicit indeterminate result.
             frames_seen = getattr(exc, "frames_received", False)
             if frames_seen and not idempotency:
@@ -317,7 +313,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
                 "A2A: streaming connection failed for %s (%s); falling back to message/send",
                 agent_label, exc)
 
-    resp = _http_post_json(rpc_url, rpc_body, headers, timeout, retry_524=idempotency)
+    resp = _http_post_json(rpc_url, rpc_body, headers, timeout, allowed_origins=allowed)
     if "error" in resp:
         raise ValueError(f"Peer '{agent_label}' returned an error: {resp['error'].get('message', resp['error'])}")
     payload = protocol.unwrap_send_message_response(resp.get("result", {}))
@@ -352,7 +348,7 @@ class _A2aTransportError(ValueError):
     frames before the failure. A zero-frame failure is a provably clean
     first dispatch (message/send fallback is safe). A frames-received
     failure is an INDETERMINATE outcome: it falls back only when the peer
-    config asserts idempotency (same contract as 524 retry); otherwise the
+    config asserts idempotency (the peer dedupes on resend); otherwise the
     caller must not resubmit.
 
     ``seen_ctx`` is the last contextId the stream established;
@@ -616,6 +612,11 @@ def a2a_call(args: dict, **_: Any) -> str:
         return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
     try:
         reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+    except _A2aIndeterminateError as e:
+        return (f"Error: call to '{agent}' is INDETERMINATE — {e}. "
+                f"Do not blindly retry a mutating request; check with the peer "
+                f"(task id {getattr(e, 'task_id', 'unknown')}) or retry only "
+                f"if the operation is safe to repeat.")
     except urllib.error.HTTPError as e:
         return _HTTP_CALL_ERRORS.get(e.code, "Error: call to '{agent}' failed — HTTP {code}.").format(agent=agent, code=e.code)
     except ValueError as e:

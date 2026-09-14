@@ -90,16 +90,7 @@ a2a_agents:
     allowed_rpc_origins: ["https://rpc.internal.example.com"]   # origin: scheme+host+port, any path
 ```
 
-**524 retries are opt-in.** A Cloudflare 524 means the proxy gave up on the response — the origin may have already executed the task. Retrying a send is therefore only safe when the peer deduplicates requests, which Hermes peers do (the retry re-sends the task with identical task and message identity). Assert that per peer:
-
-```yaml
-a2a_agents:
-  hermes-server:
-    url: "https://hermes-server-a2a.example.com"
-    idempotency: true   # peer dedupes -> 524s retried with backoff
-```
-
-Without `idempotency`, a 524 surfaces to the caller as an indeterminate outcome — never auto-retried.
+**524 responses are typed indeterminate.** A Cloudflare 524 means the proxy gave up on the response — the origin may have already executed the task. Hermes never auto-retries a send on a 524: without a proven server-side idempotency contract, a replay could execute the task twice. The error surfaces as an explicit indeterminate outcome (`_A2aIndeterminateError`) with guidance not to blindly re-send mutating requests; recovery for long tasks composes with task polling (`GetTask` on a known task id) instead of blind replay.
 
 ## Inbound: being callable
 

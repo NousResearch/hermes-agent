@@ -577,7 +577,7 @@ class TestClientTools:
 
         captured = {}
 
-        def fake_post(url, body, headers, timeout, retry_524=False):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             captured["body"] = body
             ctx = body["params"]["message"].get("contextId", "c1")
             return protocol.jsonrpc_result(
@@ -605,7 +605,7 @@ class TestClientTools:
                             lambda: {"a2a_agents": {"r": {"url": "http://localhost:9999"}}})
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t, ao=(): None)
 
-        def fake_post(url, body, headers, timeout, retry_524=False):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             return protocol.jsonrpc_result(
                 body["id"],
                 protocol.build_task("t", "ctx-q", protocol.STATE_INPUT_REQUIRED, "Which repo?"),
@@ -702,7 +702,7 @@ class TestRegistryDispatchConvention:
         monkeypatch.setattr(tools, "_http_get_json", lambda url, h, t, ao=(): None)
         captured = {}
 
-        def fake_post(url, body, headers, timeout, retry_524=False):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             captured["sent"] = True
             return protocol.jsonrpc_result(
                 body["id"],
@@ -1563,7 +1563,7 @@ class TestClientTenantAndDiscovery:
                 tenant="dev-team",
             )
 
-        def fake_post(url, body, headers, timeout, retry_524=False):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             posted["url"] = url
             posted["body"] = body
             return {"jsonrpc": "2.0", "id": body["id"], "result": protocol.build_task(
@@ -1636,7 +1636,7 @@ class TestV1SpecRegressionFixes:
             return protocol.build_agent_card(
                 name="dev", url="http://peer.example/dev/", description="dev", tenant="dev-team")
 
-        def fake_post(url, body, headers, timeout, retry_524=False):
+        def fake_post(url, body, headers, timeout, retry_524=False, allowed_origins=()):
             posted["headers"] = headers
             posted["body"] = body
             return {"jsonrpc": "2.0", "id": body["id"], "result": {"task": protocol.build_task(

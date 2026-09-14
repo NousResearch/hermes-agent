@@ -499,7 +499,7 @@ class TaskStore:
 
 def _conv_dir() -> Path:
     """Directory root for per-context conversation + reply stores."""
-    return _hermes_home() / "a2a_conversations"
+    return get_hermes_home() / "a2a_conversations"
 
 
 def _conv_path(context_id: str) -> Path:

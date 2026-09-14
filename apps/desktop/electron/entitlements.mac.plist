@@ -12,6 +12,8 @@
   <true/>
   <key>com.apple.security.device.camera</key>
   <true/>
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
   <key>com.apple.security.personal-information.calendars</key>
   <true/>
   <key>com.apple.security.personal-information.reminders</key>

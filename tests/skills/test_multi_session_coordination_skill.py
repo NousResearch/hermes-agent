@@ -5,8 +5,10 @@ support files) plus a compile check for the shipped CLI. No live network;
 the CLI's own selftest suites use scratch databases and are documented in the
 skill's Verification section. Cross-platform CI results must be verified per revision.
 """
+import os
 import py_compile
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -101,7 +103,27 @@ def test_cli_compiles():
     py_compile.compile(str(SKILL_DIR / "scripts" / "session_coord.py"), doraise=True)
 
 
-def test_selftests_present_and_executable():
+def _git_index_mode(path: Path) -> str | None:
+    """Return the git index mode (e.g. ``100755``) for ``path``, or None outside a checkout."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-s", "--", str(path)],
+            cwd=str(path.parent),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.split(" ", 1)[0] if out.startswith("100") else None
+
+
+def test_selftests_present_and_runnable():
+    """The documented invocation is ``bash <suite>`` (SKILL.md Verification), so the
+    portable contract is a bash shebang plus, on POSIX, an exec bit. NTFS has no mode
+    bits, so on Windows the committed git mode is checked when a checkout is present,
+    and the shebang alone is accepted for archive/sdist installs (no ``.git``)."""
     for suite in (
         "selftest.sh",
         "selftest_priority.sh",
@@ -110,6 +132,14 @@ def test_selftests_present_and_executable():
     ):
         p = SKILL_DIR / "scripts" / suite
         assert p.is_file(), f"missing selftest suite: {suite}"
+        with p.open("rb") as fh:
+            first = fh.readline()
+        assert first.startswith(b"#!/bin/bash"), f"selftest lacks a bash shebang: {suite}"
+        if os.name == "nt":
+            mode = _git_index_mode(p)
+            if mode is not None:
+                assert mode == "100755", f"selftest not committed executable ({mode}): {suite}"
+            continue
         assert p.stat().st_mode & 0o111, f"selftest not executable: {suite}"
 
 

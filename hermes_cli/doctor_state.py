@@ -150,7 +150,9 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
 
 def _session_count(state_db_path: Path):
     import sqlite3
-    conn = sqlite3.connect(str(state_db_path))
+    # mode=ro: doctor is a reader; a writable open of a gateway-held WAL DB is the second-writer class (#103339).
+    # as_uri() percent-encodes '?' / '#' in the home path; a raw f-string URI truncates there.
+    conn = sqlite3.connect(Path(state_db_path).resolve().as_uri() + "?mode=ro", uri=True)
     try:
         return conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     finally:
@@ -256,24 +258,27 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_warn(f"WAL file is large ({size // (1024*1024)} MB)", "(may indicate missed checkpoints)")
             if not should_fix:
                 return f.issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
-            # Checkpoint-lock premise (#40177): a bare connect runs WAL recovery and the checkpoint joins the
-            # live WAL — under a running gateway that second-writer handling corrupts state.db. Skip instead.
+            # Checkpoint-lock premise (#40177, #103339): a bare connect runs WAL recovery and the checkpoint
+            # joins the live WAL — under a running gateway that second-writer handling corrupts state.db.
+            # Holder scan first (any other process holding the DB, or an unknown, fails closed), then run the
+            # checkpoint on the exclusive repair guard so an opener arriving in between is refused, not joined.
             from hermes_state_holders import live_writer_holds_db
-            from hermes_state_repair import _connect_repair_durable
+            from hermes_state_repair import _connect_repair_durable, _exclusive_repair_db_guard
+            _SKIP = ("Large WAL file — cannot prove state.db is quiet (stop the profile's gateway first, then "
+                     "re-run 'hermes doctor --fix' to checkpoint)")
             if live_writer_holds_db(state_db_path, connect_repair_durable=_connect_repair_durable):
-                # Honest disjunction (gate C1): a True here means "held OR
-                # unprovable" — the DatabaseError lane fires when SQLite
-                # cannot open the file at all, with nobody holding it. Never
-                # assert a live writer as fact.
+                # Honest disjunction (gate C1): a True here means "held OR unprovable" — never assert a live
+                # writer as fact.
                 check_warn("WAL checkpoint skipped: cannot prove state.db is quiet",
-                           "(a live writer holds it, or it is unreadable — stop the profile's gateway "
+                           "(another process holds it, or it is unreadable — stop the profile's gateway "
                            "and re-run 'hermes doctor --fix')")
-                return f.issues.append("Large WAL file — cannot prove state.db is quiet (stop the profile's "
-                                       "gateway first, then re-run 'hermes doctor --fix' to checkpoint)")
-            import contextlib
-            import sqlite3
-            with contextlib.closing(sqlite3.connect(str(state_db_path))) as conn:
-                conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                return f.issues.append(_SKIP)
+            with _exclusive_repair_db_guard(state_db_path) as (guard, guard_error):
+                if guard is None:
+                    check_warn("WAL checkpoint skipped: could not take exclusive ownership of state.db",
+                               f"({guard_error}; stop the profile's gateway and re-run 'hermes doctor --fix')")
+                    return f.issues.append(_SKIP)
+                guard.execute("PRAGMA wal_checkpoint(PASSIVE)")
             check_ok(f"WAL checkpoint performed ({size // 1024}K → {wal_size() // 1024}K)")
             f.fixed += 1
         elif size > 10 * 1024 * 1024:  # 10 MB
@@ -294,9 +299,14 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
 
 
 def _gh_authenticated() -> bool:
-    """Check if gh CLI is authenticated via token file or device flow."""
+    """Check if gh CLI is authenticated via token file or device flow.
+
+    Plain ``gh auth status`` (exit code only): gh 2.98+ dropped the
+    ``authenticated`` JSON field, so ``--json authenticated`` exits 1 even
+    when logged in, and the doctor falsely reported "No GITHUB_TOKEN".
+    """
     try:
-        result = subprocess.run(["gh", "auth", "status", "--json", "authenticated"], capture_output=True, timeout=10)
+        result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False

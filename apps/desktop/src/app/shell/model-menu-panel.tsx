@@ -1,4 +1,4 @@
-import type { ModelOptionsResponse } from '@hermes/shared'
+import type { ModelOptionsResult } from '@hermes/shared'
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
@@ -50,7 +50,7 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
 
       // The refreshed catalog is a hint list, never a reason to move the pick:
       // a custom slug the row lacks is still what the user selected.
-      queryClient.setQueryData<ModelOptionsResponse>(queryKey, next)
+      queryClient.setQueryData<ModelOptionsResult>(queryKey, next)
     } catch {
       // Network/backend hiccup — fall back to a plain invalidate so the next
       // open re-fetches (still cached, but no worse than before).

@@ -96,7 +96,7 @@ class TestOuterErrorRetryBound:
             patch.object(
                 loop_agent, "_build_assistant_message", side_effect=boom
             ),
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -136,7 +136,7 @@ class TestOuterErrorRetryBound:
                     dict(good_msg),
                 ],
             ),
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -167,7 +167,7 @@ class TestOuterErrorRetryBound:
                 "_strip_think_blocks",
                 side_effect=lambda text: raiser(boom),
             ),
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -191,7 +191,7 @@ class TestOuterErrorRetryBound:
             patch.object(
                 loop_agent, "_build_assistant_message", side_effect=boom
             ),
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):

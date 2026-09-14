@@ -3079,7 +3079,7 @@ class TestRunConversation:
         resp = _mock_response(content="Final answer", finish_reason="stop")
         agent.client.chat.completions.create.return_value = resp
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3100,7 +3100,7 @@ class TestRunConversation:
         )
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3175,7 +3175,7 @@ class TestRunConversation:
                     (request_id, outcome)
                 ),
             ),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3200,7 +3200,7 @@ class TestRunConversation:
         agent._ollama_num_ctx = 4096
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             caplog.at_level(logging.WARNING, logger="agent.conversation_loop"),
@@ -3225,7 +3225,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
         with (
             patch("model_tools.handle_function_call", return_value="search result") as mock_handle_function_call,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3256,7 +3256,7 @@ class TestRunConversation:
                 side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
             ),
             patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record_hook),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3376,7 +3376,7 @@ class TestRunConversation:
 
         with (
             patch("hermes_cli.lifecycle.invoke_hook", return_value=[]),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3401,7 +3401,7 @@ class TestRunConversation:
         with (
             patch("model_tools.handle_function_call", return_value="search result"),
             patch.object(agent, "_safe_print") as mock_print,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3418,7 +3418,7 @@ class TestRunConversation:
             raise InterruptedError("Agent interrupted during API call")
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent._set_interrupt"),
@@ -3440,7 +3440,7 @@ class TestRunConversation:
         resp_good = _mock_response(content="Got it", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [resp_bad, resp_good]
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3468,7 +3468,7 @@ class TestRunConversation:
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp] * 6),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3498,7 +3498,7 @@ class TestRunConversation:
         # 6 responses: 1 original + 2 prefill + 3 retries after prefill exhaustion
         agent.client.chat.completions.create.side_effect = [empty_resp] * 6
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3523,7 +3523,7 @@ class TestRunConversation:
             empty_resp, empty_resp, empty_resp, empty_resp,
         ]
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3552,7 +3552,7 @@ class TestRunConversation:
         # Provide plenty of responses; guard should stop consuming early.
         agent.client.chat.completions.create.side_effect = [empty_resp] * 6
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3580,7 +3580,7 @@ class TestRunConversation:
         )
         agent.client.chat.completions.create.side_effect = [empty_resp] * 6
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3598,7 +3598,7 @@ class TestRunConversation:
         empty_resp = _mock_response(content=None, finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [empty_resp] * 4
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             caplog.at_level(logging.INFO, logger="agent.conversation_loop"),
@@ -3621,7 +3621,7 @@ class TestRunConversation:
         # 1 empty response, then model produces content on nudge
         agent.client.chat.completions.create.side_effect = [empty_resp, content_resp]
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3660,7 +3660,7 @@ class TestRunConversation:
         )
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3702,7 +3702,7 @@ class TestRunConversation:
             return True
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
@@ -3738,7 +3738,7 @@ class TestRunConversation:
             return True
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
@@ -3776,7 +3776,7 @@ class TestRunConversation:
         monkeypatch.setattr(time, "sleep", _mock_sleep)
 
         with (
-            patch.object(agent, "_persist_session") as mock_persist,
+            patch.object(agent, "_persist_session", return_value=True) as mock_persist,
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3823,7 +3823,7 @@ class TestRunConversation:
         monkeypatch.setattr(agent, "_buffer_status", lambda status: status_messages.append(status))
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3850,7 +3850,7 @@ class TestRunConversation:
         # Simulate that streaming had already delivered this text
         agent._current_streamed_assistant_text = "Here is the partial answer that was stream"
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -3879,7 +3879,7 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_emit_status", side_effect=_capture_status),
@@ -3910,7 +3910,7 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4006,7 +4006,7 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4042,7 +4042,7 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4101,7 +4101,7 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4157,7 +4157,7 @@ class TestRunConversation:
             return True
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
@@ -4188,7 +4188,7 @@ class TestRunConversation:
                 agent.context_compressor, "should_compress", return_value=True
             ),
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4242,7 +4242,7 @@ class TestRunConversation:
                 create=True,
             ) as mock_preflight,
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4276,7 +4276,7 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_compress_context") as mock_compress,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4300,7 +4300,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = [first, second]
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4334,7 +4334,7 @@ class TestRunConversation:
 
         with (
             patch.object(agent, "_build_api_kwargs", side_effect=_fake_build_api_kwargs),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4372,7 +4372,7 @@ class TestRunConversation:
 
         with (
             patch("model_tools.handle_function_call", return_value="search result"),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4412,7 +4412,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.return_value = resp
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4441,7 +4441,7 @@ class TestRunConversation:
 
         with (
             patch("model_tools.handle_function_call") as mock_handle_function_call,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4476,7 +4476,7 @@ class TestRunConversation:
         )
         with (
             patch("model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4521,7 +4521,7 @@ class TestRunConversation:
 
         with (
             patch("model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4561,7 +4561,7 @@ class TestRunConversation:
 
         with (
             patch("model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4600,7 +4600,7 @@ class TestRunConversation:
 
         with (
             patch("model_tools.handle_function_call", return_value='{"success":true}'),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4652,7 +4652,7 @@ class TestRunConversation:
             patch("hermes_cli.kanban_db_dispatch._record_task_failure",
                   mock_record_failure),
             patch("hermes_cli.kanban_db_connect.connect", mock_connect),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4701,7 +4701,7 @@ class TestRunConversation:
             patch("model_tools.handle_function_call", return_value="ok"),
             patch("hermes_cli.kanban_db_dispatch._record_task_failure",
                   mock_record_failure),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -4743,7 +4743,7 @@ class TestRunConversation:
             "You are helpful.",
         ))
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent.context_compressor, "update_model"),
@@ -4788,7 +4788,7 @@ class TestRunConversation:
             "You are helpful.",
         ))
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent.context_compressor, "update_model"),
@@ -4851,7 +4851,7 @@ class TestRunConversation:
             "You are helpful.",
         ))
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent.context_compressor, "update_model"),
@@ -4902,7 +4902,7 @@ class TestRunConversation:
             "You are helpful.",
         ))
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent.context_compressor, "update_model"),
@@ -4956,7 +4956,7 @@ class TestRunConversation:
             "You are helpful.",
         ))
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent.context_compressor, "update_model"),
@@ -5022,7 +5022,7 @@ class TestRunConversation:
             return messages, system_message
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent.context_compressor, "update_model"),
@@ -5131,7 +5131,7 @@ class TestRetryExhaustion:
         from agent import conversation_loop as _conv_loop
         from agent import retry_utils as _retry_utils
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
@@ -5164,7 +5164,7 @@ class TestRetryExhaustion:
         from agent import retry_utils as _retry_utils
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
@@ -5219,7 +5219,7 @@ class TestRetryExhaustion:
         )
         agent.client.chat.completions.create.return_value = refusal_resp
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -5243,7 +5243,7 @@ class TestRetryExhaustion:
         self._setup_agent(agent)
         with (
             patch.object(agent, "_build_api_kwargs", side_effect=ValueError("bad messages")),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
@@ -5277,7 +5277,7 @@ class TestConversationHistoryNotMutated:
         agent.client.chat.completions.create.return_value = resp
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -5727,7 +5727,7 @@ class TestSafeWriter:
         original_stderr = sys.stderr
         try:
             with (
-                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_persist_session", return_value=True),
                 patch.object(agent, "_save_trajectory"),
                 patch.object(agent, "_cleanup_task_resources"),
             ):
@@ -6836,7 +6836,7 @@ class TestReasoningReplayForStrictProviders:
         agent.client.chat.completions.create.return_value = final_resp
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
@@ -6880,7 +6880,7 @@ class TestReasoningReplayForStrictProviders:
         agent.client.chat.completions.create.return_value = final_resp
 
         with (
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):

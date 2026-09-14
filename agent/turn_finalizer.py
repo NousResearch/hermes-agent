@@ -500,6 +500,11 @@ def finalize_turn(
         except Exception:
             _mark_persistence_failed()
             raise
+        if _persisted is None:
+            # Persistence is unavailable/disabled (no session_db configured): do not
+            # mint a receipt, but retain the normal turn completion state rather than
+            # treating an intentional no-op the same as a genuine write failure.
+            return
         if _persisted is not True:
             _mark_persistence_failed()
             return

@@ -85,7 +85,7 @@ def _run_with_hooks(agent, message="hi"):
             side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
         ),
         patch("hermes_cli.lifecycle.invoke_hook", side_effect=_record_hook),
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

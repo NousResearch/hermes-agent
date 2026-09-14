@@ -123,7 +123,7 @@ def _run_tool_loop(agent, n_tool_iterations: int):
     agent.client.chat.completions.create.side_effect = responses
 
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch(

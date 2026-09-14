@@ -224,6 +224,8 @@ class FakeAgent:
             cb("tool.started", "browser_navigate", "https://example.com", {})
             time.sleep(0.35)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -306,7 +308,7 @@ class DuplicateNativeToolsAgent:
             "call-a", "web_search", {"query": "alpha"}, '{"success": true}'
         )
         time.sleep(0.15)
-        return {"final_response": "done", "messages": [], "api_calls": 1}
+        return {"final_response": "done", "messages": [], "api_calls": 1, "persistence_confirmed": True, "completed": True}
 
 
 class ThinkingAgent:
@@ -326,6 +328,8 @@ class ThinkingAgent:
             cb("_thinking", "weighing the options here")
             time.sleep(0.35)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -344,6 +348,8 @@ class LongPreviewAgent:
         self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
         time.sleep(0.35)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -366,6 +372,8 @@ class UrlPreviewAgent:
         )
         time.sleep(0.35)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -383,6 +391,8 @@ class DelayedProgressAgent:
         self.tool_progress_callback("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -408,6 +418,8 @@ class RetryableEditProgressAgent:
         callback("tool.started", "terminal", "fourth command", {})
         time.sleep(0.6)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -433,6 +445,8 @@ class ManyProgressLinesAgent:
             cb("tool.started", "terminal", f"overflow-line-{idx}-" + "x" * 45, {})
         time.sleep(0.1)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -450,6 +464,8 @@ class DelayedInterimAgent:
         self.interim_assistant_callback("second interim")
         time.sleep(0.1)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -810,6 +826,8 @@ class CommentaryAgent:
         if self.stream_delta_callback:
             self.stream_delta_callback("done")
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -825,6 +843,8 @@ class PreviewedResponseAgent:
         if self.interim_assistant_callback:
             self.interim_assistant_callback("You're welcome.", already_streamed=False)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "You're welcome.",
             "response_previewed": True,
             "messages": [],
@@ -843,6 +863,8 @@ class PreviewedSplitAfterCommentaryAgent:
             self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
         self.session_id = f"{self.session_id}-child"
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "Final answer after compression.",
             "response_previewed": True,
             "messages": [],
@@ -862,6 +884,8 @@ class StreamingRefineAgent:
         if self.stream_delta_callback:
             self.stream_delta_callback(" Final answer.")
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "Continuing to refine: Final answer.",
             "response_previewed": True,
             "messages": [],
@@ -881,6 +905,8 @@ class QueuedCommentaryAgent:
         if type(self).calls == 1 and self.interim_assistant_callback:
             self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": f"final response {type(self).calls}",
             "messages": [],
             "api_calls": 1,
@@ -908,6 +934,8 @@ class QueuedMediaAgent:
             if self.stream_delta_callback:
                 self.stream_delta_callback(final_response)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": final_response,
             "messages": [],
             "api_calls": 1,
@@ -925,6 +953,8 @@ class QueuedSilenceAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
         type(self).calls += 1
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "NO_REPLY" if type(self).calls == 1 else "follow-up processed",
             "messages": [],
             "api_calls": 1,
@@ -943,6 +973,8 @@ class QueuedFailedEmptyAgent:
         type(self).calls += 1
         if type(self).calls == 1:
             return {
+                "persistence_confirmed": True,
+                "completed": True,
                 "final_response": "",
                 "messages": [],
                 "api_calls": 1,
@@ -950,6 +982,8 @@ class QueuedFailedEmptyAgent:
                 "error": "provider exploded",
             }
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "follow-up processed",
             "messages": [],
             "api_calls": 1,
@@ -965,6 +999,8 @@ class BackgroundReviewAgent:
         if self.background_review_callback:
             self.background_review_callback("💾 Skill 'prospect-scanner' created.")
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -986,6 +1022,8 @@ class VerboseAgent:
         )
         time.sleep(0.35)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "done",
             "messages": [],
             "api_calls": 1,
@@ -1199,6 +1237,8 @@ class TransformedStreamAgent:
         if self.stream_delta_callback:
             self.stream_delta_callback("original answer")
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": "original answer\n\n[plugin appended this]",
             "response_previewed": True,
             "response_transformed": True,
@@ -1693,7 +1733,7 @@ class TerminalCommandAgent:
         )
         # Let the async progress task drain the queue and send before returning.
         time.sleep(0.35)
-        return {"final_response": "done", "messages": [], "api_calls": 1}
+        return {"final_response": "done", "messages": [], "api_calls": 1, "persistence_confirmed": True, "completed": True}
 
 
 @pytest.mark.asyncio
@@ -1858,7 +1898,7 @@ class MultiTerminalCommandAgent:
         cb("tool.started", "web_search", "query stuff", {"query": "query stuff"})
         cb("tool.started", "terminal", "echo four", {"command": "echo four"})
         time.sleep(0.35)
-        return {"final_response": "done", "messages": [], "api_calls": 1}
+        return {"final_response": "done", "messages": [], "api_calls": 1, "persistence_confirmed": True, "completed": True}
 
 
 @pytest.mark.asyncio

@@ -322,7 +322,7 @@ class TestProjectionStopsReheal:
 
         with (
             patch.object(agent, "_flush_messages_to_session_db"),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(
@@ -377,7 +377,7 @@ class TestProjectionStopsReheal:
         ]
         with (
             patch.object(agent, "_flush_messages_to_session_db"),
-            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_persist_session", return_value=True),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch.object(agent, "_emit_warning", side_effect=warned.append),

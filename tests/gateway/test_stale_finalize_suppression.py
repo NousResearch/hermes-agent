@@ -107,6 +107,8 @@ class StalePrefixAgent:
         if self.stream_delta_callback:
             self.stream_delta_callback(STREAMED_PREFIX)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": FULL_RESPONSE,
             "response_previewed": False,
             "messages": [],
@@ -125,6 +127,8 @@ class CompleteStreamAgent:
         if self.stream_delta_callback:
             self.stream_delta_callback(FULL_RESPONSE)
         return {
+            "persistence_confirmed": True,
+            "completed": True,
             "final_response": FULL_RESPONSE,
             "response_previewed": False,
             "messages": [],

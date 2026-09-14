@@ -416,21 +416,25 @@ def _persist_projected_messages(agent, turn, messages: List[Dict[str, Any]]) -> 
     Bypasses conversation_loop's per-step _persist_session(); the flush dedups via _DB_PERSISTED_MARKER so
     only the new codex rows are written. The agent stays the sole persister (agent_persisted=True): a
     gateway re-write would re-INSERT the user turn."""
+    if turn.projected_messages:
+        from agent.message_metadata import append_message
+        projected_messages = turn.projected_messages
+        # Turn-start persistence owns the accepted input. Codex's leading user item
+        # only echoes its coerced wire text; later/nonmatching events remain real.
+        submitted_user_text = getattr(turn, "submitted_user_text", None)
+        first = projected_messages[0]
+        if (submitted_user_text is not None and first.get("role") == "user"
+                and first.get("content") == submitted_user_text):
+            projected_messages = projected_messages[1:]
+        for projected_message in projected_messages:
+            append_message(messages, projected_message)
     if getattr(agent, "_session_db", None) is None:
-        return False
-    if not turn.projected_messages:
+        # No canonical writer configured: same as the non-codex path's
+        # _flush_messages_to_session_db_unlocked (agent/session_persistence.py) treating
+        # a missing session_db as a no-op, not a write failure — retain normal completion
+        # (messages above are still spliced in-memory) rather than fail-closed on a turn
+        # that never had a DB to persist to.
         return True
-    from agent.message_metadata import append_message
-    projected_messages = turn.projected_messages
-    # Turn-start persistence owns the accepted input. Codex's leading user item
-    # only echoes its coerced wire text; later/nonmatching events remain real.
-    submitted_user_text = getattr(turn, "submitted_user_text", None)
-    first = projected_messages[0]
-    if (submitted_user_text is not None and first.get("role") == "user"
-            and first.get("content") == submitted_user_text):
-        projected_messages = projected_messages[1:]
-    for projected_message in projected_messages:
-        append_message(messages, projected_message)
     flush_ok = False
     try:
         flush_ok = agent._flush_messages_to_session_db(messages)

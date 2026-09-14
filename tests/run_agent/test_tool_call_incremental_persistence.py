@@ -161,7 +161,7 @@ def test_run_conversation_flushes_assistant_tool_call_before_execution():
         messages.append(make_tool_result_message("web_search", "search result", "c1"))
 
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch.object(agent, "_execute_tool_calls", side_effect=_fake_execute),
@@ -276,7 +276,7 @@ def test_locked_flush_exception_surfaces_locked_cause_in_result_contract():
     agent._execute_tool_calls = MagicMock()
 
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
@@ -309,7 +309,7 @@ def test_persistence_cause_resets_between_turns():
     agent._execute_tool_calls = MagicMock()
 
     with (
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

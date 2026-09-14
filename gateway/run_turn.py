@@ -2911,7 +2911,13 @@ class GatewayTurnMixin:
             logger.debug("Could not set up streaming TTS consumer: %s", _stts_err)
 
     async def _run_agent_stream_consumer_task(self, stream_consumer_holder: list, release_event=None) -> None:
-        """Wait for consumer creation and persistence release before external delivery."""
+        """Wait for consumer creation and persistence release before external delivery.
+
+        No local timeout on the release wait: ``_await_stream_task`` already gives the
+        whole turn a bounded 5s window to flush and cancels this task (release wait
+        included) if that expires, so a second, longer bound here would never fire and
+        would only add scheduling indirection that desyncs tests asserting on an exact
+        number of event-loop yields (see test_stream_persistence_gate.py)."""
         for _ in range(200):
             if stream_consumer_holder[0] is not None:
                 if release_event is not None:

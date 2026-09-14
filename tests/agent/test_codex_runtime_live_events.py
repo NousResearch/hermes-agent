@@ -59,11 +59,15 @@ def test_projected_message_flush_failure_is_reported_to_gateway():
     assert _persist_projected_messages(agent, turn, []) is False
 
 
-def test_projected_message_flush_requires_a_session_database():
+def test_projected_message_flush_is_a_noop_without_a_session_database():
+    """No session_db configured is a no-op, not a write failure — consistent with the
+    non-codex path (agent/session_persistence.py's _flush_messages_to_session_db_unlocked
+    returns ``None``, and agent/turn_finalizer.py's _persist_step treats that as "retain
+    normal completion" rather than fail-closed)."""
     agent = SimpleNamespace(_session_db=None)
     turn = SimpleNamespace(projected_messages=[{"role": "assistant", "content": "answer"}])
 
-    assert _persist_projected_messages(agent, turn, []) is False
+    assert _persist_projected_messages(agent, turn, []) is True
 
 
 

@@ -391,7 +391,7 @@ def test_default_run_conversation_warns_without_guardrail_halt():
 
     with (
         patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
@@ -437,7 +437,7 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
 
     with (
         patch("model_tools.handle_function_call", return_value=json.dumps({"error": "boom"})),
-        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_persist_session", return_value=True),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):

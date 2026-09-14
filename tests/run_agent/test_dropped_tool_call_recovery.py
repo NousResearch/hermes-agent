@@ -79,7 +79,7 @@ class TestDroppedToolCallRecovery:
         ]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -114,7 +114,7 @@ class TestDroppedToolCallRecovery:
         ]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -138,7 +138,7 @@ class TestDroppedToolCallRecovery:
         ] + [_mock_response(content="done", finish_reason="stop")]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):
@@ -166,7 +166,7 @@ class TestDroppedToolCallRecovery:
         ]
 
         with (
-            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_persist_session", return_value=True),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
         ):

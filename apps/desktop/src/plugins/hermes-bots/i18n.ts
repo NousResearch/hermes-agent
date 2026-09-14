@@ -96,6 +96,20 @@ type BotsMessages = {
     deleted: (name: string, count: number) => string
     undo: string
   }
+  /** The per-bot session browser (context menu → "Show sessions"). */
+  sessions: {
+    showMenu: string
+    hideMenu: string
+    heading: string
+    close: string
+    empty: string
+    untitled: string
+    /** The canonical Bot Chat row, badged so it reads as the forever-chat. */
+    canonicalTip: string
+    openFailed: string
+    loadFailed: (reason: string) => string
+    ariaLabel: (bot: string) => string
+  }
   /** Creating, editing and removing a bot. */
   bot: {
     newTitle: string
@@ -329,6 +343,18 @@ const en: BotsMessages = {
         : `Deleted “${name}” — ${count} ${count === 1 ? 'bot' : 'bots'} moved to Unassigned`,
     undo: 'Undo'
   },
+  sessions: {
+    showMenu: 'Show sessions',
+    hideMenu: 'Hide sessions',
+    heading: 'Sessions',
+    close: 'Close session list',
+    empty: 'No stored chats in this bot’s profile yet.',
+    untitled: 'Untitled',
+    canonicalTip: 'The Bot Chat — this bot’s permanent conversation',
+    openFailed: 'Could not open that session',
+    loadFailed: (reason: string) => `Could not list sessions — ${reason}`,
+    ariaLabel: (bot: string) => `Sessions with ${bot}`
+  },
   bot: {
     newTitle: 'New bot',
     editTitle: 'Edit profile',
@@ -548,6 +574,18 @@ const ja: BotsMessages = {
         : `「${name}」を削除しました — ${count} 件のボットを未分類に移動しました`,
     undo: '元に戻す'
   },
+  sessions: {
+    showMenu: 'セッションを表示',
+    hideMenu: 'セッションを隠す',
+    heading: 'セッション',
+    close: 'セッション一覧を閉じる',
+    empty: 'このボットのプロファイルに保存されたチャットはまだありません。',
+    untitled: '無題',
+    canonicalTip: 'ボットチャット — このボットの常設の会話',
+    openFailed: 'そのセッションを開けませんでした',
+    loadFailed: (reason: string) => `セッションを一覧できませんでした — ${reason}`,
+    ariaLabel: (bot: string) => `${bot} とのセッション`
+  },
   bot: {
     newTitle: '新しいボット',
     editTitle: 'プロファイルを編集',
@@ -763,6 +801,18 @@ const zh: BotsMessages = {
     deleted: (name, count) => (count === 0 ? `已删除“${name}”` : `已删除“${name}” — ${count} 个机器人已移至未分类`),
     undo: '撤销'
   },
+  sessions: {
+    showMenu: '显示会话',
+    hideMenu: '隐藏会话',
+    heading: '会话',
+    close: '关闭会话列表',
+    empty: '此机器人的配置中还没有已保存的聊天。',
+    untitled: '无标题',
+    canonicalTip: '机器人聊天 — 此机器人的永久对话',
+    openFailed: '无法打开该会话',
+    loadFailed: (reason: string) => `无法列出会话 — ${reason}`,
+    ariaLabel: (bot: string) => `与 ${bot} 的会话`
+  },
   bot: {
     newTitle: '新建机器人',
     editTitle: '编辑配置档案',
@@ -976,6 +1026,18 @@ const zhHant: BotsMessages = {
     removeFromSection: '移出分區',
     deleted: (name, count) => (count === 0 ? `已刪除「${name}」` : `已刪除「${name}」— ${count} 個機器人已移至未分類`),
     undo: '復原'
+  },
+  sessions: {
+    showMenu: '顯示工作階段',
+    hideMenu: '隱藏工作階段',
+    heading: '工作階段',
+    close: '關閉工作階段清單',
+    empty: '此機器人的設定檔中尚無已儲存的聊天。',
+    untitled: '無標題',
+    canonicalTip: '機器人聊天 — 此機器人的永久對話',
+    openFailed: '無法開啟該工作階段',
+    loadFailed: (reason: string) => `無法列出工作階段 — ${reason}`,
+    ariaLabel: (bot: string) => `與 ${bot} 的工作階段`
   },
   bot: {
     newTitle: '新增機器人',

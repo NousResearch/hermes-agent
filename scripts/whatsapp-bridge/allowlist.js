@@ -86,3 +86,22 @@ export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
 
   return false;
 }
+
+// Baileys v7 delivers group senders in LID form (``key.participant``) and
+// carries the matching phone number in ``key.participantAlt`` (DMs:
+// ``remoteJidAlt``). When the session has no lid-mapping-*.json file for
+// that LID yet (e.g. a fresh bot number without history sync),
+// expandWhatsAppIdentifiers cannot bridge the two forms, so a phone-number
+// allowlist silently rejects every group participant (#72529). Fall back to
+// the alt identifier so whichever form the operator configured still matches.
+export function matchesAllowedSenderWithAlt(senderId, senderAltId, allowedUsers, sessionDir) {
+  if (matchesAllowedUser(senderId, allowedUsers, sessionDir)) {
+    return true;
+  }
+  const alt = normalizeWhatsAppIdentifier(senderAltId);
+  if (alt && alt !== normalizeWhatsAppIdentifier(senderId)) {
+    return matchesAllowedUser(alt, allowedUsers, sessionDir);
+  }
+  return false;
+}
+

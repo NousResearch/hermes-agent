@@ -193,6 +193,25 @@ class TestRunnerDispatch:
                 source,
             ))  # no raise
 
+    @pytest.mark.parametrize("hook_result", [{"action": "handled"}, "observer-result", ("a", "b")])
+    def test_single_or_tuple_hook_results_are_normalized(self, hook_result):
+        runner = object.__new__(GatewayRunner)
+        runner._is_user_authorized = lambda source: True
+        source = _adapter()._source_from_reaction_for_auth(
+            _auth_reaction_update(user_id=777)
+        )
+
+        with patch("hermes_cli.lifecycle.invoke_hook", return_value=hook_result):
+            result = asyncio.run(runner._handle_gateway_platform_event(
+                {"platform": "telegram", "event_type": "reaction", "payload": {}},
+                source,
+            ))
+
+        if isinstance(hook_result, tuple):
+            assert result == list(hook_result)
+        else:
+            assert result == [hook_result]
+
 
 # ---------------------------------------------------------------------------
 # TelegramAdapter._normalize_platform_event — envelope normalization
@@ -474,6 +493,111 @@ class TestOnPlatformUpdate:
 
         a._normalize_platform_event = boom  # type: ignore[assignment]
         asyncio.run(a._on_platform_update(MagicMock(), context=MagicMock()))  # must not raise
+
+
+class TestTelegramCallbackPluginBoundary:
+    def test_callback_auth_source_normalizes_zero_thread_id_to_none(self):
+        a = _adapter()
+        query = MagicMock()
+        query.from_user.id = 777
+        query.from_user.username = "rost"
+        query.message.chat.id = 123
+        query.message.chat.type = "supergroup"
+        query.message.message_thread_id = 0
+
+        source = a._source_from_callback_for_auth(query)
+
+        assert source.thread_id is None
+        assert source.chat_type == "group"
+
+    def test_callback_query_returns_plugin_action_and_applies_edit(self):
+        """Telegram callback queries are normalized and plugin actions are applied."""
+        a = _adapter()
+        a._platform_event_handler = AsyncMock(return_value=[
+            {
+                "action": "handled",
+                "answer": "recorded",
+                "edit": {
+                    "text": "done",
+                    "buttons": [[{"label": "next", "data": "x:1"}]],
+                },
+            }
+        ])
+        query = MagicMock()
+        query.data = "wp:score:slot"
+        query.from_user.id = 777
+        query.from_user.first_name = "Rost"
+        query.from_user.username = "rost"
+        query.message.chat_id = 123
+        query.message.chat.id = 123
+        query.message.chat.type = "private"
+        query.message.message_id = 456
+        query.message.message_thread_id = None
+        query.message.text = "question"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        asyncio.run(a._handle_callback_query(update, MagicMock()))
+
+        event, source = a._platform_event_handler.await_args.args
+        assert event == {
+            "platform": "telegram",
+            "event_type": "callback_query",
+            "payload": {
+                "data": "wp:score:slot",
+                "chat_id": "123",
+                "message_id": 456,
+                "message_text": "question",
+                "user_id": "777",
+                "user_name": "Rost",
+            },
+        }
+        assert source.user_id == "777"
+        query.answer.assert_awaited_once_with(text="recorded")
+        query.edit_message_text.assert_awaited_once()
+
+    def test_callback_action_acknowledges_before_malformed_edit(self):
+        """The Telegram spinner is cleared even when applying the edit fails."""
+        a = _adapter()
+        a._platform_event_handler = AsyncMock(return_value=[
+            {"action": "handled", "answer": None, "edit": {"buttons": [[{}]]}}
+        ])
+        query = MagicMock()
+        query.data = "plugin:callback"
+        query.from_user.id = 777
+        query.message.chat_id = 123
+        query.message.chat.id = 123
+        query.message.chat.type = "private"
+        query.message.message_id = 456
+        query.message.message_thread_id = None
+        query.message.text = "question"
+        query.answer = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        asyncio.run(a._handle_callback_query(update, MagicMock()))
+
+        query.answer.assert_awaited_once_with(text=None)
+
+    def test_callback_query_plugin_error_falls_through(self):
+        """A plugin failure cannot break built-in callback handling."""
+        a = _adapter()
+        a._platform_event_handler = AsyncMock(side_effect=RuntimeError("plugin boom"))
+        query = MagicMock()
+        query.data = "unknown:callback"
+        query.from_user.id = 777
+        query.message.chat_id = 123
+        query.message.chat.id = 123
+        query.message.chat.type = "private"
+        query.message.message_id = 456
+        query.message.message_thread_id = None
+        update = MagicMock()
+        update.callback_query = query
+
+        asyncio.run(a._handle_callback_query(update, MagicMock()))
+        assert a._platform_event_handler.await_count == 1
 
 
 # ---------------------------------------------------------------------------

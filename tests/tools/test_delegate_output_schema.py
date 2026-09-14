@@ -24,6 +24,7 @@ from tools.delegate_tool import (
 from tools.delegation_output_schema import (
     append_output_contract,
     build_retry_message,
+    compile_output_fields,
     coerce_output_schema,
     validate_output,
 )
@@ -99,6 +100,56 @@ class TestCoerceOutputSchema:
         assert err
 
 
+class TestCompileOutputFields:
+    def test_compiles_flat_field_contract_into_json_schema(self):
+        schema, err = compile_output_fields(
+            {
+                "summary": "string",
+                "changed_files": "string[]",
+                "passed": "boolean",
+                "count": "integer",
+                "score": "number",
+                "metadata": "object",
+                "flags": "boolean[]",
+            },
+            ["summary", "passed"],
+        )
+        assert err is None
+        assert schema == {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "changed_files": {"type": "array", "items": {"type": "string"}},
+                "passed": {"type": "boolean"},
+                "count": {"type": "integer"},
+                "score": {"type": "number"},
+                "metadata": {"type": "object"},
+                "flags": {"type": "array", "items": {"type": "boolean"}},
+            },
+            "required": ["summary", "passed"],
+        }
+
+    def test_rejects_unknown_type_without_falling_back_to_free_form(self):
+        schema, err = compile_output_fields({"summary": "string | null"}, None)
+        assert schema is None
+        assert err and "summary" in err
+
+    def test_rejects_required_field_not_declared(self):
+        schema, err = compile_output_fields({"summary": "string"}, ["verification"])
+        assert schema is None
+        assert err and "verification" in err
+
+    def test_rejects_empty_contract_instead_of_silently_accepting_any_object(self):
+        schema, err = compile_output_fields({}, None)
+        assert schema is None
+        assert err and "at least one field" in err
+
+    def test_requires_output_fields_when_required_fields_are_given(self):
+        schema, err = compile_output_fields(None, ["summary"])
+        assert schema is None
+        assert err and "output_fields" in err
+
+
 class TestPromptPlumbing:
     def test_contract_block_carries_schema(self):
         out = append_output_contract("base context", ADDRESS_SCHEMA)
@@ -141,6 +192,31 @@ class TestToolSchemaSurface:
         assert "output_schema" not in props
         task_props = props["tasks"]["items"]["properties"]
         assert task_props["output_schema"]["type"] == "object"
+
+    def test_simple_output_fields_contract_is_advertised(self):
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"][
+            "items"
+        ]["properties"]
+        output_fields = task_props["output_fields"]
+        assert output_fields["type"] == "object"
+        assert output_fields["minProperties"] == 1
+        assert output_fields["additionalProperties"] == {"type": "string"}
+        required_fields = task_props["required_output_fields"]
+        assert required_fields["type"] == "array"
+        assert required_fields["items"] == {"type": "string"}
+
+    def test_simple_output_fields_survive_served_schema_sanitization(self):
+        import model_tools
+
+        definitions = model_tools.get_tool_definitions(
+            enabled_toolsets=["delegation"], quiet_mode=True, skip_tool_search_assembly=True
+        )
+        task_props = next(
+            item["function"]["parameters"]["properties"]["tasks"]["items"]["properties"]
+            for item in definitions
+            if item["function"]["name"] == "delegate_task"
+        )
+        assert task_props["output_fields"]["additionalProperties"] == {"type": "string"}
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +487,68 @@ class TestDelegateTaskDispatch:
         assert "OUTPUT CONTRACT" in (captured.get("context") or "")
         results = payload.get("results") or []
         assert results and results[0].get("schema_valid") is True
+
+    def test_simple_contract_compiles_before_child_is_built(self):
+        captured = {}
+
+        def fake_build(**kwargs):
+            captured.update(kwargs)
+            return _StubChild(['{"summary": "done"}'])
+
+        with (
+            patch("tools.delegate_tool._load_config", return_value={}),
+            patch(
+                "tools.delegate_tool._resolve_delegation_credentials",
+                return_value={
+                    "provider": None,
+                    "model": None,
+                    "base_url": None,
+                    "api_key": None,
+                    "api_mode": None,
+                },
+            ),
+            patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=fake_build),
+        ):
+            out = delegate_task(
+                tasks=[
+                    {
+                        "goal": "produce a concise report",
+                        "output_fields": {"summary": "string"},
+                        "required_output_fields": ["summary"],
+                    }
+                ],
+                parent_agent=_make_mock_parent(),
+            )
+        payload = json.loads(out)
+        assert '"summary"' in (captured.get("context") or "")
+        assert "output_fields" not in (captured.get("context") or "")
+        assert (payload.get("results") or [])[0]["schema_valid"] is True
+
+    def test_raw_schema_and_simple_contract_cannot_be_combined(self):
+        with (
+            patch("tools.delegate_tool._load_config", return_value={}),
+            patch(
+                "tools.delegate_tool._resolve_delegation_credentials",
+                return_value={
+                    "provider": None,
+                    "model": None,
+                    "base_url": None,
+                    "api_key": None,
+                    "api_mode": None,
+                },
+            ),
+        ):
+            out = delegate_task(
+                tasks=[
+                    {
+                        "goal": "produce a report",
+                        "output_schema": ADDRESS_SCHEMA,
+                        "output_fields": {"summary": "string"},
+                    }
+                ],
+                parent_agent=_make_mock_parent(),
+            )
+        payload = json.loads(out)
+        assert payload.get("error")
+        assert "output_schema" in payload["error"]
+        assert "output_fields" in payload["error"]

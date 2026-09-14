@@ -58,3 +58,33 @@ files. The first follow-up run also exposed a fixture mistake (the changed HOME
 was not created, so `--in ~` correctly refused); that failed receipt is retained
 in `native-green.log`, and both source legs were rerun with an existing HOME.
 Prior `/tmp/botmode-dm-recovery*` evidence remains untouched.
+
+## Ordinary custom-root fallback (#104066 / #104055)
+
+`probe-cron-root.spec.ts` adds the never-deferred sibling: copy it to
+`apps/desktop/e2e/` and run with the same native fixture (no mock-trigger patch
+needed for this case). It keeps default's real Desktop Bot Chat lease, submits
+ordinary cron output to unowned Alpha from a separate Python producer under a
+custom Hermes root, and holds the real quiet CLI child at loopback inference.
+The child shim PID must match Alpha's real CLI lease; default's lease is unchanged.
+After release, Alpha has exactly one input and Desktop renders the output.
+The same case removes unused Beta and verifies delivery neither recreates Beta nor
+creates a second `.hermes` root under HOME.
+
+Both `origin/main`'s scheduler and pre-follow-up `c827ae179d67c` fail with
+`Profile 'alpha' does not exist` before any recipient turn. Fixed native run:
+**1 passed (46.3s)**. Two invariant tests exercise the actual CLI startup resolver
+across named/default/own destinations with a changed active profile, and refusal
+when the destination is missing initially or disappears during discovery:
+**5 failed before, 5 passed after**. The old env-clearing test is replaced by these
+behavior checks rather than retaining the broken expectation.
+
+Evidence: `/tmp/botmode-cron-root/{before2,origin-main,after}.log`,
+`after/{owners.json,children.log,rows.json,result.json,missing.json,ordinary-recipient.png}`.
+The first fixture attempt (`before.log`) used the wrong default row label; the
+actual Desktop label is Hermes. No production failure is claimed for that attempt.
+Full cron directory: **1346 passed, 1 skipped across 116 files**; sibling mailbox,
+DM, gateway consumer and profile tests: **124 passed, 3 skipped across 4 files**.
+Credit @fangliquanflq's #104066 for the root-boundary diagnosis and anchoring fix;
+this combined branch reuses its already-resolved destination instead of repeating
+name resolution. No retry or receipt semantics change.

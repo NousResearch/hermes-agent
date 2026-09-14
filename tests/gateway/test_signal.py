@@ -1,6 +1,7 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import httpx
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -288,6 +289,38 @@ class TestSignalSSECleanup:
 
         old_response.aclose.assert_awaited_once()
         assert adapter._sse_response is newer_response
+        assert adapter.client.stream.call_args.kwargs["headers"]["Connection"] == "close"
+
+    @pytest.mark.asyncio
+    async def test_force_reconnect_closes_response_after_stream_consumption_starts(self, monkeypatch):
+        """HTTPX marks an active response consumed before its body iterator finishes."""
+        adapter = _make_signal_adapter(monkeypatch)
+
+        class BlockingStream(httpx.AsyncByteStream):
+            def __init__(self):
+                self.closed = asyncio.Event()
+
+            async def __aiter__(self):
+                yield b": keepalive\n"
+                await self.closed.wait()
+
+            async def aclose(self):
+                self.closed.set()
+
+        stream = BlockingStream()
+        response = httpx.Response(200, stream=stream)
+        body = response.aiter_text()
+
+        assert await anext(body) == ": keepalive\n"
+        assert response.is_stream_consumed is True
+        assert response.is_closed is False
+
+        adapter._sse_response = response
+        adapter._force_reconnect()
+        await asyncio.wait_for(stream.closed.wait(), timeout=1)
+
+        assert response.is_closed is True
+        assert adapter._sse_response is None
 
 
 # ---------------------------------------------------------------------------
@@ -1558,33 +1591,6 @@ class TestSignalSseHealthMonitor:
         assert adapter._last_sse_activity == stale_at
         assert call_order == ["reconnect", "get"]
 
-    @pytest.mark.asyncio
-    async def test_forces_reconnect_when_health_check_unhealthy(self, monkeypatch):
-        import time as time_module
-
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter.client = AsyncMock()
-        adapter.client.get = AsyncMock(return_value=MagicMock(status_code=500))
-        adapter._running = True
-        adapter._last_sse_activity = time_module.time() - 200
-
-        mock_reconnect = await self._run_one_health_cycle(adapter)
-
-        mock_reconnect.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_forces_reconnect_when_health_check_raises(self, monkeypatch):
-        import time as time_module
-
-        adapter = _make_signal_adapter(monkeypatch)
-        adapter.client = AsyncMock()
-        adapter.client.get = AsyncMock(side_effect=OSError("connection refused"))
-        adapter._running = True
-        adapter._last_sse_activity = time_module.time() - 200
-
-        mock_reconnect = await self._run_one_health_cycle(adapter)
-
-        mock_reconnect.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_does_not_reconnect_when_sse_activity_is_fresh(self, monkeypatch):

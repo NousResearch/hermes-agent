@@ -959,10 +959,16 @@ def _wait_for_oneshot_background_completions(cli) -> None:
     Waits on the whole registry: a one-shot process hosts one agent, and task_id
     filtering would skip processes registered before the session id settled.
 
+    Skipped when the quiet -Q notify-resume loop already consumed the run's linger
+    budget: it calls wait_for_pending_completions with a shared deadline, so a
+    re-wait here would double-block on the same stuck notify_on_complete child.
+
     See #90879.
     """
     from tools.process_registry import process_registry
 
+    if getattr(cli, "_quiet_notify_linger_done", False):
+        return
     _agent, task_id = _oneshot_agent_and_session(cli)
     result = process_registry.wait_for_pending_completions(None)
     if result.get("waited"):
@@ -4079,7 +4085,9 @@ def _run_quiet_single_query(cli, effective_query):
     stranded receipt."""
     from agent.interrupt_compat import _accepts_keyword
     from agent.turn_author import take_turn_author_from_env
-    from hermes_cli.quiet_single_query import bind_quiet_session_key, continue_quiet_notify_completions
+    from hermes_cli.quiet_single_query import (
+        bind_quiet_session_key, continue_quiet_notify_completions, quiet_notify_linger_seconds,
+    )
 
     author = take_turn_author_from_env()
     author_kwargs = {"turn_author": author} if author is not None and _accepts_keyword(cli.agent.run_conversation, "turn_author") else {}
@@ -4112,10 +4120,15 @@ def _run_quiet_single_query(cli, effective_query):
                     history = follow["messages"]
                 return follow
 
+            # One shared linger budget for the whole run: the loop below and the later
+            # _wait_for_oneshot_background_completions pass must not each wait the full
+            # oneshot_completion_wait_seconds on the same stuck notify_on_complete child.
+            cli._quiet_notify_linger_done = True
             continued = continue_quiet_notify_completions(
                 getattr(cli, "session_id", "") or "",
                 _follow_up,
                 owns_event=getattr(cli, "_owns_process_notification", None),
+                linger_budget=quiet_notify_linger_seconds(),
             )
             if isinstance(continued, dict):
                 result = continued

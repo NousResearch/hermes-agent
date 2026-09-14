@@ -105,3 +105,33 @@ def test_quiet_one_shot_resumes_nested_notify_on_this_session_not_parent(monkeyp
     finally:
         while not process_registry.completion_queue.empty():
             process_registry.completion_queue.get_nowait()
+
+
+def test_quiet_notify_loop_shares_one_linger_budget(monkeypatch):
+    """One stuck notify_on_complete child is waited on once, not once per round plus finalize.
+
+    The loop shares a single deadline across rounds and stops after draining once a
+    wait times out; the finalize pass is skipped entirely because the loop ran.
+    """
+    from hermes_cli import quiet_single_query as qsq
+    from tools import process_registry as pr
+
+    waits = []
+
+    def fake_wait(task_id=None, *, timeout=None, poll_interval=1.0):
+        waits.append(timeout)
+        # First wait: one stuck process times out; second wait (same run): nothing pending.
+        return {"waited": ["proc-stuck"] if len(waits) == 1 else [], "completed": [], "timed_out": ["proc-stuck"] if len(waits) == 1 else []}
+
+    monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions", fake_wait)
+    monkeypatch.setattr(pr.process_registry, "drain_notifications", lambda *a, **k: [])
+    monkeypatch.setattr(qsq.time, "monotonic", lambda: 100.0)
+
+    calls = []
+    result = qsq.continue_quiet_notify_completions(
+        "session-B", lambda text: calls.append(text) or {"final_response": text}, linger_budget=600.0,
+    )
+    # Round 1: full budget; timed out -> drained (empty) -> break. Exactly one wait call.
+    assert waits == [600.0]
+    assert calls == []
+    assert result is None

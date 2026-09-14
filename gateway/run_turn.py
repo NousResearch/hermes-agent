@@ -66,6 +66,31 @@ def is_context_overflow_failure_result(agent_result: dict, history_len: int) -> 
     return any(p in err for p in _CONTEXT_OVERFLOW_ERROR_PHRASES) or ("400" in err and history_len > 50)
 
 
+def _effective_tool_progress_mode(user_config: dict, platform_key: str) -> str:
+    """Tool-progress mode a turn actually runs with (quiet = ``off`` / ``log``).
+
+    Precedence: per-platform override → legacy ``tool_progress_overrides`` →
+    ``display.tool_progress`` → platform/global defaults, with the
+    ``HERMES_TOOL_PROGRESS_MODE`` env bridge winning only while the config never set the
+    key. Shared by the display path and the single-message streaming gate so the two can
+    never disagree about whether progress bubbles are quiet.
+    """
+    from gateway.display_config import resolve_display_setting
+
+    display_cfg = user_config.get("display") or {}
+    if not isinstance(display_cfg, dict):
+        display_cfg = {}
+    resolved = resolve_display_setting(user_config, platform_key, "tool_progress")
+    env_mode = os.getenv("HERMES_TOOL_PROGRESS_MODE")
+    platform_cfg = (display_cfg.get("platforms") or {}).get(platform_key) or {}
+    legacy_overrides = display_cfg.get("tool_progress_overrides") or {}
+    configured = "tool_progress" in display_cfg or any(
+        isinstance(cfg, dict) and key in cfg
+        for cfg, key in ((platform_cfg, "tool_progress"), (legacy_overrides, platform_key))
+    )
+    return env_mode if env_mode and not configured else (resolved or env_mode or "all")
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -2462,8 +2487,9 @@ class GatewayTurnMixin:
             if source.platform == Platform.TELEGRAM else 0.0
         )
         # Preserve the established text↔tool-progress chronology unless progress is quiet.
-        # ``log`` emits no chat bubbles either — the gateway's own tool_progress_enabled
-        # treats {"off", "log"} as quiet — so both modes can host one evolving message.
+        # The gate asks for the mode the display path actually runs with (off|log is the
+        # quiet pair — the same one tool_progress_enabled uses), so the
+        # HERMES_TOOL_PROGRESS_MODE bridge can't leave bubbles on while this mode is set.
         # Telegram-only: other adapters keep their current segment-boundary semantics.
         from gateway.run import _load_gateway_config, _platform_config_key
         from gateway.display_config import resolve_display_setting
@@ -2474,14 +2500,24 @@ class GatewayTurnMixin:
             and bool(resolve_display_setting(
                 _user_config, _platform_key, "streaming_single_message", False,
             ))
-            and resolve_display_setting(_user_config, _platform_key, "tool_progress") in ("off", "log")
+            and _effective_tool_progress_mode(_user_config, _platform_key) in ("off", "log")
         )
+        # Transient-overlay sub-switches: tool-start lines (default on — quiet progress
+        # would otherwise show nothing during tool runs) and thinking snippets (opt-in).
+        _single_message_activity = _single_message_per_turn and bool(resolve_display_setting(
+            _user_config, _platform_key, "streaming_single_message_activity", True,
+        ))
+        _single_message_thinking = _single_message_per_turn and bool(resolve_display_setting(
+            _user_config, _platform_key, "streaming_single_message_thinking", False,
+        ))
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor, buffer_only=_buffer_only,
             fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
             chat_type=getattr(source, "chat_type", "") or "",
             single_message_per_turn=_single_message_per_turn,
+            single_message_activity=_single_message_activity,
+            single_message_thinking=_single_message_thinking,
         )
         return _consumer_cfg, _pause_typing_before_finalize
 
@@ -2727,10 +2763,6 @@ class GatewayTurnMixin:
         enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._adapter_for_source(source)
         # display.platforms.<platform>.<key> → display.<key> → built-in platform defaults.
-        _display_cfg = user_config.get("display", {})
-        if not isinstance(_display_cfg, dict):
-            _display_cfg = {}
-
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
@@ -2741,16 +2773,8 @@ class GatewayTurnMixin:
                 _val = resolve_display_setting(user_config, platform_key, _setting, _default)
                 getattr(_agent_display, _setter)(_cast(_val))
 
-        # Tool progress mode; HERMES_TOOL_PROGRESS_MODE wins only when the config never set it.
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
-        _platform_cfg = (_display_cfg.get("platforms") or {}).get(platform_key) or {}
-        _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
-        _tool_progress_configured = "tool_progress" in _display_cfg or any(
-            isinstance(cfg, dict) and key in cfg
-            for cfg, key in ((_platform_cfg, "tool_progress"), (_legacy_tp_overrides, platform_key))
-        )
-        progress_mode = _env_tp if _env_tp and not _tool_progress_configured else (_resolved_tp or _env_tp or "all")
+        # Tool progress mode (env bridge wins only when the config never set the key).
+        progress_mode = _effective_tool_progress_mode(user_config, platform_key)
         # "accumulate" (edit one bubble) or "separate" (one msg per tool)
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
         _generic_status_recent: List[str] = []

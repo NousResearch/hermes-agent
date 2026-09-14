@@ -1740,6 +1740,16 @@ display:
   #         streaming_single_message: true
   streaming_single_message: false
 
+  # Transient activity overlay inside that single message (only active while the mode
+  # above is on): tool-start lines (default true) and thinking snippets (default false)
+  # render under the evolving preview below a "---" rule; real text replaces them and
+  # the final message never carries them.
+  # Per-platform overrides:
+  #   display.platforms.telegram.streaming_single_message_activity
+  #   display.platforms.telegram.streaming_single_message_thinking
+  streaming_single_message_activity: true
+  streaming_single_message_thinking: false
+
   # Natural mid-turn assistant updates.
   # On gateway platforms, when true, completed assistant status messages are
   # sent as separate chat messages. On the Desktop app, when true, mid-turn

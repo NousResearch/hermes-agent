@@ -357,6 +357,82 @@ class TestSegmentBreakOnToolBoundary:
         )
         assert config.single_message_per_turn is False
 
+        # The gate must mirror the mode the display path actually runs with: the
+        # HERMES_TOOL_PROGRESS_MODE env bridge wins only while the config never set
+        # the key — otherwise bubbles would be ON while the mode believes them quiet.
+        def _config_no_tp(enabled=True):
+            return {"display": {"platforms": {"telegram": {"streaming_single_message": enabled}}}}
+
+        monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: _config_no_tp())
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_per_turn is False, "env mode 'all' must close the gate"
+
+        # Explicit config beats the env bridge; env 'off' with unset config stays quiet.
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda tp="off": _config_for(tp),
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_per_turn is True
+        monkeypatch.delenv("HERMES_TOOL_PROGRESS_MODE")
+        monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "off")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: _config_no_tp())
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_per_turn is True
+
+    def test_single_message_overlay_switches(self, monkeypatch):
+        """Activity overlay defaults on / thinking off; both follow the master gate."""
+        from gateway.config import Platform
+        from gateway.run_turn import GatewayTurnMixin
+
+        streaming = SimpleNamespace(
+            cursor=" ▉", edit_interval=0.5, buffer_threshold=20,
+            fresh_final_after_seconds=0, transport="edit",
+        )
+        source = SimpleNamespace(platform=Platform.TELEGRAM, chat_id="chat_123", chat_type="dm")
+
+        def _cfg(**over):
+            plat = {"streaming_single_message": True, "tool_progress": "off"}
+            plat.update(over)
+            return {"display": {"platforms": {"telegram": plat}}}
+
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: _cfg())
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_activity is True
+        assert config.single_message_thinking is False
+
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: _cfg(streaming_single_message_activity=False,
+                         streaming_single_message_thinking=True),
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_activity is False
+        assert config.single_message_thinking is True
+
+        # Master gate closed (progress not quiet) → overlays collapse even when flipped on.
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda: _cfg(tool_progress="all", streaming_single_message_thinking=True),
+        )
+        config, _ = GatewayTurnMixin._build_stream_consumer_config(
+            None, source, streaming, MagicMock(), on_missing_cursor="raise",
+        )
+        assert config.single_message_per_turn is False
+        assert config.single_message_activity is False
+        assert config.single_message_thinking is False
+
     @pytest.mark.asyncio
     async def test_single_message_mode_keeps_one_preview_across_tool_boundaries(self):
         """One opt-in preview survives two tool boundaries; the final authoritative

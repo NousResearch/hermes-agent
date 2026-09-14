@@ -78,6 +78,11 @@ class StreamConsumerConfig:
     # for the whole turn. The gateway enables this only for Telegram while text
     # tool-progress is quiet (off/log). See #110564.
     single_message_per_turn: bool = False
+    # Single-message extras: while the mode above is active, render a transient activity
+    # overlay under the evolving preview — tool-start lines and thinking snippets — that
+    # real text replaces and the final edit never carries. See #110564.
+    single_message_activity: bool = False
+    single_message_thinking: bool = False
 
 
 @dataclass
@@ -237,12 +242,27 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             return False
 
     @property
+    def single_message_mode(self) -> bool:
+        """One evolving preview for the whole turn (opt-in; see #110564)."""
+        return bool(self.cfg.single_message_per_turn)
+
+    @property
     def accepts_tool_progress(self) -> bool:
-        """True only when native streaming is active (gates in-stream tool progress)."""
-        return self._use_native_streaming
+        """True when the live surface renders tool progress in-stream: native streaming
+        always; single-message mode when its activity overlay is enabled."""
+        return self._use_native_streaming or (
+            self.single_message_mode and self.cfg.single_message_activity
+        )
+
+    @property
+    def accepts_thinking_progress(self) -> bool:
+        """True when the live surface renders thinking snippets in-stream (single-message
+        mode with its thinking overlay enabled)."""
+        return self.single_message_mode and self.cfg.single_message_thinking
 
     def on_tool_progress(self, line: str) -> None:
-        """Thread-safe: overlay a tool-progress line in the native bubble until the next delta."""
+        """Thread-safe: overlay a tool/thinking line in the evolving preview (native
+        streams and single-message mode) until the next real-text delta."""
         if line:
             self._queue.put((_TOOL_PROGRESS, line))
 
@@ -559,7 +579,9 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                         return
 
                 if self._should_edit(tick) and (
-                    self._accumulated or (self._use_native_streaming and self._tool_progress_active)
+                    self._accumulated
+                    or ((self._use_native_streaming or self.single_message_mode)
+                        and self._tool_progress_active)
                 ):
                     # Overflow split.  Native streaming bypasses this: the adapter
                     # truncates against the stream protocol's own limit.
@@ -648,8 +670,17 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             if kind is _FINAL_TEXT:
                 self._adopt_final_text(item[1])
             elif kind is _TOOL_PROGRESS:  # keep draining to batch simultaneous lines
-                if self._use_native_streaming:
-                    self._tool_progress_lines.append(item[1])
+                if self._use_native_streaming or self.single_message_mode:
+                    line = item[1]
+                    if line.startswith("💭"):
+                        # Latest thinking only: a new snippet replaces the previous one.
+                        self._tool_progress_lines = [
+                            existing for existing in self._tool_progress_lines
+                            if not existing.startswith("💭")
+                        ]
+                    self._tool_progress_lines.append(line)
+                    if len(self._tool_progress_lines) > 6:
+                        del self._tool_progress_lines[:-6]  # defensive cap
                     self._tool_progress_active = True
             elif kind is _APPROVAL_BOUNDARY:
                 tick.approval_boundary = (item[1], item[2])
@@ -710,6 +741,15 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         if self._use_native_streaming:
             # No platform edit-rate limit: push every delta immediately.
             should_edit = bool(self._accumulated) or self._tool_progress_active
+        elif self.single_message_mode:
+            # Same throttle as the edit path, but an activity-only preview (no text yet)
+            # is a valid update — that IS the transient overlay.
+            elapsed = time.monotonic() - self._last_edit_time
+            should_edit = bool(
+                (elapsed >= self._current_edit_interval
+                 and (self._accumulated or self._tool_progress_active))
+                or len(self._accumulated) >= self.cfg.buffer_threshold
+            )
         else:
             elapsed = time.monotonic() - self._last_edit_time
             # buffer_threshold is a codepoint debounce heuristic, not a
@@ -798,7 +838,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         """Send/edit this tick's visible text (cursor-suffixed unless finalizing)."""
         display_text = self._accumulated
         if tick.is_interim:
-            if self._use_native_streaming:
+            if self._use_native_streaming or self.single_message_mode:
                 display_text = self._compose_frame_content()
                 if display_text and self.cfg.cursor:
                     display_text += self.cfg.cursor

@@ -349,6 +349,7 @@ _POLLING_PROGRESS_TIMEOUT = 60.0  # generation unhealthy until getUpdates return
 # #92991) and no other probe can see it. ~3x the worst-case poll window leaves ample margin against false
 # positives while still recovering within a few heartbeat intervals.
 _POLLING_STALL_TIMEOUT = 150.0
+_POLLING_LIVENESS_LOG_INTERVAL = 900.0
 # Ingress dispatch stall (#102260): the transport probes prove getUpdates round-trips complete, not
 # that PTB's dispatcher ever handed the fetched updates to a handler. Two heartbeats (180s) with a
 # backlog and no dispatch progress: diagnostic only, never drives recovery (#71240 owns that).
@@ -479,6 +480,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # began, and when the last successful getUpdates round-trip completed.
         self._polling_generation_started_monotonic: Optional[float] = None
         self._polling_last_progress_monotonic: Optional[float] = None
+        self._polling_last_liveness_log_monotonic: Optional[float] = None
         # Ingress accounting (#102260): received (getUpdates wire) vs dispatched (PTB group-99 catch-all).
         self._updates_received_total: int = 0
         self._updates_dispatched_total: int = 0
@@ -1612,11 +1614,25 @@ class TelegramAdapter(BasePlatformAdapter):
         """Record successful getUpdates I/O for the current generation only; True when accepted."""
         if self._teardown_started or not self._polling_progress_accepting or generation != self._polling_generation:
             return False
-        if not self._polling_progress_event.is_set():
+        now = time.monotonic()
+        first_progress = not self._polling_progress_event.is_set()
+        if first_progress:
             # First confirmed round-trip resolves the "health pending" line both reconnect paths end on.
-            logger.info("[%s] Telegram polling confirmed healthy: getUpdates progressing (generation %d)", self.name, generation)
+            state = "recovered" if self._polling_network_error_count else "confirmed healthy"
+            logger.info("[%s] Telegram polling %s: getUpdates progressing (generation %d)", self.name, state, generation)
+            self._polling_last_liveness_log_monotonic = now
+        elif (
+            self._polling_last_liveness_log_monotonic is None
+            or now - self._polling_last_liveness_log_monotonic >= _POLLING_LIVENESS_LOG_INTERVAL
+        ):
+            logger.info(
+                "[%s] Telegram inbound liveness: getUpdates progressing (generation %d)",
+                self.name,
+                generation,
+            )
+            self._polling_last_liveness_log_monotonic = now
         self._polling_progress_event.set()
-        self._polling_last_progress_monotonic = time.monotonic()
+        self._polling_last_progress_monotonic = now
         self._polling_network_error_count = 0
         if generation == self._polling_conflict_recovery_generation:
             self._polling_conflict_recovery_generation = None

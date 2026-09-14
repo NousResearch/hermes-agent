@@ -6288,6 +6288,26 @@ def _cmd_restart(args):
         )
         sys.exit(1)
 
+    # An externally-supervised gateway (custom launchd agent running `gateway run
+    # --external-supervisor`) must restart by exiting back to its supervisor. A foreground
+    # run here stamps this CLI's PID as the gateway; every KeepAlive respawn then refuses
+    # with "Gateway already running" and the gateway stays down until the restart process
+    # is killed (#110637). Same argv marker the update path trusts
+    # (_prepare_profile_gateway_update_restart).
+    from gateway.status import get_running_pid
+    supervised_pid = get_running_pid()
+    supervised_argv = _capture_gateway_argv(supervised_pid) if supervised_pid else None
+    if supervised_argv and "--external-supervisor" in supervised_argv:
+        wait_budget = _get_restart_exit_wait_budget()
+        print(f"→ Restarting externally-supervised gateway (PID {supervised_pid}) — "
+              f"draining in-flight runs (up to {wait_budget:.0f}s)...")
+        if _graceful_restart_via_sigusr1(supervised_pid, wait_budget):
+            print()
+            print("✓ Gateway exited for its supervisor to relaunch it")
+            print("  (a KeepAlive supervisor revives it within its respawn interval)")
+            return
+        print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — falling back to stop/restart")
+
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)

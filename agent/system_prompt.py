@@ -508,7 +508,11 @@ def _guidance_parts(agent: Any) -> List[str]:
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools.
-    parts.append(STEER_CHANNEL_NOTE)
+    # Cron agents have no live user channel and cannot receive a genuine
+    # steer, so teaching them the trusted marker only creates a
+    # self-injection pattern for scheduled models to imitate.
+    if agent.platform != "cron":
+        parts.append(STEER_CHANNEL_NOTE)
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
     # matches the hardcoded model lists; true/false force; a list gives custom
     # model-name substrings.  Execution guidance is an independent gate so

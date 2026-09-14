@@ -871,12 +871,9 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     summary = getattr(args, "summary", None)
     raw_meta = getattr(args, "metadata", None)
     proof = getattr(args, "proof", None)
-    accept_unproven = bool(getattr(args, "accept_unproven", False))
-    if accept_unproven and os.environ.get("HERMES_KANBAN_TASK"):
-        return _err("kanban: --accept-unproven is restricted to human completion outside a worker run", 2)
     # Handoff fields are per-run; refuse to copy them across N runs.
-    if len(ids) > 1 and (summary or raw_meta or proof or accept_unproven):
-        return _err("kanban: --summary / --metadata / --proof / --accept-unproven are per-task "
+    if len(ids) > 1 and (summary or raw_meta or proof):
+        return _err("kanban: --summary / --metadata / --proof are per-task "
                     "and can't be used "
                     "with multiple ids (would apply the same handoff to every task). "
                     "Complete tasks one at a time, or drop the flags for the bulk close.", 2)
@@ -897,8 +894,7 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 return kb.complete_task(
                     conn, tid, result=args.result, summary=summary, metadata=metadata,
-                    expected_run_id=_worker_run_id_for(tid), proof=proof,
-                    accept_unproven=accept_unproven)
+                    expected_run_id=_worker_run_id_for(tid), proof=proof)
             except CompletionEvidenceError as exc:
                 fail_msg[tid] = f"completion evidence rejected: {exc}"
                 return False

@@ -286,8 +286,6 @@ _SPECS = [
                   '"tests_run": 12}\'). Stored on the closing run.'),
         _arg("--proof", action="append", metavar="TYPE:VALUE",
              help="Typed completion evidence (path, url, task, or attachment); repeatable."),
-        _arg("--accept-unproven", action="store_true",
-             help="Explicitly complete an evidence-contract task without proof; records an audit event."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

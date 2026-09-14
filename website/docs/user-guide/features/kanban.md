@@ -107,11 +107,11 @@ Validated receipts are normalized into the task's `completion_proof` field and a
 to re-derive evidence from prose or closing-run metadata.
 
 An evidence-contract card without a valid receipt remains in flight. When a human
-intentionally accepts that risk, CLI `--accept-unproven` (or the dashboard equivalent)
+intentionally accepts that risk, the dashboard's explicit unproven-completion action
 completes it and records the
 auditable `card_closed_without_proof` event. The override cannot be combined with a
-receipt and is not available to dispatcher workers through `kanban_complete`. Existing
-cards and `local-only` contracts remain permissive for backwards
+receipt and is not available through the worker tool or CLI. Existing cards and
+`local-only` contracts remain permissive for backwards
 compatibility; proof is an opt-in task policy rather than a heuristic applied by a
 monitoring agent after completion.
 
@@ -869,7 +869,7 @@ hermes kanban claim <id> [--ttl SECONDS]
 hermes kanban comment <id> "<text>" [--author NAME]
 
 # Bulk verbs — accept multiple ids:
-hermes kanban complete <id>... [--result "..."] [--proof TYPE:VALUE] [--accept-unproven]
+hermes kanban complete <id>... [--result "..."] [--proof TYPE:VALUE]
 hermes kanban block <id> "<reason>" [--ids <id>...]
 hermes kanban unblock <id>...
 hermes kanban archive <id>...

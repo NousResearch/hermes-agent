@@ -72,16 +72,13 @@ def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     assert "Cannot operate on a closed database" not in output
 
 
-def test_worker_cannot_use_cli_unproven_override(kanban_home, monkeypatch):
-    with kbc.connect_closing() as conn:
-        task_id = kb.create_task(conn, title="gated", completion_contract="evidence")
+def test_cli_does_not_expose_unproven_override():
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
 
-    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
-    output = kc.run_slash(f"complete {task_id} --accept-unproven")
-
-    assert "restricted to human completion outside a worker run" in output
-    with kbc.connect_closing() as conn:
-        assert kb.get_task(conn, task_id).status != "done"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["kanban", "complete", "t_example", "--accept-unproven"])
 
 
 def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch):

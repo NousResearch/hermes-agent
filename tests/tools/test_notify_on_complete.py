@@ -168,18 +168,13 @@ class TestCheckpointNotify:
 # =========================================================================
 
 class TestTerminalSchema:
-    def test_schema_advertises_unified_notify(self):
-        """`notify` is the single advertised notification arg: bool (notify on
-        exit) or list of strings (notify on pattern). The legacy
-        notify_on_complete/watch_patterns args stay handler-accepted but
-        unadvertised."""
+    def test_schema_advertises_boolean_notify_without_union(self):
+        """Strict providers can translate the exit notification declaration."""
         from tools.terminal_tool import TERMINAL_SCHEMA
         props = TERMINAL_SCHEMA["parameters"]["properties"]
-        assert "notify" in props
-        types = {alt["type"] for alt in props["notify"]["anyOf"]}
-        assert types == {"boolean", "array"}
+        assert props["notify"]["type"] == "boolean"
+        assert "anyOf" not in props["notify"]
         assert "notify_on_complete" not in props
-        assert "watch_patterns" not in props
 
     def test_handler_passes_notify(self):
         """_handle_terminal passes notify_on_complete to terminal_tool."""

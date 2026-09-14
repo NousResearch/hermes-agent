@@ -241,6 +241,18 @@ def _any_env(env_vars, read_env=os.environ.get) -> bool:
     return any(read_env(ev) for ev in env_vars)
 
 
+def _keyless_builtin_configured(hermes_id: str) -> bool:
+    """Canonical-row credential signal for api_key providers whose runtime auth is not a key: Azure
+    Foundry under ``model.auth_mode: entra_id`` mints a per-request bearer, so no ``*_API_KEY`` env
+    var ever exists and the row would otherwise vanish from the picker (#27989)."""
+    if hermes_id != "azure-foundry":
+        return False
+    from hermes_cli.models import _get_model_config_dict
+    model_cfg = _get_model_config_dict()
+    return (str(model_cfg.get("provider") or "").strip().lower() == "azure-foundry"
+            and str(model_cfg.get("auth_mode") or "").strip().lower() == "entra_id")
+
+
 def _skip(seen: set, excluded: set, *keys: str) -> bool:
     """True when any of *keys* (lowercased) is already emitted or excluded."""
     lowered = [k.lower() for k in keys]
@@ -864,7 +876,8 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
-            _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+            _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider)
+        ) or _keyless_builtin_configured(cp.slug)
         if not has_creds:
             continue
         if _is_aws_sdk(cp_config):

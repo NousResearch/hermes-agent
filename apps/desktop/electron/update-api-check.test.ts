@@ -18,6 +18,7 @@ import {
   cacheIsFresh,
   githubRepoSlug,
   parseCompare,
+  resolveApiBehindCount,
   UPDATE_CHECK_FAILURE_TTL_MS,
   UPDATE_CHECK_TTL_MS
 } from './update-api-check'
@@ -25,6 +26,37 @@ import {
 const SHA_A = 'a'.repeat(40)
 const SHA_B = 'b'.repeat(40)
 const HOUR = 60 * 60 * 1000
+
+test('a compare the API cannot answer is resolved by local ancestry, not guessed', () => {
+  // A checkout carrying local commits has a HEAD that exists nowhere on GitHub,
+  // so compare 404s and parseCompare returns null. Reading that silence as
+  // "behind" is a notice no update can ever clear — and its only suggested
+  // action is the one that can park the carried work.
+  assert.deepEqual(resolveApiBehindCount({ compared: null, targetIsAncestorOfHead: true }), {
+    behind: 0,
+    updateAvailable: false
+  })
+
+  // Same silence, but git says the remote tip is NOT reachable from HEAD:
+  // an update really is available, with the count honestly unknown.
+  assert.deepEqual(resolveApiBehindCount({ compared: null, targetIsAncestorOfHead: false }), {
+    behind: null,
+    updateAvailable: true
+  })
+
+  // ahead_by === 0 with differing tips means local sits ahead — already handled
+  // by the payload, and ancestry must not contradict it.
+  assert.deepEqual(
+    resolveApiBehindCount({ compared: { behind: 0 }, targetIsAncestorOfHead: false }),
+    { behind: 0, updateAvailable: false }
+  )
+
+  // A real behind count is reported as-is.
+  assert.deepEqual(
+    resolveApiBehindCount({ compared: { behind: 5 }, targetIsAncestorOfHead: false }),
+    { behind: 5, updateAvailable: true }
+  )
+})
 
 test('cache serves a passive check for 24h, but not once HEAD or the branch changes', () => {
   const cached = { fetchedAt: 0, currentSha: SHA_A, branch: 'main', status: { behind: 0 } }

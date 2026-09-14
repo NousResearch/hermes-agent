@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { isTimeoutError } from '@/lib/with-timeout'
+
 import {
   clearSingleFlightSessionResumeState,
   registerRecoveredRuntime,
+  SESSION_RESUME_SETTLEMENT_TIMEOUT_MS,
   singleFlightSessionResume,
   takeRecoveredRuntime
 } from './single-flight-resume'
 import { resumeStoredRuntimeSession, SessionRecoveryAborted, withSessionNotFoundResume } from './utils'
 
 afterEach(() => {
+  vi.useRealTimers()
   clearSingleFlightSessionResumeState()
   vi.restoreAllMocks()
 })
@@ -63,6 +67,140 @@ describe('singleFlightSessionResume', () => {
     await expect(singleFlightSessionResume('stored-a', run)).rejects.toThrow('boom')
     await expect(singleFlightSessionResume('stored-a', run)).resolves.toEqual({ session_id: 'rt-second' })
     expect(run).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('bounded settlement and straggler adoption', () => {
+  it('a never-settling resume rejects at the deadline instead of wedging the slot forever', async () => {
+    vi.useFakeTimers()
+
+    const flight = singleFlightSessionResume('stored-wedged', () => new Promise<never>(() => {}))
+    const settled = flight.catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(SESSION_RESUME_SETTLEMENT_TIMEOUT_MS)
+
+    expect(isTimeoutError(await settled)).toBe(true)
+  })
+
+  it('a later caller for the same stored id gets a FRESH attempt, not the dead flight', async () => {
+    vi.useFakeTimers()
+
+    const first = singleFlightSessionResume('stored-wedged', () => new Promise<never>(() => {}))
+    const firstSettled = first.catch(() => 'timed-out')
+
+    await vi.advanceTimersByTimeAsync(SESSION_RESUME_SETTLEMENT_TIMEOUT_MS)
+    expect(await firstSettled).toBe('timed-out')
+
+    const run = vi.fn(async () => ({ session_id: 'rt-second' }))
+
+    await expect(singleFlightSessionResume('stored-wedged', run)).resolves.toEqual({ session_id: 'rt-second' })
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('a joiner of an already-wedged flight inherits the same deadline', async () => {
+    vi.useFakeTimers()
+
+    const first = singleFlightSessionResume('stored-wedged', () => new Promise<never>(() => {}))
+    // The joiner passes no run() of its own — it must not hang past the ceiling.
+    const joiner = singleFlightSessionResume('stored-wedged', async () => ({ session_id: 'never-used' }))
+
+    expect(joiner).toBe(first)
+
+    const settled = joiner.catch(error => error)
+
+    await vi.advanceTimersByTimeAsync(SESSION_RESUME_SETTLEMENT_TIMEOUT_MS)
+
+    expect(isTimeoutError(await settled)).toBe(true)
+  })
+
+  it('a slow-but-legitimate resume (profile probe + RPC) still settles inside the ceiling', async () => {
+    vi.useFakeTimers()
+
+    // The worst healthy shape the ceiling is derived from: an active-profile
+    // probe, one cross-profile probe, then the resume RPC — each on its own
+    // 30s budget. A tighter ceiling would abort this and re-mint a runtime.
+    const flight = singleFlightSessionResume(
+      'stored-slow',
+      () => new Promise<{ session_id: string }>(resolve => setTimeout(() => resolve({ session_id: 'rt-slow' }), 89_000))
+    )
+
+    await vi.advanceTimersByTimeAsync(89_000)
+
+    await expect(flight).resolves.toEqual({ session_id: 'rt-slow' })
+  })
+
+  it('a runtime minted by a timed-out resume is adopted, not stranded on the gateway', async () => {
+    vi.useFakeTimers()
+
+    let land: (value: { session_id: string }) => void = () => {}
+    const flight = singleFlightSessionResume(
+      'stored-late',
+      () =>
+        new Promise<{ session_id: string }>(resolve => {
+          land = resolve
+        })
+    )
+    const settled = flight.catch(() => 'timed-out')
+
+    await vi.advanceTimersByTimeAsync(SESSION_RESUME_SETTLEMENT_TIMEOUT_MS)
+    expect(await settled).toBe('timed-out')
+
+    // The RPC was never cancelled: it lands a real, registered runtime.
+    land({ session_id: 'rt-late' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    // The next resume-shaped action reuses it instead of minting a second one.
+    expect(takeRecoveredRuntime('stored-late')).toBe('rt-late')
+  })
+
+  it('a straggler is NOT cached when a newer flight already owns the stored id', async () => {
+    vi.useFakeTimers()
+
+    let land: (value: { session_id: string }) => void = () => {}
+    const first = singleFlightSessionResume(
+      'stored-late',
+      () =>
+        new Promise<{ session_id: string }>(resolve => {
+          land = resolve
+        })
+    )
+    const settled = first.catch(() => 'timed-out')
+
+    await vi.advanceTimersByTimeAsync(SESSION_RESUME_SETTLEMENT_TIMEOUT_MS)
+    expect(await settled).toBe('timed-out')
+
+    // A new flight claims the slot before the straggler lands.
+    const second = singleFlightSessionResume('stored-late', () => new Promise<never>(() => {}))
+
+    void second.catch(() => undefined)
+    land({ session_id: 'rt-late' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    // Its caller adopts the second flight's result; caching the older runtime
+    // here would aim the next action at the wrong one.
+    expect(takeRecoveredRuntime('stored-late')).toBeUndefined()
+  })
+
+  it('a straggler that fails minted nothing and caches nothing', async () => {
+    vi.useFakeTimers()
+
+    let fail: (error: unknown) => void = () => {}
+    const flight = singleFlightSessionResume(
+      'stored-late',
+      () =>
+        new Promise<{ session_id: string }>((_resolve, reject) => {
+          fail = reject
+        })
+    )
+    const settled = flight.catch(() => 'timed-out')
+
+    await vi.advanceTimersByTimeAsync(SESSION_RESUME_SETTLEMENT_TIMEOUT_MS)
+    expect(await settled).toBe('timed-out')
+
+    fail(new Error('resume failed'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(takeRecoveredRuntime('stored-late')).toBeUndefined()
   })
 })
 

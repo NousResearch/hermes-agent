@@ -1,6 +1,7 @@
 """Regression test for the thinking-only prefill reaching the wire.
 
-A thinking-only response (reasoning tokens, no visible text) makes the loop
+A thinking-only response (reasoning tokens, no visible text) that is NOT a clean
+``stop`` (a clean-stop reasoning-only reply is promoted to the answer up front) makes the loop
 append an empty assistant turn and re-send so the model continues its own
 reasoning. On providers that don't echo reasoning back, the API copy has its
 reasoning fields stripped before ``_drop_thinking_only_and_merge_users`` runs,
@@ -52,11 +53,11 @@ def loop_agent():
 
 
 def _thinking_only_response():
-    """Reasoning tokens, no visible text — what triggers the prefill retry."""
+    """Reasoning tokens, no visible text, no clean stop — what triggers the prefill retry."""
     from tests.agent.test_run_agent import _mock_response
     return _mock_response(
         content="",
-        finish_reason="stop",
+        finish_reason="tool_calls",
         reasoning="Let me work through the request step by step.",
     )
 

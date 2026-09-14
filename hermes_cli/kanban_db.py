@@ -2654,15 +2654,31 @@ def _gate_created_cards(
     return verified_cards
 
 
-def _stage_completion_artifacts(conn: sqlite3.Connection, task_id: str, metadata: dict, now: int) -> None:
-    """Copy scratch artifacts to the attachments dir and record each as an attachment row."""
+def _stage_completion_artifacts(
+    conn: sqlite3.Connection, task_id: str, metadata: dict, now: int, *,
+    uploaded_by: str = "kanban_complete",
+) -> list[Path]:
+    """Copy scratch artifacts to the attachments dir and record each as an
+    attachment row; returns the copies so the caller can discard them if its
+    transaction rolls back."""
     _persist_scratch_completion_artifacts(conn, task_id, metadata)
-    for stored_path in metadata.pop("_staged_artifacts", []):
-        path = Path(stored_path)
+    staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
+    for path in staged:
         _insert_completion_attachment(
             conn, task_id, filename=path.name, stored_path=str(path),
-            size=path.stat().st_size, created_at=now,
+            size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
         )
+    return staged
+
+
+def _cleaned_artifact_paths(metadata: Any) -> list[str]:
+    """Non-blank string paths declared in ``metadata["artifacts"]``."""
+    if not isinstance(metadata, dict):
+        return []
+    raw = metadata.get("artifacts")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(p).strip() for p in raw if isinstance(p, str) and str(p).strip()]
 
 
 def _completed_event_payload(
@@ -2684,11 +2700,9 @@ def _completed_event_payload(
     if verified_cards:
         payload["verified_cards"] = verified_cards
     if isinstance(metadata, dict):
-        md_artifacts = metadata.get("artifacts")
-        if isinstance(md_artifacts, (list, tuple)):
-            cleaned = [str(p).strip() for p in md_artifacts if isinstance(p, str) and str(p).strip()]
-            if cleaned:
-                payload["artifacts"] = cleaned
+        cleaned = _cleaned_artifact_paths(metadata)
+        if cleaned:
+            payload["artifacts"] = cleaned
     return payload
 
 
@@ -2773,11 +2787,7 @@ def _persist_scratch_completion_artifacts(
     changed = False
 
     def _discard_copies() -> None:
-        for copied in used_destinations:
-            with contextlib.suppress(OSError):
-                copied.unlink(missing_ok=True)
-        with contextlib.suppress(OSError):
-            attachment_dir.rmdir()
+        _discard_staged_copies(used_destinations, attachment_dir)
 
     for item in raw_artifacts:
         artifact = str(item).strip() if isinstance(item, str) else ""
@@ -2832,6 +2842,16 @@ def _persist_scratch_completion_artifacts(
         ]
 
 
+def _discard_staged_copies(copies: Iterable[Path], attachment_dir: Path) -> None:
+    """Remove staged attachment copies whose DB rows never committed; a leaked
+    copy would make the retry stage ``name_1.ext`` next to an orphan."""
+    for copied in copies:
+        with contextlib.suppress(OSError):
+            Path(copied).unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        attachment_dir.rmdir()
+
+
 def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
     """Chunked copy that aborts if the file grows past the attachment cap mid-copy."""
     with src.open("rb") as source_file, dest.open("xb") as destination_file:
@@ -2847,16 +2867,16 @@ def _copy_capped(src: Path, dest: Path, artifact: str) -> None:
 
 def _insert_completion_attachment(
     conn: sqlite3.Connection, task_id: str, *, filename: str, stored_path: str, size: int,
-    created_at: int,
+    created_at: int, uploaded_by: str = "kanban_complete",
 ) -> None:
     """Record a worker-produced artifact in the existing attachment table."""
     conn.execute(
         "INSERT INTO task_attachments "
         "(task_id, filename, stored_path, content_type, size, uploaded_by, created_at) "
-        "VALUES (?, ?, ?, NULL, ?, 'kanban_complete', ?)",
-        (task_id, filename, stored_path, size, created_at),
+        "VALUES (?, ?, ?, NULL, ?, ?, ?)",
+        (task_id, filename, stored_path, size, uploaded_by, created_at),
     )
-    _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": "kanban_complete"})
+    _append_event(conn, task_id, "attached", {"filename": filename, "size": size, "by": uploaded_by})
 
 
 def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> Path:
@@ -3018,6 +3038,15 @@ def request_review(
     re-review defaults to the latest ``changes_requested`` provenance. A live
     claim is only cleared with proof of ownership (``expected_run_id``) or
     ``force=True``. Returns ``bool``, or ``(ok, reason)`` with ``with_reason``.
+
+    ``metadata["artifacts"]`` names the handoff's deliverable
+    files; a review handoff is the last implementer transition, and the
+    *reviewer's* completion is what cleans the managed scratch workspace up, so
+    the files are staged into the task's durable attachments dir here and the
+    staged paths ride the ``review_requested`` payload for the notifier to
+    upload. A declared artifact that cannot be preserved raises
+    :class:`ArtifactPreservationError`, rolling the whole transition back: the
+    task stays ``running`` and retryable, with no attachments and no event.
     """
 
     def _ret(ok: bool, reason: Optional[str] = None):
@@ -3025,76 +3054,91 @@ def request_review(
 
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
-    with write_txn(conn):
-        if not _parents_satisfied(conn, task_id):
-            return _ret(False, "parent dependencies are not satisfied")
-        trow = conn.execute(
-            "SELECT assignee, status, claim_lock, current_run_id "
-            "FROM tasks WHERE id = ?", (task_id,),
-        ).fetchone()
-        if trow is None:
-            return _ret(False, "task not found")
-        # Refuse to clear a live worker's claim without proof of ownership
-        # (expected_run_id) or an explicit human override (force=True).
-        if (
-            expected_run_id is None
-            and not force
-            and trow["status"] == "running"
-            and trow["claim_lock"] is not None
-        ):
-            return _ret(
-                False, "task is running under a live claim; pass expected_run_id "
-                "(worker ownership) or force=True (explicit operator "
-                "override) instead of clearing the live run's claim",
-            )
-        implementer = trow["assignee"]
-        if reviewer is None:
-            reviewer = _prior_reviewer(conn, task_id)
-            if reviewer is False:
+    # Declared (metadata["artifacts"]) and prose-referenced files
+    # must be durable BEFORE anything can clean the scratch workspace up: for a
+    # review-bound card the reviewer's completion is the cleanup trigger.
+    metadata = _merge_completion_prose_artifacts(conn, task_id, metadata, summary=summary, result=None)
+    now = int(time.time())
+    # Staged copies live outside the txn: a rollback after staging must not
+    # leave orphans that make the retry stage ``name_1.ext`` beside them.
+    staged_copies: list[Path] = []
+    try:
+        with write_txn(conn):
+            if not _parents_satisfied(conn, task_id):
+                return _ret(False, "parent dependencies are not satisfied")
+            trow = conn.execute(
+                "SELECT assignee, status, claim_lock, current_run_id "
+                "FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            if trow is None:
+                return _ret(False, "task not found")
+            # Refuse to clear a live worker's claim without proof of ownership
+            # (expected_run_id) or an explicit human override (force=True).
+            if (
+                expected_run_id is None
+                and not force
+                and trow["status"] == "running"
+                and trow["claim_lock"] is not None
+            ):
                 return _ret(
-                    False, "re-review has no durable reviewer provenance (the "
-                    "latest changes_requested event is missing or "
-                    "malformed); pass reviewer= explicitly",
+                    False, "task is running under a live claim; pass expected_run_id "
+                    "(worker ownership) or force=True (explicit operator "
+                    "override) instead of clearing the live run's claim",
                 )
-        reviewer = _canonical_assignee(reviewer)
-        assignee_sql = ", assignee = ?" if reviewer is not None else ""
-        run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
-        params: tuple[Any, ...] = (
-            *(() if reviewer is None else (reviewer,)), task_id,
-            *(() if expected_run_id is None else (int(expected_run_id),)),
-        )
-        cur = conn.execute(
-            """
-            UPDATE tasks
-               SET status        = 'review',
-                   claim_lock    = NULL,
-                   claim_expires = NULL,
-                   worker_pid    = NULL
-            """ + assignee_sql + """
-             WHERE id = ?
-               AND status IN ('running', 'ready')
-            """ + run_guard,
-            params,
-        )
-        if cur.rowcount != 1:
-            return _ret(
-                False, "task is not in running/ready (or expected_run_id did not match the current run)",
+            implementer = trow["assignee"]
+            if reviewer is None:
+                reviewer = _prior_reviewer(conn, task_id)
+                if reviewer is False:
+                    return _ret(
+                        False, "re-review has no durable reviewer provenance (the "
+                        "latest changes_requested event is missing or "
+                        "malformed); pass reviewer= explicitly",
+                    )
+            reviewer = _canonical_assignee(reviewer)
+            assignee_sql = ", assignee = ?" if reviewer is not None else ""
+            run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+            params: tuple[Any, ...] = (
+                *(() if reviewer is None else (reviewer,)), task_id,
+                *(() if expected_run_id is None else (int(expected_run_id),)),
             )
-        run_id = _end_or_synthesize_run(
-            conn, task_id, outcome="review_requested", status="review",
-            summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
-        )
-        _append_event(
-            conn,
-            task_id,
-            "review_requested",
-            {
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status        = 'review',
+                       claim_lock    = NULL,
+                       claim_expires = NULL,
+                       worker_pid    = NULL
+                """ + assignee_sql + """
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """ + run_guard,
+                params,
+            )
+            if cur.rowcount != 1:
+                return _ret(
+                    False, "task is not in running/ready (or expected_run_id did not match the current run)",
+                )
+            if isinstance(metadata, dict):
+                staged_copies = _stage_completion_artifacts(
+                    conn, task_id, metadata, now, uploaded_by="kanban_request_review",
+                )
+            run_id = _end_or_synthesize_run(
+                conn, task_id, outcome="review_requested", status="review",
+                summary=summary, metadata=metadata, synthesize=bool(summary or metadata),
+            )
+            payload: dict = {
                 "summary": _first_line(summary, 400) or None,
                 "implementer": implementer,
                 "reviewer": reviewer,
-            },
-            run_id=run_id,
-        )
+            }
+            staged = _cleaned_artifact_paths(metadata)
+            if staged:
+                payload["artifacts"] = staged
+            _append_event(conn, task_id, "review_requested", payload, run_id=run_id)
+    except Exception:
+        if staged_copies:
+            _discard_staged_copies(staged_copies, staged_copies[0].parent)
+        raise
     return _ret(True)
 
 

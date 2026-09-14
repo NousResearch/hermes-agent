@@ -447,6 +447,7 @@ class ModelFlagParseResult:
     """Parsed flags for a /model command."""
     model_input: str
     explicit_provider: str = ""
+    reasoning_effort: str = ""
     is_global: bool = False
     force_refresh: bool = False
     is_session: bool = False
@@ -456,32 +457,36 @@ class ModelFlagParseResult:
 # --- Flag parsing
 
 _BOOL_FLAGS = {"--global": "is_global", "--session": "is_session", "--refresh": "force_refresh", "--once": "is_once"}
+_VALUE_FLAGS = {"--provider": "explicit_provider", "--reasoning": "reasoning_effort"}
 
 
 def parse_model_flags_detailed(raw_args: str) -> ModelFlagParseResult:
-    """Parse /model flags: ``--provider X``, ``--global``, ``--session``, ``--refresh``, ``--once``.
+    """Parse /model flags: ``--provider X``, ``--reasoning <level>``, ``--global``, ``--session``,
+    ``--refresh``, ``--once``.
 
     ``--once`` is parsed here but interpreted by each caller (each frontend has its own
     live-session restore hook). ``is_global`` / ``is_session`` are raw flag presences; the
-    effective persistence decision belongs to :func:`resolve_persist_behavior`."""
+    effective persistence decision belongs to :func:`resolve_persist_behavior`. ``reasoning_effort``
+    is the raw level word (validated by :func:`hermes_constants.parse_reasoning_effort` at apply
+    time) so a model pick and its effort travel as ONE request on every surface."""
     # Telegram/iOS auto-convert ``--`` to an em/en dash: normalize a single Unicode dash before
     # a flag keyword.
-    raw_args = re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|session|refresh|once)', r'--\1', raw_args)
+    raw_args = re.sub(r'[\u2012\u2013\u2014\u2015](provider|reasoning|global|session|refresh|once)', r'--\1', raw_args)
 
     # Hand-rolled: model IDs may contain colons/slashes and the historical parser did not
     # require shell quoting.
-    flags = dict.fromkeys(_BOOL_FLAGS.values(), False)
-    explicit_provider = ""
+    flags: dict[str, bool] = dict.fromkeys(_BOOL_FLAGS.values(), False)
+    values: dict[str, str] = dict.fromkeys(_VALUE_FLAGS.values(), "")
     filtered: list[str] = []
     tokens = iter(raw_args.split())
     for tok in tokens:
         if tok in _BOOL_FLAGS:
             flags[_BOOL_FLAGS[tok]] = True
-        elif tok == "--provider" and (value := next(tokens, None)) is not None:
-            explicit_provider = value
+        elif tok in _VALUE_FLAGS and (value := next(tokens, None)) is not None:
+            values[_VALUE_FLAGS[tok]] = value
         else:
             filtered.append(tok)  # a trailing bare ``--provider`` stays part of the model text
-    return ModelFlagParseResult(model_input=" ".join(filtered).strip(), explicit_provider=explicit_provider, **flags)
+    return ModelFlagParseResult(model_input=" ".join(filtered).strip(), **values, **flags)
 
 
 def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool, bool]:
@@ -534,12 +539,14 @@ def resolve_persist_behavior(
 # Error codes emitted by parse_model_switch_args().
 MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL = "once_with_global"
 MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET = "once_requires_target"
+MODEL_SWITCH_ERR_BAD_REASONING = "bad_reasoning"
 
 # Canonical (surface-neutral) error copy. Surfaces prepend their own decoration ("  ✗ " in the
 # CLI, "❌ " in the gateway) but MUST NOT change the core sentence — it is shared user-visible copy.
 MODEL_SWITCH_ERROR_TEXT = {
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL: "/model --once cannot be combined with --global",
-    MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider."}
+    MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET: "/model --once requires a model or provider.",
+    MODEL_SWITCH_ERR_BAD_REASONING: "/model --reasoning takes none, minimal, low, medium, high, xhigh, max or ultra."}
 
 
 @dataclass(frozen=True)
@@ -554,6 +561,7 @@ class ModelSwitchRequest:
     raw: str
     target: str
     explicit_provider: str = ""
+    reasoning_effort: str = ""
     is_global: bool = False
     is_session: bool = False
     is_once: bool = False
@@ -574,7 +582,8 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
     """The ONE parser for every /model surface: tokenization plus flag-conflict validation.
 
     ``--once`` + ``--global`` -> ``MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL``; ``--once`` with neither
-    a model nor ``--provider`` -> ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``. Targets pass through
+    a model nor ``--provider`` -> ``MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET``; an unknown
+    ``--reasoning`` level -> ``MODEL_SWITCH_ERR_BAD_REASONING``. Targets pass through
     untouched (bare names, ``vendor/model``, ``vendor:model``) for :func:`switch_model`."""
     raw = str(raw or "")
     parsed = parse_model_flags_detailed(raw)
@@ -584,13 +593,17 @@ def parse_model_switch_args(raw: str) -> ModelSwitchRequest:
         errors.append(MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL)
     if parsed.is_once and not parsed.model_input and not parsed.explicit_provider:
         errors.append(MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET)
+    if parsed.reasoning_effort:
+        from hermes_constants import parse_reasoning_effort
+        if parse_reasoning_effort(parsed.reasoning_effort) is None:
+            errors.append(MODEL_SWITCH_ERR_BAD_REASONING)
     # First matching flag wins: once > session > global > default.
     scope = next((name for name, on in (("once", parsed.is_once), ("session", parsed.is_session),
                                         ("global", parsed.is_global)) if on), "default")
     return ModelSwitchRequest(
         raw=raw, target=parsed.model_input, scope=scope, errors=tuple(errors),
         **{f: getattr(parsed, f)
-           for f in ("explicit_provider", "is_global", "is_session", "is_once", "force_refresh")})
+           for f in ("explicit_provider", "reasoning_effort", "is_global", "is_session", "is_once", "force_refresh")})
 
 
 def _effective_model_candidate(value: Any) -> str:
@@ -1599,16 +1612,23 @@ def _extra_headers_from_config(entry: Any) -> dict[str, str]:
 
 
 def _scoped_key_env(name: str) -> str:
-    """Read a provider key env var through the per-profile secret scope.
+    """Read a provider key env var the way the chat path does, honouring the per-profile scope.
 
-    The multiplexed gateway installs a secret scope per turn; a raw ``os.environ`` read hands the
-    current profile whatever key happens to be in the process environment — another profile's.
-    Identical to ``os.getenv`` when multiplexing is off. A fail-closed ``UnscopedSecretError``
-    (multiplexing on, no scope installed) means "no credential visible for this profile here",
-    which is exactly how the picker already treats a missing key."""
+    With a secret scope installed (multiplexed gateway turn, dashboard/kanban workers) the scope's
+    verdict is authoritative: a hit is this profile's key, a miss must not borrow another profile's
+    value from the process env or the default ``.env``. Multiplexing on with no scope fails closed
+    (``UnscopedSecretError`` -> ""). Otherwise resolve through ``get_env_prefer_dotenv`` — the
+    chain ``client_lifecycle`` uses for the actual request — so a ``key_env`` that lives only in
+    ``$HERMES_HOME/.env`` authenticates the ``/model`` verification probe (#109315) and a rotated
+    ``.env`` beats a stale value inherited from the parent shell."""
+    if not name:
+        return ""
     try:
-        from agent.secret_scope import get_secret
-        return (get_secret(name, "") or "").strip() if name else ""
+        from agent.secret_scope import current_secret_scope, get_secret, is_multiplex_active
+        if current_secret_scope() is not None or is_multiplex_active():
+            return (get_secret(name, "") or "").strip()
+        from agent.credential_pool import get_env_prefer_dotenv
+        return (get_env_prefer_dotenv(name) or "").strip()
     except Exception:
         return ""
 

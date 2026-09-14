@@ -23,7 +23,19 @@ export interface GroupRoundMemberContext {
   startEpoch: number
   binding: { isLive(): boolean }
   isCurrent(): boolean
+  // Per-drive count of transient (thrown) turn failures per member key. A
+  // thrown turn (e.g. a ws_orphan_reap 4001 the turn-level retry couldn't
+  // recover) must NOT silently consume the user's delta and go stale: leave
+  // the watermark unadvanced so the next round re-drives the member, up to
+  // MAX_FAILED_TURN_RETRIES, after which the room settles against a
+  // genuinely-down member.
+  failedRetries?: Map<string, number>
 }
+
+/** How many extra times a member whose turn THREW is re-driven before the
+ *  round loop gives up and lets the room settle. Timeouts (reply===null
+ *  without a throw) keep their existing stranded-harvest path untouched. */
+export const MAX_FAILED_TURN_RETRIES = 1
 
 /** #93129: a held member's skip must consume its delta exactly once —
  *  advance the watermark past the current log so the same entries never
@@ -127,7 +139,7 @@ async function runVisibleMemberTurn(
 export async function runGroupRoundMember(
   context: GroupRoundMemberContext,
   member: GroupMember
-): Promise<boolean | null> {
+): Promise<boolean | null | 'retry'> {
   const { thread, startEpoch, binding } = context
   const prepared = prepareGroupRoundMember(context, member)
 
@@ -137,6 +149,7 @@ export async function runGroupRoundMember(
 
   const { room, markKey, prompt, deltaImages } = prepared
   let reply: null | string = null
+  let turnFailed = false
 
   try {
     reply = await runVisibleMemberTurn(context, member, prompt, deltaImages)
@@ -166,6 +179,7 @@ export async function runGroupRoundMember(
     })
     noteBotAttention(groupMemberKey(member), reason || error?.message || error)
     reply = null // a failed turn is a pass, never a room error
+    turnFailed = true
   }
 
   // #93127: the turn may have finished AFTER a newer user send bumped
@@ -206,6 +220,26 @@ export async function runGroupRoundMember(
     })
 
     return null
+  }
+
+  // A THROWN turn (transient reap) that still has retries left must NOT
+  // advance the watermark: leaving the user's delta unseen lets the NEXT
+  // round re-drive this member instead of silently consuming the mention.
+  // Only real throws are retried (timeouts keep the stranded-harvest path),
+  // and only up to MAX_FAILED_TURN_RETRIES so the room still settles against
+  // a genuinely-down member. Return true so spokeThisRound stays > 0 and the
+  // round loop runs another round (the room would otherwise settle after a
+  // silent round before the re-drive) — no entry is appended, so this only
+  // keeps the loop alive; the actual reply lands on the retry round.
+  if (turnFailed && context.failedRetries) {
+    const memberKey = groupMemberKey(member)
+    const priorRetries = context.failedRetries.get(memberKey) || 0
+
+    if (priorRetries < MAX_FAILED_TURN_RETRIES) {
+      context.failedRetries.set(memberKey, priorRetries + 1)
+
+      return 'retry'
+    }
   }
 
   // The member has now seen everything up to the pre-reply log length.

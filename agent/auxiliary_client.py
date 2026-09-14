@@ -5569,6 +5569,13 @@ def _get_cached_client(
         provider, model, async_mode, explicit_base_url=base_url, explicit_api_key=effective_api_key,
         api_mode=api_mode, main_runtime=runtime, is_vision=is_vision, task=task,
     )
+    if client is not None and _aux_probe_active():
+        # Availability probes answer "resolvable?" and must leave the cache untouched: the
+        # probe stub (bare, or wrapped in a Codex/Anthropic adapter whose leaf is the stub)
+        # shares the runtime key, and a cached one is served to every later caller — the
+        # next probe dies in _compat_model() on stub attribute access, so check_fns flip to
+        # False and vision tools vanish for the process lifetime (#87654).
+        return client, model or default_model
     if client is not None:
         with _client_cache_lock:
             if cache_key not in _client_cache:

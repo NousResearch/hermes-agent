@@ -15,6 +15,7 @@ import logging
 import secrets
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -22,6 +23,7 @@ import urllib.request
 from pathlib import Path
 
 from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
+from hermes_cli.local_runtime.processes import spawn_server
 
 logger = logging.getLogger(__name__)
 
@@ -113,9 +115,13 @@ class LlamaServerSupervisor:
         self.log_path = log_path or (self.models_dir.parent / "logs" / "llama-server.log")
         self.preset_path = preset_path
         self.proc: subprocess.Popen | None = None
+        self._job = None
         self.primary_model: str | None = None
         self._restarts = 0
         self._stopping = False
+        self._stop_event = threading.Event()
+        self._lifecycle_lock = threading.RLock()
+        self._state: dict | None = None
         self._watchdog: threading.Thread | None = None
         self._log_handle = None
         self._idle_since: dict[str, float] = {}
@@ -177,8 +183,8 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc = subprocess.Popen(cmd, stdout=self._log_handle,
-                                     stderr=subprocess.STDOUT, cwd=str(exe.parent))
+        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle,
+                                             stderr=subprocess.STDOUT, cwd=str(exe.parent))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
@@ -186,22 +192,33 @@ class LlamaServerSupervisor:
         self._write_state()
 
     def start(self, timeout_s: int = 120) -> None:
-        self._stopping = False
-        self._spawn()
+        with self._lifecycle_lock:
+            self._stopping = False
+            self._stop_event.clear()
+            self._spawn()
         self._wait_health(timeout_s)
-        self._write_state()
         self._watchdog = threading.Thread(target=self._watch, daemon=True, name="llamacpp-supervisor")
         self._watchdog.start()
 
     def _write_state(self) -> None:
+        import os
+        import psutil
+        from utils import atomic_json_write
+
+        proc = psutil.Process(self.proc.pid)
+        self._state = {"base_url": self.base_url, "api_key": self.api_key,
+                       "pid": proc.pid, "create_time": proc.create_time(),
+                       "executable": proc.exe(), "owner_pid": os.getpid(),
+                       "owner_create_time": psutil.Process().create_time()}
         path = state_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"base_url": self.base_url, "api_key": self.api_key,
-                                    "pid": self.proc.pid if self.proc else None}), encoding="utf-8")
+        atomic_json_write(path, self._state, mode=0o600)
 
     def _wait_health(self, timeout_s: int) -> None:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
+            if self._stop_event.is_set():
+                raise RuntimeError("llama-server startup cancelled")
             if self.proc and self.proc.poll() is not None:
                 raise RuntimeError(f"llama-server exited rc={self.proc.returncode} during startup "
                                    f"(log: {self.log_path})")
@@ -226,11 +243,15 @@ class LlamaServerSupervisor:
                 return
             backoff = _RESTART_BACKOFF_S[min(self._restarts, len(_RESTART_BACKOFF_S) - 1)]
             logger.warning("llama-server exited rc=%s; restart #%s in %ss", rc, self._restarts + 1, backoff)
-            time.sleep(backoff)
+            if self._stop_event.wait(backoff):
+                return
             self._restarts += 1
             try:
-                self._reap_orphaned_children()
-                self._spawn()
+                with self._lifecycle_lock:
+                    if self._stopping:
+                        return
+                    self._reap_orphaned_children()
+                    self._spawn()
                 self._wait_health(120)
                 if self.primary_model:
                     self.ensure_model_ready(self.primary_model)
@@ -238,16 +259,23 @@ class LlamaServerSupervisor:
                 logger.error("llama-server restart failed: %s", exc)
 
     def stop(self) -> None:
-        self._stopping = True
-        state_path().unlink(missing_ok=True)
-        if self.proc and self.proc.poll() is None:
-            self._terminate_tree(self.proc)
-        if self._log_handle:
-            self._log_handle.close()
-            self._log_handle = None
+        with self._lifecycle_lock:
+            self._stopping = True
+            self._stop_event.set()
+            try:
+                if self.proc and self.proc.poll() is None:
+                    self._terminate_tree(self.proc)
+            finally:
+                if self._job is not None:
+                    self._job.close()
+                    self._job = None
+            # Retain state: deleting it could race a replacement publication.
+            if self._log_handle:
+                self._log_handle.close()
+                self._log_handle = None
 
     @staticmethod
-    def _terminate_tree(proc: subprocess.Popen) -> None:
+    def _terminate_tree(proc: subprocess.Popen, *, verified_root: bool = False) -> None:
         """Terminate the router AND its model children.
 
         Each child holds gigabytes of VRAM; terminating only the router (TerminateProcess on
@@ -255,19 +283,30 @@ class LlamaServerSupervisor:
         FIRST (the parent must be alive to walk them), terminate all, escalate to kill.
         """
         children: list = []
-        with suppress(Exception):  # no psutil view; still stop the router
+        timeouts = (subprocess.TimeoutExpired,)
+        with suppress(ImportError):
             import psutil
 
-            children = psutil.Process(proc.pid).children(recursive=True)
-        proc.terminate()
-        for child in children:
-            _quiet(child.terminate)
+            timeouts += (psutil.TimeoutExpired,)
+            if verified_root:
+                # Recovery retains the birth identity; never rebuild it from a PID.
+                children = proc.children(recursive=True)
+                if not proc.is_running():
+                    raise psutil.NoSuchProcess(proc.pid)
+            else:
+                with suppress(psutil.Error):
+                    children = psutil.Process(proc.pid).children(recursive=True)
         try:
-            proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        for child in children:
-            _quiet(lambda: child.is_running() and child.kill())
+            for child in children:
+                _quiet(child.terminate)
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except timeouts:
+                proc.kill()
+        finally:
+            for child in children:
+                _quiet(lambda: child.is_running() and child.kill())
 
     def _reap_orphaned_children(self) -> None:
         """Kill model children orphaned by a router crash, before respawn.
@@ -276,6 +315,12 @@ class LlamaServerSupervisor:
         llama-server binary whose parent is gone is an orphan of a previous router. Its VRAM must
         come back before the new router loads models next to the ghosts.
         """
+        if self._job is not None:
+            self._job.close()
+            self._job = None
+            return
+        if sys.platform == "win32":
+            return  # Unrecorded processes are not ours merely because the binary matches.
         try:
             import psutil
 

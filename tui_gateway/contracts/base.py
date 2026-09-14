@@ -15,10 +15,9 @@ Modelling rules (they keep the generated TS clean and the wire stable):
 - Inbound models (method params and server-request results) render defaulted fields as optional.
   Outbound models (method results, server-request params and event payloads) render every field
   required; use ``X | None`` when the wire may carry ``null``.
-- Params models are ``extra="forbid"``: an unknown key is a client bug and answers ``4000``
-  instead of being silently ignored. Result and payload models are ``extra="allow"`` only
-  while a field is genuinely open (``dict[str, Any]`` is banned in a contract — declare the
-  shape or use ``JsonValue``).
+- Every model is ``extra="forbid"``. An unknown key in params is a client bug and answers
+  ``4000`` instead of being silently ignored; a genuinely open field is ``JsonValue``, never
+  ``dict[str, Any]`` or ``extra="allow"``.
 """
 
 from __future__ import annotations

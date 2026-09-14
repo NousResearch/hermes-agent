@@ -278,7 +278,7 @@ def _render_sessions(ctx):
     # pre-migration installs.
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=True)  # status only reads; never a writer beside a running gateway
         try:
             gateway_rows = db.list_gateway_sessions(active_only=True) or []
         finally:

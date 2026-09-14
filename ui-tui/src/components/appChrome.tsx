@@ -78,24 +78,6 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
 
-// `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
-// module load instead of rescanning on every status render.
-const KAOMOJI_FRAME_WIDTH = FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
-const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
-
-const indicatorFrameWidth = (style: IndicatorStyle): number => {
-  if (style === 'kaomoji') {
-    return KAOMOJI_FRAME_WIDTH
-  }
-
-  if (style === 'emoji') {
-    return EMOJI_FRAME_WIDTH
-  }
-
-  // 'ascii' and 'unicode' are single-column glyphs.
-  return 1
-}
-
 // Bounded width of the elapsed-time clock, derived from `fmtDuration` itself so
 // the reservation/budget stays consistent with what actually renders (it emits
 // a space between units, e.g. `59m 59s` / `99h 59m`). Durations beyond this
@@ -105,27 +87,15 @@ export const MAX_DURATION_WIDTH = Math.max(
   stringWidth(fmtDuration(99 * 3_600_000 + 59 * 60_000)) // "99h 59m"
 )
 
-// Display width to reserve for the busy indicator so its verb + elapsed-time
-// tail can't shove the model off-screen on narrow terminals. Style-aware:
-// `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
-// ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
-// Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb ? 1 + VERB_PAD_LEN : 0
-  // ` · ` plus the bounded clock (e.g. `59m 59s`).
-  const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
-
-  return indicatorFrameWidth(style) + verb + duration
-}
-
-function FaceTicker({
+export function FaceTicker({
   color,
+  paused = false,
   startedAt,
   style,
   verbOverride
 }: {
   color: string
+  paused?: boolean
   startedAt?: null | number
   style: IndicatorStyle
   verbOverride?: string
@@ -133,7 +103,6 @@ function FaceTicker({
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
-  const isOccluded = useStore($isStatusRuleOccluded)
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
@@ -145,14 +114,10 @@ function FaceTicker({
   const displayVerb = freezeVerb || showVerb
 
   useEffect(() => {
-    // An overlay is painted OVER the status rule (the modal widget slot, or a
-    // floating panel growing up over the top rule), so every tick below is a
-    // re-render nobody can see — in an Ink TUI that churn reads as the dialog
-    // tearing.  Arm nothing while occluded.  The effect re-runs when the rule
-    // is revealed again and re-seeds `now` from the wall clock, so the elapsed
-    // read-out resumes live rather than frozen at the moment it was covered.
-    // See `$isStatusRuleOccluded` for why this is NOT `$isBlocked`.
-    if (isOccluded) {
+    // Callers own geometry: status-rule and transcript indicators are covered
+    // by different overlay sets. Arm no clocks while this ticker is hidden;
+    // re-seeding `now` on reveal keeps the elapsed duration truthful.
+    if (paused) {
       return
     }
 
@@ -173,7 +138,7 @@ function FaceTicker({
         clearInterval(verb)
       }
     }
-  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
+  }, [displayVerb, freezeVerb, intervalMs, paused])
 
   const { frame } = renderIndicator(style, tick)
   const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
@@ -489,14 +454,12 @@ export function StatusRule({
   cwdLabel,
   cols,
   busy,
-  compacting = false,
   status,
   statusBarFields = null,
   statusColor,
   model,
   modelFast,
   modelReasoningEffort,
-  indicatorStyle = 'kaomoji',
   notice,
   usage,
   bgCount,
@@ -504,7 +467,6 @@ export function StatusRule({
   liveSessionCount,
   sessionTitle,
   sessionStartedAt,
-  turnStartedAt,
   voiceLabel,
   onSessionCountClick,
   t
@@ -540,9 +502,9 @@ export function StatusRule({
   const batteryColorVal = showBattery ? batteryColor(battery!, t) : ''
   const batteryWidth = showBattery ? stringWidth(`${batteryText} │ `) : 0
 
-  // A credits notice replaces the status/verb slot, but only when idle —
-  // while busy the FaceTicker always wins (R1 render priority). The notice
-  // text carries its own glyph; we only tint it (R1) and let it shrink (R3-M7).
+  // The live-turn indicator belongs to the transcript. A credits notice still
+  // replaces the idle status slot; while busy the slot stays empty so the
+  // indicator is not duplicated at the fixed screen edge.
   const showNotice = !busy && !!notice?.text
   // The notice slot is shrinkable (flexShrink={1}, truncate-end), so reserve
   // only a small bounded width for it in the essentials budget — enough that
@@ -552,22 +514,17 @@ export function StatusRule({
   const NOTICE_RESERVE_MAX = 24
   const noticeReserve = showNotice ? Math.min(stringWidth(notice!.text), NOTICE_RESERVE_MAX) : 0
 
-  // Width of the must-keep left segments (indicator + model + context). They
+  // Width of the must-keep left segments (idle status + model + context). They
   // are pinned (never shrink) and reserved so the cwd/branch on the right
-  // yields first. The busy face width depends on the active /indicator style
-  // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
-  // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
-  const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
-    : showNotice
-      ? noticeReserve
-      : stringWidth(status)
+  // yields first. During a turn the status slot is empty; the live indicator
+  // follows the latest transcript row instead.
+  const slotWidth = busy ? 0 : showNotice ? noticeReserve : stringWidth(status)
 
   const essentialWidth =
     stringWidth('─ ') +
     batteryWidth +
     slotWidth +
-    stringWidth(' │ ') +
+    stringWidth(busy && !DEV_CREDITS_MODE ? '' : ' │ ') +
     stringWidth(modelText) +
     (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
 
@@ -608,8 +565,8 @@ export function StatusRule({
   const showDuration = segs.duration && ok('duration') && !!sessionStartedAt && fits(SEP + MAX_DURATION_WIDTH)
 
   // Idle clock — time since the last final agent response. Hidden while busy
-  // (the FaceTicker's elapsed tail covers the live turn) and before the first
-  // turn completes. Shares the duration breakpoint and width reservation.
+  // (the transcript indicator carries the live turn) and before the first turn
+  // completes. Shares the duration breakpoint and width reservation.
   const showIdle =
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
@@ -669,7 +626,7 @@ export function StatusRule({
   return (
     <Box height={1}>
       <Box flexDirection="row" flexShrink={1} overflow="hidden" width={leftWidth}>
-        {/* Leading pinned chrome: border + busy face / idle status. When a
+        {/* Leading pinned chrome: border + idle status. When a
             notice occupies the slot the status text is dropped — the notice
             renders as a separate shrinkable box below so a long notice
             ellipsizes instead of crushing model │ ctx (R3-M7). */}
@@ -681,14 +638,7 @@ export function StatusRule({
               <Text color={t.color.muted}>{' │ '}</Text>
             </Text>
           ) : null}
-          {busy ? (
-            <FaceTicker
-              color={statusColor}
-              startedAt={turnStartedAt}
-              style={indicatorStyle}
-              verbOverride={compacting ? 'compacting' : undefined}
-            />
-          ) : showNotice ? null : (
+          {busy || showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {status}
             </Text>
@@ -712,7 +662,7 @@ export function StatusRule({
             </Text>
           ) : null}
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {busy && !DEV_CREDITS_MODE ? '' : ' │ '}
             {modelText}
           </Text>
           {ctxLabel ? (

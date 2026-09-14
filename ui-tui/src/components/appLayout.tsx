@@ -140,8 +140,9 @@ const TranscriptPane = memo(function TranscriptPane({
   actions,
   composer,
   progress,
+  status,
   transcript
-}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'status' | 'transcript'>) {
   const ui = useStore($uiState)
   const petBox = useStore($petBox)
   const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
@@ -251,6 +252,8 @@ const TranscriptPane = memo(function TranscriptPane({
             prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
             progress={progress}
             sections={ui.sections}
+            statusColor={status.statusColor}
+            turnStartedAt={status.turnStartedAt}
           />
 
           {/* Narrow terminals: reserve rows so the newest lines sit above the pet. */}
@@ -561,7 +564,13 @@ export const AppLayout = memo(function AppLayout({
             </PerfPane>
           ) : (
             <PerfPane id="transcript">
-              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+              <TranscriptPane
+                actions={actions}
+                composer={composer}
+                progress={progress}
+                status={status}
+                transcript={transcript}
+              />
             </PerfPane>
           )}
           {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}

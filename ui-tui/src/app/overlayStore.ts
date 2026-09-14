@@ -134,6 +134,13 @@ export const $isStatusRuleOccluded = computed([$overlayState, $uiState], (overla
   Boolean(overlay.widget || (ui.statusBar === 'top' && hasFloatingPanel(overlay)))
 )
 
+/** The live-turn ticker sits at the transcript tail. Full-screen widgets and
+ * every upward-growing floating panel cover that tail regardless of where the
+ * separate status rule is configured. Flow prompts resize instead of cover. */
+export const $isTranscriptIndicatorOccluded = computed($overlayState, overlay =>
+  Boolean(overlay.widget || hasFloatingPanel(overlay))
+)
+
 export const getOverlayState = () => $overlayState.get()
 
 export const patchOverlayState = (next: Partial<OverlayState> | ((state: OverlayState) => OverlayState)) =>

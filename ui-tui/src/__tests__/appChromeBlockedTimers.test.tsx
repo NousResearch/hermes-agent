@@ -8,8 +8,9 @@ import { GatewayProvider } from '../app/gatewayContext.js'
 import type { AppLayoutProps, OverlayState, UiState } from '../app/interfaces.js'
 import { patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
-import { StatusRule } from '../components/appChrome.js'
+import { FaceTicker, StatusRule } from '../components/appChrome.js'
 import { AppLayout } from '../components/appLayout.js'
+import { StreamingAssistant } from '../components/streamingAssistant.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
 import { stripAnsi } from '../lib/text.js'
@@ -75,6 +76,26 @@ const mountTree = (tree: React.ReactElement, { interactive = false } = {}) => {
 }
 
 const mount = (props: StatusRuleProps) => mountTree(<StatusRule {...props} />)
+
+const mountTicker = (verbOverride?: string) =>
+  mountTree(
+    <FaceTicker color={DEFAULT_THEME.color.ok} startedAt={T0 - 30_000} style="kaomoji" verbOverride={verbOverride} />
+  )
+
+const mountTranscriptTicker = () => {
+  patchUiState({ busy: true, indicatorStyle: 'kaomoji' })
+
+  return mountTree(
+    <StreamingAssistant
+      cols={120}
+      detailsMode="collapsed"
+      detailsModeCommandOverride={false}
+      progress={{ showProgressArea: false }}
+      statusColor={DEFAULT_THEME.color.ok}
+      turnStartedAt={T0 - 30_000}
+    />
+  )
+}
 
 const idleProps: StatusRuleProps = {
   bgCount: 0,
@@ -240,8 +261,8 @@ describe('status-chrome timers under an occluding overlay', () => {
     expect(oneSecondTimers(intervalSpy)).toBe(0)
   })
 
-  it('arms the FaceTicker glyph/verb/clock trio mid-turn when nothing covers the rule', () => {
-    mount(busyProps)
+  it('arms the in-transcript FaceTicker glyph/verb/clock trio mid-turn', () => {
+    mountLayout({}, { busy: true, indicatorStyle: 'kaomoji' })
 
     // kaomoji cadence for the glyph + verb rotation, plus the elapsed clock.
     expect(armedDelays(intervalSpy)).toContain(2500)
@@ -249,7 +270,7 @@ describe('status-chrome timers under an occluding overlay', () => {
   })
 
   it('freezes the FaceTicker verb on compacting and skips verb rotation (#97239)', () => {
-    const { output } = mount({ ...busyProps, compacting: true })
+    const { output } = mountTicker('compacting')
 
     expect(output()).toContain('compacting')
     // Glyph still ticks at the kaomoji cadence; the rotating-verb timer does not.
@@ -259,8 +280,7 @@ describe('status-chrome timers under an occluding overlay', () => {
 
   it('arms no FaceTicker timer mid-turn while the modal widget slot is open', () => {
     patchOverlayState({ widget: { appId: 'demo', state: null } })
-
-    mount(busyProps)
+    mountTranscriptTicker()
 
     expect(armedDelays(intervalSpy)).not.toContain(2500)
     expect(oneSecondTimers(intervalSpy)).toBe(0)
@@ -270,8 +290,7 @@ describe('status-chrome timers under an occluding overlay', () => {
     // `sudo` is in `$isBlocked` but renders in PromptZone's normal flow, so it
     // pushes the rule down rather than covering it — the trio must keep going.
     patchOverlayState({ sudo: { requestId: 'sudo-1' } })
-
-    mount(busyProps)
+    mountTranscriptTicker()
 
     expect(armedDelays(intervalSpy)).toContain(2500)
     expect(oneSecondTimers(intervalSpy)).toBeGreaterThan(0)
@@ -304,14 +323,14 @@ describe('status-chrome timers under an occluding overlay', () => {
     nowSpy.mockReturnValue(T0 + 300_000)
     rule.clear()
     resetOverlayState()
-    await flush()
+    await vi.waitFor(() => {
+      const resumed = rule.output()
 
-    const resumed = rule.output()
-
-    // Caught up to real elapsed time, not stuck on the pre-overlay values.
-    expect(resumed).toContain('6m 0s')
-    expect(resumed).toContain('✓ 5m 5s')
-    expect(resumed).not.toContain('1m 0s')
+      // Caught up to real elapsed time, not stuck on the pre-overlay values.
+      expect(resumed).toContain('6m 0s')
+      expect(resumed).toContain('✓ 5m 5s')
+      expect(resumed).not.toContain('1m 0s')
+    })
 
     // …and the clocks are running again.
     expect(oneSecondTimers(intervalSpy)).toBe(2)

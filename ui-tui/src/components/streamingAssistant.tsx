@@ -2,12 +2,14 @@ import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
+import { $isTranscriptIndicatorOccluded } from '../app/overlayStore.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { blockRenders } from '../domain/blockLayout.js'
 import { appendToolShelfMessage } from '../lib/liveProgress.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
+import { FaceTicker } from './appChrome.js'
 import { MessageLine } from './messageLine.js'
 import { TodoPanel } from './todoPanel.js'
 
@@ -28,16 +30,19 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   detailsModeCommandOverride,
   prevMsg,
   progress,
-  sections
+  sections,
+  statusColor,
+  turnStartedAt
 }: StreamingAssistantProps) {
   const ui = useStore($uiState)
+  const indicatorOccluded = useStore($isTranscriptIndicatorOccluded)
   const streamSegments = useTurnSelector(state => state.streamSegments)
   const streamPendingTools = useTurnSelector(state => state.streamPendingTools)
   const streaming = useTurnSelector(state => state.streaming)
   const activeTools = useTurnSelector(state => state.tools)
   const showStreamingArea = Boolean(streaming)
 
-  if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
+  if (!ui.busy && !progress.showProgressArea && !showStreamingArea && !activeTools.length) {
     return null
   }
 
@@ -61,6 +66,8 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   } else if (streamPendingTools.length) {
     blocks.push({ key: 'pending-tools', msg: { kind: 'trail', role: 'system', text: '', tools: streamPendingTools } })
   }
+
+  const showPendingIndicator = ui.busy && blocks.length === 0
 
   const detailsCtx = { commandOverride: detailsModeCommandOverride, detailsMode, sections }
   let prev = prevMsg
@@ -97,6 +104,15 @@ export const StreamingAssistant = memo(function StreamingAssistant({
 
         return node
       })}
+      {showPendingIndicator ? (
+        <FaceTicker
+          color={statusColor}
+          paused={indicatorOccluded}
+          startedAt={turnStartedAt}
+          style={ui.indicatorStyle}
+          verbOverride={ui.compacting ? 'compacting' : undefined}
+        />
+      ) : null}
     </>
   )
 })
@@ -117,4 +133,6 @@ interface StreamingAssistantProps {
   prevMsg?: Msg
   progress: AppLayoutProgressProps
   sections?: SectionVisibility
+  statusColor: string
+  turnStartedAt: null | number
 }

@@ -896,7 +896,10 @@ def test_pending_restart_accepts_systemd_managed_dashboard_worklist(monkeypatch)
     monkeypatch.setattr("hermes_cli.gateway.supports_systemd_services", lambda: True)
     monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
     monkeypatch.setattr("hermes_cli.gateway.is_windows", lambda: False)
-    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [])
+    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [
+        (scope, cmd, SimpleNamespace(returncode=0, stdout=""))
+        for scope, cmd in update_cmd_fleet._SYSTEMD_SCOPES
+    ])
     receipt = {"plan": {"runtimes": [{
         "kind": "dashboard", "profile": "default", "pid": 42, "supervisor": "systemd",
         "detail": {"create_time": 1.0},

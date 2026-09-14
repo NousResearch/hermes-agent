@@ -83,11 +83,13 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Both the active-profile and top-level copies: overwriting the root .env leaks
-    # credentials across every profile that inherits from it; the root Anthropic
-    # PKCE store is still read by default/non-profile sessions when a profile is
-    # active; bws_cache.enc.json is the Bitwarden Secrets Manager encrypted cache.
-    hermes_files = (".env", ".anthropic_oauth.json", os.path.join("cache", "bws_cache.enc.json"))
+    # Same HERMES_HOME credential files the read guard already blocks, on both
+    # the active profile and the global root. bws_cache.enc.json is write-only
+    # extra: the plaintext sibling is in ``_CREDENTIAL_FILE_NAMES``.
+    hermes_files = (
+        *_CREDENTIAL_FILE_NAMES,
+        os.path.join("cache", "bws_cache.enc.json"),
+    )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
         *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
@@ -149,6 +151,12 @@ def _classify_write_denial(path: str) -> Optional[str]:
 
     for base in _hermes_dirs():
         for sub in _HERMES_PROTECTED_SUBPATHS:
+            with suppress(Exception):
+                if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
+                    return "credential"
+        # vault/ and browser-profile/ are credential dirs on the read path;
+        # mcp-tokens/ is already in _HERMES_PROTECTED_SUBPATHS.
+        for sub, _, _ in _READ_DENIED_DIRS:
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"

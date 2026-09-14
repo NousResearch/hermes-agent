@@ -29,18 +29,18 @@ import { visibleClarifyCard } from '@/lib/keybinds/composer-focus-keys'
 import { cn } from '@/lib/utils'
 import {
   bareChoice,
+  type ClarifyBatchRequest,
   type ClarifyQuestion,
-  type ClarifyRequest,
+  type ClarifySingleRequest,
   clearClarifyRequest,
-  normalizeChoices,
+  displayChoices,
   RECOMMENDED_LABEL,
-  sessionClarifyRequest,
-  warnDroppedChoices
+  sessionClarifyRequest
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
 import { notifyError } from '@/store/notifications'
-import { forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
+import { cancelServerRequest, forgetServerRequest, respondToServerRequest } from '@/store/server-requests'
 import { requestForOwnedSession } from '@/store/session-states'
 
 import { handleClarifySubmitShortcut } from './clarify-submit-shortcut'
@@ -70,16 +70,20 @@ function stringField(row: Record<string, unknown>, ...keys: string[]): string | 
   }
 }
 
+/** Tool args are the model's JSON, not the gateway contract. */
+type ToolArgs = ReturnType<typeof parseMaybeObject>
+
+const stringList = (row: ToolArgs, key: string): string[] | null => {
+  const value = row[key]
+
+  // Same reader as scalar fields: a list keeps only its string entries.
+  return Array.isArray(value) ? value.flatMap(entry => stringField({ entry }, 'entry') ?? []) : null
+}
+
 function readClarifyArgs(args: unknown): ClarifyArgs {
   const row = parseMaybeObject(args)
-  const rawChoices = row.choices
-  const choices = normalizeChoices(rawChoices)
-
+  const choices = displayChoices(stringList(row, 'choices'))
   const question = stringField(row, 'question')
-
-  if (rawChoices != null && choices.length === 0 && question) {
-    warnDroppedChoices('tool_args', question, rawChoices)
-  }
 
   // Batch form: tool args carry the model's questions array. Entries are
   // normalized leniently here (qid comes from the gateway request, not args).
@@ -95,11 +99,11 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
           return null
         }
 
-        const itemChoices = normalizeChoices(item.choices)
+        const itemChoices = displayChoices(stringList(item, 'choices'))
 
         return {
-          choices: itemChoices.length > 0 ? itemChoices : null,
-          multiSelect: item.multi_select === true && itemChoices.length > 0,
+          choices: itemChoices,
+          multiSelect: item.multi_select === true && itemChoices !== null,
           question: text
         }
       })
@@ -112,7 +116,7 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
 
   return {
     question,
-    choices: choices.length > 0 ? choices : null,
+    choices,
     multiSelect: row.multi_select === true,
     questions
   }
@@ -398,11 +402,23 @@ function ClarifyToolPending(props: ToolCallMessagePartProps) {
   // request — but the question TEXT is already in the tool args, so paint a
   // disabled preview immediately instead of a spinner (the single-question
   // card does the same while request_id races the tool block).
-  if (request?.questions?.length || fromArgs.questions) {
-    return <ClarifyToolBatchPending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
+  if (request?.kind === 'batch' || fromArgs.questions) {
+    return (
+      <ClarifyToolBatchPending
+        fromArgs={fromArgs}
+        onAnswered={() => setAnswered(true)}
+        request={request?.kind === 'batch' ? request : null}
+      />
+    )
   }
 
-  return <ClarifyToolSinglePending fromArgs={fromArgs} onAnswered={() => setAnswered(true)} request={request} />
+  return (
+    <ClarifyToolSinglePending
+      fromArgs={fromArgs}
+      onAnswered={() => setAnswered(true)}
+      request={request?.kind === 'single' ? request : null}
+    />
+  )
 }
 
 function ClarifyToolSinglePending({
@@ -412,18 +428,14 @@ function ClarifyToolSinglePending({
 }: {
   fromArgs: ClarifyArgs
   onAnswered: () => void
-  request: ClarifyRequest | null
+  request: ClarifySingleRequest | null
 }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
   const gateway = useStore($gateway)
 
   const matchingRequest = useMemo(() => {
-    if (!request || request.questions?.length) {
-      return null
-    }
-
-    if (fromArgs.question && request.question && fromArgs.question !== request.question) {
+    if (!request || (fromArgs.question && request.question && fromArgs.question !== request.question)) {
       return null
     }
 
@@ -442,7 +454,7 @@ function ClarifyToolSinglePending({
   )
 
   const hasChoices = choices.length > 0
-  const multiSelect = hasChoices && Boolean(matchingRequest?.multiSelect ?? fromArgs.multiSelect)
+  const multiSelect = hasChoices && Boolean(matchingRequest?.multi_select ?? fromArgs.multiSelect)
 
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -483,7 +495,7 @@ function ClarifyToolSinglePending({
       try {
         // The response frame goes back over the socket the request arrived on —
         // the owner backend by construction (#91684's class cannot recur).
-        respondToServerRequest(matchingRequest.requestId, { answer })
+        respondToServerRequest('clarify', matchingRequest.requestId, { answer })
         triggerHaptic('submit')
         onAnswered()
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
@@ -947,7 +959,7 @@ function ClarifyToolBatchPending({
 }: {
   fromArgs?: ClarifyArgs
   onAnswered: () => void
-  request: ClarifyRequest | null
+  request: ClarifyBatchRequest | null
 }) {
   const { t } = useI18n()
   const copy = t.assistant.clarify
@@ -1003,7 +1015,7 @@ function ClarifyToolBatchPending({
         const options = question.choices ?? []
         let replayedAnswers = [answer]
 
-        if (question.multiSelect) {
+        if (question.multi_select) {
           try {
             const parsed = JSON.parse(answer)
 
@@ -1032,7 +1044,7 @@ function ClarifyToolBatchPending({
       const stage = staged[question.qid] ?? emptyStage
 
       if (stage.choices.length > 0) {
-        return question.multiSelect ? JSON.stringify(stage.choices.map(bareChoice)) : bareChoice(stage.choices[0])
+        return question.multi_select ? JSON.stringify(stage.choices.map(bareChoice)) : bareChoice(stage.choices[0])
       }
 
       const draft = stage.draft.trim()
@@ -1063,16 +1075,11 @@ function ClarifyToolBatchPending({
       for (const question of questions) {
         const answer = stagedAnswer(question)
 
-        await requestForOwnedSession<{ remaining?: string[]; status?: string }>(
-          request.sessionId,
-          gateway.request.bind(gateway) as typeof gateway.request,
-          'clarify.lock',
-          {
-            answer: answer ?? '',
-            question_id: question.qid,
-            request_id: request.requestId
-          }
-        )
+        await requestForOwnedSession(request.sessionId, gateway.request.bind(gateway), 'clarify.lock', {
+          answer: answer ?? '',
+          question_id: question.qid,
+          request_id: request.requestId
+        })
       }
 
       forgetServerRequest(request.requestId)
@@ -1091,7 +1098,7 @@ function ClarifyToolBatchPending({
     setStaged(current => {
       const stage = current[question.qid] ?? emptyStage
 
-      const next = question.multiSelect
+      const next = question.multi_select
         ? stage.choices.includes(choice)
           ? stage.choices.filter(value => value !== choice)
           : [...stage.choices, choice]
@@ -1113,9 +1120,9 @@ function ClarifyToolBatchPending({
     onAnswered()
     clearClarifyRequest(request.requestId, request.sessionId)
 
-    // A response with no `answers` is the cancel-all (the plain Esc path).
-    respondToServerRequest(request.requestId, {})
-  }, [gateway, onAnswered, request])
+    // Cancel-all (the plain Esc path): a JSON-RPC error settles the request unanswered.
+    cancelServerRequest(request.requestId)
+  }, [onAnswered, request])
 
   const handleSubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {

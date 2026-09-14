@@ -1,4 +1,7 @@
+import type { ApprovalChoice, ApprovalPendingResult } from '@hermes/shared'
 import { atom, computed, type ReadableAtom } from 'nanostores'
+
+import type { HermesGateway } from '@/hermes'
 
 import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
@@ -81,7 +84,7 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
-  choices?: string[]
+  choices?: ApprovalChoice[]
   command: string
   description: string
   requestId?: string
@@ -89,18 +92,13 @@ export interface ApprovalRequest extends KeyedPrompt {
   smartDenied?: boolean
 }
 
-interface ApprovalGateway {
-  request: (method: string, params: Record<string, unknown>) => Promise<unknown>
-}
+/** The socket the approval RPCs ride when the live server request is gone. */
+export type ApprovalGateway = Pick<HermesGateway, 'request'>
 
-interface PendingApprovalPayload {
-  allow_permanent?: boolean
-  choices?: unknown
-  command?: unknown
-  description?: unknown
-  request_id?: unknown
-  smart_denied?: boolean
-}
+const APPROVAL_CHOICES: readonly ApprovalChoice[] = ['once', 'session', 'always', 'deny']
+
+// `approval.pending` renders choices as plain strings; the response contract wants the closed set.
+const isApprovalChoice = (choice: string): choice is ApprovalChoice => APPROVAL_CHOICES.some(known => known === choice)
 
 export interface SudoRequest extends KeyedPrompt {
   command?: string
@@ -270,10 +268,10 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
   const revision = approvalRevision
   const sessionRevision = sessionApprovalRevisions.get(keyFor(sessionId))
   const previous = $approvalQueues.get()[keyFor(sessionId)]
-  let rawResult: unknown
+  let result: ApprovalPendingResult
 
   try {
-    rawResult = await requestForOwnedSession(sessionId, ambientRequestFor(gateway), 'approval.pending', {
+    result = await requestForOwnedSession(sessionId, ambientRequestFor(gateway), 'approval.pending', {
       session_id: sessionId
     })
   } catch (error) {
@@ -285,9 +283,6 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
 
     throw error
   }
-
-  const result =
-    rawResult && typeof rawResult === 'object' ? (rawResult as { approvals?: PendingApprovalPayload[] }) : {}
 
   if (
     revision !== approvalRevision ||
@@ -317,11 +312,9 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
 
       return receiveApprovalRequest(gateway, {
         allowPermanent: pending.allow_permanent !== false,
-        choices: Array.isArray(pending.choices)
-          ? pending.choices.filter(choice => typeof choice === 'string')
-          : undefined,
-        command: typeof pending.command === 'string' ? pending.command : '',
-        description: typeof pending.description === 'string' ? pending.description : 'dangerous command',
+        choices: pending.choices?.filter(isApprovalChoice),
+        command: pending.command ?? '',
+        description: pending.description ?? 'dangerous command',
         requestId: pending.request_id,
         sessionId,
         smartDenied: pending.smart_denied === true
@@ -340,10 +333,10 @@ export async function replayPendingApproval(gateway: ApprovalGateway | null, ses
 export async function answerApproval(
   gateway: ApprovalGateway | null,
   request: Pick<ApprovalRequest, 'requestId' | 'serverRequestId' | 'sessionId'>,
-  choice: string,
+  choice: ApprovalChoice,
   all = false
 ): Promise<void> {
-  if (respondToServerRequest(request.serverRequestId, { choice, ...(all ? { all: true } : {}) })) {
+  if (respondToServerRequest('approval', request.serverRequestId, { choice, ...(all ? { all: true } : {}) })) {
     return
   }
 
@@ -351,11 +344,15 @@ export async function answerApproval(
     throw new Error('Hermes gateway is not connected')
   }
 
+  if (!request.sessionId) {
+    throw new Error('Hermes approval names no session to answer')
+  }
+
   await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'approval.respond', {
     all,
     choice,
     ...(request.requestId ? { request_id: request.requestId } : {}),
-    session_id: request.sessionId ?? undefined
+    session_id: request.sessionId
   })
 }
 

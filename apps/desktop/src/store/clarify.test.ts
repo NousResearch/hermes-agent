@@ -5,9 +5,8 @@ import {
   $clarifyRequests,
   type ClarifyRequest,
   clearClarifyRequest,
+  displayChoices,
   hasClarifyRequest,
-  normalizeChoices,
-  normalizeQuestions,
   setClarifyRequest,
   skipClarifyRequest
 } from './clarify'
@@ -17,10 +16,11 @@ import { $activeSessionId } from './session'
 
 function clarify(sessionId: string | null, requestId: string): ClarifyRequest {
   return {
-    requestId,
-    question: `question-${requestId}`,
     choices: null,
-    multiSelect: false,
+    kind: 'single',
+    multi_select: false,
+    question: `question-${requestId}`,
+    requestId,
     sessionId
   }
 }
@@ -105,7 +105,14 @@ describe('skipClarifyRequest', () => {
   it('answers the session\u2019s clarify with an empty answer and drops it', async () => {
     const respond = vi.fn()
 
-    rememberServerRequest({ fail: vi.fn(), id: 'req-a', method: 'clarify', params: {}, respond })
+    rememberServerRequest({
+      fail: vi.fn(),
+      id: 'req-a',
+      method: 'clarify',
+      params: { choices: null, kind: 'single', multi_select: false, profile: null, question: 'q', session_id: 'session-a' },
+      respond,
+      sessionId: 'session-a'
+    })
     setClarifyRequest(clarify('session-a', 'req-a'))
     setClarifyRequest(clarify('session-b', 'req-b'))
 
@@ -131,89 +138,23 @@ describe('skipClarifyRequest', () => {
   })
 })
 
-describe('normalizeChoices', () => {
-  it('returns empty array for null/undefined', () => {
-    expect(normalizeChoices(null)).toEqual([])
-    expect(normalizeChoices(undefined)).toEqual([])
+describe('displayChoices', () => {
+  it('is null when there is nothing to render as a button', () => {
+    expect(displayChoices(null)).toBeNull()
+    expect(displayChoices([])).toBeNull()
+    expect(displayChoices(['', '   '])).toBeNull()
   })
 
-  it('returns empty array for non-array input', () => {
-    expect(normalizeChoices('hello')).toEqual([])
-    expect(normalizeChoices(42)).toEqual([])
-    expect(normalizeChoices({})).toEqual([])
-  })
-
-  it('filters out non-string items', () => {
-    expect(normalizeChoices(['a', 42, 'b', null, 'c'])).toEqual(['a', 'b', 'c'])
-  })
-
-  it('drops blank and whitespace-only strings', () => {
-    expect(normalizeChoices(['a', '', 'b', '   ', 'c'])).toEqual(['a', 'b', 'c'])
-  })
-
-  it('drops strings with newlines', () => {
-    expect(normalizeChoices(['a', 'b\nc', 'd'])).toEqual(['a', 'd'])
-  })
-
-  it('drops strings over 200 chars', () => {
+  it('drops blank, multi-line and over-long choices and keeps the rest in order', () => {
     const long = 'x'.repeat(201)
     const ok = 'y'.repeat(200)
-    expect(normalizeChoices(['a', long, ok])).toEqual(['a', ok])
+
+    expect(displayChoices(['a', '', 'b\nc', long, ok, '  '])).toEqual(['a', ok])
   })
 
-  it('drops empty items and keeps valid ones', () => {
-    expect(normalizeChoices(['valid', '  ', '', 'also valid'])).toEqual(['valid', 'also valid'])
-  })
+  it('measures a choice without the recommended label the backend appended', () => {
+    const recommended = `${'z'.repeat(200)} (Recommended)`
 
-  it('returns empty array when nothing survives', () => {
-    expect(normalizeChoices(['', '  ', null, undefined])).toEqual([])
-    expect(normalizeChoices([])).toEqual([])
-  })
-})
-
-describe('normalizeQuestions', () => {
-  it('returns empty array for non-array input', () => {
-    expect(normalizeQuestions(null)).toEqual([])
-    expect(normalizeQuestions('x')).toEqual([])
-    expect(normalizeQuestions({})).toEqual([])
-  })
-
-  it('normalizes a valid batch and keys by qid', () => {
-    const result = normalizeQuestions([
-      { choices: ['a', 'b'], qid: 'q0', question: 'One?' },
-      { qid: 'q1', question: 'Two?' }
-    ])
-
-    expect(result).toEqual([
-      { choices: ['a', 'b'], multiSelect: false, qid: 'q0', question: 'One?' },
-      { choices: null, multiSelect: false, qid: 'q1', question: 'Two?' }
-    ])
-  })
-
-  it('drops entries missing qid or question text', () => {
-    const result = normalizeQuestions([
-      { qid: '', question: 'no qid' },
-      { qid: 'q1', question: '   ' },
-      'not-an-object',
-      { qid: 'q2', question: 'kept' }
-    ])
-
-    expect(result.map(q => q.qid)).toEqual(['q2'])
-  })
-
-  it('degrades all-blank choices to open-ended per question', () => {
-    const result = normalizeQuestions([{ choices: ['', '  '], qid: 'q0', question: 'Q?' }])
-
-    expect(result[0]?.choices).toBeNull()
-  })
-
-  it('only honors multi_select when choices survive', () => {
-    const result = normalizeQuestions([
-      { choices: ['a', 'b'], multi_select: true, qid: 'q0', question: 'A?' },
-      { multi_select: true, qid: 'q1', question: 'B?' }
-    ])
-
-    expect(result[0]?.multiSelect).toBe(true)
-    expect(result[1]?.multiSelect).toBe(false)
+    expect(displayChoices([recommended, 'plain'])).toEqual([recommended, 'plain'])
   })
 })

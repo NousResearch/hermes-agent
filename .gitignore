@@ -167,6 +167,33 @@ docs/superpowers/*
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
 
+# Flat-install runtime state (checkout root == $HERMES_HOME, e.g. installs made
+# with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): the live session
+# store, its SQLite sidecars and retired-WAL capture dirs, quick snapshots, the
+# legacy transcripts, the cron executions ledger, gateway lock/pid files, and
+# cache/spill directories are Hermes-managed runtime state, never code changes.
+# Ignore them so `hermes update`'s `git stash push --include-untracked` cannot
+# sweep the live state.db/-wal into the stash and unlink it under the running
+# gateway (#110648). Nested installs keep all of this under $HERMES_HOME outside
+# the checkout, where the `.hermes/` rule above already applies.
+/state.db
+/state.db-wal
+/state.db-shm
+/state.db-journal
+/state.db.retired-wal-*/
+/kanban.db
+/kanban.db-wal
+/kanban.db-shm
+/kanban.db-journal
+/state-snapshots/
+/sessions/
+/browser-profile/
+/cron/executions.db
+/gateway.lock
+/gateway.pid
+/hook_outputs/
+/cache/
+
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/
 # Sandbox dirs used by the install/update E2E (tests/install/). The suffix is

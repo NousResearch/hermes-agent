@@ -81,6 +81,18 @@ def test_verdicts_route_through_distinct_terminal_actions(skill_text: str) -> No
     assert "Escalate" in quick_reference and "`kanban_block`" in quick_reference
 
 
+def test_escalation_names_both_explicit_block_kinds(skill_text: str) -> None:
+    procedure = skill_text.split("## Procedure", 1)[1].split("## Pitfalls", 1)[0]
+    escalate = procedure.split("**Escalate**", 1)[1].split("\n", 1)[0]
+    # Escalation must route through kanban_block with BOTH explicit kinds so a
+    # human-input wait and a dependency wait can't silently collapse into one
+    # generic block.
+    assert '`kind="needs_input"`' in escalate
+    assert '`kind="dependency"`' in escalate
+    # Correctable defects stay on the request-changes path, not a block.
+    assert "`kanban_request_changes`" in escalate
+
+
 def test_review_lenses_vary_per_round(skill_text: str) -> None:
     lenses = skill_text.split("## Review Lenses", 1)[1].split("## Procedure", 1)[0]
     # Round derivation must key off history the reviewer actually sees.

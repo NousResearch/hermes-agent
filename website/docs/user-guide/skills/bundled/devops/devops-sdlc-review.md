@@ -15,7 +15,7 @@ Review Kanban handoffs and route verified outcomes.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/devops\sdlc-review` |
+| Path | `skills/devops/sdlc-review` |
 | Version | `1.2.0` |
 | Author | Jakub Wolniewicz (@frizikk) + Hermes Agent |
 | License | MIT |
@@ -52,7 +52,7 @@ Loaded automatically by the review dispatcher. Always start with `kanban_show`; 
 |---|---|---|
 | Approve | Acceptance criteria and verification pass | `kanban_complete` |
 | Request changes | Correctable implementation defects remain | `kanban_comment`, then `kanban_request_changes` |
-| Escalate | A human decision or external prerequisite is required | `kanban_block` |
+| Escalate | A human decision or external prerequisite is required | `kanban_block` (`kind="needs_input"` or `kind="dependency"`) |
 
 A requested-changes transition returns the task to its original implementer; persisted reviewer provenance routes any re-review back to the same reviewer profile.
 
@@ -77,7 +77,7 @@ Procedure duties apply on every round; the lens only sets what you lead with.
 3. **Choose one verdict** and record evidence:
    - **Approve** only when criteria are met and evidence is sufficient: `kanban_complete` with a summary naming the exact checks that passed, plus a `review_outcome: approved` metadata field and any non-blocking caveat.
    - **Request changes** for specific, correctable defects: first `kanban_comment` with numbered findings (file/artifact + defect, where it is, how it reproduces, why it violates the task, the minimum fix), then `kanban_request_changes` with a concise reason.
-   - **Escalate** only when a human decision or external prerequisite is required: `kanban_block` with reason `escalation: <decision or prerequisite>`.
+   - **Escalate** only when a genuine human decision or external prerequisite blocks completion — never for correctable defects, which go to `kanban_request_changes`: `kanban_block` with `kind="needs_input"` when a human decision or answer is required, or `kind="dependency"` when waiting on another task or dependency, and a `reason` naming the decision or prerequisite.
 4. **Preserve role separation.** Never edit the implementation as reviewer; request changes and independently verify the next candidate.
 
 ## Pitfalls

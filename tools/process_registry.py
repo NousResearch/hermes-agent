@@ -457,6 +457,7 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    wait_on_oneshot_exit: bool = False          # Keep finite parent alive; no later notification implied
     watch_patterns: List[str] = field(default_factory=list)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
@@ -1418,12 +1419,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def wait_for_pending_completions(
         self, task_id: Optional[str] = None, *, timeout: float | None = None, poll_interval: float = 1.0,
     ) -> dict:
-        """Bounded linger for ``notify_on_complete`` background processes at one-shot exit.
+        """Bounded linger for tracked completion processes at one-shot exit.
         A one-shot CLI run (``hermes -q/-Q/-z``) exits when its turn ends; a background
         process it spawned still holds a stdout pipe owned by the dying parent and dies of
         SIGPIPE seconds later (Bot Mode handoff replies were the visible casualty). Only
         ``notify_on_complete`` processes carry a completion contract — servers/daemons/
-        watchers aren't the parent's to wait for. ``task_id=None`` waits on every tracked
+        watchers aren't the parent's to wait for. Hermes-owned delivery runners may set
+        ``wait_on_oneshot_exit`` without promising an asynchronous notification on a finite
+        channel. ``task_id=None`` waits on every tracked
         process; ``timeout=None`` reads ``terminal.oneshot_completion_wait_seconds`` (``<= 0``
         disables). Each pass re-reconciles child state so an orphaned-pipe exit can't wedge
         the linger. Returns ``{"waited", "completed", "timed_out"}`` id lists.
@@ -1440,7 +1443,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         with self._lock:
             pending = [
                 s for s in self._running.values()
-                if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
+                if (s.notify_on_complete or s.wait_on_oneshot_exit)
+                and not s._completion_event.is_set()
+                and (task_id is None or s.task_id == task_id)
             ]
         if not pending or timeout <= 0:
             return result

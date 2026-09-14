@@ -109,6 +109,41 @@ def test_wait_returns_when_process_completes(registry):
     assert elapsed < 10  # returned on completion, not the 30s bound
 
 
+def test_delivery_linger_does_not_require_async_notification(registry):
+    """Finite Bot Chat turns still retain their delivery runner's pipes."""
+    s = _make_session(notify_on_complete=False)
+    s.wait_on_oneshot_exit = True
+    with registry._lock:
+        registry._running[s.id] = s
+
+    def _finish():
+        time.sleep(0.2)
+        s.exited = True
+        s._completion_event.set()
+
+    threading.Thread(target=_finish, daemon=True).start()
+    result = registry.wait_for_pending_completions(timeout=10, poll_interval=0.05)
+    assert result["waited"] == [s.id]
+    assert result["completed"] == [s.id]
+    assert result["timed_out"] == []
+
+
+def test_message_agent_marks_runner_for_oneshot_linger(monkeypatch):
+    from tools import bot_mode_dm
+
+    captured = {}
+
+    def _terminal_tool(command, **kwargs):
+        captured.update(kwargs)
+        return '{"session_id":"proc_delivery"}'
+
+    monkeypatch.setattr("tools.terminal_tool.terminal_tool", _terminal_tool)
+    result = bot_mode_dm._spawn_delivery("deliver", "@reviewer", task_id="turn", agent=None)
+
+    assert '"status": "sent"' in result
+    assert captured["_wait_on_oneshot_exit"] is True
+
+
 def test_wait_times_out_on_stuck_process(registry):
     s = _make_session()
     with registry._lock:

@@ -129,6 +129,8 @@ For work that spans multiple tool calls, background operations, or turns, Hermes
 
 The base contract carries `objective`, `outcome`, `verification`, `constraints`, `boundaries`, and `stop_when`.
 
+A caller may also set `completion_gate` to a Plugin provider id. The provider runs only after the judge returns candidate `DONE`, and the Goal becomes done only when the provider returns `allow`. Missing, timed-out, crashed, or malformed providers pause that opted-in Goal as blocked. Goals without `completion_gate` retain the normal Hermes behavior.
+
 ## Adding criteria mid-goal: `/subgoal`
 
 While a goal is active you can append extra acceptance criteria with `/subgoal <text>` without resetting the loop. Each call adds one numbered item to the goal's subgoal list; the **continuation prompt** the agent sees on the next turn includes the original goal plus an "Additional criteria the user added mid-loop" block, and the **judge prompt** is rewritten so the verdict must consider every subgoal — the goal isn't marked done until the original objective **and** every subgoal are met.

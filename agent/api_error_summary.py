@@ -8,6 +8,7 @@ import json
 import re
 from typing import Any, Dict, Optional
 
+from agent.local_network import LOCAL_OUTAGE_MARKERS
 from agent.redact import redact_sensitive_text
 
 # Substrings of the plain ``ValueError`` the Anthropic SDK raises for a malformed event-stream
@@ -16,14 +17,8 @@ PROVIDER_STREAM_PARSE_MARKERS = ("expected ident at line", "expected value at li
 
 
 # Offline DNS failures are wrapped in a generic "Connection error" by SDKs — inspect the chain.
-_NETWORK_RESOLUTION_MARKERS = (
-    "temporary failure in name resolution",
-    "name or service not known",
-    "nodename nor servname provided, or not known",
-    "getaddrinfo failed",
-    "no address associated with hostname",
-    "network is unreachable",
-)
+# One source of truth with the failover gate that reads the same wording (agent/local_network.py).
+_NETWORK_RESOLUTION_MARKERS = LOCAL_OUTAGE_MARKERS
 _XAI_ENTITLEMENT_HINT = (
     " — xAI rejected this OAuth account. NOTE: X Premium+ does NOT "
     "include xAI API access — only standalone SuperGrok subscribers "

@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, Optional
 
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.local_network import local_network_outage
 from agent.turn_overflow import recover_from_overflow
 from agent.turn_recovery import (
     _NONRETRYABLE_LABELS, abort_turn_on_interrupt, compute_error_backoff, interruptible_backoff_sleep,
@@ -362,9 +363,14 @@ def settle_unrecovered_error(
             agent._fallback_index = 0
             agent._fallback_activated = False
             return _verdict("continue")
+        # The machine itself has no network (agent/local_network.py): another EXTERNAL route is as
+        # unreachable as the primary and a switch would outlive the outage — the session would
+        # resume on the fallback model with a cold prompt cache. Suppression is route-scoped, so a
+        # LOCAL fallback (loopback/LAN) can still save the turn; with none, we end on the offline
+        # message instead of a provider fault that never happened.
         if agent._has_pending_fallback():
             agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
-        if agent._try_activate_fallback():
+        if agent._try_activate_fallback(suppress_external_network=local_network_outage(api_error)):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
@@ -381,7 +387,7 @@ def settle_unrecovered_error(
     wait_time = compute_error_backoff(
         agent, api_error, retry_count=retry_count, max_retries=max_retries,
         is_rate_limited=is_rate_limited, is_zai_coding_overload=_is_zai_coding_overload,
-        base_url=_base, model=_model,
+        base_url=_base, model=_model, outage_state=_retry,
     )
     # Same preserve-redirect rule as the invalid-response wait: a steering correction
     # must survive backoff, not die as "Operation interrupted".

@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 from tools.send_message_targets import _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
-    _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
-    _registry_standalone_send, _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles,
-    _send_matrix_via_adapter, _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
+    _adapter_media_method, _chunk_text, _error, _fold_captions_into_text, _live_adapter,
+    _media_caption_split, _plugin_standalone_sender, _registry_standalone_send,
+    _resolve_slack_user_target, _sanitize_error_text, _send_bluebubbles, _send_matrix_via_adapter,
+    _send_qqbot, _send_signal, _send_telegram, _send_weixin, _send_yuanbao)
 from tools.registry import tool_error
 
 # NOTE: ``send_message`` is intentionally NOT registered as an agent-callable model tool
@@ -395,10 +396,20 @@ def _bounded_send_error(detail, max_chars=900):
 
 
 async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, thread_id=None, metadata=None,
-                                   force_document=False):
+                                   force_document=False, media_captions=None):
     """Deliver text and every media descriptor through adapter media APIs; adapters that only
-    inherit the BasePlatformAdapter stub for a kind are unsupported, not no-op'd."""
+    inherit the BasePlatformAdapter stub for a kind are unsupported, not no-op'd.
+
+    ``media_captions`` maps a delivered path to its ``MEDIA:<path> | <caption>`` caption. Like
+    ``_send_telegram``, a tag caption rides its own file's bubble and the text-derived caption
+    falls back to the first file left without one; the body keeps its own message whenever a tag
+    caption owns the first bubble, so body text is never suppressed into a bubble it can't use."""
+    media_captions = media_captions or {}
     caption, separate_text = _media_caption_split(message, media_files, max_caption_len=_DEFAULT_CAPTION_LIMIT)
+    # The text-derived caption would be suppressed into media_files[0]'s bubble, but a tag caption
+    # already owns that bubble — keep the body as its own message instead of losing it.
+    if caption is not None and media_files and media_captions.get(media_files[0][0]):
+        caption, separate_text = None, message
     last_result = None
     if separate_text and separate_text.strip():
         last_result = await adapter.send(chat_id=chat_id, content=separate_text, metadata=metadata)
@@ -419,9 +430,13 @@ async def _send_live_adapter_media(adapter, chat_id, message, media_files, *, th
         if adapter_method is None or adapter_method is getattr(BasePlatformAdapter, method_name):
             return {"error": (f"Live adapter does not implement native {media_kind} delivery; "
                               f"media file {index + 1}/{total} was not sent")}
+        # Tag caption wins for its own file; the text-derived one lands on the first file left.
+        file_caption = media_captions.get(media_path)
+        if file_caption is None:
+            file_caption, caption = caption, None
         try:
             last_result = await getattr(adapter, method_name)(
-                chat_id, media_path, caption=caption if index == 0 else None, reply_to=thread_id, metadata=metadata)
+                chat_id, media_path, caption=file_caption, reply_to=thread_id, metadata=metadata)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -454,7 +469,7 @@ async def _dispatch_on_gateway_loop(runner, make_coro, log_message):
 
 
 async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None, media_files=None,
-                            force_document=False):
+                            force_document=False, media_captions=None):
     """Live in-process gateway adapter first, else the plugin's ``standalone_sender_fn`` (cron),
     else an error naming both; media uses the adapter's native media APIs under the same rules."""
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
@@ -466,7 +481,7 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
             if media_files:  # always a dict result, returned as-is below
                 make_coro = lambda: _send_live_adapter_media(  # noqa: E731
                     adapter, chat_id, chunk, media_files, thread_id=thread_id, metadata=metadata,
-                    force_document=force_document)
+                    force_document=force_document, media_captions=media_captions)
             else:
                 make_coro = lambda: adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)  # noqa: E731
             result = await _dispatch_on_gateway_loop(
@@ -544,14 +559,32 @@ _PLUGIN_STANDALONE_MEDIA = {"discord": ("Discord", False, True, [], False), "fei
 
 
 async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files, *, thread_id,
-                                  max_len, force_document):
-    """Chunked send through a plugin's standalone_sender_fn; one captionable file + short text
-    rides as the media caption."""
+                                  max_len, force_document, media_captions=None):
+    """Chunked send through a plugin's standalone_sender_fn. A caption (tag or text-derived) rides
+    the media bubble on caption-capable platforms; captions the platform cannot carry — and the
+    body text whenever a tag caption owns the bubble — go out as ordinary text messages."""
+    media_captions = media_captions or {}
     label, discover, captionable, empty_media, pass_force = _PLUGIN_STANDALONE_MEDIA[platform_name]
     sender, err = _plugin_standalone_sender(platform_name, label=label, discover=discover)
     if err:
         return err
     extra = {"force_document": force_document} if pass_force else {}
+    if media_files:
+        # A caption field holds one caption per send: the first tag caption rides the bubble and
+        # every other tag caption is delivered as text, so none is lost silently.
+        bubble_path = next((p for p, _ in media_files if media_captions.get(p)), None) if captionable else None
+        bubble_caption = media_captions.get(bubble_path) if bubble_path else None
+        folded = _fold_captions_into_text(message, media_files, media_captions, exclude=bubble_path)
+        if folded != message:
+            message, chunks = folded, _chunk_text(folded, max_len)
+        if bubble_caption:
+            if message.strip():
+                text_result = await _send_chunks(chunks, lambda chunk, is_last: sender(
+                    pconfig, chat_id, chunk, thread_id=thread_id, media_files=empty_media, **extra))
+                if isinstance(text_result, dict) and text_result.get("error"):
+                    return text_result
+            return await sender(pconfig, chat_id, "", thread_id=thread_id, media_files=media_files,
+                                caption=bubble_caption, **extra)
     if captionable:
         # Cap on the platform's own message limit so the caption is deliverable.
         caption, _ = _media_caption_split(message, media_files, max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT))
@@ -562,24 +595,29 @@ async def _send_plugin_standalone(platform_name, pconfig, chat_id, message, chun
         pconfig, chat_id, chunk, thread_id=thread_id, media_files=media_files if is_last else empty_media, **extra))
 
 
-def _via_adapter_route(p, pc, cid, chunk, media, tid, fd):
-    return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd)
+def _via_adapter_route(p, pc, cid, chunk, media, tid, fd, caps=None):
+    return _send_via_adapter(p, pc, cid, chunk, thread_id=tid, media_files=media, force_document=fd,
+                             media_captions=caps)
 
 
 # Native-media chunked routes for built-in platforms; media rides on the final chunk, non-final
 # chunks get the sentinel. platform -> (media required, sentinel, sender(platform, pconfig,
-# chat_id, chunk, media, thread_id, force_document)). Matrix: ALL sends use the native adapter
-# (E2EE text). Signal: attachments ride the JSON-RPC param. Yuanbao / WeCom: media needs the
-# running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates) else the
-# plugin's standalone sender. Names resolve at call time so tests can monkeypatch ``_send_signal``.
+# chat_id, chunk, media, thread_id, force_document, media_captions)). Matrix: ALL sends use the
+# native adapter (E2EE text). Signal: attachments ride the JSON-RPC param. Yuanbao / WeCom: media
+# needs the running gateway. Slack text: live adapter (multi-workspace, ignored_channels gates)
+# else the plugin's standalone sender. Names resolve at call time so tests can monkeypatch
+# ``_send_signal``.
 _CHUNKED_ROUTES = {
-    "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd: _send_matrix_via_adapter(
-        pc, cid, chunk, media_files=media, thread_id=tid)),
-    "signal": (True, [], lambda p, pc, cid, chunk, media, tid, fd: _send_signal(
+    "matrix": (False, [], lambda p, pc, cid, chunk, media, tid, fd, caps: _send_matrix_via_adapter(
+        pc, cid, chunk, media_files=media, thread_id=tid, media_captions=caps)),
+    "signal": (True, [], lambda p, pc, cid, chunk, media, tid, fd, caps: _send_signal(
         pc.extra, cid, chunk, media_files=media)),
-    "yuanbao": (True, None, lambda p, pc, cid, chunk, media, tid, fd: _send_yuanbao(cid, chunk, media_files=media)),
+    "yuanbao": (True, None, lambda p, pc, cid, chunk, media, tid, fd, caps: _send_yuanbao(cid, chunk, media_files=media)),
     "slack": (False, [], _via_adapter_route),
     "wecom": (True, None, _via_adapter_route)}
+
+# Platforms whose media senders have no caption field (caption folds back into the text body).
+_CAPTIONLESS_MEDIA_ROUTES = frozenset({"signal", "yuanbao", "weixin"})
 
 # Text-only senders for built-in platforms (generic path; media is dropped with a
 # warning). Signature: (pconfig, chat_id, chunk, thread_id) -> result.
@@ -605,6 +643,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     from gateway.config import Platform
     platform_name = platform.value if hasattr(platform, "value") else str(platform)
     media_files = media_files or []
+    media_captions = media_captions or {}
+    if media_captions and platform_name in _CAPTIONLESS_MEDIA_ROUTES:
+        # No caption field on this route (Signal JSON-RPC / Yuanbao / Weixin): the tag caption
+        # would vanish with the tag, so fold it back into the body and deliver it as text.
+        message = _fold_captions_into_text(message, media_files, media_captions)
+        media_captions = {}
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
     # Telegram chunks internally on the *formatted* text (escaping inflates length).
@@ -618,14 +662,23 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
     if platform_name == "discord" or (media_files and platform_name in _PLUGIN_STANDALONE_MEDIA):
         return await _send_plugin_standalone(platform_name, pconfig, chat_id, message, chunks, media_files,
-                                             thread_id=thread_id, max_len=max_len, force_document=force_document)
+                                             thread_id=thread_id, max_len=max_len, force_document=force_document,
+                                             media_captions=media_captions or None)
     route = _CHUNKED_ROUTES.get(platform_name)
     if route is not None and (media_files or not route[0]):
         _, empty_media, sender = route
         return await _send_chunks(chunks, lambda chunk, is_last: sender(
-            platform, pconfig, chat_id, chunk, media_files if is_last else empty_media, thread_id, force_document))
+            platform, pconfig, chat_id, chunk, media_files if is_last else empty_media, thread_id, force_document,
+            media_captions or None))
 
     # Generic path: text only. Buzz delivers media natively via _send_via_adapter, so no warning.
+    text_sender = _TEXT_SENDERS.get(platform_name)
+    if text_sender is not None and media_files and media_captions:
+        # This route has no native media sender: the attachments are dropped below with a warning,
+        # so keep their caption words in the text rather than losing them with the tag.
+        message = _fold_captions_into_text(message, media_files, media_captions)
+        chunks = BasePlatformAdapter.truncate_message(message, max_len) if max_len else [message]
+        media_captions = {}
     warning = None
     if media_files and platform_name != "buzz":
         if not message.strip():
@@ -633,7 +686,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                               f"target {platform_name} had only media attachments")}
         warning = (f"MEDIA attachments were omitted for {platform_name}; "
                    f"native send_message media delivery is currently only supported for {_MEDIA_PLATFORMS_NOTE}")
-    text_sender = _TEXT_SENDERS.get(platform_name)
     if text_sender is not None:
         send_one = lambda chunk, is_last: text_sender(pconfig, chat_id, chunk, thread_id)  # noqa: E731
     else:
@@ -649,7 +701,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return {"error": f"Plugin send_message handler failed: {e}"}
         # Plugin platform: live gateway adapter if available, else standalone_sender_fn.
         send_one = lambda chunk, is_last: _via_adapter_route(  # noqa: E731
-            platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document)
+            platform, pconfig, chat_id, chunk, media_files if is_last else [], thread_id, force_document,
+            media_captions or None)
     last_result = await _send_chunks(chunks, send_one)
     if (warning and isinstance(last_result, dict) and last_result.get("success")
             and not last_result.get("media_delivered")):

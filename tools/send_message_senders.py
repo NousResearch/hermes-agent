@@ -37,6 +37,29 @@ def _media_caption_split(text, media_files, *, max_caption_len):
     return stripped, ""
 
 
+def _fold_captions_into_text(message, media_files, media_captions, *, exclude=None):
+    """Append ``MEDIA:<path> | <caption>`` captions that no media path can carry to the body text.
+
+    Used where the platform (or the route) has no caption field: the caption would otherwise
+    vanish with the tag, because ``extract_media`` already deleted it from the body. ``exclude``
+    is the path whose caption rides the media bubble — it must not repeat as text.
+    """
+    captions = [media_captions[path] for path, _ in (media_files or [])
+                if path != exclude and media_captions.get(path)]
+    if not captions:
+        return message
+    body = (message or "").strip()
+    return "\n\n".join([body, *captions]) if body else "\n\n".join(captions)
+
+
+def _chunk_text(message, max_len):
+    """Split ``message`` on the platform's own limit (no-op when the platform has none)."""
+    if not max_len:
+        return [message]
+    from gateway.platforms.base import BasePlatformAdapter
+    return BasePlatformAdapter.truncate_message(message, max_len)
+
+
 _URL_SECRET_QUERY_RE = re.compile(
     r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)", re.IGNORECASE)
 _GENERIC_SECRET_ASSIGN_RE = re.compile(
@@ -515,7 +538,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
 
 # "ephemeral connect (may re-init E2EE per send, see #46310)",
-async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None):
+async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, thread_id=None, media_captions=None):
     """Matrix adapter send (native media preserved). Prefer the live gateway adapter's persistent
     olm/megolm session: ephemeral per-send connects re-init E2EE and claim one-time keys, which
     under bursts exhausts recipient OTKs and silently drops messages — ephemeral is cron-only.
@@ -532,7 +555,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
         "ephemeral connect (may re-init E2EE per send)"))
     if live_adapter is not None:
         # Owned by the gateway — must NOT be disconnected (return before the ephemeral ``finally``).
-        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata)
+        return await _matrix_send_core(live_adapter, chat_id, message, media_files, metadata, media_captions)
     try:
         from plugins.platforms.matrix.adapter import MatrixAdapter
     except ImportError:
@@ -541,7 +564,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     try:
         if not await adapter.connect():
             return _error("Matrix connect failed")
-        return await _matrix_send_core(adapter, chat_id, message, media_files, metadata)
+        return await _matrix_send_core(adapter, chat_id, message, media_files, metadata, media_captions)
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
     finally:
@@ -549,8 +572,11 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             await adapter.disconnect()
 
 
-async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
-    """Core send logic shared by live and ephemeral Matrix adapters."""
+async def _matrix_send_core(adapter, chat_id, message, media_files, metadata, media_captions=None):
+    """Core send logic shared by live and ephemeral Matrix adapters. A ``MEDIA:<path> | <caption>``
+    caption rides its own file's bubble (passed only when present, so the call shape is unchanged
+    for adapters that predate captions)."""
+    media_captions = media_captions or {}
     last_result = None
     if message.strip():
         last_result = await adapter.send(chat_id, message, metadata=metadata)
@@ -561,7 +587,9 @@ async def _matrix_send_core(adapter, chat_id, message, media_files, metadata):
             return _error(f"Media file not found: {media_path}")
         ext = os.path.splitext(media_path)[1].lower()
         method, _ = _adapter_media_method(ext, (ext in _VOICE_EXTS and is_voice) or ext in _AUDIO_EXTS)
-        last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata)
+        caption = media_captions.get(media_path)
+        cap_kwargs = {"caption": caption} if caption else {}
+        last_result = await getattr(adapter, method)(chat_id, media_path, metadata=metadata, **cap_kwargs)
         if not last_result.success:
             return _error(f"Matrix media send failed: {last_result.error}")
     return {"error": _NO_DELIVERABLE} if last_result is None else _success("matrix", chat_id, message_id=last_result.message_id)

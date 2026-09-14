@@ -101,7 +101,8 @@ def test_codex_terminal_manual_refresh_failure_quarantines_only_pool_row(tmp_pat
     pool = credential_pool.load_pool("openai-codex")
 
     assert pool.refresh_matching_api_key(stale) is None
-    assert credential_pool.load_pool("openai-codex").select() is None
+    selected = credential_pool.load_pool("openai-codex").select()
+    assert selected is not None and selected.runtime_api_key == singleton
     assert refresh_calls == [(stale, "refresh-a")]
     stored = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     assert stored["providers"]["openai-codex"]["tokens"]["access_token"] == singleton

@@ -380,8 +380,22 @@ def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
-    # When JIT Context Engine or lean context is active, 16k is completely sufficient!
-    return None
+    # When JIT Context Engine is active, wire context is predictably bounded and small windows are safe.
+    _comp = getattr(agent, "context_compressor", None)
+    if _comp is not None:
+        _cname = getattr(_comp, "name", None)
+        if callable(_cname):
+            _cname = _cname()
+        if str(_cname or "").strip().lower() == "jit":
+            return None
+
+    runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
+    if (
+        not getattr(agent, "tools", None)
+        or not isinstance(runtime_ctx, int)
+        or not 0 < runtime_ctx < MINIMUM_CONTEXT_LENGTH
+    ):
+        return None
 
     model = getattr(agent, "model", "") or "the selected model"
     logger.warning(
@@ -396,7 +410,8 @@ def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str
         f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime context, but Hermes "
         f"needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens for reliable tool use.\n\n"
         "Increase the Ollama context for this model and restart/reload the model before trying "
-        "again. A known-good starting point is 65,536 tokens. In Hermes config, set "
+        "again. A known-good starting point is 65,536 tokens. Alternatively, enable the JIT context "
+        "engine with `context.engine: jit`. In Hermes config, set "
         "`model.ollama_num_ctx: 65536` (and `model.context_length: 65536` if you also override the "
         "displayed model context). If you manage the model through an Ollama Modelfile, set "
         "`PARAMETER num_ctx 65536` there instead."

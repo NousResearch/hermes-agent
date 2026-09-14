@@ -1885,21 +1885,26 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
 
 
 def _enforce_minimum_context(agent):
-    if str(agent.provider or "").strip().lower() in ("ollama", "custom", ""):
-        return
     _ctx = getattr(agent.context_compressor, "context_length", 0)
+    _comp = getattr(agent, "context_compressor", None)
+    _cname = getattr(_comp, "name", None) if _comp else None
+    if callable(_cname):
+        _cname = _cname()
+    _is_jit = str(_cname or "").strip().lower() == "jit"
+
     _allow_lmstudio_explicit_below_floor = (
-        str(agent.provider or "").strip().lower() in ("lmstudio", "ollama")
+        str(agent.provider or "").strip().lower() == "lmstudio"
         and isinstance(agent._config_context_length, int)
         and not isinstance(agent._config_context_length, bool)
         and agent._config_context_length > 0
     )
-    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not _allow_lmstudio_explicit_below_floor:
+    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not (_is_jit or _allow_lmstudio_explicit_below_floor):
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
             f"by Hermes Agent.  Choose a model with at least "
-            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
+            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or enable the JIT "
+            f"context engine (`context.engine: jit`).  If your server "
             f"reports a window smaller than the model's true window, set "
             f"model.context_length in config.yaml to the real value "
             f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."

@@ -432,9 +432,13 @@ def _open_profile_session_db(profile_home):
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None):
+def _profile_db(params: dict | None = None, *, writer: bool = False):
     """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
-    profile handles, leaves the launch-profile shared handle open."""
+    profile handles, leaves the launch-profile shared handle open.
+
+    Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
+    gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
+    hermes_cli.web_routers.profiles._read_profile_db."""
     profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
@@ -442,8 +446,13 @@ def _profile_db(params: dict | None = None):
         db, owns = _get_db(), False
     else:
         try:
-            from hermes_state_registry import acquire
-            db, owns = acquire(Path(profile_home) / "state.db"), True
+            if writer:
+                from hermes_state_registry import acquire
+                db = acquire(Path(profile_home) / "state.db")
+            else:
+                from hermes_cli.web_server_sessions import _open_session_db_at_path
+                db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
+            owns = True
         except Exception as exc:
             logger.warning("TUI profile session store unavailable for %s: %s", profile, exc)
             db, owns = None, False

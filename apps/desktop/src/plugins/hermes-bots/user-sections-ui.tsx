@@ -27,6 +27,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Input,
+  isSubmitEnter,
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
@@ -89,7 +90,7 @@ export function SectionNameDialog({ initialName, mode, onOpenChange, onSubmit, o
           maxLength={40}
           onChange={event => setValue(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+            if (isSubmitEnter(event)) {
               event.preventDefault()
               submit()
             }

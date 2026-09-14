@@ -300,6 +300,7 @@ class IterationStart:
 def begin_iteration(
     agent: Any, *, messages: Any, conversation_history: Any, original_user_message: Any,
     api_call_count: Any, interrupted: Any, _turn_exit_reason: Any,
+    _usage_tracker: Any = None,
 ) -> IterationStart:
     """Iteration entry in the original order: apply a pending redirect, reset the checkpoint
     dedup, then the interrupt / review-budget / iteration-budget exits. ``api_call_count`` is
@@ -345,6 +346,14 @@ def begin_iteration(
                 f"the review tool loop before the next provider call."
             )
         return _verdict("break")
+
+    if _usage_tracker is not None:
+        breach = _usage_tracker.check(getattr(agent, "session_total_tokens", 0))
+        if breach is not None:
+            _turn_exit_reason = breach.code
+            if not agent.quiet_mode:
+                agent._safe_print(breach.message)
+            return _verdict("break")
 
     api_call_count += 1
     agent._api_call_count = api_call_count

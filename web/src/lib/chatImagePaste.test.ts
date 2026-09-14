@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   firstImageFromClipboard,
+  imageAttachPtyFrames,
   imageFilesFromTransfer,
   transferMayContainImage,
 } from "./chatImagePaste";
@@ -95,5 +96,14 @@ describe("transferMayContainImage", () => {
       items: [makeItem("string", "text/plain", null)],
     });
     expect(transferMayContainImage(data)).toBe(false);
+  });
+});
+
+describe("imageAttachPtyFrames", () => {
+  it("keeps the image command and Return in distinct PTY frames", () => {
+    expect(imageAttachPtyFrames("/tmp/dashboard image.png")).toEqual([
+      "/image /tmp/dashboard image.png",
+      "\r",
+    ]);
   });
 });

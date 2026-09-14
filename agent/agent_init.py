@@ -1898,6 +1898,14 @@ def _enforce_minimum_context(agent):
         and not isinstance(agent._config_context_length, bool)
         and agent._config_context_length > 0
     )
+    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and _is_jit:
+        _ra().logger.info(
+            "Runtime context window (%d tokens) is below the standard floor (%d), "
+            "but permitted under active JIT Context Engine (context.engine: jit).",
+            _ctx,
+            MINIMUM_CONTEXT_LENGTH,
+        )
+
     if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and not (_is_jit or _allow_lmstudio_explicit_below_floor):
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "

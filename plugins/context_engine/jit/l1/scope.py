@@ -6,8 +6,8 @@ import re
 from typing import List, Optional, Tuple
 
 EXPLICIT_SCOPE_PATTERNS = [
-    r"(?:project|scope|switching to|switch to|working on):\s*([a-zA-Z0-9_\-]+)",
-    r"(?:przejd[zź]my do|pracujemy nad|otw[oó]rz projekt|projekt:?)\s+([a-zA-Z0-9_\-]+)",
+    r"(?:project|scope|switching to|switch to|switch project to|working on|open project):\s*([a-zA-Z0-9_\-]+)",
+    r"(?:switch to project|work on project|open project|project:?)\s+([a-zA-Z0-9_\-]+)",
 ]
 
 

@@ -114,8 +114,8 @@ def test_user_routed_subscription_uses_only_its_authorized_profile(tmp_path, mon
     assert len(primary.sent) == len(primary.handled) == 1
     assert primary.handled[0].source.user_id == "creator"
 
-    # Same sender cannot fall through to the primary profile, and a legacy row
-    # without sender identity cannot skip a potentially winning user route.
+    # Same sender can't fall back to the primary profile, and a legacy row with no sender
+    # identity must not skip a user route that could have won.
     completion(profile="default", chat="shared", thread="")
     completion(profile="default", chat="shared", thread="", user=None)
     assert not collect(runner)

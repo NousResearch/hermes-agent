@@ -369,6 +369,20 @@ class TestAdapterToSessionKeyIntegration:
         # A default-profile key would land in agent:main — must differ.
         assert key != build_session_key(source, profile=None)
 
+    def test_adapter_preserves_numeric_zero_user_id_for_routing(self, mock_runner):
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="zero", platform="discord", profile="zero", user_id="0")
+        ]
+        adapter = _stub_adapter(Platform.DISCORD, mock_runner)
+
+        with patch(
+            "hermes_cli.profiles.profiles_to_serve",
+            return_value=[("default", Path("/profiles/default")), ("zero", Path("/profiles/zero"))],
+        ):
+            source = adapter.build_source(chat_id="channel", user_id=0)
+
+        assert (source.user_id, source.profile) == ("0", "zero")
+
     @pytest.mark.asyncio
     async def test_adapter_drops_rejected_route_before_dispatch(self, mock_runner):
         mock_runner.config.profile_routes = [

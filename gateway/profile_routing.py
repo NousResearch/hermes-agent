@@ -87,7 +87,7 @@ class ProfileRoute:
             return False
         if _bot_profile_key(self.bot_profile) != _bot_profile_key(adapter_profile):
             return False
-        if self.user_id is not None and (not str(self.user_id).strip() or self.user_id != user_id):
+        if self.user_id is not None and (not self.user_id.strip() or self.user_id != user_id):
             return False
         if self.thread_id and self.thread_id != thread_id:
             return False
@@ -153,12 +153,16 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
         except (ValueError, ImportError):
             logger.warning("Skipping profile route %s: invalid profile name %r", name, profile)
             continue
+        has_user_id, user_id = "user_id" in entry, entry.get("user_id")
+        if has_user_id and (user_id is None or isinstance(user_id, str) and not user_id.strip()):
+            logger.warning("Skipping profile route %s: user_id cannot be null or empty", name)
+            continue
         routes.append(ProfileRoute(
             name=name, platform=platform, profile=profile,
             guild_id=_coerce_route_id(entry.get("guild_id")),
             chat_id=_coerce_route_id(entry.get("chat_id")),
             thread_id=_coerce_route_id(entry.get("thread_id")),
-            user_id=_coerce_route_id(entry.get("user_id")),
+            user_id=_coerce_route_id(user_id),
             enabled=entry.get("enabled", True),
             bot_profile=_bot_profile_key(entry.get("bot_profile")),
         ))

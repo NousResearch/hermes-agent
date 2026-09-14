@@ -178,6 +178,17 @@ class TestSchemaAcceptsKind:
     def test_non_dict(self):
         assert _schema_accepts_kind(None, "array") is False
 
+    def test_recursive_union_refs_keep_noncyclic_alternatives(self):
+        for union_key in ("anyOf", "oneOf", "allOf"):
+            root = {"$defs": {"Node": {
+                union_key: [{"$ref": "#/$defs/Node"}, {"type": "object"}],
+            }}}
+            schema = {"type": "array", "items": {"$ref": "#/$defs/Node"}}
+            assert _schema_accepts_kind(root["$defs"]["Node"], "array", root) is False
+            assert _normalize_json_strings_for_schema(
+                ['{"street": "Alpha Ave"}'], schema, root,
+            ) == [{"street": "Alpha Ave"}]
+
 
 class TestNormalizeJsonStringsForSchema:
     """Unit tests for _normalize_json_strings_for_schema (the recursive pass)."""

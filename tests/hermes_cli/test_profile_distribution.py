@@ -10,6 +10,7 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -423,6 +424,28 @@ class TestUpdate:
 
         assert (plan.target_dir / "cron" / "mine.json").read_text() == '{"schedule": "* * * * *"}\n'
         assert (plan.target_dir / "cron" / "daily.json").read_text() == '{"schedule": "0 10 * * *"}\n'
+
+    def test_update_refuses_symlinked_owned_container(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="link_safe")
+
+        shared = profile_env / "shared-skills"
+        shared.mkdir()
+        (shared / "mine" / "SKILL.md").parent.mkdir()
+        (shared / "mine" / "SKILL.md").write_text("shared skill\n")
+        before = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
+
+        skills = plan.target_dir / "skills"
+        shutil.rmtree(skills)
+        _symlink_file_or_skip(skills, shared)
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
+
+        with pytest.raises(DistributionError, match="symlink"):
+            update_distribution("link_safe")
+
+        assert skills.is_symlink() and skills.resolve() == shared.resolve()
+        after = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
+        assert after == before
 
     def test_update_preserves_user_data(self, profile_env):
         # 1. Build staging dir, install

@@ -8,6 +8,7 @@ development before the first push).
 from __future__ import annotations
 
 import operator
+import os
 import re
 import shutil
 import subprocess
@@ -358,10 +359,11 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
 
 def _remove_existing(path: Path) -> None:
     """Remove one destination entry without following a destination symlink."""
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.is_dir():
+    if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
+    elif os.path.lexists(path):
+        # Covers files, dangling/any symlinks, fifos and sockets alike.
+        path.unlink()
 
 
 def _replace_entry(src: Path, dest: Path) -> None:
@@ -377,12 +379,18 @@ def _replace_entry(src: Path, dest: Path) -> None:
 def _real_dir(base: Path, parts: Tuple[str, ...]) -> Path:
     """Return ``base/parts`` as a chain of real directories.
 
-    A user could have swapped any ancestor for a symlink or a file; writing through it
-    would land the payload outside the profile, so each is replaced by a real directory."""
+    A user could have swapped an ancestor for a file; writing through it is impossible,
+    so a file is replaced by a real directory. A symlinked ancestor is refused rather
+    than silently unlinked: it is deliberate user configuration (a shared skills dir,
+    say) and writing through it would land the payload outside the profile."""
     path = base
     for part in parts:
         path = path / part
-        if path.is_symlink() or (path.exists() and not path.is_dir()):
+        if path.is_symlink():
+            raise DistributionError(
+                f"{path} is a symlink; refusing to replace it — remove the link or point distribution_owned elsewhere"
+            )
+        if path.exists() and not path.is_dir():
             _remove_existing(path)
         path.mkdir(exist_ok=True)
     return path

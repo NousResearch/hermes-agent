@@ -146,6 +146,7 @@ test('root lockfile has no agent-browser entry (#43564)', () => {
   )
 })
 
+
 test('install:tui includes the nested Ink workspace without desktop', () => {
   const scripts = (rootPackageJson().scripts ?? {}) as Record<string, string>
   const command = scripts['install:tui'] ?? ''

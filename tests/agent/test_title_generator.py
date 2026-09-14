@@ -46,6 +46,29 @@ class TestGenerateTitle:
         assert captured_kwargs["task"] == "title_generation"
         assert captured_kwargs["timeout"] is None
 
+    def test_generate_title_disables_reasoning(self):
+        """The titling pass must explicitly disable thinking (#91927).
+
+        With the aux default reasoning_effort "" (provider default), Gemini
+        bills internal thought tokens against max_tokens=64, the JSON payload
+        never lands, and the prose fallback stores the opening fence
+        ("```json") as the title. Enforce the module's documented
+        thinking-disabled contract at the call site.
+        """
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = '{"title": "Reasoning Off"}'
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question") == "Reasoning Off"
+
+        assert captured_kwargs.get("reasoning_config") == {"enabled": False}
+
 
 
     def test_strips_think_blocks(self):
@@ -89,6 +112,43 @@ class TestGenerateTitle:
             title = generate_title("question")
             assert len(title) == 80
             assert title.endswith("...")
+
+    def test_rejects_answer_shaped_output(self):
+        """A model that ignores the titling task and answers the user's
+        message returns a full sentence; without a word bound the whole
+        reply (truncated mid-sentence) became the session title.
+        Regression for the can1357/oh-my-pi#7306 bug class."""
+        answer = (
+            "I don't have context on a \"registration system\" - that's not "
+            "something I recognize from this conversation, and I don't see "
+            "any prior discussion or code about it here"
+        )
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = answer
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("how does the registration system work?", "...") is None
+
+    def test_rejects_many_short_words(self):
+        """13 short words stays under the 80-char cap but is not a title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "one two three four five six seven eight nine ten eleven twelve thirteen"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") is None
+
+    def test_accepts_normal_title(self):
+        """A normal 3-7 word title is unaffected by the answer-shape guard."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Investigate the title resolver bug"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            assert generate_title("question", "answer") == "Investigate the title resolver bug"
 
 
 
@@ -191,10 +251,11 @@ class TestAutoTitleSession:
     def test_body_exception_routed_to_failure_callback(self):
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.get_session_title_source.return_value = None
         seen = []
 
         boom = ImportError("stale module")
-        with patch("agent.title_generator._auto_title_session", side_effect=boom):
+        with patch("agent.title_generator.generate_title", side_effect=boom):
             auto_title_session(
                 db,
                 "sess-1",

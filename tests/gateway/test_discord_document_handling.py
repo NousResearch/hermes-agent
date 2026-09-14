@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
+from gateway.platforms.event import MessageType
 
 
 # ---------------------------------------------------------------------------

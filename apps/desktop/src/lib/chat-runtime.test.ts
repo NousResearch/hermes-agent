@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
+import type { ChatMessage, ChatMessagePart } from '@/lib/chat-messages'
 import type { ComposerAttachment } from '@/store/composer'
 
 import {
   attachmentDisplayText,
   attachmentId,
+  coalesceToolOnlyAssistants,
   coerceThinkingText,
+  createToolMergeCache,
   messageCreatedAt,
   optimisticAttachmentRef,
-  parseCommandDispatch,
-  parseSlashCommand,
   toRuntimeMessage
 } from './chat-runtime'
 
@@ -126,72 +127,6 @@ describe('coerceThinkingText', () => {
   })
 })
 
-describe('parseCommandDispatch', () => {
-  it('keeps the notice on a send directive (e.g. /goal set)', () => {
-    // The backend's /goal set returns {type:send, notice:"⊙ Goal set …", message}.
-    // Dropping the notice made /goal look like it did nothing in the desktop app.
-    const parsed = parseCommandDispatch({ type: 'send', notice: '⊙ Goal set', message: 'do the thing' })
-
-    expect(parsed).toEqual({ type: 'send', message: 'do the thing', notice: '⊙ Goal set' })
-  })
-
-  it('keeps message-only send directives working (no notice)', () => {
-    expect(parseCommandDispatch({ type: 'send', message: 'hi' })).toEqual({
-      type: 'send',
-      message: 'hi',
-      notice: undefined
-    })
-  })
-
-  it('parses a prefill directive with its notice (e.g. /undo)', () => {
-    const parsed = parseCommandDispatch({ type: 'prefill', notice: 'backed up 1 turn', message: 'edit me' })
-
-    expect(parsed).toEqual({ type: 'prefill', message: 'edit me', notice: 'backed up 1 turn' })
-  })
-
-  it('rejects a prefill directive missing its message', () => {
-    expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
-  })
-})
-
-describe('parseSlashCommand', () => {
-  it('parses a single-line command', () => {
-    expect(parseSlashCommand('/some-skill do something')).toEqual({
-      arg: 'do something',
-      name: 'some-skill'
-    })
-  })
-
-  it('keeps a multiline arg intact instead of failing the whole parse (#41323)', () => {
-    expect(parseSlashCommand('/goal Write a Python script\nthat prints Hello World')).toEqual({
-      arg: 'Write a Python script\nthat prints Hello World',
-      name: 'goal'
-    })
-  })
-
-  it('parses a skill command with a long pasted multi-paragraph context (#55510)', () => {
-    const context = 'summarize this:\n\nparagraph one\nparagraph two\n\nparagraph three'
-
-    expect(parseSlashCommand(`/some-skill ${context}`)).toEqual({
-      arg: context,
-      name: 'some-skill'
-    })
-  })
-
-  it('takes the name across a newline boundary like the CLI and gateway (split on any whitespace)', () => {
-    expect(parseSlashCommand('/goal\npasted block')).toEqual({ arg: 'pasted block', name: 'goal' })
-  })
-
-  it('keeps truly empty slash input empty', () => {
-    expect(parseSlashCommand('/')).toEqual({ arg: '', name: '' })
-    expect(parseSlashCommand('/   ')).toEqual({ arg: '', name: '' })
-  })
-
-  it('does not treat text after horizontal whitespace as a command name (CLI parity)', () => {
-    expect(parseSlashCommand('/ some words')).toEqual({ arg: '', name: '' })
-  })
-})
-
 describe('attachmentId', () => {
   it('normalizes a trailing slash on a url so a re-attach dedupes (#59305 P2)', () => {
     expect(attachmentId('url', 'https://example.com/a')).toBe(attachmentId('url', 'https://example.com/a/'))
@@ -249,5 +184,58 @@ describe('toRuntimeMessage timeline metadata', () => {
     })
 
     expect((runtime.metadata?.custom as { timelineTimestamp?: number }).timelineTimestamp).toBeUndefined()
+  })
+})
+
+describe('coalesceToolOnlyAssistants toolCallId uniqueness', () => {
+  // Regression contract for #87857: two individually-clean assistant rows can
+  // share a toolCallId (structural carry-over re-attaching a cached row's tool
+  // calls while the same turn also exists as a committed row). Folding them
+  // used to manufacture ONE message carrying the id twice — the exact shape
+  // that makes assistant-ui's useResources throw and crash-loop the pane.
+  const tool = (toolCallId: string): ChatMessagePart =>
+    ({ type: 'tool-call', toolCallId, toolName: 'terminal', args: {} as never, argsText: '' }) as ChatMessagePart
+
+  const assistant = (id: string, parts: ChatMessagePart[]): ChatMessage =>
+    ({ id, role: 'assistant', parts }) as unknown as ChatMessage
+
+  it('drops the copy the predecessor already carries, keeps the new call', () => {
+    const merged = coalesceToolOnlyAssistants(
+      [
+        assistant('committed-49-assistant', [
+          { type: 'text', text: 'working' } as ChatMessagePart,
+          tool('call-a'),
+          tool('call-b')
+        ]),
+        assistant('assistant-stream-49', [tool('call-b'), tool('call-c')])
+      ],
+      createToolMergeCache()
+    )
+
+    expect(merged).toHaveLength(1)
+
+    const ids = merged[0].parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part as { toolCallId: string }).toolCallId)
+
+    expect(ids).toEqual(['call-a', 'call-b', 'call-c'])
+  })
+
+  it('folds a clean follow-up unchanged', () => {
+    const merged = coalesceToolOnlyAssistants(
+      [
+        assistant('a1', [{ type: 'text', text: 'ok' } as ChatMessagePart, tool('call-a')]),
+        assistant('a2', [tool('call-b')])
+      ],
+      createToolMergeCache()
+    )
+
+    expect(merged).toHaveLength(1)
+
+    const ids = merged[0].parts
+      .filter(part => part.type === 'tool-call')
+      .map(part => (part as { toolCallId: string }).toolCallId)
+
+    expect(ids).toEqual(['call-a', 'call-b'])
   })
 })

@@ -424,6 +424,11 @@ class SessionPersistenceMixin:
             elif key not in current:
                 continue  # loaded from fallback and deliberately removed
             elif current[key] == baseline[key]:
+                previous = self._entries[key]
+                if (getattr(previous, "_compression_pause_pending", False) is True
+                        and previous.session_id == durable_entry.session_id):
+                    # Recovered primary data cannot forget a failed process-local pause write.
+                    durable_entry._compression_pause_pending = True
                 self._entries[key] = durable_entry  # unchanged fallback data yields to the DB copy
         self._routing_db_loaded = True
         self._routing_fallback_baseline = None
@@ -433,10 +438,14 @@ class SessionPersistenceMixin:
         self._reconcile_recovered_routing_locked()
         return self._entries_as_dicts(), self._next_routing_generation_locked()
 
-    def _persist_routing_data(self, data: Dict[str, Any], generation: int) -> None:
+    def _persist_routing_data(
+        self, data: Dict[str, Any], generation: int, *, require_primary: bool = False,
+    ) -> None:
         """Serialize all whole-index writers through one durable write lock."""
         with self._lazy("_save_lock", threading.Lock):
             if generation <= getattr(self, "_persisted_routing_generation", 0):
+                if require_primary:
+                    raise RuntimeError("Stale routing generation cannot commit session policy")
                 return
             # Fold in fast upserts numbered above this snapshot: they were serialized after us and
             # a delayed full rewrite must not regress them.
@@ -447,12 +456,16 @@ class SessionPersistenceMixin:
                         data[key] = json.loads(entry_json)
             db_saved = False
             replacer = self._routing_db_method("replace_gateway_routing_entries")
+            if require_primary and replacer is None:
+                raise RuntimeError("Primary routing storage is unavailable")
             if replacer is not None:
                 try:
                     replacer({k: json.dumps(v) for k, v in data.items()}, scope=self._routing_scope())
                     db_saved = True
                 except Exception as exc:
                     logger.warning("gateway.session: state.db routing save failed: %s", exc)
+                    if require_primary:
+                        raise
             if getattr(self, "_write_sessions_json", True) or not db_saved:
                 try:
                     self._save_sessions_json(data)

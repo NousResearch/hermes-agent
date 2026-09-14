@@ -1209,10 +1209,24 @@ class GatewayInboundMixin:
             return _paused_notice
 
         _quick_key = self._session_key_for_source(source)
+        # /resume can recover a stripped Telegram topic before deriving its key.
+        # Check that effective identity too, without changing native event routing.
+        _recovery_source = await asyncio.to_thread(self._normalize_source_for_session_key, source)
+        _recovery_key = self._session_key_for_source(_recovery_source)
+        _recovery_busy = (self._paused_recovery_busy_reply(_quick_key)
+                          or self._paused_recovery_busy_reply(_recovery_key))
+        if _recovery_busy is not None:
+            return _recovery_busy
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return _reply
 
+        # A confirmation await may have admitted recovery. Never queue, interrupt,
+        # or stale-evict its distinct command owner as though it were an agent.
+        _recovery_busy = (self._paused_recovery_busy_reply(_quick_key)
+                          or self._paused_recovery_busy_reply(_recovery_key))
+        if _recovery_busy is not None:
+            return _recovery_busy
         # Evict a leaked/reaped ``_running_agents`` slot before the busy-session fast-path.
         self._hm_evict_idle_stale_agent(_quick_key)
         if self._is_session_running(_quick_key):
@@ -1246,6 +1260,11 @@ class GatewayInboundMixin:
         # Claim this session before any await: many awaits sit between here and _run_agent
         # registering the real AIAgent; without this sentinel a second message during any of them
         # passes the "already running" guard and spins up a duplicate agent for the same session.
+        # This event may have passed the early busy check before a command claimed.
+        _recovery_busy = (self._paused_recovery_busy_reply(_quick_key)
+                          or self._paused_recovery_busy_reply(_recovery_key))
+        if _recovery_busy is not None:
+            return _recovery_busy
         _active_session_lease, _limit_message = self._claim_active_session_slot(_quick_key, source)
         if _limit_message is not None:
             logger.info("Rejecting new active session %s: max_concurrent_sessions reached", _quick_key)

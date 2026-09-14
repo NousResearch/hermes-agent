@@ -13,6 +13,7 @@ import {
   isTitleFetchable,
   LinkifiedText,
   MarkdownLinkText,
+  normalizeExternalUrl,
   PrettyLink,
   urlSlugTitleLabel
 } from './external-link'
@@ -73,6 +74,48 @@ describe('external link helpers', () => {
     expect(isTitleFetchable('http://localhost:5174')).toBe(false)
     expect(isTitleFetchable('file:///tmp/demo.html')).toBe(false)
     expect(isTitleFetchable('mailto:hello@example.com')).toBe(false)
+  })
+
+  // #93893: wire-format directive tokens reaching this module verbatim must
+  // unwrap to their inner URL, never surface the wrapper as a fetchable
+  // "host" (`@url` from `new URL('@url:`…`')`).
+  describe('normalizeExternalUrl unwraps directive wrappers (#93893)', () => {
+    it('unwraps a backtick-quoted @url: token', () => {
+      expect(normalizeExternalUrl('@url:`https://oauth2:%s@example.internal.host`')).toBe(
+        'https://oauth2:%s@example.internal.host'
+      )
+    })
+
+    it('unwraps double-quote and bare quoted forms', () => {
+      expect(normalizeExternalUrl('@url:"https://example.com/a b"')).toBe('https://example.com/a b')
+      expect(normalizeExternalUrl('@url:https://example.com/x')).toBe('https://example.com/x')
+    })
+
+    it('peels trailing punctuation from the bare form (review follow-up)', () => {
+      expect(normalizeExternalUrl('@url:https://example.com.')).toBe('https://example.com')
+      expect(normalizeExternalUrl('@url:https://example.com/x,')).toBe('https://example.com/x')
+    })
+
+    it('does NOT unwrap @file/@folder — local paths must not become links', () => {
+      // The wrapper keeps these inert downstream rather than promoting a bare
+      // path to a link value (#93893 review, point 1).
+      expect(normalizeExternalUrl('@file:`/home/user/report.md`')).toBe('@file:`/home/user/report.md`')
+      expect(isTitleFetchable('@file:`/home/user/report.md`')).toBe(false)
+    })
+
+    it('leaves plain URLs and non-directive text untouched', () => {
+      expect(normalizeExternalUrl('https://example.com')).toBe('https://example.com')
+      expect(normalizeExternalUrl('not a directive but @url: is mentioned mid-sentence')).toBe(
+        'not a directive but @url: is mentioned mid-sentence'
+      )
+    })
+
+    it('makes wrapped URLs title-fetchable and keeps placeholder URLs un-fetched at the main boundary', () => {
+      expect(isTitleFetchable('@url:`https://example.com/docs`')).toBe(true)
+      // The wrapper itself still parses as garbage — nothing about the unwrap
+      // turns junk into a URL.
+      expect(isTitleFetchable('@url:`not-a-url`')).toBe(false)
+    })
   })
 
   it('deduplicates in-flight title fetches and caches results', async () => {

@@ -189,7 +189,7 @@ print(hashlib.sha256(json.dumps(effective, sort_keys=True).encode()).hexdigest()
     return subprocess.run(
         [sys.executable, "-c", probe], cwd=Path(__file__).resolve().parents[2],
         env={**os.environ, "HERMES_HOME": str(HOME)},
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     ).stdout.strip()
 
 

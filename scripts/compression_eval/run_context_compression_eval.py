@@ -66,7 +66,7 @@ def _command_runtime_fingerprint(command: list[str]) -> str:
                 resolved = shutil.which(parts[0]) or parts[0]
     if resolved:
         try:
-            version = subprocess.run([resolved, "--version"], capture_output=True, text=True, timeout=5, check=False)
+            version = subprocess.run([resolved, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
             return json.dumps([resolved, version.stdout, version.stderr], sort_keys=True)
         except (OSError, subprocess.SubprocessError):
             pass

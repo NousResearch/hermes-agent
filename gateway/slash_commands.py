@@ -426,6 +426,13 @@ class GatewaySlashCommandsMixin(
             await self._interrupt_and_clear_session(
                 key, source, interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason=invalidation_reason)
+            # /stop must also cancel background (async) delegate_task units the session
+            # spawned — otherwise they keep running and making API calls after a user
+            # explicitly stopped the conversation. The CLI's own /stop already does this
+            # (hermes_cli/cli_commands_mixin.py); the gateway's had no equivalent.
+            with contextlib.suppress(Exception):
+                from tools.async_delegation import interrupt_for_session
+                interrupt_for_session(session_key=key, reason="stop_command")
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:  # force-clean the sentinel so the session is unlocked
             await _stop(session_key, "stop_command_pending")

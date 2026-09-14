@@ -20,11 +20,13 @@ import stat
 import sys
 import threading
 import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlsplit
 
+from hermes_cli.mcp_discovery_codex import normalize_codex_mcp
 from hermes_cli.mcp_security import validate_mcp_server_entry
 
 logger = logging.getLogger(__name__)
@@ -213,7 +215,9 @@ def _credential_safe_config(config: dict) -> dict:
     return scrubbed if isinstance(scrubbed, dict) else {"credentialed": True}
 
 
-def _read_mapping(path: Path, *, yaml_file: bool, warnings: list[str]) -> Optional[dict]:
+def _read_mapping(
+    path: Path, *, yaml_file: bool, warnings: list[str], toml_file: bool = False,
+) -> Optional[dict]:
     label = str(path)
     try:
         if path.is_symlink():
@@ -236,7 +240,9 @@ def _read_mapping(path: Path, *, yaml_file: bool, warnings: list[str]) -> Option
             warnings.append(f"Skipped oversized MCP config: {label}")
             return None
         text = raw.decode("utf-8")
-        if yaml_file:
+        if toml_file:
+            value = tomllib.loads(text)
+        elif yaml_file:
             import yaml
 
             try:
@@ -262,6 +268,7 @@ def _client_config_paths() -> list[tuple[str, Path]]:
     paths = [
         ("Claude Code", home / ".claude.json"),
         ("Cursor", home / ".cursor" / "mcp.json"),
+        ("Codex", Path(os.environ.get("CODEX_HOME") or home / ".codex").expanduser() / "config.toml"),
     ]
     if sys.platform == "darwin":
         desktop = home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
@@ -303,17 +310,20 @@ def _raw_sources(warnings: list[str]) -> list[tuple[str, str, Path, str, dict, O
                 warnings.append(f"Ignored malformed MCP entry in {label}")
 
     for client_name, path in _client_config_paths():
-        root = _read_mapping(path, yaml_file=False, warnings=warnings)
+        is_codex = client_name == "Codex"
+        root = _read_mapping(path, yaml_file=False, toml_file=is_codex, warnings=warnings)
         if root is None:
             continue
-        servers = root.get("mcpServers")
+        server_key = "mcp_servers" if is_codex else "mcpServers"
+        servers = root.get(server_key)
         label = f"{client_name} ({path})"
         if servers is not None and not isinstance(servers, dict):
-            warnings.append(f"Ignored malformed mcpServers in {label}")
+            warnings.append(f"Ignored malformed {server_key} in {label}")
         elif isinstance(servers, dict):
             for name, config in servers.items():
                 if isinstance(name, str) and name.strip() and isinstance(config, dict):
-                    sources.append(("client", label, path, name, copy.deepcopy(config), None))
+                    kind = "codex" if is_codex else "client"
+                    sources.append((kind, label, path, name, copy.deepcopy(config), None))
                 else:
                     warnings.append(f"Ignored malformed MCP entry in {label}")
         if client_name == "Claude Code":
@@ -370,8 +380,22 @@ def _candidate_from_raw(
     target_names: set[str],
 ) -> dict:
     identity = f"{kind}:{path}:{scope or ''}:{name}"
+    raw_config = config
+    if kind == "codex":
+        try:
+            config = normalize_codex_mcp(raw_config)
+        except ValueError as exc:
+            return {
+                "id": _fingerprint(identity, {"unsupported": True}),
+                "name": name,
+                "source": label,
+                "transport": "http" if "url" in raw_config else "stdio",
+                "summary": f"MCP configuration from {label}",
+                "connectable": False,
+                "reason": str(exc),
+            }
     inline_credentials = _has_inline_credentials(config)
-    fingerprint_config = config if not inline_credentials else _credential_safe_config(config)
+    fingerprint_config = raw_config if not inline_credentials else _credential_safe_config(config)
     candidate_id = _fingerprint(identity, fingerprint_config)
     transport = _transport(config)
     issues = validate_mcp_server_entry(name, config)
@@ -412,7 +436,7 @@ def _candidate_from_raw(
                 server_key=name,
                 scope=scope,
                 endpoint=None,
-                fingerprint=_fingerprint(identity, config),
+                fingerprint=_fingerprint(identity, raw_config),
                 name=name,
                 expires_at=time.monotonic() + _CACHE_TTL_SECONDS,
             ),
@@ -703,8 +727,10 @@ def _reread_record(record: _SourceRecord) -> dict:
         if not record.path or not record.server_key:
             raise DiscoveryConflict("Discovery source metadata is incomplete")
         path = Path(record.path)
-        root = _read_mapping(path, yaml_file=(record.kind == "hermes"), warnings=[])
-        key = "mcp_servers" if record.kind == "hermes" else "mcpServers"
+        root = _read_mapping(
+            path, yaml_file=(record.kind == "hermes"), toml_file=(record.kind == "codex"), warnings=[],
+        )
+        key = "mcp_servers" if record.kind in {"hermes", "codex"} else "mcpServers"
         if record.scope is not None:
             projects = root.get("projects") if root else None
             root = projects.get(record.scope) if isinstance(projects, dict) else None
@@ -714,9 +740,15 @@ def _reread_record(record: _SourceRecord) -> dict:
             raise DiscoveryConflict("Discovery source changed; refresh the candidate list")
         config = copy.deepcopy(config)
         identity = f"{record.kind}:{path}:{record.scope or ''}:{record.server_key}"
+    raw_config = config
+    if record.kind == "codex":
+        try:
+            config = normalize_codex_mcp(raw_config)
+        except ValueError as exc:
+            raise DiscoveryConflict(str(exc)) from None
     if _has_inline_credentials(config):
         raise DiscoveryConflict("Discovery source now contains inline credentials; refresh the candidate list")
-    if _fingerprint(identity, config) != record.fingerprint:
+    if _fingerprint(identity, raw_config) != record.fingerprint:
         raise DiscoveryConflict("Discovery source changed; refresh the candidate list")
     if _transport(config) is None or validate_mcp_server_entry(record.name, config):
         raise DiscoveryConflict("Discovery source is no longer a valid MCP configuration")

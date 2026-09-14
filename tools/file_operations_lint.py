@@ -7,6 +7,7 @@ linters are pure functions importable from this module.
 import ast
 import json
 import os
+import shlex
 import tomllib
 from typing import Callable, Dict, Optional
 
@@ -229,18 +230,28 @@ class LintMixin:
 
     def _has_ancestor_tsconfig(self, path: str) -> bool:
         """True iff a tsconfig.json exists in ``path``'s directory or any ancestor.
-        Host-side walk, local backend only: on a remote backend this answers False so
-        the shell linter still runs — never suppress lint on a probe that couldn't answer."""
-        if not self._lsp_local_only():
-            return False
+        Local backend: host-side walk. Remote backends (Docker/SSH/Modal/...): one
+        shell probe on the backend, because the file lives there, not on the host —
+        walking the host here answered False for every sandboxed TS project and ran
+        a per-file ``tsc`` (phantom errors, up to the 30s timeout) on every patch.
+        Any failure answers False so lint is never suppressed by a probe that
+        couldn't answer."""
         try:
-            d = os.path.dirname(os.path.abspath(path))
-            while not os.path.isfile(os.path.join(d, "tsconfig.json")):
-                parent = os.path.dirname(d)
-                if parent == d:
-                    return False
-                d = parent
-            return True
+            if self._lsp_local_only():
+                d = os.path.dirname(os.path.abspath(path))
+                while not os.path.isfile(os.path.join(d, "tsconfig.json")):
+                    parent = os.path.dirname(d)
+                    if parent == d:
+                        return False
+                    d = parent
+                return True
+            probe = (
+                "d=$(dirname -- " + shlex.quote(path) + "); "
+                'while :; do [ -f "$d/tsconfig.json" ] && exit 0; '
+                '{ [ "$d" = / ] || [ "$d" = . ]; } && exit 1; '
+                'd=$(dirname -- "$d"); done'
+            )
+            return self._exec(probe, timeout=10).exit_code == 0
         except Exception:  # noqa: BLE001
             return False
 

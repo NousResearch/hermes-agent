@@ -423,11 +423,16 @@ class LlamaCppProfile(ProviderProfile):
 
 llamacpp = LlamaCppProfile(
     name="llamacpp",
-    # "llamacpp" is self-claimed on purpose: it steals the alias the
-    # bundled custom profile registered, which is what makes lookups by
-    # that name resolve here. "llama-swap" is new and ours alone.
+    # The three llama.cpp spellings are self-claimed on purpose: they steal
+    # the aliases the bundled custom profile registered, which is what makes
+    # lookups by those names resolve here. Runtime resolution already treats
+    # the three as one provider, so the profile lookup must too, or
+    # `provider: llama.cpp` would silently lose every feature of this
+    # profile. "llama-swap" is new and ours alone.
     aliases=(
         "llamacpp",
+        "llama.cpp",
+        "llama-cpp",
         "llama-swap",
     ),
     display_name="llama.cpp",

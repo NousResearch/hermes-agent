@@ -1,7 +1,8 @@
 # llamacpp model provider plugin for Hermes
 
 Serves llama.cpp endpoints - a bare llama-server or a llama-swap proxy -
-as a first-class Hermes provider named "llamacpp" (alias "llama-swap").
+as a first-class Hermes provider named "llamacpp" (aliases "llama.cpp",
+"llama-cpp" and "llama-swap").
 Local endpoint, no API key.
 
 What it adds over the generic custom provider:

@@ -108,7 +108,7 @@ def test_quote_scout_stdout_is_summary_plus_media(monkeypatch, capsys, artifact,
 
     monkeypatch.setattr(scout, "_load_env", lambda: None)
     monkeypatch.setattr(scout, "_collect", lambda: [{"text": "x" * 80}])
-    monkeypatch.setattr(scout, "_candidate_artifacts", lambda rows: ([artifact] * 3, [], []))
+    monkeypatch.setattr(scout, "_candidate_artifacts", lambda rows: ([artifact] * 5, [], []))
     monkeypatch.setattr(scout, "_merge_standalone_seeds", lambda seeds: None)
     monkeypatch.setattr(scout, "_already_reported", lambda items: False)
     monkeypatch.setattr(scout, "_record_reported", lambda items: None)
@@ -119,7 +119,7 @@ def test_quote_scout_stdout_is_summary_plus_media(monkeypatch, capsys, artifact,
     lines = capsys.readouterr().out.strip().splitlines()
 
     assert lines == [
-        "X Manager · 3 post recommendations (replies + quotes)",
+        "X Manager · 5 post recommendations",
         "Original posts and recommended drafts are in the attached review.",
         f"MEDIA:{report}",
     ]

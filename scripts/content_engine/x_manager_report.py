@@ -9,7 +9,7 @@ from hermes_constants import get_hermes_home
 REPORT_DIR = get_hermes_home() / 'document_cache' / 'x-manager'
 
 
-def render_report(artifacts, *, lane, title):
+def render_report(artifacts, *, lane, title, clean=False):
     import x_manager as xm
     from x_delivery import prepare_delivery, expiring_report_bytes
     artifacts = [prepare_delivery(a.id) if a.pack.context.get('staged_at') else a
@@ -54,6 +54,18 @@ def render_report(artifacts, *, lane, title):
         }
         detail = '<details><summary>Conversation, collection and source details</summary><pre>' + esc(json.dumps(diagnostics, indent=2, ensure_ascii=False, default=str)) + '</pre></details>'
         argument = '' if not artifact.pack.is_complete() else '<details data-section="argument"><summary>Argument and evidence</summary><pre>' + esc(json.dumps({k: getattr(artifact.pack, k) for k in xm.REQUIRED_PACK_FIELDS}, indent=2)) + '</pre></details>'
+        if clean:
+            action = {'reply': 'Reply', 'quote': 'Quote tweet', 'standalone': 'Post idea'}.get(context.get('recommended_action'), 'Post idea')
+            warning = '' if complete else '<p class="notice">Full conversation unavailable — check the original before posting.</p>'
+            if context.get('disclosure_review_required'):
+                warning += '<p class="notice">Check that the draft reveals no private details.</p>'
+            cards.append(
+                f'<article class="card"><h2>{len(cards)+1}. {esc(action)}</h2>'
+                f'<p><a href="{esc(sources[0]["url"])}">Open source</a> · @{esc(context.get("author", ""))}</p>'
+                f'<h3>Original</h3><pre>{esc(context.get("source_text", ""))}</pre>'
+                f'<h3>Suggested post</h3><pre>{esc(artifact.body)}</pre>'
+                f'<p>{esc(context.get("selection_reason", ""))}</p>{warning}</article>')
+            continue
         cards.append(
             f'<article class="card"><h2>{esc(context.get("recommended_action", artifact.lane))} · pending approval</h2>'
             f'<ul>{rows}</ul><h3>Original</h3><pre>{esc(context.get("source_text", "Source text unavailable"))}</pre>'
@@ -64,5 +76,7 @@ def render_report(artifacts, *, lane, title):
     path = REPORT_DIR / f'review-{uuid.uuid4().hex}.expiry.html'
     style = '<style>*{box-sizing:border-box}body{max-width:1000px;margin:auto;padding:16px;font:16px system-ui;background:#10141b;color:#eee;overflow-wrap:anywhere}article{border:1px solid #678;padding:24px;margin:24px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{color:#7cf}details{margin:16px 0}summary{cursor:pointer}.notice{color:#edc}</style>'
     body = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + esc(title) + '</title>' + style + '<h1>' + esc(title) + '</h1><p>Approval only. Delivery expires six hours after the oldest source. Generated ' + generated.isoformat() + '</p>' + ''.join(cards)
+    if clean:
+        body = body.replace('Approval only. Delivery expires six hours after the oldest source. Generated ' + generated.isoformat(), 'Choose what you like. Nothing is published automatically.')
     path.write_bytes(expiring_report_bytes(body, artifacts, generated=generated))
     return path

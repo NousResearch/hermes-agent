@@ -159,5 +159,7 @@ def test_scout_prompt_and_verdicts_consistent():
     import importlib
     scout = importlib.import_module("x_quote_scout")
     assert set(scout.VERDICTS) == {"reply", "quote", "standalone", "discard"}
-    assert scout.MAX_REPLIES_PER_RUN == 2
+    assert scout.MAX_REPLIES_PER_RUN == 10
+    assert scout.MIN_RECOMMENDATIONS == 5
+    assert scout.MAX_RECOMMENDATIONS == 10
     assert scout.LLM_SYSTEM.strip().startswith("You are drafting for Sahil")

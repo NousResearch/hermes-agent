@@ -51,6 +51,27 @@ def initial_task_state(
     return "ready", tenant
 
 
+def _has_cycle(children: list) -> bool:
+    """True when the sibling ``parents`` graph contains a directed cycle
+    (Kahn's algorithm; a cycle would deadlock every involved child)."""
+    n = len(children)
+    in_deg = [0] * n
+    adj: list[list[int]] = [[] for _ in children]
+    for i, c in enumerate(children):
+        for p in (c.get("parents") or []):
+            adj[p].append(i)
+            in_deg[i] += 1
+    queue = [i for i in range(n) if in_deg[i] == 0]
+    seen = 0
+    while queue:
+        seen += 1
+        for nb in adj[queue.pop()]:
+            in_deg[nb] -= 1
+            if in_deg[nb] == 0:
+                queue.append(nb)
+    return seen != n
+
+
 def _validate_children_graph(children: list) -> None:
     """DB-free shape check + Kahn's cycle check on the sibling graph (a cycle
     would deadlock every involved child in ``todo`` forever)."""
@@ -85,6 +106,24 @@ def _validate_children_graph(children: list) -> None:
                 queue.append(nb)
     if seen != len(children):
         raise ValueError("cyclic dependency detected in decomposed children list")
+
+
+def _leaves_assigned_to_root(children: list, root_assignee: Optional[str]) -> bool:
+    """True when every SINK child of the sibling graph (a child no other
+    child depends on) is assigned to the root's own assignee — i.e. the
+    final work the root would wait on is the root's own job. Canonical
+    stranded-wiring antipattern: nobody but the root can complete those
+    children, so gating the root on them deadlocks the whole graph.
+    Unset child assignees (inherit default) count as "same" so they don't
+    mask the pattern.
+    """
+    root = (root_assignee or "").strip()
+    depended_on = {p for c in children for p in (c.get("parents") or [])}
+    sinks = [c for i, c in enumerate(children) if i not in depended_on]
+    return bool(sinks) and all(
+        ((c.get("assignee") or "").strip() or root) == root
+        for c in sinks
+    )
 
 
 def decompose_triage_task(
@@ -138,22 +177,46 @@ def decompose_triage_task(
                 _link(conn, parent_id, child_id)
                 _append_event(conn, child_id, "linked", {"parent": parent_id, "child": child_id})
         # Root waits for the whole graph: link it under EVERY child (simpler
-        # than computing leaves; cycle-free since the root is only ever a child).
-        for cid in child_ids:
-            _link(conn, cid, task_id)
-        # Flip the root triage -> todo, assignee -> orchestrator.
-        sets = ["status = 'todo'"]
+        # than computing leaves; cycle-free since the root is only ever a
+        # child) — UNLESS every leaf child is assigned to the root's own
+        # assignee, in which case gating the root on its own duplicates
+        # deadlocks it (claim rejects with ``parents_not_done`` forever;
+        # the t_72cf3f84 stranded-wiring shape). In that degraded case the
+        # root is promoted straight to ``ready`` and left executable; the
+        # duplicate children remain visible and the audit comment below
+        # records the degradation.
+        leaf_root_duplicates = _leaves_assigned_to_root(children, root_assignee)
+        root_status = "ready" if leaf_root_duplicates else "todo"
+        if not leaf_root_duplicates:
+            for cid in child_ids:
+                _link(conn, cid, task_id)
+        # Flip the root triage -> todo/ready, assignee -> orchestrator.
+        sets = [f"status = '{root_status}'"]
         params: list[Any] = []
         if root_assignee is not None:
             sets.append("assignee = ?")
             params.append(root_assignee)
         params.append(task_id)
         conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", tuple(params))
+        if root_status == "ready":
+            # Skip the ready->running claim dance (a fresh recompute_ready
+            # would have promoted it anyway); the audit comment below records
+            # the degraded wiring so an operator can re-decompose properly.
+            _insert_comment(
+                conn, task_id, author or "decomposer",
+                "DEGRADED DECOMPOSITION: every leaf child duplicates the "
+                "root's own scope/assignee, so the root was promoted straight "
+                "to ready instead of waiting on them. Re-decompose with "
+                "partioning children if this was unintended.",
+                now,
+            )
         if author and author.strip():
             _insert_comment(
                 conn, task_id, author.strip(),
                 "Decomposed into " + ", ".join(child_ids)
-                + ". Root will wake when all children complete.",
+                + (". Root will wake when all children complete."
+                   if root_status == "todo" else
+                   ". Root set ready directly (leaf children duplicate root scope)."),
                 now,
             )
         _append_event(

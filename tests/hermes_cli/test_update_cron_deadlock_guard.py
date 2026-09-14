@@ -16,6 +16,7 @@ The fix: when the target gateway PID is an ancestor of this process,
 fire-and-forget (SIGUSR1 + return) instead of drain-waiting.
 """
 
+import argparse
 from unittest.mock import patch
 
 import pytest
@@ -165,3 +166,121 @@ class TestDrainOrSignalTriage:
         assert calls["drain"] == [(1234, 900.0)]
         assert calls["self_restart"] == []
         assert calls["escalate"] == []
+
+    def test_no_drain_skips_graceful_paths_out_of_tree(self, monkeypatch, capsys):
+        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+
+        calls = self._patched(monkeypatch, ancestor=False, wedged=True)
+        assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc", no_drain=True) is False
+        assert calls == {"self_restart": [], "escalate": [], "drain": []}
+        assert "--no-drain" in capsys.readouterr().out
+
+    def test_no_drain_keeps_ancestor_safety_guard(self, monkeypatch, capsys):
+        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+
+        calls = self._patched(monkeypatch, ancestor=True, wedged=False)
+        assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc", no_drain=True) is True
+        assert calls["self_restart"] == [1234]
+        assert calls["escalate"] == []
+        assert calls["drain"] == []
+        assert "unavailable" in capsys.readouterr().out
+
+
+def test_embedded_update_drain_waits_for_running_workers(monkeypatch, capsys):
+    from agent import estop
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(update_cmd, "_update_embedded_kanban_dispatcher_enabled", lambda: True)
+    monkeypatch.setattr(update_cmd, "_update_kanban_drain_timeout", lambda: 30.0)
+    monkeypatch.setattr(update_cmd, "_count_running_kanban_tasks_for_update", iter([1, 0]).__next__)
+    engaged = []
+    monkeypatch.setattr(estop, "is_engaged", iter([False, True]).__next__)
+    monkeypatch.setattr(estop, "engage", lambda **kwargs: engaged.append(kwargs))
+    monkeypatch.setattr(estop, "get_state", lambda: {"engaged_at": "owned-by-test", "reason": "drain"})
+
+    state = update_cmd._prepare_kanban_drain_for_update()
+
+    assert state == {
+        "engaged": True, "ready": True, "keep_paused": False,
+        "exit_code": update_cmd._UPDATE_DRAIN_TIMEOUT_EXIT, "engaged_at": "owned-by-test",
+    }
+    assert engaged == [{"reason": "hermes update: drain embedded kanban workers", "global_scope": True}]
+    output = capsys.readouterr().out
+    assert "waiting for 1 kanban worker" in output
+    assert "running=0" in output
+
+
+def test_embedded_update_drain_refuses_foreign_estop(monkeypatch, capsys):
+    from agent import estop
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(update_cmd, "_update_embedded_kanban_dispatcher_enabled", lambda: True)
+    monkeypatch.setattr(estop, "is_engaged", lambda: True)
+    monkeypatch.setattr(estop, "engage", lambda **kwargs: pytest.fail("foreign ESTOP was adopted"))
+
+    state = update_cmd._prepare_kanban_drain_for_update()
+    assert state["exit_code"] == update_cmd._UPDATE_DRAIN_FOREIGN_ESTOP_EXIT
+    assert state["engaged"] is False
+    assert "already paused" in capsys.readouterr().out
+
+
+def test_embedded_update_drain_refuses_after_timeout(monkeypatch, capsys):
+    from agent import estop
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(update_cmd, "_update_embedded_kanban_dispatcher_enabled", lambda: True)
+    monkeypatch.setattr(update_cmd, "_update_kanban_drain_timeout", lambda: 0.0)
+    monkeypatch.setattr(update_cmd, "_count_running_kanban_tasks_for_update", lambda: 1)
+    monkeypatch.setattr(update_cmd._time, "monotonic", iter([0.0, 1.0]).__next__)
+    monkeypatch.setattr(estop, "is_engaged", iter([False, True]).__next__)
+    monkeypatch.setattr(estop, "engage", lambda **_: None)
+    monkeypatch.setattr(estop, "get_state", lambda: {"engaged_at": "owned-by-test", "reason": "drain"})
+
+    state = update_cmd._prepare_kanban_drain_for_update()
+    assert state["ready"] is False
+    assert state["keep_paused"] is True
+    assert "no update was attempted" in capsys.readouterr().out
+
+
+def test_update_parser_defaults_and_accepts_no_drain():
+    from hermes_cli.subcommands.update import build_update_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_update_parser(subparsers, cmd_update=lambda _args: None)
+    assert parser.parse_args(["update"]).no_drain is False
+    assert parser.parse_args(["update", "--no-drain"]).no_drain is True
+
+
+def test_finish_does_not_clear_replaced_estop(monkeypatch, caplog):
+    from agent import estop
+    from hermes_cli import update_cmd
+
+    disengaged = []
+    monkeypatch.setattr(estop, "get_state", lambda: {"engaged_at": "operator-owned", "reason": "manual pause"})
+    monkeypatch.setattr(estop, "disengage", lambda: disengaged.append(True))
+    update_cmd._finish_kanban_drain_for_update({
+        "engaged": True, "ready": True, "keep_paused": False, "engaged_at": "update-owned",
+    })
+    assert disengaged == []
+    assert "ownership changed" in caplog.text
+
+
+def test_cmd_update_drain_boundary_refuses_before_impl(monkeypatch):
+    from hermes_cli import main
+    from hermes_cli import update_cmd
+
+    state = {"engaged": True, "ready": False, "keep_paused": True, "exit_code": 76}
+    finished = []
+    monkeypatch.setattr(main, "_prepare_kanban_drain_for_update", lambda **_: state)
+    monkeypatch.setattr(main, "_finish_kanban_drain_for_update", finished.append)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **_: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda _state: None)
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", lambda *_a, **_k: pytest.fail("update ran"))
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda _args: False)
+
+    from types import SimpleNamespace
+    with pytest.raises(SystemExit) as exc_info:
+        main.cmd_update(SimpleNamespace(gateway=False, no_drain=False))
+    assert exc_info.value.code == 76
+    assert finished == [state]

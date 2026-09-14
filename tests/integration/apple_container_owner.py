@@ -57,7 +57,10 @@ def main() -> None:
     def recording_popen(command, *positional, **kwargs):
         process = real_popen(command, *positional, **kwargs)
         argv = list(command)
-        if len(argv) > 1 and argv[0] == args.executable and argv[1] == "run":
+        if (
+            len(argv) > 1 and argv[0] == args.executable
+            and argv[1] == "run" and "--name" in argv
+        ):
             try:
                 created = psutil.Process(process.pid).create_time()
             except psutil.NoSuchProcess:
@@ -116,7 +119,7 @@ def main() -> None:
         )
         name = environment._container_name
         result = environment.execute("printf preserved > /workspace/owner.txt")
-        assert result["exit_code"] == 0, result
+        assert result.get("returncode") == 0, result
         persistent_file = str(
             args.home / "sandboxes" / "apple_container" / task_id
             / "workspace" / "owner.txt"

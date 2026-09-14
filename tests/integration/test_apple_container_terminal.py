@@ -357,3 +357,112 @@ def test_native_raw_pipe_owner_sigkill_removes_container(native_container_cli, t
         victim["owner"].wait(timeout=10)
         _native_wait_absent(native_container_cli, victim["name"])
         assert _fixture_process_alive(victim["spectator"])
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.parametrize("same_profile", [True, False])
+def test_native_backend_owner_sigkill_preserves_other_owner(
+    native_container_cli, tmp_path, same_profile
+):
+    victim_home = tmp_path / "victim-home"
+    survivor_home = victim_home if same_profile else tmp_path / "survivor-home"
+    with _native_owner(
+        native_container_cli, tmp_path / "victim", victim_home, "backend"
+    ) as victim, _native_owner(
+        native_container_cli, tmp_path / "survivor", survivor_home, "backend"
+    ) as survivor:
+        victim["owner"].kill()
+        victim["owner"].wait(timeout=10)
+        _native_wait_absent(native_container_cli, victim["name"])
+        assert victim["pipe_inheritable"] is False
+        assert _fixture_process_alive(victim["spectator"])
+        assert Path(victim["persistent_file"]).read_text(encoding="utf-8") == "preserved"
+        assert survivor["owner"].poll() is None
+        result = _native_command(
+            native_container_cli, "exec", survivor["name"],
+            "bash", "-c", "cat /workspace/owner.txt",
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "preserved"
+
+
+@pytest.mark.live_system_guard_bypass
+def test_native_lifetime_client_sigkill_removes_container(native_container_cli, tmp_path):
+    with _native_owner(
+        native_container_cli, tmp_path / "client-victim", tmp_path / "client-home", "backend"
+    ) as victim:
+        client = _recorded_process(victim, "client")
+        assert client is not None, "fixture lifetime client exited before SIGKILL"
+        client.kill()
+        # Only the still-live owner can reap this child. A zombie has already
+        # closed its descriptors, so verify VM removal, not PID disappearance.
+        _native_wait_absent(native_container_cli, victim["name"])
+        assert not _fixture_process_alive(client)
+        assert victim["owner"].poll() is None
+        assert Path(victim["persistent_file"]).read_text(encoding="utf-8") == "preserved"
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["python:3.11-slim-bookworm", "-c", "exec sleep infinity"],
+        ["-c1"], ["-iv/tmp:/mnt"], ["--network="],
+        ["-iv=/tmp:/mnt"], ["-ic=1"],
+    ],
+)
+def test_native_unsafe_extra_args_are_rejected(
+    native_container_cli, monkeypatch, tmp_path, extra_args
+):
+    import tools.credential_files as credential_files
+    from tools.environments import apple_container as apple
+
+    monkeypatch.setattr(credential_files, "get_credential_file_mounts", lambda: [])
+    monkeypatch.setattr(credential_files, "get_skills_directory_mount", lambda: [])
+    monkeypatch.setattr(credential_files, "get_cache_directory_mounts", lambda: [])
+    monkeypatch.setattr(apple, "get_sandbox_dir", lambda: tmp_path / "sandboxes")
+    env = None
+    try:
+        with pytest.raises(ValueError):
+            env = apple.AppleContainerEnvironment(
+                cpu=1, memory=1024, extra_args=extra_args,
+            )
+    finally:
+        if env is not None:
+            name = env._container_name
+            env.cleanup()
+            assert not _native_present(native_container_cli, name)
+
+
+@pytest.mark.parametrize("volume_flag", ["-v", "-v=", "-iv"])
+def test_native_explicit_option_values_preserve_lifetime(
+    native_container_cli, monkeypatch, tmp_path, volume_flag
+):
+    import tools.credential_files as credential_files
+    from tools.environments import apple_container as apple
+
+    monkeypatch.setattr(credential_files, "get_credential_file_mounts", lambda: [])
+    monkeypatch.setattr(credential_files, "get_skills_directory_mount", lambda: [])
+    monkeypatch.setattr(credential_files, "get_cache_directory_mounts", lambda: [])
+    monkeypatch.setattr(apple, "get_sandbox_dir", lambda: tmp_path / "sandboxes")
+    source = tmp_path / "fixture data"
+    source.mkdir()
+    (source / "marker").write_text("fixture", encoding="utf-8")
+    spec = f"{source}:/workspace/extra:ro"
+    volume = [volume_flag + spec] if volume_flag.endswith("=") else [volume_flag, spec]
+    env = apple.AppleContainerEnvironment(
+        cpu=1, memory=1024,
+        extra_args=["--network=none", "-c=1", *volume],
+    )
+    name = env._container_name
+    try:
+        result = env.execute("cat /workspace/extra/marker")
+        assert result.get("returncode") == 0, result
+        assert "fixture" in result.get("output", "")
+        client = env._run_process
+        assert client is not None and client.stdin is not None
+        client.stdin.close()
+        _native_wait_absent(native_container_cli, name)
+        assert (source / "marker").read_text(encoding="utf-8") == "fixture"
+    finally:
+        env.cleanup()
+        assert not _native_present(native_container_cli, name)

@@ -14,12 +14,16 @@ backend conventions where the CLI supports them.
 Requires: macOS 26+, Apple Silicon, and the separately installed `container` CLI.
 """
 
+import json
 import logging
 import os
 import platform
 import posixpath
+import re
 import shutil
 import subprocess
+import tempfile
+import time
 import unicodedata
 import uuid
 from pathlib import Path
@@ -37,6 +41,11 @@ _CONTAINER_SEARCH_PATHS = [
 _container_executable: Optional[str] = None
 _system_resources: Optional[dict] = None  # cached after first query
 _HOST_REQUIREMENT = "macOS 26 or later on Apple Silicon (arm64)"
+_STARTUP_TIMEOUT = 300.0
+_KEEPALIVE_COMMAND = (
+    "trap 'exit 0' TERM INT; "
+    "while IFS= read -r _hermes_keepalive; do :; done"
+)
 
 
 def is_apple_container_supported_host() -> bool:
@@ -260,8 +269,118 @@ def _validate_extra_args(extra_args: list | None) -> list[str]:
             raise ValueError(
                 f"Apple Container extra arg contains a control character: {arg!r}"
             )
+        # Reserve lifecycle controls here; option/value syntax is checked
+        # against the CLI metadata by _validate_extra_arg_boundaries.
+        long_name = arg.partition("=")[0]
+        if (
+            arg == "--"
+            or long_name in {"--detach", "--tty", "--name", "--entrypoint"}
+            or re.match(r"^-[iq]*[dt]", arg)
+        ):
+            raise ValueError(
+                "Apple Container owns container lifetime; extra args cannot "
+                f"override its name, entrypoint, attached input, or TTY mode: {arg!r}"
+            )
         validated.append(arg)
     return validated
+
+
+def _validate_extra_arg_boundaries(executable: str, extra_args: list[str]) -> None:
+    """Keep extra options from consuming the generated image or replacing it."""
+    if not extra_args:
+        return
+    try:
+        result = subprocess.run(
+            [executable, "run", "--experimental-dump-help"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"metadata query exited with status {result.returncode}")
+        metadata = json.loads(result.stdout)
+        if type(metadata["serializationVersion"]) is not int or metadata["serializationVersion"] != 0:
+            raise ValueError("unsupported metadata serialization version")
+        command = metadata["command"]
+        arguments = command["arguments"]
+        if command["commandName"] != "run" or not isinstance(arguments, list) or not arguments:
+            raise ValueError("invalid run command metadata")
+        kinds: dict[str, str] = {}
+        for argument in arguments:
+            kind = argument["kind"]
+            if kind == "positional":
+                continue
+            if kind not in {"option", "flag"} or argument["parsingStrategy"] != "default":
+                raise ValueError("unsupported option kind or parsing strategy")
+            names = argument["names"]
+            if not isinstance(names, list) or not names:
+                raise ValueError("missing option names")
+            for entry in names:
+                name = entry["name"]
+                name_kind = entry["kind"]
+                if (
+                    not isinstance(name, str)
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*", name)
+                    or name_kind not in {"long", "short"}
+                    or (name_kind == "short" and len(name) != 1)
+                ):
+                    raise ValueError("unsupported option name")
+                option = ("--" if name_kind == "long" else "-") + name
+                if option in kinds:
+                    raise ValueError(f"duplicate option metadata: {option}")
+                kinds[option] = kind
+        if not kinds:
+            raise ValueError("missing option metadata")
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise ValueError(
+            "Apple Container cannot validate extra args using "
+            "'container run --experimental-dump-help'; remove extra args or use "
+            f"a CLI with supported option metadata: {exc}"
+        ) from exc
+
+    tokens = iter(extra_args)
+    for token in tokens:
+        if token in {"-", "--"} or not token.startswith("-"):
+            raise ValueError(
+                f"Apple Container extra args cannot contain positional image/command tokens: {token!r}"
+            )
+        if token.startswith("--"):
+            option, separator, _value = token.partition("=")
+            options = [(option, bool(separator))]
+        else:
+            # Boolean short flags may precede a final value-taking option,
+            # but clustered options require a separate value.
+            options = []
+            for index, character in enumerate(token[1:], 2):
+                option = "-" + character
+                attached = kinds.get(option) == "option" and index < len(token)
+                if attached and index != 2:
+                    raise ValueError(
+                        f"Apple Container extra arg cluster requires a separate value: {token!r}"
+                    )
+                if attached and token[index] != "=":
+                    raise ValueError(
+                        f"Apple Container extra arg {option!r} requires a separate value or '=value': {token!r}"
+                    )
+                options.append((option, attached))
+                if kinds.get(option) != "flag":
+                    break
+        for option, attached in options:
+            _validate_extra_args([option])  # Also reserve controls in short clusters.
+            kind = kinds.get(option)
+            if kind is None:
+                raise ValueError(f"Apple Container extra args contain an unknown option: {option!r}")
+            if kind == "flag":
+                if attached:
+                    raise ValueError(f"Apple Container extra arg flag does not take a value: {token!r}")
+                continue
+            if attached and not token.partition("=")[2]:
+                raise ValueError(f"Apple Container extra arg {option!r} requires a nonempty value")
+            if not attached:
+                value = next(tokens, None)
+                if not value or value.startswith("-"):
+                    raise ValueError(
+                        f"Apple Container extra arg {option!r} requires a value; "
+                        "use '=' for dash-leading values"
+                    )
 
 
 class AppleContainerEnvironment(BaseEnvironment):
@@ -296,10 +415,12 @@ class AppleContainerEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout)
 
         self._exe = _ensure_container_available()
+        _validate_extra_arg_boundaries(self._exe, validated_extra_args)
         self._base_image = image
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._container_name: Optional[str] = None
+        self._run_process: Optional[subprocess.Popen] = None
         self._workspace_dir: Optional[str] = None
         self._credential_staging_dirs: list[Path] = []
 
@@ -313,7 +434,7 @@ class AppleContainerEnvironment(BaseEnvironment):
             # Build and start the container, then initialize its session snapshot.
             self._start_container(image, parsed_volumes, validated_extra_args)
             self.init_session()
-        except Exception:
+        except BaseException:
             self.cleanup()
             raise
 
@@ -329,7 +450,9 @@ class AppleContainerEnvironment(BaseEnvironment):
         run_cmd = [
             self._exe, "run",
             "--name", container_name,
-            "--detach",
+            "--interactive",
+            "--rm",
+            "--entrypoint", "bash",
             "--cpus", f"{self._cpus:g}",
             "--memory", f"{self._memory_mb}M",
             # Apple Container accepts a mount path only (no Docker-style
@@ -413,40 +536,106 @@ class AppleContainerEnvironment(BaseEnvironment):
 
         run_cmd.extend(extra_args)
         run_cmd.append(image)
-        # Keep the container alive with a long sleep
-        run_cmd.extend(["sleep", "infinity"])
+        # The owner-held stdin pipe, not an infinite sleep, owns VM lifetime.
+        run_cmd.extend(["-c", _KEEPALIVE_COMMAND])
 
         logger.debug("Starting Apple Container: %s", " ".join(run_cmd))
         self._container_name = container_name
-        try:
-            result = subprocess.run(
-                run_cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,  # image pull can take a while
-            )
-            if result.returncode != 0:
-                stderr = (result.stderr or "").strip()
-                self._force_delete_candidate()
-                raise RuntimeError(
-                    f"Failed to start Apple Container (exit {result.returncode}): {stderr}"
-                )
-        except subprocess.TimeoutExpired:
-            self._force_delete_candidate()
-            raise RuntimeError(
-                "Apple Container startup timed out. The image may be too large "
-                "or the container system may not be running."
-            )
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            self._force_delete_candidate()
-            raise RuntimeError(f"Apple Container startup failed: {exc}") from exc
+        self._launch_container(run_cmd)
 
         logger.info(
             "Started Apple Container '%s' (%d CPUs, %d MB RAM)",
             container_name, self._cpus, self._memory_mb,
         )
+
+    def _launch_container(self, run_cmd: list[str]) -> None:
+        """Keep the run client's stdin writer alive for this environment."""
+        with tempfile.TemporaryFile(mode="w+b") as error_log:
+            try:
+                self._run_process = subprocess.Popen(
+                    run_cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=error_log,
+                    bufsize=0,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+                self._wait_for_container_ready()
+            except BaseException as exc:
+                # Stop the creator before deleting its candidate: otherwise a
+                # slow startup could create the container after our deletion.
+                released = self._release_run_process()
+                if released:
+                    self._force_delete_candidate()
+                if not isinstance(exc, Exception):
+                    raise
+                if not released:
+                    raise RuntimeError(
+                        "Apple Container startup failed and its run client "
+                        "could not be reaped; candidate retained"
+                    ) from exc
+                error_log.seek(0, os.SEEK_END)
+                size = error_log.tell()
+                error_log.seek(max(0, size - 8192))
+                detail = error_log.read().decode("utf-8", errors="replace").strip()
+                message = (
+                    str(exc) if isinstance(exc, RuntimeError)
+                    else f"Apple Container startup failed: {exc}"
+                )
+                if detail:
+                    message += f": {detail}"
+                raise RuntimeError(message) from exc
+
+    def _wait_for_container_ready(self) -> None:
+        process = self._run_process
+        name = self._container_name
+        assert process is not None and name is not None
+        deadline = time.monotonic() + _STARTUP_TIMEOUT
+        while True:
+            code = process.poll()
+            if code is not None:
+                raise RuntimeError(f"Failed to start Apple Container (exit {code})")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(
+                    "Apple Container startup timed out. The image may be too large "
+                    "or the container system may not be running."
+                )
+            try:
+                result = subprocess.run(
+                    [self._exe, "exec", name, "bash", "-c", ":"],
+                    capture_output=True, text=True, timeout=min(5.0, remaining),
+                )
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0 and process.poll() is None:
+                return
+            time.sleep(min(0.2, max(0.0, deadline - time.monotonic())))
+
+    def _release_run_process(self) -> bool:
+        """Close the lifetime pipe and reap only this environment's client."""
+        process = self._run_process
+        if process is None:
+            return True
+        try:
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            # Retain the handle for another explicit cleanup attempt.
+            logger.warning("Failed to reap Apple Container run client: %s", exc)
+            return False
+        self._run_process = None
+        return True
 
     def _stage_credential_mounts(
         self,
@@ -560,6 +749,10 @@ class AppleContainerEnvironment(BaseEnvironment):
 
     def cleanup(self):
         """Stop and remove the container, waiting for graceful shutdown."""
+        if not self._release_run_process():
+            # The client could still be creating the candidate. Keep both
+            # identities for a retry instead of claiming successful teardown.
+            return
         if not self._container_name:
             self._cleanup_credential_staging()
             return

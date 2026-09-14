@@ -275,7 +275,7 @@ function ChoiceButton({
         type="button"
       >
         <KeyBadge char={char} preview={active} selected={Boolean(selected)} />
-        <span className="flex-1 wrap-anywhere">
+        <span className="min-w-0 flex-1 wrap-anywhere whitespace-pre-wrap overflow-y-auto max-h-48">
           <ChoiceLabel choice={choice} />
         </span>
       </button>
@@ -284,12 +284,34 @@ function ChoiceButton({
 }
 
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
-  // Answered → settled Q&A (ToolFallback collapsed the answer away).
+  const sessionId = useStore(useSessionView().$runtimeId)
+  const $request = useMemo(() => sessionClarifyRequest(sessionId), [sessionId])
+  const request = useStore($request)
+
+  // Ghost skip: a parked request plus an empty skip result must stay live.
+  if (request != null && isVacuousClarifyResult(props.result)) {
+    return <ClarifyToolPending {...props} />
+  }
+
   if (props.result !== undefined) {
     return <ClarifyToolSettled {...props} />
   }
 
   return <ClarifyToolPending {...props} />
+}
+
+function isVacuousClarifyResult(result: unknown): boolean {
+  if (result === undefined) {
+    return false
+  }
+
+  const parsed = readClarifyResult(result)
+
+  if (parsed.error) {
+    return false
+  }
+
+  return parsed.answer === undefined || !parsed.answer.trim()
 }
 
 function ClarifyToolSettled(props: ToolCallMessagePartProps) {
@@ -541,18 +563,11 @@ function ClarifyToolSinglePending({
     (delta: number) => {
       const itemCount = choices.length + 1
 
-      // Arrow navigation is a move, not a pick. Multi-select keeps staged
-      // choices while the cursor moves so the user can build a set; the
-      // single-select path retains its existing clear-on-navigation behaviour.
+      // Arrow navigation is a move, not a pick: keep staged highlights.
       setDraft('')
-
-      if (!multiSelect) {
-        setSelectedChoices([])
-      }
-
       setActiveIndex(index => (index + delta + itemCount) % itemCount)
     },
-    [choices.length, multiSelect]
+    [choices.length]
   )
 
   const submitAnswer = useCallback(() => {
@@ -648,9 +663,10 @@ function ClarifyToolSinglePending({
         return
       }
 
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'ArrowRight' || event.key === 'ArrowLeft') {
         event.preventDefault()
-        moveActive(event.key === 'ArrowDown' ? 1 : -1)
+        const forward = event.key === 'ArrowDown' || event.key === 'ArrowRight'
+        moveActive(forward ? 1 : -1)
 
         return
       }

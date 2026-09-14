@@ -454,6 +454,59 @@ describe('ClarifyTool keyboard navigation', () => {
     expect(fireEvent.keyDown(window, { key: 'ArrowDown' })).toBe(true)
     expect(request).not.toHaveBeenCalled()
   })
+
+  it('cycles with left and right arrows the same way as up and down', () => {
+    renderLiveClarify()
+
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' })
+    expect(production.getAttribute('data-highlighted')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'ArrowLeft' })
+    expect(staging.getAttribute('data-highlighted')).toBe('true')
+  })
+
+  it('keeps a staged single-select choice when the cursor moves', () => {
+    renderLiveClarify()
+
+    const staging = screen.getByRole('button', { name: /staging/ })
+
+    fireEvent.click(staging)
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'ArrowDown' })
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
+describe('ClarifyTool ghost skip vs parked request', () => {
+  it('keeps a live panel when an empty skip result arrives while the request is still parked', () => {
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
+    setClarifyRequest({
+      choices: ['staging', 'production'],
+      multiSelect: false,
+      question: 'Which deployment target?',
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          { question: 'Which deployment target?', choices: ['staging', 'production'] },
+          { question: 'Which deployment target?', user_response: '' },
+          'clarify-ghost'
+        )}
+      />
+    )
+
+    expect(document.querySelector('[data-clarify-choices]')).toBeTruthy()
+    expect(document.querySelector('[data-clarify-settled]')).toBeNull()
+    expect(screen.queryByText('Skipped')).toBeNull()
+    expect(screen.getByRole('button', { name: /Continue/ })).toBeTruthy()
+  })
 })
 
 describe('ClarifyTool recommended option', () => {

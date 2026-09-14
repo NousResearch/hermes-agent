@@ -39,17 +39,21 @@ export const bareChoice = (choice: string): string =>
 /**
  * Validate and normalize a choices array.
  *
- * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
- * and returns an empty array when nothing usable survives — the caller then
- * falls back to a free-text answer instead of dead buttons.
+ * Keeps non-blank strings whose bare text is ≤ MAX_CHOICE_CHARS (newlines
+ * allowed so option reasons can wrap). Drops everything else and returns an
+ * empty array when nothing usable survives — the caller then falls back to a
+ * free-text answer instead of dead buttons.
  */
+/** Per-choice cap. Abuse-stop only; not a one-line label limit. */
+export const MAX_CHOICE_CHARS = 8000
+
 export function normalizeChoices(choices: unknown): string[] {
   if (!Array.isArray(choices)) {
     return []
   }
 
   return choices.filter(
-    (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
+    (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= MAX_CHOICE_CHARS
   )
 }
 

@@ -81,7 +81,8 @@ def _install_fake_trafilatura(
 def _use_transport(monkeypatch, handler):
     """Route the provider's httpx client through a MockTransport."""
     monkeypatch.setattr(
-        local_mod, "_transport_for_tests", httpx.MockTransport(handler)
+        local_mod, "_make_client",
+        lambda: httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False),
     )
 
 
@@ -180,6 +181,9 @@ class TestExtract:
         """SSRF is re-checked per hop — a redirect into the cloud metadata
         address must be blocked BEFORE any request is sent to it. Uses the
         real is_safe_url: 169.254.169.254 is blocked unconditionally."""
+        import socket
+        from tools import url_safety
+        monkeypatch.setattr(url_safety, "_getaddrinfo", lambda host, *a: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("169.254.169.254" if host == "169.254.169.254" else "93.184.216.34", 80))])
         _install_fake_trafilatura(monkeypatch)
         _allow_all_policy(monkeypatch)
 
@@ -413,8 +417,10 @@ class TestRegistryIntegration:
                 web_tools, "_ddgs_package_importable", lambda: False
             )
             monkeypatch.setattr(
-                web_tools, "_peek_nous_access_token", lambda: None
+                web_tools, "_is_tool_gateway_ready", lambda: False
             )
+            monkeypatch.setattr(web_tools, "selection_exists", lambda *a: False)
+            monkeypatch.setattr(web_tools, "_has_env", lambda *a: False)
             with patch("tools.web_tools._load_web_config", return_value={}):
                 # Search auto-detect must NOT pick the extract-only local
                 # provider; with nothing configured it keeps the legacy

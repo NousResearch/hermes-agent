@@ -90,7 +90,7 @@ def profile_dbs(monkeypatch, tmp_path):
         opened.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     monkeypatch.setattr(
         server, "_profile_home", lambda profile: profile_home if profile else None
     )
@@ -116,20 +116,20 @@ def _resume(**params):
     )
 
 
-def test_resume_closes_profile_db_when_session_not_found(profile_dbs):
+def test_resume_closes_profile_db_when_session_not_found(profile_dbs, tmp_path):
     """The 'session not found' early return must not leak the handle.
 
     The stranded-session adoption fallback (#93296 follow-up) may lazily
     construct the SHARED launch handle via ``_get_db()`` while probing the
-    default store for a donor row; that handle carries ``db_path=None`` and
-    is never closed by design (see module docstring). Only the dedicated
-    profile-scoped open (``db_path=<profile>/state.db``) is the caller's to
-    close, so the leak assertion filters to path-scoped opens.
+    default store for a donor row; that handle is never closed by design (see
+    module docstring). Only the dedicated profile-scoped open is the caller's
+    to close, so the leak assertion filters to the profile store path.
     """
+    profile_store = tmp_path / "work" / "state.db"
     resp = _resume(session_id="missing", profile="work")
 
     assert resp["error"]["code"] == 4007
-    scoped = [db for db in profile_dbs if db.db_path is not None]
+    scoped = [db for db in profile_dbs if db.db_path == profile_store]
     assert len(scoped) == 1
     assert scoped[0].closed == 1
 
@@ -146,7 +146,7 @@ def test_deferred_desktop_resume_keeps_stored_workspace_provenance(
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
 
     resp = _resume(session_id="s1", profile="work", source="desktop")
     session = server._sessions[resp["result"]["session_id"]]
@@ -166,7 +166,7 @@ def test_resume_closes_profile_db_when_reopen_fails(profile_dbs, monkeypatch):
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
 
     resp = _resume(session_id="s1", profile="work")
 
@@ -189,7 +189,7 @@ def test_resume_closes_profile_db_on_live_session_fast_path(profile_dbs, monkeyp
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     live_session = {}
     with server._sessions_lock:
         server._sessions["live-sid"] = live_session
@@ -225,7 +225,7 @@ def test_resume_closes_profile_db_on_deferred_cold_resume(profile_dbs, monkeypat
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
 
     resp = _resume(session_id="s1", profile="work")
@@ -258,7 +258,7 @@ def test_resume_hands_profile_db_to_deferred_history_worker(profile_dbs, monkeyp
         profile_dbs.append(db)
         return db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
     monkeypatch.setattr(server, "_start_agent_build", lambda *_args, **_kwargs: None)
 
@@ -300,7 +300,7 @@ def test_resume_keeps_profile_db_open_after_ownership_transfer(profile_dbs, monk
     def _fake_init_session(sid, key, agent, history, session_db=None, **_kwargs):
         captured["init_db"] = session_db
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_init_session", _fake_init_session)
     monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
@@ -345,7 +345,7 @@ def test_resume_drops_half_built_session_when_init_session_raises(
             server._sessions[sid] = {"agent": agent, "session_key": key}
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", _factory)
+    monkeypatch.setattr("hermes_state_registry.acquire", _factory)
     monkeypatch.setattr(
         server, "_make_agent", lambda *a, **k: types.SimpleNamespace(model="test")
     )

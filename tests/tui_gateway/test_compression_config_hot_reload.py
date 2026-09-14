@@ -133,7 +133,8 @@ def test_clearing_threshold_tokens_restores_ratio_trigger(monkeypatch):
 
 
 def test_prompt_submit_calls_compression_sync_after_model_sync():
-    source = open(server.__file__, encoding="utf-8").read()
+    # Read the module that actually defines the turn (it moved out of server.py).
+    source = open(server._run_prompt_submit.__code__.co_filename, encoding="utf-8").read()
     model_idx = source.find("_sync_agent_model_with_config(sid, session)")
     compression_idx = source.find("_sync_agent_compression_with_config(sid, session)")
     assert model_idx != -1

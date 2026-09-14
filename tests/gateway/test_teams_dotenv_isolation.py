@@ -162,7 +162,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
         _install_fake_teams_sdk(monkeypatch)
         _purge_teams_adapter_modules()
 
-        from plugins.platforms.teams.adapter import TeamsSummaryWriter
+        from plugins.platforms.teams.summary_writer import TeamsSummaryWriter
 
         assert CANARY_KEY not in os.environ
         assert TeamsSummaryWriter is not None

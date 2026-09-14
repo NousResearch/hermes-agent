@@ -45,7 +45,7 @@ const loadPreviewEngine = () => {
  *  (terminal/preview/window), agent terminal streaming, pane reveal, and
  *  message reactions. */
 export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
-  const { event, payload, isActiveEvent } = ctx
+  const { event, payload, explicitSid, isActiveEvent } = ctx
 
   if (event.type === 'terminal.read.request') {
     // read_terminal tool: serialize the renderer's xterm buffer and answer
@@ -95,6 +95,13 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      // Every mounted desktop window can observe the same gateway event. A
+      // scoped mismatch belongs to another window, so answering here would race
+      // the owning window and could make this refusal win before its real result.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const answer = (result: unknown) =>
         $gateway.get()?.request('preview.act.respond', {
           request_id: requestId,
@@ -179,6 +186,13 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
     if (requestId) {
+      // As with preview actions, only the renderer that owns an explicitly
+      // scoped request may answer. Inactive windows must stay silent even when
+      // tours are disabled locally, or their refusal can beat the owner.
+      if (explicitSid && !isActiveEvent) {
+        return true
+      }
+
       const answer = (result: unknown) =>
         $gateway.get()?.request('tour.respond', {
           request_id: requestId,

@@ -1049,7 +1049,7 @@ mode = "overwrite"
     assert not (atof_dir / "events.jsonl").exists()
 
 
-def test_real_binding_layers_project_config_after_explicit_opt_in(
+def test_real_binding_ignores_project_config_with_explicit_opt_in(
     tmp_path,
     monkeypatch,
 ):
@@ -1061,7 +1061,8 @@ def test_real_binding_layers_project_config_after_explicit_opt_in(
     working_directory = project_root / "workspace"
     config_directory = project_root / ".nemo-relay"
     selected_directory = tmp_path / "selected-config"
-    atof_dir = tmp_path / "atof"
+    project_atof_dir = tmp_path / "project-atof"
+    selected_atof_dir = tmp_path / "selected-atof"
     working_directory.mkdir(parents=True)
     config_directory.mkdir()
     selected_directory.mkdir()
@@ -1081,14 +1082,35 @@ enabled = true
 
 [[components.config.atof.sinks]]
 type = "file"
-output_directory = "{atof_dir}"
+output_directory = "{project_atof_dir}"
 filename = "events.jsonl"
 mode = "overwrite"
 """.strip(),
         encoding="utf-8",
     )
     selected_config = selected_directory / "plugins.toml"
-    selected_config.write_text("version = 1", encoding="utf-8")
+    selected_config.write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 4
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "{selected_atof_dir}"
+filename = "events.jsonl"
+mode = "overwrite"
+""".strip(),
+        encoding="utf-8",
+    )
     xdg_config_home = tmp_path / "xdg"
     xdg_config_home.mkdir()
     monkeypatch.chdir(working_directory)
@@ -1102,12 +1124,13 @@ mode = "overwrite"
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert host.managed_execution_enabled()
-        host.ensure_session({"session_id": "native-layered-plugins"})
+        host.ensure_session({"session_id": "native-explicit-plugins"})
     finally:
         host.shutdown()
         relay_runtime._reset_for_tests()
 
-    assert (atof_dir / "events.jsonl").is_file()
+    assert (selected_atof_dir / "events.jsonl").is_file()
+    assert not (project_atof_dir / "events.jsonl").exists()
 
 
 def test_real_binding_keeps_two_profile_trajectories_separate_in_shared_exporters(

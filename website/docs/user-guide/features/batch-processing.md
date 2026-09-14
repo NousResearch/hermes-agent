@@ -68,7 +68,7 @@ Entries can optionally include:
 | `--resume` | `false` | Resume from checkpoint |
 | `--verbose` | `false` | Enable verbose logging |
 | `--max_samples` | all | Only process first N samples from dataset |
-| `--max_tokens` | model default | Maximum tokens per model response |
+
 
 ### Provider Routing (OpenRouter)
 

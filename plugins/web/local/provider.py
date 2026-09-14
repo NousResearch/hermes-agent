@@ -39,17 +39,17 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 from agent.web_search_provider import WebSearchProvider
-from tools.url_safety import is_safe_url
+from tools.url_safety import is_safe_url, create_ssrf_safe_client
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
-# Per-URL wall clock for fetch + extraction combined (asyncio.wait_for cap
-# in extract()); mirrors the firecrawl per-URL 60s guard.
+# Per-URL wait timeout. Cancelling the await does not terminate its worker
+# thread; in-flight fetch/extraction may continue until it returns.
 _EXTRACT_TIMEOUT_SECS = 60
 
 # httpx per-request timeout (connect/read/write/pool). The hop loop can
-# issue up to _MAX_REDIRECTS + 1 requests, all under _EXTRACT_TIMEOUT_SECS.
+# issue up to _MAX_REDIRECTS + 1 requests; this is not a total deadline.
 _FETCH_TIMEOUT_SECS = 30
 
 _MAX_REDIRECTS = 5
@@ -71,14 +71,8 @@ _HTMLISH_CONTENT_TYPES = (
 # Some hosts refuse default library user agents outright; identify as a
 # browser engine but keep an honest product token appended.
 _USER_AGENT = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) HermesAgent-LocalExtract/1.0"
+    "HermesAgent-LocalExtract/1.0"
 )
-
-# Test hook — tests inject an ``httpx.MockTransport`` here; production
-# leaves it None (httpx builds its default transport).
-_transport_for_tests: Optional[Any] = None
-
 
 def _import_trafilatura() -> Any:
     """Import trafilatura, lazily installing it on first use.
@@ -119,9 +113,10 @@ def _make_client() -> Any:
     """
     import httpx
 
-    return httpx.Client(
+    return create_ssrf_safe_client(
         timeout=httpx.Timeout(_FETCH_TIMEOUT_SECS),
         follow_redirects=False,
+        trust_env=False,
         headers={
             "User-Agent": _USER_AGENT,
             "Accept": (
@@ -129,7 +124,6 @@ def _make_client() -> Any:
                 "text/plain;q=0.8,*/*;q=0.5"
             ),
         },
-        transport=_transport_for_tests,
     )
 
 
@@ -430,7 +424,8 @@ class LocalWebSearchProvider(WebSearchProvider):
         """Extract readable content from one or more URLs locally.
 
         Async; each URL runs fetch + extraction in a background thread
-        under a ``_EXTRACT_TIMEOUT_SECS`` cap. Per-URL failures become
+        with a ``_EXTRACT_TIMEOUT_SECS`` wait timeout (not thread cancellation).
+        Per-URL failures become
         items with an ``error`` field rather than raising.
 
         Accepted kwargs (others ignored for forward compat):

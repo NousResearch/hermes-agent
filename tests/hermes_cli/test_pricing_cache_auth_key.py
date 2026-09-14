@@ -12,7 +12,8 @@ from unittest.mock import MagicMock
 import pytest
 
 import hermes_cli.models as models_mod
-from hermes_cli.models import fetch_models_with_pricing, peek_cached_pricing
+from hermes_cli import models_pricing
+from hermes_cli.models_pricing import fetch_models_with_pricing, peek_cached_pricing
 
 BASE = "https://inference-api.example.com"
 
@@ -23,11 +24,11 @@ _FILTERED = ["vendor/allowed"]
 
 @pytest.fixture(autouse=True)
 def _clear_pricing_cache():
-    models_mod._pricing_cache.clear()
-    models_mod._pricing_cache_retry_after.clear()
+    models_pricing._pricing_cache.clear()
+    models_pricing._pricing_cache_retry_after.clear()
     yield
-    models_mod._pricing_cache.clear()
-    models_mod._pricing_cache_retry_after.clear()
+    models_pricing._pricing_cache.clear()
+    models_pricing._pricing_cache_retry_after.clear()
 
 
 @pytest.fixture
@@ -96,7 +97,7 @@ def test_one_token_does_not_receive_another_tokens_catalog(per_org_catalog):
 
 def test_credential_value_does_not_appear_in_the_cache_key():
     """Guards against keying on the raw token."""
-    assert "sk-super-secret" not in models_mod._pricing_auth_fingerprint("sk-super-secret")
+    assert "sk-super-secret" not in models_pricing._pricing_auth_fingerprint("sk-super-secret")
 
 
 def test_anonymous_and_authenticated_reads_are_separate(catalog):
@@ -159,7 +160,7 @@ class TestNousCatalogExpiry:
     a long-lived process holds the entry."""
 
     def test_entry_expires_so_a_policy_change_is_picked_up(self, catalog, monkeypatch):
-        from hermes_cli.models import _NOUS_CATALOG_TTL_SECONDS
+        from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
 
         fetch_models_with_pricing(
             api_key="sk-test", base_url=BASE,
@@ -196,7 +197,7 @@ class TestNousCatalogExpiry:
 
     def test_peek_skips_an_expired_entry(self, catalog, monkeypatch):
         """Reading _pricing_cache directly walked straight past the TTL."""
-        from hermes_cli.models import _NOUS_CATALOG_TTL_SECONDS
+        from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
 
         fetch_models_with_pricing(
             api_key="sk-test", base_url=BASE,

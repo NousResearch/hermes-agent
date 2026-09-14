@@ -70,7 +70,7 @@ describe('workspace scope', () => {
 })
 
 describe('workspace owner title', () => {
-  it("captions a bot chat by its bot instead of the canonical stored title, and leaves everything else alone (#99152)", () => {
+  it('captions a bot chat by its bot instead of the canonical stored title, and leaves everything else alone (#99152)', () => {
     setWorkspaceOwnerLabel('bot:alpha', 'Alpha')
     const botChat = { workspaceMode: 'bots' as const, workspaceOwnerKey: 'bot:alpha', workspaceTabTitle: 'Bot Chat' }
 

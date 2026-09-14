@@ -432,7 +432,7 @@ def _capture_skill_registration(adapter, monkeypatch, entries):
         # (categories_dict, uncategorized_list, hidden_count)
         return ({}, list(entries), 0)
 
-    import hermes_cli.commands as _hc
+    import hermes_cli.commands_platforms as _hc
     monkeypatch.setattr(
         _hc, "discord_skill_commands_by_category", fake_categories,
     )

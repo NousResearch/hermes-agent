@@ -616,15 +616,14 @@ class CLIInfoMixin:
         from agent.account_usage import redeem_codex_reset_credit
 
         print("  ⏳ Checking banked reset credits...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-            try:
-                result = _pool.submit(
-                    redeem_codex_reset_credit, base_url=self._agent_or_self("base_url"),
-                    api_key=self._agent_or_self("api_key"), force=force,
-                ).result(timeout=45.0)
-            except concurrent.futures.TimeoutError:
-                print("  ❌ Timed out talking to the Codex backend — try again shortly.")
-                return
+        # Each network/refresh phase is bounded internally. Do not add an outer
+        # future timeout: a running POST cannot be cancelled safely, and reporting
+        # failure while it completes could prompt a second, differently keyed redemption.
+        result = redeem_codex_reset_credit(
+            base_url=self._agent_or_self("base_url"),
+            api_key=self._agent_or_self("api_key"),
+            force=force,
+        )
         print(f"  {result.message}")
 
     def _show_context_breakdown(self, cmd_original: str = ""):

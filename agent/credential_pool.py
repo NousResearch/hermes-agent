@@ -1032,6 +1032,13 @@ class CredentialPool(CredentialPoolAdminMixin):
                 if len(matches) != 1:
                     return None
                 target = matches[0]
+        if target.last_status == STATUS_DEAD:
+            if self.provider != "openai-codex":
+                return None
+            with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
+                target = self._sync_codex_entry_for_refresh(target)
+            if target.last_status == STATUS_DEAD and target.runtime_api_key == stale_key:
+                return None
         if target.auth_type != AUTH_TYPE_OAUTH or not target.refresh_token:
             return None
         if target.runtime_api_key != stale_key:
@@ -1213,9 +1220,17 @@ class CredentialPool(CredentialPoolAdminMixin):
             stored = PooledCredential.from_dict(self.provider, persisted)
             if is_anthropic and not (stored.access_token or "").strip() and not (stored.refresh_token or "").strip():
                 return entry
-            if stored.access_token != entry.access_token or stored.refresh_token != entry.refresh_token:
+            tokens_changed = (
+                stored.access_token != entry.access_token
+                or stored.refresh_token != entry.refresh_token
+            )
+            terminal_verdict_changed = (
+                stored.last_status == STATUS_DEAD
+                and entry.last_status != STATUS_DEAD
+            )
+            if tokens_changed or terminal_verdict_changed:
                 logger.debug(
-                    "Pool entry %s: adopting %s OAuth tokens rotated by another pool instance",
+                    "Pool entry %s: adopting %s OAuth state updated by another pool instance",
                     entry.id, self.provider,
                 )
                 self._replace_entry(entry, stored)
@@ -1417,6 +1432,8 @@ class CredentialPool(CredentialPoolAdminMixin):
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
                 synced = self._sync_codex_entry_for_refresh(entry)
+                if synced.last_status == STATUS_DEAD:
+                    return None
                 if synced is not entry:
                     if entry.source != "device_code" or not force:
                         return synced

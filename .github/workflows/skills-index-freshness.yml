@@ -48,25 +48,32 @@ jobs:
           import json, sys
           from datetime import datetime, timezone
 
+          def clean(v):
+              """Single-line scalar for $GITHUB_OUTPUT: the fetched JSON is
+              remote data, so \r\n must never reach a key=value line."""
+              return str(v).replace("\r", " ").replace("\n", " ")
+
           try:
               with open("/tmp/skills-index.json") as f:
                   data = json.load(f)
           except Exception as e:
               print(f"status=parse-failed")
-              print(f"detail=JSON decode error: {e}")
+              print(f"detail=JSON decode error: {clean(e)}")
               sys.exit(0)
 
-          generated_at = data.get("generated_at", "")
+          generated_at = clean(data.get("generated_at", ""))
           total = data.get("skill_count", 0)
+          if not isinstance(total, int):
+              total = -1
           skills = data.get("skills", [])
           if not isinstance(skills, list):
               print("status=invalid-shape")
               print(f"detail=skills field is not a list (got {type(skills).__name__})")
               sys.exit(0)
 
-          # Per-source counts
+          # Per-source counts (keys are remote data; keep them single-line)
           from collections import Counter
-          by_src = Counter(s.get("source", "") for s in skills)
+          by_src = Counter(clean(s.get("source", "")) for s in skills if isinstance(s, dict))
 
           # Freshness
           age_hours = None

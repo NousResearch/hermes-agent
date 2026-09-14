@@ -6,7 +6,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
-import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
+import { enqueueQueuedPrompt, getQueuedPrompts, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasMcpSetupRequest, skipMcpSetupRequest } from '@/store/mcp-setup'
 import { hasBlockingPromptRequest } from '@/store/prompts'
 
@@ -82,6 +82,7 @@ export function useComposerSubmit({
   const paneVisible = usePaneVisible()
   const scope = useComposerScope()
   const surfaceId = useComposerSurfaceId()
+  const nativeSubmitPending = useRef(false)
 
   // Shared send primitive: fire onSubmit, and if the gateway rejects (accepted
   // === false) or throws, re-load + re-stash the draft so the words survive.
@@ -127,7 +128,7 @@ export function useComposerSubmit({
 
   useLayoutEffect(
     () =>
-      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind }) => {
+      onComposerSubmitRequest(({ surfaceId: requestedSurfaceId, target, text, displayKind, native }) => {
         if (
           target === scope.target &&
           surfaceId !== null &&
@@ -135,6 +136,58 @@ export function useComposerSubmit({
           paneVisible &&
           !inputDisabled
         ) {
+          if (native) {
+            if (native.sessionId !== sessionId || disabled) {
+              return
+            }
+            const finish = native.claim()
+
+            if (!finish) {
+              return
+            }
+            const key = activeQueueSessionKeyRef.current
+
+            if (!key) {
+              finish({ status: 'rejected' })
+            } else if (nativeSubmitPending.current || busy || compacting || getQueuedPrompts(key).length > 0) {
+              const entry = enqueueQueuedPrompt(key, { text, attachments: [], confirmedExternal: true })
+              finish(entry ? { status: 'queued', queueId: entry.id } : { status: 'rejected' })
+            } else {
+              // Do not inherit attachments, clear a draft, or restore rejected
+              // remote text into a user's composer. The native onSubmit still
+              // owns optimistic transcript insertion and the gateway request.
+              nativeSubmitPending.current = true
+
+              void (async () => {
+                try {
+                  let queued = false
+
+                  const accepted = await onSubmit(text, {
+                    attachments: [],
+                    composerScope: key,
+                    confirmedExternal: true,
+                    sessionId,
+                    storedSessionId: key,
+                    onExternalAccepted: value => {
+                      queued = value
+                    }
+                  })
+
+                  finish({
+                    status:
+                      accepted === true ? (queued ? 'queued' : 'accepted') : accepted === false ? 'rejected' : 'unknown'
+                  })
+                } catch {
+                  finish({ status: 'unknown' })
+                } finally {
+                  nativeSubmitPending.current = false
+                }
+              })()
+            }
+
+            return
+          }
+
           const current = externalSubmitRef.current
 
           if (!current.busy) {
@@ -186,7 +239,18 @@ export function useComposerSubmit({
           }
         }
       }),
-    [activeQueueSessionKeyRef, inputDisabled, paneVisible, scope.target, sessionId, surfaceId]
+    [
+      inputDisabled,
+      paneVisible,
+      scope.target,
+      surfaceId,
+      sessionId,
+      disabled,
+      busy,
+      compacting,
+      activeQueueSessionKeyRef,
+      onSubmit
+    ]
   )
 
   const submitDraft = () => {

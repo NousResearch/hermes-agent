@@ -726,6 +726,9 @@ export interface SubmitTextOptions {
   /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
    *  model-bound note by the gateway (never persisted, never rendered). */
   voiceContext?: string
+  /** Confirmed plugin instruction: enqueue server-side, never interrupt/recover/replay. */
+  confirmedExternal?: boolean
+  onExternalAccepted?: (queued: boolean) => void
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

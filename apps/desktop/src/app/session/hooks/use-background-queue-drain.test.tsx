@@ -59,6 +59,23 @@ function Harness({
 }
 
 describe('useBackgroundQueueDrain', () => {
+  it('does not retry an uncertain confirmed entry after remount', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => {
+      throw new Error('lost acknowledgement')
+    })
+    enqueueQueuedPrompt('stored-session-a', { text: 'confirmed once', attachments: [], confirmedExternal: true })
+    const view = render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    await waitFor(() => expect(submitText).toHaveBeenCalledTimes(1))
+    expect(submitText.mock.calls[0]).toEqual(['confirmed once', expect.objectContaining({ confirmedExternal: true })])
+    view.unmount()
+    await act(async () => {
+      render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+    })
+    expect(submitText).toHaveBeenCalledTimes(1)
+    expect(getQueuedPrompts('stored-session-a')[0].dispatchStarted).toBe(true)
+  })
+
   beforeEach(() => {
     vi.useRealTimers()
     clearAllSessionStates()

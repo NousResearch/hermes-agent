@@ -131,14 +131,17 @@ _BG_DELETE_ACTIONS = ("replace", "remove")
 
 def _background_delete_gate(action, operations, target="memory", content=None, old_text=None) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
-    stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
-    single or inside a batch — are never applied unattended. The op is staged in the pending
-    store instead of merely denied: the fork's own review summary is never published back, so
-    a plain denial would drop the consolidation request with no surfacing path at all. A
-    staging failure fails closed to a plain denial."""
+    stays available, while ``replace``/``remove`` — single or inside a batch — are staged by
+    default. An explicit memory policy may admit consolidation to the general write-approval
+    gate; otherwise staging preserves the proposal for supervised review."""
     from tools.skill_provenance import is_unattended_review
 
     if not is_unattended_review():
+        return None
+    memory_config = get_builtin_memory_config()
+    allow_consolidation = is_truthy_value(
+        memory_config.get("allow_unattended_consolidation"), default=False)
+    if allow_consolidation:
         return None
     hit = action in _BG_DELETE_ACTIONS or any(
         isinstance(op, dict) and op.get("action") in _BG_DELETE_ACTIONS for op in (operations or []))

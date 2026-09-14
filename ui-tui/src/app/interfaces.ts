@@ -413,6 +413,8 @@ export interface ComposerState {
   compIdx: number
   compReplace: number
   completions: CompletionItem[]
+  /** Inline ghost text for the current input; '' when nothing is suggested. */
+  ghost: string
   historyIdx: null | number
   input: string
   inputBuf: string[]
@@ -585,6 +587,7 @@ export interface AppLayoutComposerProps {
   compIdx: number
   completions: CompletionItem[]
   empty: boolean
+  ghost: string
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   input: string
   inputBuf: string[]

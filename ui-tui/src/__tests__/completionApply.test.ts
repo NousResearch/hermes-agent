@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyCompletion, completionToApplyOnSubmit } from '../domain/slash.js'
+import { applyCompletion, completionToApplyOnSubmit, tabAcceptValue } from '../domain/slash.js'
 
 describe('applyCompletion', () => {
   it('replaces from compReplace and drops the leading slash from the row', () => {
@@ -59,5 +59,26 @@ describe('completionToApplyOnSubmit', () => {
   it('returns null when there is no row text', () => {
     expect(completionToApplyOnSubmit('/exit', undefined, 1)).toBeNull()
     expect(completionToApplyOnSubmit('/exit', '', 1)).toBeNull()
+  })
+})
+
+describe('tabAcceptValue — one Tab, two suggestion sources', () => {
+  it('applies the highlighted completion row when a menu is open', () => {
+    expect(tabAcceptValue('/he', 'help', 1, 'lp')).toBe('/help')
+  })
+
+  it('falls back to the inline ghost when no row is highlighted', () => {
+    // History recalls ghost without ever opening a menu.
+    expect(tabAcceptValue('git pu', undefined, 0, 'sh origin main')).toBe('git push origin main')
+  })
+
+  it('prefers the row even when the ghost points elsewhere', () => {
+    // The user arrowed the highlight off the shortest match; Tab must honor it.
+    expect(tabAcceptValue('/he', 'heartbeat', 1, 'lp')).toBe('/heartbeat')
+  })
+
+  it('is a no-op when there is neither a row nor a ghost', () => {
+    expect(tabAcceptValue('/he', undefined, 1, '')).toBeNull()
+    expect(tabAcceptValue('/he', '', 1, '')).toBeNull()
   })
 })

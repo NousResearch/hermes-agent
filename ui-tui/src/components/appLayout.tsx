@@ -438,6 +438,7 @@ const ComposerPane = memo(function ComposerPane({
                   // terminals lie about their background); anything blended
                   // toward the resolved surface inherits that wrong polarity.
                   placeholderColor={ui.theme.color.muted}
+                  suggestion={composer.ghost}
                   value={composer.input}
                   voiceRecordKey={composer.voiceRecordKey}
                 />

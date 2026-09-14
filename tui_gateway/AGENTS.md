@@ -39,6 +39,7 @@ side) and `apps/shared/src/gateway-events.test.ts` (type side) both fail when ei
 | Session picker | `sessionPicker.tsx` | `session.list` / `session.resume` |
 | Slash commands | local handler + fallthrough | `slash.exec` → `_SlashWorker`; `command.dispatch` |
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
+| Inline ghost text | `domain/inlineSuggest.ts` → `textInput.tsx` | none — reuses the rows those two already returned |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` carries skin data |
 | Plugin compat notice | — | `plugins.compat_report` (see `plugins/AGENTS.md`) |
 

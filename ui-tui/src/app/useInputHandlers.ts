@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
-import { applyCompletion } from '../domain/slash.js'
+import { tabAcceptValue } from '../domain/slash.js'
 import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
@@ -737,11 +737,18 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
-    if (key.tab && cState.completions.length) {
-      const row = cState.completions[cState.compIdx]
+    // Tab takes the highlighted completion row, or the inline ghost when no
+    // menu is up (history recalls ghost without ever opening one).
+    if (key.tab && (cState.completions.length || cState.ghost)) {
+      const next = tabAcceptValue(
+        cState.input,
+        cState.completions[cState.compIdx]?.text,
+        cState.compReplace,
+        cState.ghost
+      )
 
-      if (row?.text) {
-        cActions.setInput(applyCompletion(cState.input, row.text, cState.compReplace))
+      if (next !== null) {
+        cActions.setInput(next)
       }
 
       return

@@ -107,7 +107,7 @@ Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavi
 - **Mouse drag** highlights text with a uniform selection background.
 - **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
-- **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
+- **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown. Inline ghost text runs alongside it exactly as in the classic CLI: type `/upd` and a dim `ate` appears after the cursor (ordinary prompts ghost your matching history instead). `Tab`, `→`, or `End` accepts it — with the panel open, `Tab` takes the highlighted row.
 - **`Ctrl+X`** opens the live session switcher. When a queued message is highlighted (sent while the agent was still running), it still deletes that queued message instead. **`Esc`** cancels editing and unhighlights without deleting.
 - **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 

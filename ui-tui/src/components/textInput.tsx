@@ -745,6 +745,43 @@ function renderWithSelection(
   )
 }
 
+/**
+ * Whether inline ghost text may be drawn right now, and how much of it.
+ *
+ * Ghost text is a HINT painted in the cells after the caret, so every state
+ * where those cells are not free, or are not the user's own next keystroke,
+ * disqualifies it:
+ *
+ *   - not focused / masked → no hint over a password, none on a parked input
+ *   - a selection is up    → the inverted range owns the cells
+ *   - caret not at the end → the ghost would be typed INTO, not appended
+ *
+ * The width test is what keeps the composer from resizing under the hint: the
+ * ghost never starts a new visual row, so `inputVisualHeight` (computed from
+ * the real value) stays truthful and the input box can't grow a line just
+ * because a suggestion arrived. A suggestion too long for the remaining row is
+ * simply not shown — it is still there to accept, Tab/→ just apply it unseen.
+ */
+export function inlineGhostText(opts: {
+  columns: number
+  cursor: number
+  focus: boolean
+  masked: boolean
+  selected: boolean
+  suggestion: string
+  value: string
+}): string {
+  const { columns, cursor, focus, masked, selected, suggestion, value } = opts
+
+  if (!focus || masked || selected || !suggestion || !value || cursor !== value.length) {
+    return ''
+  }
+
+  const lastLine = value.slice(value.lastIndexOf('\n') + 1)
+
+  return stringWidth(lastLine) + stringWidth(suggestion) < Math.max(1, columns) ? suggestion : ''
+}
+
 function useFwdDelete(active: boolean) {
   const ref = useRef(false)
   const { inputEmitter: ee } = useStdin()
@@ -788,6 +825,7 @@ export function TextInput({
   placeholderColor,
   accentColor,
   color,
+  suggestion = '',
   focus = true
 }: TextInputProps) {
   const [cur, setCur] = useState(() =>
@@ -823,6 +861,11 @@ export function TextInput({
   const lastClickRef = useRef<{ at: number; offset: number }>({ at: 0, offset: -1 })
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
+  // Read from the key handler (a stable closure) and from canFastEchoBase, so
+  // both see the ghost/suggestion of the CURRENT render, not the first one.
+  const ghostRef = useRef('')
+  const suggestionRef = useRef('')
+  suggestionRef.current = suggestion
 
   const cbChange = useRef(onChange)
   const cbSubmit = useRef(onSubmit)
@@ -902,6 +945,25 @@ export function TextInput({
   const accentOpen = mask ? '' : fgSeq(accentColor)
   const highlights = useMemo(() => (accentOpen ? highlightMask(display) : null), [accentOpen, display])
 
+  // Inline ghost text (CLI `SlashCommandAutoSuggest` parity). The composer
+  // decides WHAT to suggest; this decides whether the cells after the caret are
+  // free to show it (see inlineGhostText).
+  const ghost = inlineGhostText({
+    columns,
+    cursor: cur,
+    focus,
+    masked: !!mask,
+    selected: !!selected,
+    suggestion,
+    value: display
+  })
+
+  // The fast-echo bypass writes ONLY the newly typed cells — straight into the
+  // ones the ghost is sitting in. A typed char would overwrite the ghost's
+  // first glyph and strand the rest on screen until an unrelated repaint, so
+  // typing under a ghost takes the full Ink path (see canFastEchoBase).
+  ghostRef.current = ghost
+
   const rendered = useMemo(() => {
     if (!focus) {
       return display ? paintHighlights(display, accentOpen, highlights) : colorizeHint(placeholder, placeholderColor)
@@ -917,10 +979,22 @@ export function TextInput({
       return renderWithSelection(display, selected.start, selected.end, accentOpen, highlights)
     }
 
+    if (!ghost) {
+      return nativeCursor
+        ? paintHighlights(display, accentOpen, highlights) || ' '
+        : renderWithCursor(display, cur, accentOpen, highlights)
+    }
+
+    // Hardware cursor drawn by the host ⇒ the ghost is just hint text behind
+    // it. No hardware cursor ⇒ the cursor cell IS the ghost's first glyph
+    // (the placeholder's synthetic-cursor trick), so the hint stays readable
+    // instead of being swallowed by an inverted block.
     return nativeCursor
-      ? paintHighlights(display, accentOpen, highlights) || ' '
-      : renderWithCursor(display, cur, accentOpen, highlights)
-  }, [accentOpen, cur, display, focus, highlights, nativeCursor, placeholder, placeholderColor, selected])
+      ? paintHighlights(display, accentOpen, highlights) + colorizeHint(ghost, placeholderColor)
+      : paintHighlights(display, accentOpen, highlights) +
+          hintCursorCell(ghost[0] ?? ' ', placeholderColor) +
+          colorizeHint(ghost.slice(1), placeholderColor)
+  }, [accentOpen, cur, display, focus, ghost, highlights, nativeCursor, placeholder, placeholderColor, selected])
 
   useEffect(() => {
     const ownEcho = self.current && value === vRef.current
@@ -1078,7 +1152,7 @@ export function TextInput({
   }
 
   const canFastEchoBase = () =>
-    supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
+    supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !ghostRef.current && !!stdout?.isTTY
 
   const canFastAppend = (current: string, cursor: number, text: string) =>
     canFastEchoBase() &&
@@ -1273,6 +1347,29 @@ export function TextInput({
     return range && range.start !== range.end
       ? { end: Math.max(range.start, range.end), start: Math.min(range.start, range.end) }
       : null
+  }
+
+  /**
+   * Accept the inline suggestion: append it whole and park the caret after it.
+   *
+   * Accepts the FULL suggestion even when it was too wide to paint (see
+   * inlineGhostText) — prompt_toolkit does the same, and a suggestion that is
+   * real enough to Tab is real enough to apply. Returns false when there is
+   * nothing to accept or the caret is not at the end, so callers can fall
+   * through to the key's ordinary meaning (→ moves, End moves).
+   */
+  const acceptSuggestion = () => {
+    const text = suggestionRef.current
+    const v = vRef.current
+
+    if (!text || mask || selRange() || curRef.current !== v.length) {
+      return false
+    }
+
+    flushKeyBurst()
+    commit(v + text, v.length + text.length)
+
+    return true
   }
 
   const ins = (v: string, c: number, s: string) => v.slice(0, c) + s + v.slice(c)
@@ -1479,6 +1576,12 @@ export function TextInput({
 
         return
       } else if (actionEnd) {
+        // Already at the end ⇒ End completes the ghost (readline/fish habit);
+        // otherwise it just travels there.
+        if (!k.shift && acceptSuggestion()) {
+          return
+        }
+
         c = v.length
         moveCursor(c, k.shift)
 
@@ -1495,6 +1598,12 @@ export function TextInput({
 
         return
       } else if (k.rightArrow) {
+        // → at the end of the line accepts the ghost instead of no-op'ing
+        // against the end of the buffer (the CLI's prompt_toolkit binding).
+        if (!range && !wordMod && !k.shift && acceptSuggestion()) {
+          return
+        }
+
         if (range && !wordMod && !k.shift) {
           clearSel()
           c = range.end
@@ -1815,6 +1924,8 @@ interface TextInputProps {
   placeholder?: string
   /** Hex color for placeholder text (theme muted); SGR dim when omitted. */
   placeholderColor?: string
+  /** Inline ghost text painted after the caret; → / End / Tab accept it. */
+  suggestion?: string
   value: string
   voiceRecordKey?: ParsedVoiceRecordKey
 }

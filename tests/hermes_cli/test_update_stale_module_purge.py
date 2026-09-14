@@ -58,6 +58,8 @@ def test_purge_evicts_hermes_prefixed_modules():
         "tools.ansi_strip",
         "tui_gateway.server",
         "agent.memory_store",
+        "utils",
+        "batch_runner",
     ]
     added = []
     for name in victims:

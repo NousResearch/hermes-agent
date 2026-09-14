@@ -176,6 +176,8 @@ class HermesProviderMixin:
         ``expires_in`` is optional in RFC 6749: None means no expiry was
         issued, which the SDK treats as valid, so it counts as live here too.
         """
+        if self.context.current_tokens is None:
+            return False
         exp = getattr(self.context.current_tokens, "expires_in", None)
         return exp is None or int(exp) > 0
 

@@ -952,3 +952,27 @@ async def test_refresh_fence_surfaces_non_contention_lock_errors_immediately(tmp
     with pytest.raises(mcp_oauth.RefreshFenceTimeout, match="unavailable on this filesystem"):
         await mcp_oauth.acquire_refresh_fence(tmp_path / "srv.json", timeout=5.0)
     assert time.monotonic() - started < 1.0, "must fail fast, not wait out the deadline"
+
+
+@pytest.mark.asyncio
+async def test_refresh_400_recovery_rejects_disk_pair_from_another_issuer(tmp_path, monkeypatch):
+    """A 400 must not be "recovered" with a disk pair bound to a different issuer.
+
+    The enforcer strips that pair's refresh token on install; a stripped pair
+    is not a recovery, so the session is cleared as on any dead grant and the
+    foreign refresh token never survives on disk.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    storage = provider.context.storage
+    storage.bind_issuer("https://other-idp.example")
+    await storage.set_tokens(_token("A2", "R2"))
+
+    recovered = await provider._handle_refresh_response(
+        _fake_response(400, endpoint, b'{"error":"invalid_grant"}')
+    )
+
+    assert recovered is False
+    assert provider.context.current_tokens is None
+    assert (await storage.get_tokens()).refresh_token is None, "foreign refresh token must not survive on disk"

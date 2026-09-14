@@ -49,6 +49,23 @@ vi.mock('@hermes/plugin-sdk', () => ({ host: hostMock, LruCache: UnboundedCache 
 vi.mock('./data', () => ({
   botHandle: (name: string) => (name === 'default' ? 'hermes' : name),
   clearBotAttention: clearBotAttentionMock,
+  // Mirrors the real slug + reserved-token rules so roster handles are
+  // exercised, not stubbed away.
+  mentionNameForms: (value: null | string | undefined) => {
+    const name = String(value || '')
+      .trim()
+      .toLowerCase()
+
+    if (!name) {
+      return []
+    }
+
+    const slug = name.replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+
+    return [slug].filter(
+      form => /^[a-z0-9][a-z0-9_-]*$/.test(form) && !['all', 'everyone', 'user', 'default', 'hermes'].includes(form)
+    )
+  },
   noteBotAttention: noteBotAttentionMock
 }))
 
@@ -394,6 +411,67 @@ describe('the roster loop pushes the OTHER connections’ agents', () => {
     // The primary profile is published by its callable alias, never "default".
     expect(syncs[1].params.agents).toEqual([
       expect.objectContaining({ connection_id: 'a', handle: 'hermes', profile: 'default' })
+    ])
+
+    stopBotRelay()
+  })
+
+  it('publishes a renamed profile by its display_name slug', async () => {
+    // The roster handle is what attribution stamps and autocomplete insert, so
+    // a default renamed "CTO" must be addressable as @cto rather than @hermes.
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return {
+          profiles: [
+            call.connectionId === 'a'
+              ? { display_name: 'CTO', name: 'default' }
+              : { name: 'ops' }
+          ]
+        }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const syncs = calls.filter(call => call.method === 'bot_relay.roster.sync')
+
+    expect(syncs[1].params.agents).toEqual([
+      expect.objectContaining({ handle: 'cto', profile: 'default' })
+    ])
+
+    stopBotRelay()
+  })
+
+  it('refuses to let a renamed profile claim the reserved hermes alias', async () => {
+    // mentionNameForms drops reserved tokens, so the canonical handle stands.
+    const calls = respondWith(call => {
+      if (call.method === 'profiles.list') {
+        return {
+          profiles: [
+            call.connectionId === 'a'
+              ? { name: 'default' }
+              : { display_name: 'Hermes', name: 'ops' }
+          ]
+        }
+      }
+
+      return {}
+    })
+
+    const { startBotRelay, stopBotRelay } = await loadRelay()
+
+    startBotRelay()
+    await vi.advanceTimersByTimeAsync(0)
+
+    const syncs = calls.filter(call => call.method === 'bot_relay.roster.sync')
+
+    expect(syncs[0].params.agents).toEqual([
+      expect.objectContaining({ handle: 'ops', profile: 'ops' })
     ])
 
     stopBotRelay()

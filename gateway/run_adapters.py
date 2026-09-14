@@ -35,6 +35,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+# Each handoff runs a full agent turn; bound post-outage backlogs.
+_HANDOFF_MAX_CONCURRENT = 3
+
+
 class GatewayAdapterLifecycleMixin:
     """Adapter lifecycle: connect/teardown, fatal recovery, reconnect watcher, multiplex profiles."""
 
@@ -466,11 +470,13 @@ class GatewayAdapterLifecycleMixin:
             _process_takes_profile = False
         # In-flight dispatches by session id: a handoff is a FULL agent turn, so never process inline.
         inflight: Dict[str, "asyncio.Task"] = {}
+        dispatch_slots = asyncio.Semaphore(_HANDOFF_MAX_CONCURRENT)
 
         async def _dispatch(row, session_id, session_db, profile_name) -> None:
             """Run one claimed handoff to a terminal state, off the poll path."""
             try:
-                await self._process_handoff(*((row, profile_name) if _process_takes_profile else (row,)))
+                async with dispatch_slots:
+                    await self._process_handoff(*((row, profile_name) if _process_takes_profile else (row,)))
                 await session_db.complete_handoff(session_id)
             except asyncio.CancelledError:
                 # Leave the row 'running' so the next start's reclaim marks it failed with a clear reason.

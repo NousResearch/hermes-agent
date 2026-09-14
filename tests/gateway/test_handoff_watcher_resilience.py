@@ -335,3 +335,90 @@ def test_reclaimed_session_can_request_handoff_again(tmp_path):
     assert db.request_handoff("stuck", "telegram") is True, (
         "after reclaim the session must be able to hand off again"
     )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_concurrency_is_capped(monkeypatch):
+    """A backlog of pending handoffs must not open one parallel full agent
+    turn per row. Each dispatch runs a complete agent turn plus delivery,
+    the same class of work delegation caps its children for. Without a cap,
+    a post-outage catchup of N rows means N concurrent model calls.
+
+    Mutation-survivable by construction: ``_process_handoff`` rows block on
+    ``release``, which is only set AFTER max concurrency has been observed.
+    Removing the cap lets all 5 rows run at once, max hits 5, and the
+    assertion fails. With the cap, rows 4 and 5 stay queued (claimed but
+    waiting for a slot) and max stays at 3."""
+    monkeypatch.setattr(run, "_handoff_watch_scopes", lambda _r: [(None, None)])
+
+    _real_sleep = asyncio.sleep
+
+    async def _yield_sleep(_seconds):
+        await _real_sleep(0)
+
+    monkeypatch.setattr(run.asyncio, "sleep", _yield_sleep)
+
+    from gateway.run_adapters import _HANDOFF_MAX_CONCURRENT
+
+    cap = _HANDOFF_MAX_CONCURRENT
+    rows = [{"id": f"row-{i}"} for i in range(cap + 2)]
+
+    class _BacklogDB:
+        def __init__(self):
+            self.claimed = []
+            self.completed = []
+
+        async def list_pending_handoffs(self):
+            return list(rows)
+
+        async def claim_handoff(self, sid):
+            if sid in self.claimed:
+                return False
+            self.claimed.append(sid)
+            return True
+
+        async def complete_handoff(self, sid):
+            self.completed.append(sid)
+
+        async def fail_handoff(self, sid, err):
+            return None
+
+    cap_reached = asyncio.Event()
+    release = asyncio.Event()
+    stats = {"now": 0, "max": 0}
+
+    async def _process_handoff(row, profile_name=None):
+        stats["now"] += 1
+        stats["max"] = max(stats["max"], stats["now"])
+        if stats["now"] >= cap:
+            cap_reached.set()
+        await release.wait()
+        stats["now"] -= 1
+
+    db = _BacklogDB()
+    fake = types.SimpleNamespace()
+    fake._session_db = db
+    fake._running = _running_flag(50)
+    fake._process_handoff = _process_handoff
+
+    async def _watch():
+        await run.GatewayRunner._handoff_watcher(fake, interval=0.0, drain_timeout=5)
+
+    task = asyncio.ensure_future(_watch())
+    await asyncio.wait_for(cap_reached.wait(), timeout=5)
+    # Give any over-dispatch real turns to run: an uncapped watcher hits 5.
+    for _ in range(20):
+        await _real_sleep(0)
+
+    assert stats["max"] == cap, (
+        f"at most {cap} handoff dispatches may run at once, saw {stats['max']}"
+    )
+
+    release.set()
+    try:
+        await asyncio.wait_for(task, timeout=5)
+    except asyncio.TimeoutError:
+        task.cancel()
+        raise AssertionError("watcher did not drain after release")
+
+    assert set(db.completed) == {row["id"] for row in rows}

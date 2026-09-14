@@ -112,6 +112,7 @@ curl -s -X POST \
 # Clone it — destination is explicit and under the projects root (Section 1)
 DEST="${HERMES_PROJECTS_ROOT:-$HOME/projects}/my-new-project"
 git clone https://github.com/$GH_USER/my-new-project.git "$DEST"
+cd "$DEST"
 ```
 
 **Seeding an existing local directory is an operator step, not an agent one.** It ends in
@@ -184,7 +185,10 @@ gh repo sync $GH_USER/repo-name
 ```
 
 To bring the sync down locally afterwards: `git fetch origin && git checkout main && git
-merge --ff-only origin/main`.
+merge --ff-only origin/main`. The `--ff-only` is deliberate: it fails loudly if your local
+`main` has diverged (a stray local commit) instead of silently creating a merge commit on
+the default branch. If it fails, inspect with `git log --oneline origin/main..main` and move
+those commits onto a branch — don't reach for `--force` or a plain `merge` to get past it.
 
 ## 4. Repository Information
 

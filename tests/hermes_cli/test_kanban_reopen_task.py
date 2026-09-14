@@ -230,3 +230,41 @@ def test_reopen_fires_blocked_lifecycle_hook_when_landing_blocked(conn, monkeypa
     assert kb.complete_task(conn, task2)
     assert kb.reopen_task(conn, task2, landing="ready") is True
     assert [x for x in fired if x[0] == "kanban_task_blocked"] == []
+
+
+def test_reopen_retracts_summary_and_old_pr_but_guards_new_comment(conn):
+    """Run/comment boundaries are causal, not wall-clock based."""
+    task_id = kb.create_task(conn, title="publish", assignee="builder")
+    claimed = kb.claim_task(conn, task_id)
+    assert claimed is not None
+    assert kb.complete_task(conn, task_id, summary="old handoff", result="old result")
+    kb.add_comment(conn, task_id, "builder", "PR https://github.com/org/repo/pull/7")
+    assert kb.latest_summary(conn, task_id) == "old handoff"
+
+    assert kb.reopen_task(
+        conn, task_id, reason="verification failed", landing="ready", author="operator",
+    ) is True
+
+    # Immutable history remains, but the retracted handoff is not current.
+    runs = kb.list_runs(conn, task_id, include_active=True)
+    assert runs and runs[-1].summary == "old handoff"
+    assert kb.latest_summary(conn, task_id) is None
+    assert kb.latest_summaries(conn, [task_id]) == {}
+    assert kbd.check_respawn_guard(conn, task_id) is None
+
+    # A newer PR comment is evidence for the new aggregate and must still guard
+    # it, even when all writes happen inside one second.
+    kb.add_comment(conn, task_id, "builder", "PR https://github.com/org/repo/pull/8")
+    assert kbd.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_reopen_records_transactional_boundaries(conn):
+    task_id = kb.create_task(conn, title="boundary", assignee="builder")
+    claimed = kb.claim_task(conn, task_id)
+    assert claimed is not None
+    assert kb.complete_task(conn, task_id, summary="handoff", result="result")
+    kb.add_comment(conn, task_id, "builder", "old comment")
+    assert kb.reopen_task(conn, task_id, landing="todo", author="operator")
+    event = [e for e in kb.list_events(conn, task_id) if e.kind == "completion_reopened"][-1]
+    assert event.payload["retracted_through_run_id"] == kb.latest_run(conn, task_id).id
+    assert event.payload["comment_cursor"] == kb.list_comments(conn, task_id)[-1].id

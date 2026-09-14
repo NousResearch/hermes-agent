@@ -3528,6 +3528,7 @@ def reopen_task(
     Fires ``kanban_task_blocked`` post-commit when ``landing='blocked'`` so
     observers see the veto exactly like a :func:`block_task` block.
     """
+    _assert_not_delegated_child_mutation()
     if landing not in _REOPEN_LANDINGS:
         raise ValueError(f"landing must be one of {sorted(_REOPEN_LANDINGS)}")
     if kind is not None and kind not in VALID_BLOCK_KINDS:
@@ -3540,7 +3541,9 @@ def reopen_task(
     with write_txn(conn):
         prev = conn.execute(
             "SELECT status, completed_at, result, block_kind, block_recurrences, "
-            "consecutive_failures, assignee FROM tasks WHERE id = ?", (task_id,),
+            "consecutive_failures, assignee, "
+            "(SELECT MAX(id) FROM task_runs WHERE task_id = tasks.id) AS run_cursor "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if prev is None or prev["status"] != "done":
             return False
@@ -3570,6 +3573,32 @@ def reopen_task(
         )
         if cur.rowcount != 1:
             return False
+        # The audit reason is part of the same transaction as the retraction.
+        # Capture its id after insertion: later comments are new evidence, while
+        # all earlier comments belong to the retracted attempt.
+        if reason:
+            _insert_comment(
+                conn, task_id, author or "operator",
+                f"COMPLETION REOPENED: {reason}", now,
+            )
+        comment_row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS cursor FROM task_comments WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        comment_cursor = int(comment_row["cursor"] if comment_row is not None else 0)
+        run_cursor = prev["run_cursor"]
+        _append_event(
+            conn, task_id, "completion_reopened",
+            {
+                "reason": reason,
+                "prior_status": "done",
+                "status": new_status,
+                "retracted_run_id": run_cursor,
+                "retracted_through_run_id": run_cursor,
+                "comment_cursor": comment_cursor,
+            },
+            run_id=run_cursor,
+        )
         if new_status == "blocked":
             # Sticky + notify + block-loop bookkeeping, mirroring
             # block_task/_route_block for a needs_input-style veto.
@@ -4195,12 +4224,19 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
 
 
 def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
-    """Newest non-empty run summary, or None. Workers hand off via ``summary`` and
-    leave ``tasks.result`` NULL, so views need this or a done task looks empty."""
+    """Newest non-empty non-retracted run summary, or None.
+
+    Completion reopen deliberately keeps immutable run history, but a summary
+    from the retracted run must not remain current in task views.
+    """
     row = conn.execute(
         "SELECT summary FROM task_runs "
         "WHERE task_id = ? AND summary IS NOT NULL AND summary != '' "
-        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1", (task_id,),
+        "AND id > COALESCE((SELECT CAST(json_extract(e.payload, '$.retracted_through_run_id') AS INTEGER) "
+        "FROM task_events e WHERE e.task_id = ? AND e.kind = 'completion_reopened' "
+        "ORDER BY e.id DESC LIMIT 1), 0) "
+        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+        (task_id, task_id),
     ).fetchone()
     return row["summary"] if row else None
 
@@ -4223,6 +4259,11 @@ def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[
               FROM task_runs
              WHERE task_id IN ({placeholders})
                AND summary IS NOT NULL AND summary != ''
+               AND id > COALESCE((SELECT CAST(json_extract(e.payload, '$.retracted_through_run_id') AS INTEGER)
+                                   FROM task_events e
+                                  WHERE e.task_id = task_runs.task_id
+                                    AND e.kind = 'completion_reopened'
+                                  ORDER BY e.id DESC LIMIT 1), 0)
         ) WHERE rn = 1
         """,
         ids,

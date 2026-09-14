@@ -963,9 +963,9 @@ def _cmd_reopen(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "REOPENED", lambda tid: kb.reopen_task(
+        op = lambda tid: kb.reopen_task(
             conn, tid, reason=reason, landing=landing, kind=kind, author=author or "operator",
-        ))
+        )
         def ok_msg(tid):
             landed = kb.get_task(conn, tid)
             where = landed.status if landed else landing

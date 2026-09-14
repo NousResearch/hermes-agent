@@ -611,3 +611,54 @@ def _patch_httpx_post(monkeypatch, responses):
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Codex CLI import guard — access_token must be a JWT with an exp claim
+# ---------------------------------------------------------------------------
+
+def _mock_jwt(exp_offset_seconds: int = 3600, **extra_claims) -> str:
+    payload = {
+        "exp": int(time.time()) + exp_offset_seconds,
+        "https://api.openai.com/auth": {"chatgpt_user_id": "test-user"},
+        **extra_claims,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
+    return f"h.{encoded}.s"
+
+
+def test_import_codex_cli_tokens(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-cli"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": _mock_jwt(),
+            "refresh_token": "rt-valid",
+            "id_token": "id-token-present",
+            "account_id": "acct-123",
+        },
+    }), encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    tokens = _import_codex_cli_tokens()
+    assert tokens is not None
+    assert tokens["refresh_token"] == "rt-valid"
+    assert tokens["id_token"] == "id-token-present"
+    assert tokens["account_id"] == "acct-123"
+
+
+@pytest.mark.parametrize("access_token", ["***", "not-a-jwt", 12345])
+def test_import_codex_cli_tokens_rejects_non_jwt_placeholders(tmp_path, monkeypatch, access_token):
+    codex_home = tmp_path / "codex-cli"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": "***",
+            "id_token": "id-token-present",
+            "account_id": "acct-123",
+        },
+    }), encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    assert _import_codex_cli_tokens() is None

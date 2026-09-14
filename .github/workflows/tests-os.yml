@@ -61,7 +61,14 @@ jobs:
             runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest-32-core
+            # TEMPORARY: was a 32-core Larger Runner. Larger Runners require
+            # GitHub Team/Enterprise; this account is on Free, so this job
+            # queued forever and never ran (every PR back to #16 shows it
+            # stuck in "queued"). Falling back to standard `windows-latest`.
+            # The marked set here is small and runs as one unsliced pytest
+            # process (see the block comment above), so this lane shouldn't
+            # need the extra cores the way the main suite did.
+            runner: windows-latest
             marker: windows_only
     steps:
       - name: Checkout code

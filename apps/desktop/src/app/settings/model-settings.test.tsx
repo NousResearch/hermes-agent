@@ -326,6 +326,40 @@ describe('ModelSettings', () => {
     expect(screen.getAllByText('auto · use main model').length).toBeGreaterThan(0)
   })
 
+  it('edits auxiliary reasoning effort below the selected model and applies it with the assignment', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'nous', model: 'hermes-4', base_url: '', reasoning_effort: null }]
+    })
+
+    await renderModelSettings()
+
+    expect(screen.queryByRole('combobox', { name: 'Vision reasoning effort' })).toBeNull()
+
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Change' }))[0])
+
+    const reasoningSelect = await screen.findByRole('combobox', { name: 'Vision reasoning effort' })
+    expect(reasoningSelect.compareDocumentPosition(await screen.findByRole('combobox', { name: 'Vision model' }))).toBe(
+      Node.DOCUMENT_POSITION_PRECEDING
+    )
+
+    fireEvent.click(reasoningSelect)
+    fireEvent.click(await screen.findByRole('option', { name: 'High' }))
+
+    const applyButtons = await screen.findAllByRole('button', { name: 'Apply' })
+    fireEvent.click(applyButtons.at(-1)!)
+
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith({
+        model: 'hermes-4',
+        provider: 'nous',
+        scope: 'auxiliary',
+        task: 'vision',
+        reasoning_effort: 'high'
+      })
+    )
+  })
+
   it('assigns an auxiliary task to the main model via setModelAssignment', async () => {
     await renderModelSettings()
 
@@ -408,6 +442,50 @@ describe('ModelSettings', () => {
 
     // Banner present on load, no switch required.
     expect(await screen.findByText(/still run on/)).toBeTruthy()
+  })
+
+  it('does not warn when an aux slot uses the main alias', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [{ task: 'vision', provider: 'main', model: 'kimi-k3', base_url: '' }]
+    })
+
+    await renderModelSettings()
+    await screen.findAllByRole('button', { name: 'Set to main' })
+
+    // 'main' is a backend-supported alias that tracks the active main provider
+    // (auxiliary_client._normalize_aux_provider) — it can never be a stale pin. #97310
+    expect(screen.queryByText(/still run on/)).toBeNull()
+  })
+
+  it('does not flag an aux slot pinned to a local/LAN endpoint and shows its base_url', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'ollama-cloud', model: 'glm-5.3-flash' },
+      tasks: [
+        {
+          task: 'title_generation',
+          provider: 'openai',
+          model: 'llama3.2:3b',
+          base_url: 'http://byron.local:11434/v1',
+          local_endpoint: true
+        },
+        {
+          task: 'vision',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          base_url: 'https://api.example.com/v1',
+          local_endpoint: false
+        }
+      ]
+    })
+
+    await renderModelSettings()
+
+    // The public custom endpoint still bills a provider, so the banner stays —
+    // but it names only that one task, not the free LAN pin.
+    expect(await screen.findByText(/1 auxiliary task \(/)).toBeTruthy()
+    // The row shows where the pinned task actually points.
+    expect(screen.getByText(/http:\/\/byron\.local:11434\/v1/)).toBeTruthy()
   })
 })
 

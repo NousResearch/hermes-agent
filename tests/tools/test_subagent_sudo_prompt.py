@@ -29,8 +29,6 @@ def _clean_sudo_state(monkeypatch):
     """Isolate sudo-related process/thread state per test."""
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-    # Host sudoers NOPASSWD must not short-circuit the path under test.
-    monkeypatch.setattr(tts, "_sudo_nopasswd_works", lambda: False)
     tts._reset_cached_sudo_passwords()
     tt.set_sudo_password_callback(None)
     yield

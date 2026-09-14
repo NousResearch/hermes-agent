@@ -19,8 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
-    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE, MEMORY_GUIDANCE,
-    USER_PROFILE_GUIDANCE, PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
+    HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
@@ -277,10 +277,11 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
     # available"; with only USER.md enabled the narrower block is used.
     memory_guidance = None
     if "memory" in names:
-        if getattr(agent, "_memory_enabled", True):
-            memory_guidance = MEMORY_GUIDANCE
-        elif getattr(agent, "_user_profile_enabled", True):
-            memory_guidance = USER_PROFILE_GUIDANCE
+        memory_guidance = _pb.build_memory_guidance(
+            getattr(agent, "_memory_enabled", True),
+            getattr(agent, "_user_profile_enabled", True),
+            skill_manage_available="skill_manage" in names,
+        )
     # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
     # the kanban_show fallback covers code paths that bypass agent_init.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
@@ -380,7 +381,7 @@ def _active_profile_line(agent: Any) -> str:
     )
 
 
-def _platform_hint(agent: Any) -> str:
+def platform_hint(agent: Any) -> str:
     """Built-in/plugin platform hint + Telegram rich-messages opt-in + config
     override + desktop TUI clarifier."""
     platform_key = (agent.platform or "").lower().strip()
@@ -578,7 +579,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), _platform_hint(agent)]
+    parts += [_active_profile_line(agent), platform_hint(agent)]
     return parts
 
 
@@ -735,7 +736,7 @@ def format_tools_for_system_message(agent: Any) -> str:
 
 
 __all__ = ["build_system_prompt_parts", "build_system_prompt", "invalidate_system_prompt",
-           "restore_plugin_prompt_sections", "format_tools_for_system_message"]
+           "platform_hint", "restore_plugin_prompt_sections", "format_tools_for_system_message"]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

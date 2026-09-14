@@ -84,9 +84,9 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["auth_token"] == "minimax-secret-123"
             assert "api_key" not in kwargs
-            assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14"
-            }
+            assert kwargs["default_headers"]["anthropic-beta"] == "interleaved-thinking-2025-05-14"
+            # bearer-only construction omits x-api-key so an env ANTHROPIC_API_KEY never rides along
+            assert kwargs["default_headers"]["X-Api-Key"] is mock_sdk.Omit.return_value
 
 
     def test_azure_foundry_anthropic_endpoint_uses_bearer_auth(self):

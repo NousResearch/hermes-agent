@@ -505,8 +505,11 @@ class WebhookAdapter(BasePlatformAdapter):
         async def _fire_cron_job() -> None:
             try:
                 from tools.cronjob_tools import execute_job_for_event
-                # A cron job is a full agent run (minutes) — keep it off the gateway event loop.
-                result = await asyncio.to_thread(execute_job_for_event, job_ref, event_context)
+                # The job store (cron/jobs.json) and the run belong to the ROUTED profile, not the gateway's
+                # default home; to_thread copies contextvars so the scope follows. A cron job is a full agent
+                # run (minutes) — keep it off the gateway event loop.
+                with self._profile_scope(profile):
+                    result = await asyncio.to_thread(execute_job_for_event, job_ref, event_context)
                 if not result.get("success"):
                     logger.warning("[webhook] cron-trigger job=%s route=%s did not complete cleanly: %s", job_ref,
                                    route_name, result.get("error"))
@@ -597,7 +600,8 @@ class WebhookAdapter(BasePlatformAdapter):
                     return web.json_response({"status": "ignored", "reason": "script", "route": route_name})
                 payload = transformed_payload or payload
             prompt = self._render_prompt(route_config.get("prompt", ""), payload, event_type, route_name)
-            if skills := route_config.get("skills", []):
+            # cron_job routes: the job's own skills apply; the rendered prompt is only per-run context.
+            if (skills := route_config.get("skills", [])) and not route_config.get("cron_job"):
                 prompt = self._apply_skills(prompt, skills)
         delivery_id = headers.get("X-GitHub-Delivery", headers.get("svix-id", headers.get(
             "webhook-id", headers.get("X-Request-ID", str(int(time.time() * 1000))))))

@@ -7,7 +7,7 @@ source: https://docs.apify.com/integrations/mcp
 # Hosted Streamable HTTP; disable optional tool/client telemetry by default.
 transport:
   type: http
-  url: https://mcp.apify.com/?telemetry-enabled=false
+  url: https://mcp.apify.com/
 
 auth:
   type: oauth

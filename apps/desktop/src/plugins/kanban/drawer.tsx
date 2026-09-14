@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
   ErrorState,
   host,
+  isSubmitEnter,
   Loader,
   LogView,
   Textarea,
@@ -45,7 +46,6 @@ import {
   taskKey,
   uploadAttachment
 } from './api'
-import { shouldSubmitOnEnter } from './ime-enter'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
   type Diagnostic,
@@ -323,7 +323,7 @@ function CommentComposer({
           className={cn('field-sizing-content max-h-40 min-h-0 resize-none', running ? 'pr-[3.5rem]' : 'pr-[5rem]')}
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
-            if (shouldSubmitOnEnter(event) && !event.shiftKey) {
+            if (isSubmitEnter(event) && !event.shiftKey) {
               event.preventDefault()
               submit()
             }

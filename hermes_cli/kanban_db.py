@@ -4230,12 +4230,29 @@ def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     from the retracted run must not remain current in task views.
     """
     row = conn.execute(
-        "SELECT summary FROM task_runs "
-        "WHERE task_id = ? AND summary IS NOT NULL AND summary != '' "
-        "AND id > COALESCE((SELECT CAST(json_extract(e.payload, '$.retracted_through_run_id') AS INTEGER) "
-        "FROM task_events e WHERE e.task_id = ? AND e.kind = 'completion_reopened' "
-        "ORDER BY e.id DESC LIMIT 1), 0) "
-        "ORDER BY COALESCE(ended_at, started_at) DESC, id DESC LIMIT 1",
+        """
+        WITH latest_reopen AS (
+            SELECT payload
+              FROM task_events
+             WHERE task_id = ? AND kind = 'completion_reopened'
+             ORDER BY id DESC LIMIT 1
+        ), reopen_boundary AS (
+            SELECT 1 AS has_reopen,
+                   CASE WHEN json_valid(payload) THEN
+                       CASE WHEN json_type(payload, '$.retracted_through_run_id') = 'integer'
+                                  AND json_extract(payload, '$.retracted_through_run_id') >= 0
+                            THEN json_extract(payload, '$.retracted_through_run_id')
+                       END
+                   END AS boundary
+              FROM latest_reopen
+        )
+        SELECT r.summary
+          FROM task_runs r
+          LEFT JOIN reopen_boundary b ON 1 = 1
+         WHERE r.task_id = ? AND r.summary IS NOT NULL AND r.summary != ''
+           AND (COALESCE(b.has_reopen, 0) = 0 OR (b.boundary IS NOT NULL AND r.id > b.boundary))
+         ORDER BY COALESCE(r.ended_at, r.started_at) DESC, r.id DESC LIMIT 1
+        """,
         (task_id, task_id),
     ).fetchone()
     return row["summary"] if row else None
@@ -4250,23 +4267,36 @@ def latest_summaries(conn: sqlite3.Connection, task_ids: Iterable[str]) -> dict[
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         f"""
-        SELECT task_id, summary FROM (
-            SELECT task_id, summary,
+        WITH latest_reopen AS (
+            SELECT task_id, payload,
+                   ROW_NUMBER() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
+              FROM task_events
+             WHERE task_id IN ({placeholders}) AND kind = 'completion_reopened'
+        ), reopen_boundary AS (
+            SELECT task_id, 1 AS has_reopen,
+                   CASE WHEN json_valid(payload) THEN
+                       CASE WHEN json_type(payload, '$.retracted_through_run_id') = 'integer'
+                                  AND json_extract(payload, '$.retracted_through_run_id') >= 0
+                            THEN json_extract(payload, '$.retracted_through_run_id')
+                       END
+                   END AS boundary
+              FROM latest_reopen
+             WHERE rn = 1
+        ), ranked_runs AS (
+            SELECT r.task_id, r.summary,
                    ROW_NUMBER() OVER (
-                       PARTITION BY task_id
-                       ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+                       PARTITION BY r.task_id
+                       ORDER BY COALESCE(r.ended_at, r.started_at) DESC, r.id DESC
                    ) AS rn
-              FROM task_runs
-             WHERE task_id IN ({placeholders})
-               AND summary IS NOT NULL AND summary != ''
-               AND id > COALESCE((SELECT CAST(json_extract(e.payload, '$.retracted_through_run_id') AS INTEGER)
-                                   FROM task_events e
-                                  WHERE e.task_id = task_runs.task_id
-                                    AND e.kind = 'completion_reopened'
-                                  ORDER BY e.id DESC LIMIT 1), 0)
-        ) WHERE rn = 1
+              FROM task_runs r
+              LEFT JOIN reopen_boundary b ON b.task_id = r.task_id
+             WHERE r.task_id IN ({placeholders})
+               AND r.summary IS NOT NULL AND r.summary != ''
+               AND (COALESCE(b.has_reopen, 0) = 0 OR (b.boundary IS NOT NULL AND r.id > b.boundary))
+        )
+        SELECT task_id, summary FROM ranked_runs WHERE rn = 1
         """,
-        ids,
+        (*ids, *ids),
     ).fetchall()
     return {r["task_id"]: r["summary"] for r in rows}
 

@@ -268,3 +268,24 @@ def test_reopen_records_transactional_boundaries(conn):
     event = [e for e in kb.list_events(conn, task_id) if e.kind == "completion_reopened"][-1]
     assert event.payload["retracted_through_run_id"] == kb.latest_run(conn, task_id).id
     assert event.payload["comment_cursor"] == kb.list_comments(conn, task_id)[-1].id
+
+
+@pytest.mark.parametrize("payload", [
+    "not-json",
+    '{"reason": "missing boundary"}',
+    '{"retracted_through_run_id": "not-an-integer"}',
+    '{"retracted_through_run_id": -1}',
+])
+def test_summary_retraction_malformed_boundary_fails_closed(conn, payload):
+    task_id = kb.create_task(conn, title="corrupt reopen", assignee="builder")
+    claimed = kb.claim_task(conn, task_id)
+    assert claimed is not None
+    assert kb.complete_task(conn, task_id, summary="stale handoff")
+    conn.execute(
+        "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, ?, ?, ?)",
+        (task_id, "completion_reopened", payload, 1),
+    )
+    conn.commit()
+
+    assert kb.latest_summary(conn, task_id) is None
+    assert kb.latest_summaries(conn, [task_id]) == {}

@@ -13,6 +13,9 @@ call is mocked — we never actually shell out during unit tests.
 from __future__ import annotations
 
 
+import sys
+from pathlib import Path
+
 import pytest
 
 import tools.lazy_deps as ld
@@ -600,3 +603,85 @@ class TestInstallWarmsBytecode:
         cmd = uv_cmds[0]
         assert "--compile-bytecode" in cmd
         assert cmd.index("--compile-bytecode") < cmd.index("zzzfake==1.0")
+
+
+class TestInstallEnvIsolation:
+    """#83264: ambient UV_*/CONDA_*/PYTHON* steering vars must not choose the
+    uv pip install target. UV_PYTHON takes precedence over VIRTUAL_ENV, so an
+    ambient value made every lazy-backend and memory-provider refresh fail
+    with "No virtual environment found" even though VIRTUAL_ENV was correct —
+    while the core update install (managed_python_env isolation, #83914)
+    succeeded. The installer must apply the same isolation."""
+
+    @staticmethod
+    def _run_install(monkeypatch, target=None):
+        captured = {}
+
+        class _Completed:
+            returncode = 0
+            stdout = "out"
+            stderr = "err"
+
+        def fake_run(cmd, *a, **kw):
+            captured["cmd"] = list(cmd)
+            captured["env"] = dict(kw.get("env") or {})
+            return _Completed()
+
+        if target is None:
+            monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        else:
+            monkeypatch.setattr(ld, "_lazy_install_target", lambda: target)
+        monkeypatch.setattr(
+            ld.shutil, "which", lambda name: "uv" if name == "uv" else None
+        )
+        monkeypatch.setattr(
+            "hermes_cli.managed_uv.resolve_uv",
+            lambda *a, **kw: "uv",
+            raising=False,
+        )
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(ld, "_warm_installed_bytecode", lambda specs, target: None)
+
+        monkeypatch.setenv("UV_PYTHON", "/opt/other-software/python3.12")
+        monkeypatch.setenv("UV_SYSTEM_PYTHON", "1")
+        monkeypatch.setenv("UV_PYTHON_INSTALL_DIR", "/opt/other-software/store")
+        monkeypatch.setenv("CONDA_PREFIX", "/opt/conda")
+        monkeypatch.setenv("PYTHONHOME", "/opt/foreign-python")
+
+        result = ld._venv_pip_install(("zzzfake==1.0",))
+        return result, captured
+
+    def test_ambient_uv_python_cannot_steer_the_install_target(self, monkeypatch):
+        result, captured = self._run_install(monkeypatch)
+        assert result.success is True
+
+        env = captured["env"]
+        for stolen in (
+            "UV_PYTHON",
+            "UV_SYSTEM_PYTHON",
+            "UV_PYTHON_INSTALL_DIR",
+            "CONDA_PREFIX",
+            "PYTHONHOME",
+            "PYTHONPATH",
+        ):
+            assert stolen not in env, stolen
+        assert env["VIRTUAL_ENV"] == str(Path(sys.executable).parent.parent)
+        assert env["UV_NO_CONFIG"] == "1"
+
+        cmd = captured["cmd"]
+        assert "--python" in cmd
+        assert cmd[cmd.index("--python") + 1] == sys.executable
+
+    def test_durable_target_mode_strips_steering_but_pins_no_python(
+        self, monkeypatch, tmp_path
+    ):
+        result, captured = self._run_install(monkeypatch, target=tmp_path / "lt")
+        assert result.success is True
+
+        env = captured["env"]
+        assert "UV_PYTHON" not in env
+        assert env["VIRTUAL_ENV"] == str(Path(sys.executable).parent.parent)
+
+        cmd = captured["cmd"]
+        assert "--target" in cmd
+        assert "--python" not in cmd

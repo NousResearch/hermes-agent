@@ -281,7 +281,7 @@ hermes gateway
 
 ## 配置参考
 
-Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环境级开关，**`~/.hermes/config.yaml`** 用于结构化设置。当两者都设置时，环境变量始终优先于 config.yaml 的值。
+Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据（机器人 token），**`~/.hermes/config.yaml`** 用于结构化设置。密钥留在 `.env`。对于 `discord.require_mention` 和 `discord.free_response_channels`，适配器在配置键已设置时读取 `config.yaml`；对应的 `DISCORD_*` 环境变量仅作回退。这与[配置优先级](../configuration.md#配置优先级)中非密钥项的规则一致。
 
 ### 环境变量（`.env`）
 
@@ -318,7 +318,7 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 
 ### 配置文件（`config.yaml`）
 
-`~/.hermes/config.yaml` 中的 `discord` 部分与上述环境变量对应。config.yaml 设置作为默认值应用——如果已设置等效的环境变量，则环境变量优先。
+`~/.hermes/config.yaml` 中的 `discord` 部分与上述环境变量对应。对于 `require_mention` 和 `free_response_channels`，只要 `discord:` 下存在该键（包括全新安装写入的默认值），该值即生效；对应的 `DISCORD_*` 变量仅在该配置键未设置时使用，因此会忽略 `.env` 中的冲突项。
 
 ```yaml
 # Discord 特定设置

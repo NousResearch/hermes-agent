@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Optional
 import json
 import time
+from datetime import datetime, timezone
 
 
 # Least → most urgent; sorted outputs put critical first.
@@ -425,11 +426,33 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _fmt_run_ts(ts: Any) -> str:
+    """``YYYY-MM-DD HH:MMZ`` for a run timestamp. A rule must never print
+    ``None`` into an operator's page, so a row without a usable timestamp reads
+    as a phrase instead of a value."""
+    try:
+        value = int(ts)
+    except (TypeError, ValueError):
+        return "an unrecorded time"
+    if value <= 0:
+        return "an unrecorded time"
+    return datetime.fromtimestamp(value, tz=timezone.utc).strftime("%Y-%m-%d %H:%MZ")
+
+
 def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Trailing run outcomes show >= cfg["crash_threshold"] (default 2)
     consecutive ``crashed`` with no ``completed``/``reclaimed`` between. Fires
     earlier than ``repeated_failures`` for a crash-specific heads-up and
     suppresses itself when the unified rule is about to fire.
+
+    The streak is reported as a **current** incident only while the task's
+    newest run is itself one of those crashes. A card that has since moved on
+    -- a newer run that ended ``unreported``/``blocked``, or one still in
+    flight -- keeps the historical streak in the report, dated, and at
+    ``warning``: the crash rule must not assert a present-tense crash about a
+    card whose newest run disproves it, and the page that pages only
+    ``critical`` findings must not page about a crash streak that is over.
+    The current-crash path (severity ladder included) is unchanged.
 
     Exempt: done/archived (a manual done appends no completed run, so the
     streak would be permanent) and running (an in-flight run has no outcome
@@ -443,43 +466,98 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
     threshold = int(cfg.get("crash_threshold", 2))
     # Count trailing consecutive 'crashed' outcomes; a success (or manual
     # reclaim) breaks the streak, other outcomes neither count nor break it.
+    ordered = _runs_newest_first(runs)
     consecutive = 0
     last_err = None
-    for r in _runs_newest_first(runs):
+    last_crash = None
+    for r in ordered:
         outcome = _task_field(r, "outcome")
         if outcome == "crashed":
             consecutive += 1
             if last_err is None:
                 last_err = _task_field(r, "error")
+            if last_crash is None:
+                last_crash = r
         elif outcome in {"completed", "reclaimed"}:
             break
     if consecutive < threshold:
         return []
+    newest = ordered[0]
+    newest_outcome = _task_field(newest, "outcome")
+    is_current = newest_outcome == "crashed"
+    last_crash_at = _task_field(last_crash, "ended_at") or _task_field(last_crash, "started_at")
+    last_crash_ts = _fmt_run_ts(last_crash_at)
+    last_crash_id = _task_field(last_crash, "id")
+    newest_id = _task_field(newest, "id")
+    newest_at = _task_field(newest, "ended_at") or _task_field(newest, "started_at")
     task_id = _task_field(task, "id")
     actions: list[DiagnosticAction] = []
     if task_id:
         actions.append(_log_hint_action(task_id))
     actions.extend(_generic_recovery_actions(task, running=_is_running(task)))
-    severity = "critical" if consecutive >= threshold * 2 else "error"
+    # How urgently a streak is reported depends on whether it is still running.
+    severity = ("critical" if consecutive >= threshold * 2 else "error") if is_current else "warning"
     # Error up-front so operators see WHAT broke without opening the logs.
     err_snippet = _error_snippet(last_err)
-    if err_snippet:
-        title = f"Agent crashed {consecutive}x: {err_snippet.splitlines()[0][:160]}"
-        detail = (
-            f"The last {consecutive} runs ended with outcome=crashed. "
-            f"Full last error:\n\n{err_snippet}"
-        )
+    if is_current:
+        if err_snippet:
+            title = f"Agent crashed {consecutive}x: {err_snippet.splitlines()[0][:160]}"
+            detail = (
+                f"The last {consecutive} runs ended with outcome=crashed. "
+                f"Full last error:\n\n{err_snippet}"
+            )
+        else:
+            title = f"Agent crashed {consecutive}x (no error recorded)"
+            detail = (
+                f"The last {consecutive} runs ended with outcome=crashed but "
+                f"no error text was captured. Check the worker log for more."
+            )
     else:
-        title = f"Agent crashed {consecutive}x (no error recorded)"
-        detail = (
-            f"The last {consecutive} runs ended with outcome=crashed but "
-            f"no error text was captured. Check the worker log for more."
+        newest_state = (
+            f"ended with outcome={newest_outcome}" if newest_outcome
+            else "is still in flight (no outcome yet)"
         )
+        basis = (
+            f"The last {consecutive} crash runs ended with outcome=crashed; the most recent was "
+            f"{last_crash_ts} (run {last_crash_id}). The newest run ({newest_id}, "
+            f"{_fmt_run_ts(newest_at)}) has since {newest_state}, so this streak is historical — "
+            f"not a current crash."
+        )
+        if err_snippet:
+            title = (
+                f"Agent crashed {consecutive}x (historical, last {last_crash_ts}): "
+                f"{err_snippet.splitlines()[0][:120]}"
+            )
+            detail = f"{basis}\n\nFull last error:\n\n{err_snippet}"
+        else:
+            title = f"Agent crashed {consecutive}x (historical, last {last_crash_ts}; no error recorded)"
+            detail = f"{basis}\n\nNo error text was captured. Check the worker log for more."
     return [Diagnostic(
         kind="repeated_crashes", severity=severity,
         title=title, detail=detail, actions=actions,
         first_seen_at=now, last_seen_at=now, count=consecutive,
-        data={"consecutive_crashes": consecutive, "last_error": last_err},
+        data={
+            "consecutive_crashes": consecutive,
+            "last_error": last_err,
+            # The basis, so a reader can tell a current crash streak from a
+            # historical one without re-reading the runs table: the newest
+            # outcome decides, and `runs_read` is the ordered list the scan saw.
+            "is_current": is_current,
+            "newest_outcome": newest_outcome,
+            "newest_run_id": newest_id,
+            "newest_run_ended_at": _task_field(newest, "ended_at"),
+            "last_crash_run_id": last_crash_id,
+            "last_crash_at": last_crash_at,
+            "runs_read": [
+                {
+                    "id": _task_field(r, "id"),
+                    "outcome": _task_field(r, "outcome"),
+                    "started_at": _task_field(r, "started_at"),
+                    "ended_at": _task_field(r, "ended_at"),
+                }
+                for r in ordered[:50]
+            ],
+        },
     )]
 
 

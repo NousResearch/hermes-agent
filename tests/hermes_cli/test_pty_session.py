@@ -65,6 +65,16 @@ class FakeWS:
         self.close_code = code
 
 
+class FailingWS(FakeWS):
+    def __init__(self):
+        super().__init__()
+        self.send_started = asyncio.Event()
+
+    async def send_bytes(self, data):
+        self.send_started.set()
+        raise RuntimeError("socket closed")
+
+
 @pytest.mark.asyncio
 async def test_attach_replays_buffer_then_streams_live():
     from hermes_cli.pty_session import PtySession
@@ -76,6 +86,38 @@ async def test_attach_replays_buffer_then_streams_live():
     await s.attach(ws)
     replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
     assert replay == b"hello world"
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_replay_detaches_session():
+    from hermes_cli.pty_session import PtySession
+
+    s = PtySession("k", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    s.buffer.append(b"replay")
+
+    with pytest.raises(RuntimeError, match="socket closed"):
+        await s.attach(FailingWS())
+
+    assert s.attached is False
+    assert s.last_detached_at is not None
+    assert s._ws is None
+    await s.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_live_send_detaches_session():
+    from hermes_cli.pty_session import PtySession
+
+    s = PtySession("k", FakeBridge([b"live"]), buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FailingWS()
+    await s.attach(ws)
+    await asyncio.wait_for(ws.send_started.wait(), timeout=1)
+
+    assert s.attached is False
+    assert s.last_detached_at is not None
+    assert s._ws is None
     await s.close()
 
 

@@ -71,11 +71,12 @@ class PtySession:
                 await asyncio.sleep(0)
                 continue
             self.buffer.append(chunk)
+            ws = self._ws
             try:
-                if self._ws is not None:
-                    await self._ws.send_bytes(chunk)
+                if ws is not None:
+                    await ws.send_bytes(chunk)
             except Exception:
-                pass                                 # detached mid-send; keep buffering
+                self.detach(ws)
 
     async def write(self, ws, data: bytes) -> bool:
         """Serialize input and discard bytes from a superseded socket."""
@@ -108,7 +109,11 @@ class PtySession:
         self.attached = True
         self.last_detached_at = None
         if snap := self.buffer.snapshot():
-            await ws.send_bytes(snap)
+            try:
+                await ws.send_bytes(snap)
+            except Exception:
+                self.detach(ws)
+                raise
         if force_redraw:
             return await self.write(ws, TUI_FORCE_REDRAW)
         return True

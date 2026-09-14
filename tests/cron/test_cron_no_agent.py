@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 from unittest.mock import patch
 
@@ -146,6 +147,7 @@ def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failur
     """
     from cron.jobs import create_job
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     (hermes_env / "scripts" / "slow.py").write_text("import time; time.sleep(999)\n")
     job = create_job(
@@ -183,10 +185,8 @@ def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failur
             self.returncode = -9
 
     monkeypatch.setattr(scheduler.subprocess, "Popen", _NeverFinishes)
-    monkeypatch.setattr(scheduler, "_get_script_timeout", lambda: 1)
-    monkeypatch.setattr(
-        scheduler,
-        "_terminate_cron_script_process",
+    monkeypatch.setattr(sched_script, "_get_script_timeout", lambda: 1)
+    monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
         lambda proc: setattr(proc, "returncode", -15),
     )
     monkeypatch.setattr(
@@ -206,6 +206,7 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
     """Provider timeout classification remains available to agent-backed jobs."""
     from cron.jobs import create_job
     import cron.scheduler as scheduler
+    from cron import scheduler_script as sched_script
 
     job = create_job(
         prompt="Summarize the overnight logs.",
@@ -246,7 +247,7 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
 
 def test_run_job_script_path_traversal_still_blocked(hermes_env):
     """Security regression: shell-script support must NOT loosen containment."""
-    from cron.scheduler import _run_job_script
+    from cron.scheduler_script import _run_job_script
 
     # Absolute path outside the scripts dir should be rejected.
     ok, output = _run_job_script("/etc/passwd")
@@ -259,12 +260,58 @@ def test_run_job_script_nul_path_fails_cleanly(hermes_env):
     value can survive to fire time (the creation-time guard treats it as
     "nothing to scan"), and ``Path.expanduser()`` raises ValueError — not
     OSError — on it. The scheduler must fail the run with a report, not
-    crash with an unhandled exception."""
-    from cron.scheduler import _run_job_script
+    crash with an unhandled exception.
+
+    Regression (#86829): the assertion pins the *eager rejection* contract
+    — the specific "NUL byte" report is only produced by the pre-check
+    added in the fix. On Linux the legacy guard would swallow the
+    expanduser() ValueError and report a generic invalid-path message, so
+    a bare "Blocked" assertion could not tell the fixed code from the
+    unfixed code; on Windows the unfixed code crashes outright."""
+    from cron.scheduler_script import _run_job_script
 
     ok, output = _run_job_script("~user\x00bad.sh")
     assert ok is False
-    assert "Blocked" in output
+    assert "NUL byte" in output
+
+
+def test_run_job_script_nul_rejected_before_any_path_call(hermes_env, monkeypatch):
+    """The eager NUL check must run before ``Path(...)`` is ever constructed.
+
+    On Windows ``expanduser()`` never expands ``~user`` and never raises,
+    so without the pre-check the NUL surfaces later from ``resolve()`` /
+    ``exists()`` — outside the guard's try — and the uncaught ValueError
+    crashes the scheduler (#86829). Stubbing ``Path`` with a hard failure
+    proves the rejection happens before any pathlib call on every
+    platform, not just the ones where expanduser happens to raise."""
+    import cron.scheduler as scheduler_module
+    from cron import scheduler_script as sched_script
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("Path must not be touched for a NUL-bearing script path")
+
+    monkeypatch.setattr(scheduler_module, "Path", boom)
+    ok, output = sched_script._run_job_script("nul\x00byte.sh")
+    assert ok is False
+    assert "NUL byte" in output
+
+
+def test_run_job_script_accepts_pathlike_script_path(hermes_env):
+    """The eager NUL guard must not crash on a non-str script_path.
+
+    ``"\x00" in script_path`` raises TypeError for a pathlib.Path (not
+    iterable), so a Path passed by a future caller would crash the
+    scheduler at the guard itself. The guard coerces with str() first;
+    a valid Path must still run the script end-to-end (regression for
+    the #86832 review point)."""
+    from cron.scheduler_script import _run_job_script
+
+    script = hermes_env / "scripts" / "probe.py"
+    script.write_text('print("pathlike ok")\n', encoding="utf-8")
+
+    ok, output = _run_job_script(pathlib.Path(script))
+    assert ok is True
+    assert "pathlike ok" in output
 
 
 # ---------------------------------------------------------------------------

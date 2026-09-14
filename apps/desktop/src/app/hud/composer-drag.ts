@@ -10,34 +10,94 @@ const MOVE_TOLERANCE = 8
 
 interface PressState {
   armed: boolean
-  lastX: number
-  lastY: number
+  mode: 'control' | 'hold'
   originH: number
   originW: number
   pointerId: number
   startX: number
   startY: number
   target: HTMLElement
+  workspaceTransfer: boolean
+}
+
+interface HudComposerDragOptions {
+  /** X11 escape hatch: Ctrl+primary-button grabs immediately instead of
+   *  competing with Chromium's text-selection drag until the hold timer. */
+  controlDrag?: boolean
+  /** X11/KWin only: keep the grabbed window visible while the user changes
+   *  virtual desktops, then pin it to the destination desktop on release. */
+  workspaceTransfer?: boolean
+}
+
+function capturePointer(state: PressState): void {
+  try {
+    state.target.setPointerCapture?.(state.pointerId)
+  } catch {
+    // A renderer can reject capture after selection/native-drag bookkeeping.
+    // Window capture-phase listeners below still keep the in-window gesture
+    // alive, so a failed capture must not abort the drag altogether.
+  }
+}
+
+function releasePointer(state: PressState): void {
+  try {
+    if (state.target.hasPointerCapture?.(state.pointerId)) {
+      state.target.releasePointerCapture?.(state.pointerId)
+    }
+  } catch {
+    // Pointer cancellation may invalidate the id before React cleans up.
+  }
+}
+
+function setWorkspaceTransfer(transferring: boolean): void {
+  window.hermesDesktop?.hud?.setWorkspaceTransfer?.(transferring)
+}
+
+function moveHud(state: PressState): void {
+  window.hermesDesktop?.hud?.moveBy?.({
+    width: state.originW,
+    height: state.originH
+  })
+}
+
+function armGrab(state: PressState, workspaceTransfer: boolean): void {
+  state.armed = true
+  state.workspaceTransfer = workspaceTransfer
+
+  if (workspaceTransfer) {
+    setWorkspaceTransfer(true)
+  }
+
+  window.hermesDesktop?.hud?.beginMove?.()
 }
 
 /**
- * HUD-only: press and hold the composer, then drag to move the window.
+ * HUD-only: press and hold the composer, then drag to move the window. On X11,
+ * Ctrl+primary-button is an immediate grab that also works over selected text.
  *
- * The only way to move the HUD. An `-webkit-app-region: drag` handle is the
- * obvious alternative and cannot work here: the window manager takes a drag
- * region's mouse input whole, which starves `useHudClickThrough` of the moves
- * it decides solidity from, so the window is already transparent by the time
- * the press lands and it falls through to the app behind. See click-through.ts.
+ * The way to move the HUD on macOS/Windows. An `-webkit-app-region: drag`
+ * handle is the obvious alternative and cannot work THERE: the window manager
+ * takes a drag region's mouse input whole, which starves `useHudClickThrough`
+ * of the moves it decides solidity from, so the window is already transparent
+ * by the time the press lands and it falls through to the app behind. See
+ * click-through.ts. Native Wayland uses a compositor drag region instead,
+ * because apps cannot place their own top-level surfaces there. X11 stays on
+ * this renderer path and additionally supports an immediate Ctrl-drag.
  *
- * Deltas are read in SCREEN coordinates. Client coordinates are relative to the
- * window we are moving, so a window that keeps up with the cursor reports the
- * same clientX every frame — zero delta, and the drag dies one pixel in.
+ * The renderer only owns hold detection and the size snapshot. Once armed,
+ * main samples the native cursor and parks the window at cursor minus grab
+ * offset (see hud-drag.ts). Client coordinates are relative to the window we
+ * are moving, so a window that keeps up reports the same clientX every frame.
  *
  * The size is snapshotted at press and sent with every move, so main can pin it
  * (see hermes:hud:move-by — a transparent frameless window drifts wider on
- * Windows otherwise). Same shape as the pet overlay's drag.
+ * Windows otherwise). Crossing a display can fire pointercancel; that must
+ * not end the grab, or the bar sticks on the first monitor.
  */
-export function useHudComposerDrag(enabled: boolean) {
+export function useHudComposerDrag(
+  enabled: boolean,
+  { controlDrag = false, workspaceTransfer = false }: HudComposerDragOptions = {}
+) {
   const [grabbing, setGrabbing] = useState(false)
   const stateRef = useRef<PressState | null>(null)
   const timerRef = useRef<number | null>(null)
@@ -50,8 +110,16 @@ export function useHudComposerDrag(enabled: boolean) {
 
     const state = stateRef.current
 
-    if (state?.target.hasPointerCapture(state.pointerId)) {
-      state.target.releasePointerCapture(state.pointerId)
+    if (state) {
+      if (state.armed) {
+        window.hermesDesktop?.hud?.endMove?.()
+      }
+
+      if (state.workspaceTransfer) {
+        setWorkspaceTransfer(false)
+      }
+
+      releasePointer(state)
     }
 
     stateRef.current = null
@@ -65,21 +133,41 @@ export function useHudComposerDrag(enabled: boolean) {
       }
 
       const target = event.currentTarget
+      const immediate = controlDrag && event.ctrlKey
 
-      stateRef.current = {
+      // A press over an existing contentEditable selection otherwise starts
+      // Chromium's native text drag, which cancels our pointer stream. Cancel
+      // that default action before it is chosen; do not blur or rewrite the
+      // Selection, so the user's selected text survives moving the window.
+      if (immediate) {
+        event.preventDefault()
+      }
+
+      const state: PressState = {
         armed: false,
-        lastX: event.screenX,
-        lastY: event.screenY,
+        mode: immediate ? 'control' : 'hold',
         originH: window.outerHeight,
         originW: window.outerWidth,
         pointerId: event.pointerId,
         startX: event.screenX,
         startY: event.screenY,
-        target
+        target,
+        workspaceTransfer: false
       }
+
+      stateRef.current = state
 
       if (timerRef.current !== null) {
         window.clearTimeout(timerRef.current)
+      }
+
+      if (immediate) {
+        armGrab(state, workspaceTransfer)
+        setGrabbing(true)
+        triggerHaptic('selection')
+        capturePointer(state)
+
+        return
       }
 
       timerRef.current = window.setTimeout(() => {
@@ -89,20 +177,20 @@ export function useHudComposerDrag(enabled: boolean) {
           return
         }
 
-        state.armed = true
+        armGrab(state, workspaceTransfer)
         setGrabbing(true)
         triggerHaptic('selection')
 
         // Capture so the moves keep arriving once the cursor outruns the bar,
         // and drop the caret so the drag isn't also extending a selection.
-        state.target.setPointerCapture(state.pointerId)
+        capturePointer(state)
 
         if (document.activeElement instanceof HTMLElement) {
           document.activeElement.blur()
         }
       }, LONG_PRESS_MS)
     },
-    [enabled]
+    [controlDrag, enabled, workspaceTransfer]
   )
 
   useEffect(() => {
@@ -129,25 +217,14 @@ export function useHudComposerDrag(enabled: boolean) {
       }
 
       event.preventDefault()
-
-      const dx = event.screenX - state.lastX
-      const dy = event.screenY - state.lastY
-
-      state.lastX = event.screenX
-      state.lastY = event.screenY
-
-      window.hermesDesktop?.hud?.moveBy?.({
-        x: dx,
-        y: dy,
-        width: state.originW,
-        height: state.originH
-      })
+      moveHud(state)
     }
 
-    const onUp = (event: PointerEvent) => {
+    const onUp = (event: PointerEvent | MouseEvent) => {
       const state = stateRef.current
+      const pointerId = 'pointerId' in event ? event.pointerId : state?.pointerId
 
-      if (!state || event.pointerId !== state.pointerId) {
+      if (!state || pointerId !== state.pointerId) {
         return
       }
 
@@ -159,14 +236,51 @@ export function useHudComposerDrag(enabled: boolean) {
       reset()
     }
 
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('pointercancel', onUp)
+    // Crossing a display often cancels the pointer without a matching up.
+    // Ending the grab there is what parks the HUD on the first monitor; snap
+    // to the native cursor and keep the hold so the next move (or mouseup)
+    // can finish on the other display.
+    const onCancel = (event: PointerEvent) => {
+      const state = stateRef.current
+
+      if (!state || event.pointerId !== state.pointerId) {
+        return
+      }
+
+      if (!state.armed) {
+        reset()
+
+        return
+      }
+
+      event.preventDefault()
+      moveHud(state)
+      capturePointer(state)
+    }
+
+    const preventEditorGesture = (event: Event) => {
+      if (stateRef.current?.mode === 'control') {
+        event.preventDefault()
+      }
+    }
+
+    // Capture phase wins the race against contentEditable selection/drag
+    // handlers. `dragstart` is a second guard for an already-selected range;
+    // `selectstart` stops the same press from replacing that range.
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('mouseup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
+    window.addEventListener('dragstart', preventEditorGesture, true)
+    window.addEventListener('selectstart', preventEditorGesture, true)
 
     return () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onUp)
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('mouseup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
+      window.removeEventListener('dragstart', preventEditorGesture, true)
+      window.removeEventListener('selectstart', preventEditorGesture, true)
     }
   }, [enabled, reset])
 

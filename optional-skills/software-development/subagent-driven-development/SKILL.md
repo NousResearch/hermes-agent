@@ -8,7 +8,7 @@ platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [delegation, subagent, implementation, workflow, parallel]
-    related_skills: [plan, requesting-code-review, test-driven-development]
+    related_skills: [requesting-code-review, test-driven-development]
 ---
 
 # Subagent-Driven Development

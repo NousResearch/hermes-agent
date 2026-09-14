@@ -1731,6 +1731,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
                 if _ur._current is not None:
                     _ur._current.data["runtime_outcomes"] = _runtime_outcomes
 
+    if _pre_update_plan is None or getattr(_pre_update_plan, "inventory_errors", None):
+        print("\n⚠ Pre-update runtime inventory was incomplete — verification incomplete.")
+        restart.incomplete = True
+
     _receipt_path = None
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt

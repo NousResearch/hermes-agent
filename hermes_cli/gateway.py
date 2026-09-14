@@ -546,7 +546,7 @@ def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int])
         pids.append(pid)
 
 
-def _iter_proc_cmdlines(exclude_pids: set[int]):
+def _iter_proc_cmdlines(exclude_pids: set[int], *, strict: bool = False):
     """Yield ``(pid, cmdline)`` from ``/proc`` (Docker without procps); raises if /proc is unusable."""
     my_pid = os.getpid()
     for entry in os.listdir("/proc"):
@@ -558,7 +558,11 @@ def _iter_proc_cmdlines(exclude_pids: set[int]):
         try:
             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                 cmdline = _f.read().decode("utf-8", errors="replace")
-        except (OSError, PermissionError):
+        except FileNotFoundError:
+            continue
+        except OSError:
+            if strict:
+                raise
             continue
         yield pid, cmdline.replace("\x00", " ")
 
@@ -622,7 +626,7 @@ def _scan_gateway_pids(
             _found_via_proc = False
             if os.path.isdir("/proc"):
                 try:
-                    for pid, command in _iter_proc_cmdlines(exclude_pids):
+                    for pid, command in _iter_proc_cmdlines(exclude_pids, strict=strict):
                         _consider(pid, command)
                     _found_via_proc = True
                 except Exception:

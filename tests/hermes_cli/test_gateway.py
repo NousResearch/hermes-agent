@@ -1277,3 +1277,15 @@ def test_find_profile_gateway_processes_strict_propagates_profile_listing_failur
 
     with pytest.raises(RuntimeError, match="profile listing failed"):
         gateway.find_profile_gateway_processes(strict=True)
+
+
+def test_strict_proc_scan_rejects_unreadable_process_rows(monkeypatch):
+    monkeypatch.setattr(gateway.os, "listdir", lambda _path: ["42"])
+
+    def unreadable(*_args, **_kwargs):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr("builtins.open", unreadable)
+
+    with pytest.raises(PermissionError, match="denied"):
+        list(gateway._iter_proc_cmdlines(set(), strict=True))

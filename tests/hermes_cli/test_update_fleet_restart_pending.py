@@ -973,6 +973,33 @@ def test_clean_update_warns_about_surviving_pre_update_serve_runtime(
     assert "pre-update code" in out
 
 
+def test_clean_update_preserves_marker_when_runtime_inventory_is_incomplete(
+    monkeypatch, tmp_path, capsys
+):
+    from hermes_cli.update_inventory import UpdatePlan
+    import hermes_cli.update_inventory as ui
+
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+    plan = UpdatePlan()
+    plan.inventory_errors.append("Serve/dashboard ledger inventory")
+    monkeypatch.setattr(ui, "collect_runtime_inventory", lambda: plan)
+
+    with pytest.raises(SystemExit) as excinfo:
+        hermes_main.cmd_update(args)
+
+    assert excinfo.value.code == 1
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    assert not update_cmd_fleet._fleet_restart_completion_path().exists()
+    receipt = json.loads(
+        (get_hermes_home() / "logs" / "update_receipts" / "latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["outcome"] == "partial"
+    assert "runtime inventory was incomplete" in capsys.readouterr().out
+
+
 def test_clean_update_escalates_surviving_serve_as_unaccounted(
     monkeypatch, tmp_path, capsys
 ):

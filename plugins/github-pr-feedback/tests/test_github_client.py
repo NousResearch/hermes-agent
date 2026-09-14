@@ -383,6 +383,23 @@ def test_github_client_reads_paginated_canonical_feedback_with_fixed_gh_argv() -
     }
 
 
+def test_github_client_lists_only_confirmed_merged_pull_requests() -> None:
+    argv = (
+        "gh", "pr", "list", "--repo", "acme/widgets", "--state", "merged",
+        "--author", "owner", "--limit", str(MAX_DISCOVERED_PULL_REQUESTS),
+        "--json",
+        "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels,mergedAt,mergeCommit",
+    )
+    merged = canonical_list_pull()
+    merged.update({"mergedAt": "2026-08-27T00:00:00Z", "mergeCommit": {"oid": "c" * 40}})
+    closed = canonical_list_pull(number=18)
+    closed.update({"state": "CLOSED", "mergedAt": None, "mergeCommit": None})
+    pulls = GitHubClient(RecordingRunner({argv: [merged, closed]})).list_merged_pull_requests(
+        "acme/widgets", "owner"
+    )
+    assert [(pull.number, pull.state, pull.head_sha) for pull in pulls] == [(17, "MERGED", "a" * 40)]
+
+
 def test_github_client_reads_independent_feedback_endpoints_without_nested_fanout() -> None:
     runner = RecordingRunner(feedback_responses("ordinary"))
 

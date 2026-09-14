@@ -616,6 +616,21 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
 
     subcommands = parser.add_subparsers(dest="github_pr_feedback_action", required=True)
     subcommands.add_parser("scan", help="Read and dispatch newly admitted feedback")
+    historical = subcommands.add_parser(
+        "historical-merged-scan",
+        help="Inventory feedback on confirmed merged PRs without dispatching work",
+    )
+    historical.add_argument(
+        "--repository",
+        required=True,
+        help="Configured repository to scan; prevents cross-project history scans",
+    )
+    historical.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="Optional bounded PR count for diagnostics; zero scans all merged PRs",
+    )
     subcommands.add_parser("status", help="Show durable receipt counts")
     subcommands.add_parser(
         "doctor", help="Check configuration readiness without scanning"
@@ -742,6 +757,11 @@ def setup_cli(_ctx: Any, parser: argparse.ArgumentParser) -> None:
         "--repository-path", required=True, type=Path
     )
     resolve_superseded_feedback.add_argument("--test-evidence", required=True)
+    resolve_superseded_feedback.add_argument(
+        "--allow-merged",
+        action="store_true",
+        help="Allow an exact merged PR for historical superseded-feedback resolution",
+    )
     retired = subcommands.add_parser("retire-feedback", help="Retire an exact feedback dispatch after PR closure")
     retired.add_argument("--repository", required=True)
     retired.add_argument("--pr-number", required=True, type=int)
@@ -778,6 +798,8 @@ def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
     action = getattr(args, "github_pr_feedback_action", None)
     if action == "scan":
         return _scan(ctx)
+    if action == "historical-merged-scan":
+        return _historical_merged_scan(ctx, args)
     if action == "status":
         return _status()
     if action == "doctor":
@@ -828,6 +850,86 @@ def handle_cli_with_context(ctx: Any, args: argparse.Namespace) -> int:
     if action == "complete-maintenance":
         return _complete_maintenance(ctx, args)
     return 2
+
+
+def _historical_merged_scan(ctx: Any, args: argparse.Namespace) -> int:
+    """Inventory feedback on merged PRs without entering the repair queue."""
+    try:
+        policy = _load_policy_from_context(ctx)
+        if not policy.enabled:
+            print(json.dumps({"status": "ok", "merged_prs": [], "skipped": {}}))
+            return 0
+        repository = str(args.repository).strip()
+        target = policy.targets.get(repository)
+        if target is None:
+            raise ValueError(f"repository is not a configured target: {repository}")
+        github = _github_client(policy)
+        rows: list[dict[str, object]] = []
+        skipped: dict[str, object] = {}
+        try:
+            pulls = github.list_merged_pull_requests(repository, target.owner_login)
+        except GitHubClientError as error:
+            skipped["github_error"] = 1
+            skipped["github_error_detail"] = str(error)
+            pulls = ()
+        if args.limit < 0:
+            raise ValueError("historical scan limit must not be negative")
+        if args.limit:
+            pulls = pulls[: args.limit]
+        # Five PRs keeps the GraphQL request below GitHub's query-complexity
+        # ceiling while reducing historical reads by 5x.
+        for offset in range(0, len(pulls), 5):
+            batch = pulls[offset : offset + 5]
+            try:
+                unresolved_by_pr = github.list_unresolved_review_threads_batch(
+                    repository, tuple(pull.number for pull in batch)
+                )
+            except GitHubClientError as error:
+                skipped["github_error"] = skipped.get("github_error", 0) + len(batch)
+                skipped.setdefault("github_error_detail", str(error))
+                continue
+            for pull in batch:
+                # Keep exact identities in the output so the next governed
+                # step can act without a second scan.
+                unresolved_threads = unresolved_by_pr[pull.number]
+                rows.append(
+                    {
+                        "repository": repository,
+                        "pr_number": pull.number,
+                        "state": pull.state,
+                        "head_sha": pull.head_sha,
+                        "base_sha": pull.base_sha,
+                        "unresolved_thread_count": len(unresolved_threads),
+                        "unresolved_threads": [
+                            {
+                                "thread_id": thread.thread_id,
+                                "comment_id": thread.comment_id,
+                                "head_sha": thread.head_sha,
+                                "body": thread.body,
+                                "path": thread.path,
+                                "line": thread.line,
+                                "author_login": thread.author_login,
+                            }
+                            for thread in unresolved_threads
+                        ],
+                    }
+                )
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "scope": "merged_only",
+                    "dispatch": "disabled",
+                    "merged_prs": rows,
+                    "skipped": skipped,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    except (GitHubClientError, ValueError) as exc:
+        print(json.dumps({"status": "blocked", "reason": str(exc)}, sort_keys=True))
+        return 1
 
 
 def _complete_maintenance(ctx: Any, args: argparse.Namespace) -> int:
@@ -2486,6 +2588,7 @@ def _resolve_superseded_feedback(ctx: Any, args: argparse.Namespace) -> int:
             fix_sha=args.fix_sha,
             repository_path=args.repository_path,
             test_evidence=args.test_evidence,
+            allow_merged=args.allow_merged,
         )
         receipt = FeedbackReceipt(
             result.repository,

@@ -231,6 +231,16 @@ hermes github-pr-feedback scan
 hermes github-pr-feedback merge-status
 ```
 
+Historical review is intentionally separate from the ordinary open-PR scan:
+
+```sh
+hermes github-pr-feedback historical-merged-scan
+```
+
+This read-only command inventories feedback only on PRs with a confirmed merge
+commit. Closed-but-unmerged PRs are excluded before feedback is read, and no
+Kanban repair task or receipt is created.
+
 Enroll one exact configured pull request before it can enter the governed merge lane,
 or remove that durable enrollment without changing GitHub state:
 

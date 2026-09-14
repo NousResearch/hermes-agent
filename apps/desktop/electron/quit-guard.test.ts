@@ -26,12 +26,21 @@ test('mergeActiveWork de-dupes a session two windows both report', () => {
   assert.deepEqual(merged, { count: 2, titles: ['Fix login', 'Ship docs'] })
 })
 
-test('quitPromptFor stays out of the way when nothing is running', () => {
-  assert.equal(quitPromptFor({ count: 0, titles: [] }, false), null)
+test('quitPromptFor only prompts for idle work when always is selected', () => {
+  const idle = { count: 0, titles: [] }
+  assert.equal(quitPromptFor(idle, false), null)
+  assert.equal(quitPromptFor(idle, false, 'never'), null)
+  assert.equal(quitPromptFor(idle, false, 'while-working'), null)
+  const prompt = quitPromptFor(idle, false, 'always')
+  assert.ok(prompt)
+  assert.ok(prompt.detail.includes('Local models'))
 })
 
 test('quitPromptFor stays out of the way during an update handoff', () => {
-  assert.equal(quitPromptFor({ count: 2, titles: ['Fix login'] }, true), null)
+  for (const mode of ['never', 'while-working', 'always'] as const) {
+    assert.equal(quitPromptFor({ count: 2, titles: ['Fix login'] }, true, mode), null)
+    assert.equal(quitPromptFor({ count: 0, titles: [] }, true, mode), null)
+  }
 })
 
 test('quitPromptFor names the running chats', () => {
@@ -41,6 +50,8 @@ test('quitPromptFor names the running chats', () => {
   assert.equal(prompt.message, 'Hermes is still working on 2 chats.')
   assert.ok(prompt.detail.includes('• Fix login'))
   assert.ok(prompt.detail.includes('• Ship docs'))
+  assert.deepEqual(quitPromptFor({ count: 2, titles: ['Fix login', 'Ship docs'] }, false, 'always'), prompt)
+  assert.equal(quitPromptFor({ count: 2, titles: ['Fix login', 'Ship docs'] }, false, 'never'), null)
 })
 
 test('quitPromptFor summarizes past the list cap and counts untitled work', () => {

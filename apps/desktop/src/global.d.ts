@@ -3,6 +3,7 @@ import type { TranslucencyState } from '@hermes/shared/translucency'
 
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
+import type { QuitConfirmationMode } from '../electron/quit-guard'
 
 import type { WakeIndicatorState } from './lib/wake-indicator'
 import type {
@@ -384,6 +385,8 @@ declare global {
       resolveFavicon?: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
+        getQuitConfirmation?: () => Promise<QuitConfirmationMode>
+        setQuitConfirmation?: (mode: QuitConfirmationMode) => Promise<QuitConfirmationMode>
         getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>

@@ -925,6 +925,16 @@ export const en: Translations = {
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
       showOptions: 'Show options'
     },
+    quitConfirmation: {
+      title: 'Confirm before quitting',
+      description:
+        'Ask before quitting Hermes on this computer. By default, asks only while agents are working. Applies across profiles.',
+      never: 'Never',
+      whileWorking: 'When agents are working',
+      always: 'Always',
+      loadFailed: 'Could not load the quit confirmation preference.',
+      saveFailed: 'Could not save the quit confirmation preference. Your previous choice is still active.'
+    },
     quickEntry: {
       enabledTitle: 'Quick Entry',
       enabledDesc:

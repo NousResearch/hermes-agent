@@ -941,6 +941,15 @@ export const zhHant = defineLocale({
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
       showOptions: '顯示選項'
     },
+    quitConfirmation: {
+      title: '結束前確認',
+      description: '在此電腦上結束 Hermes 前詢問。預設僅在代理工作時詢問。適用於所有設定檔。',
+      never: '永不',
+      whileWorking: '代理工作時',
+      always: '一律',
+      loadFailed: '無法載入結束確認偏好設定。',
+      saveFailed: '無法儲存結束確認偏好設定。先前的選擇仍然有效。'
+    },
     quickEntry: {
       enabledTitle: '快速輸入',
       enabledDesc: '用全域快速鍵在任何地方喚出一個小輸入框，無需開啟 Hermes 即可送出提示。',

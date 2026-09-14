@@ -900,6 +900,16 @@ export const ja = defineLocale({
       keepAwakeTitle: 'コンピューターをスリープさせない',
       keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
     },
+    quitConfirmation: {
+      title: '終了前に確認',
+      description:
+        'このコンピューターで Hermes を終了する前に確認します。既定ではエージェントの作業中のみ確認します。すべてのプロファイルに適用されます。',
+      never: '確認しない',
+      whileWorking: 'エージェントの作業中',
+      always: '常に確認',
+      loadFailed: '終了確認の設定を読み込めませんでした。',
+      saveFailed: '終了確認の設定を保存できませんでした。以前の選択が引き続き有効です。'
+    },
     quickEntry: {
       enabledTitle: 'クイック入力',
       enabledDesc:

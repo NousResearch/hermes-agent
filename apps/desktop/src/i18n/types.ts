@@ -793,6 +793,15 @@ export interface Translations {
       attachmentSizeLabel: string
       showOptions: string
     }
+    quitConfirmation: {
+      title: string
+      description: string
+      never: string
+      whileWorking: string
+      always: string
+      loadFailed: string
+      saveFailed: string
+    }
     quickEntry: {
       enabledTitle: string
       enabledDesc: string

@@ -749,11 +749,73 @@ function Install-Uv {
     # place, so install.ps1 and `hermes update` stay in sync.
     $managedUv = Join-Path $HermesHome "bin\uv.exe"
 
+    function Get-UsableUvVersion($UvPath) {
+        $prevEAP = $ErrorActionPreference
+        try {
+            # A broken Chocolatey shim commonly writes its failure to stderr.
+            # Do not let PowerShell's global Stop policy turn that probe into a
+            # terminating exception before we can inspect the native exit code.
+            $ErrorActionPreference = "Continue"
+            $global:LASTEXITCODE = 0
+            $versionOutput = @(& $UvPath --version 2>&1)
+            $exitCode = $LASTEXITCODE
+        } catch {
+            return $null
+        } finally {
+            $ErrorActionPreference = $prevEAP
+        }
+        if ($exitCode -eq 0 -and $versionOutput.Count -gt 0) {
+            $version = ($versionOutput -join " ").Trim()
+            if ($version -match '^uv\s+\d+\.\d+') { return $version }
+        }
+        return $null
+    }
+
+    function Resolve-ExecutableTarget($ExePath) {
+        if (-not $ExePath -or -not (Test-Path $ExePath)) { return $null }
+
+        # 1. Chocolatey: shim at chocolatey\bin\uv.exe redirects to
+        # chocolatey\lib\uv\tools\uv.exe. Copying the 390KB shim breaks
+        # outside of Chocolatey's tree; resolving the underlying real
+        # executable (~68MB) lets the salvage succeed.
+        $parent = Split-Path $ExePath -Parent
+        $grandparent = Split-Path $parent -Parent
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($ExePath)
+        $chocoTarget = Join-Path $grandparent "lib\$name\tools\$name.exe"
+        if (Test-Path $chocoTarget) { return $chocoTarget }
+
+        # 2. Scoop: companion .shim file contains `path = "..."` pointing
+        # to the real unpacked binary under apps\<pkg>\current.
+        $scoopShim = [System.IO.Path]::ChangeExtension($ExePath, ".shim")
+        if (Test-Path $scoopShim) {
+            $shimContent = Get-Content $scoopShim -Raw -ErrorAction SilentlyContinue
+            if ($shimContent -and $shimContent -match 'path\s*=\s*"?([^"\r\n]+)"?') {
+                $scoopTarget = $matches[1].Trim()
+                if (Test-Path $scoopTarget) { return $scoopTarget }
+            }
+        }
+
+        # 3. Windows symlink / reparse point: resolve underlying target.
+        try {
+            $item = Get-Item $ExePath -ErrorAction SilentlyContinue
+            if ($item.LinkType -and $item.Target) {
+                $target = if ($item.Target -is [array]) { $item.Target[0] } else { $item.Target }
+                if (Test-Path $target) { return $target }
+            }
+        } catch {}
+
+        return $ExePath
+    }
+
     if (Test-Path $managedUv) {
-        $script:UvCmd = $managedUv
-        $version = & $managedUv --version
-        Write-Success "Managed uv found ($version)"
-        return $true
+        $version = Get-UsableUvVersion $managedUv
+        if ($version) {
+            $script:UvCmd = $managedUv
+            Write-Success "Managed uv found ($version)"
+            return $true
+        }
+        Write-Info "Existing managed uv at $managedUv is not usable; replacing it ..."
+        Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
     }
 
     Write-Info "Installing managed uv into $HermesHome\bin ..."
@@ -784,16 +846,29 @@ function Install-Uv {
         & $psHostExe -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" 2>&1 | Tee-Object -Variable astralOut | Out-Null
         $installerOutput += "--- uv installer source: astral.sh ---"
         $installerOutput += @($astralOut | ForEach-Object { "$_" })
-        if (Test-Path $managedUv) {
+        $managedUvVersion = if (Test-Path $managedUv) {
+            Get-UsableUvVersion $managedUv
+        }
+        if ($managedUvVersion) {
             Write-Info "uv installer succeeded via astral.sh"
         } else {
+            if (Test-Path $managedUv) {
+                Write-Info "astral.sh produced an unusable uv; removing it before trying the mirror ..."
+                Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
+            }
             Write-Info "astral.sh uv installer did not produce $managedUv; trying GitHub releases mirror ..."
             $ghOut = @()
             & $psHostExe -ExecutionPolicy ByPass -c "irm https://github.com/astral-sh/uv/releases/latest/download/uv-installer.ps1 | iex" 2>&1 | Tee-Object -Variable ghOut | Out-Null
             $installerOutput += "--- uv installer source: GitHub releases ---"
             $installerOutput += @($ghOut | ForEach-Object { "$_" })
-            if (Test-Path $managedUv) {
+            $managedUvVersion = if (Test-Path $managedUv) {
+                Get-UsableUvVersion $managedUv
+            }
+            if ($managedUvVersion) {
                 Write-Info "uv installer succeeded via GitHub releases"
+            } elseif (Test-Path $managedUv) {
+                Write-Info "GitHub uv installer produced an unusable binary; removing it ..."
+                Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
             }
         }
 
@@ -804,23 +879,30 @@ function Install-Uv {
         # the managed location so the managed-first invariant holds
         # (hermes_cli/managed_uv.py looks only at $HermesHome\bin\uv.exe).
         if (-not (Test-Path $managedUv)) {
-            $existingUv = $null
             $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue |
                 Select-Object -First 1
-            if ($uvOnPath -and $uvOnPath.Source -and (Test-Path $uvOnPath.Source)) {
-                $existingUv = $uvOnPath.Source
+            $salvageCandidates = @()
+            if ($uvOnPath -and $uvOnPath.Source) {
+                # Resolve package manager shims (Chocolatey, Scoop) to their real target first
+                $resolved = Resolve-ExecutableTarget $uvOnPath.Source
+                if ($resolved -and (Test-Path $resolved)) {
+                    $salvageCandidates += $resolved
+                }
+                $salvageCandidates += $uvOnPath.Source
             }
-            if (-not $existingUv) {
-                $defaultUv = Join-Path $env:USERPROFILE ".local\bin\uv.exe"
-                if (Test-Path $defaultUv) { $existingUv = $defaultUv }
-            }
-            if ($existingUv) {
+            $salvageCandidates += (Join-Path $env:USERPROFILE ".local\bin\uv.exe")
+            foreach ($existingUv in ($salvageCandidates | Select-Object -Unique)) {
+                if (-not (Test-Path $existingUv)) { continue }
                 Write-Info "Salvaging existing uv from $existingUv"
                 try {
                     Copy-Item $existingUv $managedUv -Force
                     # Verify the salvaged binary actually runs before
                     # trusting it as the managed uv.
-                    $null = & $managedUv --version
+                    $version = Get-UsableUvVersion $managedUv
+                    if (-not $version) {
+                        throw "uv --version failed for salvaged candidate"
+                    }
+                    break
                 } catch {
                     Write-Info "Existing uv at $existingUv could not be salvaged: $_"
                     Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
@@ -831,10 +913,13 @@ function Install-Uv {
         $ErrorActionPreference = $prevEAP
 
         if (Test-Path $managedUv) {
-            $script:UvCmd = $managedUv
-            $version = & $managedUv --version
-            Write-Success "Managed uv installed ($version)"
-            return $true
+            $version = Get-UsableUvVersion $managedUv
+            if ($version) {
+                $script:UvCmd = $managedUv
+                Write-Success "Managed uv installed ($version)"
+                return $true
+            }
+            Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
         }
 
         Write-Err "uv installed but not found at $managedUv"

@@ -54,6 +54,14 @@ class ResolveOutcome:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class _BlockedClaim:
+    task: kb.Task
+    attempt: int
+    event_id: int
+    payload: dict
+
+
 def _safe_text(value: Any, limit: int) -> str:
     from agent.redact import redact_sensitive_text
 
@@ -61,19 +69,19 @@ def _safe_text(value: Any, limit: int) -> str:
     return text[:limit]
 
 
-def _latest_block_payload(conn: Any, task_id: str) -> dict:
+def _latest_block_event(conn: Any, task_id: str) -> tuple[Optional[int], dict]:
     row = conn.execute(
-        "SELECT payload FROM task_events WHERE task_id = ? "
+        "SELECT id, payload FROM task_events WHERE task_id = ? "
         "AND kind IN ('blocked', 'block_loop_detected') ORDER BY id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
-    if row is None or not row["payload"]:
-        return {}
+    if row is None:
+        return None, {}
     try:
         value = json.loads(row["payload"])
     except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+        value = {}
+    return int(row["id"]), value if isinstance(value, dict) else {}
 
 
 def _latest_run_summary(conn: Any, task_id: str) -> str:
@@ -95,7 +103,7 @@ def _has_creator_wake(conn: Any, task_id: str) -> bool:
     ).fetchone() is not None
 
 
-def _claim_candidate(conn: Any, max_attempts: int) -> tuple[Optional[kb.Task], int]:
+def _claim_candidate(conn: Any, max_attempts: int) -> Optional[_BlockedClaim]:
     """Atomically reserve one eligible blocked task for an auxiliary call."""
     with kb.write_txn(conn):
         rows = conn.execute(
@@ -113,13 +121,18 @@ def _claim_candidate(conn: Any, max_attempts: int) -> tuple[Optional[kb.Task], i
             ).fetchone()[0])
             if attempts >= max_attempts:
                 continue
+            event_id, payload = _latest_block_event(conn, task_id)
+            if event_id is None:
+                continue
             attempt = attempts + 1
             kb._append_event(
                 conn, task_id, _ATTEMPT_EVENT,
-                {"attempt": attempt, "max_attempts": max_attempts},
+                {"attempt": attempt, "max_attempts": max_attempts, "blocked_event_id": event_id},
             )
-            return kb.get_task(conn, task_id), attempt
-    return None, 0
+            task = kb.get_task(conn, task_id)
+            if task is not None:
+                return _BlockedClaim(task, attempt, event_id, payload)
+    return None
 
 
 def _parse_decision(raw: str) -> tuple[str, str, str]:
@@ -142,11 +155,11 @@ def _parse_decision(raw: str) -> tuple[str, str, str]:
 def resolve_one(conn: Any, *, max_attempts: int = 1, timeout: int = 120) -> ResolveOutcome:
     """Resolve at most one blocked task; expected failures leave it blocked."""
     max_attempts = max(1, int(max_attempts))
-    task, attempt = _claim_candidate(conn, max_attempts)
-    if task is None:
+    claim = _claim_candidate(conn, max_attempts)
+    if claim is None:
         return ResolveOutcome(None, False, reason="no eligible blocked task")
 
-    payload = _latest_block_payload(conn, task.id)
+    task = claim.task
     raw, reason = _call_aux(
         "blocked resolver", task.id, aux_task="kanban_block_resolver", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(
@@ -154,9 +167,9 @@ def resolve_one(conn: Any, *, max_attempts: int = 1, timeout: int = 120) -> Reso
             title=_safe_text(task.title, 400),
             assignee=_safe_text(task.assignee, 100),
             block_kind=task.block_kind or "unspecified",
-            reason=_safe_text(payload.get("reason"), 1200) or "(no reason recorded)",
+            reason=_safe_text(claim.payload.get("reason"), 1200) or "(no reason recorded)",
             run_summary=_latest_run_summary(conn, task.id),
-            attempt=attempt,
+            attempt=claim.attempt,
             max_attempts=max_attempts,
             body=_safe_text(task.body, 4000) or "(no body)",
         ),
@@ -169,16 +182,17 @@ def resolve_one(conn: Any, *, max_attempts: int = 1, timeout: int = 120) -> Reso
     if not action:
         return ResolveOutcome(task.id, True, reason=reason)
 
-    current = kb.get_task(conn, task.id)
-    if current is None or current.status != "blocked":
-        return ResolveOutcome(task.id, True, action=action, reason="task changed while resolver ran")
-    kb.add_comment(conn, task.id, _AUTHOR, note)
-    if action == "retry":
-        # needs_input/capability were excluded at claim time; recheck the live row
-        # so a concurrent edit cannot turn this into an approval bypass.
+    with kb.write_txn(conn):
         current = kb.get_task(conn, task.id)
-        if current and current.status == "blocked" and current.block_kind not in {"needs_input", "capability"}:
-            if kb.unblock_task(conn, task.id):
+        event_id, _ = _latest_block_event(conn, task.id)
+        if current is None or current.status != "blocked" or event_id != claim.event_id:
+            return ResolveOutcome(task.id, True, action=action, reason="task changed while resolver ran")
+        if action == "retry" and current.block_kind in {"needs_input", "capability"}:
+            return ResolveOutcome(task.id, True, action="escalate", reason="human gate preserved")
+
+        kb.add_comment(conn, task.id, _AUTHOR, note)
+        if action == "retry":
+            if kb._unblock_task_in_txn(conn, task.id):
                 return ResolveOutcome(task.id, True, action="retry", reason="task unblocked")
-        return ResolveOutcome(task.id, True, action="escalate", reason="human gate preserved")
-    return ResolveOutcome(task.id, True, action="escalate", reason="left blocked for human")
+            return ResolveOutcome(task.id, True, action="escalate", reason="human gate preserved")
+        return ResolveOutcome(task.id, True, action="escalate", reason="left blocked for human")

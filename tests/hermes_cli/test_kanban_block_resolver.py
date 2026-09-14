@@ -69,3 +69,25 @@ def test_resolver_adds_context_retries_once_and_preserves_attempt_budget(tmp_pat
         assert kb.get_task(conn, task_id).status == "blocked"
     finally:
         conn.close()
+
+
+def test_resolver_does_not_apply_stale_decision_to_replacement_blocker(tmp_path, monkeypatch):
+    conn = _board(tmp_path, monkeypatch)
+    try:
+        task_id = kb.create_task(conn, title="flaky fetch", assignee="worker")
+        assert kb.block_task(conn, task_id, reason="first timeout", kind="transient")
+
+        def replace_blocker(*args, **kwargs):
+            assert kb.unblock_task(conn, task_id)
+            assert kb.block_task(conn, task_id, reason="replacement blocker", kind=None)
+            return ('{"action":"retry","context":"Retry the first timeout.",'
+                    '"rationale":"The first blocker looked transient."}', "")
+
+        monkeypatch.setattr(resolver, "_call_aux", replace_blocker)
+        outcome = resolver.resolve_one(conn)
+
+        assert outcome.reason == "task changed while resolver ran"
+        assert kb.get_task(conn, task_id).status == "blocked"
+        assert not kb.list_comments(conn, task_id)
+    finally:
+        conn.close()

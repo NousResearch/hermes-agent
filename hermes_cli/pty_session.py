@@ -108,7 +108,18 @@ class PtySession:
         self.attached = True
         self.last_detached_at = None
         if snap := self.buffer.snapshot():
-            await ws.send_bytes(snap)
+            try:
+                await ws.send_bytes(snap)
+            except Exception:
+                # The client vanished mid-replay and the caller's handler unwinds before its
+                # writer-loop finally, so nothing else will detach this socket: undo the committed
+                # attach here, or the session reads attached forever and reap_idle() — which only
+                # reclaims ``not alive`` or detached sessions with a detach timestamp — leaks the
+                # PTY process group.
+                self._ws = None
+                self.attached = False
+                self.last_detached_at = time.monotonic()
+                return False
         if force_redraw:
             return await self.write(ws, TUI_FORCE_REDRAW)
         return True

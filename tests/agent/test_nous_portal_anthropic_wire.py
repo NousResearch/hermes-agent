@@ -21,7 +21,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli import runtime_provider as rp
+from hermes_cli import providers as _providers
 from hermes_cli.providers import nous_api_mode
+
+
+@pytest.fixture(autouse=True)
+def _native_wire_selected(monkeypatch):
+    """These contracts describe the native wire, which is now opt-in (``nous.anthropic_wire:
+    native``; default ``chat`` since 2026-09-06, see ``nous_api_mode``). Select it here so the
+    wire keeps working for the flip-back; the default's own contract is in
+    ``test_nous_anthropic_wire_default.py``."""
+    monkeypatch.setattr(_providers, "_nous_anthropic_wire", lambda: "native")
 
 PORTAL_URL = "https://inference-api.nousresearch.com/v1"
 # Staging / preview hosts used via NOUS_INFERENCE_BASE_URL — not the prod
@@ -202,12 +212,15 @@ class TestClientShape:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-should-not-leak")
         client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)
 
+        from tests.agent.test_anthropic_client_auth import wire_headers
+
         assert client.auth_token == "portal-invoke-jwt"
-        assert client.api_key is None
-        assert "X-Api-Key" not in client.auth_headers
-        assert client.auth_headers.get("Authorization", "").startswith(
-            "Bearer portal-invoke-jwt"
-        )
+        # The guard is a copy-safe Omit() default header, so assert what reaches the wire —
+        # on the client and on a with_options() copy (which re-reads ANTHROPIC_API_KEY).
+        for wire_client in (client, client.with_options(timeout=30)):
+            headers = wire_headers(wire_client)
+            assert "x-api-key" not in headers
+            assert headers.get("authorization", "").startswith("Bearer portal-invoke-jwt")
 
 
 

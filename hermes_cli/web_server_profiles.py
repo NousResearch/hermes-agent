@@ -233,13 +233,17 @@ def _config_profile_scope(profile: Optional[str]):
     """Await-safe, config-only profile scope: touches ONLY the task-local HERMES_HOME
     contextvar, never the process-global skills-module attributes ``_profile_scope`` swaps
     (holding those across an ``await`` lets a concurrent request restore THIS request's dir
-    on its ``finally``). None/""/"current" = no override."""
+    on its ``finally``). None/""/"current" = no override.
+
+    Explicit names resolving to the process home retain current-profile semantics.
+    Still enter the requested home so a nested scope cannot retain another profile.
+    """
     if _is_current_profile(profile):
         yield None
         return
     profile_dir = _resolve_profile_dir(profile.strip())
     with _hermes_home_scope(profile_dir):
-        yield profile_dir
+        yield None if profile_dir.resolve() == get_process_hermes_home().resolve() else profile_dir
 
 
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with

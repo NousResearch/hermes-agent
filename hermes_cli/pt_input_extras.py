@@ -269,10 +269,32 @@ def _modify_other_keys_aliases(ANSI_SEQUENCES: dict, Keys) -> dict[str, object]:
             for mod in _lock_twins(m) if key is not None else ():
                 _put(twin_fmt.format(mod=mod), key)
 
+    keypad_twins = {
+        57414: "\x1b[13;{mod}u",  # Enter
+        **{code: "\x1b[1;{mod}" + suffix for code, suffix in
+           zip((57417, 57418, 57419, 57420, 57423, 57424), "DCABHF")},
+        **{code: f"\x1b[{number};{{mod}}~" for code, number in
+           ((57421, 5), (57422, 6), (57425, 2), (57426, 3))},
+    }
     for code, key_val in _kitty_functional_map(Keys).items():
         _put(f"\x1b[{code}u", key_val)
         for mod in _lock_twins(1):  # with a lock on these arrive as ESC[<code>;129u etc.
             _put(f"\x1b[{code};{mod}u", key_val)
+        twin = keypad_twins.get(code)
+        if isinstance(key_val, str) and not isinstance(key_val, Keys) and len(key_val) == 1:
+            twin = f"\x1b[{ord(key_val)};{{mod}}u"
+        # Modified keypad keys inherit existing non-keypad semantics, not new bindings.
+        # Some twins (Alt+Enter, lock variants) are still in this builder's pending aliases.
+        for modifier in range(2, 9):
+            for mod in _lock_variants(modifier):
+                equivalent = None
+                if twin is not None:
+                    source = twin.format(mod=mod)
+                    equivalent = ANSI_SEQUENCES.get(source, aliases.get(source))
+                elif key_val is Keys.Ignore:
+                    equivalent = Keys.Ignore
+                if equivalent is not None:
+                    _put(f"\x1b[{code};{mod}u", equivalent)
     return aliases
 
 

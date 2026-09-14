@@ -107,6 +107,10 @@ class _FakeSessionDB:
 
 
 def test_desktop_session_search_merges_id_matches_before_content_matches(monkeypatch):
+    from hermes_state import SessionDB
+
+    # Search projection is mocked, but an owner must initialize the store.
+    SessionDB().close()
     _FakeSessionDB.opened_read_only = None
     _FakeSessionDB.requested_fields = None
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)

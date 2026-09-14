@@ -312,6 +312,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         A/B, while dropping numbers regressed line-referencing."""
         from tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
+        # A trailing newline terminates the final line — it does not start a new,
+        # empty one. Splitting without dropping it rendered a phantom "<N+1>|"
+        # gutter line on every newline-terminated file (`cat -n` semantics).
+        # Exactly ONE terminator is dropped, so a genuinely selected trailing
+        # blank line in a page keeps its own number.
+        if content.endswith('\n'):
+            content = content[:-1]
         return '\n'.join(
             f"{i}|{line if len(line) <= max_line_length else line[:max_line_length] + '... [truncated]'}"
             for i, line in enumerate(content.split('\n'), start=start_line))
@@ -441,19 +448,28 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         name-based blocklist can't cover a FIFO (a file TYPE at any path); ``[ -f ]``
         is a stat (symlinks followed) so it answers without touching content."""
         arg = self._escape_shell_arg(path)
+        # A missing path ECHOES its sentinel: a non-zero exit with no sentinel means the shell itself did
+        # not run (container still starting, removed out-of-band, transport down) — not a missing file.
+        # Reporting that as "File not found" made the model trust a false negative for the whole session.
         stat_result = self._exec(
             f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
             f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
-            f"else exit 1; fi")
-        if stat_result.exit_code != 0:
-            return 0, "missing"
+            f"else echo {MISSING_SENTINEL}; fi")
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout).strip()
+        if stat_output == MISSING_SENTINEL:
+            return 0, "missing"
         if stat_output == NOT_REGULAR_SENTINEL:
             return 0, "not_regular"
+        if stat_result.exit_code != 0:
+            return 0, "env_unavailable"
         try:
             return int(stat_output), "ok"
         except ValueError:
             return 0, "bad_size"
+
+    def _env_unavailable_error(self, path: str) -> ReadResult:
+        return ReadResult(error=(f"Terminal environment unavailable: could not stat {path} "
+                                 "(the sandbox may still be starting or was removed). Retry shortly."))
 
     def _detect_binary(self, path: str) -> tuple[bool, Optional[bytes]]:
         """``(is_binary, sample_bytes)`` — byte-layer detection when the transport
@@ -641,7 +657,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             file_size=file_size, file_ends_with_newline=file_ends_with_newline)
 
     def _native_read_enabled(self) -> bool:
-        """Whether ``read_file`` may bypass the shell: only POSIX + ``LocalEnvironment``
+        """Whether ``read_file`` and ``search_files`` may bypass the shell: only POSIX + ``LocalEnvironment``
         (file is on this host, path already native; Windows keeps the shell path since
         file_operations holds Git-Bash-style paths there). ``HERMES_NATIVE_FILE_READ=0``
         turns the fast path off."""
@@ -812,6 +828,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._read_file_missing(path, offset, limit)
         if status == "not_regular":
             return self._not_regular_error(path)
+        if status == "env_unavailable":
+            return self._env_unavailable_error(path)
         if self._is_image(path):  # never inlined — redirect to the vision tool
             return self._image_redirect_result(file_size)
         is_binary, sample_bytes = self._detect_binary(path)
@@ -858,6 +876,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         read path so the BOM strip, pagination hint, ``cut`` newline-artifact fix and
         the ambiguous-silence guards never drift apart. ``file_ends_with_newline`` is
         None when the caller could not tell (artifact left alone, as before)."""
+        # ``wc -l`` counts newlines, not lines: a nonempty file whose last byte
+        # is not a newline holds one more line than the count (#3907). Adjust
+        # here — the single choke point — so total_lines, truncation, and the
+        # past-EOF guard agree on every read path (compound, sequential, native).
+        if file_size > 0 and file_ends_with_newline is False:
+            total_lines += 1
         if offset == 1:  # only the first chunk can carry a BOM (byte 0)
             read_output, _ = _strip_bom(read_output)
         truncated = total_lines > end_line
@@ -964,6 +988,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._suggest_similar_files(path)
         if status == "not_regular":
             return self._not_regular_error(path)
+        if status == "env_unavailable":
+            return self._env_unavailable_error(path)
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
         is_binary, sample_bytes = self._detect_binary(path)
@@ -985,6 +1011,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return ReadResult(error=f"File not found: {path}")
         if status == "not_regular":
             return self._not_regular_error(path)
+        if status == "env_unavailable":
+            return self._env_unavailable_error(path)
         if status == "bad_size":
             return ReadResult(error=f"Could not determine file size: {path}")
         if max_bytes is not None and file_size > max_bytes:
@@ -1357,7 +1385,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 error=(f"Invalid file search order {order!r}; expected "
                        "'discovery' or 'modified'."))
         path = self._expand_path(path)
-        if "not_found" in self._path_exists_probe(path):
+        exists_probe = self._path_exists_probe(path)
+        if "exists" not in exists_probe and "not_found" not in exists_probe:
+            return SearchResult(error=(f"Terminal environment unavailable: could not stat {path} "
+                                       "(the sandbox may still be starting or was removed). Retry shortly."))
+        if "not_found" in exists_probe:
             # Models often pass several paths in one string: search the parts that exist.
             multi = self._try_multi_path_search(
                 pattern, path, target, file_glob, limit, offset, output_mode, context, order)

@@ -14,12 +14,31 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 from hermes_constants import hermes_home_key
 
 logger = logging.getLogger(__name__)
+
+_session_tool_scope = ContextVar("session_tool_scope", default=None)
+
+
+@contextmanager
+def session_tool_scope(scope):
+    """Execution-owned overlay, additive to the existing profile registry."""
+    token = _session_tool_scope.set(scope)
+    try:
+        yield
+    finally:
+        _session_tool_scope.reset(token)
+
+
+def current_session_tool_scope():
+    return _session_tool_scope.get()
+
 
 # Cap on a tool error body; only trims runaway interpolated exceptions (static msgs are ~115 chars).
 _MAX_TOOL_ERROR_CHARS = 2048
@@ -88,6 +107,15 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
     per-file AST scan costs ~145 ms over ~100 files, so verdicts are memoized on disk keyed
     by ``(mtime_ns, size)``; a mismatch or corrupt cache re-scans that file. The write is
     best-effort and atomic, so concurrent processes race harmlessly."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    if safe_worker_enabled():
+        # Toolset filtering happens AFTER import. Keep the troubleshooting worker's
+        # import graph closed over reviewed core tools, not plugin-backed wrappers
+        # or a profile-writable discovery cache. Core approval/redaction stay intact.
+        module_names = ["tools.file_tools", "tools.terminal_tool", "tools.process_registry"]
+        for module_name in module_names:
+            importlib.import_module(module_name)
+        return module_names
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
     cache = _load_discovery_cache()
     fresh_cache: Dict[str, list] = {}
@@ -311,10 +339,14 @@ def _check_fn_cached(fn: Callable) -> bool:
         cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             return cached[1]
+    exc_info = None
     try:
         value, outcome = bool(fn()), "returned False"
-    except Exception:
-        value, outcome = False, "raised"
+    except Exception as exc:
+        # Keep the exception for the verdict log below (emitted outside this block, where
+        # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
+        # or its resolver, and a bare "raised" verdict reads as "nothing configured" (#87950).
+        value, outcome, exc_info = False, "raised", exc
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:
@@ -333,7 +365,8 @@ def _check_fn_cached(fn: Callable) -> bool:
         # No recent success (or grace expired) — honor the failure; logged so silent tool
         # loss in quiet mode (subagents) is diagnosable.
         logger.warning(
-            "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome)
+            "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
+            exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
         return False
 
@@ -410,7 +443,10 @@ class ToolRegistry:
 
     def _merged_tools(self, scope: Optional[str] = None) -> Dict[str, ToolEntry]:
         """Return global tools overlaid with one profile's plugin tools."""
-        return {**self._tools, **self._scoped_tools.get(scope or self.current_scope_key(), {})}
+        entries = {**self._tools, **self._scoped_tools.get(scope or self.current_scope_key(), {})}
+        if scope is None:
+            entries.update(self._scoped_tools.get(current_session_tool_scope(), {}))
+        return entries
 
     def _toolset_entries(self, toolset: str, scope: Optional[str]) -> List[ToolEntry]:
         return self._grouped(self._merged_tools(scope).values()).get(toolset, [])
@@ -602,6 +638,17 @@ class ToolRegistry:
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
+        # Reject malformed schemas at registration, not at request time: a non-dict
+        # ``parameters`` (e.g. a list) serializes into every provider request and 400s the
+        # whole turn far from the offending plugin. Failing here names the culprit instead.
+        if not isinstance(schema, dict):
+            raise ValueError(
+                f"Tool {name!r}: schema must be a dict, got {type(schema).__name__}")
+        params = schema.get("parameters")
+        if params is not None and not isinstance(params, dict):
+            raise ValueError(
+                f"Tool {name!r}: schema['parameters'] must be an object (JSON Schema dict), "
+                f"got {type(params).__name__}")
         handler_owner = self._plugin_owner_of(handler)
         caller_owner = self._plugin_namespace_of_module(self._caller_module())
         owner = caller_owner or handler_owner

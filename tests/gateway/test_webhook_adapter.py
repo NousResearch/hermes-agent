@@ -72,6 +72,8 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     """Build the aiohttp Application from the adapter (without starting a full server)."""
     # Mirror connect(): client_max_size enforces the cap on chunked bodies.
     app = web.Application(client_max_size=adapter._max_body_bytes)
+    from tests.gateway.fixtures.webhook_route_authority import mount_authority
+    mount_authority(app, adapter)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
@@ -299,6 +301,36 @@ class TestValidateSignature:
             }
         )
         assert adapter._validate_signature(req, body, secret) is True
+
+    @pytest.mark.parametrize(
+        "secret, sign_with, body, received, stale, expected",
+        [
+            ("whsec_" + base64.b64encode(b"0123456789abcdef").decode(), None, b'{"a":1}', b'{"a":1}', False, True),
+            ("raw-signing-secret", None, b'{"a":1}', b'{"a":1}', False, True),
+            ("real-secret", "attacker-secret", b'{"a":1}', b'{"a":1}', False, False),
+            ("real-secret", None, b'{"a":1}', b'{"a":2}', False, False),  # tampered body
+            ("real-secret", None, b'{"a":1}', b'{"a":1}', True, False),  # replayed stale timestamp
+        ],
+    )
+    def test_standard_webhooks_headers_validate_like_svix(self, secret, sign_with, body, received, stale, expected):
+        """#47451/#101837: webhook-id/-timestamp/-signature is the same HMAC scheme as svix-*."""
+        adapter = _make_adapter()
+        timestamp = str(int(time.time()) - (600 if stale else 0))
+        sig = _svix_signature(body, sign_with or secret, "msg_std", timestamp)
+        req = _mock_request(headers={"webhook-id": "msg_std", "webhook-timestamp": timestamp, "webhook-signature": sig})
+        assert adapter._validate_signature(req, received, secret) is expected
+
+    def test_gitlab_secret_token_survives_unsigned_standard_webhooks_metadata(self):
+        """GitLab sends webhook-id/webhook-timestamp on every delivery and webhook-signature only when a
+        signing token is set; a legacy X-Gitlab-Token route must not be hijacked into the HMAC path."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "X-Gitlab-Token": "legacy-token", "webhook-id": "gl_1", "webhook-timestamp": str(int(time.time())),
+        })
+        assert adapter._validate_signature(req, b"{}", "legacy-token") is True
+        req_partial = _mock_request(headers={"webhook-id": "gl_2", "webhook-timestamp": str(int(time.time())),
+                                             "webhook-signature": "v1,AAAA"})
+        assert adapter._validate_signature(req_partial, b"{}", "legacy-token") is False
 
 
 # ===================================================================
@@ -684,6 +716,7 @@ class TestWebhookSilenceSuppression:
         mock_target.send = AsyncMock(return_value=SendResult(success=True))
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
         adapter.gateway_runner = mock_runner
 
@@ -811,6 +844,7 @@ class TestDeliverCrossPlatformThreadId:
 
         mock_runner = MagicMock()
         mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner._authorization_adapter = lambda platform, profile=None: mock_runner.adapters.get(platform)
         mock_runner.config.get_home_channel.return_value = None
 
         adapter.gateway_runner = mock_runner
@@ -939,10 +973,11 @@ class TestMultiplexProfileWebhookAuthentication:
     def _configure_profiles(adapter, tmp_path, monkeypatch):
         runner = MagicMock()
         runner.config.multiplex_profiles = True
+        runner._profile_name_for_source.return_value = None
         adapter.gateway_runner = runner
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex, profile_allowlist=None: [
+            lambda multiplex: [
                 ("default", tmp_path),
                 ("worker", tmp_path / "profiles" / "worker"),
                 ("other", tmp_path / "profiles" / "other"),
@@ -1047,10 +1082,14 @@ class TestMultiplexProfileWebhookAuthentication:
         self._configure_profiles(adapter, tmp_path, monkeypatch)
         seen = []
 
-        async def _capture(event):
-            seen.append(event)
+        async def _capture(request, route_config, route_name, profile, payload, prompt,
+                           event_type, delivery_id, now):
+            seen.append((profile, prompt))
+            return web.Response(status=202)
 
-        adapter.handle_message = _capture
+        # Rendering-only boundary; the authority correctly refuses an unserved
+        # secondary home (covered independently by the native profile tests).
+        adapter._dispatch_agent_run = _capture
         body = b'{"action":"opened"}'
         headers = {
             "Content-Type": "application/json",
@@ -1065,8 +1104,8 @@ class TestMultiplexProfileWebhookAuthentication:
                 assert resp.status == 202
                 await asyncio.sleep(0.05)
         assert len(seen) == 1
-        assert seen[0].source.profile == "worker"
-        assert "Body of worker-only." in seen[0].text
+        assert seen[0][0] == "worker"
+        assert "Body of worker-only." in seen[0][1]
 
 
 def test_route_profile_validation_fails_closed():

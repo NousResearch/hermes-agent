@@ -150,18 +150,24 @@ def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:
 class PluginDispatchMixin:
     @staticmethod
     def _invoke_hook_callback(callback: Callable, payload: Dict[str, Any]) -> Any:
-        """Invoke a hook while withholding additive fields from narrow legacy callbacks."""
+        """Invoke a hook while withholding additive fields from narrow legacy callbacks.
+
+        An ``async def`` callback returns a coroutine; resolve it the way plugin slash commands
+        are (loop-safe), otherwise the bare coroutine object is appended to the results and the
+        plugin's body never runs (#12449).
+        """
+        from hermes_cli.plugins import resolve_plugin_command_result
         try:
             parameters = inspect.signature(callback).parameters
         except (TypeError, ValueError):
-            return callback(**payload)  # no introspectable signature: historical behavior
+            return resolve_plugin_command_result(callback(**payload))  # no introspectable signature
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-            return callback(**payload)
+            return resolve_plugin_command_result(callback(**payload))
         keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-        return callback(**{
+        return resolve_plugin_command_result(callback(**{
             name: value for name, value in payload.items()
             if name in parameters and parameters[name].kind in keyword_kinds
-        })
+        }))
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all callbacks for *hook_name*; return their non-``None`` results.
@@ -172,6 +178,10 @@ class PluginDispatchMixin:
         closed with a block directive, others skip. ``_HOOK_CALLER_THREAD_HOOKS`` always run on the
         caller thread. ``pre_llm_call`` may return ``{"context": "..."}`` (or a str) to inject.
         """
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return []
         from hermes_cli.plugins import _resolve_hook_callback_timeout
         # Gateway platform events define event-local envelopes; a bus-wide version here would turn
         # unrelated adapter payloads into one monolithic compatibility contract.
@@ -202,8 +212,8 @@ class PluginDispatchMixin:
         self, hook_name: str, cb: Callable, kwargs: Dict[str, Any], timeout: float
     ) -> Any:
         """Run one callback on a daemon worker with a wall-clock cap; ``_HOOK_SKIPPED`` when
-        suppressed, still running, or timed out (worker abandoned, never joined). Exceptions
-        propagate."""
+        suppressed, still running, timed out (worker abandoned, never joined), or the worker
+        could not be started. Exceptions propagate."""
         callback_name = getattr(cb, "__name__", repr(cb))
         callback_key = (hook_name, id(cb))
         token = object()
@@ -224,19 +234,29 @@ class PluginDispatchMixin:
         outcome: Dict[str, Any] = {}
         failure: Dict[str, Exception] = {}
 
+        def _release_token() -> None:
+            with self._hook_timeout_lock:
+                if self._hook_running_callbacks.get(callback_key) is token:
+                    self._hook_running_callbacks.pop(callback_key, None)
+
         def _runner() -> None:
             try:
                 outcome["value"] = context.run(self._invoke_hook_callback, cb, kwargs)
             except Exception as exc:
                 failure["exc"] = exc
             finally:
-                with self._hook_timeout_lock:
-                    if self._hook_running_callbacks.get(callback_key) is token:
-                        self._hook_running_callbacks.pop(callback_key, None)
+                _release_token()
                 done.set()
 
         thread = threading.Thread(target=_runner, name=f"hermes-hook-{callback_name}"[:40], daemon=True)
-        thread.start()
+        try:
+            thread.start()
+        except RuntimeError as exc:
+            _release_token()  # the runner's finally never runs when OS thread creation fails
+            logger.warning(
+                "Hook '%s' callback %s worker failed to start: %s — skipping",
+                hook_name, callback_name, exc)
+            return _HOOK_SKIPPED
         if not done.wait(timeout=timeout):  # do not join — that would reintroduce the hang
             with self._hook_timeout_lock:
                 # See #6622.
@@ -373,16 +393,28 @@ class PluginDispatchMixin:
 
     def has_hook(self, hook_name: str) -> bool:
         """Return True when at least one callback is registered for a hook."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return False
         return bool(self._hooks.get(hook_name))
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
         """Return a stable snapshot of callbacks registered for a hook."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return ()
         return tuple(self._hooks.get(hook_name, ()))
 
     def render_system_prompt_sections(
         self, session_info: Mapping[str, Any]
     ) -> List[RenderedPluginSystemPromptSection]:
         """Render all registered sections deterministically and fail open."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return []
         frozen_info = types.MappingProxyType(dict(session_info))
         rendered: List[RenderedPluginSystemPromptSection] = []
         total_chars = len(PLUGIN_SECTIONS_START) + len(PLUGIN_SECTIONS_END) + 2
@@ -443,10 +475,18 @@ class PluginDispatchMixin:
 
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return False
         return bool(self._middleware.get(kind))
 
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
         """Call middleware callbacks for *kind* (each isolated); return non-``None`` results."""
+        from agent.safe_worker_policy import safe_worker_enabled
+
+        if safe_worker_enabled():
+            return []
         results: List[Any] = []
         for cb in self._middleware.get(kind, []):
             try:

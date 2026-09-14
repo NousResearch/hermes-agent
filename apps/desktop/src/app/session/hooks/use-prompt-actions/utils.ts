@@ -1,4 +1,5 @@
 import type { AppendMessage } from '@assistant-ui/react'
+import { JsonRpcGatewayError } from '@hermes/shared'
 
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
@@ -7,6 +8,7 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
 import { registerRecoveredRuntime, singleFlightSessionResume, takeRecoveredRuntime } from './single-flight-resume'
+import type { SubmissionDestination } from './submission-destination'
 
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
@@ -279,6 +281,17 @@ export const SESSION_BUSY_RETRY_INTERVAL_MS = 150
 
 export function isSessionBusyError(error: unknown): boolean {
   return /session busy/i.test(error instanceof Error ? error.message : String(error))
+}
+
+// prompt.submit refused because another surface (TUI, messaging gateway)
+// holds this session's lease (4090 / SESSION_NOT_OWNED, #106217). The gateway
+// stamps the machine reason in `error.data.reason`; the prose fallback covers
+// backends older than that contract. Deterministic until the owner lets go —
+// Retry reproduces it, so the card offers "Start new session" instead.
+export function isSessionNotOwnedError(error: unknown): boolean {
+  const reason = error instanceof JsonRpcGatewayError ? (error.data as { reason?: unknown } | undefined)?.reason : null
+
+  return reason === 'SESSION_NOT_OWNED' || /already has a live owner/i.test(error instanceof Error ? error.message : '')
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
@@ -689,6 +702,12 @@ export function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targ
 }
 
 export interface SubmitTextOptions {
+  /** Original slash invocation: retries must not re-expand a prepared prompt. */
+  retryText?: string
+  /** Captured by slash dispatch before asynchronous expansion. */
+  destination?: SubmissionDestination
+  /** Stable caller-owned identity; retain across uncertain admission retries. */
+  submission_id?: string
   attachments?: ComposerAttachment[]
   /** The composer scope key that was actually loaded when this text was
    *  submitted (see use-composer-draft's activeQueueSessionKeyRef). Compared
@@ -707,6 +726,13 @@ export interface SubmitTextOptions {
    *  renders anywhere — the off-screen path for widget intents. The agent
    *  still receives the text as a normal user turn. */
   displayKind?: 'hidden'
+  /** Per-turn client surface the gateway turns into a model-bound note. The
+   *  HUD sets `hud` from its own store; a GPT-Live delegation passes
+   *  `voice-live` (spoken transcript in, speakable prose out). */
+  surface?: 'voice-live'
+  /** With `surface: 'voice-live'`: the recent spoken exchange, appended to the
+   *  model-bound note by the gateway (never persisted, never rendered). */
+  voiceContext?: string
   fromQueue?: boolean
   /** Runtime session id to submit into. Queue drains pass this so a
    *  backgrounded/source session cannot be replaced by the current foreground

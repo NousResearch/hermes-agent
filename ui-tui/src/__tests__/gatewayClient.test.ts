@@ -139,6 +139,68 @@ describe('GatewayClient websocket attach mode', () => {
     }
   })
 
+  it('publishes canonical readiness once after discovery and arms the negotiated heartbeat', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    delete process.env.HERMES_TUI_SIDECAR_URL
+    const gw = new GatewayClient(async () => ({ url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }))
+    const events: any[] = []
+    gw.on('event', event => events.push(event))
+
+    try {
+      gw.start()
+      gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(FakeWebSocket.instances).toHaveLength(1)
+      const socket = FakeWebSocket.instances[0]!
+      socket.open()
+      socket.message(JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { heartbeat: true } } }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(0)
+      const request = JSON.parse(socket.sent[0]!)
+      expect(request.method).toBe('runtime.describe')
+      socket.message(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+        session_create: { sources: ['tui'], parameters: ['source', 'request_id'] }
+      } }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.filter(event => event.type === 'gateway.ready')).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(socket.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
+    } finally {
+      gw.kill()
+      expect(vi.getTimerCount()).toBe(0)
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps discovery-only retries alive and delivers readiness to the mounted subscriber', async () => {
+    vi.useFakeTimers()
+    delete process.env.HERMES_TUI_GATEWAY_URL
+    const grant = { url: 'ws://gateway.test/api/ws', protocols: [], instance_id: 'owner', profile_id: 'fixture' }
+    const bootstrap = vi.fn().mockResolvedValueOnce(grant).mockRejectedValueOnce(new Error('owner stopped')).mockRejectedValueOnce(new Error('owner stopped')).mockResolvedValue(grant)
+    const gw = new GatewayClient(bootstrap)
+    const events: any[] = []
+    gw.on('event', event => events.push(event))
+
+    try {
+      gw.start(); gw.drain()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.open()
+      await vi.advanceTimersByTimeAsync(0)
+      FakeWebSocket.instances[0]!.close()
+      await vi.advanceTimersByTimeAsync(RECONNECT_MAX_MS * 4)
+      expect(bootstrap.mock.calls.map(args => args[0])).toEqual([true, false, false, false])
+      const socket = FakeWebSocket.instances.at(-1)!
+      socket.open()
+      await vi.advanceTimersByTimeAsync(0)
+      const request = JSON.parse(socket.sent[0]!)
+      socket.message(JSON.stringify({ id: request.id, result: { session_create: { sources: ['tui'], parameters: [] } } }))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(events.some(event => event.type === 'gateway.ready')).toBe(true)
+    } finally { gw.kill(); vi.useRealTimers() }
+  })
+
   it('waits for websocket open and resolves RPC requests', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     const gw = new GatewayClient()
@@ -402,6 +464,34 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
+  it('surfaces JSON-RPC error code and data to callers (shared error mapping)', async () => {
+    process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
+    const gw = new GatewayClient()
+
+    gw.start()
+    const socket = FakeWebSocket.instances[0]!
+
+    socket.open()
+    const req = gw.request('projects.create', {})
+    await vi.waitFor(() => expect(socket.sent.length).toBeGreaterThan(0))
+
+    const frame = JSON.parse(socket.sent[0] ?? '{}') as { id: string }
+    socket.message(
+      JSON.stringify({
+        error: { code: -32601, data: { method: 'projects.create' }, message: 'unknown method: projects.create' },
+        id: frame.id,
+        jsonrpc: '2.0'
+      })
+    )
+
+    await expect(req).rejects.toMatchObject({
+      code: -32601,
+      data: { method: 'projects.create' },
+      message: 'unknown method: projects.create'
+    })
+    gw.kill()
+  })
+
   it('uses the undici WebSocket fallback when global WebSocket is unavailable', () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=hunter2&channel=secret'
     delete (globalThis as { WebSocket?: unknown }).WebSocket
@@ -517,14 +607,31 @@ describe('GatewayClient websocket attach mode', () => {
           params: { type: 'gateway.ready', payload: { heartbeat: true } }
         })
       )
+      // A live gateway answers every ping (tui_gateway/ws.py replies inline);
+      // the shared channel counts any inbound frame as liveness, so a socket
+      // whose pings keep getting acked must never trip the deadline.
+      const acked: string[] = []
+
+      const ackPings = () => {
+        for (const raw of socket.sent) {
+          const frame = JSON.parse(raw) as { id: string; method: string }
+
+          if (frame.method === 'gateway.ping' && !acked.includes(frame.id)) {
+            acked.push(frame.id)
+            socket.message(JSON.stringify({ id: frame.id, jsonrpc: '2.0', result: { ok: true } }))
+          }
+        }
+      }
+
       await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      expect(JSON.parse(socket.sent.at(-1) ?? '{}')).toMatchObject({ method: 'gateway.ping' })
 
-      const heartbeat = JSON.parse(socket.sent.at(-1) ?? '{}') as { id: string; method: string }
+      for (let elapsed = 0; elapsed < WS_HEARTBEAT_DEAD_MS * 2; elapsed += WS_HEARTBEAT_INTERVAL_MS) {
+        ackPings()
+        await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_INTERVAL_MS)
+      }
 
-      expect(heartbeat.method).toBe('gateway.ping')
-      socket.message(JSON.stringify({ id: heartbeat.id, jsonrpc: '2.0', result: { ok: true } }))
-
-      await vi.advanceTimersByTimeAsync(WS_HEARTBEAT_DEAD_MS + WS_HEARTBEAT_INTERVAL_MS)
+      expect(acked.length).toBeGreaterThan(2)
       expect(socket.readyState).toBe(FakeWebSocket.OPEN)
       expect(FakeWebSocket.instances).toHaveLength(1)
     } finally {

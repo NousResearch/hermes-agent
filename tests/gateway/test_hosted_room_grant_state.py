@@ -29,7 +29,7 @@ def test_grant_state_paths_keep_shared_and_named_profile_db(tmp_path, monkeypatc
     monkeypatch.setenv("HERMES_HOME", str(root))
 
     assert grant_state.grant_state_db_paths(profile_home) == (
-        root / "state.db",
+        root / "shared-state.db",
         profile_home / "state.db",
     )
 
@@ -46,7 +46,7 @@ def test_grant_state_paths_follow_the_active_profile_scope(tmp_path, monkeypatch
     token = set_hermes_home_override(str(profile_home))
     try:
         assert grant_state.grant_state_db_paths() == (
-            root / "state.db",
+            root / "shared-state.db",
             profile_home / "state.db",
         )
     finally:

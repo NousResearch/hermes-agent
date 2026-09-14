@@ -108,6 +108,153 @@ def test_database_guard_blocks_an_old_process_promoting_a_replica(tmp_path):
         )
 
 
+def test_migration_quarantines_both_sides_of_a_namespace_collision(tmp_path):
+    db = _replica_db(tmp_path)
+    rooms.create_room(
+        db,
+        room_id="room-1",
+        name="Field Room",
+        members=MEMBERS,
+        authority_gateway_id=AUTH_B,
+    )
+    actor_json = json.dumps(
+        {"kind": "system", "id": "room-control"},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("DROP TRIGGER trg_hosted_replicas_reject_reserved_insert")
+        conn.execute("DROP TRIGGER trg_hosted_replicas_reserve_insert")
+        conn.execute(
+            """INSERT INTO hosted_room_replicas(
+                   room_id, name, members_json, authority_gateway_id,
+                   authority_epoch, last_seq, latest_seq, event_bytes,
+                   created_at, updated_at, disbanded_at
+               ) VALUES ('room-1', 'Field Room', ?, ?, 1, 1, 1, 0, 1, 2, 2)""",
+            (json.dumps(MEMBERS, separators=(",", ":")), AUTH_A),
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_replica_events(
+                   room_id, seq, event_id, kind, actor_json, authority_epoch,
+                   payload_json, created_at
+               ) VALUES (
+                   'room-1', 1, 'replica-disband', 'room.disbanded', ?, 1, '{}', 2
+               )""",
+            (actor_json,),
+        )
+        rooms._initialize_schema(conn)  # noqa: SLF001
+
+    state = replicas.replica_state(db, room_id="room-1")
+    assert state["safety_status"] == "quarantined"
+    assert state["safety_reason"] == "room_namespace_collision"
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        assert rooms.room_safety._prune_disbanded_replicas_locked(  # noqa: SLF001
+            conn,
+            now=None,
+            max_replica_event_bytes=0,
+            max_replica_rooms=0,
+        ) == 0
+    assert replicas.replica_state(db, room_id="room-1")["safety_status"] == (
+        "quarantined"
+    )
+
+
+def test_database_budget_trigger_fences_an_old_replica_writer(tmp_path, monkeypatch):
+    db = _replica_db(tmp_path)
+    monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", 1024)
+    actor_json = json.dumps(USER, separators=(",", ":"), sort_keys=True)
+    payload_json = json.dumps({"text": "x" * 2048}, separators=(",", ":"))
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        rooms._initialize_schema(conn)  # noqa: SLF001
+        conn.execute(
+            """INSERT INTO hosted_room_replicas(
+                   room_id, name, members_json, authority_gateway_id,
+                   authority_epoch, last_seq, latest_seq, event_bytes,
+                   created_at, updated_at
+               ) VALUES ('old-writer', 'Legacy', ?, ?, 1, 0, 1, 0, 1, 1)""",
+            (json.dumps(MEMBERS, separators=(",", ":")), AUTH_A),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="budget exceeded"):
+            conn.execute(
+                """INSERT INTO hosted_room_replica_events(
+                       room_id, seq, event_id, kind, actor_json,
+                       authority_epoch, payload_json, created_at
+                   ) VALUES (
+                       'old-writer', 1, 'too-large', 'message.user', ?, 1, ?, 1
+                   )""",
+                (actor_json, payload_json),
+            )
+
+
+def test_root_schema_migrates_legacy_replica_before_capacity_pressure(
+    tmp_path, monkeypatch
+):
+    db = _replica_db(tmp_path)
+    actor_json = json.dumps(USER, separators=(",", ":"), sort_keys=True)
+    payload_json = json.dumps({"text": "x" * 2048}, separators=(",", ":"))
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            """CREATE TABLE hosted_room_replicas (
+                room_id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                members_json TEXT NOT NULL, authority_gateway_id TEXT NOT NULL,
+                authority_epoch INTEGER NOT NULL, last_seq INTEGER NOT NULL,
+                latest_seq INTEGER NOT NULL, event_bytes INTEGER NOT NULL,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE hosted_room_replica_events (
+                room_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                event_id TEXT NOT NULL, kind TEXT NOT NULL,
+                actor_json TEXT NOT NULL, authority_epoch INTEGER,
+                payload_json TEXT NOT NULL, created_at REAL NOT NULL,
+                PRIMARY KEY (room_id, seq)
+            )"""
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_replicas VALUES
+               ('legacy-large', 'Legacy', ?, ?, 1, 1, 1, 0, 1, 1)""",
+            (json.dumps(MEMBERS, separators=(",", ":")), AUTH_A),
+        )
+        conn.execute(
+            """INSERT INTO hosted_room_replica_events VALUES
+               ('legacy-large', 1, 'legacy-event', 'message.user', ?, 1, ?, 1)""",
+            (actor_json, payload_json),
+        )
+
+    monkeypatch.setattr(rooms, "MAX_GATEWAY_EVENT_BYTES", 1024)
+    rooms.create_room(
+        db,
+        room_id="healthy-room",
+        name="Healthy",
+        members=MEMBERS,
+        authority_gateway_id=AUTH_B,
+    )
+    with sqlite3.connect(db) as conn:
+        columns = {row[1] for row in conn.execute(
+            "PRAGMA table_info(hosted_room_replicas)"
+        )}
+        assert {"disbanded_at", "quarantined_at", "quarantine_reason"} <= columns
+        assert conn.execute(
+            "SELECT reason FROM hosted_room_quarantine WHERE room_id='legacy-large'"
+        ).fetchone()[0] == "replica_storage_budget_exceeded"
+    with pytest.raises(replicas.ReplicaHistoryExpiredError):
+        replicas.replica_state(db, room_id="legacy-large")
+    assert rooms.append_event(
+        db,
+        room_id="healthy-room",
+        event_id="healthy-event",
+        kind="message.user",
+        actor=USER,
+        payload={"text": "ok"},
+        authority_gateway_id=AUTH_B,
+        authority_epoch=1,
+    )["seq"] == 1
+
+
 def test_disbanded_replica_room_id_cannot_be_recreated(tmp_path):
     authority_db = _authority_db(tmp_path)
     _seed_room(authority_db, n_events=1)

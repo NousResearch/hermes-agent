@@ -138,7 +138,7 @@ export function UpdatesOverlay() {
             commits={status?.commits ?? []}
             onInstall={handleInstall}
             onLater={() => handleClose(false)}
-            onRetryCheck={() => void check()}
+            onRetryCheck={() => void check({ force: true })}
             status={status}
             target={target}
             updateAvailable={updateAvailable}
@@ -215,6 +215,7 @@ function IdleView({
           </Button>
         }
         body={u.connectionRetry}
+        detail={status.message}
         icon={<ErrorIcon />}
         title={u.checkFailedTitle}
       />
@@ -557,11 +558,15 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
 function CenteredStatus({
   action,
   body,
+  detail,
   icon,
   title
 }: {
   action?: React.ReactNode
   body?: string
+  /** Diagnostic line from the main process (HTTP status, DNS, TLS…), shown
+   *  verbatim so a bug report carries the real cause. */
+  detail?: string
   icon: React.ReactNode
   title: string
 }) {
@@ -572,6 +577,11 @@ function CenteredStatus({
 
         <DialogTitle className="text-center text-lg">{title}</DialogTitle>
         {body && <DialogDescription className="text-center text-sm">{body}</DialogDescription>}
+        {detail && (
+          <p className="max-w-sm break-words rounded-md bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground">
+            {detail}
+          </p>
+        )}
       </div>
 
       {action && <div className="flex justify-center">{action}</div>}

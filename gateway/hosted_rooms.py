@@ -195,6 +195,12 @@ class RoomProbeUnavailableError(HostedRoomError):
 
 class EventConflictError(HostedRoomError): """Raised when an event id is reused with different immutable content."""
 
+class EventCursorConflictError(HostedRoomError):
+    """Raised when new room events invalidate an uncommitted publication plan."""
+
+class EventAttachmentConflictError(EventCursorConflictError):
+    """A publication lost its file commitments; use the same fresh-plan retry."""
+
 class AuthorityConflictError(HostedRoomError):
     """Raised when a stale room authority attempts to mutate hosted state."""
     reason = "authority_conflict"
@@ -406,10 +412,21 @@ def _schema_is_current(conn: sqlite3.Connection) -> bool:
 
 
 def default_db_path() -> Path:
-    """Return the gateway-wide state database for the active install."""
+    """Return the hosted-room coordination database for the active install.
+
+    Profile gateways (``~/.hermes/profiles/<name>/``) resolve to the shared
+    ROOT ``shared-state.db`` instead of the master ``state.db``: hosted-room
+    coordination is the only thing this module owns, and pointing profile
+    gateways at the master session store makes every profile process a
+    long-lived writer on state.db — the recurring multi-writer corruption
+    vector observed across a 6-gateway fleet (state.db WAL/FTS collisions
+    during bot-gateway restart storms, 2026-09-03). Keeping the hosted_room*
+    tables in a dedicated file means profile gateways never open the master
+    session store writable.
+    """
     from hermes_constants import get_hermes_home
     home = get_hermes_home()
-    return (home.parent.parent if home.parent.name == "profiles" else home) / "state.db"
+    return (home.parent.parent if home.parent.name == "profiles" else home) / "shared-state.db"
 
 
 def local_authority_gateway_id() -> str:
@@ -422,7 +439,7 @@ def local_authority_gateway_id() -> str:
 
 
 _connect = partial(
-    connect, db_label="state.db (hosted_rooms)", ready=_schema_is_current,
+    connect, db_label="shared-state.db (hosted_rooms)", ready=_schema_is_current,
     initialize=lambda conn: _initialize_schema(conn), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
 
 
@@ -506,7 +523,7 @@ def _event_content(row: sqlite3.Row) -> tuple[Any, Any, Any, Any]:
 
 
 def _gateway_event_bytes(conn: sqlite3.Connection) -> int:
-    return int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0])
+    return int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0]) + room_safety._replica_event_bytes_locked(conn)
 
 
 def _insert_event(
@@ -529,19 +546,13 @@ def _prepare_event(
         raise HostedRoomError("This Group Chat reached its history limit. Start a new Group Chat to continue.")
     if int(room["event_bytes"]) + additional_bytes > MAX_ROOM_EVENT_BYTES + byte_reserve:
         raise HostedRoomError("This Group Chat reached its storage limit. Start a new Group Chat to continue.")
-    replica_bytes = room_safety._replica_event_bytes_locked(conn)
-    gateway_bytes = replica_bytes + _gateway_event_bytes(conn)
+    gateway_bytes = _gateway_event_bytes(conn)
     if gateway_bytes + additional_bytes > gateway_byte_limit:
         _prune_disbanded_rooms_locked(
-            conn, now=None,
-            max_gateway_event_bytes=max(0, gateway_byte_limit - additional_bytes - replica_bytes))
-        gateway_bytes = replica_bytes + _gateway_event_bytes(conn)
-    if gateway_bytes + additional_bytes > gateway_byte_limit:
-        hosted_bytes = _gateway_event_bytes(conn)
+            conn, now=None, max_gateway_event_bytes=max(0, gateway_byte_limit - additional_bytes))
         room_safety._prune_disbanded_replicas_locked(
-            conn, now=None,
-            max_replica_event_bytes=max(0, gateway_byte_limit - additional_bytes - hosted_bytes))
-        gateway_bytes = room_safety._replica_event_bytes_locked(conn) + hosted_bytes
+            conn, now=None, max_replica_event_bytes=max(0, gateway_byte_limit - additional_bytes - int(conn.execute(_SUM_EVENT_BYTES).fetchone()[0])))
+        gateway_bytes = _gateway_event_bytes(conn)
     if gateway_bytes + additional_bytes > gateway_byte_limit:
         raise HostedRoomError("Group Chat storage is full on this host. Delete an old Group Chat and try again.")
     return additional_bytes
@@ -566,14 +577,17 @@ def _prune_disbanded_rooms_locked(
     if now is not None:
         candidates.update(_room_ids(
             conn, """SELECT room_id FROM hosted_rooms
-                     WHERE disbanded_at IS NOT NULL AND disbanded_at<=?""", (now - DISBANDED_ROOM_RETENTION_SECONDS,)))
+                     WHERE room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
+                       AND disbanded_at IS NOT NULL AND disbanded_at<=?""", (now - DISBANDED_ROOM_RETENTION_SECONDS,)))
     candidates.update(_room_ids(
-        conn, """SELECT room_id FROM hosted_rooms WHERE disbanded_at IS NOT NULL
+        conn, """SELECT room_id FROM hosted_rooms WHERE room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
+                       AND disbanded_at IS NOT NULL
                 ORDER BY disbanded_at DESC, room_id ASC LIMIT -1 OFFSET ?""", (MAX_DISBANDED_ROOM_TOMBSTONES,)))
     if max_gateway_event_bytes is not None:
         retained_bytes = _gateway_event_bytes(conn)
         if retained_bytes > max_gateway_event_bytes:
-            for row in conn.execute("""SELECT room_id, event_bytes FROM hosted_rooms WHERE disbanded_at IS NOT NULL
+            for row in conn.execute("""SELECT room_id, event_bytes FROM hosted_rooms WHERE room_id NOT IN (SELECT room_id FROM hosted_room_quarantine)
+                       AND disbanded_at IS NOT NULL
                     ORDER BY disbanded_at ASC, room_id ASC"""
             ).fetchall():
                 candidates.add(str(row["room_id"]))
@@ -972,6 +986,8 @@ def upsert_remote_run_receipt(db_path: DbPath, *, record: Mapping[str, Any], now
                    target_profile, task_id, execution_generation, run_id,
                    session_id, created_at, updated_at
                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (*immutable, timestamp, timestamp))
+        from gateway.hosted_room_work_records import capture_transition_locked
+        capture_transition_locked(conn, record["room_id"])
 
 
 def list_remote_run_receipts(
@@ -1115,11 +1131,14 @@ def rename_room(db_path: DbPath, *, room_id: Any, event_id: Any, name: Any, now:
 
 def append_event(
     db_path: DbPath, *, room_id: Any, event_id: Any, kind: Any, actor: Any, payload: Any,
-    authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None) -> dict[str, Any]:
+    authority_gateway_id: Any = None, authority_epoch: Any = None, now: float | None = None,
+    expected_latest_seq: int | None = None) -> dict[str, Any]:
     """Append one immutable event and allocate its per-room sequence atomically; repeating an ``event_id``
     with identical content returns the original, different content fails closed."""
     room_id = _room_id(room_id)
     event_id = _event_id(event_id)
+    if expected_latest_seq is not None:
+        _bounded_int(expected_latest_seq, message="expected_latest_seq must be a nonnegative integer")
     kind = _validate_event_kind(kind)
     normalized_actor, actor_json = _validate_actor(actor, kind=kind)
     # Every admitted actor kind is room-scoped, so authority fields are always required.
@@ -1145,6 +1164,12 @@ def append_event(
         if kind == "message.user":
             route_schema.require_room_work_open(conn, room_id, error=HostedRoomError)
         seq = int(room["next_seq"])
+        if expected_latest_seq is not None and seq - 1 != expected_latest_seq:
+            raise EventCursorConflictError("room changed before event publication")
+        if kind in {"message.user", "message.member"}:
+            from gateway.hosted_room_attachments import retain_message_attachments
+            retain_message_attachments(conn, room_id=room_id, event_id=event_id,
+                                       manifest=json.loads(payload_json).get("attachments", []), now=now)
         event_bytes = _insert_event(
             conn, room, room_id, seq, event_id, kind, actor_json, authority_epoch, payload_json, now,
             allow_control=kind in _CONTROL_EVENT_KINDS)
@@ -1378,3 +1403,9 @@ from typing import NoReturn  # noqa: F401,E402
 from contextlib import contextmanager  # noqa: F401,E402
 import time  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
+
+
+class RoomQuarantinedError(AuthorityConflictError):
+    """Raised when an unsafe legacy takeover must remain read-only."""
+
+    reason = "room_authority_quarantined"

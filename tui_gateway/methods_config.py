@@ -266,12 +266,26 @@ def _readiness_check(rid, params, probe):
 
 @method("setup.status")
 def _(rid, params: dict) -> dict:
-    """Loose provider check; ``profile`` (optional) scopes it to that profile's home."""
+    """Loose provider check; ``profile`` (optional) scopes it to that profile's home.
+
+    For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
+    the call blocks up to ``SETUP_READY_WAIT_SECONDS`` for it, so a client's first poll lands after
+    the free-tier identity exists (or has been refused) rather than racing the mint. If the record
+    is still missing after the wait, or a named profile is asked about, today's live probe answers.
+    The record's fields ride along additively (``ready``, ``free_tier``, ``other_providers``)."""
     try:
         from hermes_cli.main import _has_any_provider_configured
-        return _readiness_check(rid, params, lambda profile, scoped: {
-            "provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
-            **scoped})
+        from hermes_cli.free_tier_bootstrap import wait_for_record
+
+        def probe(profile, scoped):
+            record = None if profile else wait_for_record()
+            if record is None:
+                return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
+                        **scoped}
+            return {"provider_configured": record.provider_configured, "ready": True,
+                    "free_tier": record.free_tier, "other_providers": record.other_providers,
+                    "inference_provider": record.inference_provider, **scoped}
+        return _readiness_check(rid, params, probe)
     except Exception as e:
         return _err(rid, 5016, str(e))
 
@@ -283,30 +297,11 @@ def _(rid, params: dict) -> dict:
     error when the model can't be served, so UIs surface onboarding before a doomed prompt.
     ``profile`` answers for THAT profile's pin and ``.env``; unknown -> ``ok=False``."""
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.auth import has_usable_secret
-        from hermes_cli.main import _has_any_provider_configured
+        from hermes_cli.runtime_readiness import check_runtime_readiness
         requested = str(params.get("provider") or "").strip() or None
 
         def probe(profile, scoped):
-            runtime = resolve_runtime_provider(requested=requested)
-            provider_configured = bool(_has_any_provider_configured(strict_profile_scope=bool(profile)))
-            provider = runtime.get("provider") or "provider"
-            source = str(runtime.get("source") or "")
-
-            def fail(error, src):
-                return {"ok": False, "provider": provider, "model": runtime.get("model"),
-                        "source": src, "error": error, **scoped}
-            if (not provider_configured and provider == "bedrock"
-                    and source in {"iam-role", "aws-sdk-default-chain"}):
-                return fail("No Hermes provider is configured.", source)
-            api_key = runtime.get("api_key")
-            api_key_text = "" if callable(api_key) else str(api_key or "").strip()
-            if not (callable(api_key) or api_key_text in {"aws-sdk", "no-key-required"}
-                    or has_usable_secret(api_key_text) or bool(runtime.get("command"))):
-                return fail(f"No usable credentials found for {provider}.", runtime.get("source"))
-            return {"ok": True, "provider": runtime.get("provider"), "model": runtime.get("model"),
-                    "source": runtime.get("source"), **scoped}
+            return {**check_runtime_readiness(requested, strict_profile_scope=bool(profile)), **scoped}
         return _readiness_check(rid, params, probe)
     except Exception as e:
         return _ok(rid, {"ok": False, "error": str(e)})

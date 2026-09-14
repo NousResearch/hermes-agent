@@ -29,56 +29,56 @@ describe('deleteSession profile scoping', () => {
     // opened its own default state.db, missed the row, and returned
     // {ok:true, already_absent:true} — the row vanished optimistically but was
     // never deleted and came back on refresh. The URL must carry ?profile=.
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
     // Mirrors the real capabilityScoped for an object owner (remote-stamped row).
     vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'tommy', connectionId: 'hermes-pi' })
 
     await deleteSession('sess-1', { connectionId: 'hermes-pi', profile: 'tommy' })
 
-    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+    expect(hermesApi.mock.calls.filter(([request]) => request.method)[0][0]).toMatchObject({
       method: 'DELETE',
-      path: '/api/sessions/sess-1?profile=tommy',
+      path: expect.stringContaining('/api/sessions/sess-1?profile=tommy'),
       connectionId: 'hermes-pi',
       profile: 'tommy'
     })
   })
 
   it('scopes the DELETE to the owning profile in the URL (bare string owner)', async () => {
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
     // Bare-string owner: capabilityScoped resolves it to a profile scope.
     vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'tommy' })
 
     await deleteSession('sess-2', 'tommy')
 
-    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+    expect(hermesApi.mock.calls.filter(([request]) => request.method)[0][0]).toMatchObject({
       method: 'DELETE',
-      path: '/api/sessions/sess-2?profile=tommy'
+      path: expect.stringContaining('/api/sessions/sess-2?profile=tommy')
     })
   })
 
   it('omits the profile query when no owner is known', async () => {
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
 
     await deleteSession('sess-3')
 
-    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+    expect(hermesApi.mock.calls.filter(([request]) => request.method)[0][0]).toMatchObject({
       method: 'DELETE',
-      path: '/api/sessions/sess-3'
+      path: expect.stringContaining('/api/sessions/sess-3')
     })
-    expect((hermesApi.mock.calls[0][0] as { path: string }).path).not.toContain('profile=')
+    expect((hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { path: string }).path).not.toContain('profile=')
   })
 
   it('keeps an explicit local pin routed to the local pool', async () => {
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
     // capabilityScoped drops a 'local' connection id by design; sessionScoped
     // must re-add it so the request stays pinned to this device.
     vi.mocked(client.capabilityScoped).mockReturnValue({ profile: 'tommy' })
 
     await deleteSession('sess-4', { connectionId: 'local', profile: 'tommy' })
 
-    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+    expect(hermesApi.mock.calls.filter(([request]) => request.method)[0][0]).toMatchObject({
       method: 'DELETE',
-      path: '/api/sessions/sess-4?profile=tommy',
+      path: expect.stringContaining('/api/sessions/sess-4?profile=tommy'),
       connectionId: 'local',
       profile: 'tommy'
     })
@@ -91,11 +91,11 @@ describe('setSessionArchived profile scoping', () => {
     // from body.profile, so archiving a foreign-profile session must send it in
     // the body, not only as request.profile (Electron routing), or on a remote
     // gateway the archive lands on the wrong state.db and silently no-ops.
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
 
     await setSessionArchived('sess-a', true, 'tommy')
 
-    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+    expect(hermesApi.mock.calls.filter(([request]) => request.method)[0][0]).toMatchObject({
       method: 'PATCH',
       path: '/api/sessions/sess-a',
       profile: 'tommy',
@@ -104,11 +104,11 @@ describe('setSessionArchived profile scoping', () => {
   })
 
   it('omits the profile from the body when none is given', async () => {
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
 
     await setSessionArchived('sess-b', false)
 
-    const req = hermesApi.mock.calls[0][0] as { body: Record<string, unknown> }
+    const req = hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { body: Record<string, unknown> }
     expect(req).toMatchObject({ method: 'PATCH', body: { archived: false } })
     expect(req.body).not.toHaveProperty('profile')
   })
@@ -116,11 +116,11 @@ describe('setSessionArchived profile scoping', () => {
 
 describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () => {
   it('carries the owning profile in the pin PATCH body', async () => {
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
 
     await setSessionPinnedRemote('sess-p', true, 'tommy')
 
-    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+    expect(hermesApi.mock.calls.filter(([request]) => request.method)[0][0]).toMatchObject({
       method: 'PATCH',
       path: '/api/sessions/sess-p',
       profile: 'tommy',
@@ -129,11 +129,11 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
   })
 
   it('carries the owning profile in the unread PATCH body', async () => {
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
 
     await setSessionUnreadRemote('sess-u', true, 'tommy')
 
-    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+    expect(hermesApi.mock.calls.filter(([request]) => request.method)[0][0]).toMatchObject({
       method: 'PATCH',
       path: '/api/sessions/sess-u',
       profile: 'tommy',
@@ -142,11 +142,11 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
   })
 
   it('omits the profile from the body when none is given', async () => {
-    hermesApi.mockResolvedValue({ ok: true } as never)
+    hermesApi.mockResolvedValue({ ok: true, exists: true, runtime_revision: 5, runtime_generation: 2 } as never)
 
     await setSessionPinnedRemote('sess-p2', false)
 
-    const req = hermesApi.mock.calls[0][0] as { body: Record<string, unknown> }
+    const req = hermesApi.mock.calls.filter(([request]) => request.method)[0][0] as { body: Record<string, unknown> }
     expect(req).toMatchObject({ method: 'PATCH', body: { pinned: false } })
     expect(req.body).not.toHaveProperty('profile')
   })

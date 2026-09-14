@@ -209,6 +209,26 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
 })
 
 describe('createSessionRpcDispatcher: stale runtime recovery', () => {
+  it('surfaces canonical refusals without requesting another resume of the healthy selected session', async () => {
+    setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
+    const { request } = dispatcher(undefined, 'stored-omar')
+
+    for (const reason of ['invalid_params', 'permission_denied', 'stale_generation', 'profile_mismatch']) {
+      const error = Object.assign(new Error(reason), { code: 4001, data: { reason } })
+      gatewayMocks.requestGatewayForAgent.mockRejectedValueOnce(error)
+      await expect(request('config.get', { session_id: 'rt-omar' })).rejects.toBe(error)
+      expect(sessionMocks.requestSessionResume).not.toHaveBeenCalled()
+    }
+
+    const missing = Object.assign(new Error('not_found'), { code: 4001, data: { reason: 'not_found' } })
+    gatewayMocks.requestGatewayForAgent.mockRejectedValueOnce(missing)
+    await expect(request('process.list', { session_id: 'rt-omar' })).rejects.toBe(missing)
+    expect(sessionMocks.requestSessionResume).toHaveBeenCalledExactlyOnceWith('stored-omar', {
+      connectionId: 'local',
+      profile: 'omar'
+    })
+  })
+
   it('requests a durable rebind for the visible session after a structured 4001', async () => {
     setSessions([makeSessionInfo({ connection_id: 'local', id: 'stored-omar', profile: 'omar' })])
     gatewayMocks.requestGatewayForAgent.mockRejectedValueOnce(

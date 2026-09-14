@@ -102,7 +102,8 @@ def mount_spa(application: FastAPI):
     with a missing dist per-request (404 JSON / ``check_dir=False``), so a long-lived
     ``--skip-build`` process recovers the moment a build appears on disk — no restart.
     """
-    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, _SESSION_TOKEN, app
+    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, app
+    from hermes_cli.web_deps import _server
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
     # dist is lying around, so only the JSON-RPC/WS/API surface is reachable.
@@ -120,7 +121,7 @@ def mount_spa(application: FastAPI):
             if full_path == "" and not gated:
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
-                    f"window.__HERMES_SESSION_TOKEN__={json.dumps(_SESSION_TOKEN)};"
+                    f"window.__HERMES_SESSION_TOKEN__={json.dumps(_server()._SESSION_TOKEN)};"
                     "window.__HERMES_AUTH_REQUIRED__=false;"
                     f"</script></head><body>{_HEADLESS_MSG}</body></html>",
                     headers=_NO_STORE,
@@ -151,7 +152,7 @@ def mount_spa(application: FastAPI):
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
-        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
@@ -633,6 +634,11 @@ def _plugin_auth_hint(name: str, provides_tools: list) -> tuple:
     return False, ""
 
 
+def _plugin_runtime_status(aliases: set, enabled_set: set, disabled_set: set) -> str:
+    """enabled / disabled / inactive for a plugin's name+key alias set (disabled wins)."""
+    return "disabled" if aliases & disabled_set else "enabled" if aliases & enabled_set else "inactive"
+
+
 def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     """Agent discovery + dashboard manifests + provider picker metadata.
 
@@ -661,6 +667,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         _get_enabled_set,
         _read_manifest as _read_plugin_manifest_at,
     )
+    from hermes_cli.plugins_cmd_catalog import removed_annotation
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -674,12 +681,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         # Both the path-derived key (nested category plugins) and the bare manifest name
         # count for enabled/disabled state, matching the runtime loader's back-compat lookup.
         aliases = {name, key} if key else {name}
-        if aliases & disabled_set:
-            runtime_status = "disabled"
-        elif aliases & enabled_set:
-            runtime_status = "enabled"
-        else:
-            runtime_status = "inactive"
+        runtime_status = _plugin_runtime_status(aliases, enabled_set, disabled_set)
 
         dir_path = Path(dir_str)
         dm = dash_by_name.get(name)
@@ -707,6 +709,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
+            "removed_reason": removed_annotation(name, dir_str),
         })
 
     agent_names = {r["name"] for r in rows}

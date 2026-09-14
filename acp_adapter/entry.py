@@ -182,23 +182,18 @@ def main(argv: list[str] | None = None) -> None:
     import acp
     from .server import HermesACPAgent
 
-    # MCP discovery from config.yaml runs in a background daemon thread so the ACP server is
-    # responsive immediately (blocking here cost 2-5 s); per-session MCP servers registered via
-    # asyncio.to_thread are unaffected. Metadata-only hosts can opt out of the global startup.
-    # Previously this blocked asyncio.run() for 2-5 s. (ACP also registers per-session MCP servers
-    # dynamically via asyncio.to_thread inside the event loop; that path is unaffected.)  Moved from
-    # model_tools.py module scope to avoid freezing the gateway's loop on lazy import (#16856).
-    if os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP", "").strip() != "1":
-        try:
-            from hermes_cli.mcp_startup import start_background_mcp_discovery
-
-            start_background_mcp_discovery(logger=logger, thread_name="acp-mcp-discovery")
-        except Exception:
-            logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
-
     agent = HermesACPAgent()
+
+    async def serve():
+        # MCP and execution belong to the daemon. Close only this viewer, while
+        # its event loop is still alive, including on protocol/transport errors.
+        try:
+            await acp.run_agent(agent, use_unstable_protocol=True)
+        finally:
+            await agent.aclose()
+
     try:
-        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
+        asyncio.run(serve())
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

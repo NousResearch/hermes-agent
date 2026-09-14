@@ -99,9 +99,11 @@ const {
   resetUpdateApplyState,
   startUpdatePoller,
   stopUpdatePoller,
-  $updateStatus
+  $updateStatus,
+  BACKGROUND_UPDATE_CHECK_MS
 } = await import('./updates')
 
+const { CANONICAL_GATEWAY_PROTOCOL } = await import('@/api/canonical-protocol')
 const { setConnection } = await import('./session')
 
 const registryOf = (ids: string[]) => ({
@@ -196,6 +198,18 @@ describe('reportBackendContract', () => {
     reportBackendContract(6)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('accepts only the matching canonical gateway protocol without claiming the legacy contract', () => {
+    reportBackendContract(undefined, CANONICAL_GATEWAY_PROTOCOL)
+    expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
+    expect(notifySpy).not.toHaveBeenCalled()
+
+    reportBackendContract(undefined, 'hermes-gateway-v0')
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+
+    reportBackendContract(Number.MAX_SAFE_INTEGER, 'hermes-gateway-v0')
+    expect(notifySpy).toHaveBeenCalledTimes(2)
   })
 
   it('warns when the backend is behind (or reports no contract)', () => {
@@ -1356,24 +1370,27 @@ describe('startUpdatePoller', () => {
   it('calls checkUpdates() on startup so the version pill populates immediately', async () => {
     startUpdatePoller()
 
-    // checkUpdates() is async — flush microtasks without advancing the 30-min interval.
+    // checkUpdates() is async — flush microtasks without advancing the daily interval.
     await vi.advanceTimersByTimeAsync(0)
 
     expect(checkMock).toHaveBeenCalled()
     expect($updateStatus.get()?.behind).toBe(5)
   })
 
-  it('calls checkUpdates() on each interval tick', async () => {
+  it('polls once per day and never forces past the caches', async () => {
     startUpdatePoller()
     await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).toHaveBeenCalledWith({ force: false })
     checkMock.mockClear()
 
-    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    await vi.advanceTimersByTimeAsync(BACKGROUND_UPDATE_CHECK_MS - 1)
+    expect(checkMock).not.toHaveBeenCalled()
 
-    expect(checkMock).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(checkMock).toHaveBeenCalledTimes(1)
   })
 
-  it('calls checkUpdates() when the window regains focus', async () => {
+  it('window focus only re-checks once the daily cadence has elapsed', async () => {
     startUpdatePoller()
     await vi.advanceTimersByTimeAsync(0)
     checkMock.mockClear()
@@ -1381,9 +1398,12 @@ describe('startUpdatePoller', () => {
     // Invoke the registered focus handler directly (the mock window doesn't
     // propagate DOM events, so call the stored listener).
     listeners['focus']?.()
-
     await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).not.toHaveBeenCalled()
 
-    expect(checkMock).toHaveBeenCalled()
+    vi.setSystemTime(Date.now() + BACKGROUND_UPDATE_CHECK_MS)
+    listeners['focus']?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).toHaveBeenCalledTimes(1)
   })
 })

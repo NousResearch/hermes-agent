@@ -2,9 +2,14 @@ import { renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as HermesModule from '@/hermes'
-import { setSessionOwnerHint, setSessions } from '@/store/session'
-import { sessionTileDelegate } from '@/store/session-states'
+import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { $activeSessionId, setSessionOwnerHint, setSessions } from '@/store/session'
+import { $sessionTiles, sessionTileDelegate } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
+
+import {
+  clearSingleFlightSessionResumeState
+} from '../../session/hooks/use-prompt-actions/single-flight-resume'
 
 import { useSessionTileDelegate } from './use-session-tile-delegate'
 
@@ -63,11 +68,13 @@ function renderTile(
 
 describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
+    clearSingleFlightSessionResumeState()
     setSessions([])
     vi.mocked(getLatestSessionMessages).mockClear()
   })
 
   afterEach(() => {
+    clearSingleFlightSessionResumeState()
     setSessions([])
   })
 
@@ -194,6 +201,68 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(getLatestSessionMessages).not.toHaveBeenCalled()
   })
 
+  it('forces an owner-routed message snapshot into a warm tile without touching foreground state', async () => {
+    const ownerRoute = { connectionId: 'remote-tile', profile: 'tile-profile', targetProfile: 'backend-tile' }
+
+    const pending = {
+      id: 'user-pending',
+      parts: [{ type: 'text', text: 'local pending prompt' }],
+      pending: true,
+      role: 'user'
+    }
+
+    const warm = { busy: false, messages: [pending], storedSessionId: 'stored-tile' }
+    const runtimeIdByStoredSessionIdRef = { current: new Map([['stored-tile', 'runtime-tile']]) }
+    const states = { current: new Map([['runtime-tile', warm]]) }
+
+    const update = vi.fn((id, updater) => {
+      const next = updater(states.current.get(id))
+      states.current.set(id, next)
+
+      return next
+    })
+
+    $activeSessionId.set('runtime-foreground')
+    $sessionTiles.set([{ ownerRoute, runtimeId: 'runtime-tile', storedSessionId: 'stored-tile' }] as never)
+    stashSessionDraft('stored-tile', 'unsent tile draft', [])
+    vi.mocked(requestGatewayForAgent).mockResolvedValueOnce({
+      info: { model: 'snapshot-model' },
+      message_count: 2,
+      messages: [
+        { content: 'new prompt', role: 'user', timestamp: 1 },
+        { content: 'new answer', role: 'assistant', timestamp: 2 }
+      ],
+      resumed: 'stored-tile',
+      running: true,
+      session_id: 'runtime-tile'
+    } as never)
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef,
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    await sessionTileDelegate()!.resumeTile('stored-tile', { authoritativeSnapshot: true })
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith('remote-tile', 'tile-profile', 'session.resume', {
+      cols: 96,
+      omit_messages: false,
+      profile: 'backend-tile',
+      session_id: 'stored-tile'
+    })
+    expect(getLatestSessionMessages).not.toHaveBeenCalled()
+    expect(states.current.get('runtime-tile')).toMatchObject({ busy: true, model: 'snapshot-model' })
+    expect(JSON.stringify(states.current.get('runtime-tile')?.messages)).toContain('new answer')
+    expect(states.current.get('runtime-tile')?.messages).toContainEqual(pending)
+    expect($activeSessionId.get()).toBe('runtime-foreground')
+    expect(takeSessionDraft('stored-tile').text).toBe('unsent tile draft')
+
+    clearSessionDraft('stored-tile')
+    $activeSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
   it('merges persisted messages into a warm tile on explicit reopen (#96183)', async () => {
     const stateA = {
       busy: false,
@@ -230,6 +299,161 @@ describe('useSessionTileDelegate resumeTile', () => {
     const texts = next.messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
 
     expect(texts.some(text => text.includes('cron delivery'))).toBe(true)
+  })
+
+  it('refreshes a retained live tile even when the reverse lookup is absent', async () => {
+    const state = {
+      busy: true,
+      streamId: 'assistant-stream-live',
+      storedSessionId: 'stored-retained',
+      messages: [
+        { id: 'old-user', role: 'user', parts: [{ type: 'text', text: 'earlier prompt' }] },
+        { id: 'old-assistant', role: 'assistant', parts: [{ type: 'text', text: 'Hello earlier answer' }] },
+        { id: 'user-live', role: 'user', parts: [{ type: 'text', text: 'prompt' }] },
+        { id: 'assistant-stream-live', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'Hello' }] }
+      ]
+    }
+
+    const states = { current: new Map([['runtime-retained', state]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    setSessions([row({ id: 'stored-retained', profile: 'default' })])
+    $sessionTiles.set([{ storedSessionId: 'stored-retained', runtimeId: 'runtime-retained' }] as never)
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+      session_id: 'stored-retained',
+      messages: [
+        { role: 'user', content: 'earlier prompt', timestamp: 0.5 },
+        { role: 'assistant', content: 'Hello earlier answer', timestamp: 0.6 },
+        { role: 'user', content: 'prompt', timestamp: 1 },
+        { role: 'system', content: 'external notice', timestamp: 2 }
+      ]
+    } as never)
+    vi.mocked(requestGatewayForProfile).mockResolvedValueOnce({
+      session_id: 'runtime-retained',
+      info: { running: true }
+    } as never)
+    const request = vi.fn()
+    renderTile(request, { sessionStateByRuntimeIdRef: states, updateSessionState: update })
+
+    try {
+      expect(await sessionTileDelegate()!.resumeTile('stored-retained', { refreshTranscript: true })).toBe(
+        'runtime-retained'
+      )
+      const refreshed = states.current.get('runtime-retained')!
+      expect(JSON.stringify(refreshed.messages)).toContain('external notice')
+      expect(refreshed.messages.find(message => message.id === state.streamId)).toEqual(state.messages[3])
+      expect(refreshed.busy).toBe(true)
+
+      // REST may finish before the next WS delta; keep one, fuller answer.
+      states.current.set('runtime-retained', state)
+      vi.mocked(getLatestSessionMessages).mockResolvedValueOnce({
+        session_id: 'stored-retained',
+        messages: [
+          { role: 'user', content: 'earlier prompt', timestamp: 0.5 },
+          { role: 'assistant', content: 'Hello earlier answer', timestamp: 0.6 },
+          { role: 'user', content: 'prompt', timestamp: 1 },
+          { role: 'assistant', content: 'Hello world', timestamp: 2 }
+        ]
+      } as never)
+      await sessionTileDelegate()!.resumeTile('stored-retained', { refreshTranscript: true })
+      const answers = states.current.get('runtime-retained')!.messages.filter(message => message.role === 'assistant')
+      expect(answers.map(message => message.parts.map(part => part.text).join(''))).toEqual([
+        'Hello earlier answer',
+        'Hello world'
+      ])
+    } finally {
+      vi.mocked(requestGatewayForProfile).mockReset()
+      $sessionTiles.set([])
+    }
+  })
+
+  it('merges delayed refreshes against the latest streaming and completed state', async () => {
+    const initial = {
+      busy: true,
+      streamId: 'assistant-stream-live',
+      storedSessionId: 'stored-delay',
+      messages: [
+        { id: 'user-live', role: 'user', parts: [{ type: 'text', text: 'prompt' }] },
+        { id: 'assistant-stream-live', role: 'assistant', pending: true, parts: [{ type: 'text', text: 'Hello' }] }
+      ]
+    }
+
+    const states = { current: new Map([['runtime-delay', initial]]) }
+
+    const update = vi.fn((_id, updater) => {
+      const next = updater(states.current.get(_id))
+      states.current.set(_id, next)
+
+      return next
+    })
+
+    renderTile(vi.fn(), {
+      runtimeIdByStoredSessionIdRef: { current: new Map([['stored-delay', 'runtime-delay']]) },
+      sessionStateByRuntimeIdRef: states,
+      updateSessionState: update
+    })
+
+    for (const scenario of ['streaming', 'completed', 'compacted']) {
+      const pending = scenario === 'streaming'
+      states.current.set('runtime-delay', initial)
+      let release!: (value: never) => void
+      let started!: () => void
+
+      const fetching = new Promise<void>(resolve => {
+        started = resolve
+      })
+
+      vi.mocked(getLatestSessionMessages).mockImplementationOnce(() => {
+        started()
+
+        return new Promise(resolve => {
+          release = resolve
+        })
+      })
+      const refreshing = sessionTileDelegate()!.resumeTile('stored-delay', { refreshTranscript: true })
+      await fetching
+
+      const current = {
+        ...initial,
+        busy: pending,
+        streamId: pending ? initial.streamId : null,
+        messages: [
+          ...(scenario === 'compacted'
+            ? [{ id: 'old-answer', role: 'assistant', parts: [{ type: 'text', text: 'Hello earlier answer' }] }]
+            : []),
+          initial.messages[0],
+          {
+            ...initial.messages[1],
+            pending,
+            parts: [{ type: 'text', text: pending ? 'Hello newer delta' : 'Hello completed' }]
+          }
+        ]
+      }
+
+      states.current.set('runtime-delay', current as never)
+      release({
+        session_id: 'stored-delay',
+        messages: [
+          { role: 'user', content: 'prompt', timestamp: 1 },
+          { role: 'system', content: 'external notice', timestamp: 2 },
+          ...(scenario === 'compacted' ? [{ role: 'assistant', content: 'Hello completed', timestamp: 3 }] : [])
+        ]
+      } as never)
+      await refreshing
+      const refreshed = states.current.get('runtime-delay')!
+      expect(refreshed.busy).toBe(pending)
+      expect(refreshed.streamId).toBe(current.streamId)
+      expect(refreshed.messages.filter(message => message.role === 'assistant')).toEqual([
+        current.messages[current.messages.length - 1]
+      ])
+      expect(JSON.stringify(refreshed.messages)).toContain('external notice')
+    }
   })
 
   it('falls through to a real resume when the warm binding has no transcript (post-wake empty tile)', async () => {

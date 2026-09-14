@@ -7,7 +7,7 @@ import {
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
-import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -17,7 +17,12 @@ import {
 import { knownSessionOwner, ownerLookupSessionRows } from '@/store/session'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { requestForSessionProfile, type SessionOwnerScope } from '@/store/session-request-router'
-import { publishSessionState, sessionTileOwnerRoute, setSessionTileDelegate } from '@/store/session-states'
+import {
+  $sessionTiles,
+  publishSessionState,
+  sessionTileOwnerRoute,
+  setSessionTileDelegate
+} from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
 import type { usePromptActions } from '../../session/hooks/use-prompt-actions'
@@ -25,7 +30,10 @@ import { singleFlightSessionResume } from '../../session/hooks/use-prompt-action
 import { markSessionRecentlyInterrupted, withSessionNotFoundResume } from '../../session/hooks/use-prompt-actions/utils'
 import {
   chatMessageArraysEquivalent,
+  overlayConcurrentMessageChanges,
+  preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
+  resolveResumedBusy,
   resolveSessionOwner
 } from '../../session/hooks/use-session-actions/utils'
 import type { useSessionStateCache } from '../../session/hooks/use-session-state-cache'
@@ -35,7 +43,8 @@ type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 function mergeTileTranscript(
   previous: ChatMessage[],
-  prefetchMessages: SessionResumeResponse['messages'] | undefined
+  prefetchMessages: SessionResumeResponse['messages'] | undefined,
+  streamId?: null | string
 ): ChatMessage[] {
   const prefetched = toChatMessages(prefetchMessages ?? [])
 
@@ -45,7 +54,64 @@ function mergeTileTranscript(
 
   const persisted = graftRefreshedTailOntoBackfill(prefetched, previous)
 
-  return reconcileResumeMessages(persisted, previous)
+  // The known stream belongs to this turn even when its text repeats an older
+  // answer; the generic reconnect reconciler only has text/ordinal heuristics.
+  const stream = previous.find(message => message.id === streamId)
+
+  const merged = preserveLocalPendingTurnMessages(
+    reconcileResumeMessages(persisted, previous),
+    stream ? previous.filter(message => message !== stream) : previous
+  )
+
+  if (!stream) {
+    return merged
+  }
+
+  // Compaction shifts global assistant ordinals. Anchor this turn at its user
+  // row instead; an older answer sharing the stream's prefix is not a match.
+  const beforeStream = previous.slice(0, previous.indexOf(stream))
+  const user = beforeStream.findLast(message => message.role === 'user')
+
+  let anchor = user
+    ? persisted.findIndex(
+        message => message.id === user.id || (user.rowId !== undefined && message.rowId === user.rowId)
+      )
+    : -1
+
+  if (user && anchor < 0) {
+    const matches = persisted.filter(
+      message => message.role === 'user' && chatMessageText(message) === chatMessageText(user)
+    )
+
+    anchor = matches.length === 1 ? persisted.indexOf(matches[0]) : -1
+  }
+
+  const turn = anchor < 0 ? [] : persisted.slice(anchor + 1)
+  const nextUser = turn.findIndex(message => message.role === 'user')
+
+  const ordinal = user
+    ? beforeStream.slice(beforeStream.indexOf(user) + 1).filter(message => message.role === 'assistant').length
+    : 0
+
+  const counterpart =
+    persisted.find(
+      message => message.id === stream.id || (stream.rowId !== undefined && message.rowId === stream.rowId)
+    ) ?? (nextUser < 0 ? turn : turn.slice(0, nextUser)).filter(message => message.role === 'assistant')[ordinal]
+
+  const localText = chatMessageText(stream)
+  const storedText = counterpart ? chatMessageText(counterpart) : ''
+
+  if (!counterpart || !(storedText.startsWith(localText) || localText.startsWith(storedText))) {
+    return [...merged, stream]
+  }
+
+  // Keep the stream id for subsequent deltas, but use REST's fuller answer.
+  const reply =
+    storedText.length > localText.length
+      ? { ...reconcileResumeMessages([counterpart], [stream])[0], id: stream.id }
+      : stream
+
+  return merged.map((message, index) => (index === persisted.indexOf(counterpart) ? reply : message))
 }
 
 interface SessionTileDelegateParams {
@@ -203,9 +269,16 @@ export function useSessionTileDelegate({
         )
       },
       resumeTile: async (storedSessionId, options) => {
-        const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        // A retained tile can still own its runtime after the primary view drops
+        // its reverse lookup. Reconnect invalidates both bindings.
+        const existing =
+          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
+        const resumeRequestBaselineMessages = cached?.messages ?? []
         const refreshTranscript = options?.refreshTranscript === true
+        const authoritativeSnapshot = options?.authoritativeSnapshot === true
 
         // Warm path: reuse a live binding — but only when it still carries a
         // transcript (or is mid-turn, where messages legitimately stream in).
@@ -222,7 +295,8 @@ export function useSessionTileDelegate({
           existing &&
           cached?.storedSessionId === storedSessionId &&
           (cached.busy || cached.messages.length > 0) &&
-          !refreshTranscript
+          !refreshTranscript &&
+          !authoritativeSnapshot
         ) {
           publishSessionState(existing, cached)
 
@@ -241,17 +315,27 @@ export function useSessionTileDelegate({
             ? { connectionId: owner.connectionId, profile: owner.targetProfile || owner.profile }
             : owner
 
-        const prefetchPromise = getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
+        const prefetchPromise = authoritativeSnapshot
+          ? Promise.resolve(null)
+          : getLatestSessionMessages(storedSessionId, restScope).catch(() => null)
 
-        if (existing && cached?.storedSessionId === storedSessionId && (cached.busy || cached.messages.length > 0)) {
+        if (
+          !authoritativeSnapshot &&
+          existing &&
+          cached?.storedSessionId === storedSessionId &&
+          (cached.busy || cached.messages.length > 0)
+        ) {
           const prefetch = await prefetchPromise
-          const merged = mergeTileTranscript(cached.messages, prefetch?.messages)
+          // Deltas and completion may land while REST is in flight.
+          updateSessionState(
+            existing,
+            state => {
+              const merged = mergeTileTranscript(state.messages, prefetch?.messages, state.streamId ?? cached.streamId)
 
-          if (!chatMessageArraysEquivalent(cached.messages, merged)) {
-            updateSessionState(existing, state => ({ ...state, messages: merged }), storedSessionId)
-          } else {
-            publishSessionState(existing, cached)
-          }
+              return chatMessageArraysEquivalent(state.messages, merged) ? state : { ...state, messages: merged }
+            },
+            storedSessionId
+          )
 
           return existing
         }
@@ -266,17 +350,23 @@ export function useSessionTileDelegate({
           () => {
             assertSessionOwnerResolved(owner, { method: 'session.resume', sessionId: storedSessionId })
 
-            return singleFlightSessionResume(storedSessionId, () =>
-              requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
-                session_id: storedSessionId,
-                cols: 96,
-                omit_messages: true,
-                ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
-              })
+            return singleFlightSessionResume(
+              storedSessionId,
+              () =>
+                requestForSessionProfile<SessionResumeResponse>(owner, requestGateway, 'session.resume', {
+                  session_id: storedSessionId,
+                  cols: 96,
+                  omit_messages: !authoritativeSnapshot,
+                  ...(owner ? { profile: typeof owner === 'string' ? owner : owner.profile } : {})
+                }),
+              { requiresMessages: authoritativeSnapshot, scope: owner }
             )
           },
           async () => {
-            const stored = (await prefetchPromise) ?? (await fetchStoredTranscriptAcrossBackends(storedSessionId))
+            const stored =
+              (await prefetchPromise) ??
+              (await getLatestSessionMessages(storedSessionId, restScope).catch(() => null)) ??
+              (await fetchStoredTranscriptAcrossBackends(storedSessionId))
 
             if (!stored) {
               throw new Error('stored transcript unavailable on every reachable backend')
@@ -319,22 +409,59 @@ export function useSessionTileDelegate({
           throw new Error('resume returned no session id')
         }
 
+        const currentBinding =
+          runtimeIdByStoredSessionIdRef.current.get(storedSessionId) ??
+          $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)?.runtimeId
+
+        // Another resume/rebind won while this request was in flight. Do not
+        // publish the older response into the runtime the tile now owns.
+        if (currentBinding && currentBinding !== existing && currentBinding !== runtimeId) {
+          return currentBinding
+        }
+
         const info = resumed?.info
 
         updateSessionState(
           runtimeId,
-          state => ({
-            ...state,
-            busy: Boolean(info?.running),
-            // Persist the session's own model/provider from resume so the tile
-            // pill does not wait on a chrome-scoped catalog read (#93892).
-            ...(typeof info?.model === 'string' ? { model: info.model } : {}),
-            ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-            ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
-            ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
-            messages:
-              state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
-          }),
+          state => {
+            const previousMessages = state.messages.length > 0 ? state.messages : resumeRequestBaselineMessages
+
+            const messages = authoritativeSnapshot
+              ? resumed.messages.length > 0
+                ? overlayConcurrentMessageChanges(
+                    mergeTileTranscript(
+                      resumeRequestBaselineMessages,
+                      resumed.messages,
+                      cached?.streamId
+                    ),
+                    resumeRequestBaselineMessages,
+                    previousMessages
+                  )
+                : previousMessages
+              : previousMessages.length > 0
+                ? previousMessages
+                : toChatMessages(prefetch?.messages ?? resumed.messages ?? [])
+
+            const busyChangedWhileResuming = cached
+              ? Boolean(
+                  state.busy &&
+                    (state.turnStartedAt !== cached.turnStartedAt || (state.turnLive && !cached.turnLive))
+                )
+              : state.busy
+
+            const running = resolveResumedBusy(resumed.running ?? info?.running, busyChangedWhileResuming)
+
+            return {
+              ...state,
+              ...(typeof info?.fast === 'boolean' ? { fast: info.fast } : {}),
+              ...(typeof info?.model === 'string' ? { model: info.model } : {}),
+              ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
+              ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+              awaitingResponse: running && !resumed.inflight?.assistant,
+              busy: running,
+              messages
+            }
+          },
           storedSessionId
         )
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import textwrap
 
 from gateway import run as gateway_run
 from gateway import run_turn as gateway_run_turn
@@ -37,7 +38,8 @@ def _calls(node: ast.AST) -> set[str]:
 def _find_deferred_guarded_reset_chain() -> ast.If:
     """Return the ``if agent_result.get('compression_deferred') ... elif
     agent_result.get('compression_exhausted') ... reset_session`` chain."""
-    tree = ast.parse(inspect.getsource(gateway_run_turn))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(
+        gateway_run_turn.GatewayTurnMixin._hmwa_compression_exhaustion_reset)))
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):

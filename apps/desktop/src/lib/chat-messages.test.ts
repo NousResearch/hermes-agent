@@ -224,7 +224,24 @@ describe('toChatMessages', () => {
 
     expect(toolPart?.result).toMatchObject({ image: 'https://cdn.example/cat.png', success: true })
     // The duplicated image is stripped, but the agent's words survive.
-    expect(chatMessageText(message)).toBe('Here you go.')
+    expect(chatMessageText(message)).toBe('Here you go.\n\n')
+  })
+
+  it('hydrates canonical native image suffixes without changing durable history or caption prose', () => {
+    const caption = 'Explain [Image attached at: /not/an/attachment.png] in this sentence.'
+    const paths = ['/cache/native-inputs/hash/a [1].png', 'https://example.test/image.png']
+    const content = `${caption}\n\n[Image attached at: ${paths[0]}]\n[Image attached: ${paths[1]}]\n[screenshot]\n[screenshot]`
+    const stored = { role: 'user' as const, content, timestamp: 1, row_id: 23 }
+    const [message] = toChatMessages([stored])
+
+    expect(chatMessageText(message)).toBe(caption)
+    expect(message.attachmentRefs).toEqual([`@image:\`${paths[0]}\``, `@image:${paths[1]}`])
+    expect(stored.content).toBe(content)
+    const [prose] = toChatMessages([{ ...stored, content: `${caption}\n\n[Image attached at: /literal.png]` }])
+    expect(chatMessageText(prose)).toBe(`${caption}\n\n[Image attached at: /literal.png]`)
+    expect(prose.attachmentRefs).toBeUndefined()
+    const [assistant] = toChatMessages([{ ...stored, role: 'assistant' }])
+    expect(chatMessageText(assistant)).toBe(content)
   })
 
   it('lifts @image directive lines into attachmentRefs instead of inline text', () => {
@@ -270,7 +287,7 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(chatMessageText(message)).toBe('what is in this photo?')
+    expect(chatMessageText(message)).toBe('what is in this photo?\n')
     expect((message as { attachmentRefs?: string[] }).attachmentRefs).toEqual([ref])
   })
 
@@ -1341,6 +1358,30 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
+  })
+
+  it('does not replay earlier turns when the spoken id is missing or stale', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      user('u2', 'new question'),
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'vanished-stream-id')?.text).toBe('Live reply only.')
+    expect(collectUnspokenTurnSpeech(messages, 'a1')?.text).toBe('Live reply only.')
+  })
+
+  it('bounds to a hidden user turn too (widget intents render no bubble)', () => {
+    const messages = [
+      user('u1', 'old question'),
+      assistant('a1', 'Previous output from last turn.'),
+      { ...user('u2', 'widget intent'), hidden: true },
+      assistant('a2', 'Live reply only.')
+    ]
+
+    expect(collectUnspokenTurnSpeech(messages, null)?.text).toBe('Live reply only.')
   })
 })
 

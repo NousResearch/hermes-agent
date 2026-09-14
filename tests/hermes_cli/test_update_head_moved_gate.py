@@ -107,7 +107,22 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None
     )
-    # Short-circuit the long tail: dependency install + desktop build.
+    # No code is replaced in this simulation. A real purge would discard the
+    # discovery patches below and reimport helpers that can reach live services.
+    monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
+    from hermes_cli import update_cmd_fleet, update_inventory, update_receipt
+
+    monkeypatch.setattr(
+        update_inventory, "collect_runtime_inventory",
+        lambda: update_inventory.UpdatePlan(install_method="git", profiles=[], runtimes=[]),
+    )
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kwargs: [])
+    monkeypatch.setattr(
+        update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None,
+    )
+    # These tests own only the HEAD gate, not installers or profile maintenance.
+    monkeypatch.setattr(update_cmd, "_sync_python_dependencies_after_pull", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd, "_run_post_update_maintenance", lambda **kwargs: True)
     monkeypatch.setattr(hermes_main, "_write_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(hermes_main, "_clear_update_incomplete_marker", lambda: None)
     monkeypatch.setattr(main_install_repair, "_clear_update_incomplete_marker", lambda: None)
@@ -118,8 +133,9 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     # unsupported, so the phase is a clean no-op for both snapshots.
     import hermes_cli.gateway as hermes_gateway
 
+    monkeypatch.setattr(hermes_gateway, "_get_service_pids", lambda **kwargs: set())
     monkeypatch.setattr(
-        hermes_gateway, "find_gateway_pids", lambda all_profiles=False: []
+        hermes_gateway, "find_gateway_pids", lambda **kwargs: []
     )
     monkeypatch.setattr(
         hermes_gateway, "supports_systemd_services", lambda: False

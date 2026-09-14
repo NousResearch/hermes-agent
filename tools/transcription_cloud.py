@@ -19,7 +19,8 @@ from urllib.parse import urljoin
 from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
-    DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
+    AZURE_FOUNDRY_STT_MODELS, DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL,
+    GROQ_BASE_URL, GROQ_MODELS,
     OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
     _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
 
@@ -163,6 +164,22 @@ def _transcribe_openai(
                     Path(file_path).name, provider_label, model_name, len(transcript_text))
         return _ok_result(transcript_text, provider_label)
     return _with_openai_client(api_key, base_url, file_path, provider_label, _run)
+
+
+def _transcribe_azure_foundry(
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Transcribe through the configured Azure Foundry v1 endpoint."""
+    from tools.transcription_tools import _resolve_stt_language, get_env_value
+    api_key = str(get_env_value("AZURE_FOUNDRY_API_KEY") or "").strip()
+    base_url = str(get_env_value("AZURE_FOUNDRY_BASE_URL") or "").strip()
+    if not api_key or not base_url:
+        return _error_result("AZURE_FOUNDRY_API_KEY or AZURE_FOUNDRY_BASE_URL not set")
+    if model_name not in AZURE_FOUNDRY_STT_MODELS:
+        return _error_result(f"Azure Foundry STT model '{model_name}' is not supported by Hermes")
+    return _transcribe_openai(file_path, model_name, api_key=api_key, base_url=base_url,
+                              provider_label="azure_foundry",
+                              language=language or _resolve_stt_language("azure_foundry"), prompt=prompt)
 
 
 def _transcribe_mistral(

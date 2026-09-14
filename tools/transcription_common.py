@@ -35,6 +35,7 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "gpt-transcribe"}
+AZURE_FOUNDRY_STT_MODELS = OPENAI_MODELS | {"gpt-offline-whisper-1"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
 # Providers with native handlers. Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES``
@@ -43,7 +44,7 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 # The plugin hook from issue #30398-style follow-up rejects plugins registering under any of these names;
 # the dispatcher in ``transcribe_audio`` short-circuits them defensively as well.
 BUILTIN_STT_PROVIDERS = frozenset({
-    "local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs", "deepinfra"})
+    "local", "local_command", "groq", "openai", "azure_foundry", "mistral", "xai", "elevenlabs", "deepinfra"})
 # Built-in providers that upload audio to a remote API.
 CLOUD_STT_PROVIDERS = frozenset(BUILTIN_STT_PROVIDERS - {"local", "local_command"})
 

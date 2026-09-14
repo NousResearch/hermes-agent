@@ -213,9 +213,31 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner._run_agent = pytest.fail
     runner._post_turn_goal_continuation = AsyncMock()
 
+    # "The lease wait has its own clock" is an ORDERING/BUDGET fact, not a
+    # duration: record the wait budget dispatch actually hands the registry.
+    # A stopwatch around _handle_message cannot express it — the dominant term
+    # in that window is incidental first-call setup (measured: plugin
+    # discover_and_load 0.14s + bcrypt hash_password 0.04s + module imports
+    # 0.15s of a 0.28s window, against a 0.02s lease budget), so the old
+    # `wait_for(..., timeout=1)` was a stopwatch on the import graph. On loaded
+    # CI slice runners that setup cost pushed past 1s and cancelled the task
+    # inside `asyncio.to_thread(_recover_telegram_topic_thread_id)` — before
+    # the lease acquire was even reached — surfacing as a bare TimeoutError.
+    lease_waits: list = []
+    _real_acquire = runner._turn_leases.acquire
+
+    async def _recording_acquire(session_id, **kwargs):
+        lease_waits.append(kwargs.get("timeout"))
+        return await _real_acquire(session_id, **kwargs)
+
+    runner._turn_leases.acquire = _recording_acquire
+
     try:
-        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=1)
+        # Finite only as a hang guard — orders of magnitude above the real
+        # dispatch cost, so it is not itself a timing assertion.
+        response = await asyncio.wait_for(runner._handle_message(_event()), timeout=30)
     finally:
+        runner._turn_leases.acquire = _real_acquire
         assert runner._turn_leases.release(holder) is True
 
     assert isinstance(response, str)
@@ -224,6 +246,14 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner.session_store.load_transcript.assert_not_called()
     runner._clear_session_env.assert_called_once_with(session_env_tokens)
     runner._post_turn_goal_continuation.assert_not_awaited()
+    # The lease carries HERMES_TURN_LEASE_TIMEOUT independently: lease
+    # contention is not agent inactivity. Charging this wait to
+    # HERMES_AGENT_TIMEOUT (5s here) would hold the turn 250x longer than the
+    # operator configured before the resend notice is emitted.
+    assert lease_waits == [pytest.approx(0.02)], (
+        f"dispatch did not wait on the lease's OWN budget "
+        f"(HERMES_TURN_LEASE_TIMEOUT=0.02): saw {lease_waits}"
+    )
 
 
 # ---------------------------------------------------------------------------

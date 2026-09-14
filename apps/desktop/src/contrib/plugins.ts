@@ -17,7 +17,30 @@ import { createPluginContext, type HermesPlugin } from './plugin'
 import { pluginActive, publishPlugin } from './plugins-store'
 import { watchRuntimePlugins } from './runtime-loader'
 
-const modules = import.meta.glob<{ default: HermesPlugin }>('../plugins/*/plugin.{js,ts,tsx}', { eager: true })
+const modules = import.meta.glob<{ default: HermesPlugin | (() => HermesPlugin) }>('../plugins/*/plugin.{js,ts,tsx}', { eager: true })
+
+// `import.meta.glob` is Vite-specific. Rolldown's CJS-interop wrapper
+// (rolldown-runtime `u({default: () => x})`) turns the default export into a
+// getter function; Vite/normal ESM keeps it as the object. Accept both shapes
+// so bundled plugins don't get skipped with
+// "[plugins] X has no valid default HermesPlugin export".
+export function unwrapPluginDefault(mod: unknown): HermesPlugin | null {
+  const raw = (mod as { default?: unknown } | null | undefined)?.default
+
+  if (typeof raw === 'function') {
+    try {
+      return (raw as () => HermesPlugin | null | undefined)() ?? null
+    } catch {
+      return null
+    }
+  }
+
+  if (raw && typeof raw === 'object') {
+    return raw as HermesPlugin
+  }
+
+  return null
+}
 
 // One-shot init guard. Contributions themselves register by id (re-registering
 // is idempotent), but the disk-door watcher setup below (watchRuntimePlugins)
@@ -33,7 +56,7 @@ export function discoverBundledPlugins(): void {
   loaded = true
 
   for (const [path, mod] of Object.entries(modules)) {
-    const plugin = mod.default
+    const plugin = unwrapPluginDefault(mod)
 
     if (!plugin?.id || typeof plugin.register !== 'function') {
       console.warn(`[plugins] ${path} has no valid default HermesPlugin export — skipped`)

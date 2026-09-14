@@ -848,3 +848,57 @@ async def test_refresh_fails_closed_while_a_peer_holds_the_fence(tmp_path, monke
     assert provider.context.current_tokens.refresh_token == "R1"
     assert (await provider.context.storage.get_tokens()).refresh_token == "R1"
     assert provider._hermes_fence is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_adopts_expired_peer_pair_and_posts_its_refresh_token(tmp_path, monkeypatch):
+    """A peer rotated to (A2, R2) but A2 already expired: we must POST R2, never R1.
+
+    The adopt path installs the rotated pair even without a live access
+    token, because the POST we are about to build needs the new grant.
+    """
+    from urllib.parse import parse_qs
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    await provider.context.storage.set_tokens(_token("A2", "R2", expires_in=0))
+
+    presented = []
+
+    def responder(request):
+        if request.method != "POST":
+            return _fake_response(200, str(request.url), b"{}")
+        presented.append(parse_qs(request.content.decode())["refresh_token"][0])
+        body = json.dumps(_token("A3", "R3").model_dump(mode="json", exclude_none=True)).encode()
+        return _fake_response(200, endpoint, body)
+
+    await _drive_flow(provider, responder)
+
+    assert presented == ["R2"], presented
+    assert provider.context.current_tokens.refresh_token == "R3"
+
+
+@pytest.mark.asyncio
+async def test_refresh_restarts_flow_when_disk_pair_is_from_another_issuer(tmp_path, monkeypatch):
+    """A disk pair bound to a different issuer loses its refresh token on adoption.
+
+    With nothing left to refresh, _refresh_token must restart the SDK flow
+    (401 -> full auth) instead of building a POST from the foreign grant or
+    raising OAuthTokenError, and it must not keep the fence.
+    """
+    from tools.mcp_oauth_provider import _RefreshCompletedByPeer
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    storage = provider.context.storage
+    storage.bind_issuer("https://other-idp.example.com")
+    await storage.set_tokens(_token("A2", "R2"))
+
+    with pytest.raises(_RefreshCompletedByPeer):
+        await provider._refresh_token()
+
+    assert not provider.context.current_tokens.refresh_token, "foreign refresh token must be stripped"
+    assert (await storage.get_tokens()).refresh_token is None, "strip must reach disk"
+    assert provider._hermes_fence is None

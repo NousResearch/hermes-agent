@@ -145,7 +145,7 @@ class HermesProviderMixin:
             # Re-read under the fence: a peer may have rotated while we waited
             # for it, in which case the token we were about to POST is dead.
             adopted = await self._hermes_adopt_tokens_from_disk()
-            if adopted and self.context.is_token_valid():
+            if adopted and self._hermes_live_ttl() and self.context.is_token_valid():
                 # The peer's access token is live: presenting our copy of the
                 # refresh token would only burn a generation on a single-use
                 # provider. Skip the POST and let the flow restart.
@@ -155,6 +155,19 @@ class HermesProviderMixin:
             # Never hold the fence when no POST will follow.
             await self._hermes_release_refresh_fence()
             raise
+
+    def _hermes_live_ttl(self) -> bool:
+        """True when the installed token has a real, positive TTL.
+
+        Storage clamps a past-due token to ``expires_in == 0`` on read (see
+        HermesTokenStorage.get_tokens); the SDK's is_token_valid() compares
+        ``time.time() <= expiry`` and still reports True for that boundary,
+        which would make us adopt a token the server rejects immediately.
+        """
+        try:
+            return int(getattr(self.context.current_tokens, "expires_in", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
 
     async def _hermes_acquire_refresh_fence(self) -> None:
         """Enter the fence, or let RefreshFenceTimeout abort this attempt.
@@ -184,25 +197,55 @@ class HermesProviderMixin:
         except Exception:  # pragma: no cover - release must never mask the outcome
             self._hermes_logger.debug("Refresh fence release failed", exc_info=True)
 
+    async def _hermes_rotated_candidate(self):
+        """The on-disk pair, if a peer rotated it past the one we hold.
+
+        A candidate must carry a refresh token different from ours (same
+        token: disk has nothing newer) and a non-empty access token. A disk
+        entry with no refresh token is never adopted: its access token may
+        still be inside its TTL, but taking it trades an explicit reauth now
+        for a silent one at expiry with no way to refresh in between.
+        ``get_tokens`` already returns None for absent or corrupt files.
+        """
+        stored = await self.context.storage.get_tokens()
+        if stored is None:
+            return None
+        current = self.context.current_tokens
+        stored_refresh = getattr(stored, "refresh_token", None)
+        if not stored_refresh or not getattr(stored, "access_token", None):
+            return None
+        if stored_refresh == getattr(current, "refresh_token", None):
+            return None
+        return stored
+
+    def _hermes_install_disk_pair(self, tokens) -> None:
+        """Publish a disk pair to the context and re-run issuer binding on it.
+
+        If the enforcer strips the refresh token (the pair was minted by a
+        different issuer) there is nothing left to refresh with: restart the
+        SDK flow so it lands in 401 -> full authorization instead of raising
+        OAuthTokenError over an unusable grant.
+        """
+        self.context.current_tokens = tokens
+        self.context.update_token_expiry(tokens)
+        enforce_refresh_token_issuer(self.context)
+        if not getattr(self.context.current_tokens, "refresh_token", None):
+            raise _RefreshCompletedByPeer
+
     async def _hermes_adopt_tokens_from_disk(self) -> bool:
         """Adopt a peer's newer tokens before POSTing our own copy.
 
-        Called under the fence. If disk already holds a different token, the
-        peer that held the fence before us won this generation; its value is
-        the only one the provider will still accept. Returns True when the
-        in-memory pair was replaced.
+        Called under the fence. If disk already holds a different refresh
+        token, the peer that held the fence before us won this generation;
+        its value is the only one the provider will still accept, so it is
+        installed even when its access token has already expired (the POST
+        we are about to build needs the new refresh token). Returns True
+        when the in-memory pair was replaced.
         """
-        try:
-            stored = await self.context.storage.get_tokens()
-        except Exception:  # pragma: no cover - unreadable store: keep what we have
+        candidate = await self._hermes_rotated_candidate()
+        if candidate is None:
             return False
-        if stored is None:
-            return False
-        current = self.context.current_tokens
-        if current is not None and getattr(stored, "refresh_token", None) == getattr(current, "refresh_token", None):
-            return False
-        self.context.current_tokens = stored
-        self.context.update_token_expiry(stored)
+        self._hermes_install_disk_pair(candidate)
         return True
 
     async def _initialize(self) -> None:
@@ -251,10 +294,11 @@ class HermesProviderMixin:
     async def _hermes_handle_refresh_response(self, response) -> bool:
         if not (200 <= response.status_code < 300):
             self._hermes_logger.warning("Token refresh failed: %s", response.status_code)
-            # A peer process (gateway vs desktop sharing one HERMES_HOME) may have
-            # rotated the refresh token microseconds ago and already persisted the
-            # replacement. Providers issuing single-use refresh tokens reject our
-            # now-stale copy with a 400. Re-read disk before destroying the session.
+            # A writer outside the fence (interactive `hermes mcp login`, or a
+            # pre-fence Hermes sharing this HERMES_HOME) may have rotated the
+            # grant and persisted the replacement. Providers issuing single-use
+            # refresh tokens reject our stale copy with a 400. Re-read disk
+            # before destroying the session.
             if await self._hermes_reload_tokens_after_refresh_failure():
                 self._hermes_logger.info(
                     "Recovered a peer-rotated refresh token instead of clearing the session"
@@ -287,81 +331,30 @@ class HermesProviderMixin:
     async def _hermes_reload_tokens_after_refresh_failure(self) -> bool:
         """Re-read tokens from disk after a rejected refresh.
 
-        Returns True only when disk holds a token that is BOTH different
-        from the one we just failed with AND still valid. That is the
-        signature of a peer process having rotated the refresh token
-        between our read and our POST — a recoverable race, not a dead
-        credential.
+        Returns True only when disk holds a pair that is BOTH different from
+        the one we just failed with AND still live. That is the signature of
+        a writer outside the fence (an interactive ``hermes mcp login`` or a
+        pre-fence Hermes) having rotated the grant between our read and our
+        POST -- a recoverable race, not a dead credential.
 
-        Returns False for the genuinely-expired case (nobody else wrote a
-        newer token), so the caller still clears state and surfaces the
-        reauth prompt. Never raises: a failure to recover must degrade to
-        the pre-existing clear-and-reauth path.
+        Returns False for the genuinely-expired case (nobody wrote a newer
+        pair), so the caller still clears state and surfaces the reauth
+        prompt.
         """
-        try:
-            storage = getattr(self.context, "storage", None)
-            if storage is None:
-                return False
-
-            stale = getattr(self.context, "current_tokens", None)
-            stale_refresh = getattr(stale, "refresh_token", None)
-
-            fresh = await storage.get_tokens()
-            if fresh is None:
-                return False
-
-            fresh_refresh = getattr(fresh, "refresh_token", None)
-            # Same credential we just failed with: disk has nothing newer.
-            if fresh_refresh is not None and fresh_refresh == stale_refresh:
-                return False
-
-            # No refresh token on the disk entry. The access token may
-            # still be usable right now, but adopting it would trade an
-            # explicit reauth today for a silent one at expiry, with no
-            # way to refresh in between. Treat it as unrecoverable.
-            if fresh_refresh is None:
-                return False
-
-            # Defence-in-depth. Not load-bearing: is_token_valid() below
-            # already rejects an empty access_token, so mutating this
-            # guard away leaves the suite green. Kept because recovering
-            # onto a credential-less token would be a security-relevant
-            # failure if that SDK behaviour ever changed.
-            access = getattr(fresh, "access_token", None)
-            if not access:
-                return False
-
-            # Storage clamps a past-due token to ``expires_in == 0`` on
-            # read (see HermesTokenStorage.get_tokens). The SDK's
-            # is_token_valid() compares ``time.time() <= expiry`` and so
-            # still reports True for that boundary value, which would make
-            # us "recover" onto a token the server will immediately reject.
-            # Require a real, positive TTL.
-            try:
-                if int(getattr(fresh, "expires_in", 0) or 0) <= 0:
-                    return False
-            except (TypeError, ValueError):
-                return False
-
-            # Publish, then restore on rejection. is_token_valid() reads
-            # the context rather than taking a token argument, so the
-            # candidate has to be installed to be tested; keeping the
-            # previous value lets a losing probe leave the context exactly
-            # as it found it instead of stranding a rejected token there
-            # for the caller to clean up.
-            previous_tokens = self.context.current_tokens
-            self.context.current_tokens = fresh
-            self.context.update_token_expiry(fresh)
-
-            if not self.context.is_token_valid():
-                self.context.current_tokens = previous_tokens
-                self.context.update_token_expiry(previous_tokens)
-                return False
-
-            return True
-        except Exception as exc:  # noqa: BLE001 — recovery is best-effort
-            logger.debug("Post-refresh disk reload failed: %s", exc)
+        candidate = await self._hermes_rotated_candidate()
+        if candidate is None:
             return False
+        # Publish, then restore on rejection. is_token_valid() reads the
+        # context rather than taking a token argument, so the candidate has
+        # to be installed to be tested; a losing probe must leave the context
+        # exactly as it found it.
+        previous_tokens = self.context.current_tokens
+        self._hermes_install_disk_pair(candidate)
+        if self._hermes_live_ttl() and self.context.is_token_valid():
+            return True
+        self.context.current_tokens = previous_tokens
+        self.context.update_token_expiry(previous_tokens)
+        return False
 
 
 def _metadata_issuer(context: Any) -> str | None:

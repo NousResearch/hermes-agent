@@ -138,6 +138,7 @@ def test_run_state_initialization_and_teardown_are_shard_owned():
     assert adapter._stopping_run_ids == set()
     assert adapter._run_statuses == {}
     assert adapter._run_approval_sessions == {}
+    assert adapter._run_approval_resolvers == {}
 
     api_server_runs._close_run_state(adapter)
     store.close.assert_called_once_with()

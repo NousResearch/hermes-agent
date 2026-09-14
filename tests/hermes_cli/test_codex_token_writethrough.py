@@ -119,14 +119,18 @@ def test_concurrent_refreshes_of_shared_root_grant_submit_old_token_once(profile
         "providers": {"openai-codex": {"auth_mode": "chatgpt", "tokens": _pair("old")}},
     })
     _write(profile_path, {"version": 1, "providers": {}})
-    endpoint = _RotatingEndpoint(hold_seconds=0.3)
+    endpoint = _RotatingEndpoint(hold_seconds=1.5)  # longer than the lock floor (1 s)
     monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: endpoint)
+    # The waiter must outlive the peer's endpoint call on BOTH locks: with the default lock
+    # timeout shorter than the POST, the second profile would raise TimeoutError instead of adopt.
+    monkeypatch.setattr(auth._auth_store_lock.__wrapped__, "__defaults__", (1.0,))
+    monkeypatch.setattr(auth_codex, "AUTH_LOCK_TIMEOUT_SECONDS", 1.0)
 
     results, errors = {}, {}
 
     def _refresh(name):
         try:
-            results[name] = auth._refresh_codex_auth_tokens(_pair("old"), timeout_seconds=5.0)
+            results[name] = auth._refresh_codex_auth_tokens(_pair("old"), timeout_seconds=1.0)
         except Exception as exc:  # pragma: no cover - surfaced via the assertion below
             errors[name] = exc
 

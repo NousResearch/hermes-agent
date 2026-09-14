@@ -20,6 +20,11 @@ Use `terminal` to run `gh issue view <N> --comments`. The body is a snapshot fro
 
 Before writing anything, run `gh pr list --search "#<N>" --state all` plus at least two keyword/synonym variants of the symptom (`gh pr list --search "<subsystem> <symptom>" --state open`). Popular issues attract multiple independent fixes; building a duplicate wastes the work and the credit. Also check whether a recent commit already fixed it: `git log --oneline -20 -- <relevant files>`. Done when you know every open PR and recent commit touching this issue, or that none exist.
 
+For a Hermes White Knight repair, load `hermes-upstream-audit` before this
+step. It requires one reusable snapshot of the complete open issue and PR
+landscape, then correlates the local mechanism to relevant upstream clusters.
+Do not reduce that audit to the issue number or newest titles.
+
 ### 3. Validate the premise against current code — and against design intent
 
 Reproduce the bug or demonstrate the missing behavior on the current default branch with a failing test or fixture, using `search_files` and `read_file` to trace the reported path. Then check the second question: is the "bug" actually deliberate design? Run `git log -p -S "<symbol>"` on the code the issue wants changed and read the original commit's intent — a missing link or restriction is often the feature. Challenge stale or flawed issue prose instead of implementing it blindly. Done when the root cause or feature gap is demonstrated in current code AND the change doesn't fight an intentional design.

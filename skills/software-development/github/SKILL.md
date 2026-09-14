@@ -28,6 +28,7 @@ starting that workflow, the body below only routes.
 | Create, triage, label, assign, close issues | `references/issues.md` |
 | Branch, commit, open PR, watch CI, merge | `references/pr-workflow.md` |
 | Carry an ISSUE to a verified PR (full delivery loop) | `references/issue-to-pr.md` |
+| Audit the upstream Hermes issue/PR landscape first | `optional-skills/software-development/hermes-upstream-audit/SKILL.md` |
 | Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
 | Clone/create/fork repos, remotes, releases | `references/repo-management.md` |
 

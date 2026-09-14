@@ -9,6 +9,11 @@ import json
 import contextlib
 import threading
 
+from tui_gateway.contracts.server_requests import (
+    EmptyRequestParams, McpSetupRequestParams, PreviewActRequestParams, ReadRangeRequestParams,
+    SecretRequestParams, VaultCodeRequestParams, VaultSaveLoginRequestParams,
+    VaultUnlockRequestParams)
+
 from .method_ctx import bind_module
 
 
@@ -121,7 +126,7 @@ def _agent_cbs(sid: str) -> dict:
         # read_terminal / read_preview (desktop GUI): server request like clarify; the preview
         # read gets longer since a URL tab extracts text from a live page.
         return lambda start=None, count=None: _ask(
-            method, sid, {k: v for k, v in (("start", start), ("count", count)) if v is not None},
+            method, sid, ReadRangeRequestParams(session_id=sid, start=start, count=count),
             timeout=timeout)
 
     callbacks = {
@@ -144,12 +149,18 @@ def _agent_cbs(sid: str) -> dict:
         "read_terminal_callback": _read_block("terminal.read", 30),
         "read_preview_callback": _read_block("preview.read", 45),
         # drive_preview / annotate_preview (desktop GUI): same budget as the preview read it ends with.
-        "drive_preview_callback": lambda payload: _ask("preview.act", sid, dict(payload), timeout=45),
+        "drive_preview_callback": lambda payload: _ask(
+            "preview.act", sid, PreviewActRequestParams(session_id=sid, **payload), timeout=45),
         # read_window_below (desktop GUI): main process enumerates native windows.
-        "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
+        "read_window_below_callback": lambda: _ask("window.read", sid, EmptyRequestParams(session_id=sid), timeout=30),
+        # setup_mcp (desktop GUI): consent card + install/enable/OAuth; long timeout on purpose
+        # (typing an API key, browser OAuth).
+        "setup_mcp_callback": lambda server, action, reason: _ask(
+            "mcp.setup", sid, McpSetupRequestParams(
+                session_id=sid, server=server, action=action, reason=reason), timeout=600),
         # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
         # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
-        "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
+        "connection_callback": lambda payload: _emit("connection.request", sid, ConnectionRequestPayload.model_validate(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload)}
 
@@ -198,15 +209,14 @@ def _wire_callbacks(sid: str):
     from tools.project_tools import set_project_workspace_callback
 
     def secret_cb(env_var, prompt, metadata=None):
-        pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
-        val = _ask("secret", sid, pl)
+        val = _ask("secret", sid, SecretRequestParams(
+            session_id=sid, prompt=prompt, env_var=env_var, metadata=metadata))
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure
         return {**save_env_value_secure(env_var, val), "skipped": False, "message": "ok"}
 
-    set_sudo_password_callback(lambda: _ask(
-        "sudo", sid, {"command": _redact_approval_command(get_sudo_prompt_command())}, timeout=120))
+    set_sudo_password_callback(lambda: _ask("sudo", sid, EmptyRequestParams(session_id=sid), timeout=120))
     set_project_workspace_callback(_apply_project_workspace)
     set_secret_capture_callback(secret_cb)
     # External password-manager unlock: the renderer shows a masked master-password card; the
@@ -215,11 +225,13 @@ def _wire_callbacks(sid: str):
                                              set_save_login_prompt_callback, set_unlock_prompt_callback)
     set_current_session_id(sid)  # an unlock made on this turn belongs to this session (released with it)
     set_unlock_prompt_callback(lambda backend, display_name: _ask(
-        "vault.unlock_prompt", sid, {"backend": backend, "display_name": display_name}, timeout=120))
+        "vault.unlock_prompt", sid, VaultUnlockRequestParams(
+            session_id=sid, backend=backend, display_name=display_name), timeout=120))
 
     def save_login_cb(origin, site):
         # The renderer shows identifier + masked password; the JSON answer goes straight to the vault store.
-        raw = _ask("vault.save_login", sid, {"origin": origin, "site": site}, timeout=180)
+        raw = _ask("vault.save_login", sid, VaultSaveLoginRequestParams(
+            session_id=sid, origin=origin, site=site), timeout=180)
         try:
             data = json.loads(raw) if raw else None
         except ValueError:
@@ -228,7 +240,7 @@ def _wire_callbacks(sid: str):
 
     set_save_login_prompt_callback(save_login_cb)
     set_code_prompt_callback(lambda site, hint: _ask(
-        "vault.code", sid, {"site": site, "hint": hint}, timeout=180))
+        "vault.code", sid, VaultCodeRequestParams(session_id=sid, site=site, hint=hint), timeout=180))
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:

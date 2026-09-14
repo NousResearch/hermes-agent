@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable: split modules)
 
+from pydantic import TypeAdapter, ValidationError
+
 # Several of these look unused here but are resolved BARE by split-module bodies rebound onto this
 # namespace (method_ctx.bind_module) — deleting one breaks a handler at call time, not import time.
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
@@ -35,6 +37,16 @@ from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
+from tui_gateway.contracts.base import Params, Payload, Result
+from tui_gateway.contracts.common import SessionLiveInfo, Usage
+from tui_gateway.contracts.events import (
+    ErrorPayload, NotificationClearPayload, NotificationShowPayload, ReviewSummaryPayload,
+    SessionResumeProgressPayload, SessionUsagePayload, StatusUpdatePayload)
+from tui_gateway.contracts.server_requests import (
+    ApprovalRequestParams, ClarifyAnswer, ClarifyAnswers, ClarifyBatch, ClarifyQuestion,
+    ClarifySingle, EmptyRequestParams, McpSetupRequestParams, PreviewActRequestParams,
+    ReadRangeRequestParams, SecretRequestParams, TourRequestParams, VaultCodeRequestParams,
+    VaultSaveLoginRequestParams, VaultUnlockRequestParams)
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401
 from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
@@ -436,14 +448,14 @@ def _open_profile_session_db(profile_home):
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None, *, writer: bool = False):
-    """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
+def _profile_db(params=None, *, writer: bool = False):
+    """Yield the SessionDB for ``params.profile`` (None when unavailable); closes dedicated
     profile handles, leaves the launch-profile shared handle open.
 
     Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
     gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
     hermes_cli.web_routers.profiles._read_profile_db."""
-    profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
+    profile = str(getattr(params, "profile", "") or "").strip() or None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
     if (profile_home := _profile_home(profile)) is None:
@@ -549,13 +561,14 @@ def _profile_scoped(handler):
     launch process's ``os.environ``: ``config.get full`` for a secondary shipped the default profile's
     expanded secrets and ``config.set`` published a secondary's ``.env`` edit into the shared process env.
 
+
     Launch profile: unscoped while this is a single-profile process (legacy ``os.environ`` precedence,
     systemd / ``op run`` injection); once multiplexing is active it binds its own scope from the env
     frozen at activation (``_session_profile_runtime_scope``), never ambient state a secondary context
     might have poisoned (#107422).
     """
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        home = _profile_home(getattr(params, "profile", None))
         with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
             return handler(rid, params)
     return wrapper
@@ -628,13 +641,21 @@ def write_json(obj: dict) -> bool:
     return (current_transport() or _stdio_transport).write(obj)
 
 
-def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
-    _contracts.check_payload(event, payload)
-    params: dict = {"type": event, "session_id": sid, **({"payload": payload} if payload is not None else {})}
+def _event_frame(event: str, sid: str, payload: "Payload | None" = None) -> dict:
+    contract = _contracts.EVENTS[event]
+    expected = contract.payload
+    if expected is None:
+        if payload is not None:
+            raise TypeError(f"event {event!r} does not accept a payload")
+    elif not isinstance(payload, expected):
+        raise TypeError(f"event {event!r} payload must be {expected.__name__}")
+    params: dict = {"type": event, "session_id": sid}
+    if payload is not None:
+        params["payload"] = payload.model_dump(mode="json")
     return {"jsonrpc": "2.0", "method": "event", "params": params}
 
 
-def _emit(event: str, sid: str, payload: dict | None = None) -> bool:
+def _emit(event: str, sid: str, payload: "Payload | None" = None) -> bool:
     from agent.notification_presentation import event_presentation_muted
     if event_presentation_muted(event, sid):
         return False
@@ -645,6 +666,8 @@ from tui_gateway import server_requests as _server_requests  # noqa: E402
 
 _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, payload: _emit(event, sid, payload),
                             lambda sid: _session_client_answers_requests(sid))
+
+
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
@@ -667,13 +690,13 @@ def unregister_live_transport(transport: Transport | None) -> None:
     _server_requests.forget(transport)
 
 
-def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
+def _broadcast_global_event(event: str, payload: Payload | None = None) -> None:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
     emitters bottom out at stdio in ``write_json``'s ladder. No registered transports (stdio TUI, tests) → ``_emit``."""
     with _live_transports_lock:
         targets = list(_live_transports)
     if not targets:
-        return _emit(event, "", payload)
+        return write_json(_event_frame(event, "", payload))
     frame = _event_frame(event, "", payload)
     for transport in targets:
         try:
@@ -748,8 +771,9 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     payload = _approval_request_payload(data)
     request_id = str(payload.get("request_id") or "")
     session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
+    params = ApprovalRequestParams(session_id=sid, **payload)
 
-    def on_result(result: dict | None) -> None:
+    def on_result(result: Result | None) -> None:
         if result is None:
             # No client can answer this prompt: the request was never sent (the only attached client predates
             # server→client requests) or the client answered -32601 (no handler). Without withdrawing the
@@ -760,11 +784,10 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
                                                     "the attached client cannot answer approval requests "
                                                     "(update the Hermes app)")
             return
-        choice = str(result.get("choice") or "deny")
-        _approval.resolve_gateway_approval(session_key, choice, resolve_all=bool(result.get("all")),
-                                           request_id=request_id or None)
+        _approval.resolve_gateway_approval(session_key, result.choice,
+                                           resolve_all=bool(result.all), request_id=request_id or None)
 
-    settle = server_requests.send_async("approval", sid, payload, on_result)
+    settle = server_requests.send_async("approval", sid, params, on_result)
     if request_id:
         _approval.register_gateway_settle(session_key, request_id, settle)
 
@@ -780,7 +803,7 @@ def _status_update(sid: str, kind: str, text: str | None = None):
         from agent.conversation_compression import is_compaction_progress_status
         if is_compaction_progress_status(body):
             out_kind = "compacting"
-    _emit("status.update", sid, {"kind": out_kind, "text": body})
+    _emit("status.update", sid, StatusUpdatePayload(kind=out_kind, text=body))
 
 
 def _image_meta(path: Path) -> dict:
@@ -795,8 +818,10 @@ def _image_meta(path: Path) -> dict:
     return meta
 
 
-def _ok(rid, result: dict) -> dict:
-    return {"jsonrpc": "2.0", "id": rid, "result": result}
+def _ok(rid, result: Result) -> dict:
+    if not isinstance(result, Result):
+        raise TypeError("RPC results must be Result instances")
+    return {"jsonrpc": "2.0", "id": rid, "result": result.model_dump(mode="json")}
 
 
 def _err(rid, code: int, msg: str, data=None) -> dict:
@@ -805,10 +830,42 @@ def _err(rid, code: int, msg: str, data=None) -> dict:
 
 
 def register_method(name: str, fn) -> None:
-    """The ONE registration seam (``@method`` here and ``HandlerRegistry.install`` for the split
-    modules). ``tests/tui_gateway/contracts/test_generated.py::test_every_method_has_a_contract`` and the
-    generator's ``assert_complete`` fail when a registered name has no contract."""
-    _methods[name] = fn
+    """Install one declared method with its model boundary around the raw handler."""
+    contract = _contracts.METHODS[name]
+    adapter = TypeAdapter(contract.result)
+
+    def wrapper(rid, params, *extras):
+        try:
+            model = contract.params.model_validate(params)
+        except ValidationError as exc:
+            data = [
+                {key: error[key] for key in ("loc", "msg", "type")}
+                for error in exc.errors(include_input=False, include_url=False)
+            ]
+            return _err(rid, 4000, f"invalid params for {name}", data=data)
+        response = fn(rid, model, *extras)
+        if isinstance(response, dict):
+            if "error" not in response:
+                raise TypeError(f"RPC handler {name!r} returned a dict that is not an error frame")
+            return response
+        if not isinstance(response, Result):
+            raise TypeError(f"RPC handler {name!r} must return a Result instance")
+        try:
+            result = adapter.validate_python(response)
+        except ValidationError as exc:
+            raise TypeError(f"RPC handler {name!r} returned an invalid result") from exc
+        return _ok(rid, result)
+
+    wrapper._hermes_raw_handler = fn
+    _methods[name] = wrapper
+
+
+def invoke(name: str, params: Params, **trusted):
+    """Call a declared raw handler for a trusted in-process path without revalidating its model."""
+    raw = getattr(_methods[name], "_hermes_raw_handler", None)
+    if raw is None:
+        raise RuntimeError(f"RPC handler {name!r} is not registered through register_method")
+    return raw(None, params, **trusted)
 
 
 def method(name: str):
@@ -829,6 +886,7 @@ def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     if params is not None and not isinstance(params, dict):
         return _err(rid, -32602, "invalid params: expected an object")
     return rid, method, params if params is not None else {}
+
 
 
 
@@ -910,12 +968,12 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
             return _err(rid, 5032, session.get("agent_error") or "agent initialization failed before completing")
         if not notified_slow and waited >= _AGENT_BUILD_SLOW_NOTICE_AFTER:
             notified_slow = True  # one keyed, replace-in-place notice (toast / status bar)
-            _emit("notification.show", sid, {
-                "text": "Still starting the agent (tool discovery / model setup) — your message will be sent as soon as it's ready.",
-                "level": "info", "kind": "agent", "ttl_ms": None,
-                "key": _AGENT_BUILD_SLOW_NOTICE_KEY, "id": _AGENT_BUILD_SLOW_NOTICE_KEY})
+            _emit("notification.show", sid, NotificationShowPayload(
+                text="Still starting the agent (tool discovery / model setup) — your message will be sent as soon as it's ready.",
+                level="info", kind="agent", ttl_ms=None,
+                key=_AGENT_BUILD_SLOW_NOTICE_KEY, id=_AGENT_BUILD_SLOW_NOTICE_KEY))
     if notified_slow:
-        _emit("notification.clear", sid, {"key": _AGENT_BUILD_SLOW_NOTICE_KEY})
+        _emit("notification.clear", sid, NotificationClearPayload(key=_AGENT_BUILD_SLOW_NOTICE_KEY))
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
@@ -975,7 +1033,8 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
         load_permanent_allowlist()
     _wire_callbacks(sid)
     with contextlib.suppress(Exception):  # bare agents without the attribute must not break startup
-        agent.background_review_callback = lambda message, _sid=sid: _emit("review.summary", _sid, {"text": str(message)})
+        agent.background_review_callback = lambda message, _sid=sid: _emit(
+            "review.summary", _sid, ReviewSummaryPayload(text=str(message)))
         agent.memory_notifications = _load_memory_notifications()
     return notify_registered
 
@@ -1025,7 +1084,7 @@ def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
     if cfg_warn := _probe_config_health(_load_cfg()):
         info["config_warning"] = cfg_warn
         logger.warning(cfg_warn)
-    _emit("session.info", sid, info)
+    _emit("session.info", sid, SessionLiveInfo.model_validate(info))
     _schedule_mcp_late_refresh(sid, agent)  # servers slower than the bounded discovery wait land here
 
 
@@ -1106,7 +1165,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": agent_init_failed_message(e)})
+            _emit("error", sid, ErrorPayload(message=agent_init_failed_message(e)))
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -1119,7 +1178,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 
 def _sess_nowait(params, rid):
-    sid = params.get("session_id") or ""
+    sid = getattr(params, "session_id", "") or ""
     s = _sessions.get(sid)
     if s:
         return (s, None)
@@ -1148,7 +1207,7 @@ def _sess_building(params, rid):
     reader thread, where waiting on a cold build stalled every RPC behind it ("text is instant, images hang")."""
     s, err = _sess_nowait(params, rid)
     if not err:
-        _start_agent_build(params.get("session_id") or "", s)
+        _start_agent_build(getattr(params, "session_id", "") or "", s)
     return (None, err) if err else (s, None)
 
 
@@ -1283,12 +1342,13 @@ def _enable_gateway_prompts() -> None:
 # ── Blocking prompt factory ──────────────────────────────────────────
 
 
-def _ask(method: str, sid: str, params: dict, timeout: float | None = 300) -> str:
+def _ask(method: str, sid: str, params: Params, timeout: float | None = 300) -> str:
     """Server→client request whose answer is one string under ``value`` (sudo, secret, vault prompts, GUI reads,
     MCP setup). Empty string when the renderer skipped, timed out, or was cancelled."""
     from tui_gateway import server_requests
+
     result = server_requests.send(method, sid, params, timeout=timeout)
-    value = (result or {}).get("value", "")
+    value = result.value if result is not None else ""
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
@@ -1310,17 +1370,19 @@ def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
     from tui_gateway import server_requests
     if questions:
-        wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
-                for e in questions]
-        result = server_requests.send("clarify", sid, {"questions": wire}, timeout=_clarify_timeout_seconds(),
-                                      qids=[e["qid"] for e in questions])
-        if not result or "answers" not in result:
+        wire = [ClarifyQuestion(qid=e["qid"], question=e["question"], choices=e["choices"],
+                                multi_select=bool(e["multi_select"])) for e in questions]
+        result = server_requests.send(
+            "clarify", sid, ClarifyBatch(session_id=sid, kind="batch", questions=wire, answers=None),
+            timeout=_clarify_timeout_seconds(), qids=[e["qid"] for e in questions])
+        if not isinstance(result, ClarifyAnswers):
             return ""
-        return json.dumps(result, ensure_ascii=False)
-    params = {"question": q, "choices": c, "multi_select": True} if multi_select else {"question": q, "choices": c}
-    result = server_requests.send("clarify", sid, params, timeout=_clarify_timeout_seconds())
-    answer = (result or {}).get("answer", "")
-    return answer if isinstance(answer, str) else ""
+        return json.dumps(result.model_dump(mode="json"), ensure_ascii=False)
+    result = server_requests.send(
+        "clarify", sid,
+        ClarifySingle(session_id=sid, kind="single", question=q, choices=c, multi_select=bool(multi_select)),
+        timeout=_clarify_timeout_seconds())
+    return result.answer if isinstance(result, ClarifyAnswer) else ""
 
 
 # A tour action is a DOM op the renderer answers in ms; the generous deadline exists only because a
@@ -1354,7 +1416,7 @@ def _tour_request(sid: str, payload: dict) -> str:
     state = session.get("tour_bridge")
     if state == "unanswered":
         return _TOUR_BRIDGE_UNAVAILABLE
-    answer = _ask("tour", sid, dict(payload),
+    answer = _ask("tour", sid, TourRequestParams(session_id=sid, **payload),
                   timeout=_TOUR_TIMEOUT_S if state == "answered" else _TOUR_PROBE_TIMEOUT_S)
     if answer:
         session["tour_bridge"] = "answered"
@@ -2129,7 +2191,7 @@ def _emit_session_info_for_session(sid: str, session: dict) -> None:
     agent = session.get("agent")
     if agent is not None or _metadata_mirror(session):
         with contextlib.suppress(Exception):
-            _emit("session.info", sid, _session_info(agent, session))
+            _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, session)))
 
 
 def broadcast_session_info() -> None:
@@ -2171,7 +2233,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             if not added:
                 return  # discovery added nothing → don't churn the client
             info = _session_info(agent, session)
-        _emit("session.info", sid, info)  # outside the lock — write_json must not block under _sessions_lock
+        _emit("session.info", sid, SessionLiveInfo.model_validate(info))  # outside the lock — write_json must not block under _sessions_lock
     threading.Thread(target=_wait_then_refresh, name=f"tui-mcp-late-refresh-{sid}", daemon=True).start()
 
 
@@ -2407,7 +2469,7 @@ def _init_session(
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
     _start_session_services(sid, key, _sessions.get(sid, {}))
-    _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
+    _emit("session.info", sid, SessionLiveInfo.model_validate(_session_info(agent, _sessions.get(sid, {}))))
     _schedule_mcp_late_refresh(sid, agent)
 
 
@@ -2578,7 +2640,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
         try:
             if session is None:
                 return
-            _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                phase="history", status="loading"))
             db.reopen_session(stored_id)
             raw_history, display_history, prefix = _load_resume_transcript(
                 db, stored_id, model_history_only=model_history_only)
@@ -2596,8 +2659,8 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             if todo_state is not None and session.get("todo_state") is None:
                 session["todo_state"] = todo_state
             session["resume_history_ready"].set()
-            _emit("session.resume_progress", sid,
-                  {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                message_count=session["resume_message_count"], phase="history", status="complete"))
             _maybe_schedule_auto_continue(sid, session, stored_id)
             _start_agent_build(sid, session)
         except Exception as exc:
@@ -2607,8 +2670,9 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
             session.update(resume_hydrating=False, resume_history_error=message, agent_error=message)
             session["resume_history_ready"].set()
             session["agent_ready"].set()
-            _emit("session.resume_progress", sid, {"message": message, "phase": "history", "status": "failed"})
-            _emit("error", sid, {"message": message})
+            _emit("session.resume_progress", sid, SessionResumeProgressPayload(
+                message=message, phase="history", status="failed"))
+            _emit("error", sid, ErrorPayload(message=message))
             with _sessions_lock:
                 discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
             if (lease := (discarded or {}).get("active_session_lease")) is not None:
@@ -3074,7 +3138,7 @@ def _start_usage_ticker(sid: str, agent, interval: float = 1.0) -> tuple[threadi
                 last = usage
                 if stop.is_set():
                     break  # turn ended while snapshotting; message.complete carries the authoritative usage
-                _emit("session.usage", sid, {"usage": usage})
+                _emit("session.usage", sid, SessionUsagePayload(usage=Usage.model_validate(usage)))
     thread = _RealThread(target=_loop, daemon=True)
     thread.start()
     return stop, thread

@@ -37,9 +37,9 @@ def _profile_scoped_rpc(
     sources are hydrated first (the requested profile may never have been served in this process)."""
 
     def deco(body):
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params) -> dict:
             for key, present in required:
-                if not present(params.get(key)):
+                if not present(getattr(params, key, None)):
                     return _err(rid, 4063, f"{key} required")
             args = (rid, params)
             if live_session:
@@ -89,8 +89,8 @@ def _scoped_rpc(name: str, fail_code: int = 5024, **kw):
     return lambda body: method(name)(_profile_scoped_rpc(fail_code, **kw)(body))
 
 
-def _str_arg(params: dict, key: str) -> str:
-    return str(params.get(key) or "").strip()
+def _str_arg(params, key: str) -> str:
+    return str(getattr(params, key, "") or "").strip()
 
 
 def _tools_mod(module: str):

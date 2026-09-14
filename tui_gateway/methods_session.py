@@ -17,7 +17,7 @@ _profile_scoped = _registry.profile_scoped
 def _session_arg(resolve):
     """Resolve ``params.session_id`` via ``resolve`` (a lambda — decoration precedes bind_module) → 3rd arg."""
     def deco(fn):
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params) -> dict:
             session, err = resolve(params, rid)
             return err or fn(rid, params, session)
         return handler
@@ -36,7 +36,7 @@ def _session_method(name: str, *, live: bool = False):
 def _with_db(code: int, *, session_scoped: bool):
     """Append a db arg — the session's db (after ``_with_session``) or ``_profile_db(params)``; ``code`` when None."""
     def deco(fn):
-        def handler(rid, params: dict, *session) -> dict:
+        def handler(rid, params, *session) -> dict:
             with (_session_db(session[0]) if session_scoped else _profile_db(params)) as db:
                 if db is None:
                     return _db_unavailable_error(rid, code=code)
@@ -45,19 +45,19 @@ def _with_db(code: int, *, session_scoped: bool):
     return deco
 
 
-def _str_param(params: dict, key: str, default: str = "") -> str:
-    """``str(params[key]).strip()`` with ``default`` for missing / falsy values."""
-    return str(params.get(key) or "").strip() or default
+def _str_param(params, key: str, default: str = "") -> str:
+    """``str(params.key).strip()`` with ``default`` for missing / falsy values."""
+    return str(getattr(params, key, "") or "").strip() or default
 
 
-def _flag(params: dict, name: str) -> bool:
-    return is_truthy_value(params.get(name, False))
+def _flag(params, name: str) -> bool:
+    return is_truthy_value(getattr(params, name, False))
 
 
-def _int_param(params: dict, key: str, default: int) -> int:
-    """``int(params[key])`` with ``default`` for missing / unparsable values."""
+def _int_param(params, key: str, default: int) -> int:
+    """``int(params.key)`` with ``default`` for missing / unparsable values."""
     try:
-        return int(params.get(key, default))
+        return int(getattr(params, key, default))
     except (TypeError, ValueError):
         return default
 
@@ -177,7 +177,7 @@ def _pet_method(name: str, *, fail_open=None, slug: bool = False, scoped: bool =
     """``@method`` (+ ``@_profile_scoped`` unless ``scoped=False``) whose exceptions never break the surface: logged
     at debug, then ``fail_open`` (payload or ``params -> payload``) or ``_err(5031)``. ``slug``: 3rd arg (4004)."""
     def deco(fn):
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params) -> dict:
             try:
                 if slug and not (value := _str_param(params, "slug")):
                     return _err(rid, 4004, "missing slug")
@@ -2073,8 +2073,8 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
     """steer/redirect RPC: ``params.text`` (4002, checked before the session) into a live session;
     ``supported(agent)`` gates 4010."""
     @method(name)
-    def _(rid, params: dict) -> dict:
-        if not (text := (params.get("text") or "").strip()):
+    def _(rid, params) -> dict:
+        if not (text := (getattr(params, "text", "") or "").strip()):
             return _err(rid, 4002, "text is required")
         session, err = _sess_nowait(params, rid)
         if err:

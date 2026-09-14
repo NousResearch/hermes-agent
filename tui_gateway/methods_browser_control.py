@@ -91,7 +91,7 @@ def _controller_method(
     """
 
     def dec(fn):
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params) -> dict:
             from gateway import browser_control_broker
 
             if precheck is not None:
@@ -102,7 +102,7 @@ def _controller_method(
             identity = getattr(transport, "auth_identity", None)
             if not _is_authenticated_identity(identity):
                 return _err(rid, _ERR_FORBIDDEN, identity_message)
-            session_id = str(params.get("session_id") or "")
+            session_id = str(getattr(params, "session_id", "") or "")
             with _sessions_lock:
                 session = _sessions.get(session_id)
                 # Membership, not slot identity: a mirrored session holds a FanoutTransport, which is

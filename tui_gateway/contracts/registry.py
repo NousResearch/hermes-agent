@@ -1,29 +1,28 @@
 """The contract catalog: every method, server→client request and event the gateway speaks.
 
 Three tables, filled by the ``contracts.*`` topic modules at import time and read by
-``tui_gateway/server.py`` (runtime validation) and ``scripts/gen_gateway_contracts.py``
+``tui_gateway/server.py`` (runtime dispatch) and ``scripts/gen_gateway_contracts.py``
 (TypeScript + OpenRPC rendering). A handler registered with ``@method`` for a name that has
 no contract here fails at import: the wire has no undeclared surface.
 """
 
 from __future__ import annotations
 
-import logging
-import os
 from dataclasses import dataclass
-
-from pydantic import ValidationError
+from types import UnionType
+from typing import TypeAlias
 
 from .base import Params, Payload, Result
 
-logger = logging.getLogger(__name__)
+
+ResultType: TypeAlias = type[Result] | UnionType
 
 
 @dataclass(frozen=True)
 class MethodContract:
     name: str
     params: type[Params]
-    result: type[Result]
+    result: ResultType
     doc: str = ""
 
 
@@ -33,7 +32,7 @@ class ServerRequestContract:
 
     name: str
     params: type[Params]
-    result: type[Result]
+    result: ResultType
     doc: str = ""
 
 
@@ -55,13 +54,14 @@ def _declare(table: dict, entry) -> None:
     table[entry.name] = entry
 
 
-def method(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> MethodContract:
+def method(name: str, *, params: type[Params], result: ResultType, doc: str = "") -> MethodContract:
     entry = MethodContract(name, params, result, doc)
     _declare(METHODS, entry)
     return entry
 
 
-def server_request(name: str, *, params: type[Params], result: type[Result], doc: str = "") -> ServerRequestContract:
+def server_request(name: str, *, params: type[Params], result: ResultType,
+                   doc: str = "") -> ServerRequestContract:
     entry = ServerRequestContract(name, params, result, doc)
     _declare(SERVER_REQUESTS, entry)
     return entry
@@ -156,24 +156,9 @@ def assert_complete(methods: dict[str, object], emitted_events: set[str], server
         problems.append(f"methods without a contract: {missing}")
     if orphan := sorted(set(METHODS) - set(methods)):
         problems.append(f"method contracts with no handler: {orphan}")
-    if missing := sorted(emitted_events - set(EVENTS)):
-        problems.append(f"events without a contract: {missing}")
-    if orphan := sorted(set(EVENTS) - emitted_events):
-        problems.append(f"event contracts nothing emits: {orphan}")
     if missing := sorted(server_requests - set(SERVER_REQUESTS)):
         problems.append(f"server requests without a contract: {missing}")
     if orphan := sorted(set(SERVER_REQUESTS) - server_requests):
         problems.append(f"server request contracts nothing sends: {orphan}")
     if problems:
-        raise ContractViolation("tui_gateway/contracts is incomplete:\n  " + "\n  ".join(problems))
-
-
-def _no_payload_error(payload: dict) -> ValidationError:
-    class _Empty(Payload):
-        pass
-
-    try:
-        _Empty.model_validate(payload)
-    except ValidationError as exc:
-        return exc
-    raise AssertionError("unreachable")
+        raise RuntimeError("tui_gateway/contracts is incomplete:\n  " + "\n  ".join(problems))

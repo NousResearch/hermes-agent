@@ -191,7 +191,7 @@ def _room_method(
     error_class = _room_error_class  # closure cell: handlers run under server.py globals
 
     def dec(fn):
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params) -> dict:
             args = (rid, params)
             if service_code is not None:
                 service = get_hosted_room_service()

@@ -30,7 +30,7 @@ def _projects_method(name: str):
     def decorator(fn):
         @method(name)
         @_registry.profile_scoped
-        def handler(rid, params: dict) -> dict:
+        def handler(rid, params) -> dict:
             try:
                 from hermes_cli import projects_db as pdb
                 with pdb.connect_closing() as conn:

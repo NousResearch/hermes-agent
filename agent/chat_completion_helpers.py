@@ -2702,6 +2702,40 @@ def _fallback_reason_text(reason: "FailoverReason | None") -> str:
     return str(value or reason or "provider failure").replace("_", " ")
 
 
+def _provider_notice_label(provider: str, *, requested: str = "") -> str:
+    """Operator-facing provider label for fallback notices.
+
+    Named custom providers keep a ``name:`` in config.yaml (e.g.
+    ``proxy:antigravity``). Prefer that over the runtime category
+    (``custom``) so two lanes on the same OpenAI-compatible proxy stay
+    distinguishable.
+    """
+    candidates = []
+    for raw in (requested, provider):
+        s = str(raw or "").strip()
+        if s and s not in candidates:
+            candidates.append(s)
+    slug = candidates[0] if candidates else "custom"
+    keys = []
+    for s in candidates:
+        keys.append(s)
+        if s.startswith("custom:"):
+            keys.append(s[len("custom:"):])
+    try:
+        from hermes_cli.config import load_config
+        providers = (load_config() or {}).get("providers") or {}
+    except Exception:
+        providers = {}
+    if isinstance(providers, dict):
+        for key in keys:
+            entry = providers.get(key)
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str) and name.strip():
+                    return name.strip()
+    return slug
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -2921,6 +2955,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         old_model = agent.model
         old_provider = agent.provider
         old_base_url = agent.base_url
+        old_requested = getattr(agent, "requested_provider", "") or ""
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -3150,8 +3185,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
         notice = (
-            f"⚠️ Model fallback: {old_model} via {old_provider} unavailable "
-            f"({_fallback_reason_text(reason)}); using {fb_model} via {fb_provider}."
+            f"⚠️ Model fallback: {old_model} via "
+            f"{_provider_notice_label(old_provider, requested=old_requested)} "
+            f"unavailable ({_fallback_reason_text(reason)}); using {fb_model} via "
+            f"{_provider_notice_label(fb_provider)}."
         )
         # The buffered switch is surfaced on terminal failure. A successful
         # fallback clears retry chatter, so retain every switch as a durable

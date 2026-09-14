@@ -577,6 +577,33 @@ class TestSchemaConversion:
         assert set(defs_case["$defs"]) == {"properties"}
 
 
+    def test_properties_map_entry_named_required_is_not_injected_with_type(self):
+        """A parameter literally named ``required`` keeps its map entry intact.
+
+        Same code path as the ``properties``-named collision above (#110530),
+        and the one where the keyword and the parameter name collide at the
+        same level: the map is repaired per-entry, so no phantom
+        ``properties`` entry appears inside it and no non-list ``required``
+        keyword is synthesised at the object level.
+        """
+        from tools.mcp_tool_schema import _normalize_mcp_input_schema
+
+        normalized = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "table": {"type": "string"},
+                "required": {"type": "array", "items": {"type": "string"}},
+            },
+        })
+
+        props = normalized["properties"]
+        assert set(props) == {"table", "required"}
+        # The legitimately-named `required` parameter keeps its array schema.
+        assert props["required"] == {"type": "array", "items": {"type": "string"}}
+        # No non-list `required` keyword was synthesised at the object level.
+        assert "required" not in normalized
+
+
     def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
         """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
         from tools.mcp_tool_schema import _normalize_mcp_input_schema

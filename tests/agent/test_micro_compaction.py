@@ -58,6 +58,21 @@ def _summary_markers(messages: list) -> list:
 
 
 class TestMicroCompaction:
+    def test_summary_budget_grows_with_existing_rolling_summary(self):
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = "existing " * 900
+
+        budget = cc._micro_summary_token_budget("new exchange " * 300)
+
+        assert budget > 1500
+        assert budget <= cc.max_summary_tokens
+
+    def test_summary_budget_keeps_small_merges_bounded(self):
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = "short summary"
+
+        assert cc._micro_summary_token_budget("short exchange") == 1500
+
     def test_absorbs_one_exchange_and_leaves_a_summary_marker(self):
         cc = _compressor()
         messages = _conversation()

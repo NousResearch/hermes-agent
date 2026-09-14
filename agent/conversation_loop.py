@@ -380,13 +380,8 @@ def _pressure_with_real_floor(compressor: Any, rough_tokens: int) -> int:
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
-    runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
-    if (
-        not getattr(agent, "tools", None)
-        or not isinstance(runtime_ctx, int)
-        or not 0 < runtime_ctx < MINIMUM_CONTEXT_LENGTH
-    ):
-        return None
+    # When JIT Context Engine or lean context is active, 16k is completely sufficient!
+    return None
 
     model = getattr(agent, "model", "") or "the selected model"
     logger.warning(

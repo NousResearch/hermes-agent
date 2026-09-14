@@ -155,6 +155,26 @@ class TestResolveThreshold:
 
 
 class TestBudgetForContextWindow:
+    def test_operator_can_force_early_spillover(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {
+                "tool_budget": {
+                    "result_size_chars": 12_000,
+                    "turn_budget_chars": 24_000,
+                    "preview_size_chars": 800,
+                    "mcp_result_size_chars": 10_000,
+                }
+            },
+        )
+
+        cfg = budget_for_context_window(1_000_000)
+
+        assert cfg.default_result_size == 12_000
+        assert cfg.turn_budget == 24_000
+        assert cfg.preview_size == 800
+        assert cfg.mcp_result_size == 10_000
+
     """Scaling the tool-output budget to the active model's context window."""
 
     def test_none_returns_default(self):

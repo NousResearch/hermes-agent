@@ -534,13 +534,27 @@ class CLIChatTurnMixin:
                         all_parts.append(extra)
                 except queue.Empty:
                     break
-            combined = "\n".join(all_parts)
+            # Payloads may be (text, images) tuples when the message carried image
+            # attachments (bundled at cli_tui_mixin._tui_on_enter); unpack them here —
+            # "\n".join(all_parts) raises TypeError on a tuple and the outer
+            # handler swallows it, silently dropping the interrupt (#110737).
+            text_parts: list[str] = []
+            image_parts: list = []
+            for part in all_parts:
+                if isinstance(part, tuple):
+                    part_text, part_images = part
+                    text_parts.append(part_text)
+                    image_parts.extend(part_images or [])
+                else:
+                    text_parts.append(part)
+            combined = "\n".join(text_parts)
+            payload = (combined, image_parts) if image_parts else combined
             preview = combined[:50] + ("..." if len(combined) > 50 else "")
             if len(all_parts) > 1:
                 print(f"\n⚡ Sending {len(all_parts)} messages after interrupt: '{preview}'")
             else:
                 print(f"\n⚡ Sending after interrupt: '{preview}'")
-            self._pending_input.put(combined)
+            self._pending_input.put(payload)
 
         # A /steer the agent finished before absorbing becomes the next user turn.
         _leftover_steer = turn.result.get("pending_steer") if turn.result else None

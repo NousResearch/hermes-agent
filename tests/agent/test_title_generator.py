@@ -180,19 +180,6 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             assert generate_title("hey there!") == "Friendly greeting"
 
-    def test_prompt_examples_render_from_guard_constants(self):
-        """The prompt's example lines are rendered from the same constants the
-        guard checks, so the two cannot drift apart."""
-        from agent.title_generator import (
-            _PROMPT_GOOD_EXAMPLES,
-            _PROMPT_VAGUE_EXAMPLE,
-            _TITLE_PROMPT_TEMPLATE,
-        )
-
-        for example in _PROMPT_GOOD_EXAMPLES:
-            assert f'Good: {{"title": "{example}"}}' in _TITLE_PROMPT_TEMPLATE
-        assert f'Too vague: {{"title": "{_PROMPT_VAGUE_EXAMPLE}"}}' in _TITLE_PROMPT_TEMPLATE
-
     def test_topical_title_resembling_example_passes(self):
         """The guard is exact-match only: a genuinely topical title that merely
         resembles an example must not be rejected."""

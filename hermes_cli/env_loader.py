@@ -100,11 +100,18 @@ def _record_supplied_names(report) -> set[str]:
 
 
 def secret_source_names() -> tuple[str, ...]:
-    """Every env-var name some profile's external secret source supplied (names only — the map is
-    process-wide, so a value must be resolved through the active profile's secret scope). Includes names
-    the source supplied but a pre-existing process value won (``skipped_existing``): the launch value
-    in ``os.environ`` is still not a routed profile's to inherit."""
-    return tuple(dict.fromkeys((*_SECRET_SOURCES, *sorted(_SOURCE_SUPPLIED_NAMES))))
+    """Every env-var name some profile's external secret source APPLIED (names only — the map is
+    process-wide, so a value must be resolved through the active profile's secret scope). Consumers that
+    forward source values into a child (MCP stdio env) want exactly these; see ``source_supplied_names``
+    for the wider set the routed-child scrub needs."""
+    return tuple(_SECRET_SOURCES)
+
+
+def source_supplied_names() -> tuple[str, ...]:
+    """Every env-var name an external source supplied for any home — applied, or lost to a pre-existing
+    process value (``skipped_existing``). The launch value in ``os.environ`` is still not a routed
+    profile's to inherit, so the strip must see the skipped names too."""
+    return tuple(sorted(set(_SECRET_SOURCES) | _SOURCE_SUPPLIED_NAMES))
 
 
 def launch_dotenv_keys() -> frozenset[str]:

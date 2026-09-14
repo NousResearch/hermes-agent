@@ -2674,15 +2674,19 @@ def _resolve_compress_call(
     return compress_fn, compress_kwargs
 
 
-def _pure_automatic_sanitation(agent: Any, *, force: bool) -> bool:
+def _pure_automatic_sanitation(agent: Any, *, force: bool, bypass_cooldown: bool) -> bool:
     """Whether this attempt returned the external engine's pure sanitation result."""
-    return not force and getattr(agent.context_compressor, "last_compression_status", None) == "sanitized"
+    return (
+        not force
+        and not bypass_cooldown
+        and getattr(agent.context_compressor, "last_compression_status", None) == "sanitized"
+    )
 
 
-def _defer_external_engine_memory_hook(agent: Any, *, force: bool) -> bool:
+def _defer_external_engine_memory_hook(agent: Any, *, force: bool, bypass_cooldown: bool) -> bool:
     """Delay memory work until an output-only external operation is known."""
     compressor = agent.context_compressor
-    if force or not isinstance(getattr(compressor, "last_compression_status", None), str):
+    if force or bypass_cooldown or not isinstance(getattr(compressor, "last_compression_status", None), str):
         return False
     probe_kwargs = _supported_compression_kwargs(
         compressor.compress, current_tokens=None, focus_topic=None, force=False,
@@ -3529,7 +3533,9 @@ def _run_summary_phase(
                 # Adopted list is fully durable: re-anchor persist idx at the end so the post-
                 # compression flush skips it; run_agent marker sync realigns _session_messages.
                 agent._persist_user_message_idx = len(messages)
-        defer_memory_hook = _defer_external_engine_memory_hook(agent, force=force)
+        defer_memory_hook = _defer_external_engine_memory_hook(
+            agent, force=force, bypass_cooldown=bypass_cooldown
+        )
         memory_context = (
             "" if defer_memory_hook else _pre_compress_memory_context(agent, messages, checkpoint_required)
         )
@@ -3545,7 +3551,9 @@ def _run_summary_phase(
             agent, messages, compress_fn, compress_kwargs, commit_fence=commit_fence,
             attempt_generation=attempt.generation, hard_cancel_event=hard_cancel_event,
         )
-        pure_sanitation = _pure_automatic_sanitation(agent, force=force)
+        pure_sanitation = _pure_automatic_sanitation(
+            agent, force=force, bypass_cooldown=bypass_cooldown
+        )
         if defer_memory_hook and not pure_sanitation:
             deferred_memory_context = _pre_compress_memory_context(agent, messages, checkpoint_required)
             _warn_memory_context_unsupported(agent, deferred_memory_context)

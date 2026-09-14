@@ -285,13 +285,14 @@ def test_automatic_sanitation_commits_exact_candidate_without_boundary_side_effe
 
 
 @pytest.mark.parametrize(
-    ("status", "force", "rounds", "watermark_failure", "terminal_result"),
+    ("status", "force", "bypass_cooldown", "rounds", "watermark_failure", "terminal_result"),
     [
-        ("sanitized", False, 8, False, "refused_growth_bound"),
-        ("sanitized", False, 1, True, "refused_missing_watermark"),
-        ("sanitized", True, 1, False, None),
-        ("reassembled", False, 1, False, None),
-        (None, False, 1, False, None),
+        ("sanitized", False, False, 8, False, "refused_growth_bound"),
+        ("sanitized", False, False, 1, True, "refused_missing_watermark"),
+        ("sanitized", True, False, 1, False, None),
+        ("sanitized", False, True, 1, False, None),
+        ("reassembled", False, False, 1, False, None),
+        (None, False, False, 1, False, None),
     ],
 )
 def test_sanitation_bridge_is_bounded_and_narrow(
@@ -300,11 +301,12 @@ def test_sanitation_bridge_is_bounded_and_narrow(
     caplog,
     status,
     force,
+    bypass_cooldown,
     rounds,
     watermark_failure,
     terminal_result,
 ):
-    """Beyond-bound sanitation refuses; force, ambiguous, and legacy results stay generic."""
+    """Beyond-bound sanitation refuses; force, overflow, ambiguous, and legacy results stay generic."""
     import agent.context_compressor as context_compressor
     import agent.conversation_compression as compression
 
@@ -346,6 +348,7 @@ def test_sanitation_bridge_is_bounded_and_narrow(
         "system",
         approx_tokens=100_000,
         force=force,
+        bypass_cooldown=bypass_cooldown,
     )
 
     if terminal_result is not None:

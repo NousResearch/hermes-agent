@@ -417,6 +417,8 @@ def make_tool_result_message(
         "role": "tool",
         "name": name,
         "tool_name": name,
+        # Current executors encode command interruptions in structured results; bare text is data.
+        "tool_result_format": "structured",
         "content": wrapped,
         "tool_call_id": tool_call_id,
     })

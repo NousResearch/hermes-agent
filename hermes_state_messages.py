@@ -24,8 +24,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
-                   display_metadata, display_identity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   display_metadata, display_identity, tool_result_format)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 _BUMP_GENERATION_SQL = """
             INSERT INTO conversation_generations (source, session_key, generation)
             VALUES (?, ?, 1)
@@ -261,7 +261,8 @@ class SessionMessagesMixin:
             msg.get("platform_message_id") or msg.get("message_id"),
             1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
-            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)))
+            display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
+            msg.get("tool_result_format"))
 
     @staticmethod
     def _bump_session_counters(conn, session_id: str, inserted: int, tool_calls: int, *, unit: bool) -> None:
@@ -284,7 +285,8 @@ class SessionMessagesMixin:
         effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
         api_content: Optional[str] = None, display_kind: Optional[str] = None,
         display_metadata: Optional[Dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
-        turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0) -> int:
+        turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
+        tool_result_format: Optional[str] = None) -> int:
         """Append one message; returns the row id and bumps the session counters. ``platform_message_id``:
         the platform's own id. ``api_content``: byte-fidelity sidecar, the exact string sent to the API when
         it differed from ``content``, stored as sent except lone surrogates."""
@@ -967,7 +969,7 @@ class SessionMessagesMixin:
             if include_summary_markers and row["_compressed_summary"]:
                 msg["_compressed_summary"] = True
             msg.update(
-                (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition") if row[col])
+                (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition", "tool_result_format") if row[col])
             if row["tool_calls"]:
                 msg["tool_calls"] = _json_or(
                     row["tool_calls"], [], "Failed to deserialize tool_calls in conversation replay, falling back to []")

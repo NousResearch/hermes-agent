@@ -239,7 +239,7 @@ class TestKillStaleDashboardPosix:
                 return MagicMock(returncode=0, stdout="active\n", stderr="")
             if args == ["systemctl", "--user", "is-enabled", "hermes-dashboard.service"]:
                 return MagicMock(returncode=0, stdout="enabled\n", stderr="")
-            if args == ["systemctl", "--user", "restart", "hermes-dashboard.service"]:
+            if args == ["systemctl", "--user", "--no-ask-password", "restart", "hermes-dashboard.service"]:
                 return MagicMock(returncode=0, stdout="", stderr="")
             raise AssertionError(f"unexpected subprocess.run call: {args}")
 
@@ -252,7 +252,7 @@ class TestKillStaleDashboardPosix:
             ["systemctl", "--user", "list-unit-files", "hermes-dashboard.service", "--no-legend", "--no-pager"],
             ["systemctl", "--user", "is-active", "hermes-dashboard.service"],
             ["systemctl", "--user", "is-enabled", "hermes-dashboard.service"],
-            ["systemctl", "--user", "restart", "hermes-dashboard.service"],
+            ["systemctl", "--user", "--no-ask-password", "restart", "hermes-dashboard.service"],
         ]
         assert all(call[:1] != ["sudo"] and call[:2] != ["systemctl"] for call in calls)
         # The pass keeps scanning for serve backends the dashboard unit does
@@ -381,6 +381,78 @@ class TestSupervisedBackendRestart:
 
     def _live(self):
         return main_dashboard
+
+    def test_managed_system_restart_disables_polkit_prompts(self):
+        """The standard system service restart must also remain non-interactive."""
+        restart_calls = []
+
+        def run_probe(command, *, timeout):
+            if "list-unit-files" in command:
+                return subprocess.CompletedProcess(
+                    command,
+                    1 if "--user" in command else 0,
+                    stdout="hermes-dashboard.service enabled\n",
+                )
+            if "is-active" in command:
+                return subprocess.CompletedProcess(command, 0, stdout="active\n")
+            if "is-enabled" in command:
+                return subprocess.CompletedProcess(command, 0, stdout="enabled\n")
+            if "restart" in command:
+                restart_calls.append(command)
+                return subprocess.CompletedProcess(command, 0)
+            raise AssertionError(command)
+
+        with patch.object(main_dashboard, "_run_probe", side_effect=run_probe):
+            restarted = main_dashboard._restart_managed_dashboard_service("update")
+
+        assert restarted is True
+        assert restart_calls == [[
+            "systemctl", "--no-ask-password", "restart", "hermes-dashboard.service",
+        ]]
+
+    def test_system_scope_restart_uses_noninteractive_sudo(self):
+        """A system unit must never send the updater through a polkit prompt."""
+        calls = []
+
+        def run_probe(command, *, timeout):
+            calls.append((command, timeout))
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch("hermes_cli.update_cmd_fleet._needs_sudo", return_value=True), \
+             patch.object(main_dashboard, "_run_probe", side_effect=run_probe):
+            restarted = main_dashboard._try_restart_systemd_service(
+                "hermes-conduit.service", "/system.slice/hermes-conduit.service"
+            )
+
+        assert restarted is True
+        assert calls == [
+            ([
+                "sudo", "-n", "systemctl", "--no-ask-password", "restart",
+                "hermes-conduit.service",
+            ], 15)
+        ]
+
+    def test_refused_system_scope_restart_never_retries_interactively(self):
+        """A refused sudo restart returns promptly instead of trying plain systemctl."""
+        calls = []
+
+        def run_probe(command, *, timeout):
+            calls.append((command, timeout))
+            return subprocess.CompletedProcess(command, 1)
+
+        with patch("hermes_cli.update_cmd_fleet._needs_sudo", return_value=True), \
+             patch.object(main_dashboard, "_run_probe", side_effect=run_probe):
+            restarted = main_dashboard._try_restart_systemd_service(
+                "hermes-conduit.service", "/system.slice/hermes-conduit.service"
+            )
+
+        assert restarted is False
+        assert calls == [
+            ([
+                "sudo", "-n", "systemctl", "--no-ask-password", "restart",
+                "hermes-conduit.service",
+            ], 15)
+        ]
 
     def test_supervised_pid_restarts_owning_unit(self, capsys):
         """A killed PID whose cgroup names a custom unit → systemctl restart."""

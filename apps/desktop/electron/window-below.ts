@@ -150,12 +150,14 @@ const describeError = (error: unknown): string =>
 
 /**
  * Redirect a resolved module specifier out of `app.asar` so its files exist on
- * the real filesystem. `/app.asar/` only ever appears as a complete path
+ * the real filesystem. `app.asar` only ever appears as a complete path
  * segment in a packaged build (electron-builder names the archive exactly
- * that), so in dev — where nothing is archived — this is a no-op.
+ * that), so in dev — where nothing is archived — this is a no-op. The segment
+ * is matched against either separator because the staged specifier comes from
+ * `path.join`, which on Windows yields backslashes; same regex as main.ts.
  */
 export const resolveOutsideAsar = (specifier: string): string =>
-  specifier.replace('/app.asar/', '/app.asar.unpacked/')
+  specifier.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
 
 let getWindowsModule: Promise<GetWindowsModule | EnumerationFailure> | null = null
 

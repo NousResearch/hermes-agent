@@ -156,17 +156,22 @@ describe('resolveOutsideAsar', () => {
     ).toBe('file:///Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist/node_modules/get-windows/index.js')
   })
 
-  it('leaves a dev-tree specifier alone', () => {
-    const dev = 'file:///Users/dev/hermes-agent/node_modules/get-windows/index.js'
-
-    expect(resolveOutsideAsar(dev)).toBe(dev)
+  // The staged specifier is built with path.join, so on Windows the archive
+  // segment is delimited by backslashes, not the slashes a file: URL has.
+  it('redirects a Windows packaged path built with backslashes', () => {
+    expect(resolveOutsideAsar('C:\\Users\\me\\AppData\\Local\\Hermes\\resources\\app.asar\\dist\\node_modules\\get-windows\\index.js')).toBe(
+      'C:\\Users\\me\\AppData\\Local\\Hermes\\resources\\app.asar.unpacked\\dist\\node_modules\\get-windows\\index.js'
+    )
   })
 
   // Only the exact archive segment counts — a directory that merely starts
-  // with the name must not be rewritten.
+  // with the name must not be rewritten, and a dev tree has nothing to rewrite.
   it('requires app.asar to be a complete path segment', () => {
-    const lookalike = 'file:///opt/app.asar-tools/node_modules/get-windows/index.js'
-
-    expect(resolveOutsideAsar(lookalike)).toBe(lookalike)
+    for (const untouched of [
+      'file:///opt/app.asar-tools/node_modules/get-windows/index.js',
+      'file:///Users/dev/hermes-agent/node_modules/get-windows/index.js'
+    ]) {
+      expect(resolveOutsideAsar(untouched)).toBe(untouched)
+    }
   })
 })

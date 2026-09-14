@@ -2720,11 +2720,12 @@ def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     ]
 
     result: list[str] = []
-    seen = set(path_entries)
+    seen = {entry.rstrip("/") for entry in path_entries}
     for entry in candidates:
-        if entry and entry not in seen:
-            seen.add(entry)
-            result.append(entry)
+        normalized = entry.rstrip("/")
+        if entry and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
     return result
 
 

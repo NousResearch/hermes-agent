@@ -374,10 +374,21 @@ def sync_skills(quiet: bool = False) -> dict:
             )
     elif essential_only:
         if not quiet:
-            print("  (home opted out of bundled skills and essential seeding — seeding nothing)")
-        return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
-                "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": [],
-                "shadowed_by_external": [], "skipped_opt_out": True}
+            print(
+                "  (home opted out of bundled skills and essential seeding — seeding nothing)"
+            )
+        return {
+            "copied": [],
+            "updated": [],
+            "skipped": 0,
+            "user_modified": [],
+            "cleaned": [],
+            "suppressed": [],
+            "total_bundled": 0,
+            "optional_provenance_backfilled": [],
+            "shadowed_by_external": [],
+            "skipped_opt_out": True,
+        }
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],

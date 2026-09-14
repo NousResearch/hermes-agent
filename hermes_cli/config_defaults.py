@@ -131,6 +131,11 @@ DEFAULT_CONFIG = {
         # otherwise wedge the turn until the idle watchdog discards the already-billed response
         # (#103864). 0 skips the drain. Well-behaved endpoints close immediately and never wait this long.
         "stream_drain_timeout": 2.0,
+        # Seconds a turn may wait for connectivity when the machine itself is offline (DNS/routing
+        # dead, confirmed by a reachability probe — agent/local_network.py). While offline the turn
+        # keeps retrying the primary route instead of switching providers: a fallback cannot work
+        # when every route is down, and it would outlive the outage. 0 = fail fast while offline.
+        "network_outage_max_wait_seconds": 120,
         # Empty-response retry guard. Empty retries re-send the full input at full price; this stops
         # re-billing deterministic empties (unsignaled refusals, zero output tokens) while failing
         # open on ambiguous evidence (missing usage, any tokens, model/provider change).

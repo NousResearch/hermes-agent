@@ -2031,11 +2031,19 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=None) -> bool:
+def try_activate_fallback(
+    agent, reason: FailoverReason | None = None, reset_at=None, *, suppress_external_network: bool = False,
+) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
-    construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    construction goes through resolve_provider_client (no duplicated provider→key mappings).
+
+    ``suppress_external_network`` (machine offline, agent/local_network.py) skips candidates that
+    depend on the outside network — every external provider is unreachable in that state — while
+    leaving loopback/LAN entries eligible, so a local model can still take over the turn.
+    """
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    from agent.local_network import route_needs_external_network
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
@@ -2050,6 +2058,16 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
         unavailable = agent._unavailable_fallback_keys
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
+        if suppress_external_network and route_needs_external_network(
+            fb_provider, str(fb.get("base_url") or "")
+        ):
+            # Not marked unavailable: the outage is transient, and the entry is fine once the
+            # network returns (the chain index still advances, so this walk moves on).
+            logger.info(
+                "Fallback skip: %s/%s needs the external network and the machine is offline "
+                "(route-scoped suppression)", fb_provider, fb_model,
+            )
+            continue
         if _should_skip_fallback_candidate(agent, fb, fb_key, fb_provider, fb_model, unavailable):
             continue
 

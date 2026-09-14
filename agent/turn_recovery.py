@@ -22,6 +22,10 @@ from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.local_network import (
+    local_network_outage, network_outage_max_wait_seconds, outage_wait_plan,
+    route_needs_external_network as _route_needs_external_network,
+)
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _messages_carry_images,
     _sanitize_messages_non_ascii,
@@ -1487,7 +1491,7 @@ def reset_hint(api_error: Exception) -> str:
 
 def compute_error_backoff(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int, is_rate_limited: bool,
-    is_zai_coding_overload: bool, base_url: Any, model: Any,
+    is_zai_coding_overload: bool, base_url: Any, model: Any, outage_state: Any = None,
 ) -> float:
     """Pick the wait before the next API retry and announce it. Retry-After wins for
     rate limits and any other retryable error (capped at ``RETRY_AFTER_CAP_S``); otherwise
@@ -1510,6 +1514,17 @@ def compute_error_backoff(
     if _retry_after is not None:
         _retry_after = min(_retry_after, RETRY_AFTER_CAP_S)
     wait_time = _retry_after if _retry_after is not None else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+    # Offline waits are reserved by _hold_primary_while_offline() against one budget and slept here
+    # verbatim, so the configured cap bounds real wall-clock waiting (agent/local_network.py). No
+    # reservation (budget spent, or an offline failure that is not a transport failure) keeps the
+    # normal backoff — never an outage schedule the accounting did not charge for.
+    _offline_wait = local_network_outage(api_error)
+    if _offline_wait:
+        _reserved = float(getattr(outage_state, "network_outage_sleep", 0.0) or 0.0)
+        if outage_state is not None:
+            outage_state.network_outage_sleep = 0.0  # single use
+        if _reserved > 0:
+            wait_time = _reserved
     _backoff_policy = None
     _adaptive = is_rate_limited or is_zai_coding_overload
     if _adaptive and _retry_after is None:
@@ -1526,7 +1541,8 @@ def compute_error_backoff(
                    f"(attempt {retry_count + 1}/{max_retries}){_policy_note}...")
         _announce_now = _backoff_policy == "zai_coding_overload_long"
     else:
-        _status = f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
+        _status = (f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})"
+                   f"{' — waiting for internet connectivity' if _offline_wait else ''}...")
         # A 5xx Retry-After can reach the cap; buffering it would leave the user silent for minutes.
         _announce_now = _retry_after is not None and _retry_after > LIVE_RETRY_WAIT_CAP_S
     if _announce_now:
@@ -1541,8 +1557,11 @@ def compute_error_backoff(
         _live_reason = f"{_wait_reason.lower()} — resets in {_reset},"
     else:
         _live_reason = "the free model is busy —" if _free_busy else "waiting on provider —"
+    _wait_icon = "🌐" if _offline_wait else "⏳"
+    if _offline_wait and not _reset:
+        _live_reason = "no internet access —"
     agent._emit_diagnostic_wait(
-        f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
+        f"{_wait_icon} {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
@@ -1816,6 +1835,41 @@ def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context:
     return _genuine
 
 
+def _hold_primary_while_offline(
+    agent: Any, _retry: Any, *, retry_count: int, max_retries: int,
+) -> int:
+    """Keep retrying the SAME route while the machine itself has no network; returns the ceiling to use.
+
+    Switching to another *external* route cannot help — every external provider is unreachable — and
+    it would outlive the outage: the session would resume on the fallback model with a cold prompt
+    cache, billed at that model's rate, for a fault that was never the provider's. Routes that do not
+    need the outside network stay eligible (the chain walk decides per candidate); this only buys time
+    and refuses to spend the normal retry budget on someone else's outage.
+
+    The seconds reserved here are the seconds the loop actually sleeps: ``outage_wait_plan`` clamps
+    them to the remaining budget, they are charged here, and ``compute_error_backoff`` reads them back
+    from ``TurnRetryState.network_outage_sleep`` — one authority, so ``network_outage_max_wait_seconds``
+    bounds real wall-clock waiting instead of a bookkeeping counter.
+    """
+    cap = network_outage_max_wait_seconds()
+    waited = float(getattr(_retry, "network_outage_waited", 0.0) or 0.0)
+    wait = outage_wait_plan(waited, retry_count, cap=cap)
+    _retry.network_outage_sleep = wait
+    if wait <= 0:
+        # Budget spent (or disabled): leave the ceiling alone and let normal handling finish the turn.
+        return max_retries
+    _retry.network_outage_waited = waited + wait
+    agent._buffer_diagnostic_status(
+        f"🌐 No internet access — holding {agent.model} via {agent.provider} "
+        f"and waiting for connectivity ({_retry.network_outage_waited:.0f}s of {cap:.0f}s)"
+    )
+    logger.info(
+        "Local network outage: holding %s via %s, waited %.1fs of %.0fs (retry %s/%s)",
+        agent.model, agent.provider, _retry.network_outage_waited, cap, retry_count, max_retries,
+    )
+    return max(max_retries, retry_count + 1)
+
+
 def route_classified_error(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *, error_msg: str,
     error_context: Any, recovered_with_pool: bool, base_url: Any, model: Any,
@@ -1935,6 +1989,17 @@ def route_classified_error(
         if classified.reason == FailoverReason.rate_limit else None
     )
     _is_transport_failure = classified.reason in _TRANSPORT_FAILURE_REASONS
+    # A machine-level outage (resolver dead, no route, link down) is not evidence about THIS
+    # provider, and switching to another EXTERNAL route cannot recover the turn — it would strand
+    # the session on the fallback model once the network returns (agent/local_network.py). Hold the
+    # primary route and wait for connectivity; the chain walk still lets LOCAL routes through. A
+    # LOCAL current route is exempt from the hold: it does not depend on the network that is down,
+    # so its failure is that endpoint's own problem and waiting for the WAN would only delay it.
+    _local_outage = _is_transport_failure and local_network_outage(api_error)
+    if _local_outage and _route_needs_external_network(agent.provider, str(base_url or "")):
+        max_retries = _hold_primary_while_offline(
+            agent, _retry, retry_count=retry_count, max_retries=max_retries,
+        )
     # Z.AI overload 429s classify `overloaded`, which `is_rate_limited` excludes. Detect
     # directly so the long backoff runs, and raise the ceiling to reach it.
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
@@ -1955,7 +2020,9 @@ def route_classified_error(
         if not pool_may_recover:
             agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
-            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
+            if agent._try_activate_fallback(
+                reason=classified.reason, reset_at=reset_at, suppress_external_network=_local_outage,
+            ):
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:

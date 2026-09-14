@@ -895,9 +895,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             read_output = read_output[:-1]
 
         # Empty content is indistinguishable from a broken tool: name the dead end.
-        if file_size == 0:
+        # Probe metadata must never discard content already returned by the read.
+        if file_size == 0 and not read_output:
             return ReadResult(content="", total_lines=0, file_size=0, hint="File is empty (0 bytes).")
-        if offset > total_lines > 0:
+        if offset > total_lines > 0 and not read_output:
             return ReadResult(
                 content="", total_lines=total_lines, file_size=file_size,
                 hint=(

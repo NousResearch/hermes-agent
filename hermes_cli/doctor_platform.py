@@ -116,17 +116,34 @@ def _report_conversion_holders(unapplied: "list[tuple[str, Path]]") -> None:
     scan_unavailable = sys.platform == "win32"  # foreign_state_db_holders short-circuits to [] there
     for name, path in unapplied:
         try:
-            holders = foreign_state_db_holders(path)
+            holders = foreign_state_db_holders(path, include_scan_gaps=True)
         except Exception as exc:  # a diagnostic must never take doctor down
             holders = [(-1, f"holder scan failed: {exc}")]
         # ``pid < 0`` rows are scan failures, not holders: "cannot prove quiet" is not "quiet".
-        named = [(pid, _shown(detail)) for pid, detail in holders if pid >= 0]
         unprovable = [_shown(detail) for pid, detail in holders if pid < 0]
-        cannot_prove = bool(unprovable) or scan_unavailable
+        # A POSITIVE pid can still be uncertainty rather than a confirmed holder: the scanner uses
+        # these exact markers when it could not inspect a process or a descriptor, and
+        # ``live_writer_holds_db`` already fails closed on them. Show the pid, but do not let it
+        # read as proof — the same three prefixes, kept in sync with that function.
+        def _uncertain(detail: str) -> bool:
+            return (detail.startswith("uninspectable holder:")
+                    or detail.startswith("uninspectable descriptor:")
+                    or detail.endswith(" (deleted)"))
+
+        # One row per matching DESCRIPTOR, so a single SQLite child holding .db/-wal/-shm is three
+        # rows for one process. Group by pid before counting or capping, or the count is wrong and
+        # five descriptors from one pid can hide a second pid the operator still has to stop.
+        by_pid: "dict[int, list[str]]" = {}
+        for pid, detail in holders:
+            if pid >= 0:
+                by_pid.setdefault(pid, []).append(_shown(detail))
+        named = sorted(by_pid.items())
+        cannot_prove = (bool(unprovable) or scan_unavailable
+                        or any(_uncertain(d) for details in by_pid.values() for d in details))
 
         listed = ""
         if named:
-            listed = ", ".join(f"pid {pid} ({detail})" for pid, detail in named[:5])
+            listed = ", ".join(f"pid {pid} ({details[0]})" for pid, details in named[:5])
             if len(named) > 5:
                 listed += f", and {len(named) - 5} more"
 

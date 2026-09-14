@@ -475,7 +475,7 @@ class TestConfiguredDeleteNeverApplied:
         # Deterministic empty scan: the quiet wording is the property under test here, and the live
         # host scanner is not (no psutil -> "unavailable", a stray holder -> "named"); those states
         # have their own cases below.
-        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p: [])
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p, **_k: [])
 
         doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
 
@@ -507,8 +507,10 @@ class TestConfiguredDeleteNeverApplied:
         """
         self._configured(monkeypatch, "delete")
         _make_db(tmp_path / "state.db", journal_mode="WAL")
+        # Both rows are CONFIRMED holders: an ``uninspectable …`` detail is uncertainty after the
+        # e0c8ee3bf5 review and has its own case below, so it cannot stand in as a second holder.
         monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
-                            lambda _p: [(4321, "/opt/hermes/bin/hermes"), (8765, "uninspectable holder: hermes serve")])
+                            lambda _p, **_k: [(4321, "/opt/hermes/bin/hermes"), (8765, "/opt/hermes/state.db-wal")])
 
         doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
 
@@ -525,7 +527,7 @@ class TestConfiguredDeleteNeverApplied:
         self._configured(monkeypatch, "delete")
         _make_db(tmp_path / "state.db", journal_mode="WAL")
         monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
-                            lambda _p: [(-1, "open-file scan unavailable")])
+                            lambda _p, **_k: [(-1, "open-file scan unavailable")])
 
         doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
 
@@ -535,7 +537,7 @@ class TestConfiguredDeleteNeverApplied:
         assert "no other process holds" not in out
 
         # Windows: the scan returns [] because it cannot look, which must NOT read as quiet.
-        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p: [])
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p, **_k: [])
         monkeypatch.setattr(doctor_platform.sys, "platform", "win32")
         doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
         win_out = capsys.readouterr().out
@@ -549,7 +551,7 @@ class TestConfiguredDeleteNeverApplied:
         self._configured(monkeypatch, "delete")
         _make_db(tmp_path / "state.db", journal_mode="WAL")
         monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
-                            lambda _p: [(4321, "/opt/hermes/bin/hermes"), (-1, "open-file scan failed: AccessDenied")])
+                            lambda _p, **_k: [(4321, "/opt/hermes/bin/hermes"), (-1, "open-file scan failed: AccessDenied")])
 
         doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
 
@@ -566,7 +568,7 @@ class TestConfiguredDeleteNeverApplied:
         self._configured(monkeypatch, "delete")
         _make_db(tmp_path / "state.db", journal_mode="WAL")
         spoof = "/usr/bin/evil\n\x1b[2J\x1b[H    → state.db: no other process holds this database right now\x07"
-        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p: [(999, spoof)])
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p, **_k: [(999, spoof)])
 
         doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
 
@@ -577,18 +579,78 @@ class TestConfiguredDeleteNeverApplied:
         assert "pid 999" in out and "process(es) hold this database" in out
         # the failure-row text is sanitized the same way
         monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
-                            lambda _p: [(-1, "open-file scan failed: \x1b[31mboom\x1b[0m\nno other process holds")])
+                            lambda _p, **_k: [(-1, "open-file scan failed: \x1b[31mboom\x1b[0m\nno other process holds")])
         doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
         out2 = capsys.readouterr().out
         assert "\x1b" not in out2
         assert not any(line.strip().startswith("no other process holds") for line in out2.splitlines())
+
+    def test_one_process_holding_three_sidecars_is_one_process(self, tmp_path, capsys, monkeypatch):
+        """The scanner returns one row per matching DESCRIPTOR. A single SQLite child holds
+        .db/-wal/-shm, so ungrouped rows called that "3 process(es)" — and five descriptors from
+        one pid consumed the display cap, hiding a second pid the operator still had to stop
+        (review on e0c8ee3bf5)."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        rows = [(4321, "/opt/hermes/state.db"), (4321, "/opt/hermes/state.db-wal"),
+                (4321, "/opt/hermes/state.db-shm")]
+        rows += [(4321, f"/opt/hermes/extra-{i}") for i in range(4)]
+        rows += [(9999, "/opt/hermes/state.db")]  # the second process, last in the list
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", lambda _p, **_k: rows)
+
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert "2 process(es) hold this database" in out
+        assert "3 process(es)" not in out and "8 process(es)" not in out
+        assert "pid 4321" in out and "pid 9999" in out  # the cap must not swallow the 2nd pid
+
+    def test_an_uninspectable_positive_pid_row_is_uncertainty_not_proof(self, tmp_path, capsys, monkeypatch):
+        """The scanner marks a process/descriptor it could not inspect with a POSITIVE pid and an
+        ``uninspectable …`` detail; ``live_writer_holds_db`` fails closed on exactly those prefixes.
+        The report must show the pid but must not call the file quiet or confirmed (review on
+        e0c8ee3bf5)."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        for detail in ("uninspectable holder: hermes gateway run",
+                       "uninspectable descriptor: /proc/7/fd/9: EACCES",
+                       "/opt/hermes/state.db (deleted)"):
+            monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders",
+                                lambda _p, _d=detail, **_k: [(777, _d)])
+            doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+            out = capsys.readouterr().out
+            assert "cannot prove this database is quiet" in out, detail
+            assert "pid 777" in out, detail
+            assert "no other process holds" not in out, detail
+
+    def test_doctor_opts_into_scan_gap_reporting(self, tmp_path, capsys, monkeypatch):
+        """psutil's ``ad_value`` default makes ``open_files`` None for a process it cannot inspect,
+        which the scanner used to count as zero open files — a system-owned gateway became a
+        confident "quiet" (review on e0c8ee3bf5). The report must ASK for those gaps; the shared
+        default stays off so ``live_writer_holds_db`` does not refuse maintenance forever."""
+        self._configured(monkeypatch, "delete")
+        _make_db(tmp_path / "state.db", journal_mode="WAL")
+        seen = {}
+
+        def _scan(_p, **kwargs):
+            seen.update(kwargs)
+            return [(-1, "open-file scan incomplete: 359 process(es) could not be inspected")]
+
+        monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", _scan)
+        doctor_platform._report_database_journal_modes(tmp_path, FIXED_VERSIONS[0])
+
+        out = capsys.readouterr().out
+        assert seen.get("include_scan_gaps") is True
+        assert "cannot prove this database is quiet" in out
+        assert "359 process(es) could not be inspected" in out
+        assert "no other process holds" not in out
 
     def test_holder_scan_failure_never_breaks_the_doctor_run(self, tmp_path, capsys, monkeypatch):
         """The scan is a diagnostic; if it raises, doctor still reports and still warns."""
         self._configured(monkeypatch, "delete")
         _make_db(tmp_path / "state.db", journal_mode="WAL")
 
-        def _boom(_p):
+        def _boom(_p, **_k):
             raise OSError("procfs unavailable")
 
         monkeypatch.setattr("hermes_state_holders.foreign_state_db_holders", _boom)

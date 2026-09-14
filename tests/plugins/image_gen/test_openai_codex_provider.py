@@ -96,10 +96,22 @@ class TestAvailability:
 
 class TestGenerate:
     def test_returns_auth_error_without_codex_token(self, provider, monkeypatch):
+        """Direct plugin failure already contains exactly one recovery command."""
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
         result = provider.generate("a cat")
         assert result["success"] is False
         assert result["error_type"] == "auth_required"
+        assert result["error"] == (
+            "No Codex/ChatGPT OAuth credentials available. From an SSH shell, run: "
+            "`hermes auth add openai-codex`."
+        )
+
+    def test_setup_schema_uses_current_ssh_recovery_command(self, provider):
+        """This CLI-only hint complements #102165; it does not bootstrap picker OAuth."""
+        hint = provider.get_setup_schema()["post_setup_hint"]
+        assert "From an SSH shell" in hint
+        assert "`hermes auth add openai-codex`" in hint
+        assert "hermes auth codex" not in hint
 
 
     def test_generate_uses_codex_stream_path(self, provider, monkeypatch, tmp_path):

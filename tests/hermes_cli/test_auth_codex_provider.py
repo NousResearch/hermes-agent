@@ -580,6 +580,38 @@ def test_is_rate_limited_auth_error_distinguishes_credential_errors():
     assert is_rate_limited_auth_error(ValueError("nope")) is False
 
 
+def test_format_codex_relogin_error_includes_exact_ssh_recovery_command():
+    """Lost Codex OAuth must give the operator one copy/paste SSH fix."""
+    from hermes_cli.auth import format_auth_error
+
+    err = AuthError(
+        "Codex OAuth expired.",
+        provider="openai-codex",
+        code="invalid_grant",
+        relogin_required=True,
+    )
+
+    rendered = format_auth_error(err)
+    assert "From an SSH shell" in rendered
+    assert "`hermes auth add openai-codex`" in rendered
+    assert "hermes model" not in rendered
+
+
+def test_format_codex_relogin_error_does_not_duplicate_plain_embedded_recovery_command():
+    """Specific Codex errors carrying an unfenced command stay concise."""
+    from hermes_cli.auth import format_auth_error
+
+    err = AuthError(
+        "OAuth lost. From an SSH shell, run: hermes auth add openai-codex.",
+        provider="openai-codex",
+        code="codex_auth_missing",
+        relogin_required=True,
+    )
+
+    rendered = format_auth_error(err)
+    assert rendered.count("hermes auth add openai-codex") == 1
+
+
 
 
 class _FakeResp:

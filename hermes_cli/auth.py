@@ -449,6 +449,11 @@ def format_auth_error(error: Exception) -> str:
         # Rate-limit / quota errors are not credential problems: never append "re-authenticate".
         return str(error)
     if error.relogin_required:
+        if getattr(error, "provider", "") == "openai-codex":
+            remediation = "From an SSH shell, run: `hermes auth add openai-codex`."
+            if "hermes auth add openai-codex" in str(error):
+                return str(error)
+            return f"{error} {remediation}"
         return f"{error} Run `hermes model` to re-authenticate."
     if error.code in _ENTITLEMENT_ERROR_CODES:
         if error.provider == "nous":

@@ -56,8 +56,8 @@ _PARTIAL_IMAGES_REQUESTED = 0
 _NONFINAL_RETRIES = 1  # content-agnostic retries when the stream yields no final result
 
 _NO_AUTH = (
-    "No Codex/ChatGPT OAuth credentials available. Run "
-    "`hermes auth codex` (or `hermes setup` → Codex) to sign in.")
+    "No Codex/ChatGPT OAuth credentials available. From an SSH shell, run: "
+    "`hermes auth add openai-codex`.")
 
 
 def _summarize_error_body(body: str) -> str:
@@ -336,8 +336,9 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required; supports text and image inputs",
             "env_vars": [],
             "post_setup_hint": (
-                "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
-                "if you haven't already. No API key needed."),
+                "From an SSH shell, sign in with "
+                "`hermes auth add openai-codex`. No API key needed."
+            ),
         }
 
     def capabilities(self) -> Dict[str, Any]:

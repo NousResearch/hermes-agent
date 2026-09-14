@@ -286,6 +286,9 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     """Fire a queued next-turn prompt if one is waiting and the session is idle. True when dispatched: the caller
     skips lower-priority follow-ups this cycle (the user's message wins)."""
+    if _free_tier_session_refusal(session) is not None:
+        _sync_free_tier_notice(sid, session)
+        return True  # paused: retain head + attachments and suppress automatic follow-ups
     with session["history_lock"]:
         if session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
             return False
@@ -312,13 +315,15 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
-    # The compute-host frame has no author field, so only the inline runner receives it.
+    # The host receives authored data but the original envelope stays in the parent.
     author_kwargs = {"turn_author": queued["turn_author"]} if queued.get("turn_author") else {}
     dispatch_failed = False
     try:
         if not use_compute_host:
-            _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
-        elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
+            _run_prompt_submit(
+                rid, sid, session, queued["text"], queued_envelope=queued, **kwargs, **author_kwargs)
+        elif (resp := _submit_prompt_to_compute_host(
+                rid, sid, session, queued["text"], queued_envelope=queued, **kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)

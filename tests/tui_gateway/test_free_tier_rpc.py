@@ -48,8 +48,9 @@ def _set_guest_off(monkeypatch):
 
 def test_status_is_pull_from_local_state_and_ack_persists_on_the_identity(guest, monkeypatch):
     status = _call("free_tier.status")
-    assert status == {"has_guest": True, "enabled": True, "available": True, "notice_pending": True,
-                      "model": "nous/welcome", "label": anon_auth.FREE_TIER_LABEL}
+    expected = {"has_guest": True, "enabled": True, "available": True, "notice_pending": True,
+                "model": "nous/welcome", "label": anon_auth.FREE_TIER_LABEL}
+    assert {key: status[key] for key in expected} == expected
 
     assert _call("free_tier.ack_notice") == {"acked": True}
     assert _call("free_tier.status")["notice_pending"] is False

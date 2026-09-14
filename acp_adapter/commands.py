@@ -63,6 +63,7 @@ class SlashCommandsMixin:
             "prompt to run next",
         ),
         "version": ("Show Hermes version", "Show Hermes version", None),
+        "login": ("Configure a provider in the terminal", "Configure a provider in the terminal", None),
     }
 
 
@@ -118,6 +119,11 @@ class SlashCommandsMixin:
         lines.extend(f"  /{cmd:10s}  {desc}" for cmd, (desc, _adv, _hint) in self._COMMANDS.items())
         lines.extend(["", "Unrecognized /commands are sent to the model as normal messages."])
         return "\n".join(lines)
+
+    def _cmd_login(self, args: str, state: SessionState) -> str:
+        return ("Run `hermes setup` in a terminal to sign in or configure your own provider, "
+                "then authenticate/reconnect this editor. You can also use /model with a configured provider. "
+                "Your pending request is retained; resend it after setup. Do not paste credentials here.")
 
     def _cmd_model(self, args: str, state: SessionState) -> str:
         if not args:

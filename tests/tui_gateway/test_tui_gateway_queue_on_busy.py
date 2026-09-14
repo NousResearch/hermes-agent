@@ -628,13 +628,25 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
             "drain-b",
             "sid",
             "B",
-            {"image_paths": ["/tmp/b.png"], "queued_prompt_generation": 0},
+            {
+                "image_paths": ["/tmp/b.png"],
+                "queued_prompt_generation": 0,
+                "queued_envelope": {
+                    "text": "B", "image_paths": ["/tmp/b.png"], "transport": None,
+                },
+            },
         ),
         (
             "drain-c",
             "sid",
             "C",
-            {"image_paths": ["/tmp/c.png"], "queued_prompt_generation": 0},
+            {
+                "image_paths": ["/tmp/c.png"],
+                "queued_prompt_generation": 0,
+                "queued_envelope": {
+                    "text": "C", "image_paths": ["/tmp/c.png"], "transport": None,
+                },
+            },
         ),
     ]
 

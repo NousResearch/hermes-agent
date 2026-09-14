@@ -7,7 +7,12 @@ import type { SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import {
+  buildSetupRequiredSections,
+  FREE_TIER_LIMIT_ERROR,
+  FREE_TIER_LIMIT_KEY,
+  SETUP_REQUIRED_TITLE
+} from '../content/setup.js'
 import type {
   AnyGatewayEvent,
   CommandsCatalogResponse,
@@ -28,6 +33,7 @@ import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, th
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
+import { createFreeTierGatePresenter, setFreeTierBlock } from './freeTierGate.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
@@ -436,6 +442,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   }
 
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
+
+  const freeTierGate = createFreeTierGatePresenter(
+    panel,
+    () => ctx.submission.submitRef.current('/login'),
+    () => ctx.submission.submitRef.current('/setup model')
+  )
+
   const { setInput } = ctx.composer
   const { submitLiteralRef, submitRef } = ctx.submission
   const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
@@ -918,6 +931,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
+        if (p.key === 'free_tier.login') {
+          sys(p.text)
+
+          return
+        }
+
+        if (p.key === FREE_TIER_LIMIT_KEY) {
+          setFreeTierBlock(p.text)
+        }
+
         turnController.showNotice({
           id: p.id,
           key: p.key,
@@ -926,6 +949,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           text: p.text,
           ttl_ms: p.ttl_ms ?? null
         })
+        freeTierGate.show()
 
         return
       }
@@ -934,6 +958,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // Key-matched clear only — a stale/late clear must not wipe a newer
         // notice (turnController guards the key match).
         turnController.clearNotice(ev.payload?.key)
+
+        if (ev.payload?.key === FREE_TIER_LIMIT_KEY) {
+          setFreeTierBlock(null)
+          freeTierGate.clear()
+        }
 
         return
       case 'billing.step_up.verification': {
@@ -1553,6 +1582,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'message.complete': {
+        if (ev.payload?.continuation_required) {
+          const message = ev.payload.free_tier_notice || ev.payload.text || 'Choose a provider to continue.'
+          setFreeTierBlock(message)
+          turnController.showNotice({ key: FREE_TIER_LIMIT_KEY, kind: 'sticky', level: 'info', text: message })
+        }
+
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
@@ -1560,7 +1595,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           msgs.forEach(appendMessage)
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
-          flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')
+          if (ev.payload?.code !== FREE_TIER_LIMIT_ERROR) {
+            flashPet(isTodoDone(getTurnState().todos) ? 'jump' : 'wave')
+          }
 
           if (bellOnComplete && stdout?.isTTY) {
             stdout.write('\x07')
@@ -1568,6 +1605,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         setStatus('ready')
+        freeTierGate.show()
 
         if (ev.payload?.warning) {
           turnController.pushActivity(ev.payload.warning, 'warn')
@@ -1615,6 +1653,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         {
           const message = String(ev.payload?.message || 'unknown error')
+
+          if (ev.payload?.code === FREE_TIER_LIMIT_ERROR) {
+            setFreeTierBlock(message)
+            turnController.showNotice({ key: FREE_TIER_LIMIT_KEY, kind: 'sticky', level: 'info', text: message })
+            freeTierGate.clear()
+            freeTierGate.show()
+            setStatus('choose a provider to continue')
+
+            return
+          }
 
           turnController.pushActivity(message, 'error')
 

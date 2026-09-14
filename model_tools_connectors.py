@@ -45,13 +45,15 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                 code="INTERRUPTED"))
             break
         # Wrapper-level skip flags describe only the wrapper, never its entries.
-        payload = handle_function_call(
-            plan.name, plan.arguments, **asdict(ids), user_task=user_task,
-            enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
-            skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
-            skip_tool_execution_middleware=False,
-            enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        )
+        from agent.free_tier import nested_dispatch
+        with nested_dispatch():
+            payload = handle_function_call(
+                plan.name, plan.arguments, **asdict(ids), user_task=user_task,
+                enabled_tools=enabled_tools, tool_request_middleware_trace=list(middleware_trace),
+                skip_pre_tool_call_hook=False, skip_tool_request_middleware=False,
+                skip_tool_execution_middleware=False,
+                enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
+            )
         try:
             value = json.loads(payload) if isinstance(payload, str) else payload
         except ValueError:

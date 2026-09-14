@@ -24,6 +24,12 @@ const RU_NOUN = (count: number | string, one: string, few: string, many: string)
 }
 
 export const ru = defineLocale({
+  freeTier: {
+    continueTitle: "Продолжайте с Hermes.",
+    continueBody: "Бесплатные вызовы инструментов после настройки закончились. Войдите, используйте локальную модель или выберите другого провайдера. Чат и черновик сохранятся.",
+    signInOrCreate: "Войти / создать аккаунт",
+    useLocal: "Использовать локальную модель",
+  },
   sessionImport: {
     title: 'Продолжить из другого приложения',
     subtitle: 'Перенесите разговор в Hermes и продолжите с того места, где остановились.',

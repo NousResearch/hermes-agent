@@ -1594,22 +1594,27 @@ def run_conversation(
     """
     from agent.turn_context import export_current_turn_boundary
 
-    result = _run_conversation_turn(
-        agent,
-        user_message,
-        system_message=system_message,
-        conversation_history=conversation_history,
-        task_id=task_id,
-        stream_callback=stream_callback,
-        persist_user_message=persist_user_message,
-        persist_user_timestamp=persist_user_timestamp,
-        persist_user_display_kind=persist_user_display_kind,
-        persist_user_display_metadata=persist_user_display_metadata,
-        persist_user_platform_id=persist_user_platform_id,
-        moa_config=moa_config,
-        turn_author=turn_author,
-    )
-    return export_current_turn_boundary(agent, result, user_message)
+    from agent.free_tier import admit_turn, finish_turn
+
+    with admit_turn(agent, conversation_history) as blocked:
+        if blocked is not None:
+            return blocked
+        result = _run_conversation_turn(
+            agent,
+            user_message,
+            system_message=system_message,
+            conversation_history=conversation_history,
+            task_id=task_id,
+            stream_callback=stream_callback,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            persist_user_platform_id=persist_user_platform_id,
+            moa_config=moa_config,
+            turn_author=turn_author,
+        )
+        return finish_turn(agent, export_current_turn_boundary(agent, result, user_message))
 
 
 __all__ = ["run_conversation"]

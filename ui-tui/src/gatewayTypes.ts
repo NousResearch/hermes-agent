@@ -167,6 +167,14 @@ export interface SetupStatusResponse {
   provider_configured?: boolean
 }
 
+export interface RuntimeCheckResponse {
+  ok: boolean
+  provider?: string
+  model?: string
+  free_tier?: boolean
+  error?: string
+}
+
 export interface SystemBatteryResponse {
   available?: boolean
   category?: string

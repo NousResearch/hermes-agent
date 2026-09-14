@@ -123,6 +123,8 @@ class GatewayGoalsMixin:
                 logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
 
     async def _heartbeat_poll_watch(self, watch, quick_key, source, session_id):
+        if await asyncio.to_thread(self._free_tier_refusal_for_source, source, quick_key) is not None:
+            return
         await self._warm_goals_session_db("heartbeat poll")
         store = getattr(self, "session_store", None)
         if store is not None:
@@ -310,6 +312,9 @@ class GatewayGoalsMixin:
         self, *, agent_result: Any, source: Any, is_internal: bool, event: Any = None,
     ) -> None:
         """Run goal and loop bookkeeping after an agent turn returns."""
+        outcome = agent_result if isinstance(agent_result, dict) else getattr(event, "_agent_turn_result", None)
+        if isinstance(outcome, dict) and (outcome.get("free_tier") or {}).get("capped"):
+            return  # Neither the refusal nor the previous assistant turn is judge input.
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
         try:
             session_entry = await self.async_session_store.get_or_create_session(
@@ -409,6 +414,8 @@ class GatewayGoalsMixin:
         if session_key and session_key in self._running_agents:
             return  # busy — stays due, next scan retries
         if goal_blocks_loop_tick(sid):
+            return
+        if await asyncio.to_thread(self._free_tier_refusal_for_source, source, session_key) is not None:
             return
 
         mgr = LoopManager(session_id=sid)

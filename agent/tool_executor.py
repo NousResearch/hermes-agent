@@ -686,7 +686,14 @@ def _dispatch_authorized_once(
         agent._iters_since_skill = 0
 
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    from agent.free_tier import record_executed_tool
+    try:
+        result = _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    except Exception:
+        record_executed_tool(ref.name, ref.args)
+        raise
+    record_executed_tool(ref.name, ref.args)
+    return result
 
 
 def _run_agent_tool_execution_middleware(

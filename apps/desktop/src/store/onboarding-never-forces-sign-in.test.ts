@@ -1,13 +1,6 @@
-/**
- * The free tier is unmetered and the guided first launch never demands an
- * account. This is the acceptance criterion the guided onboarding was built
- * to, as a test rather than a memory: a user can work through the guide and
- * the first build, tool call after tool call, and the only way a sign-in
- * reaches them is the guide's own ready screen at the moment the guide picks.
- * Every surface that could push a sign-in over the guide — the provider
- * picker, the deferred credential warning, the free-tier ready screen — has
- * to yield while the gate is cinematic, guided or handoff.
- */
+/** The lifetime allowance starts after guided onboarding. Provider prompts,
+ * deferred warnings and the free-tier ready screen must yield throughout the
+ * cinematic, guided and handoff stages. */
 import { expect, it, vi } from 'vitest'
 
 import type * as storageModule from '@/lib/storage'

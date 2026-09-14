@@ -13,6 +13,7 @@ def test_at_context_resolution_passes_active_provider():
     cli.base_url = "https://chatgpt.com/backend-api/codex"
     cli.api_key = "token"
     cli.provider = "openai-codex"
+    cli.conversation_history = []
     cli.agent = SimpleNamespace(_config_context_length=None)
     cli._active_agent_route_signature = "route"
     cli._secret_capture_callback = lambda *_args, **_kwargs: None

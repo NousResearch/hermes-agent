@@ -110,6 +110,9 @@ export interface GatewayReadyPayload {
 /** `tui_gateway/prompt_turn.py::_complete_turn_payload` and
  *  `tui_gateway/session_auto_continue.py::_emit_terminal_turn_error`. */
 export interface MessageCompletePayload {
+  code?: string
+  continuation_required?: boolean
+  free_tier_notice?: string
   /** Structured billing wall when the turn failed with FailoverReason.billing. */
   billing?: BillingBlock
   /** `status: "error"` — the failure message (`text` may be streamed output). */
@@ -240,6 +243,7 @@ export interface SessionControlUpdatePayload {
 }
 
 export interface ErrorPayload {
+  code?: string
   message?: string
   reason?: string
 }

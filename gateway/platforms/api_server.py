@@ -988,8 +988,11 @@ class _IdempotencyCache:
         if task is None:
             async def _compute_and_store():
                 resp = await compute_coro()
-                self._store[key] = {"resp": resp, "fp": fingerprint, "ts": time.time()}
-                self._purge()
+                from gateway.platforms.api_server_openai_routes import _continuation_refused
+                # A refused turn did no work; a later explicit resend must recheck the route.
+                if not (isinstance(resp, tuple) and resp and _continuation_refused(resp[0])):
+                    self._store[key] = {"resp": resp, "fp": fingerprint, "ts": time.time()}
+                    self._purge()
                 return resp
             task = asyncio.create_task(_compute_and_store())
             self._inflight[inflight_key] = task
@@ -3129,11 +3132,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         final_response = _resolve_media_to_data_urls(
             result.get("final_response", "") if is_dict else "")
         headers = self._session_headers(effective_session_id or session_id, gateway_session_key)
+        from gateway.platforms.api_server_openai_routes import _continuation_error, _continuation_metadata
+        refused = _continuation_error(result, pending_prompt=ctx["user_message"], headers=headers)
+        if refused is not None:
+            return refused
         return web.json_response(
             {"object": "hermes.session.chat.completion",
              "session_id": effective_session_id or session_id,
              "message": {"role": "assistant", "content": final_response}, "usage": usage,
-             "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage)},
+             "runtime": self._effective_turn_runtime(ctx["runtime_request"], result, usage),
+             "hermes": _continuation_metadata(result)},
             headers=headers)
 
     @_admit_api_agent_request
@@ -3185,17 +3193,29 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
                 turn_messages = self._turn_transcript_messages(history, user_message, result) if is_dict else []
                 effective_runtime = self._effective_turn_runtime(runtime_request, result, usage)
+                from gateway.platforms.api_server_openai_routes import _continuation_metadata, _result_flags
+                meta = _continuation_metadata(result, user_message)
+                completed, partial, failed, error = _result_flags(result)
+                if failed:
+                    payload = {"session_id": effective_session_id, "message_id": message_id,
+                               "content": final_response, "completed": False, "failed": True,
+                               "partial": partial, "error": _redact_api_error_text(error or "Agent run failed"),
+                               "usage": usage, "runtime": effective_runtime, **meta}
+                    await queue.put(_event_payload("assistant.failed", dict(payload)))
+                    await queue.put(_event_payload("run.failed", {**payload, "messages": []}))
+                    self._set_run_status(run_id, "failed", **payload, last_event="run.failed")
+                    return
                 await queue.put(_event_payload("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
                     "content": final_response, "completed": True,
                     "partial": bool(result.get("partial")) if is_dict else False,
-                    "interrupted": False, "runtime": effective_runtime}))
+                    "interrupted": False, "runtime": effective_runtime, **meta}))
                 # A steer accepted after the final reply lands in result["pending_steer"]; surface
                 # it so clients can replay it rather than lose it.
                 pending_steer = result.get("pending_steer") if is_dict else None
                 completed_payload = {
                     "session_id": effective_session_id, "message_id": message_id, "completed": True,
-                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}
+                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime, **meta}
                 if pending_steer:
                     completed_payload["pending_steer"] = pending_steer
                 await queue.put(_event_payload("run.completed", completed_payload))
@@ -3736,6 +3756,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
                     result = agent.run_conversation(**conversation_kwargs)
+                    from gateway.platforms.api_server_openai_routes import _continuation_refused
+                    if _continuation_refused(result):
+                        result["pending_prompt"] = user_message
                     return self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)

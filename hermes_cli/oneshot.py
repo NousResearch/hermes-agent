@@ -256,6 +256,8 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
+    if result.get("failure_reason") == "free_tier_limit":
+        return 2  # Visible refusal is not a successful model response.
     if not (response or "").strip():
         if result.get("failed") or result.get("partial"):
             return 2

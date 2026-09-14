@@ -70,6 +70,7 @@ def _bare_agent() -> AIAgent:
     agent.session_id = "test-session"
     agent._parent_session_id = ""
     agent._credential_pool = None
+    agent._fallback_activated = False
     agent._memory_store = object()
     agent._memory_enabled = True
     agent._user_profile_enabled = False
@@ -551,7 +552,7 @@ def test_live_turn_waits_for_review_exit_before_relay_and_turn_context(monkeypat
         ("begin", True),
         ("start_task_run", True),
     ]
-    assert boundary_reached.is_set()
+    assert boundary_reached.is_set(), live_result
     assert seen["interrupt_message"] == "superseded by a new live turn"
     assert seen["review_returned_at_boundary"] is True
     assert live_result == {"boundary_reached": True}
@@ -597,7 +598,7 @@ def test_live_turn_cancels_review_during_startup_before_provider(monkeypatch):
 
     assert not worker.is_alive()
     assert not live.is_alive()
-    assert boundary_reached.is_set()
+    assert boundary_reached.is_set(), live_result
     assert provider_calls == []
     assert run.request_done.is_set()
     assert relay_calls == [
@@ -684,7 +685,7 @@ def test_live_turn_proceeds_when_review_acknowledgement_times_out(monkeypatch):
     assert not live.is_alive()
     # Foreground retains priority: Relay/turn-context proceed even though
     # the review did not acknowledge within the bounded deadline.
-    assert boundary_calls == [True]
+    assert boundary_calls == [True], live_result
     assert live_result == {"boundary_reached": True}
     assert relay_calls == [
         ("acquire", False),
@@ -725,7 +726,7 @@ def test_live_turn_interrupts_legacy_review_but_keeps_foreground_priority(monkey
     assert interrupt_called.wait(2.0)
     assert interrupts == ["superseded by a new live turn"]
     assert not live.is_alive()
-    assert boundary_calls == [True]
+    assert boundary_calls == [True], live_result
     assert live_result == {"boundary_reached": True}
     assert relay_calls == [
         ("acquire", False),

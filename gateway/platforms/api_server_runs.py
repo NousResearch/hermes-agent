@@ -637,10 +637,16 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             _finish("cancelled")
         elif result.get("failed"):
             # Non-retryable client errors (401/400) return failed=True rather than raising.
-            _finish("failed", error=_redact_api_error_text(result.get("error") or "agent run failed"))
+            from gateway.platforms.api_server_openai_routes import _continuation_metadata
+            _finish("failed", _continuation_metadata(result, run.user_message),
+                    output=result.get("final_response", ""), usage=usage,
+                    error=_redact_api_error_text(result.get("error") or "agent run failed"))
         else:
             # Undelivered steer text rides on the terminal event/status for client replay.
-            extra = {"pending_steer": result["pending_steer"]} if result.get("pending_steer") else {}
+            from gateway.platforms.api_server_openai_routes import _continuation_metadata
+            extra = _continuation_metadata(result)
+            if result.get("pending_steer"):
+                extra["pending_steer"] = result["pending_steer"]
             _finish("completed", extra, output=result.get("final_response", ""), usage=usage)
     except asyncio.CancelledError:
         _finish("cancelled")

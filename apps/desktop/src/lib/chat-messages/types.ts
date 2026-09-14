@@ -65,6 +65,7 @@ export type GatewayEventPayload = {
   preview?: string
   result?: unknown
   summary?: string
+  code?: string
   error?: string | boolean
   // message.complete with status "error" — structured {layer, code, retryable}
   // descriptor naming which stack layer failed (agent/error_surface.py).

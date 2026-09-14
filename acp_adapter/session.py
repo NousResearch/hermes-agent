@@ -146,6 +146,8 @@ class SessionState:
     # Per-session allocator for ACP assistant messageIds (lazily created by
     # the server so streamed chunks group into distinct assistant replies).
     message_ids: Any = None
+    pending_prompt: Any = None  # original ACP blocks; never inserted into history on refusal
+    refresh_runtime: bool = False
 
 
 class SessionManager:

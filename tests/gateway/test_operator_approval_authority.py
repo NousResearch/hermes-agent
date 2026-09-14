@@ -15,16 +15,24 @@ def test_only_gated_session_with_explicit_subject_allowlist_is_operator():
     identity = authenticated_operator_identity(
         _session(),
         auth_required=True,
-        allowed_subjects=("portal:operator-1",),
+        allowed_subjects=('{"provider":"portal","user_id":"operator-1"}',),
     )
 
-    assert identity == "portal:operator-1"
+    assert identity == '{"provider":"portal","user_id":"operator-1"}'
 
 
 def test_loopback_token_or_unlisted_session_cannot_be_operator():
     assert authenticated_operator_identity(
-        _session(), auth_required=False, allowed_subjects=("portal:operator-1",)
+        _session(), auth_required=False, allowed_subjects=('{"provider":"portal","user_id":"operator-1"}',)
+    ) is None
+
+
+def test_subject_encoding_does_not_alias_delimited_identities():
+    assert authenticated_operator_identity(
+        _session(user_id="operator", provider="portal:team"),
+        auth_required=True,
+        allowed_subjects=('{"provider":"portal","user_id":"team:operator"}',),
     ) is None
     assert authenticated_operator_identity(
-        _session(), auth_required=True, allowed_subjects=("portal:someone-else",)
+        _session(), auth_required=True, allowed_subjects=('{"provider":"portal","user_id":"someone-else"}',)
     ) is None

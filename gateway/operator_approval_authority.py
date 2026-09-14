@@ -10,6 +10,7 @@ allowlist.
 from __future__ import annotations
 
 from collections.abc import Iterable
+import json
 from typing import Any
 
 
@@ -23,7 +24,11 @@ def dashboard_session_subject(session: Any, *, auth_required: bool) -> str | Non
         return None
     if not isinstance(user_id, str) or not user_id.strip():
         return None
-    return f"{provider.strip()}:{user_id.strip()}"
+    return json.dumps(
+        {"provider": provider.strip(), "user_id": user_id.strip()},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def authenticated_operator_identity(

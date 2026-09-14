@@ -343,6 +343,127 @@ def test_stale_fleet_matrix_on_latest_receipt_is_pending(monkeypatch):
     assert update_cmd._pending_fleet_restart_needed() is True
 
 
+# ---------------------------------------------------------------------------
+# Sticky-warning invariants (2026-09-14: warning stayed on for ~26h across a
+# reboot with the fleet provably current — both sources needed a gate)
+# ---------------------------------------------------------------------------
+
+
+def _fleet_row(profile, pid, code_sha, state):
+    return {"profile": profile, "pid": pid, "code_sha": code_sha, "state": state}
+
+
+def _patch_live_fleet(monkeypatch, rows):
+    """Feed ``collect_fleet_versions`` the live fleet the reconciliation probes."""
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions", lambda *a, **k: list(rows)
+    )
+
+
+def _write_latest_receipt(payload):
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "latest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_completed_receipt_superseded_by_a_later_checkout_does_not_retrigger(monkeypatch):
+    """A *finished* update's ``fleet`` snapshot must not fire once the tree moves on.
+
+    Observed 2026-09-14: the 2026-09-09 update's completed receipt recorded a fleet that
+    was current when it finished. Every later pull moves the checkout past the recorded
+    SHA, and the fleet branch had no ``_receipt_looks_unfinished`` gate — so a completed
+    update read as "gateways may be serving pre-update modules" forever, even with the
+    live fleet provably current on the checkout.
+    """
+    disk_sha, recorded_sha = "b" * 40, "9" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: disk_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: disk_sha)
+    _patch_live_fleet(monkeypatch, [_fleet_row("default", 823, disk_sha, "current")])
+    _write_latest_receipt(
+        {
+            "outcome": "success",
+            "exit_code": 0,
+            "post_update": {"sha": recorded_sha},
+            "fleet": [_fleet_row("default", 48579, recorded_sha, "current")],
+            "plan": {
+                "expected_sha": "5" * 40,
+                "runtimes": [
+                    {"kind": "gateway", "profile": "default", "pid": 20593, "code_sha": "5" * 40},
+                    # A recorded serve runtime: the gateway matrix cannot vouch for it, so
+                    # ``_live_fleet_covers_receipt`` cannot rescue this receipt. Only the
+                    # unfinished gate can.
+                    {"kind": "serve", "profile": "default", "pid": 20586, "code_sha": None},
+                ],
+            },
+            "gateway_restart": {"incomplete": False},
+        }
+    )
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+
+
+def test_marker_expires_when_the_fleet_already_runs_the_pulled_code(monkeypatch):
+    """A reboot / ``hermes gateway restart`` discharges the marker without clearing it."""
+    sha = "b" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: sha)
+    _patch_live_fleet(monkeypatch, [_fleet_row("default", 823, sha, "current")])
+
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    assert marker.is_file()
+    assert f"expected_sha={sha}" in marker.read_text(encoding="utf-8")
+
+    assert update_cmd._pending_fleet_restart_needed() is False
+    assert not marker.exists(), "a discharged obligation must stop firing, not linger"
+
+
+def test_marker_stays_pending_while_a_gateway_runs_pre_pull_code(monkeypatch):
+    """Negative control: the expiry must not silence a genuinely stale fleet."""
+    sha, pre_pull = "b" * 40, "7" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: sha)
+    _patch_live_fleet(monkeypatch, [_fleet_row("default", 823, pre_pull, "stale")])
+
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+    assert marker.is_file(), "an owed restart keeps its breadcrumb"
+
+
+def test_marker_for_an_older_pull_stays_pending(monkeypatch):
+    """A marker from a pull other than the code on disk cannot be reconciled away."""
+    checkout_sha, marker_pull_sha = "b" * 40, "c" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: checkout_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: checkout_sha)
+    _patch_live_fleet(monkeypatch, [_fleet_row("default", 823, checkout_sha, "current")])
+
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=marker_pull_sha)
+
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+
+def test_marker_pending_when_a_recorded_gateway_has_no_current_successor(monkeypatch):
+    """Every identity the marker recorded must have a live successor on the pulled code."""
+    sha = "b" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: sha)
+    live = [
+        _fleet_row("default", 823, sha, "current"),
+        _fleet_row("work", 824, "7" * 40, "stale"),
+    ]
+    _patch_live_fleet(monkeypatch, live)
+
+    update_cmd._write_fleet_restart_pending_marker(expected_sha=sha)
+    marker = update_cmd._fleet_restart_pending_marker_path()
+    assert f"gateway_profiles=default,work" in marker.read_text(encoding="utf-8")
+
+    # "work" settles; "default" goes missing without a replacement.
+    live[:] = [_fleet_row("work", 824, sha, "current")]
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+
 def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     monkeypatch.setattr(
         "hermes_cli.gateway.find_gateway_pids", lambda **k: []

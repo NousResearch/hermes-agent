@@ -26,6 +26,11 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 # this one is the fleet-restart obligation after a git pull that advanced HEAD (#95294).
 _FLEET_RESTART_PENDING_NAME = "fleet_restart_pending"
 
+#: Marker line listing the gateway identities running when the obligation was recorded
+#: (``profile`` names, comma-separated). It lets a later run reconcile — and expire — the
+#: marker against a live, identity-matched fleet instead of trusting its existence forever.
+_FLEET_RESTART_PENDING_PROFILES_KEY = "gateway_profiles"
+
 _FRESH_RESTART_SUPERVISORS = frozenset({"systemd", "launchd", "service", "s6"})
 
 _SYSTEMD_SCOPES = (("user", ["systemctl", "--user"]), ("system", ["systemctl"]))
@@ -45,8 +50,32 @@ def _fleet_restart_pending_marker_path() -> Path:
     return get_hermes_home() / _FLEET_RESTART_PENDING_NAME
 
 
+def _running_gateway_profiles() -> list[str] | None:
+    """Profiles of the gateways running right now, or ``None`` when the probe failed.
+
+    The obligation a marker records is "restart the gateways that were serving at pull
+    time", so the identity snapshot is taken from the same live probe the reconciliation
+    later uses — one side cannot silently disagree with the other.
+    """
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+
+        return sorted(
+            {str(row.get("profile")) for row in collect_fleet_versions() if row.get("profile")}
+        )
+    except Exception as exc:
+        logger.debug("Could not snapshot running gateways for the pending marker: %s", exc)
+        return None
+
+
 def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> None:
-    """Drop the pull→restart obligation breadcrumb. Never raises."""
+    """Drop the pull→restart obligation breadcrumb. Never raises.
+
+    Records the gateway identities running at write time, because the marker outlives the
+    run that wrote it: a reboot or a manual ``hermes gateway restart`` puts the fleet on
+    the pulled code without clearing the file, and only the recorded identities let a
+    later run tell that discharged obligation from a live one.
+    """
     from hermes_cli.update_cmd import _m
     path = _fleet_restart_pending_marker_path()
     if _m()._pytest_owns_live_checkout(path.parent):
@@ -56,6 +85,9 @@ def _write_fleet_restart_pending_marker(*, expected_sha: str = "") -> None:
         lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
         if expected_sha:
             lines.append(f"expected_sha={expected_sha}")
+        profiles = _running_gateway_profiles()
+        if profiles is not None:
+            lines.append(f"{_FLEET_RESTART_PENDING_PROFILES_KEY}={','.join(profiles)}")
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except OSError as exc:
         logger.debug("Could not write fleet-restart-pending marker: %s", exc)
@@ -102,9 +134,12 @@ def _receipt_looks_unfinished(receipt: dict) -> bool:
 def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     """True when ``update_receipts/latest.json`` records a runtime SHA skew.
 
-    Prefer the post-restart ``fleet`` matrix. ``plan.runtimes[].code_sha`` is captured
-    *before* the pull, so a finished update's plan always looks stale and must not
-    retrigger a restart; consult it only for an unfinished receipt.
+    Only an UNFINISHED update can still owe a restart. Both the post-restart ``fleet``
+    matrix and ``plan.runtimes[].code_sha`` are snapshots of the moment that update ran, so
+    as soon as a later pull moves the checkout a *completed* receipt reads as skewed
+    forever — it must never retrigger a restart (#98022; the gate the ``fleet`` branch was
+    missing). ``plan.runtimes[].code_sha`` is captured *before* the pull, so it is
+    consulted only for an unfinished receipt.
 
     See #95294.
     """
@@ -119,6 +154,8 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
     expected_sha = expected_sha or _current_checkout_sha()
     if not expected_sha:
         return False
+    if not _receipt_looks_unfinished(receipt):
+        return False
 
     def _sha_mismatch(code_sha) -> bool:
         return bool(code_sha) and str(code_sha) != str(expected_sha)
@@ -131,8 +168,6 @@ def _receipt_reports_stale_runtime(expected_sha: str | None = None) -> bool:
             for entry in fleet
         )
 
-    if not _receipt_looks_unfinished(receipt):
-        return False
     plan = receipt.get("plan")
     if not isinstance(plan, dict):
         return False
@@ -183,15 +218,79 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _read_pending_marker(path) -> "tuple[str, list[str] | None]":
+    """``(expected_sha, gateway_profiles)`` recorded in the pending marker.
+
+    ``gateway_profiles`` is ``None`` when the marker predates the identity line, and
+    ``expected_sha`` is ``""`` when the marker is unreadable. Neither can discharge the
+    obligation on its own — they only make it checkable.
+    """
+    expected_sha = ""
+    profiles: "list[str] | None" = None
+    with suppress(OSError):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if not separator:
+                continue
+            key, value = key.strip(), value.strip()
+            if key == "expected_sha":
+                expected_sha = value
+            elif key == _FLEET_RESTART_PENDING_PROFILES_KEY:
+                profiles = [name for name in (part.strip() for part in value.split(",")) if name]
+    return expected_sha, profiles
+
+
+def _pending_marker_obligation_discharged(path) -> bool:
+    """True when the marker's own evidence proves its restart obligation is already met.
+
+    The marker is a breadcrumb, not proof. A reboot or a manual ``hermes gateway
+    restart`` restarts every gateway onto the pulled code and clears nothing, so file
+    existence alone kept the warning on forever — the advertised remedy never silenced
+    it. Identity decides instead: every gateway the marker owed must be running the code
+    that marker's pull produced.
+
+    Fail-closed: an unreadable marker, a marker from a pull other than the code now on
+    disk, an empty (unprobeable) fleet, any gateway not provably on that SHA, or a
+    recorded identity with no live successor all keep the obligation pending.
+    """
+    from hermes_cli.update_cmd import _current_checkout_sha
+
+    expected_sha, recorded_profiles = _read_pending_marker(path)
+    checkout_sha = _current_checkout_sha()
+    if not expected_sha or not checkout_sha or expected_sha != checkout_sha:
+        return False
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+
+        fleet = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Could not probe the live fleet for the pending marker: %s", exc)
+        return False
+    if not fleet or any(
+        row.get("state") != "current" or row.get("code_sha") != checkout_sha for row in fleet
+    ):
+        return False
+    if recorded_profiles:
+        live_profiles = {str(row.get("profile")) for row in fleet}
+        if not set(recorded_profiles) <= live_profiles:
+            return False
+    return True
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
 
-    # The marker has no runtime inventory and may belong to a newer, killed update
-    # than latest.json. An older receipt cannot discharge that unknown obligation.
+    # The marker may belong to a newer, killed update than latest.json, so an older
+    # receipt cannot discharge it — but a fleet provably running the code that marker's
+    # pull produced can, and does (a reboot restarts every gateway onto that code and
+    # clears nothing). Expire it there instead of warning until the next `hermes update`.
+    marker = _fleet_restart_pending_marker_path()
     with suppress(OSError):
-        if _fleet_restart_pending_marker_path().is_file():
-            return True
+        if marker.is_file():
+            if not _pending_marker_obligation_discharged(marker):
+                return True
+            _clear_fleet_restart_pending_marker()
     if not _receipt_reports_stale_runtime():
         return False
     return not _live_fleet_covers_receipt(_current_checkout_sha())

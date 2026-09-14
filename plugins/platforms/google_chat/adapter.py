@@ -670,7 +670,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """Run streaming_pull with exponential backoff + full jitter; fatal after N attempts.
         ``subscribe()`` returns a Future that resolves when the stream dies."""
         pubsub_fatals = {
-            gax_exceptions.Unauthenticated: ("pubsub_auth", "Pub/Sub authentication failed (SA key invalid/revoked)"),
+            gax_exceptions.Unauthenticated: (
+                "pubsub_auth",
+                "Pub/Sub authentication failed; check service-account credentials and gateway logs",
+            ),
             gax_exceptions.PermissionDenied: ("pubsub_permission", "SA lacks pubsub.subscriber on the subscription"),
         }
         attempt = 0

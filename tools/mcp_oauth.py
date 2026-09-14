@@ -73,9 +73,12 @@ class RefreshFenceTimeout(RuntimeError):
 _FENCE_CONTENTION_ERRNOS = frozenset({errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EDEADLK})
 
 
-@contextlib.asynccontextmanager
-async def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS):
-    """Own one refresh generation across read -> POST -> persist.
+def _refresh_lock_path(path: "Path") -> "Path":
+    return path.with_suffix(path.suffix + ".refresh.lock")
+
+
+async def acquire_refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOUT_SECONDS) -> int:
+    """Take the fence that owns one refresh generation across read -> POST -> persist.
 
     Token files are written atomically (``_write_json``), so a reader never
     sees a torn file; the only cross-process hazard is the read-modify-write
@@ -98,13 +101,16 @@ async def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOU
     already excludes sibling tasks and threads of the same process.
 
     Acquisition failure RAISES. Degrading to "proceed unlocked" would
-    reintroduce the exact race.
+    reintroduce the exact race. Returns the locked descriptor; the caller
+    hands it back to ``release_refresh_fence`` from its own exit path (the
+    SDK drives the refresh as a generator, so no single ``with`` block can
+    span the critical section).
     """
-    lock_path = path.with_suffix(path.suffix + ".refresh.lock")
+    lock_path = _refresh_lock_path(path)
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         secure_parent_dir(lock_path)
-        lock_fd = open(lock_path, "a+", encoding="utf-8")
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     except OSError as exc:
         # No lock file means no ownership proof. Fail closed: see the
         # class docstring for why proceeding is worse than aborting.
@@ -112,24 +118,19 @@ async def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOU
             f"refresh fence unavailable ({lock_path.name}): {exc}"
         ) from exc
 
-    acquired = False
+    deadline = time.monotonic() + timeout
     try:
-        lock_fd.seek(0)
-        deadline = time.monotonic() + timeout
         while True:
             try:
                 if fcntl is not None:
-                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(
-                        lock_fd.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
-                    )
+                    getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_NBLCK"), 1)
                 else:  # pragma: no cover - no advisory locking primitive
                     raise RefreshFenceTimeout(
                         "refresh fence unsupported: no flock/msvcrt on this platform"
                     )
-                acquired = True
-                break
+                return fd
             except OSError as exc:
                 if exc.errno not in _FENCE_CONTENTION_ERRNOS:
                     # Not "a peer holds it" but "this filesystem cannot lock"
@@ -143,21 +144,23 @@ async def _refresh_fence(path: "Path", *, timeout: float = _REFRESH_FENCE_TIMEOU
                         f"refresh fence held by a peer for {timeout:.0f}s ({lock_path.name})"
                     ) from None
                 await asyncio.sleep(0.05)
+    except BaseException:
+        os.close(fd)
+        raise
 
-        yield
+
+def release_refresh_fence(fd: int) -> None:
+    """Unlock and close a descriptor returned by ``acquire_refresh_fence``. Never raises."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            getattr(msvcrt, "locking")(fd, getattr(msvcrt, "LK_UNLCK"), 1)
+    except OSError:
+        pass
     finally:
-        try:
-            if acquired:
-                if fcntl is not None:
-                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                elif msvcrt is not None:
-                    getattr(msvcrt, "locking")(
-                        lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
-                    )
-        except (OSError, IOError):
-            pass
-        finally:
-            lock_fd.close()
+        with contextlib.suppress(OSError):
+            os.close(fd)
 
 
 # ---------------------------------------------------------------------------
@@ -563,7 +566,7 @@ class HermesTokenStorage:
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
-        for p in (*self._state_paths(), self._cimd_rejected_path()):
+        for p in (*self._state_paths(), self._cimd_rejected_path(), _refresh_lock_path(self._tokens_path())):
             p.unlink(missing_ok=True)
 
     def snapshot(self) -> dict[str, bytes]:

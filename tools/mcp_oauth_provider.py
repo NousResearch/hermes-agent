@@ -74,9 +74,9 @@ class HermesProviderMixin:
         self._coerce_client_secret_post()
         return self._prepare_token_request(await super()._exchange_token_authorization_code(*args, **kwargs))
 
-    # Set while this provider owns the refresh fence; cleared by
+    # Locked descriptor while this provider owns the refresh fence; cleared by
     # _hermes_release_refresh_fence. Never shared across instances.
-    _hermes_fence: Any = None
+    _hermes_fence: int | None = None
 
     async def async_auth_flow(self, request):
         """Guarantee fence release even if the auth generator is abandoned.
@@ -130,7 +130,7 @@ class HermesProviderMixin:
         The fence is acquired BEFORE the final read of the refresh token and is
         released only after _handle_refresh_response has persisted the
         replacement, so one refresh generation is consumed by exactly one
-        process. See tools.mcp_oauth._refresh_fence for the interleaving this
+        process. See tools.mcp_oauth.acquire_refresh_fence for the interleaving this
         closes.
 
         Holding a lock across ``yield`` in the SDK's generator-based auth flow
@@ -176,26 +176,22 @@ class HermesProviderMixin:
         be POSTed. A stale fence from an aborted attempt is replaced rather
         than stacked, so a crashed generator cannot leak ownership.
         """
-        from tools.mcp_oauth import _refresh_fence
+        from tools.mcp_oauth import acquire_refresh_fence
 
         await self._hermes_release_refresh_fence()
         storage = self.context.storage
         tokens_path = getattr(storage, "_tokens_path", None)
         if tokens_path is None:  # pragma: no cover - non-Hermes storage
             return
-        fence = _refresh_fence(tokens_path())
-        await fence.__aenter__()
-        self._hermes_fence = fence
+        self._hermes_fence = await acquire_refresh_fence(tokens_path())
 
     async def _hermes_release_refresh_fence(self) -> None:
         """Release the fence if held. Idempotent and never raises."""
-        fence, self._hermes_fence = self._hermes_fence, None
-        if fence is None:
-            return
-        try:
-            await fence.__aexit__(None, None, None)
-        except Exception:  # pragma: no cover - release must never mask the outcome
-            self._hermes_logger.debug("Refresh fence release failed", exc_info=True)
+        from tools.mcp_oauth import release_refresh_fence
+
+        fd, self._hermes_fence = self._hermes_fence, None
+        if fd is not None:
+            release_refresh_fence(fd)
 
     async def _hermes_rotated_candidate(self):
         """The on-disk pair, if a peer rotated it past the one we hold.

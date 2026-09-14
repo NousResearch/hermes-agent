@@ -835,14 +835,17 @@ async def test_refresh_fails_closed_while_a_peer_holds_the_fence(tmp_path, monke
     provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
     await provider.context.storage.set_tokens(_token("A1", "R1"))
     monkeypatch.setattr(
-        mcp_oauth, "_refresh_fence", functools.partial(mcp_oauth._refresh_fence, timeout=0.2)
+        mcp_oauth, "acquire_refresh_fence", functools.partial(mcp_oauth.acquire_refresh_fence, timeout=0.2)
     )
 
     sent = []
 
-    async with mcp_oauth._refresh_fence(provider.context.storage._tokens_path()):
+    peer_fd = await mcp_oauth.acquire_refresh_fence(provider.context.storage._tokens_path())
+    try:
         with pytest.raises(mcp_oauth.RefreshFenceTimeout):
             await _drive_flow(provider, sent.append)
+    finally:
+        mcp_oauth.release_refresh_fence(peer_fd)
 
     assert sent == []
     assert provider.context.current_tokens.refresh_token == "R1"
@@ -922,6 +925,5 @@ async def test_refresh_fence_surfaces_non_contention_lock_errors_immediately(tmp
     monkeypatch.setattr(mcp_oauth.fcntl, "flock", broken_flock)
     started = time.monotonic()
     with pytest.raises(mcp_oauth.RefreshFenceTimeout, match="unavailable on this filesystem"):
-        async with mcp_oauth._refresh_fence(tmp_path / "srv.json", timeout=5.0):
-            pass
+        await mcp_oauth.acquire_refresh_fence(tmp_path / "srv.json", timeout=5.0)
     assert time.monotonic() - started < 1.0, "must fail fast, not wait out the deadline"

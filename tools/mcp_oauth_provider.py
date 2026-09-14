@@ -144,12 +144,22 @@ class HermesProviderMixin:
         try:
             # Re-read under the fence: a peer may have rotated while we waited
             # for it, in which case the token we were about to POST is dead.
-            adopted = await self._hermes_adopt_tokens_from_disk()
-            if adopted and self._hermes_live_ttl() and self.context.is_token_valid():
-                # The peer's access token is live: presenting our copy of the
-                # refresh token would only burn a generation on a single-use
-                # provider. Skip the POST and let the flow restart.
-                raise _RefreshCompletedByPeer
+            # If disk already holds a different refresh token, the peer that held
+            # the fence before us won this generation; its value is the only one
+            # the provider will still accept, so install it even when its access
+            # token has already expired (the POST we build needs the new grant).
+            candidate = await self._hermes_rotated_candidate()
+            if candidate is not None:
+                if not self._hermes_install_disk_pair(candidate):
+                    # Issuer binding stripped the peer's refresh token: nothing
+                    # left to POST. Restart the flow so the SDK lands in 401 ->
+                    # full authorization instead of raising over a dead grant.
+                    raise _RefreshCompletedByPeer
+                if self._hermes_live_ttl() and self.context.is_token_valid():
+                    # The peer's access token is live: presenting our copy of the
+                    # refresh token would only burn a generation on a single-use
+                    # provider. Skip the POST and let the flow restart.
+                    raise _RefreshCompletedByPeer
             return self._prepare_token_request(await super()._refresh_token())
         except BaseException:
             # Never hold the fence when no POST will follow.
@@ -157,17 +167,17 @@ class HermesProviderMixin:
             raise
 
     def _hermes_live_ttl(self) -> bool:
-        """True when the installed token has a real, positive TTL.
+        """True when the installed token is not known to be past due.
 
         Storage clamps a past-due token to ``expires_in == 0`` on read (see
         HermesTokenStorage.get_tokens); the SDK's is_token_valid() compares
         ``time.time() <= expiry`` and still reports True for that boundary,
         which would make us adopt a token the server rejects immediately.
+        ``expires_in`` is optional in RFC 6749: None means no expiry was
+        issued, which the SDK treats as valid, so it counts as live here too.
         """
-        try:
-            return int(getattr(self.context.current_tokens, "expires_in", 0) or 0) > 0
-        except (TypeError, ValueError):
-            return False
+        exp = getattr(self.context.current_tokens, "expires_in", None)
+        return exp is None or int(exp) > 0
 
     async def _hermes_acquire_refresh_fence(self) -> None:
         """Enter the fence, or let RefreshFenceTimeout abort this attempt.
@@ -214,35 +224,17 @@ class HermesProviderMixin:
             return None
         return stored
 
-    def _hermes_install_disk_pair(self, tokens) -> None:
+    def _hermes_install_disk_pair(self, tokens) -> bool:
         """Publish a disk pair to the context and re-run issuer binding on it.
 
-        If the enforcer strips the refresh token (the pair was minted by a
-        different issuer) there is nothing left to refresh with: restart the
-        SDK flow so it lands in 401 -> full authorization instead of raising
-        OAuthTokenError over an unusable grant.
+        Returns False when the enforcer strips the refresh token (the pair was
+        minted by a different issuer): there is nothing left to refresh with,
+        and each caller decides what that means for its own flow.
         """
         self.context.current_tokens = tokens
         self.context.update_token_expiry(tokens)
         enforce_refresh_token_issuer(self.context)
-        if not getattr(self.context.current_tokens, "refresh_token", None):
-            raise _RefreshCompletedByPeer
-
-    async def _hermes_adopt_tokens_from_disk(self) -> bool:
-        """Adopt a peer's newer tokens before POSTing our own copy.
-
-        Called under the fence. If disk already holds a different refresh
-        token, the peer that held the fence before us won this generation;
-        its value is the only one the provider will still accept, so it is
-        installed even when its access token has already expired (the POST
-        we are about to build needs the new refresh token). Returns True
-        when the in-memory pair was replaced.
-        """
-        candidate = await self._hermes_rotated_candidate()
-        if candidate is None:
-            return False
-        self._hermes_install_disk_pair(candidate)
-        return True
+        return bool(getattr(self.context.current_tokens, "refresh_token", None))
 
     async def _initialize(self) -> None:
         """Load stored state, restore persisted server metadata when the SDK has none (so the issuer
@@ -345,8 +337,11 @@ class HermesProviderMixin:
         # to be installed to be tested; a losing probe must leave the context
         # exactly as it found it.
         previous_tokens = self.context.current_tokens
-        self._hermes_install_disk_pair(candidate)
-        if self._hermes_live_ttl() and self.context.is_token_valid():
+        if (
+            self._hermes_install_disk_pair(candidate)
+            and self._hermes_live_ttl()
+            and self.context.is_token_valid()
+        ):
             return True
         self.context.current_tokens = previous_tokens
         self.context.update_token_expiry(previous_tokens)

@@ -883,6 +883,31 @@ async def test_refresh_adopts_expired_peer_pair_and_posts_its_refresh_token(tmp_
 
 
 @pytest.mark.asyncio
+async def test_refresh_adopts_peer_pair_without_expiry_and_skips_the_post(tmp_path, monkeypatch):
+    """A peer rotated to (A2, R2) with no ``expires_in`` (RFC 6749 optional): that pair is live.
+
+    Treating a missing expiry as expired would POST R2 needlessly and burn a
+    generation on a single-use provider.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    endpoint = "https://idp.example.com/oauth/token"
+    provider = _fenced_provider(tmp_path, monkeypatch, endpoint)
+    await provider.context.storage.set_tokens(_token("A2", "R2", expires_in=None))
+
+    posted = []
+
+    def responder(request):
+        if request.method == "POST":
+            posted.append(request)
+        return _fake_response(200, str(request.url), b"{}")
+
+    await _drive_flow(provider, responder)
+
+    assert posted == [], "a live peer pair must be adopted without presenting a refresh token"
+    assert (provider.context.current_tokens.access_token, provider.context.current_tokens.refresh_token) == ("A2", "R2")
+
+
+@pytest.mark.asyncio
 async def test_refresh_restarts_flow_when_disk_pair_is_from_another_issuer(tmp_path, monkeypatch):
     """A disk pair bound to a different issuer loses its refresh token on adoption.
 

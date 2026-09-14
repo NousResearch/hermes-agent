@@ -255,8 +255,27 @@ export interface NativeChatPanelProps {
  * use the existing shared session state, exact-route request router and native
  * ChatView/ChatBar implementation. */
 export function NativeChatPanel({ binding, className, focusRequest = 0 }: NativeChatPanelProps) {
-  const bindingRoute = binding.route
-  const route = useMemo(() => normalizeRoute(bindingRoute), [bindingRoute])
+  const {
+    connectionId: routeConnectionId,
+    mode: routeMode,
+    profile: routeProfile,
+    targetProfile: routeTargetProfile
+  } = binding.route
+
+  // Keyed by the route's PRIMITIVE fields, not the route object's identity: a
+  // plugin's inline render produces an equivalent binding on every render, and
+  // an identity-keyed route would re-register the foreground lease below on
+  // each one.
+  const route = useMemo(
+    () =>
+      normalizeRoute({
+        connectionId: routeConnectionId,
+        mode: routeMode,
+        profile: routeProfile,
+        targetProfile: routeTargetProfile
+      }),
+    [routeConnectionId, routeMode, routeProfile, routeTargetProfile]
+  )
 
   const storedSessionId = binding.storedSessionId.trim()
   const target = `native:${storedSessionId}`
@@ -282,7 +301,6 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
   const delegateRevision = useStore($sessionTileDelegateRevision)
   const [error, setError] = useState<string | null>(null)
   const [retryRevision, setRetryRevision] = useState(0)
-  const resumingRef = useRef(false)
 
   useEffect(() => {
     if (!runtimeId || $sessionStates.get()[runtimeId]) {
@@ -308,19 +326,24 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
     return retainForegroundSessionSurface(route, runtimeId)
   }, [route, runtimeId, storedSessionId])
 
-  // resumingRef is an in-flight request token for the resume effect below,
-  // not an atom mirror: the runtime atom only settles after the promise does.
-  // eslint-disable-next-line no-restricted-syntax -- in-flight resume latch, not an atom mirror
+  // The resume is keyed to the exact binding it belongs to: a panel that is
+  // re-bound while an earlier resume is still in flight must start the NEW
+  // binding's resume instead of leaving itself on "Connecting" forever. A stale
+  // resume that settles later is dropped by its own cleanup.
+  const resumeKey = nativeBindingKey(route, storedSessionId)
+  const resumingKeyRef = useRef<null | string>(null)
+  // eslint-disable-next-line no-restricted-syntax -- in-flight resume latch keyed to the binding, not an atom mirror
   useEffect(() => {
     // The shared delegate is installed by Desktop's normal session wiring. It
     // performs exact-owner resume, transcript hydration, approval restoration
     // and shared state publication without layout/navigation side effects.
-    if (!storedSessionId || $runtimeId.get() || resumingRef.current || !sessionTileDelegate()) {
+    if (!storedSessionId || $runtimeId.get() || resumingKeyRef.current === resumeKey || !sessionTileDelegate()) {
       return
     }
 
     let cancelled = false
-    resumingRef.current = true
+
+    resumingKeyRef.current = resumeKey
     setError(null)
 
     void sessionTileDelegate()!
@@ -336,13 +359,15 @@ export function NativeChatPanel({ binding, className, focusRequest = 0 }: Native
         }
       })
       .finally(() => {
-        resumingRef.current = false
+        if (resumingKeyRef.current === resumeKey) {
+          resumingKeyRef.current = null
+        }
       })
 
     return () => {
       cancelled = true
     }
-  }, [$runtimeId, delegateRevision, retryRevision, storedSessionId])
+  }, [$runtimeId, delegateRevision, resumeKey, retryRevision, storedSessionId])
 
   // A durable row means the backend session now survives socket pruning. Until
   // then the creation lease stays alive even if the plugin temporarily unmounts

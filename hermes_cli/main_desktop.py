@@ -805,8 +805,10 @@ def _desktop_macos_local_codesign(app: Path, *, desktop_dir: Path, identity: str
             if p.suffix in {".framework", ".app"}:
                 bundles.add(p)
     for bundle in sorted(bundles, key=lambda p: len(p.parts), reverse=True):
-        ent = ent_inherit if bundle.suffix == ".app" and "Helper" in bundle.name else None
-        sign_path(bundle, entitlements=ent, identifier=_desktop_macos_bundle_id(bundle))
+        # Every nested bundle takes the inherit plist, frameworks included: under the hardened
+        # runtime Electron Framework needs allow-jit in its own signature, and signing it with
+        # no entitlements strips what electron-builder's afterSign step applies in a real build.
+        sign_path(bundle, entitlements=ent_inherit, identifier=_desktop_macos_bundle_id(bundle))
 
     # 3) The main bundle, with the app's own entitlements.
     sign_path(app, entitlements=ent_main, identifier=_desktop_macos_bundle_id(app))

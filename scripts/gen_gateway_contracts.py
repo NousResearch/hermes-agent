@@ -561,7 +561,8 @@ def _doc(text: str | None, indent: str = "") -> str:
     return f"{indent}/** {' '.join(text.split())} */\n"
 
 
-_TAIL_INTERFACES = ("RpcMethods", "ServerRequestMap", "BackendGatewayEventMap")
+_TAIL_INTERFACES = ("RpcMethods", "ServerRequestMap", "BackendGatewayEventMap",
+                    "RpcMethod", "ServerRequestMethod", "BackendGatewayEventName")
 
 
 def render_ts() -> str:

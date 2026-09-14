@@ -56,6 +56,7 @@ class TestGetDefaultHermesRoot:
         assert get_default_hermes_root() == docker_root
 
     @pytest.mark.windows_only
+    @pytest.mark.real_platform_home  # exercises the REAL %LOCALAPPDATA% fallback
     def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
         """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
         local_appdata = tmp_path / "LocalAppData"
@@ -129,6 +130,7 @@ class TestGetHermesHome:
     """Tests for get_hermes_home() platform-aware fallback."""
 
     @pytest.mark.windows_only
+    @pytest.mark.real_platform_home  # exercises the REAL %LOCALAPPDATA% fallback
     def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
         """When HERMES_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""
         local_appdata = tmp_path / "LocalAppData"

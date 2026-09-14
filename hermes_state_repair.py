@@ -712,7 +712,9 @@ def integrity_damage_is_structural(integrity_lines, master_rows) -> bool:
         tree = _INTEGRITY_TREE_RE.search(text)
         if tree:
             name = name_by_rootpage.get(int(tree.group(1)), "")
-            if name and not _FTS_OBJECT_RE.fullmatch(name):
+            # Only a positively identified Hermes FTS object is safe to rebuild
+            # in place. A missing rootpage mapping cannot prove FTS ownership.
+            if not name or not _FTS_OBJECT_RE.fullmatch(name):
                 return True
         missing = _INTEGRITY_MISSING_INDEX_RE.search(text)
         if missing and not _FTS_OBJECT_RE.fullmatch(missing.group(1)):

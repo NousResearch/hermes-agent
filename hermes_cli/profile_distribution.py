@@ -28,7 +28,7 @@ ENV_EXAMPLE_FILENAME = ".env.EXAMPLE"
 
 # Default distribution-owned paths (relative to profile root). Authors may override via
 # ``distribution_owned:``. config.yaml is dist-owned but preserved on update by default.
-DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "skills", "cron", MANIFEST_FILENAME)
+DEFAULT_DIST_OWNED: Tuple[str, ...] = ("SOUL.md", "config.yaml", "mcp.json", "cron", MANIFEST_FILENAME)
 
 # Paths NEVER part of a distribution: user-owned, protected on update. Keep consistent with
 # ``profiles.py`` export exclusions plus the ``local/`` convention for user customizations.
@@ -356,12 +356,20 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             yield src, rel_parts
 
 
-def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
+def _copy_dist_payload(
+    staged: Path,
+    target: Path,
+    manifest: DistributionManifest,
+    preserve_config: bool,
+    preserve_skills: bool = False,
+) -> None:
     """Copy distribution-owned files (see ``_owned_entries``) from *staged* into *target*.
 
     User-owned paths are never touched. ``config.yaml`` is replaced only when
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
-    as ``.env.EXAMPLE`` so it never shadows a real ``.env``."""
+    as ``.env.EXAMPLE`` so it never shadows a real ``.env``. During an update,
+    the skills tree is merged so skills that are not in the new distribution
+    are left alone."""
     target.mkdir(parents=True, exist_ok=True)
     staged_resolved = staged.resolve()
 
@@ -380,9 +388,10 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
         dest = target.joinpath(*rel_parts)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
-            if dest.exists():
+            merge_skills = preserve_skills and rel_parts[0] == "skills"
+            if dest.exists() and not merge_skills:
                 shutil.rmtree(dest)
-            shutil.copytree(src, dest, ignore=_ignore_user_owned)
+            shutil.copytree(src, dest, ignore=_ignore_user_owned, dirs_exist_ok=merge_skills)
         else:
             shutil.copy2(src, dest)
 
@@ -451,7 +460,13 @@ def update_distribution(profile_name: str, force_config: bool = False) -> Instal
     with tempfile.TemporaryDirectory(prefix="hermes_dist_update_") as tmp:
         plan = plan_install(existing_manifest.source, Path(tmp), override_name=canon)
         plan.preserves_config = not force_config
-        _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=plan.preserves_config)
+        _copy_dist_payload(
+            plan.staged_dir,
+            plan.target_dir,
+            plan.manifest,
+            preserve_config=plan.preserves_config,
+            preserve_skills=True,
+        )
         return plan
 
 

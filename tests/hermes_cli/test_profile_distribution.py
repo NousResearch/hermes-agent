@@ -375,6 +375,42 @@ class TestInstall:
 
 class TestUpdate:
 
+    def test_update_merges_skills_without_removing_profile_skills(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="skills_safe")
+
+        custom = plan.target_dir / "skills" / "custom"
+        custom.mkdir()
+        (custom / "SKILL.md").write_text("custom skill\n")
+        stale = plan.target_dir / "skills" / "stale"
+        stale.mkdir()
+        (stale / "SKILL.md").write_text("stale skill\n")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
+        (staged / "skills" / "new").mkdir()
+        (staged / "skills" / "new" / "SKILL.md").write_text("new skill\n")
+
+        update_distribution("skills_safe")
+
+        assert (plan.target_dir / "skills" / "custom" / "SKILL.md").read_text() == "custom skill\n"
+        assert (plan.target_dir / "skills" / "stale" / "SKILL.md").read_text() == "stale skill\n"
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "updated demo\n"
+        assert (plan.target_dir / "skills" / "new" / "SKILL.md").read_text() == "new skill\n"
+
+    def test_update_preserves_skills_when_distribution_uses_explicit_allowlist(self, profile_env):
+        mf = DistributionManifest(name="skills_allowlist", version="0.1.0", distribution_owned=["skills"])
+        staged = _make_staging_dir(profile_env, "src", manifest=mf)
+        plan = install_distribution(str(staged), name="skills_allowlist")
+
+        custom = plan.target_dir / "skills" / "custom"
+        custom.mkdir()
+        (custom / "SKILL.md").write_text("custom skill\n")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n")
+
+        update_distribution("skills_allowlist")
+
+        assert (plan.target_dir / "skills" / "custom" / "SKILL.md").read_text() == "custom skill\n"
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "updated demo\n"
+
     def test_update_preserves_user_data(self, profile_env):
         # 1. Build staging dir, install
         staged = _make_staging_dir(profile_env, "src")
@@ -758,4 +794,3 @@ class TestManifestCrashDurability:
 
         mode = stat.S_IMODE(mf.stat().st_mode)
         assert mode == 0o644, f"new manifest created as {oct(mode)}"
-

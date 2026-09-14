@@ -33,6 +33,19 @@ def test_cron_subactions_present():
         assert ns.cron_command == action
 
 
+def test_cron_script_timeout_flag_on_create_and_edit():
+    parser = _build()
+    # --script-timeout-seconds is the per-job budget (mirrors --reasoning-effort): a bare string so
+    # "" can CLEAR the override on edit, and it exists on both create and edit.
+    assert parser.parse_args(
+        ["cron", "create", "30m", "--script-timeout-seconds", "11700"]).script_timeout_seconds == "11700"
+    assert parser.parse_args(
+        ["cron", "edit", "j", "--script-timeout-seconds", "11700"]).script_timeout_seconds == "11700"
+    assert parser.parse_args(["cron", "edit", "j"]).script_timeout_seconds is None
+    assert parser.parse_args(
+        ["cron", "edit", "j", "--script-timeout-seconds", ""]).script_timeout_seconds == ""
+
+
 def test_cron_edit_no_agent_tristate():
     parser = _build()
     # --no-agent -> True, --agent -> False, neither -> None

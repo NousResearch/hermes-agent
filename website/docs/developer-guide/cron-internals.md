@@ -263,12 +263,15 @@ import requests, json
 # Print summary to stdout — agent analyzes and reports
 ```
 
-The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout()` resolves the limit through a three-layer chain:
+The script timeout defaults to 3600 seconds (1 hour). `_get_script_timeout(job)` resolves the limit through a five-layer chain, most specific first:
 
-1. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
-2. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`
-3. **Config** — `cron.script_timeout_seconds` in `config.yaml` (read via `load_config()`)
-4. **Default** — 3600 seconds (1 hour)
+1. **Job override** — the job's own `script_timeout_seconds` field (positive int; written by `hermes cron create|edit --script-timeout-seconds`). An unusable stored value (0, negative, unparsable, wrong type) logs a warning and falls through to rung 2 rather than failing the run, so a hand-edited `jobs.json` can never wedge a job; `cron.jobs._normalize_job_script_timeout` already refuses such values at write time.
+2. **Module-level override** — `_SCRIPT_TIMEOUT` (for tests/monkeypatching). Only used when it differs from the default.
+3. **Environment variable** — `HERMES_CRON_SCRIPT_TIMEOUT`
+4. **Config** — `cron.script_timeout_seconds` in `config.yaml` (read via `load_config()`)
+5. **Default** — 3600 seconds (1 hour)
+
+`_run_job_script(script_path, workdir, cancel_event, job)` is the single place the timeout is computed: it passes `job` (when the caller has one) into `_get_script_timeout`. Every `_run_job_script` call inside `_run_job_script_with_claim_heartbeat` — including its early-return paths — threads `job=job`, and so does `cron/scheduler_prompt.py`'s inline fallback for callers that skip the wake-gate. `cron/monitor.py` is deliberately **not** wired to the job field: monitor probes are change-detection diagnostics and keep the profile-wide bound.
 
 This timeout bounds the **pre-run script only**, not the agent. Skill-based / LLM-driven jobs run on a separate *inactivity*-based budget (`HERMES_CRON_TIMEOUT`, default 600s of idle time, `0` = unlimited) — they can run for hours as long as they keep calling tools or streaming tokens, and are only killed after the configured idle period with no activity. Scripts are dispatched to a persistent thread pool (not held under the tick lock), so a long-running script does not block other due jobs from firing.
 

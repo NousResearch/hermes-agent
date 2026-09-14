@@ -185,7 +185,9 @@ def test_timed_out_no_agent_script_delivery_is_not_mislabeled_as_provider_failur
             self.returncode = -9
 
     monkeypatch.setattr(scheduler.subprocess, "Popen", _NeverFinishes)
-    monkeypatch.setattr(sched_script, "_get_script_timeout", lambda: 1)
+    # Signature mirrors the real helper's new optional ``job`` argument (the job's own
+    # script_timeout_seconds); the pinned 1s budget and every assertion below are unchanged.
+    monkeypatch.setattr(sched_script, "_get_script_timeout", lambda job=None: 1)
     monkeypatch.setattr(sched_script, "_terminate_cron_script_process",
         lambda proc: setattr(proc, "returncode", -15),
     )

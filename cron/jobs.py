@@ -1604,6 +1604,34 @@ def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     return text
 
 
+def _normalize_job_script_timeout(value: Any) -> Optional[int]:
+    """Per-job script budget in seconds: an int or numeric string -> positive int, else ValueError.
+
+    Mirrors the ``cron.script_timeout_seconds`` config key it overrides. ``None``/``""``/``False``
+    means "no override" (clear), so the job follows the profile-wide chain — consistent with the
+    sibling normalizers, where an empty value is unset rather than zero. Invalid values raise BEFORE
+    storing (refused at write time, so ``_get_script_timeout``'s fall-through rung is unreachable
+    from any sanctioned path and exists only for hand-edited jobs.json records).
+    """
+    if value is None or value is False or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        # True would otherwise coerce to 1 second via int(float(True)) — a clearly unintended budget.
+        raise ValueError(
+            f"Invalid script_timeout_seconds {value!r}. Expected a positive integer number of seconds.")
+    try:
+        timeout = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(
+            f"Invalid script_timeout_seconds {value!r}. Expected a positive integer number of "
+            "seconds (an empty string clears the override).")
+    if timeout <= 0:
+        raise ValueError(
+            f"Invalid script_timeout_seconds {value!r}. Expected a positive integer number of "
+            "seconds (an empty string clears the override).")
+    return timeout
+
+
 # Normalizers for create_job (all fields) / update_job (present fields). Invalid values raise BEFORE
 # storing.
 _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
@@ -1618,12 +1646,14 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "script_timeout_seconds": _normalize_job_script_timeout,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "script_timeout_seconds": _normalize_job_script_timeout,
 }
 
 
@@ -1735,6 +1765,7 @@ def create_job(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
+    script_timeout_seconds: Optional[Union[int, str]] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -1745,7 +1776,9 @@ def create_job(
     delivered verbatim, requires ``script``). context_from: job id(s) whose latest output is
     injected. workdir: absolute cwd for tools/scripts. monitor_script/monitor_url: cheap monitor
     source run FIRST each tick; unchanged output suppresses the agent run (mutually exclusive,
-    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated."""
+    incompatible with ``no_agent``). reasoning_effort: per-job pin; capability NOT validated.
+    script_timeout_seconds: per-job budget for the ``script`` (beats cron.script_timeout_seconds
+    for THIS job only; positive int or numeric string, invalid values raise before storing)."""
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1833,6 +1866,7 @@ def create_job(
     for key, value in (
         ("attach_to_session", normalized_attach), ("reasoning_effort", normalized_reasoning_effort),
         ("failure_deliver", f["failure_deliver"]),
+        ("script_timeout_seconds", f["script_timeout_seconds"]),
     ):
         if value is not None:
             job[key] = value

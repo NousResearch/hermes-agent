@@ -746,7 +746,30 @@ cron:
   script_timeout_seconds: 1800   # 30 minutes
 ```
 
-Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 3600s default.
+Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: **per-job value → env var → config.yaml → 3600s default.**
+
+### Per-job timeout
+
+The config value above is a *profile-wide* cap: raising it for one slow script raises it for every script job in that profile. When a single job legitimately needs more wall clock than the global (a multi-hour report, a full-market ingest), set the job's own budget instead — everything else in the profile keeps the global cap:
+
+```bash
+hermes cron edit 7ee50d668d0a --script-timeout-seconds 11700   # 3h15m for THIS job only
+```
+
+The same field is available on `cron create` (`hermes cron create … --script-timeout-seconds 11700`). It must be a positive integer number of seconds; `0`, negatives and non-numeric values are refused *before* the job is stored, so a bad value can never wedge a job. Pass an empty string on `cron edit` (`--script-timeout-seconds ""`) to clear the override and follow the chain again. `hermes cron create`/`cron edit` echo the stored override back as `Script timeout: 11700s (per-job override)`.
+
+Precedence is most-specific-first:
+
+1. **The job's own `script_timeout_seconds`** (stored in `jobs.json`)
+2. **`HERMES_CRON_SCRIPT_TIMEOUT`** environment variable
+3. **`cron.script_timeout_seconds`** in `config.yaml`
+4. **3600s** built-in default
+
+Past the limit the script process tree is killed and the run is recorded as `Script timed out after Ns`, exactly as with the global value.
+
+:::note Scope of the override
+The job's value bounds **only that job's `script`** — the same process a global `cron.script_timeout_seconds` would have bounded. It does **not** raise the budget for a job's `monitor_script`/`monitor_url` probe, and it does not touch the agent-side inactivity budget (`HERMES_CRON_TIMEOUT`). Monitor probes are cheap change-detection diagnostics and deliberately keep the profile-wide cap, so a slow monitor can never silently extend one job's diagnostics window past the profile's.
+:::
 
 Cron also bounds post-run session and agent-resource cleanup. This happens after the LLM turn returns, so it is separate from the inactivity timeout. The default is 10 seconds per cleanup operation. If a storage or client finalizer stops returning, the scheduler logs an error, releases the job's in-flight guard, and allows later runs to dispatch instead of skipping that job forever.
 

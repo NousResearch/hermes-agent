@@ -610,6 +610,9 @@ def _action_create(a: Dict[str, Any]) -> str:
             monitor_url=_normalize_optional_job_value(a["monitor_url"]),
             # CLI-only lane: absent from CRONJOB_SCHEMA and the model dispatch (models don't pick models).
             reasoning_effort=a["reasoning_effort"],
+            # CLI-only lane, same reasoning: a model must not extend its own script budget. The
+            # value is validated by cron.jobs._normalize_job_script_timeout before storing.
+            script_timeout_seconds=a["script_timeout_seconds"],
             failure_deliver=_resolve_cron_context_deliver(_normalize_deliver_param(a["failure_deliver"])),
             **({"paused": a["paused"], "paused_reason": a["paused_reason"]}
                if a["paused"] is not False or a["paused_reason"] is not None else {}))
@@ -769,7 +772,8 @@ def _update_core_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[st
 
 
 def _update_script_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[str, Any]) -> Optional[str]:
-    """script / monitor_script / monitor_url (empty string clears); returns an error string or None."""
+    """script / monitor_script / monitor_url (empty string clears) + the per-job script timeout;
+    returns an error string or None."""
     monitor_script, monitor_url = a["monitor_script"], a["monitor_url"]
     for field, value in (("script", a["script"]), ("monitor_script", monitor_script)):
         if value is not None:
@@ -778,6 +782,10 @@ def _update_script_fields(job: Dict[str, Any], a: Dict[str, Any], updates: Dict[
                 if path_error:
                     return path_error
             updates[field] = _normalize_optional_job_value(value) if value else None
+    if a["script_timeout_seconds"] is not None:
+        # CLI-only lane; update_job validates, empty string clears the override. Grouped with the
+        # script knobs because it bounds only the job's `script`.
+        updates["script_timeout_seconds"] = a["script_timeout_seconds"]
     if monitor_url is not None:
         updates["monitor_url"] = _normalize_optional_job_value(monitor_url) if monitor_url else None
     if (monitor_script is not None or monitor_url is not None) and (
@@ -955,6 +963,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, List[str]]] = None,
+    script_timeout_seconds: Optional[Union[int, str]] = None,
     all: Optional[bool] = None,
     task_id: str = None,
     session_id: Optional[str] = None,

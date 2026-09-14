@@ -18,7 +18,7 @@ from pathlib import Path
 from foundation_cron_common import age_hours, local_now
 
 STALE_AGE_DAYS = 3.0
-SUBSYSTEMS = ("memory", "skills")
+SUBSYSTEMS = ("memory", "skills", "upstream_fix")
 
 
 def _stale_items(pending_dir: Path, now) -> list[tuple[str, str, float]]:

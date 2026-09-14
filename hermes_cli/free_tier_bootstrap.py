@@ -190,7 +190,9 @@ def retry_bootstrap_mint(*, force: bool = False, announce: bool = True) -> Setup
         return run_bootstrap(announce=announce)
     if current.has_identity:
         return current
-    record = _build_record(other=current.other_providers, force=force)
+    # Re-inventory: a provider the user connected during the cooldown must keep inference; the
+    # boot-time answer is stale by now.
+    record = _build_record(other=_inventory_other_providers(), force=force)
     with _lock:
         _record = record
     if announce:

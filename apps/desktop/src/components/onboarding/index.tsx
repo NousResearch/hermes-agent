@@ -287,15 +287,27 @@ export function DesktopOnboardingOverlay({
   // The boot bootstrap re-announces `setup.ready` when a background retry of
   // the free-tier set-up succeeds after a failed first attempt. A picker that
   // is up only because that set-up failed re-checks readiness and gives way
-  // on its own; a manual open, or a picker the user is mid-flow in, is left
-  // alone.
+  // on its own. An untouched picker only: a manual open, a provider flow in
+  // progress, or the API-key form (which leaves the flow idle while the user
+  // types) is left alone, and the check is repeated after the readiness
+  // round so a key form opened in the meantime survives too.
   useEffect(
     () =>
       $setupReadyTick.listen(() => {
-        const current = $desktopOnboarding.get()
+        const untouched = () => {
+          const current = $desktopOnboarding.get()
 
-        if (!current.manual && current.configured === false && current.flow.status === 'idle') {
-          void refreshOnboarding(ctx)
+          return (
+            !current.manual &&
+            current.configured === false &&
+            current.flow.status === 'idle' &&
+            current.mode === 'oauth' &&
+            !current.localEndpoint
+          )
+        }
+
+        if (untouched()) {
+          void refreshOnboarding(ctx, untouched)
         }
       }),
     [ctx]

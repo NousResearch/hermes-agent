@@ -54,33 +54,25 @@ describe('setupFailureCopy', () => {
     ['anon_unreachable', copy.unreachable],
     ['anon_server_error', copy.serverError],
     ['anon_pow_required', copy.powRequired],
-    ['anon_account_locked', copy.locked]
-  ])('%s has its own sentence', (code, expected) => {
-    const failure = freeTierSetupFailure({ ...NO_IDENTITY, error_code: code })
+    ['anon_account_locked', copy.locked],
+    ['anon_rate_limited', copy.rateLimited('about 5 minutes')]
+  ])('%s has its own sentence, in the agreed voice', (code, expected) => {
+    const failure = freeTierSetupFailure({ ...NO_IDENTITY, error_code: code, retry_after: 300 })
+    const text = failure ? setupFailureCopy(failure, copy) : ''
 
-    expect(failure && setupFailureCopy(failure, copy)).toBe(expected)
-  })
-
-  it('speaks the wait for a rate limit', () => {
-    const failure = freeTierSetupFailure({ ...NO_IDENTITY, error_code: 'anon_rate_limited', retry_after: 300 })
-
-    expect(failure && setupFailureCopy(failure, copy)).toContain('about 5 minutes')
+    expect(text).toBe(expected)
+    // Never "the free service is off" — what is unavailable is using Hermes without signing in —
+    // and no jargon a first-time user would not know.
+    expect(text.toLowerCase()).not.toMatch(/free (service|model|tier) is (off|switched off|unavailable|down)/)
+    expect(text.toLowerCase()).not.toMatch(/anonymous|guest|credential|token|rate limit/)
   })
 
   it('falls back to the backend sentence for a code this build does not know', () => {
     const failure = freeTierSetupFailure({ ...NO_IDENTITY, error: 'Something new.', error_code: 'anon_newer' })
 
     expect(failure && setupFailureCopy(failure, copy)).toBe('Something new.')
-  })
-
-  it('never says the free service or the free model is off', () => {
-    for (const code of Object.keys(copy)) {
-      const failure = freeTierSetupFailure({ ...NO_IDENTITY, error_code: `anon_${code}` })
-      const text = failure ? setupFailureCopy(failure, copy).toLowerCase() : ''
-
-      expect(text).not.toMatch(/free (service|model|tier) is (off|switched off|unavailable|down)/)
-      expect(text).not.toMatch(/anonymous|guest|credential|token|rate limit/)
-    }
+    // Prototype names are not codes.
+    expect(setupFailureCopy({ ...failure!, code: 'constructor', message: '' }, copy)).toBe(copy.generic)
   })
 })
 

@@ -15,34 +15,27 @@ import { type OnboardingContext, refreshOnboarding } from '@/store/onboarding'
 
 type SetupFailedCopy = Translations['freeTier']['setupFailed']
 
-/** One sentence per backend code. The backend's own sentence is the fallback for
- *  a code this build does not know, so a newer backend still reads as words. */
+// One sentence per backend code (`hermes_cli/anon_auth.py::ANON_*`).
+const COPY_KEY_BY_CODE: Record<string, keyof SetupFailedCopy> = {
+  anon_account_locked: 'locked',
+  anon_gate_closed: 'gateClosed',
+  anon_gate_paused: 'paused',
+  anon_pow_required: 'powRequired',
+  anon_server_error: 'serverError',
+  anon_unreachable: 'unreachable'
+}
+
+/** The sentence for a failure. The backend's own sentence is the fallback for a
+ *  code this build does not know, so a newer backend still reads as words. */
 export function setupFailureCopy(failure: FreeTierSetupFailure, copy: SetupFailedCopy): string {
-  switch (failure.code) {
-    case 'anon_gate_closed':
-      return copy.gateClosed
-
-    case 'anon_gate_paused':
-      return copy.paused
-
-    case 'anon_rate_limited':
-      return copy.rateLimited(friendlyWait(failure.retryAfter || 60))
-
-    case 'anon_unreachable':
-      return copy.unreachable
-
-    case 'anon_server_error':
-      return copy.serverError
-
-    case 'anon_pow_required':
-      return copy.powRequired
-
-    case 'anon_account_locked':
-      return copy.locked
-
-    default:
-      return failure.message || copy.generic
+  if (failure.code === 'anon_rate_limited') {
+    return copy.rateLimited(friendlyWait(failure.retryAfter || 60))
   }
+
+  const key = Object.hasOwn(COPY_KEY_BY_CODE, failure.code) ? COPY_KEY_BY_CODE[failure.code] : null
+  const sentence = key ? copy[key] : null
+
+  return typeof sentence === 'string' ? sentence : failure.message || copy.generic
 }
 
 /**

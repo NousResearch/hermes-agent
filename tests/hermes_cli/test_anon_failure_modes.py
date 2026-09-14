@@ -7,9 +7,7 @@ in ``hermes_cli.anon_auth``), never through mocked-away client code.
 
 from __future__ import annotations
 
-import base64
 import json
-import time
 
 import httpx
 import pytest
@@ -17,89 +15,21 @@ import pytest
 from hermes_cli import anon_auth, anon_sign_in, free_tier_bootstrap
 from hermes_cli.auth import _load_auth_store
 
-PORTAL = "https://portal.example.test"
-WELCOME = "https://welcome-api.nousresearch.com/v1"
-
-
-def _jwt(**claims) -> str:
-    def seg(obj):
-        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    payload = {"sub": "nas_user:1", "client_id": "nas-anonymous", "account_tier": "anonymous",
-               "scope": "inference:invoke tool:invoke", "exp": int(time.time()) + 900, **claims}
-    return f"{seg({'alg': 'RS256'})}.{seg(payload)}.sig"
-
-
-class FakeNas:
-    """The anonymous surface as NAS ships it. ``create_response`` / ``token_response`` override the
-    happy path with one canned refusal; ``raise_transport`` simulates the wire failing."""
-
-    def __init__(self):
-        self.calls: list[tuple[str, str]] = []
-        self.minted = 0
-        self.create_response: httpx.Response | None = None
-        self.token_response: httpx.Response | None = None
-        self.raise_transport: Exception | None = None
-
-    def handler(self, request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        self.calls.append((request.method, path))
-        if self.raise_transport is not None:
-            raise self.raise_transport
-        if path == "/api/anonymous/create":
-            if self.create_response is not None:
-                return self.create_response
-            self.minted += 1
-            return httpx.Response(201, json={"user_id": f"nas_user:{self.minted}", "org_id": "nas_org:1",
-                                             "token": f"anon_{self.minted:04d}", "idle_ttl_days": 14})
-        if path == "/api/anonymous/token":
-            if self.token_response is not None:
-                return self.token_response
-            return httpx.Response(200, json={"access_token": _jwt(), "token_type": "Bearer", "expires_in": 900,
-                                             "user_id": "nas_user:1", "org_id": "nas_org:1",
-                                             "inference_base_url": WELCOME})
-        return httpx.Response(500, json={"error": f"unexpected {path}"})
-
-    def creates(self) -> int:
-        return [p for _, p in self.calls].count("/api/anonymous/create")
+from tests.hermes_cli.anon_portal import PORTAL, WELCOME, install_portal  # noqa: F401
 
 
 @pytest.fixture
 def nas(monkeypatch, tmp_path):
-    fake = FakeNas()
-    monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
-    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-store"))
-    monkeypatch.setenv("HERMES_GUEST_ONBOARDING", "1")
-    for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NOUS_API_KEY"):
-        monkeypatch.delenv(var, raising=False)
-    from hermes_cli import auth_nous
-
-    def _client(timeout_seconds, verify):
-        return httpx.Client(transport=httpx.MockTransport(fake.handler), base_url=PORTAL)
-    monkeypatch.setattr(auth_nous, "_nous_http_client", _client)
-    # The runtime resolver builds its own client; route it through the fake too.
-    real_client = httpx.Client
-
-    class _RoutedClient(real_client):
-        def __init__(self, *a, **kw):
-            kw.pop("verify", None)
-            kw["transport"] = httpx.MockTransport(fake.handler)
-            super().__init__(*a, **kw)
-    monkeypatch.setattr(httpx, "Client", _RoutedClient)
-    monkeypatch.setattr("agent.bedrock_adapter.has_aws_credentials", lambda: False)
-    anon_auth.reset_mint_memo_for_tests()
-    free_tier_bootstrap.reset_for_tests()
-    from hermes_cli import auth as auth_mod
-    monkeypatch.setattr(auth_mod, "_RESOLVE_TOKEN_CACHE", {})
-    return fake
+    return install_portal(monkeypatch, tmp_path)
 
 
-def _mint_error(nas: FakeNas) -> anon_auth.AuthError:
+def _mint_error(nas) -> anon_auth.AuthError:
     with pytest.raises(anon_auth.AuthError) as exc:
         anon_auth.ensure_portal_identity(explicit=True)
     return exc.value
 
 
-def _exchange_error(nas: FakeNas) -> anon_auth.AuthError:
+def _exchange_error(nas) -> anon_auth.AuthError:
     """Mint (the credential is persisted before any exchange), then exchange it at first use."""
     from hermes_cli.auth_nous import resolve_nous_runtime_credentials
     assert anon_auth.is_guest_state(anon_auth.ensure_portal_identity(explicit=True))
@@ -156,6 +86,21 @@ class TestNasRefusalCodes:
         assert isinstance(err, anon_auth.AnonCredentialDead)
         assert err.code == anon_auth.ANON_ACCOUNT_LOCKED
         # Retired, and NOT replaced by a fresh identity: the way forward is a sign-in.
+        assert "nous" not in _load_auth_store().get("providers", {})
+        assert nas.creates() == 1
+
+    def test_a_locked_account_is_never_replaced_through_connectors_either(self, nas):
+        from hermes_cli.auth import _auth_store_lock, _save_auth_store
+        from tests.hermes_cli.anon_portal import make_jwt
+        from tools import managed_tool_gateway as mtg
+        anon_auth.ensure_portal_identity(explicit=True)
+        with _auth_store_lock():
+            store = _load_auth_store()
+            store["providers"]["nous"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+            store["providers"]["nous"]["access_token"] = make_jwt(exp=1)
+            _save_auth_store(store)
+        nas.token_response = httpx.Response(403, json={"error": "account_locked"})
+        assert mtg.read_nous_access_token() is None
         assert "nous" not in _load_auth_store().get("providers", {})
         assert nas.creates() == 1
 
@@ -292,6 +237,16 @@ class TestBootstrapRecord:
         free_tier_bootstrap._bootstrap_then_retry()
         assert nas.creates() == 1 + free_tier_bootstrap.BOOTSTRAP_RETRY_ATTEMPTS
         assert free_tier_bootstrap.current_record().error_code == anon_auth.ANON_UNREACHABLE
+
+    def test_a_retry_re_inventories_so_a_provider_connected_meanwhile_keeps_inference(self, nas, monkeypatch):
+        nas.raise_transport = httpx.ConnectTimeout("no route")
+        free_tier_bootstrap.run_bootstrap(announce=False)
+        # The user connected their own provider during the cooldown.
+        monkeypatch.setattr(free_tier_bootstrap, "_inventory_other_providers", lambda: True)
+        nas.raise_transport = None
+        record = free_tier_bootstrap.retry_bootstrap_mint(force=True, announce=False)
+        assert record.has_identity is True and record.other_providers is True
+        assert _load_auth_store().get("active_provider") != "nous"
 
     def test_the_desktop_retry_refreshes_the_boot_record(self, nas):
         nas.raise_transport = httpx.ConnectTimeout("no route")

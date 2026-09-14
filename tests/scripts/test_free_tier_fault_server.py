@@ -58,6 +58,12 @@ class TestControlSurface:
 
         assert _post(base, "/__reset").json() == {**_post(base, "/__reset").json(), "nas": "ok", "inference": "ok"}
 
+    def test_reading_the_log_never_wedges_the_next_request(self, server):
+        _module, base = server
+        assert httpx.get(f"{base}/__log", timeout=5.0).status_code == 200
+        assert httpx.get(f"{base}/__scenario", timeout=5.0).status_code == 200
+        assert httpx.get(f"{base}/__log", timeout=5.0).json()["requests"][-1]["path"] == "/__scenario"
+
     def test_the_control_surface_is_cors_open_for_a_renderer(self, server):
         _module, base = server
         preflight = httpx.options(f"{base}/__scenario", timeout=5.0)

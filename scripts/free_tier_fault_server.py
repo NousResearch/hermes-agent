@@ -43,8 +43,6 @@ from urllib.parse import parse_qs, urlparse
 
 WELCOME_MODEL = "nous/welcome"
 REAL_WELCOME_HOST = "welcome-api.nousresearch.com"
-REAL_PAID_URL = "https://inference-api.nousresearch.com"
-GENERIC_403 = "You tried to access something that you don't have permissions for."
 UPGRADE_URL = "https://portal.nousresearch.com/signup"
 
 # --- Scenario catalogue --------------------------------------------------------------------------
@@ -83,6 +81,35 @@ INFERENCE_SCENARIOS: Dict[str, str] = {
 }
 
 
+_FAIRSHARE_MESSAGE = ("You've reached this model's current fair-share rate limit. It adapts to demand — "
+                      "retry after the indicated delay, or try an alternate model.")
+
+
+def _fairshare(reason: str, message: str, **extra: Any) -> Dict[str, Any]:
+    return {"status": 429, "message": message, "reason": reason, "alternates": [], "upgrade_url": UPGRADE_URL, **extra}
+
+
+# Static inference answers: scenario -> (status, body, default Retry-After seconds). ``retry_after``
+# in a fairshare body and every wait header are filled in per request from the live override.
+INFERENCE_RESPONSES: Dict[str, tuple] = {
+    "rate_limited": (429, _fairshare("rate_limited", _FAIRSHARE_MESSAGE), 600),
+    "rate_limited_short": (429, _fairshare("rate_limited", _FAIRSHARE_MESSAGE), 5),
+    "at_capacity": (429, _fairshare("at_capacity", "The free tier is at capacity and briefly paused. It reopens "
+                                    "automatically — retry after the indicated delay."), 30),
+    "model_not_free": (429, _fairshare("model_not_free", "This model isn't available on the free tier.",
+                                       alternates=[WELCOME_MODEL]), 0),
+    "tier_disabled": (403, {"status": 403, "message": "You tried to access something that you don't have permissions for."}, 0),
+    "wrong_host": (400, {"status": 400, "message": "This request is not valid. Check the model name and other parameters. "
+                         f"Additional info: Anonymous accounts must use https://{REAL_WELCOME_HOST} for inference."}, 0),
+    "bare_429": (429, {"status": 429, "message": "Hold up for a bit, you've exceeded the rate limit on your API key."}, 600),
+    "upstream_503": (503, {"status": 503, "message": "The requested model is currently unavailable."}, 0),
+    "upstream_500": (500, {"status": 500, "message": "Something unexpected happened while processing your request. "
+                           "Please try again in a moment, or contact us if the issue persists."}, 0),
+    "invalid_token": (401, {"status": 401, "error": "invalid_token", "subcause": "anonymous_credential_revoked",
+                            "message": "The anonymous account behind this token is gone"}, 0),
+}
+
+
 def _jwt(**claims: Any) -> str:
     def seg(obj: Any) -> str:
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
@@ -105,7 +132,6 @@ class State:
         self.minted = 0
         self.dead_tokens: set[str] = set()
         self.signin: Dict[str, Any] = {"status": "pending"}
-        self.claim_codes: Dict[str, str] = {}
         self.log: deque[Dict[str, Any]] = deque(maxlen=100)
 
     def snapshot(self) -> Dict[str, Any]:
@@ -146,7 +172,6 @@ class State:
             self.retry_after = None
             self.dead_tokens.clear()
             self.signin = {"status": "pending"}
-            self.claim_codes.clear()
             self.log.clear()
 
 
@@ -210,7 +235,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, STATE.snapshot())
         elif path == "/__log":
             with STATE.lock:
-                self._send(200, {"requests": list(STATE.log)})
+                entries = list(STATE.log)
+            self._send(200, {"requests": entries})   # outside the lock: _send appends to the log
         elif path == "/v1/models":
             self._send(200, {"object": "list", "data": [{"id": WELCOME_MODEL, "object": "model", "owned_by": "nous"}]})
         elif path.startswith("/__claim"):
@@ -292,11 +318,8 @@ class Handler(BaseHTTPRequestHandler):
             with STATE.lock:
                 STATE.minted += 1
                 n = STATE.minted
-                token = f"anon_rehearsal_{n:04d}_{secrets.token_hex(4)}"
-                if scenario == "dead_once":
-                    pass  # the credential itself is fine; its first exchange is what dies
             self._send(201, {"user_id": f"nas_user:rehearsal-{n}", "org_id": f"nas_org:rehearsal-{n}",
-                             "token": token, "idle_ttl_days": 14})
+                             "token": f"anon_rehearsal_{n:04d}_{secrets.token_hex(4)}", "idle_ttl_days": 14})
             return
         if path == "/api/anonymous/token":
             token = str(body.get("token") or "")
@@ -356,7 +379,6 @@ class Handler(BaseHTTPRequestHandler):
                 return
             code = f"{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
             with STATE.lock:
-                STATE.claim_codes[code] = str(body.get("token") or "")
                 STATE.signin = {"status": "pending"}
             host = self.headers.get("Host") or "127.0.0.1"
             self._send(200, {"claim_code": code, "claim_url": f"http://{host}/__claim?code={code}",
@@ -388,65 +410,31 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- the welcome inference host --------------------------------------------------------------
 
-    def _refusal(self, status: int, message: str, *, reason: str, retry_after: int,
-                 alternates: Optional[list] = None, extra_headers: Optional[Dict[str, str]] = None) -> None:
-        headers = {"Retry-After": str(retry_after)}
-        if reason in ("rate_limited", "at_capacity"):
-            headers["RateLimit-Policy"] = '"fairshare";q=0;qu="tokens";w=60'
-            headers["RateLimit"] = f'"fairshare";r=0;t={retry_after}'
-        headers.update(extra_headers or {})
-        STATE.consume_once("inference")
-        self._send(status, {"status": status, "message": message, "reason": reason, "retry_after": retry_after,
-                            "alternates": alternates or [], "upgrade_url": UPGRADE_URL}, headers=headers)
-
     def _inference(self, body: Dict[str, Any]) -> None:
         with STATE.lock:
             scenario = STATE.inference
-        model = str(body.get("model") or WELCOME_MODEL)
-        if scenario == "rate_limited":
-            self._refusal(429, "You've reached this model's current fair-share rate limit. It adapts to demand — "
-                          "retry after the indicated delay, or try an alternate model.",
-                          reason="rate_limited", retry_after=self._retry_after(600))
-        elif scenario == "rate_limited_short":
-            self._refusal(429, "You've reached this model's current fair-share rate limit. It adapts to demand — "
-                          "retry after the indicated delay, or try an alternate model.",
-                          reason="rate_limited", retry_after=self._retry_after(5))
-        elif scenario == "at_capacity":
-            self._refusal(429, "The free tier is at capacity and briefly paused. It reopens automatically — "
-                          "retry after the indicated delay.", reason="at_capacity", retry_after=self._retry_after(30))
-        elif scenario == "model_not_free":
-            self._refusal(429, "This model isn't available on the free tier.", reason="model_not_free",
-                          retry_after=0, alternates=[WELCOME_MODEL])
-        elif scenario == "tier_disabled":
-            STATE.consume_once("inference")
-            self._send(403, {"status": 403, "message": GENERIC_403})
-        elif scenario == "wrong_host":
-            STATE.consume_once("inference")
-            self._send(400, {"status": 400, "message": "This request is not valid. Check the model name and other "
-                             f"parameters. Additional info: Anonymous accounts must use https://{REAL_WELCOME_HOST} for inference."})
-        elif scenario == "bare_429":
-            STATE.consume_once("inference")
-            self._send(429, {"status": 429, "message": "Hold up for a bit, you've exceeded the rate limit on your API key."},
-                       headers={"x-ratelimit-limit-requests": "30", "x-ratelimit-remaining-requests": "0",
-                                "x-ratelimit-reset-requests": str(self._retry_after(600)),
-                                "Retry-After": str(self._retry_after(600))})
-        elif scenario == "upstream_503":
-            STATE.consume_once("inference")
-            self._send(503, {"status": 503, "message": "The requested model is currently unavailable."})
-        elif scenario == "upstream_500":
-            STATE.consume_once("inference")
-            self._send(500, {"status": 500, "message": "Something unexpected happened while processing your request. "
-                             "Please try again in a moment, or contact us if the issue persists."})
-        elif scenario == "invalid_token":
-            STATE.consume_once("inference")
-            self._send(401, {"status": 401, "error": "invalid_token", "subcause": "anonymous_credential_revoked",
-                             "message": "The anonymous account behind this token is gone"})
-        elif scenario == "timeout":
+        if scenario == "timeout":
             STATE.consume_once("inference")
             time.sleep(120)
             self._send(504, {"status": 504, "message": "timed out"})
-        else:
-            self._reply(model, stream=bool(body.get("stream")))
+            return
+        canned = INFERENCE_RESPONSES.get(scenario)
+        if canned is None:
+            self._reply(str(body.get("model") or WELCOME_MODEL), stream=bool(body.get("stream")))
+            return
+        status, payload, default_wait = canned
+        wait = self._retry_after(default_wait)
+        headers = {"Retry-After": str(wait)} if default_wait or "reason" in payload else {}
+        if payload.get("reason") in ("rate_limited", "at_capacity"):
+            headers["RateLimit-Policy"] = '"fairshare";q=0;qu="tokens";w=60'
+            headers["RateLimit"] = f'"fairshare";r=0;t={wait}'
+        if scenario == "bare_429":
+            headers.update({"x-ratelimit-limit-requests": "30", "x-ratelimit-remaining-requests": "0",
+                            "x-ratelimit-reset-requests": str(wait)})
+        if "reason" in payload:
+            payload = {**payload, "retry_after": wait}
+        STATE.consume_once("inference")
+        self._send(status, payload, headers=headers)
 
     def _reply(self, model: str, *, stream: bool) -> None:
         text = ("Hello from the free tier fault server. Everything is working; switch a scenario on "

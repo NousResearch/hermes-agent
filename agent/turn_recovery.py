@@ -480,14 +480,18 @@ def _recover_format_errors(
     return False
 
 
-def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState, error_context: Any) -> bool:
+def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -> bool:
     """Two one-shot repairs for the Nous free tier, both silent on the wire and named once in chat.
 
     ``model_not_free``: the session asked the welcome host for a model it does not serve; move
     to the first alternate the gateway named (its own model) and retry, instead of failing the
     turn. ``anon_on_paid_host``: this process is pointed at the paid host with a free-tier
-    identity (a stale route); re-read the credentials, which heals the URL, and retry."""
-    ctx = error_context if isinstance(error_context, dict) else (getattr(classified, "error_context", None) or {})
+    identity (a stale route); re-read the credentials, which heals the URL, and retry.
+
+    Reads the CLASSIFIER's context (``classified.error_context``): that is where
+    ``_nous_welcome_tier`` parks ``welcome_refusal`` / ``welcome_route``. The turn's other context
+    (``extract_api_error_context``) never carries them."""
+    ctx = getattr(classified, "error_context", None) or {}
     refusal = ctx.get("welcome_refusal") if isinstance(ctx, dict) else None
     if isinstance(refusal, dict) and refusal.get("reason") == "model_not_free" and not _retry.welcome_model_switch_attempted:
         _retry.welcome_model_switch_attempted = True
@@ -529,7 +533,7 @@ def recover_after_classification(
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
     from agent.conversation_loop import _is_nous_inference_route
 
-    if _recover_welcome_tier(agent, classified, _retry, error_context):
+    if _recover_welcome_tier(agent, classified, _retry):
         return True, False
 
     if (
@@ -1361,23 +1365,27 @@ def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_fail
     return "⚠️ Rate limited — switching to fallback provider..."
 
 
-def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context: Any) -> bool:
+def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context: Any, classified: Any = None) -> bool:
     """Record a genuine account-level Nous 429 to the cross-session breaker; upstream
-    capacity 429s (no exhausted bucket in headers or last-known state) are left alone."""
+    capacity 429s (no exhausted bucket in headers or last-known state) are left alone.
+
+    *error_context* is the turn's (``extract_api_error_context``); *classified* brings the
+    classifier's own context, where a welcome-tier ``rate_limited`` refusal and its ``reset_at``
+    live. A long welcome reset is an exhausted allowance whatever the headers say, and the one
+    place the user is told that signing in lifts it."""
     _genuine = False
     try:
         from agent.nous_rate_guard import (
             is_genuine_nous_rate_limit, is_long_welcome_rate_limit, record_nous_rate_limit)
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
-        # The welcome tier's structured ``rate_limited`` refusal names its own reset; a long one
-        # is an exhausted allowance whatever the headers say, and the one place the user is told
-        # that signing in lifts it.
+        _classified_ctx = getattr(classified, "error_context", None) or {}
         _genuine = (
-            is_long_welcome_rate_limit(error_context)
+            is_long_welcome_rate_limit(_classified_ctx)
             or is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state))
         if _genuine:
-            record_nous_rate_limit(headers=_err_hdrs, error_context=error_context)
+            _merged = {**(error_context if isinstance(error_context, dict) else {}), **_classified_ctx}
+            record_nous_rate_limit(headers=_err_hdrs, error_context=_merged)
         else:
             logger.info(
                 "Nous 429 looks like upstream capacity "
@@ -1553,7 +1561,7 @@ def route_classified_error(
         and agent.provider == "nous"
         and classified.reason == FailoverReason.rate_limit
         and not recovered_with_pool
-        and _is_genuine_nous_rate_limit(agent, api_error, error_context)
+        and _is_genuine_nous_rate_limit(agent, api_error, error_context, classified)
     ):
         # Re-enter the loop exactly once so the top-of-loop Nous guard runs
         # (retry_count = max_retries would skip it entirely).

@@ -128,6 +128,49 @@ describe('preprocessMarkdown', () => {
     expect(output).not.toContain('another[7]')
   })
 
+  it('does not anchor a citation marker on source-list-like prose without a Sources header', () => {
+    const input = 'Claim.[7]\n\n[7] todo'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).not.toContain('Claim.[7]')
+  })
+
+  it('does not anchor a citation marker on a source entry inside fenced code', () => {
+    const input = 'Claim.[7]\n\n```\n[7] https://example.com/a\n```'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).not.toContain('Claim.[7]')
+  })
+
+  it('anchors citation markers under a plain Sources: header too', () => {
+    const input = 'Claim.[7]\n\nSources:\n\n[7] https://example.com/a'
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).toContain('Claim.[7]')
+  })
+
+  it('collects entries only after the last Sources header', () => {
+    const input = [
+      'Claim one[1] and claim two[7].',
+      '',
+      '## Sources',
+      '',
+      '[1] https://example.com/a',
+      '',
+      '## Sources',
+      '',
+      '[7] https://example.com/b'
+    ].join('\n')
+
+    const output = preprocessMarkdown(input)
+
+    expect(output).not.toContain('one[1]')
+    expect(output).toContain('two[7]')
+  })
+
   it('demotes title/url blocks wrapped in malformed inline fences', () => {
     const input = [
       '**🚢 TOMORROW (Fajardo, crystal clear cays, pickup avail):**',

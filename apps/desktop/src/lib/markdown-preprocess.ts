@@ -49,13 +49,23 @@ const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
-// Numbered source-list entries — a `[3] url` line at the start of a line
-// (optionally behind a list marker), as the bundled grounded-citations skill
-// renders its `## Sources` block. Such an entry anchors the bare `[3]` marker
-// in prose: the marker cites a listed source, so it must survive the
-// orphan-marker strip. Line-start anchoring keeps mid-prose markers out; a
-// false anchor can only keep a marker, never delete information.
-const SOURCE_LIST_ENTRY_RE = /^[ \t]*(?:[-*+][ \t]+)?\[((?:\d+(?:\s*,\s*\d+)*))\][ \t]+\S/gm
+// The `Sources` section header the bundled grounded-citations skill renders —
+// `## Sources` (ATX, 1-6 hashes) or plain `Sources:`, case-insensitive,
+// optionally bolded, colon optional. Mirrors the skill's own header pattern
+// so only the section shape it actually emits is recognized.
+const SOURCES_HEADER_RE = /^[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?sources:?(?:\*\*)?[ \t]*\r?$/i
+// Numbered source-list entries inside a `Sources` section — a `[3] https://…`
+// line (optionally behind a list marker or a `-`/`–`/`:` separator), as the
+// bundled grounded-citations skill renders its entries. Such an entry anchors
+// the bare `[3]` marker in prose: the marker cites a listed source, so it
+// must survive the orphan-marker strip. Entries only count after a `Sources`
+// header and never inside a fenced block, so ordinary `[7] todo` lines or
+// fenced examples can't anchor anything.
+const SOURCE_LIST_ENTRY_RE = /^[ \t]*(?:[-*+][ \t]+)?\[((?:\d+(?:\s*,\s*\d+)*))\][ \t]*(?:[-–:][ \t]*)?https?:\/\/\S/
+// Any fence line toggles code-block state while scanning for the `Sources`
+// section — the same toggle the bundled skill uses to drop fenced code from
+// a draft's prose.
+const FENCE_TOGGLE_RE = /^[ \t]*(?:```|~~~)/
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -200,12 +210,55 @@ function routeFileLinksToPreview(text: string): string {
   })
 }
 
+// Mirror of the bundled skill's `_split_draft()`: find the LAST `Sources`
+// header, then collect entry ids only from the section that header opens
+// (fenced code excluded). A marker survives only when this response actually
+// lists a corresponding `[n] url` entry.
 function collectSourceListIds(text: string): Set<string> {
   const ids = new Set<string>()
+  const lines = text.split('\n')
+  let inFence = false
+  let headerIndex = -1
 
-  for (const match of text.matchAll(SOURCE_LIST_ENTRY_RE)) {
-    for (const id of match[1].split(',')) {
-      ids.add(id.trim())
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    if (FENCE_TOGGLE_RE.test(line)) {
+      inFence = !inFence
+
+      continue
+    }
+
+    if (!inFence && SOURCES_HEADER_RE.test(line)) {
+      headerIndex = index
+    }
+  }
+
+  if (headerIndex === -1) {
+    return ids
+  }
+
+  inFence = false
+
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index]
+
+    if (FENCE_TOGGLE_RE.test(line)) {
+      inFence = !inFence
+
+      continue
+    }
+
+    if (inFence) {
+      continue
+    }
+
+    const match = line.match(SOURCE_LIST_ENTRY_RE)
+
+    if (match) {
+      for (const id of match[1].split(',')) {
+        ids.add(id.trim())
+      }
     }
   }
 
@@ -657,9 +710,9 @@ export function preprocessMarkdown(text: string): string {
   const scrubbed = scrubBacktickNoise(cleaned)
   const normalizedFences = normalizeFenceBlocks(scrubbed)
   const strippedEmptyFences = stripEmptyFenceBlocks(normalizedFences)
-  // Anchors are collected across the whole message — a fenced listing that
-  // happens to contain a source-list line can only anchor (keep) markers,
-  // never strip them.
+  // Anchors come from the response's `Sources` section only: a marker
+  // survives the orphan strip exactly when this response lists a matching
+  // `[n] url` entry there (see collectSourceListIds).
   const sourceListIds = collectSourceListIds(strippedEmptyFences)
 
   return strippedEmptyFences

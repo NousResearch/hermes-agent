@@ -157,6 +157,34 @@ class TestProxyEnvironmentDnsDelegation:
         with _resolves_to("198.18.0.23"):
             assert is_safe_url(url) is expected
 
+    def test_tun_fakeip_allowed_when_enabled(self, monkeypatch):
+        monkeypatch.setenv("HERMES_ALLOW_TUN_FAKEIP", "true")
+        with _resolves_to("198.18.0.23"):
+            # Hostnames resolving to TUN fake-IP are permitted
+            assert is_safe_url("https://example.com/file.jpg") is True
+            assert is_safe_url("http://example.com/file.jpg") is True
+            # Literal 198.18.x IP is still blocked
+            assert is_safe_url("http://198.18.0.23/file.jpg") is False
+            # Private LAN and loopback remain blocked
+            assert is_safe_url("http://192.168.1.1/admin") is False
+            assert is_safe_url("http://127.0.0.1:8080/") is False
+            # Cloud metadata remains blocked
+            assert is_safe_url("http://169.254.169.254/latest/meta-data") is False
+
+    def test_tun_fakeip_connect_resolution_checks(self, monkeypatch):
+        monkeypatch.setenv("HERMES_ALLOW_TUN_FAKEIP", "true")
+        answers = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("198.18.0.5", 443))
+        ]
+        with patch("socket.getaddrinfo", return_value=answers):
+            # Allowed for hostnames
+            ips = _resolved_http_connect_ips("example.com", 443, "https")
+            assert "198.18.0.5" in ips
+
+        # Blocked for literal IP dial
+        with pytest.raises(SSRFConnectionBlocked, match="private/internal"):
+            _resolved_http_connect_ips("198.18.0.5", 80, "http")
+
 
 class TestAsyncIsSafeUrl:
     """async_is_safe_url must match is_safe_url (runs DNS in a thread pool)."""

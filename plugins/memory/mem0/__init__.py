@@ -152,7 +152,12 @@ class Mem0MemoryProvider(MemoryProvider):
         atomic_json_write(config_path, {**read_json_or_empty(config_path), **values}, mode=0o600)
 
     def get_config_schema(self):
-        api_key_required = _load_config().get("mode", "platform") != "oss"
+        cfg = _load_config()
+        # The Platform needs a key; a self-hosted server takes one only when it enforces auth (the
+        # README documents AUTH_DISABLED deployments) — the same rule is_available() applies. Marking
+        # the key required with a host configured left such a server "needs config" in the dashboard,
+        # and _require_memory_provider_ready refuses to activate anything that is not "ready".
+        api_key_required = cfg.get("mode", "platform") != "oss" and not cfg.get("host")
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},

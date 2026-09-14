@@ -57,7 +57,7 @@ def test_nous_options_entitlement(tmp_path, monkeypatch, refresh, tier, status):
     monkeypatch.setattr(urllib.request, "urlopen", transport)
     monkeypatch.setattr(urllib.request.OpenerDirector, "open", transport)
     writes = Mock(side_effect=AssertionError("no auth writes"))
-    monkeypatch.setattr(auth, "_write_private_file_atomic", writes)
+    monkeypatch.setattr(auth, "atomic_json_write", writes)
     # Observe forbidden authorization/entitlement boundaries without replacing the
     # actual cache reader, discovery or any enrichment collaborator.
     live_tier = Mock(side_effect=AssertionError("no live tier"))

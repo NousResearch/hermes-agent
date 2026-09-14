@@ -71,7 +71,7 @@ def test_real_picker_chain(tmp_path, monkeypatch, singleton, hot, refresh):
     monkeypatch.setattr(urllib.request.OpenerDirector, "open", boundary("urllib_opener"))
     # Final persistence boundaries, never load_pool/discovery/prefetch/enrichment.
     monkeypatch.setattr(auth, "_save_auth_store", boundary("auth_write"))
-    monkeypatch.setattr(auth, "_write_private_file_atomic", boundary("atomic_auth_write"))
+    monkeypatch.setattr(auth, "atomic_json_write", boundary("atomic_auth_write"))
     monkeypatch.setattr(models, "_write_json_cache", boundary("catalog_write"))
     excluded = sorted((set(auth.PROVIDER_REGISTRY) | set(HERMES_OVERLAYS)
                        | {cp.slug for cp in CANONICAL_PROVIDERS}) - set(slugs))

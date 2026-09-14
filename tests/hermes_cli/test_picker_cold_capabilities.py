@@ -95,7 +95,7 @@ def test_recorded_caps_no_auth(tmp_path, monkeypatch, singleton, expires, hot, r
     monkeypatch.setattr(urllib.request, "urlopen", boundary("urlopen"))
     monkeypatch.setattr(urllib.request.OpenerDirector, "open", boundary("opener"))
     monkeypatch.setattr(auth, "_save_auth_store", boundary("auth_write"))
-    monkeypatch.setattr(auth, "_write_private_file_atomic", boundary("atomic_auth_write"))
+    monkeypatch.setattr(auth, "atomic_json_write", boundary("atomic_auth_write"))
     monkeypatch.setattr(models, "_write_json_cache", boundary("cache_write"))
     original_resolve = auth.resolve_nous_runtime_credentials
     original_open = Path.open
@@ -189,7 +189,7 @@ def test_memory_peek_does_not_poison_normal_refresh(tmp_path, monkeypatch, route
     monkeypatch.setattr(httpx.Client, "send", deny("oauth"))
     monkeypatch.setattr(socket.socket, "connect", deny("socket"))
     monkeypatch.setattr(auth, "_save_auth_store", deny("auth_write"))
-    monkeypatch.setattr(auth, "_write_private_file_atomic", deny("atomic_write"))
+    monkeypatch.setattr(auth, "atomic_json_write", deny("atomic_write"))
     monkeypatch.setattr(models, "_write_json_cache", deny("cache_write"))
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", deny("urlopen"))

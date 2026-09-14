@@ -268,7 +268,7 @@ class UrlSource(GuardedFetchMixin, SkillSource):
 
 # --- LobeHub source adapter -------------------------------------------------
 
-class LobeHubSource(SkillSource):
+class LobeHubSource(GuardedFetchMixin, SkillSource):
     """LobeHub agent marketplace (14,500+ system-prompt agents, converted to
     SKILL.md on fetch). Data lives in GitHub: lobehub/lobe-chat-agents."""
 
@@ -323,10 +323,11 @@ class LobeHubSource(SkillSource):
         return self._agent_meta(agent, agent_id, agent.get("meta", agent).get("description", "")) if agent else None
 
     def _fetch_index(self) -> Optional[Any]:
-        return _memo_json("lobehub_index", lambda: _get_json(self.INDEX_URL, timeout=30))
+        return _memo_json("lobehub_index", lambda: self._fetch_json(self.INDEX_URL, timeout=30))
 
     def _fetch_agent(self, agent_id: str) -> Optional[dict]:
-        return _get_json(f"https://chat-agents.lobehub.com/{agent_id}.json", timeout=15)
+        data = self._fetch_json(f"https://chat-agents.lobehub.com/{agent_id}.json", timeout=15)
+        return data if isinstance(data, dict) else None
 
     @staticmethod
     def _convert_to_skill_md(agent_data: dict) -> str:
@@ -347,7 +348,7 @@ class LobeHubSource(SkillSource):
 
 # --- browse.sh source adapter -----------------------------------------------
 
-class BrowseShSource(SkillSource):
+class BrowseShSource(GuardedFetchMixin, SkillSource):
     """Browserbase's browse.sh catalog of site-specific browser-automation SKILL.md files.
 
     The catalog is ``/api/skills``; content comes from ``/api/skills/{slug}``'s ``skillMdUrl`` (CDN blob).
@@ -361,7 +362,7 @@ class BrowseShSource(SkillSource):
 
     def _fetch_catalog(self) -> List[Dict]:
         def compute():
-            data = _get_json(self.CATALOG_URL)
+            data = self._fetch_json(self.CATALOG_URL)
             skills = data.get("skills", []) if isinstance(data, dict) else []
             return skills if isinstance(skills, list) else None
 
@@ -404,7 +405,7 @@ class BrowseShSource(SkillSource):
             return None
         slug = item["slug"]
         md_url = self._resolve_skill_md_url(slug, item)
-        content = _get_text(md_url, follow_redirects=True) if md_url else None
+        content = self._fetch_text(md_url) if md_url else None
         if content is None:
             return None
         meta = self._item_to_meta(item)
@@ -417,7 +418,7 @@ class BrowseShSource(SkillSource):
 
     def _resolve_skill_md_url(self, slug: str, item: Dict) -> Optional[str]:
         """``skillMdUrl`` from ``/api/skills/{slug}``; fallback to a ``raw.githubusercontent.com`` ``sourceUrl``."""
-        data = _get_json(self.SKILL_DETAIL_URL.format(slug=slug), follow_redirects=True)
+        data = self._fetch_json(self.SKILL_DETAIL_URL.format(slug=slug))
         md_url = data.get("skillMdUrl") if isinstance(data, dict) else None
         if isinstance(md_url, str) and md_url.startswith("http"):
             return md_url

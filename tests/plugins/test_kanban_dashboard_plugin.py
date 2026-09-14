@@ -1232,3 +1232,38 @@ def test_specify_happy_path(client, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_bulk_apply_preserves_selection_except_on_archive():
+    """A non-destructive bulk apply must keep the selection.
+
+    Regression: ``applyBulk`` cleared ``selectedIds`` and the anchor on every
+    success. The action bar submits one field per click (``{status: ...}``,
+    ``{assignee: ...}``, ``{priority: ...}``), so clearing the selection made
+    it impossible to run two actions against one selection — move to Ready and
+    then reassign, say — even though ``/tasks/bulk`` accepts both fields in a
+    single patch. Archive still clears, since those cards leave the default
+    board view and a surviving selection would be meaningless.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Archive still drops the selection; everything else keeps it.
+    assert (
+        "            if (finalPatch.archive) {\n"
+        "              setSelectedIds(new Set());\n"
+        "              setLastSelectedId(null);\n"
+        "            }\n"
+        "            loadBoard();"
+    ) in bundle
+
+    # The unconditional clear in applyBulk's success handler is gone.
+    assert (
+        "              setFailedIds(new Set());\n"
+        "            }\n"
+        "            setSelectedIds(new Set());\n"
+        "            setLastSelectedId(null);\n"
+        "            loadBoard();"
+    ) not in bundle

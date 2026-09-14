@@ -1,14 +1,4 @@
-"""Warn when an in-session model switch will trigger preflight compression on the next turn.
-
-Addresses part of #23767 ("user-facing guardrail when switching from a
-high-context provider to a substantially lower-context provider"). The other
-proposed fixes from that issue (hard preflight token guard, metadata cache
-invalidation on switch, compression safety invariant, oversized tool-output
-handling) are tracked separately.
-
-Mirrors the expensive-model guard pattern: merge into ``ModelSwitchResult.warning_message``
-so Herm TUI, CLI, and gateway surfaces that already show switch warnings pick it up.
-"""
+"""Warn when an in-session model switch will trigger preflight compression on the next turn."""
 
 from __future__ import annotations
 
@@ -35,9 +25,8 @@ def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int
         return None
 
     if messages is not None:
-        protect = int(getattr(cc, "protect_first_n", 3)) + int(
-            getattr(cc, "protect_last_n", 20)
-        ) + 1
+        protect = (
+            int(getattr(cc, "protect_first_n", 3)) + int(getattr(cc, "protect_last_n", 20)) + 1)
         if len(messages) <= protect:
             return None
         try:
@@ -47,11 +36,7 @@ def _estimate_tokens(agent: Any, messages: Optional[List[dict]]) -> Optional[int
             tools = getattr(agent, "tools", None)
             return int(
                 estimate_request_tokens_rough(
-                    messages,
-                    system_prompt=system_prompt,
-                    tools=tools or None,
-                )
-            )
+                    messages, system_prompt=system_prompt, tools=tools or None))
         except Exception:
             pass
 
@@ -71,8 +56,7 @@ def merge_preflight_compression_warning(
     config_context_length: int | None = None,
     configured_model: str | None = None,
     configured_provider: str | None = None,
-    configured_base_url: str | None = None,
-) -> None:
+    configured_base_url: str | None = None) -> None:
     """If the next user message will likely preflight-compress, append a warning."""
     if not result.success or agent is None:
         return
@@ -83,12 +67,13 @@ def merge_preflight_compression_warning(
     if cc is None:
         return
 
-    # Classic CLI historically omitted custom_providers here while the /model
-    # confirmation display threaded agent._custom_providers — so the shrink
-    # warning fell through to the hardcoded catalog (e.g. "qwen" → 131072)
-    # even when custom_providers[].models.<id>.context_length was 1M.
+    # Fall back to the agent's custom providers: without them the shrink warning used the
+    # hardcoded catalog (e.g. "qwen" → 131072) even when the provider declared 1M.
     if custom_providers is None:
         custom_providers = getattr(agent, "_custom_providers", None)
+
+    def _or_agent(value, attr):
+        return value if value is not None else getattr(agent, attr, None)
 
     old_ctx = int(getattr(cc, "context_length", 0) or 0)
     new_ctx = resolve_display_context_length(
@@ -99,22 +84,9 @@ def merge_preflight_compression_warning(
         model_info=result.model_info,
         custom_providers=custom_providers,
         config_context_length=config_context_length,
-        configured_model=(
-            configured_model
-            if configured_model is not None
-            else getattr(agent, "model", None)
-        ),
-        configured_provider=(
-            configured_provider
-            if configured_provider is not None
-            else getattr(agent, "provider", None)
-        ),
-        configured_base_url=(
-            configured_base_url
-            if configured_base_url is not None
-            else getattr(agent, "base_url", None)
-        ),
-    )
+        configured_model=_or_agent(configured_model, "model"),
+        configured_provider=_or_agent(configured_provider, "provider"),
+        configured_base_url=_or_agent(configured_base_url, "base_url"))
     if not new_ctx:
         return
 
@@ -122,8 +94,7 @@ def merge_preflight_compression_warning(
     if estimate is None:
         return
 
-    pct = float(getattr(cc, "threshold_percent", 0.5))
-    new_threshold = _threshold_tokens(new_ctx, pct)
+    new_threshold = _threshold_tokens(new_ctx, float(getattr(cc, "threshold_percent", 0.5)))
     if estimate < new_threshold:
         return
 
@@ -132,15 +103,12 @@ def merge_preflight_compression_warning(
 
     parts: list[str] = []
     if old_ctx and new_ctx < old_ctx:
-        parts.append(
-            f"Context window shrinks ({old_ctx:,} → {new_ctx:,}). "
-        )
+        parts.append(f"Context window shrinks ({old_ctx:,} → {new_ctx:,}). ")
     parts.append(
         f"Session is ~{estimate:,} tokens; "
         f"{result.new_model} allows {new_ctx:,} "
         f"(auto-compress at ~{new_threshold:,}). "
-        f"Your next message will run preflight compression before the model replies."
-    )
+        f"Your next message will run preflight compression before the model replies.")
     _append_warning(result, "".join(parts))
 
 
@@ -151,8 +119,7 @@ def enrich_model_switch_warnings_for_gateway(
     session_key: str,
     source: Any,
     custom_providers: list | None = None,
-    load_gateway_config: Callable[[], dict] | None = None,
-) -> None:
+    load_gateway_config: Callable[[], dict] | None = None) -> None:
     """Gateway helper: cached agent + session DB messages."""
     lock = getattr(runner, "_agent_cache_lock", None)
     cache = getattr(runner, "_agent_cache", None)
@@ -165,19 +132,18 @@ def enrich_model_switch_warnings_for_gateway(
     if agent is None:
         return
 
-    cfg_ctx = None
-    configured_model = None
-    configured_provider = None
-    configured_base_url = None
+    configured: dict = dict.fromkeys(
+        ("config_context_length", "configured_model", "configured_provider", "configured_base_url"))
     if load_gateway_config is not None:
         try:
             cfg = load_gateway_config()
             model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
             if isinstance(model_cfg, dict) and model_cfg.get("context_length") is not None:
-                cfg_ctx = int(model_cfg["context_length"])
-                configured_model = model_cfg.get("default") or model_cfg.get("model")
-                configured_provider = model_cfg.get("provider")
-                configured_base_url = model_cfg.get("base_url")
+                configured.update(
+                    config_context_length=int(model_cfg["context_length"]),
+                    configured_model=model_cfg.get("default") or model_cfg.get("model"),
+                    configured_provider=model_cfg.get("provider"),
+                    configured_base_url=model_cfg.get("base_url"))
         except Exception:
             pass
 
@@ -192,12 +158,4 @@ def enrich_model_switch_warnings_for_gateway(
             pass
 
     merge_preflight_compression_warning(
-        result,
-        agent=agent,
-        messages=messages,
-        custom_providers=custom_providers,
-        config_context_length=cfg_ctx,
-        configured_model=configured_model,
-        configured_provider=configured_provider,
-        configured_base_url=configured_base_url,
-    )
+        result, agent=agent, messages=messages, custom_providers=custom_providers, **configured)

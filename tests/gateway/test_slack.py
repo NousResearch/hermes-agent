@@ -6049,3 +6049,76 @@ class TestAgentSessionsApiRouting:
             thread_ts="171234.0001",
             title="Summarize the incident",
         )
+
+
+# ---------------------------------------------------------------------------
+# TestNonConversationalSubtypeAllowlist
+# ---------------------------------------------------------------------------
+
+
+class TestNonConversationalSubtypeAllowlist:
+    """#110778 — housekeeping subtypes must not start a turn in free-response
+    channels. The gate is an allowlist so subtypes Slack adds later are dropped
+    instead of silently readmitted."""
+
+    @staticmethod
+    def _event(subtype):
+        event = {
+            "type": "message",
+            "user": "U_HUMAN",
+            "text": "hello",
+            "ts": "12345.6789",
+            "channel": "C_FREE",
+        }
+        if subtype is not None:
+            event["subtype"] = subtype
+        return event
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "subtype",
+        [
+            "channel_join",
+            "channel_leave",
+            "channel_topic",
+            "channel_purpose",
+            "channel_name",
+            "channel_convert_to_private",
+            "channel_convert_to_public",
+            "pinned_item",
+            "unpinned_item",
+            "message_deleted",
+            "file_comment",
+        ],
+    )
+    async def test_housekeeping_subtypes_are_dropped(self, adapter, subtype):
+        assert await adapter._prefilter_inbound(self._event(subtype), None) is None
+        adapter.handle_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "subtype", [None, "file_share", "thread_broadcast", "me_message"]
+    )
+    async def test_conversational_subtypes_pass(self, adapter, subtype):
+        accepted = await adapter._prefilter_inbound(self._event(subtype), None)
+        assert accepted is not None
+        assert accepted[0].get("channel") == "C_FREE"
+
+    @pytest.mark.asyncio
+    async def test_edited_message_still_wakes_the_bot(self, adapter):
+        event = {
+            "type": "message",
+            "subtype": "message_changed",
+            "channel": "C_FREE",
+            "ts": "12340.0000",
+            "message": {
+                "type": "message",
+                "user": "U_HUMAN",
+                "text": "edited hello",
+                "ts": "12345.6789",
+                "edited": {"ts": "12346.0000"},
+            },
+        }
+        accepted = await adapter._prefilter_inbound(event, None)
+        assert accepted is not None
+        assert accepted[0].get("text") == "edited hello"

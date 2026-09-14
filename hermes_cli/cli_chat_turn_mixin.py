@@ -320,6 +320,11 @@ class CLIChatTurnMixin:
                 stream_callback=turn.stream_callback, task_id=self.session_id,
                 persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
             )
+            # Kanban quota-wall sentinel: a dispatcher-spawned worker runs through the
+            # NON-quiet one-shot path, whose caller needs the failure detail to choose
+            # its exit code. ``chat()`` returns only the response text, so keep the full
+            # result for that caller to inspect (see ``_kanban_exit_code`` in cli.py).
+            self._last_conversation_result = turn.result
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}
                 for _key, _value in _restore.items():

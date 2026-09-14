@@ -198,8 +198,10 @@ class TestSuccessImpliesAccounting:
         plan = _plan_with_runtimes(_THREE_RUNTIMES)
         outcomes, incomplete, path = self._drive_decision(
             plan,
-            restarted_services=[],
-            relaunched_profiles=["work", "ops"],
+            # Serve/dashboard runtimes are reconciled in their own unit
+            # vocabulary and never borrow a gateway relaunch (#100479).
+            restarted_services=["hermes-serve-ops.service"],
+            relaunched_profiles=["work"],
             externally_supervised_profiles=[],
             killed_pids={101},
             failed_units=[],

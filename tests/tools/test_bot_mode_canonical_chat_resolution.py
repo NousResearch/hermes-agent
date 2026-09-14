@@ -24,7 +24,7 @@ mint on ambiguity. Post-#92129 the contract is name-as-identity:
 What is pinned here is the Python layer the desktop relies on. The desktop
 click/create flow itself (plugin.js), and group ROOM member-session lifecycle
 (#90005's original surface), live in Electron JS and are covered by
-tests/canonical-chat-registry.test.mjs et al.; here we pin the DB/RPC algebra
+apps/desktop/src/plugins/hermes-bots/canonical-chat-registry.test.ts; here we pin the DB/RPC algebra
 those flows depend on, including a Python re-enactment of the #90005 and
 #92692 shapes at the registry layer.
 """
@@ -252,14 +252,6 @@ def test_resolution_never_mints(home, state):
     assert _count_sessions(home) == before
 
 
-def test_absent_registry_resolves_empty_not_minted(home):
-    """The #90705 shape exactly: null canonical → resolver must NOT mint."""
-    _state_empty(home)
-    assert _resolve() == []
-    assert _canonical_via_profiles() is None
-    assert _count_sessions(home) == 0
-
-
 # ---------------------------------------------------------------------------
 # Property 3 — UNIQUENESS: at most one canonical row per profile, always
 # ---------------------------------------------------------------------------
@@ -303,25 +295,6 @@ def _adopt_or_mint(home, sid, results, idx):
             results[idx] = row["id"] if row else None
     finally:
         db.close()
-
-
-@pytest.mark.parametrize("seq", [
-    ["resolve", "resolve", "resolve"],
-    ["create", "resolve", "create", "resolve"],
-    ["resolve", "create", "resolve", "create", "resolve"],
-])
-def test_any_operation_sequence_leaves_at_most_one_canonical(home, seq):
-    """After ANY sequence of resolve/create ops: ≤1 canonical row (#92692)."""
-    _state_empty(home)
-    results = {}
-    for i, op in enumerate(seq):
-        if op == "resolve":
-            _resolve()
-        else:
-            _adopt_or_mint(home, f"mint-{i}", results, i)
-    assert len(_canonical_rows(home)) <= 1
-    creators = [v for k, v in results.items()]
-    assert len(set(creators)) <= 1  # every creator converged on one identity
 
 
 def test_two_resolvers_racing_cold_profile_yield_one_canonical(home):

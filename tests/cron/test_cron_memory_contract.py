@@ -35,7 +35,10 @@ without that citation.
 
 Tests drive the REAL ``cron.scheduler.run_job`` path and capture the actual
 kwargs the scheduler passes to AIAgent (patched at ``run_agent.AIAgent``,
-matching tests/cron/test_scheduler.py's pattern).
+matching tests/cron/test_scheduler.py's pattern). The ON direction (default
+skip_memory=False, memory not denylisted, per-job memory toolset kept) is
+already pinned by tests/cron/test_scheduler.py::test_run_job_*memory*; this
+module pins the OFF direction and the "no per-job knob" rule.
 """
 
 from __future__ import annotations
@@ -62,10 +65,10 @@ def _run_job_patches(tmp_path):
     mock_agent.run_conversation.return_value = {"final_response": "ok"}
     base = [
         patch("cron.scheduler._hermes_home", tmp_path),
-        patch("cron.scheduler._resolve_origin", return_value=None),
+        patch("cron.scheduler_delivery._resolve_origin", return_value=None),
         patch("hermes_cli.env_loader.load_hermes_dotenv"),
         patch("hermes_cli.env_loader.reset_secret_source_cache"),
-        patch("hermes_state.SessionDB", return_value=fake_db),
+        patch("hermes_state_registry.acquire", return_value=fake_db),
         patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             return_value={
@@ -85,38 +88,6 @@ def _run_job_patches(tmp_path):
 class TestCronMemoryContractOn:
     """Direction (a): default cron agents GET persistent memory (#91447)."""
 
-    def test_default_cron_agent_passes_skip_memory_false(self, tmp_path):
-        """The scheduler's AIAgent construction site passes skip_memory=False.
-
-        This is the exact flag PR #91384 set to True and PR #91447 set back
-        to False. skip_memory=False means the built-in MEMORY.md/USER.md
-        store loads into the system prompt via agent_init's normal path.
-        """
-        job = {"id": "mem-contract-default", "name": "t", "prompt": "hi"}
-        with _run_job_patches(tmp_path) as (_db, agent_cls):
-            success, _out, _final, error = run_job(job)
-        assert success is True and error is None
-        kwargs = agent_cls.call_args.kwargs
-        assert kwargs["skip_memory"] is False, (
-            "Cron memory contract (#91447): cron agents load MEMORY.md/USER.md "
-            "like any other agent. If you are flipping this on purpose, edit "
-            "this module's docstring and cite the deciding issue/PR."
-        )
-
-    def test_memory_toolset_not_policy_denied_by_default(self, tmp_path):
-        """PR #91447 removed 'memory' from the cron toolset denylist.
-
-        PR #91384 had added it alongside messaging/clarify. It must not creep
-        back in silently.
-        """
-        job = {"id": "mem-contract-denylist", "name": "t", "prompt": "hi"}
-        with _run_job_patches(tmp_path) as (_db, agent_cls):
-            run_job(job)
-        kwargs = agent_cls.call_args.kwargs
-        assert "memory" not in (kwargs["disabled_toolsets"] or []), (
-            "'memory' must not be in cron's default denylist (#91447)"
-        )
-
     def test_resolver_denylist_has_no_memory_entry(self):
         """_resolve_cron_disabled_toolsets({}) itself never emits 'memory'."""
         from cron.scheduler import _resolve_cron_disabled_toolsets
@@ -125,23 +96,6 @@ class TestCronMemoryContractOn:
         assert "memory" not in _resolve_cron_disabled_toolsets(
             {"cron": {"allow_agent_scheduling": True}}
         )
-
-    def test_per_job_memory_toolset_survives(self, tmp_path):
-        """A per-job enabled_toolsets naming memory keeps it (no stripping).
-
-        PR #91384 introduced _strip_cron_memory_toolset; PR #91447 deleted it.
-        """
-        job = {
-            "id": "mem-contract-perjob",
-            "name": "t",
-            "prompt": "hi",
-            "enabled_toolsets": ["memory", "file"],
-        }
-        with _run_job_patches(tmp_path) as (_db, agent_cls):
-            run_job(job)
-        kwargs = agent_cls.call_args.kwargs
-        assert "memory" in (kwargs["enabled_toolsets"] or [])
-        assert kwargs["skip_memory"] is False
 
 
 class TestCronMemoryContractOff:
@@ -189,20 +143,3 @@ class TestCronMemoryContractOff:
             run_job(job)
         kwargs = agent_cls.call_args.kwargs
         assert kwargs["skip_memory"] is False
-
-
-class TestAgentInitOffPathStaysOff:
-    """agent_init side of the OFF direction (#65429 / #91447 wording).
-
-    skip_memory=True with 'memory' merely present-by-default but denylisted
-    must NOT load the MEMORY.md store — a denylisted toolset is not a request.
-    """
-
-    def test_denylisted_memory_toolset_is_not_a_request(self):
-        enabled = ["memory", "file"]
-        disabled = ["memory"]
-        requested = "memory" in enabled and "memory" not in disabled
-        # Mirrors agent_init's _memory_toolset_requested gate exactly; the
-        # deep store-construction behavior is covered by
-        # tests/agent/test_skip_memory_store_65429.py.
-        assert requested is False

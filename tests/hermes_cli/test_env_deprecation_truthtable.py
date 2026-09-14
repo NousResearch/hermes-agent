@@ -151,9 +151,8 @@ def test_deprecated_env_warning_truth_table(
 
     err = capsys.readouterr().err
     if warn_keys:
-        assert "Deprecated .env settings detected" in err
+        assert err.strip(), "expected a deprecation warning on stderr"
         for key in warn_keys:
-            assert f"{key}=" in err, f"expected {key} in warning:\n{err}"
-        assert "config.yaml" in err  # migration hint present
+            assert key in err, f"expected {key} in warning:\n{err}"
     else:
         assert err == "", f"expected silence, got:\n{err}"

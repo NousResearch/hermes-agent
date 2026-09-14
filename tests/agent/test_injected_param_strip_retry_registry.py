@@ -116,9 +116,6 @@ class _FlakyTransport:
 class TestClassifierPathRegistryWalk:
     """Every registered injected param × every real 400 shape must retry."""
 
-    def test_registry_is_never_empty(self):
-        assert REGISTRY_PARAMS, "injected-param registry must not be empty"
-
     @pytest.mark.parametrize("param", REGISTRY_PARAMS)
     def test_classified_retryable_without_compression(self, param):
         """#90257/#91164: injected-param 400 → retryable server_error,

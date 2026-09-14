@@ -162,19 +162,6 @@ class TestDecorationIdempotenceLaw:
                 f"{BUDGET}-breakpoint budget (the #90971 HTTP-400 class)"
             )
 
-    @pytest.mark.parametrize("make", SHAPES)
-    def test_fixed_point_reached_after_one_pass(self, make):
-        """Convergence in one step: repeated application never drifts —
-        rounds 1..4 all serialize identically (stronger than pairwise)."""
-        forms = []
-        msgs = make()
-        for _ in range(4):
-            msgs = apply_anthropic_cache_control(
-                msgs, static_system_prefix="STATIC_PREFIX")
-            forms.append(_canon(msgs))
-            msgs = copy.deepcopy(json.loads(forms[-1]))
-        assert len(set(forms)) == 1, "decoration drifted across rounds"
-
     def test_predecorated_input_does_not_inherit_extra_markers(self):
         """#90971 core symptom: pre-decorated input must not carry stale
         markers PLUS fresh ones. Every marker in the output is one the

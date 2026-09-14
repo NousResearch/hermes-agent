@@ -7,14 +7,14 @@ license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [pdf, documents, forms, ocr, text-extraction, reportlab, pypdf, pdfplumber, pymupdf, marker]
+    tags: [pdf, documents, forms, ocr, text-extraction, reportlab, pypdf, pymupdf, marker]
     category: productivity
     related_skills: [docx, xlsx, powerpoint]
 ---
 
 # PDF Skill
 
-Create PDFs from structured specs, build and fill AcroForm forms (with layout linting and visual overlays), extract text/tables/metadata, merge/split/rotate/watermark/stamp pages, export page images, manage metadata and attachments, and encrypt/decrypt — using pypdf, reportlab, and pdfplumber. Two absorbed capabilities live in references/ (read the matching file before those tasks):
+Create PDFs from structured specs, build and fill AcroForm forms (with layout linting and visual overlays), extract text/tables/metadata, merge/split/rotate/watermark/stamp pages, export page images, manage metadata and attachments, and encrypt/decrypt — using pypdf, reportlab, and PyMuPDF. Two absorbed capabilities live in references/ (read the matching file before those tasks):
 
 - **Scanned/image-only PDFs and OCR** (pymupdf fast path, marker-pdf quality path, scripts/extract_pymupdf.py + scripts/extract_marker.py): `references/ocr-extraction.md`
 - **Editing text inside an existing PDF via natural-language prompts** (nano-pdf CLI): `references/nano-pdf-editing.md`
@@ -31,8 +31,8 @@ Create PDFs from structured specs, build and fill AcroForm forms (with layout li
 
 ## Prerequisites
 
-- Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`:
-  `python -m pip install pypdf reportlab pdfplumber`
+- Python 3.10+ with `pypdf`, `reportlab`, `PyMuPDF`:
+  `python -m pip install pypdf reportlab pymupdf`
 - Optional, for page rasterization (`pdf_page_image.py`, overlay rendering): `python -m pip install pypdfium2`, or poppler's `pdftoppm` on PATH. Scripts fall back pypdfium2 → pdftoppm and report `{"rendered": false, "missing": [...]}` (exit 0) when neither exists.
 - Each helper script checks imports lazily and prints an install hint if a dependency is missing.
 
@@ -71,9 +71,9 @@ python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments di
 | Create doc (headings, tables, images) | reportlab platypus | `pdf_create.py spec.json -o out.pdf` |
 | Build fillable form | reportlab acroForm | `pdf_make_form.py formspec.json -o form.pdf` |
 | Lint form layout / overlay image | pure python + PIL | `pdf_form_layout.py formspec.json [--render-overlay o.png]` |
-| Per-page text | pdfplumber | `pdf_read.py f.pdf --text` |
-| Tables → JSON/CSV | pdfplumber | `pdf_read.py f.pdf --tables` |
-| Metadata / sizes / encrypted / scanned | pypdf + pdfplumber | `pdf_read.py f.pdf --meta` |
+| Per-page text | PyMuPDF | `pdf_read.py f.pdf --text` |
+| Tables → JSON/CSV | PyMuPDF | `pdf_read.py f.pdf --tables` |
+| Metadata / sizes / encrypted / scanned | pypdf + PyMuPDF | `pdf_read.py f.pdf --meta` |
 | Merge (+ outline) | pypdf | `pdf_merge.py a.pdf b.pdf -o m.pdf` |
 | Split / extract / rotate | pypdf | `pdf_split.py f.pdf --pages 2-5 --rotate 90` |
 | List / fill / flatten form | pypdf | `pdf_read.py --fields`, `pdf_fill_form.py` |
@@ -104,9 +104,9 @@ python scripts/pdf_meta.py doc.pdf --list-attachments | --extract-attachments di
 - **Non-Latin form values**: values are stored correctly (UTF-16), but the field's default font may lack glyphs, so a viewer can show blanks even though the data round-trips. Verify with `--fields`, not just visually.
 - **Compression expectations**: `--compress` only deflates content streams. Typical savings are 0–20%; it does nothing for PDFs dominated by images or already-compressed streams. It is not a substitute for image downsampling (Ghostscript territory).
 - **Permission flags don't enforce**: owner-password permission bits (no-print, no-copy) are polite requests that viewers may honor; any library (including pypdf) can read and strip them. Only the user password actually gates content via encryption. Never present permission flags as security.
-- **Table extraction is heuristic**: pdfplumber detects tables from ruling lines/word alignment; borderless or merged-cell tables may need `table_settings` tuning or manual cleanup.
+- **Table extraction is heuristic**: PyMuPDF detects tables from page geometry and text alignment; borderless or merged-cell tables may need strategy/tolerance tuning or manual cleanup.
 - **Page indexing**: helper CLIs take 1-based pages; pypdf APIs are 0-based. The scripts convert — don't double-convert.
-- **Rotated stamp text extraction**: pdfplumber's line grouping scrambles rotated glyphs (a 45° "DRAFT" extracts as stray letters); verify rotated stamps with `pypdf`'s `extract_text()` or a rendered image instead.
+- **Rotated stamp text extraction**: verify rotated stamps with `pypdf`'s `extract_text()` or a rendered image instead of assuming table/text order is correct.
 - **Radio groups**: reportlab needs ≥2 `radio()` widgets per group, fills need the slashed export value (`"/red"`), and flatten fidelity is worst for radios — see `references/forms.md`.
 - **Metadata scope**: `pdf_meta.py` writes the classic DocInfo dictionary only; embedded XMP metadata (if any) is left untouched and may show different values in some viewers.
 - **PDF/A is out of scope**: pypdf/reportlab cannot produce or validate conformant PDF/A. If archival conformance is required, run Ghostscript via the `terminal` tool (e.g. `gs -dPDFA=2 -dPDFACompatibilityPolicy=1 -sColorConversionStrategy=UseDeviceIndependentColor -sDEVICE=pdfwrite -o out.pdf in.pdf` with a suitable ICC profile) and validate with veraPDF — both are external installs, and the result still needs validation, not assumption.

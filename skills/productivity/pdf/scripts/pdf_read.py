@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import contextlib
+import io
 import json
 import os
 import sys
@@ -25,29 +27,46 @@ def _need(module: str, package: str):
         raise SystemExit(2)
 
 
+def _open_pymupdf(path: str, password: str | None):
+    pymupdf = _need("pymupdf", "pymupdf")
+    doc = pymupdf.open(path)
+    if doc.needs_pass:
+        if password is None or not doc.authenticate(password):
+            doc.close()
+            raise ValueError("Unable to decrypt PDF with the supplied password.")
+    return doc
+
+
 def read_text(path: str, password: str | None) -> dict:
-    pdfplumber = _need("pdfplumber", "pdfplumber")
+    doc = _open_pymupdf(path, password)
     pages = []
-    with pdfplumber.open(path, password=password) as pdf:
-        for page in pdf.pages:
-            pages.append(page.extract_text() or "")
+    try:
+        for page in doc:
+            pages.append(page.get_text("text") or "")
+    finally:
+        doc.close()
     return {"page_count": len(pages), "pages": pages}
 
 
 def read_tables(path: str, password: str | None, csv_dir: str | None) -> dict:
-    pdfplumber = _need("pdfplumber", "pdfplumber")
+    doc = _open_pymupdf(path, password)
     result = []
     written = []
-    with pdfplumber.open(path, password=password) as pdf:
-        for pageno, page in enumerate(pdf.pages, start=1):
-            for tidx, table in enumerate(page.extract_tables()):
-                result.append({"page": pageno, "index": tidx, "rows": table})
+    try:
+        for pageno, page in enumerate(doc, start=1):
+            with contextlib.redirect_stdout(io.StringIO()):
+                tables = page.find_tables().tables
+            for tidx, table in enumerate(tables):
+                rows = [[c if c is not None else "" for c in row] for row in table.extract()]
+                result.append({"page": pageno, "index": tidx, "rows": rows})
                 if csv_dir:
                     os.makedirs(csv_dir, exist_ok=True)
                     csv_path = os.path.join(csv_dir, f"page{pageno}_table{tidx}.csv")
                     with open(csv_path, "w", encoding="utf-8", newline="") as fh:
-                        csv.writer(fh).writerows([[c if c is not None else "" for c in row] for row in table])
+                        csv.writer(fh).writerows(rows)
                     written.append(csv_path)
+    finally:
+        doc.close()
     out = {"table_count": len(result), "tables": result}
     if csv_dir:
         out["csv_files"] = written
@@ -77,14 +96,13 @@ def read_meta(path: str, password: str | None) -> dict:
     # scanned-page heuristic: no extractable text but page has images
     likely_scanned = []
     try:
-        pdfplumber = _need("pdfplumber", "pdfplumber")
-        with pdfplumber.open(path, password=password) as pdf:
-            for pageno, page in enumerate(pdf.pages, start=1):
-                text = (page.extract_text() or "").strip()
-                if not text and page.images:
+        doc = _open_pymupdf(path, password)
+        try:
+            for pageno, page in enumerate(doc, start=1):
+                if not (page.get_text("text") or "").strip() and page.get_images(full=True):
                     likely_scanned.append(pageno)
-    except SystemExit:
-        raise
+        finally:
+            doc.close()
     except Exception as exc:  # pragma: no cover - heuristic only
         print(f"Warning: scanned-page check failed: {exc}", file=sys.stderr)
     out = {

@@ -3,7 +3,8 @@
 Lives under the shared Hermes root: ``default`` board DB at ``<root>/kanban.db`` (pre-boards
 back-compat), other boards at ``<root>/kanban/boards/<slug>/``; a worker on one board never sees
 another. Board resolution: ``board=`` arg > ``HERMES_KANBAN_BOARD`` > ``HERMES_KANBAN_DB`` (pins the
-file path) > ``<root>/kanban/current`` > ``default``; the dispatcher injects these into workers.
+file path) > ``<root>/kanban/current`` > ``default``; the dispatcher injects these into workers. An explicit CLI ``--board``
+(:func:`scoped_explicit_board`) outranks the whole chain, ignoring the path pins.
 Concurrency: WAL + ``BEGIN IMMEDIATE`` + compare-and-swap on ``tasks.status``/``claim_lock`` —
 SQLite serializes writers so one claimer wins, losers see zero rows (no retries, no distributed
 locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attachments, notify subs.
@@ -350,6 +351,39 @@ def scoped_current_board(slug: str):
         _CURRENT_BOARD_OVERRIDE.reset(token)
 
 
+_EXPLICIT_BOARD_SLUG: ContextVar[str | None] = ContextVar(
+    "hermes_kanban_explicit_board_slug", default=None,
+)
+
+
+@contextlib.contextmanager
+def scoped_explicit_board(slug: str):
+    """Pin the active board AND outrank the path-pin env vars.
+
+    Engaged only by an *explicit* caller pass — today the CLI ``--board`` flag.
+    ``HERMES_KANBAN_DB``/``HERMES_KANBAN_WORKSPACES_ROOT``/``HERMES_KANBAN_ATTACHMENTS_ROOT``
+    are process-wide pins the dispatcher injects into worker env; left alone they silently
+    divert an explicit ``--board other`` call back to the pinned board's files (a worker saw
+    its own board for every ``--board`` value, and ``notify-subscribe`` wrote subscriptions
+    to the wrong DB). Inside this scope those pins are ignored for path resolution and the
+    explicit slug outranks every implicit layer, so the slug the caller typed is the board
+    that answers. Worker and default resolution (no explicit ``--board``) are unchanged.
+    """
+    normed = _normalize_board_slug(slug)
+    if not normed:
+        raise ValueError("board slug is required")
+    token: Token[str | None] = _EXPLICIT_BOARD_SLUG.set(normed)
+    try:
+        yield
+    finally:
+        _EXPLICIT_BOARD_SLUG.reset(token)
+
+
+def _explicit_board_scope_engaged() -> bool:
+    """True inside :func:`scoped_explicit_board` (CLI ``--board`` scope)."""
+    return _EXPLICIT_BOARD_SLUG.get() is not None
+
+
 # Slug = directory name: strict enough to stop traversal / separators, loose
 # enough for kebab-case. Display names (spaces, emoji) live in board.json.
 _BOARD_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")
@@ -402,9 +436,9 @@ def current_board_path() -> Path:
 
 
 def get_current_board() -> str:
-    """Active slug: context override -> ``HERMES_KANBAN_BOARD`` -> ``<root>/kanban/current``
-    (only while that board exists) -> ``DEFAULT_BOARD``. A malformed/stale slug
-    falls through — the dispatcher must never crash on a hand-edited file."""
+    """Active slug: explicit ``--board`` scope -> context override -> ``HERMES_KANBAN_BOARD``
+    -> ``<root>/kanban/current`` (only while that board exists) -> ``DEFAULT_BOARD``. A
+    malformed/stale slug falls through — the dispatcher must never crash on a hand-edited file."""
     def _existing(candidate: str) -> Optional[str]:
         if not candidate:
             return None
@@ -415,6 +449,7 @@ def get_current_board() -> str:
         return normed if normed and board_exists(normed) else None
 
     for candidate in (
+        (_EXPLICIT_BOARD_SLUG.get() or "").strip(),
         (_CURRENT_BOARD_OVERRIDE.get() or "").strip(),
         os.environ.get("HERMES_KANBAN_BOARD", "").strip(),
     ):
@@ -477,7 +512,8 @@ def _board_path(
     for the ``default`` board, else ``board_dir(slug)/leaf``."""
     if env_var:
         override = os.environ.get(env_var, "").strip()
-        if override:
+        # Explicit --board scope outranks worker path pins (see scoped_explicit_board).
+        if override and not _explicit_board_scope_engaged():
             return Path(override).expanduser()
     slug = _normalize_board_slug(board)
     if slug is None:

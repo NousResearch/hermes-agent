@@ -4,8 +4,6 @@ import {
   $groupChats,
   appendGroupChatEntry,
   GROUP_CHAT_HISTORY_LIMIT,
-  GROUP_CHAT_MAX_CONTINUATIONS,
-  GROUP_CHAT_MAX_MESSAGES,
   groupThreadOf,
   shouldCommitMemberTurn,
   updateGroupChat
@@ -23,6 +21,8 @@ export interface GroupRoundMemberContext {
   startEpoch: number
   binding: { isLive(): boolean }
   isCurrent(): boolean
+  /** The drive's spend ceilings, snapshotted at its start (config-driven). */
+  limits: { maxContinuations: number; maxMessages: number; maxRounds: number }
 }
 
 /** #93129: a held member's skip must consume its delta exactly once —
@@ -347,13 +347,13 @@ export async function runGroupContinuationMembers(
   continuations: number,
   posted: number
 ): Promise<number | null> {
-  const { members, isCurrent } = context
+  const { members, isCurrent, limits } = context
   let spokeThisRound = 0
 
-  if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
+  if (pendingKeys.length && continuations <= limits.maxContinuations) {
     const citedMembers = members.filter((member: GroupMember) => pendingKeys.includes(groupMemberKey(member)))
 
-    if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
+    if (citedMembers.length && posted < limits.maxMessages) {
       const strandedNow = ($groupChats.get()[context.group] || {}).stranded || {}
 
       const continuationResponders = citedMembers.filter(
@@ -361,7 +361,7 @@ export async function runGroupContinuationMembers(
       )
 
       for (const member of continuationResponders) {
-        if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) {
+        if (!isCurrent() || posted >= limits.maxMessages || continuations > limits.maxContinuations) {
           break
         }
 

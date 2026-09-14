@@ -86,11 +86,15 @@ def test_plugin_backend_rejects_malformed_names_without_aborting_registration():
     class NonStringName(PluginBackend):
         name = 7
 
+    class UnhashableName(PluginBackend):
+        name = []
+
     manager = PluginManager()
     context = PluginContext(PluginManifest(name="malformed", key="malformed"), manager)
     try:
         assert context.register_login_backend(MissingName) is None
         assert context.register_login_backend(NonStringName) is None
+        assert context.register_login_backend(UnhashableName) is None
     finally:
         manager.unload("malformed")
 

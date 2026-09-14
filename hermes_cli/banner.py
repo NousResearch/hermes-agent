@@ -406,7 +406,8 @@ def check_for_updates(*, passive: bool = False) -> Optional[int]:
     head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir) if repo_dir is not None else None
     cached = _read_json(cache_file)
     if cached is not None and cached.get("rev") == embedded_rev and cached.get("ver") == VERSION \
-            and cached.get("head") == head_rev:
+            and cached.get("head") == head_rev \
+            and (embedded_rev is not None or repo_dir is None or head_rev is not None):
         ttl = _UPDATE_CHECK_CACHE_SECONDS if cached.get("behind") is not None else _UPDATE_CHECK_FAILURE_CACHE_SECONDS
         if now - cached.get("ts", 0) < ttl:
             return cached.get("behind")

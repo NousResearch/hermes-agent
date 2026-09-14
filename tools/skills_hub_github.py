@@ -222,6 +222,10 @@ class GitHubSource(SkillSource):
         # search/install flow so repeated tree lookups cost no API calls.
         self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
         self._tree_revisions: Dict[str, str] = {}
+        # A recursive tree can be truncated for very large repos. Keep its root SHA so fetch()
+        # can walk just the requested skill subtree instead of silently falling back to files
+        # linked from SKILL.md.
+        self._truncated_tree_roots: Dict[str, str] = {}
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
         self._rate_limited: bool = False
@@ -265,6 +269,11 @@ class GitHubSource(SkillSource):
         # than the tree the paths were validated against (TOCTOU). Idempotent + cached.
         tree = self._get_repo_tree(repo)
         pinned_ref = self._tree_revisions.get(repo)
+        if tree is None and repo in self._truncated_tree_roots:
+            entries = self._get_skill_tree_entries(repo, skill_dir)
+            if entries is None:
+                return None
+            tree = ("", entries)
         skill_md = self._fetch_file_content(repo, f"{skill_dir}/SKILL.md", ref=pinned_ref)
         if skill_md is None:
             return None
@@ -390,21 +399,77 @@ class GitHubSource(SkillSource):
         if repo in self._tree_cache:
             return self._tree_cache[repo]
         repo_data = self._github_json(f"{_API}/{repo}")
-        if repo_data is None:
+        if not isinstance(repo_data, dict):
             return None
         default_branch = repo_data.get("default_branch", "main")
+        if not isinstance(default_branch, str) or not default_branch:
+            return None
         tree_data = self._github_json(
             f"{_API}/{repo}/git/trees/{default_branch}", params={"recursive": "1"}, timeout=30.0,
         )
-        if tree_data is None:
-            return None
-        if tree_data.get("truncated"):
-            logger.debug("Git tree truncated for %s, cannot cache", repo)
+        if not isinstance(tree_data, dict):
             return None
         if isinstance(tree_data.get("sha"), str) and tree_data["sha"]:
             self._tree_revisions[repo] = tree_data["sha"]
+        if tree_data.get("truncated"):
+            self._truncated_tree_roots[repo] = self._tree_revisions.get(repo, "")
+            logger.debug("Git tree truncated for %s; walking requested skill subtree", repo)
+            return None
         self._tree_cache[repo] = tree = (default_branch, tree_data.get("tree", []))
         return tree
+
+    def _get_skill_tree_entries(self, repo: str, skill_path: str) -> Optional[List[dict]]:
+        """Walk one skill subtree when GitHub truncates the repository-wide recursive tree.
+
+        Every lookup starts from the truncated response's root tree SHA, and file bytes remain
+        fetched with that same SHA. This preserves the pinned revision while avoiding a partial
+        install that contains only paths mentioned in ``SKILL.md``.
+        """
+        tree_sha = self._truncated_tree_roots.get(repo)
+        if not tree_sha:
+            return None
+        for part in skill_path.split("/"):
+            tree_data = self._github_json(f"{_API}/{repo}/git/trees/{tree_sha}")
+            if not isinstance(tree_data, dict) or tree_data.get("truncated"):
+                return None
+            entries = tree_data.get("tree")
+            if not isinstance(entries, list):
+                return None
+            if not all(isinstance(item, dict) and isinstance(item.get("path"), str) for item in entries):
+                return None
+            child = next((item for item in entries if item["path"] == part), None)
+            if not isinstance(child, dict) or child.get("type") != "tree" or not isinstance(child.get("sha"), str):
+                return None
+            tree_sha = child["sha"]
+        return self._walk_tree_entries(repo, tree_sha, skill_path)
+
+    def _walk_tree_entries(self, repo: str, tree_sha: str, prefix: str) -> Optional[List[dict]]:
+        """Return every entry below one non-truncated tree, with repository-relative paths."""
+        tree_data = self._github_json(f"{_API}/{repo}/git/trees/{tree_sha}")
+        if not isinstance(tree_data, dict) or tree_data.get("truncated"):
+            return None
+        entries = tree_data.get("tree")
+        if not isinstance(entries, list):
+            return None
+        result: List[dict] = []
+        for item in entries:
+            if not isinstance(item, dict):
+                return None
+            item_path = item.get("path")
+            item_type = item.get("type")
+            if not isinstance(item_path, str) or not isinstance(item_type, str):
+                return None
+            full_path = f"{prefix}/{item_path}"
+            result.append({**item, "path": full_path})
+            if item_type == "tree":
+                child_sha = item.get("sha")
+                if not isinstance(child_sha, str) or not child_sha:
+                    return None
+                children = self._walk_tree_entries(repo, child_sha, full_path)
+                if children is None:
+                    return None
+                result.extend(children)
+        return result
 
     def _github_json(self, url: str, **kwargs) -> Optional[dict]:
         """Decoded JSON body of a 200 ``_github_get`` (which flags rate-limit exhaustion), else None."""

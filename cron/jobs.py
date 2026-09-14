@@ -2376,7 +2376,16 @@ def mark_job_run(
                     job_id)
                 return False
         now = _hermes_now().isoformat()
+        continuation = bool((job.get("fire_claim") or {}).get("continuation"))
+        # A completion turn is not another occurrence of the user's schedule.
+        preserved = {key: job[key] for key in
+                     ("manual_run_at", "manual_run_prompt", "pending_slot", "run_claim")
+                     if key in job} if continuation else {}
         _record_run_outcome(job, success, error, delivery_error, status, now)
+        if continuation:
+            job.update(preserved)
+            save_jobs(jobs)
+            return True
         _advance_after_run(job, now)
         from cron import quota_hold
         from cron.unreachable_retry import clear_state, plan_retry

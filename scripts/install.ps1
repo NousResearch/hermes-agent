@@ -1219,11 +1219,12 @@ function Resolve-UvCmd {
     # Already resolved (default invocation path: Install-Uv ran earlier
     # in the same process and set $script:UvCmd).
     if ($script:UvCmd) {
+        # Re-probe rather than trusting the cached path: PATH can change
+        # mid-session and a cached binary can be replaced by a broken shim.
         if ($script:UvCmd -eq "uv") {
-            # "uv" on PATH -- verify it's still resolvable (PATH could have
-            # changed mid-session; cheap to recheck).
-            if (Get-Command uv -ErrorAction SilentlyContinue) { return }
-        } elseif (Test-Path $script:UvCmd) {
+            $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+            if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) { return }
+        } elseif ((Test-Path $script:UvCmd) -and (Get-UsableUvVersion $script:UvCmd)) {
             return
         }
         # Stale; fall through to re-discover.
@@ -1239,13 +1240,15 @@ function Resolve-UvCmd {
         # Same self-heal as Install-Uv's rerun path: a salvaged Chocolatey
         # shim (or a truncated download) would otherwise be accepted here and
         # fail later inside the venv stage with an unrelated-looking error.
-        Write-Info "Existing managed uv at $managedUv is not usable; replacing it ..."
+        Write-Info "Existing managed uv at $managedUv is not usable; removing it. Rerun install.ps1 -Stage uv to reinstall."
         Remove-Item $managedUv -Force -ErrorAction SilentlyContinue
     }
 
     # Fall back to PATH (covers edge cases where the installer ran in a
-    # sibling process and HERMES_HOME wasn't propagated).
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
+    # sibling process and HERMES_HOME wasn't propagated).  A PATH uv is the
+    # most likely place to meet a package-manager shim, so probe it too.
+    $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+    if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) {
         $script:UvCmd = "uv"
         return
     }
@@ -1253,7 +1256,8 @@ function Resolve-UvCmd {
     # Refresh PATH from registry in case the current process started before
     # Install-Uv updated User PATH.
     $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-    if (Get-Command uv -ErrorAction SilentlyContinue) {
+    $uvOnPath = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue
+    if ($uvOnPath -and (Get-UsableUvVersion $uvOnPath.Source)) {
         $script:UvCmd = "uv"
         return
     }
@@ -1548,7 +1552,11 @@ function Get-ManagedGitUserPath {
 }
 
 function Set-ManagedGitPath {
-    param([string]$GitDir)
+    # Defaults to the Hermes-managed PortableGit and is a no-op when it is not
+    # installed, so every stage can call it unconditionally before probing git.
+    param([string]$GitDir = (Join-Path $HermesHome "git"))
+
+    if (-not (Test-Path -LiteralPath (Join-Path $GitDir "cmd\git.exe") -PathType Leaf)) { return }
 
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $updated = Get-ManagedGitUserPath -UserPath $userPath -GitDir $GitDir
@@ -1597,10 +1605,7 @@ function Install-Git {
     $script:GitInstallFailureReason = $null
     Write-Info "Checking Git..."
 
-    $managedGitDir = Join-Path $HermesHome "git"
-    if (Test-Path -LiteralPath (Join-Path $managedGitDir "cmd\git.exe") -PathType Leaf) {
-        Set-ManagedGitPath -GitDir $managedGitDir
-    }
+    Set-ManagedGitPath
 
     if (Get-Command git -ErrorAction SilentlyContinue) {
         $version = git --version
@@ -2262,10 +2267,7 @@ function Install-Repository {
 
     # A missing/unlaunchable Git is not evidence of a broken checkout. Resolve
     # the managed install again in this fresh stage before any probe or move.
-    $managedGitDir = Join-Path $HermesHome "git"
-    if (Test-Path -LiteralPath (Join-Path $managedGitDir "cmd\git.exe") -PathType Leaf) {
-        Set-ManagedGitPath -GitDir $managedGitDir
-    }
+    Set-ManagedGitPath
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
         throw "Git is not available on PATH. Rerun the Git installation stage. The existing checkout has not been moved."
     }

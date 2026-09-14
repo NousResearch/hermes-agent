@@ -155,12 +155,17 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
     token = _smt._skill_gate_bypass.set(True)
     try:
         for i, op in enumerate(operations):
-            raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
-                                          task_id=task_id, session_id=session_id)
             try:
-                parsed = json.loads(raw)
-            except Exception:  # noqa: BLE001
-                parsed = {"success": False, "error": "unparseable op result"}
+                raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
+                                              task_id=task_id, session_id=session_id)
+            except Exception as exc:
+                # Raised operations need the same rollback and snapshot retention as error results.
+                parsed = {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+            else:
+                try:
+                    parsed = json.loads(raw)
+                except Exception:  # noqa: BLE001
+                    parsed = {"success": False, "error": "unparseable op result"}
             if not parsed.get("success"):
                 note, rollback_failed = _rollback(snapshots, _smt._find_skill)
                 fail = {  # key order is wire-visible

@@ -212,6 +212,69 @@ class TestSkillManageBatch(unittest.TestCase):
         content = open(skill_md).read()
         self.assertIn("Step ONE.", content)
 
+    def test_child_op_exception_rolls_back_instead_of_escaping(self):
+        """A child op that RAISES (I/O error, unexpected bug) must trigger
+        the same rollback as a clean op failure. It used to propagate past
+        the loop, the finally deleted the snapshots, and earlier ops
+        stayed applied with no recovery and no error payload."""
+        from unittest.mock import patch as _patch
+
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+        real_skill_manage = self.smt._skill_manage_from
+
+        def crashing_skill_manage(payload, **kwargs):
+            if payload.get("action") == "write_file":
+                raise OSError("disk blew up")
+            return real_skill_manage(payload, **kwargs)
+
+        with _patch.object(self.smt, "_skill_manage_from",
+                           side_effect=crashing_skill_manage):
+            r = self._call("probe", [
+                {"action": "patch",
+                 "old_string": "Step 1.", "new_string": "Step ONE."},
+                {"action": "write_file",
+                 "file_path": "references/late.md", "file_content": "x"},
+            ])
+        self.assertFalse(r["success"], r)
+        self.assertEqual(r["failed_index"], 1)
+        self.assertIn("OSError", r["error"])
+        self.assertIn("rolled back", r["error"])
+        # The patch from op 0 was undone by the rollback.
+        from pathlib import Path
+        content = (Path(self.home) / "skills" / "probe" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("Step 1.", content)
+        self.assertNotIn("Step ONE.", content)
+
+    def test_raised_op_keeps_snapshot_when_rollback_fails(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from tools import skill_manager_batch as batch
+
+        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
+        original = self.smt._skill_manage_from
+
+        def crash(payload, **kwargs):
+            if payload["action"] == "write_file":
+                raise OSError("write failed")
+            return original(payload, **kwargs)
+
+        with patch.object(self.smt, "_skill_manage_from", side_effect=crash), \
+             patch.object(batch, "_restore_snapshot", side_effect=OSError("restore failed")), \
+             patch.object(batch, "_snapshot_skills", wraps=batch._snapshot_skills) as snapshot:
+            result = self._call("probe", [
+                {"action": "patch", "old_string": "Step 1.", "new_string": "Step ONE."},
+                {"action": "write_file", "file_path": "references/late.md", "file_content": "x"},
+            ])
+        snapshot_root = snapshot.call_args.args[1]
+        try:
+            self.assertFalse(result["success"])
+            self.assertIn("ROLLBACK FAILED", result["error"])
+            self.assertIn(str(snapshot_root / "probe"), result["error"])
+            self.assertIn("Step 1.", (snapshot_root / "probe" / "SKILL.md").read_text(encoding="utf-8"))
+            self.assertIn("Step ONE.", (Path(self.home) / "skills" / "probe" / "SKILL.md").read_text(encoding="utf-8"))
+        finally:
+            shutil.rmtree(snapshot_root)
+
     def test_single_op_path_unchanged(self):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
         raw = self.smt.skill_manage(

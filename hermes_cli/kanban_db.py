@@ -8006,6 +8006,12 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
+# Cache of PR-URL -> (is_open, checked_at). Dispatch re-checks the same few
+# PR URLs on every tick; without this each tick would shell out to `gh` once
+# per guarded task.
+_PR_STATE_CACHE: dict = {}
+_PR_STATE_CACHE_TTL = 120  # seconds
+
 # Pattern matching a GitHub PR URL in task comments.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
@@ -8250,6 +8256,390 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _default_scan_pids():
+    """Enumerate live pids on this host. Derived from the OS, never a list.
+
+    psutil is a declared dependency (pyproject.toml), but this must degrade
+    gracefully rather than hard-fail if it is missing: fall back to ``/proc``
+    on Linux, then to an empty enumeration (the group/pid signal still runs).
+    """
+    try:
+        import psutil  # type: ignore
+
+        return list(psutil.pids())
+    except Exception:
+        pass
+    try:
+        return [int(name) for name in os.listdir("/proc") if name.isdigit()]
+    except Exception:
+        return []
+
+
+def _default_proc_table() -> dict:
+    """Map live pid -> ``(ppid, create_time)``. Derived from the OS.
+
+    This is the ancestry/identity source: ``ppid`` gives the parent chain and
+    ``create_time`` gives a pid-reuse-proof identity that SURVIVES
+    reparenting (unlike the session id, which a descendant can leave by
+    calling ``setsid()``).
+
+    psutil is a declared dependency but this must degrade gracefully: an
+    empty table simply disables the ancestry arm, leaving the group and
+    session arms exactly as they were.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return {}
+    table: dict[int, tuple[int, float]] = {}
+    try:
+        for proc in psutil.process_iter(["pid", "ppid", "create_time"]):
+            try:
+                info = proc.info
+                table[int(info["pid"])] = (
+                    int(info["ppid"]), float(info["create_time"]),
+                )
+            except Exception:
+                continue
+    except Exception:
+        return {}
+    return table
+
+
+def _ancestry_reaches(cand: int, worker: int, table: dict, limit: int = 64) -> bool:
+    """True when walking ``cand``'s parent chain reaches ``worker``.
+
+    Bounded and cycle-guarded; a missing table entry ends the walk.
+    """
+    seen: set[int] = set()
+    cur = int(cand)
+    for _ in range(limit):
+        entry = table.get(cur)
+        if entry is None:
+            return False
+        parent = int(entry[0])
+        if parent == worker:
+            return True
+        if parent <= 1 or parent in seen:
+            return False
+        seen.add(parent)
+        cur = parent
+    return False
+
+
+def _capture_worker_tree(
+    pid: int,
+    *,
+    getpgid=None,
+    getsid=None,
+    scan_pids=None,
+    proc_table=None,
+) -> dict:
+    """Snapshot every pid owned by worker ``pid``, BEFORE it is signalled.
+
+    Ownership is the UNION of three derived sources (never a hand-maintained
+    list):
+
+    a) the worker's own process GROUP (handled by the caller's ``killpg``),
+    b) the SESSION the worker leads (``getsid(pid) == pid``),
+    c) ANCESTRY: every live pid whose parent chain reaches the worker pid.
+
+    (c) exists because neither the group nor the session is a complete
+    boundary — any descendant may call ``setsid()``/``start_new_session``
+    and leave the session entirely. Measured live:
+
+        worker 90579 pgid 90579 sid 90579
+          desc 90580 ppid 90579 pgid 90580 sid 90580
+        NEW-SESSION descendants: [90580]
+
+    Production workers do this routinely (node, zsh job control, MCP stdio
+    servers).
+
+    Why a SNAPSHOT and not a live derivation at kill time: once the worker
+    dies its descendants are reparented to init(1) and the ancestry chain to
+    the worker is GONE. The escalation pass (SIGKILL) therefore reuses this
+    snapshot instead of re-deriving from a chain that no longer exists.
+
+    PID-reuse safety travels with the snapshot: each entry carries the
+    ``create_time`` captured here, re-verified immediately before the signal.
+    """
+    pid = int(pid)
+    if getpgid is None:
+        getpgid = getattr(os, "getpgid", None)
+    if getsid is None:
+        getsid = getattr(os, "getsid", None)
+    if proc_table is None:
+        proc_table = _default_proc_table
+    try:
+        table = proc_table() if callable(proc_table) else dict(proc_table)
+    except Exception:
+        table = {}
+    if not isinstance(table, dict):
+        table = {}
+
+    owns_session = False
+    if getsid is not None:
+        try:
+            owns_session = int(getsid(pid)) == pid
+        except Exception:
+            owns_session = False
+
+    # pid -> [create_time|None, via_session]
+    owned: dict[int, list] = {}
+
+    def _ctime(cand: int):
+        entry = table.get(cand)
+        return None if entry is None else float(entry[1])
+
+    # (b) SESSION arm — only a session we can prove we created. The scan is
+    # not even consulted otherwise.
+    if owns_session:
+        scanner = _default_scan_pids if scan_pids is None else scan_pids
+        try:
+            candidates = scanner() if callable(scanner) else scanner
+            candidates = list(candidates)
+        except Exception:
+            candidates = []
+        for raw in candidates:
+            try:
+                cand = int(raw)
+            except Exception:
+                continue
+            if cand <= 0 or cand == pid:
+                continue
+            try:
+                if int(getsid(cand)) != pid:
+                    continue
+            except Exception:
+                continue
+            owned.setdefault(cand, [_ctime(cand), False])[1] = True
+
+    # (c) ANCESTRY arm — derived from the OS parent chain.
+    for cand in list(table.keys()):
+        cand = int(cand)
+        if cand <= 0 or cand == pid or cand in owned:
+            continue
+        if _ancestry_reaches(cand, pid, table):
+            owned[cand] = [_ctime(cand), False]
+    # Group leaders among the owned set: a separate process GROUP (the
+    # `set -m` job case, or a new-session descendant) gets a group signal so
+    # children appearing after this enumeration are still covered.
+    groups: list[tuple[int, Any, bool]] = []
+    if getpgid is not None:
+        for cand, (ctime, via_session) in owned.items():
+            try:
+                cand_pgid = int(getpgid(cand))
+            except Exception:
+                continue
+            if cand_pgid != cand or cand_pgid == pid:
+                continue
+            groups.append((cand_pgid, ctime, via_session))
+
+    return {
+        "pid": pid,
+        "owns_session": owns_session,
+        "pids": [
+            (cand, ctime, via_session)
+            for cand, (ctime, via_session) in sorted(owned.items())
+        ],
+        "groups": groups,
+    }
+
+
+def _verify_snapshot_identity(
+    cand: int,
+    ctime,
+    via_session: bool,
+    *,
+    worker: int,
+    getsid,
+    fresh: dict,
+) -> bool:
+    """Re-verify a snapshotted pid immediately before signalling it.
+
+    ``create_time`` is the authoritative check: it survives reparenting,
+    which the session id does not (a descendant that called ``setsid()`` was
+    never in our session, and after the worker dies the ancestry chain is
+    gone). A pid whose ``create_time`` changed has been RECYCLED and must be
+    skipped. Session-derived entries additionally keep the session re-check.
+    """
+    if via_session and getsid is not None:
+        try:
+            if int(getsid(cand)) != worker:
+                return False
+        except Exception:
+            return False
+    if ctime is not None:
+        cur = fresh.get(int(cand))
+        if cur is None:
+            return False
+        try:
+            if abs(float(cur[1]) - float(ctime)) > 1e-6:
+                return False
+        except Exception:
+            return False
+        return True
+    # No identity proof available (no psutil): only session-derived entries
+    # are signallable, and they were just re-verified above.
+    return bool(via_session and getsid is not None)
+
+
+def _signal_captured_tree(
+    snapshot: dict,
+    sig: int,
+    *,
+    kill,
+    killpg,
+    getsid,
+    proc_table=None,
+) -> None:
+    """Signal every pid in a pre-death snapshot, identity-verified."""
+    worker = int(snapshot.get("pid", 0))
+    entries = list(snapshot.get("pids") or ())
+    groups = list(snapshot.get("groups") or ())
+    if not entries and not groups:
+        return
+    if proc_table is None:
+        proc_table = _default_proc_table
+    try:
+        fresh = proc_table() if callable(proc_table) else dict(proc_table)
+    except Exception:
+        fresh = {}
+    if not isinstance(fresh, dict):
+        fresh = {}
+
+    for cand, ctime, via_session in entries:
+        if not _verify_snapshot_identity(
+            cand, ctime, via_session,
+            worker=worker, getsid=getsid, fresh=fresh,
+        ):
+            continue
+        try:
+            kill(cand, sig)
+        except Exception:
+            continue
+
+    if killpg is None:
+        return
+    for pgid, ctime, via_session in groups:
+        if not _verify_snapshot_identity(
+            pgid, ctime, via_session,
+            worker=worker, getsid=getsid, fresh=fresh,
+        ):
+            continue
+        try:
+            killpg(pgid, sig)
+        except Exception:
+            continue
+
+
+def _signal_worker_tree(
+    pid: int,
+    sig: int,
+    *,
+    kill=None,
+    killpg=None,
+    getpgid=None,
+    getsid=None,
+    scan_pids=None,
+    proc_table=None,
+    snapshot=None,
+) -> None:
+    """Signal a dispatcher worker AND its descendants.
+
+    Workers are spawned with ``start_new_session=True``, which makes each
+    worker the leader of its own session/process GROUP. Signalling only the
+    worker pid leaves its children (e.g. ``gtimeout`` -> ``pi``) running
+    against a task that has already been handed to a new worker — the
+    observed descendant leak.
+
+    Safety property (load-bearing): we only ever group-signal when the pid
+    is ITSELF the group leader (``os.getpgid(pid) == pid``), i.e. the group
+    is one we created for that worker. If the pid is not the leader it
+    belongs to somebody else's group, and ``killpg`` on it would take out
+    unrelated processes — in that case we signal the single pid only.
+    Never assume ``pgid == pid``: derive it.
+
+    Falls back to a plain pid signal on ProcessLookupError / OSError /
+    AttributeError (Windows has neither ``getpgid`` nor ``killpg``).
+
+    The group signal is NOT sufficient on its own. The real worker chain is
+    a job-control shell (``sh -c 'set -m; gtimeout ... pi ... &'``), and
+    ``set -m`` puts the ``gtimeout`` -> ``pi`` pair in a *separate process
+    group* that ``killpg(worker_pgid)`` never reaches. Measured live:
+
+        worker 80761 pgid 80761 sid 80761
+          desc 80762 ppid 80761 pgid 80762 sid 80761
+          desc 80763 ppid 80762 pgid 80762 sid 80761
+        LEAKED after killpg-only: [80762, 80763]
+
+    The session is a better invariant, but it is STILL not complete: any
+    descendant may call ``setsid()``/``start_new_session`` and leave the
+    session (node, zsh job control and MCP stdio servers all do). Measured
+    live:
+
+        worker 90579 pgid 90579 sid 90579
+          desc 90580 ppid 90579 pgid 90580 sid 90580
+        LEAKED after the session-only sweep: [90580]
+
+    So ownership is the UNION of three DERIVED sources: the owned process
+    group, the owned session, and process ANCESTRY (see
+    ``_capture_worker_tree``). The owned set is snapshotted BEFORE the
+    worker is signalled, because the worker's death reparents its
+    descendants to init(1) and destroys the ancestry chain; callers pass
+    that same ``snapshot`` back in for the SIGKILL escalation.
+
+    ``kill`` / ``killpg`` / ``getpgid`` / ``getsid`` / ``scan_pids`` /
+    ``proc_table`` are injectable for tests; they default to the ``os``
+    equivalents and a live psutil-derived enumeration. Raises whatever the
+    underlying signal call raises (callers already handle
+    ProcessLookupError/OSError).
+    """
+    pid = int(pid)
+    if kill is None:
+        kill = getattr(os, "kill", None)
+    if kill is None:
+        return
+    if killpg is None:
+        killpg = getattr(os, "killpg", None)
+    if getpgid is None:
+        getpgid = getattr(os, "getpgid", None)
+    if getsid is None:
+        getsid = getattr(os, "getsid", None)
+
+    # ── Owned-set sweep: the descendants killpg cannot reach ─────────────
+    # Runs BEFORE the worker signal so the worker's death (and the ensuing
+    # reparent-to-init) cannot race the enumeration.
+    if snapshot is None:
+        snapshot = _capture_worker_tree(
+            pid,
+            getpgid=getpgid, getsid=getsid,
+            scan_pids=scan_pids, proc_table=proc_table,
+        )
+    _signal_captured_tree(
+        snapshot, sig,
+        kill=kill, killpg=killpg, getsid=getsid, proc_table=proc_table,
+    )
+
+    if killpg is not None and getpgid is not None:
+        try:
+            pgid = getpgid(pid)
+        except (ProcessLookupError, OSError, AttributeError):
+            pgid = None
+        if pgid is not None and int(pgid) == pid:
+            # We own this group (worker is its own session/group leader):
+            # signal the whole tree.
+            try:
+                killpg(int(pgid), sig)
+                return
+            except (OSError, AttributeError) as exc:
+                if isinstance(exc, ProcessLookupError):
+                    raise
+                # killpg unsupported/failed -> fall through to pid signal.
+
+    kill(pid, sig)
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
@@ -8277,12 +8667,23 @@ def _terminate_reclaimed_worker(
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
     )
+    # When a test injects ``signal_fn`` it must intercept BOTH the single-pid
+    # and the process-group signal, otherwise a real ``os.killpg`` would fire
+    # at the test runner's own group.
+    killpg = signal_fn if signal_fn is not None else None
     if kill is None:
         return info
 
     info["termination_attempted"] = True
+    # Snapshot the owned set BEFORE the worker is signalled: its death
+    # reparents the descendants to init(1) and destroys the ancestry chain,
+    # so the SIGKILL escalation below must reuse this same snapshot.
+    tree = _capture_worker_tree(int(pid))
     try:
-        kill(int(pid), signal.SIGTERM)
+        _signal_worker_tree(
+            int(pid), signal.SIGTERM,
+            kill=kill, killpg=killpg, snapshot=tree,
+        )
     except ProcessLookupError:
         # Process is already gone — that's a successful termination, not a
         # survival. Leaving terminated=False here would make the reclaim guard
@@ -8303,7 +8704,10 @@ def _terminate_reclaimed_worker(
             # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
             # (which maps to TerminateProcess via the stdlib shim).
             _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
+            _signal_worker_tree(
+                int(pid), _sigkill,
+                kill=kill, killpg=killpg, snapshot=tree,
+            )
             info["sigkill"] = True
         except (ProcessLookupError, OSError):
             return info
@@ -8472,9 +8876,18 @@ def enforce_max_runtime(
         kill = signal_fn if signal_fn is not None else (
             os.kill if hasattr(os, "kill") else None
         )
+        # See _terminate_reclaimed_worker: an injected hook intercepts the
+        # group signal too.
+        killpg = signal_fn if signal_fn is not None else None
         if kill is not None:
+            # Pre-death snapshot; reused by the SIGKILL escalation (the
+            # ancestry chain is gone once the worker dies).
+            tree = _capture_worker_tree(pid)
             try:
-                kill(pid, signal.SIGTERM)
+                _signal_worker_tree(
+                    pid, signal.SIGTERM,
+                    kill=kill, killpg=killpg, snapshot=tree,
+                )
             except (ProcessLookupError, OSError):
                 pass
             # Short polling wait — no time.sleep on the write txn.
@@ -8486,7 +8899,10 @@ def enforce_max_runtime(
                 try:
                     # signal.SIGKILL doesn't exist on Windows.
                     _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
+                    _signal_worker_tree(
+                        pid, _sigkill,
+                        kill=kill, killpg=killpg, snapshot=tree,
+                    )
                     killed = True
                 except (ProcessLookupError, OSError):
                     pass
@@ -8791,6 +9207,17 @@ def _error_fingerprint(error_text: str) -> str:
 # ``max_retries`` overrides this bound — the same "task override wins"
 # precedence ``_record_task_failure`` documents for every other failure kind.
 _PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
+
+# Bounded retry budget for reclaims where we could NOT determine why the
+# worker died (``_classify_worker_exit`` -> "unknown"). The reap registry
+# (``_recent_worker_exits``) is in-memory, so ANY dispatcher/host restart
+# turns every in-flight worker into an "unknown" exit — a fact about our own
+# process lifecycle, not about the task. With the default failure limit of 2
+# that meant two unrelated restarts permanently blocked a card with
+# "pid N not alive", which is how dozens of healthy cards ended up frozen for
+# days. Unknown exits get their own, larger budget so infrastructure churn
+# cannot trip the breaker on work that never actually failed.
+_UNKNOWN_EXIT_FAILURE_LIMIT = 6
 
 # How far back to walk a task's closed runs when counting the violation
 # streak. The streak trips at a handful of violations, so anything beyond a
@@ -9113,11 +9540,19 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
             fp = _error_fingerprint(error_text)
             is_systemic = _fp_counts.get(fp, 0) >= 3
+            # "unknown" exits (pid vanished from the in-memory reap registry,
+            # typically because the dispatcher itself restarted) get their own
+            # larger budget — see ``_UNKNOWN_EXIT_FAILURE_LIMIT``. Systemic
+            # same-error storms still trip immediately.
+            _unknown_exit = error_text.endswith("not alive")
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if is_systemic else None,
+                failure_limit=(
+                    1 if is_systemic
+                    else (_UNKNOWN_EXIT_FAILURE_LIMIT if _unknown_exit else None)
+                ),
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -9438,6 +9873,13 @@ def check_respawn_guard(
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+        Exception: when the task's LATEST run ended with the
+        ``changes_requested`` outcome, this rule is bypassed entirely.
+        That outcome is the reviewer explicitly routing the task back to
+        the same implementer to push more commits to the SAME open PR —
+        the open-PR comment is the *precondition* of that rework, not a
+        duplicate-work signal. Without the bypass the guard fires on
+        every dispatch tick forever and the rework never spawns.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -9467,7 +9909,11 @@ def check_respawn_guard(
     latest_run = conn.execute(
         "SELECT outcome, ended_at FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        # ``id DESC`` tiebreak: the review-handoff run and the reviewer's
+        # verdict run routinely end in the SAME unix second, and without a
+        # deterministic tiebreak the older row non-deterministically shadows
+        # the newer outcome.
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if (
@@ -9526,15 +9972,82 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #
+    # An OPEN PR means work is genuinely in flight, so defer the respawn. A
+    # MERGED or CLOSED PR is finished work: continuing to guard on it freezes
+    # the task forever (the comment never expires within the window), which
+    # deadlocks the board — `ready` grows while nothing spawns. Only an open
+    # PR is evidence of in-flight work.
+    #
+    # Bypass, mirroring rule 3's explicit-re-queue bypass: a latest run that
+    # ended ``changes_requested`` IS the deliberate "run it again" request —
+    # the reviewer handed the task back to the same implementer to push more
+    # commits to the same PR. That card always carries an open-PR comment, so
+    # without this the guard would fire every tick forever and the rework
+    # would never spawn.
+    if latest_run is not None and latest_run["outcome"] == "changes_requested":
+        return None
+
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        if not c["body"]:
+            continue
+        match = _RESPAWN_GUARD_PR_URL_RE.search(c["body"])
+        if not match:
+            continue
+        if _pr_url_is_open(match.group(0)):
             return "active_pr"
 
     return None
+
+
+def _pr_url_is_open(pr_url: str) -> bool:
+    """Return True if ``pr_url`` points at a still-open GitHub PR.
+
+    Fails OPEN (returns True) when the state cannot be determined, so a
+    network blip or a missing ``gh`` CLI degrades to the old conservative
+    behaviour of guarding, rather than stampeding duplicate workers onto a
+    task whose PR is actually still in flight.
+
+    Results are cached per-process: dispatch checks the same handful of PR
+    URLs on every tick, and an uncached `gh` call per task per tick would
+    make the dispatcher unusably slow.
+    """
+    cached = _PR_STATE_CACHE.get(pr_url)
+    now = time.time()
+    if cached is not None and now - cached[1] < _PR_STATE_CACHE_TTL:
+        return cached[0]
+
+    is_open = True  # fail-open default
+    try:
+        import re as _re
+        import subprocess
+
+        m = _re.search(r"github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_url)
+        if m:
+            owner, repo, number = m.group(1), m.group(2), m.group(3)
+            proc = subprocess.run(
+                (
+                    "gh", "pr", "view", number,
+                    "--repo", f"{owner}/{repo}",
+                    "--json", "state", "--jq", ".state",
+                ),
+                capture_output=True,
+                text=True,
+                timeout=20,
+                env={**os.environ, "PAGER": "cat", "GH_PAGER": "cat"},
+            )
+            state = (proc.stdout or "").strip().upper()
+            if proc.returncode == 0 and state in {"OPEN", "MERGED", "CLOSED"}:
+                is_open = state == "OPEN"
+    except Exception:
+        is_open = True  # unreachable/ambiguous -> keep guarding
+
+    _PR_STATE_CACHE[pr_url] = (is_open, now)
+    return is_open
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:

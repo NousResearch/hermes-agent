@@ -544,8 +544,8 @@ function ProviderColumn({
             key={p.slug}
             active={active}
             onClick={() => onSelect(p.slug)}
-            className={`items-start text-xs border-l-2 ${
-              active ? "border-l-primary" : "border-l-transparent"
+            className={`items-start text-xs border-s-2 ${
+              active ? "border-s-primary" : "border-s-transparent"
             }`}
           >
             <div className="flex-1 min-w-0">

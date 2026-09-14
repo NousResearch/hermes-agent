@@ -164,8 +164,10 @@ class TestNeedsOcrPath(unittest.TestCase):
         from tools import read_extract as rx
 
         mod, calls = self._fake_mod(hosted_result="OCR TEXT")
-        with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
-                          return_value=(True, "key", None)),              patch.object(rx.os.path, "getsize", return_value=10):
+        with patch.object(rx, "_anydoc", return_value=mod), \
+             patch.object(rx, "_hosted_ocr_config",
+                          return_value=(True, "key", None)), \
+             patch.object(rx.os.path, "getsize", return_value=10):
             out = rx._extract_anydoc("scan.pdf")
         self.assertEqual(out, "OCR TEXT\n")
         self.assertEqual(calls[1].get("ocr"), "hosted")
@@ -174,8 +176,10 @@ class TestNeedsOcrPath(unittest.TestCase):
         from tools import read_extract as rx
 
         mod, _ = self._fake_mod(hosted_exc=RuntimeError("HTTP 500"))
-        with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
-                          return_value=(True, "key", "https://gw")),              patch.object(rx.os.path, "getsize", return_value=10):
+        with patch.object(rx, "_anydoc", return_value=mod), \
+             patch.object(rx, "_hosted_ocr_config",
+                          return_value=(True, "key", "https://gw")), \
+             patch.object(rx.os.path, "getsize", return_value=10):
             out = rx._extract_anydoc("scan.pdf")
         self.assertIn("[NEEDS OCR", out)
         self.assertIn("pages 2, 3", out)
@@ -192,8 +196,10 @@ class TestNeedsOcrPath(unittest.TestCase):
         from tools import read_extract as rx
 
         mod, calls = self._fake_mod()
-        with patch.object(rx, "_anydoc", return_value=mod),              patch.object(rx, "_hosted_ocr_config",
-                          return_value=(False, None, None)),              patch.object(rx.os.path, "getsize", return_value=10):
+        with patch.object(rx, "_anydoc", return_value=mod), \
+             patch.object(rx, "_hosted_ocr_config",
+                          return_value=(False, None, None)), \
+             patch.object(rx.os.path, "getsize", return_value=10):
             out = rx._extract_anydoc("scan.pdf")
         self.assertIn("[NEEDS OCR", out)
         self.assertEqual(len(calls), 1)  # no hosted attempt
@@ -214,6 +220,82 @@ class TestNeedsOcrPath(unittest.TestCase):
         self.assertIsNotNone(m1)
         self.assertIsNotNone(m2)
         self.assertEqual(m1.group(1), m2.group(1))
+
+
+class TestNeedsOcrBytesPath(unittest.TestCase):
+    """The bytes door (_extract_anydoc_bytes, used for backend-transferred
+    documents) must honor NeedsOcrError the same way the path door does:
+    hosted OCR attempt when a route exists, NEEDS-OCR teaching otherwise."""
+
+    def _fake_mod(self, hosted_result=None, hosted_exc=None):
+        class NeedsOcrError(Exception):
+            def __init__(self, pages):
+                super().__init__("needs ocr")
+                self.pages = pages
+
+        calls = []
+
+        class Mod:
+            pass
+
+        mod = Mod()
+        mod.NeedsOcrError = NeedsOcrError
+
+        def to_markdown_bytes(data, **kw):
+            calls.append(kw)
+            if not kw:
+                raise NeedsOcrError([4])
+            if hosted_exc is not None:
+                raise hosted_exc
+            return hosted_result
+
+        mod.to_markdown_bytes = to_markdown_bytes
+        return mod, calls
+
+    def test_hosted_success_uses_explicit_credentials_without_native_scan_warning(self):
+        import io
+        import anydoc
+        from tools import read_extract as rx
+
+        captured = []
+
+        def scanned(_data, _format):
+            raise anydoc.NeedsOcrError("scanned page")
+
+        def transport(request, **_kwargs):
+            captured.append(request)
+            response = io.BytesIO(b'{"success":true,"data":{"markdown":"OCR BYTES TEXT"}}')
+            response.status = 200
+            return response
+
+        with patch.object(anydoc, "_to_markdown_bytes", side_effect=scanned), \
+             patch.object(anydoc.urllib.request, "urlopen", side_effect=transport), \
+             patch.object(rx, "_hosted_ocr_config", return_value=(True, None, None)), \
+             patch.object(rx, "_pdf_coverage_note_from_bytes") as native_note, \
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "other-profile-key",
+                                     "FIRECRAWL_API_URL": "https://other-profile.invalid"}):
+            out = rx._extract_anydoc_bytes(b"scanned PDF", "scan.pdf")
+        self.assertEqual(out, "OCR BYTES TEXT\n")
+        native_note.assert_not_called()
+        self.assertEqual(len(captured), 1)
+        self.assertIsNone(captured[0].get_header("Authorization"))
+        self.assertEqual(captured[0].full_url, "https://api.firecrawl.dev/v2/parse")
+
+    def test_unavailable_ocr_teaches_recovery(self):
+        from tools import read_extract as rx
+
+        for enabled, error in ((False, None), (True, RuntimeError("HTTP 500"))):
+            with self.subTest(enabled=enabled):
+                mod, calls = self._fake_mod(hosted_exc=error)
+                with patch.object(rx, "_anydoc", return_value=mod), \
+                     patch.object(rx, "_hosted_ocr_config", return_value=(enabled, "key", None)):
+                    out = rx._extract_anydoc_bytes(b"pdf-bytes", "scan.pdf")
+                self.assertIn("[NEEDS OCR", out)
+                self.assertIn("pages 4", out)
+                self.assertEqual(len(calls), 2 if enabled else 1)
+                if enabled:
+                    self.assertIn("attempted and failed", out)
+                    self.assertIn("HTTP 500", out)
 
 
 if __name__ == "__main__":

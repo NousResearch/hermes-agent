@@ -1,11 +1,11 @@
 import type { MouseTrackingMode } from '@hermes/ink'
+import type { RpcMethods } from '@hermes/shared/gateway-events'
 import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
+import { type HermesConfigTree, hermesConfigTree } from '../gatewayTypes.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
-import { asRpcResult } from '../lib/rpc.js'
 
 import { applyConfiguredTuiTheme } from './createGatewayEventHandler.js'
 import {
@@ -131,13 +131,13 @@ export const normalizeMouseTracking = (display: {
 
 const MTIME_POLL_MS = 5000
 
-const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
+const quietRpc = async <M extends keyof RpcMethods>(
   gw: GatewayClient,
-  method: string,
-  params: Record<string, unknown> = {}
-): Promise<null | T> => {
+  method: M,
+  params: RpcMethods[M]['params']
+): Promise<null | RpcMethods[M]['result']> => {
   try {
-    return asRpcResult<T>(await gw.request<T>(method, params))
+    return await gw.request(method, params)
   } catch {
     return null
   }
@@ -176,7 +176,7 @@ export const syncMcpReload = async (
   state.inFlight = true
 
   try {
-    const r = await quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', {
+    const r = await quietRpc(gw, 'reload.mcp', {
       confirm: true,
       rev: nextMcpRev,
       session_id: sid
@@ -193,18 +193,14 @@ export const syncMcpReload = async (
   }
 }
 
-const _voiceRecordKeyFromConfig = (cfg: ConfigFullResponse | null): ParsedVoiceRecordKey => {
-  const raw = cfg?.config?.voice?.record_key
+const _voiceRecordKeyFromConfig = (cfg: HermesConfigTree | null): ParsedVoiceRecordKey => {
+  const raw = cfg?.voice?.record_key
 
   return raw ? parseVoiceRecordKey(raw) : DEFAULT_VOICE_RECORD_KEY
 }
 
-const _pasteCollapseLinesFromConfig = (cfg: ConfigFullResponse | null): number => {
-  if (!cfg?.config) {
-    return 5
-  }
-
-  const raw = cfg.config.paste_collapse_threshold
+const _pasteCollapseLinesFromConfig = (cfg: HermesConfigTree | null): number => {
+  const raw = cfg?.paste_collapse_threshold
 
   if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
     return Math.round(raw)
@@ -221,12 +217,8 @@ const _pasteCollapseLinesFromConfig = (cfg: ConfigFullResponse | null): number =
   return 5
 }
 
-const _pasteCollapseCharsFromConfig = (cfg: ConfigFullResponse | null): number => {
-  if (!cfg?.config) {
-    return 2000
-  }
-
-  const raw = cfg.config.paste_collapse_char_threshold
+const _pasteCollapseCharsFromConfig = (cfg: HermesConfigTree | null): number => {
+  const raw = cfg?.paste_collapse_char_threshold
 
   if (typeof raw === 'number' && Number.isFinite(raw) && raw >= 0) {
     return Math.round(raw)
@@ -255,21 +247,21 @@ export async function hydrateFullConfig(
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
   setBellOnPrompt?: (v: boolean) => void
-): Promise<ConfigFullResponse | null> {
-  const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
+): Promise<HermesConfigTree | null> {
+  const cfg = hermesConfigTree(await quietRpc(gw, 'config.get', { key: 'full' }))
   applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
 
   return cfg
 }
 
 export const applyDisplay = (
-  cfg: ConfigFullResponse | null,
+  cfg: HermesConfigTree | null,
   setBell: (v: boolean) => void,
   setVoiceRecordKey?: (v: ParsedVoiceRecordKey) => void,
   setBellOnPrompt?: (v: boolean) => void
 ) => {
-  const d = cfg?.config?.display ?? {}
-  const approvals = cfg?.config?.approvals
+  const d = cfg?.display ?? {}
+  const approvals = cfg?.approvals
 
   setBell(!!d.bell_on_complete)
 
@@ -336,7 +328,7 @@ export function useConfigSync({
     // Environment flags are enough to initialize the UI bit; the heavier status
     // check still runs when the user opens /voice.
     setVoiceEnabled(process.env.HERMES_VOICE === '1')
-    quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
+    quietRpc(gw, 'config.get', { key: 'mtime' }).then(r => {
       mtimeRef.current = Number(r?.mtime ?? 0)
       // Seed the MCP revision baseline too: after a normal boot mtime is
       // already non-zero, so the poller's baseline branch never runs, and an
@@ -353,7 +345,7 @@ export function useConfigSync({
     }
 
     const id = setInterval(() => {
-      quietRpc<ConfigMtimeResponse>(gw, 'config.get', { key: 'mtime' }).then(r => {
+      quietRpc(gw, 'config.get', { key: 'mtime' }).then(r => {
         const next = Number(r?.mtime ?? 0)
         const nextMcpRev = String(r?.mcp_rev ?? '')
 
@@ -387,7 +379,7 @@ export function useConfigSync({
         // Older gateways don't send mcp_rev — fall back to
         // reload-on-any-change there (no ack tracking possible).
         if (!nextMcpRev) {
-          quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
+          quietRpc(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
             r => r && turnController.pushActivity('MCP reloaded after config change')
           )
         }

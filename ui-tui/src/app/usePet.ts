@@ -61,20 +61,6 @@ interface KittyView {
   placeholder: string[]
 }
 
-interface PetCellsResult {
-  color?: string
-  enabled?: boolean
-  frameMs?: number
-  // unicode mode: cell grids; kitty mode: transmit-escape strings.
-  frames?: PetGrid[] | string[]
-  graphics?: string
-  imageId?: number
-  placeholder?: string[]
-  scale?: number
-  slug?: string
-  state?: string
-}
-
 type CacheEntry =
   | { kind: 'cells'; frameMs: number; frames: PetGrid[] }
   | { kind: 'kitty'; frameMs: number; frames: string[]; placeholder: string[]; color: string }
@@ -208,7 +194,7 @@ export function usePet(): PetRender {
   const sync = useCallback(
     (state: PetState) =>
       runSingleFlight(async () => {
-        const update = await requestPetUpdate<PetCellsResult>(gw, state, IS_TTY, meta => {
+        const update = await requestPetUpdate(gw, state, IS_TTY, meta => {
           const slug = meta.slug ?? ''
           const scale = meta.scale ?? 0
           const revision = meta.spritesheetRevision ?? ''
@@ -272,6 +258,7 @@ export function usePet(): PetRender {
           cache.current.set(`${slug}:${state}`, {
             color: res.color ?? '#000001',
             frameMs: res.frameMs ?? FRAME_MS,
+            // SAFETY: `graphics === 'kitty'` selects the transmit-escape branch of the frames union.
             frames: res.frames as string[],
             kind: 'kitty',
             placeholder: res.placeholder
@@ -279,6 +266,7 @@ export function usePet(): PetRender {
         } else if (res.frames?.length) {
           cache.current.set(`${slug}:${state}`, {
             frameMs: res.frameMs ?? FRAME_MS,
+            // SAFETY: the non-kitty branch of the frames union is the half-block cell grid.
             frames: res.frames as PetGrid[],
             kind: 'cells'
           })

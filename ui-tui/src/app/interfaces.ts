@@ -1,21 +1,27 @@
 import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
-import type { Usage } from '@hermes/shared/gateway-events'
+import type {
+  ApprovalChoice,
+  CompletionItem,
+  RpcMethods,
+  SessionCloseResult,
+  SystemBatteryResult,
+  Usage
+} from '@hermes/shared/gateway-events'
+import type {
+  BillingAutoReloadResult,
+  BillingCardInfo,
+  BillingStateResult,
+  ConfigSetResult,
+  SubscriptionPreviewResult,
+  SubscriptionStateResult,
+  SubscriptionUpgradeResult
+} from '@hermes/shared/gateway-events'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type {
-  BillingCardInfo,
-  BillingMutationResponse,
-  BillingStateResponse,
-  SessionCloseResponse,
-  SubscriptionPreviewResponse,
-  SubscriptionStateResponse,
-  SubscriptionUpgradeResponse
-} from '../gatewayTypes.js'
 import type { QueueItem } from '../hooks/useQueue.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
-import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
 import type { Theme } from '../theme.js'
 import type {
@@ -38,17 +44,6 @@ export interface StateSetter<T> {
 }
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
-
-export type BatteryCategory = 'bad' | 'critical' | 'dim' | 'good' | 'warn'
-
-// A single battery reading pushed from the Python gateway (`system.battery`).
-// `available` is false on machines without a battery; `percent` is 0-100.
-export interface BatteryInfo {
-  available: boolean
-  category: BatteryCategory
-  percent: null | number
-  plugged: null | boolean
-}
 
 export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
 
@@ -87,17 +82,8 @@ export interface SelectionApi {
   shiftSelection: (dRow: number, minRow: number, maxRow: number) => void
 }
 
-export interface CompletionItem {
-  display: string
-  /** Completion class from the gateway; `skill` is the only kind offered for
-   *  an inline `/skill` reference typed mid-message. */
-  kind?: string
-  meta?: string
-  text: string
-}
-
 export interface GatewayRpc {
-  <T extends RpcResult = RpcResult>(method: string, params?: Record<string, unknown>): Promise<null | T>
+  <M extends keyof RpcMethods>(method: M, params: RpcMethods[M]['params']): Promise<null | RpcMethods[M]['result']>
 }
 
 export interface GatewayServices {
@@ -118,6 +104,10 @@ export interface GatewayProviderProps {
 // auto_reload / step_up).  Backend is unchanged & shared with the CLI.
 
 export type BillingScreen = 'autoreload' | 'buy' | 'confirm' | 'limit' | 'overview' | 'stepup'
+
+/** The generated billing error envelope every billing/subscription mutation answers
+ *  (`BillingEnvelope` in the contract; the richer results only add fields to it). */
+export type BillingEnvelope = BillingAutoReloadResult
 
 /** Outcome of a charge attempt — lets the overlay route without tearing down. */
 export type BillingChargeOutcome =
@@ -155,7 +145,7 @@ export interface BillingOverlayCtx {
    * "I've added it — check again" so a card saved on the portal appears without
    * re-running /topup. Resolves null on failure (caller keeps the old state).
    */
-  refreshState: () => Promise<BillingStateResponse | null>
+  refreshState: () => Promise<BillingStateResult | null>
   /** Emit a transcript system line. */
   sys: (text: string) => void
   /** Validate a custom amount against state bounds + 2dp (mirrors the server). */
@@ -178,7 +168,7 @@ export interface BillingOverlayState {
   /** Set when on the 'confirm' screen for a buy. */
   pendingCharge?: BillingPendingCharge | null
   screen: BillingScreen
-  state: BillingStateResponse
+  state: BillingStateResult
 }
 
 // ── Subscription overlay (in-terminal plan change, V3) ──
@@ -203,8 +193,8 @@ export type SubscriptionStepUpRetry = { kind: 'apply' } | { kind: 'preview'; tie
 /** Outcome of a remote-spending step-up: granted, plus the typed denial (for copy). */
 export interface StepUpResult {
   granted: boolean
-  error?: string
-  message?: string
+  error?: null | string
+  message?: null | string
 }
 
 export interface SubscriptionOverlayCtx {
@@ -222,17 +212,17 @@ export interface SubscriptionOverlayCtx {
   /** Open an arbitrary portal recovery URL (e.g. an upgrade's SCA handoff). */
   openPortal: (url: string) => void
   /** Re-fetch subscription.state. */
-  refreshState: () => Promise<SubscriptionStateResponse | null>
+  refreshState: () => Promise<SubscriptionStateResult | null>
   /** POST /preview a change to `tierId` → the chargeless effect quote (or typed error). */
-  preview: (tierId: string) => Promise<SubscriptionPreviewResponse | null>
+  preview: (tierId: string) => Promise<SubscriptionPreviewResult | null>
   /** PUT pending-change: schedule a downgrade / same-price change to `tierId`. */
-  scheduleChange: (tierId: string) => Promise<BillingMutationResponse | null>
+  scheduleChange: (tierId: string) => Promise<BillingEnvelope | null>
   /** PUT pending-change: schedule a cancellation at period end. */
-  scheduleCancellation: () => Promise<BillingMutationResponse | null>
+  scheduleCancellation: () => Promise<BillingEnvelope | null>
   /** DELETE pending-change: clear a scheduled downgrade / cancellation (resume). */
-  resume: () => Promise<BillingMutationResponse | null>
+  resume: () => Promise<BillingEnvelope | null>
   /** POST /upgrade: charge the card on the subscription + flip the plan now. */
-  upgrade: (tierId: string, idempotencyKey?: string) => Promise<SubscriptionUpgradeResponse | null>
+  upgrade: (tierId: string, idempotencyKey?: string) => Promise<SubscriptionUpgradeResult | null>
   /**
    * Run the `billing.step_up` device flow (allow remote spending / "Remote
    * Spending"). Resolves `{granted}` plus the typed denial (`error`/`message`) so
@@ -251,7 +241,7 @@ export interface SubscriptionPendingChange {
   /** How it will be applied — drives which ctx call confirm makes. */
   kind: 'cancellation' | 'tier_change' | 'upgrade'
   /** The preview quote shown on confirm (null = the quote call failed). */
-  preview?: null | SubscriptionPreviewResponse
+  preview?: null | SubscriptionPreviewResult
   /**
    * Stable idempotency key for an upgrade charge, minted when confirm opens.
    * Reused on retry so a re-submit dedups server-side.
@@ -276,7 +266,7 @@ export interface SubscriptionOverlayState {
   /** Set on the 'result' screen: the outcome to render. */
   result?: null | SubscriptionResult
   screen: SubscriptionScreen
-  state: SubscriptionStateResponse
+  state: SubscriptionStateResult
   /** Held while on the 'stepup' screen: the action to replay once the grant lands. */
   stepUpRetry?: null | SubscriptionStepUpRetry
 }
@@ -319,7 +309,7 @@ export interface TranscriptRow {
 
 export interface UiState {
   battery: boolean
-  batteryStatus: BatteryInfo | null
+  batteryStatus: null | SystemBatteryResult
   bgTasks: Set<string>
   busy: boolean
   busyInputMode: BusyInputMode
@@ -535,11 +525,11 @@ export interface SlashHandlerContext {
     catalog: null | SlashCatalog
     getHistoryItems: () => Msg[]
     getLastUserMsg: () => string
-    maybeWarn: (value: unknown) => void
+    maybeWarn: (result: ConfigSetResult | null) => void
     setCatalog: StateSetter<null | SlashCatalog>
   }
   session: {
-    closeSession: (targetSid?: null | string) => Promise<unknown>
+    closeSession: (targetSid?: null | string) => Promise<null | SessionCloseResult>
     die: () => void
     dieWithCode: (code: number) => void
     guardBusySessionSwitch: (what?: string) => boolean
@@ -566,7 +556,7 @@ export interface SlashHandlerContext {
 }
 
 export interface AppLayoutActions {
-  answerApproval: (choice: string) => void
+  answerApproval: (choice: ApprovalChoice) => void
   answerClarify: (answer: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
@@ -574,7 +564,7 @@ export interface AppLayoutActions {
   answerVaultUnlock: (password: string) => void
   clearSelection: () => void
   activateLiveSession: (id: string) => void
-  closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
+  closeLiveSession: (id: string) => Promise<null | SessionCloseResult>
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void
   onModelSelect: (value: string) => void
@@ -635,11 +625,11 @@ export interface AppOverlaysProps {
   cols: number
   compIdx: number
   completions: CompletionItem[]
-  onApprovalChoice: (choice: string) => void
+  onApprovalChoice: (choice: ApprovalChoice) => void
   onClarifyAnswer: (value: string) => void
   onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
-  onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
+  onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResult>
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void

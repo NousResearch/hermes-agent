@@ -237,7 +237,13 @@ describe('createSlashHandler', () => {
 
   it('does not duplicate --global for explicit persistent model switches', () => {
     patchUiState({ sid: 'sid-abc' })
-    const ctx = buildCtx()
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'x-model --global' }))
+      }
+    })
 
     createSlashHandler(ctx)('/model x-model --global')
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
@@ -469,7 +475,7 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
     expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
       command: 'skills check',
-      session_id: null
+      session_id: ''
     })
   })
 
@@ -701,7 +707,7 @@ describe('createSlashHandler', () => {
     ['/reload-mcp', 'reload.mcp', { session_id: null }],
     ['/reload', 'reload.env', {}],
     ['/stop', 'process.stop', {}],
-    ['/fast status', 'config.get', { key: 'fast', session_id: null }],
+    ['/fast status', 'config.get', { key: 'fast', session_id: undefined }],
     ['/busy status', 'config.get', { key: 'busy' }],
     ['/indicator', 'config.get', { key: 'indicator' }]
   ])('routes %s through native RPC (no slash worker)', (command, method, params) => {
@@ -870,7 +876,7 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => {
       expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
         command: 'profile',
-        session_id: null
+        session_id: ''
       })
     })
     expect(ctx.transcript.sys).not.toHaveBeenCalledWith(expect.stringContaining('ambiguous command'))

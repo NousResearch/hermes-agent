@@ -1,6 +1,5 @@
 import type { RunExternalProcess } from '@hermes/ink'
 
-import type { SetupStatusResponse } from '../gatewayTypes.js'
 import type { LaunchResult } from '../lib/externalCli.js'
 
 import type { SlashHandlerContext } from './interfaces.js'
@@ -40,7 +39,7 @@ export async function runExternalSetup({ args, ctx, done, launcher, suspend }: R
     return
   }
 
-  const setup = await gateway.rpc<SetupStatusResponse>('setup.status', {})
+  const setup = await gateway.rpc('setup.status', {})
 
   if (setup?.provider_configured === false) {
     transcript.sys('still no provider configured')

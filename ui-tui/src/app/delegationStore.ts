@@ -1,6 +1,5 @@
+import type { DelegationStatusResult } from '@hermes/shared/gateway-events'
 import { atom } from 'nanostores'
-
-import type { DelegationStatusResponse } from '../gatewayTypes.js'
 
 export interface DelegationState {
   // Last known caps from `delegation.status` RPC.  null until fetched.
@@ -53,25 +52,14 @@ export const getOverlaySectionOpen = (title: string, defaultOpen: boolean): bool
   return title in state ? state[title]! : defaultOpen
 }
 
-/** Merge a raw RPC response into the store.  Tolerant of partial/omitted fields. */
-export const applyDelegationStatus = (r: DelegationStatusResponse | null | undefined) => {
-  if (!r) {
-    return
-  }
+/** Merge a `delegation.status` result into the store. */
+export const applyDelegationStatus = (r: DelegationStatusResult) =>
+  patchDelegationState({
+    maxConcurrentChildren: r.max_concurrent_children,
+    maxSpawnDepth: r.max_spawn_depth,
+    paused: r.paused,
+    updatedAt: Date.now()
+  })
 
-  const patch: Partial<DelegationState> = { updatedAt: Date.now() }
-
-  if (typeof r.max_spawn_depth === 'number') {
-    patch.maxSpawnDepth = r.max_spawn_depth
-  }
-
-  if (typeof r.max_concurrent_children === 'number') {
-    patch.maxConcurrentChildren = r.max_concurrent_children
-  }
-
-  if (typeof r.paused === 'boolean') {
-    patch.paused = r.paused
-  }
-
-  patchDelegationState(patch)
-}
+/** `delegation.pause` answers the new flag alone; the caps are unchanged. */
+export const applyDelegationPaused = (paused: boolean) => patchDelegationState({ paused, updatedAt: Date.now() })

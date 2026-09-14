@@ -1,17 +1,10 @@
+import type { PetCellsResult, PetInfoMetaResult } from '@hermes/shared/gateway-events'
+
 import type { GatewayClient } from '../gatewayClient.js'
 
-import { asRpcResult } from './rpc.js'
-
-export interface PetMetaResult {
-  enabled?: boolean
-  scale?: number
-  slug?: string
-  spritesheetRevision?: string
-}
-
-interface PetUpdate<TCells> {
-  cells: TCells | null
-  meta: PetMetaResult
+interface PetUpdate {
+  cells: PetCellsResult | null
+  meta: PetInfoMetaResult
 }
 
 type PetGateway = Pick<GatewayClient, 'request'>
@@ -47,26 +40,20 @@ export function createPetSingleFlight() {
  * This deliberately bypasses the transcript-logging RPC wrapper: pet display
  * is cosmetic, so an unavailable gateway must not print an error.
  */
-export async function requestPetUpdate<TCells>(
+export async function requestPetUpdate(
   gateway: PetGateway,
   state: string,
   graphics: boolean,
-  needsCells: (meta: PetMetaResult) => boolean
-): Promise<PetUpdate<TCells> | null> {
+  needsCells: (meta: PetInfoMetaResult) => boolean
+): Promise<PetUpdate | null> {
   try {
-    const meta = asRpcResult(await gateway.request('pet.info.meta')) as PetMetaResult | null
-
-    if (!meta) {
-      return null
-    }
+    const meta = await gateway.request('pet.info.meta', {})
 
     if (!meta.enabled || !needsCells(meta)) {
       return { cells: null, meta }
     }
 
-    const cells = asRpcResult(await gateway.request('pet.cells', { graphics, state })) as TCells | null
-
-    return { cells, meta }
+    return { cells: await gateway.request('pet.cells', { graphics, state }), meta }
   } catch {
     return null
   }

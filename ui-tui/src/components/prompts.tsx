@@ -1,4 +1,5 @@
 import { Box, Text, useInput, wrapAnsi } from '@hermes/ink'
+import type { ApprovalChoice, ClarifyQuestion, ClarifySingle } from '@hermes/shared/gateway-events'
 import { useEffect, useState } from 'react'
 
 import { isMac } from '../lib/platform.js'
@@ -9,18 +10,16 @@ import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 import { chipRowProps } from './overlayPrimitives.js'
 import { TextInput } from './textInput.js'
 
-const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
+const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const satisfies readonly ApprovalChoice[]
 // tirith warning present → backend downgrades "always" to session scope, so drop it.
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 const CMD_PREVIEW_LINES = 10
 
-type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
-
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
   if (req.choices) {
-    return req.choices.filter((choice): choice is ApprovalChoice => APPROVAL_OPTS.includes(choice as ApprovalChoice))
+    return req.choices
   }
 
   if (req.smartDenied) {
@@ -143,18 +142,28 @@ export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptPr
   )
 }
 
+/** The two clarify forms the wire sends, split once so the prompt reads plain fields. */
+const clarifyForms = (
+  params: ClarifyReq['params']
+): { batch: ClarifyQuestion[]; choices: string[]; single: ClarifySingle | null } =>
+  params.kind === 'single'
+    ? { batch: [], choices: params.choices ?? [], single: params }
+    : { batch: params.questions, choices: [], single: null }
+
+const clarifyHeadingText = (batch: ClarifyQuestion[], single: ClarifySingle | null) =>
+  batch.length > 0 ? `${batch.length} questions` : (single?.question ?? '')
+
 export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer, req, t }: ClarifyPromptProps) {
   const [sel, setSel] = useState(0)
   const [custom, setCustom] = useState('')
   const [typing, setTyping] = useState(false)
-  const choices = req.choices ?? []
-  const batch = req.questions ?? []
+  const { batch, choices, single } = clarifyForms(req.params)
   const isBatch = batch.length > 0
 
   // ── Batch (A-compact) state: status list + one expanded active question.
   // `active` walks the QUESTION list (Tab/Shift-Tab cycle it, any order);
   // `sel` is reused as the cursor within the active question's choice rows.
-  const answers = req.answers ?? {}
+  const answers = req.answers
   const firstUnanswered = batch.findIndex(q => answers[q.qid] === undefined)
   const [active, setActive] = useState(Math.max(0, firstUnanswered))
 
@@ -199,7 +208,7 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, onQuestionAnswer,
   const heading = (
     <Text bold>
       <Text color={t.color.accent}>ask</Text>
-      <Text color={t.color.text}> {isBatch ? `${batch.length} questions` : req.question}</Text>
+      <Text color={t.color.text}> {clarifyHeadingText(batch, single)}</Text>
     </Text>
   )
 
@@ -478,7 +487,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
 
 interface ApprovalPromptProps {
   cols?: number
-  onChoice: (s: string) => void
+  onChoice: (choice: ApprovalChoice) => void
   req: ApprovalReq
   t: Theme
 }

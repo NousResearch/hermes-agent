@@ -2,7 +2,6 @@ import { Box, Text, useInput } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
-import { asRpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 import { TextInput } from './textInput.js'
@@ -16,11 +15,8 @@ export function rosterViewport(height: number, count: number, cursor: number) {
 }
 
 export async function sendAgentSteer(gw: GatewayClient, sid: string, id: string, text: string) {
-  const result = asRpcResult<{ status: string }>(
-    await gw.request('subagent.steer', { session_id: sid, subagent_id: id, text })
-  )
-
-  const accepted = result?.status === 'queued'
+  const result = await gw.request('subagent.steer', { session_id: sid, subagent_id: id, text })
+  const accepted = result.status === 'queued'
 
   return {
     accepted,
@@ -112,13 +108,11 @@ export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
       pending = true
 
       try {
-        const result = asRpcResult<{ available: boolean; text: string; truncated: boolean }>(
-          await gw.request('subagent.tail', { session_id: sid, subagent_id: id })
-        )
+        const result = await gw.request('subagent.tail', { session_id: sid, subagent_id: id })
 
         if (active) {
           setTail(
-            result?.available
+            result.available
               ? `${result.truncated ? '[last 16 KiB]\n' : ''}${result.text}`
               : 'Live transcript unavailable; child may have finished. Progress and output remain below.'
           )

@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { useStdin, withInkSuspended } from '@hermes/ink'
+import type { ClipboardPasteResult, ImageAttachResult } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import { droppedTokens, imageToken, nextImageIndex } from '../domain/attachments.js'
-import type { ClipboardPasteResponse, ImageAttachResponse, InputDetectDropResponse } from '../gatewayTypes.js'
 import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
@@ -169,7 +169,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       for (const token of gone) {
         if (token.kind === 'image') {
-          void gw.request('image.detach', { path: token.path, session_id: getUiState().sid }).catch(() => {})
+          void gw.request('image.detach', { path: token.path, session_id: getUiState().sid ?? '' }).catch(() => {})
         }
       }
 
@@ -184,7 +184,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
    * of `~/shot.png look at this` keeps the caption).
    */
   const attachImageToken = useCallback(
-    (attached: ImageAttachResponse & { path?: string }, value: string, cursor: number): ComposerPasteResult => {
+    (attached: ClipboardPasteResult | ImageAttachResult, value: string, cursor: number): ComposerPasteResult => {
       const index = nextImageIndex(tokensRef.current)
       const label = imageToken(index)
 
@@ -213,9 +213,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         return null
       }
 
-      const r = await gw
-        .request<ClipboardPasteResponse & { path?: string }>('clipboard.paste', { session_id: sid })
-        .catch(() => null)
+      const r = await gw.request('clipboard.paste', { session_id: sid }).catch(() => null)
 
       if (r?.attached) {
         return attachImageToken(r, value, cursor)
@@ -242,7 +240,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
       if (sid && looksLikeDroppedPath(cleanedText)) {
         try {
-          const attached = await gw.request<ImageAttachResponse>('image.attach', {
+          const attached = await gw.request('image.attach', {
             path: cleanedText,
             session_id: sid
           })
@@ -259,7 +257,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
         }
 
         try {
-          const dropped = await gw.request<InputDetectDropResponse>('input.detect_drop', {
+          const dropped = await gw.request('input.detect_drop', {
             session_id: sid,
             text: cleanedText
           })
@@ -291,7 +289,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setComposerTokens(prev => trimTokens([...prev, { kind: 'paste', label, text: cleanedText }]))
 
       void gw
-        .request<{ path?: string }>('paste.collapse', { text: cleanedText })
+        .request('paste.collapse', { text: cleanedText })
         .then(r => {
           const path = r?.path
 
@@ -375,13 +373,11 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
           return null
         }
 
-        const attached = await gw
-          .request<ImageAttachResponse & { path?: string }>('image.attach', { path, session_id: sid })
-          .catch((e: Error) => {
-            sys(`error: ${e.message}`)
+        const attached = await gw.request('image.attach', { path, session_id: sid }).catch((e: Error) => {
+          sys(`error: ${e.message}`)
 
-            return null
-          })
+          return null
+        })
 
         return attached?.name ? attachImageToken(attached, value, cursor) : null
       }),

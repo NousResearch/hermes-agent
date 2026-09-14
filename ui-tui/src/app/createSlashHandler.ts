@@ -1,6 +1,5 @@
 import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
 
-import type { SlashExecResponse } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
@@ -153,7 +152,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
       }
     }
 
-    gw.request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: sid })
+    gw.request('slash.exec', { command: cmd.slice(1), session_id: sid ?? '' })
       .then(r => {
         if (stale()) {
           return

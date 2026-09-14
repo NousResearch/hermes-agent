@@ -5,9 +5,7 @@ import { TYPING_IDLE_MS } from '../config/timing.js'
 import { expandTokens } from '../domain/attachments.js'
 import { completionToApplyOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { queueItem, type QueueItem } from '../hooks/useQueue.js'
-import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import type { Msg } from '../types.js'
 
@@ -132,14 +130,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
       appendMessage({ role: 'user', text: `!${cmd}` })
       patchUiState({ busy: true, status: 'running…' })
 
-      gw.request<ShellExecResponse>('shell.exec', { command: cmd })
-        .then(raw => {
-          const r = asRpcResult<ShellExecResponse>(raw)
-
-          if (!r) {
-            return sys('error: invalid response: shell.exec')
-          }
-
+      gw.request('shell.exec', { command: cmd })
+        .then(r => {
           const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
 
           if (out) {
@@ -164,12 +156,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
       Promise.all(
         matches.map(m =>
           gw
-            .request<ShellExecResponse>('shell.exec', { command: m[1]! })
-            .then(raw => {
-              const r = asRpcResult<ShellExecResponse>(raw)
-
-              return [r?.stdout, r?.stderr].filter(Boolean).join('\n').trim()
-            })
+            .request('shell.exec', { command: m[1]! })
+            .then(r => [r.stdout, r.stderr].filter(Boolean).join('\n').trim())
             .catch(() => '(error)')
         )
       ).then(results => then(spliceMatches(text, matches, results)))
@@ -228,11 +216,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       if (mode === 'steer' && live.sid) {
-        gw.request<SessionSteerResponse>('session.steer', { session_id: live.sid, text: item.text })
-          .then(raw => {
-            const r = asRpcResult<SessionSteerResponse>(raw)
-
-            if (r?.status !== 'queued') {
+        gw.request('session.steer', { session_id: live.sid, text: item.text })
+          .then(r => {
+            if (r.status !== 'queued') {
               fallback('steer rejected — message queued for next turn')
             }
           })

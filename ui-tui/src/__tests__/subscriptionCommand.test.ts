@@ -1,9 +1,9 @@
+import type { SubscriptionStateResult } from '@hermes/shared/gateway-events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { subscriptionCommands } from '../app/slash/commands/subscription.js'
 import { findSlashCommand } from '../app/slash/registry.js'
-import type { SubscriptionStateResponse } from '../gatewayTypes.js'
 
 vi.mock('../lib/openExternalUrl.js', () => ({
   openExternalUrl: vi.fn(() => true)
@@ -11,7 +11,7 @@ vi.mock('../lib/openExternalUrl.js', () => ({
 
 const subscriptionCommand = subscriptionCommands.find(cmd => cmd.name === 'subscription')!
 
-const loggedInState = (overrides: Partial<SubscriptionStateResponse> = {}): SubscriptionStateResponse => ({
+const loggedInState = (overrides: Partial<SubscriptionStateResult> = {}): SubscriptionStateResult => ({
   ok: true,
   logged_in: true,
   is_admin: true,

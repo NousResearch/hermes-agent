@@ -10,7 +10,8 @@ import { INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 describe('constants', () => {
-  it('ZERO', () => expect(ZERO).toEqual({ calls: 0, input: 0, output: 0, total: 0 }))
+  it('ZERO', () =>
+    expect(ZERO).toMatchObject({ calls: 0, completion: 0, input: 0, output: 0, prompt: 0, reasoning: 0, total: 0 }))
 
   it('string arrays are populated', () => {
     for (const arr of [FACES, PLACEHOLDERS, VERBS]) {

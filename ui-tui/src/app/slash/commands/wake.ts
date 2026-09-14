@@ -1,4 +1,5 @@
-import type { WakeStartResponse, WakeStatusResponse, WakeStopResponse } from '../../../gatewayTypes.js'
+import type { WakeStartResult, WakeStatusResult } from '@hermes/shared/gateway-events'
+
 import { setWakeUserDisabled } from '../../wakeState.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
@@ -18,7 +19,7 @@ const START_REASON_TEXT: Record<string, string> = {
   unavailable: 'unavailable'
 }
 
-const startFailureLine = (r: WakeStartResponse): string => {
+const startFailureLine = (r: WakeStartResult): string => {
   const reason = r.reason ?? 'unknown'
   const base = START_REASON_TEXT[reason] ?? reason
   const owner = r.owner_surface ? ` (owned by ${r.owner_surface})` : ''
@@ -27,7 +28,7 @@ const startFailureLine = (r: WakeStartResponse): string => {
   return `wake: not started — ${base}${owner}${hint}`
 }
 
-const statusLine = (r: WakeStatusResponse): string => {
+const statusLine = (r: WakeStatusResult): string => {
   const phrase = r.phrase ? ` for “${r.phrase}”` : ''
   const provider = r.provider ? ` · ${r.provider}` : ''
 
@@ -61,9 +62,9 @@ const runOn = (ctx: SlashRunCtx): void => {
   // so the choice survives restarts (the backend only persists on gesture
   // paths; reconnect auto-arm never does).
   ctx.gateway
-    .rpc<WakeStartResponse>('wake.start', { persist: true, surface: 'tui' })
+    .rpc('wake.start', { persist: true, surface: 'tui' })
     .then(
-      ctx.guarded<WakeStartResponse>(r => {
+      ctx.guarded(r => {
         if (!r.started) {
           return ctx.transcript.sys(startFailureLine(r))
         }
@@ -84,9 +85,9 @@ const runOff = (ctx: SlashRunCtx): void => {
   setWakeUserDisabled(true)
 
   ctx.gateway
-    .rpc<WakeStopResponse>('wake.stop', { persist: true })
+    .rpc('wake.stop', { persist: true })
     .then(
-      ctx.guarded<WakeStopResponse>(r => {
+      ctx.guarded(r => {
         const saved = r.disabled_persisted ? ' · disabled in config' : ''
 
         if (r.stopped) {
@@ -103,8 +104,8 @@ const runOff = (ctx: SlashRunCtx): void => {
 
 const runStatus = (ctx: SlashRunCtx): void => {
   ctx.gateway
-    .rpc<WakeStatusResponse>('wake.status', {})
-    .then(ctx.guarded<WakeStatusResponse>(r => ctx.transcript.sys(statusLine(r))))
+    .rpc('wake.status', {})
+    .then(ctx.guarded(r => ctx.transcript.sys(statusLine(r))))
     .catch(ctx.guardedErr)
 }
 

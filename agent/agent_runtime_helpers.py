@@ -1775,9 +1775,23 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     _ensure_copilot_headers(client_kwargs)
     # OpenCode Free is served anonymously: any unrecognized bearer is a 401, so an empty
     # Authorization default_header overrides the SDK's "Bearer <api_key>".
-    if agent.provider == "opencode-free":
-        from hermes_cli.models import opencode_zen_free_headers
-        client_kwargs["default_headers"] = {**(client_kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
+    # After ALIASES maps opencode-zen → opencode, provider is no longer
+    # "opencode-free"; gate on the shared predicate so healed *-free sessions
+    # still blank Authorization (#93890). Unguarded: swallowing here would
+    # emit Bearer <placeholder> and surface as the same 401 this guard exists to stop.
+    from hermes_cli.models import is_opencode_keyless, opencode_zen_free_headers
+    if is_opencode_keyless(
+        getattr(agent, "provider", ""),
+        client_kwargs.get("api_key") or getattr(agent, "api_key", ""),
+    ):
+        # Merge: overlay keyless Auth/attribution. Unlike
+        # `_apply_client_headers_for_base_url` (which assigns the whole
+        # route set), a later rebuild must not drop headers another path
+        # already placed on client_kwargs.
+        client_kwargs["default_headers"] = {
+            **(client_kwargs.get("default_headers") or {}),
+            **opencode_zen_free_headers(),
+        }
     # All primary construction and recovery paths must identify Hermes to the official Codex
     # endpoint, including snapshots with custom header overrides.
     from agent.codex_headers import apply_required_codex_headers

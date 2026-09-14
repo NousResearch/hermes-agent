@@ -170,11 +170,11 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
     # OpenCode Zen free tier: the keyless placeholder must never hit the wire (relay 401s any
-    # unrecognized bearer) — blank the Authorization header.
-    with contextlib.suppress(Exception):
-        from hermes_cli.models import OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER, opencode_zen_free_headers
-        if api_key == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER:
-            kwargs["default_headers"] = {**(kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
+    # unrecognized bearer) — blank the Authorization header. Same predicate as the
+    # primary rebuild paths so this gate cannot drift (#93890).
+    from hermes_cli.models import is_opencode_keyless, opencode_zen_free_headers
+    if is_opencode_keyless("", api_key):
+        kwargs["default_headers"] = {**(kwargs.get("default_headers") or {}), **opencode_zen_free_headers()}
     _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Hermes owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Hermes sees one failure.
@@ -4337,10 +4337,23 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return sync_client, model
     sync_base_url = str(sync_client.base_url)
     async_kwargs = {"api_key": sync_client.api_key, "base_url": sync_base_url}
+    from hermes_cli.models import is_opencode_keyless, opencode_zen_free_headers
+    oc_keyless_headers = None
+    if is_opencode_keyless(
+        _effective_provider_for_client(sync_client, ""),
+        getattr(sync_client, "api_key", ""),
+    ):
+        oc_keyless_headers = opencode_zen_free_headers()
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
     elif _is_official_codex_base_url(sync_base_url):
         headers = _apply_user_default_headers(_codex_cloudflare_headers(sync_client.api_key, base_url=sync_base_url))
+    elif oc_keyless_headers is not None:
+        # Rebuild from (api_key, base_url) does not copy sync default_headers.
+        # Without this, the SDK re-emits Bearer <placeholder> and the relay
+        # 401s every aux vision/title/compression call (#93890 / #93897).
+        headers = dict(_apply_user_default_headers(dict(oc_keyless_headers)) or oc_keyless_headers)
+        headers["Authorization"] = ""
     else:
         # Provider for the profile-header fallback is inferred from the hostname.
         try:

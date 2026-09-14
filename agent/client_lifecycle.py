@@ -888,18 +888,30 @@ class ClientLifecycleMixin:
 
     # ------------------------------------------------------------------ route-derived client config
     def _apply_client_headers_for_base_url(self, base_url: str, *, apply_user_headers: bool = True) -> None:
+        from hermes_cli.models import is_opencode_keyless, opencode_zen_free_headers
+        oc_keyless = is_opencode_keyless(
+            getattr(self, "provider", ""),
+            self._client_kwargs.get("api_key") or getattr(self, "api_key", ""),
+        )
         for host, build in _ROUTE_DEFAULT_HEADERS:
             if base_url_host_matches(base_url, host):
                 self._client_kwargs["default_headers"] = build(self, base_url)
                 break
         else:
-            # No URL-specific headers — fall back to profile.default_headers, else clear.
-            self._client_kwargs.pop("default_headers", None)
-            with suppress(Exception):
-                from providers import get_provider_profile
-                profile = get_provider_profile(self.provider)
-                if profile and profile.default_headers and (profile_headers := dict(profile.default_headers)):
-                    self._client_kwargs["default_headers"] = profile_headers
+            # No URL-specific headers. Keyless OpenCode free-tier must keep
+            # Authorization: "" — popping then applying profile attribution
+            # would drop it, and the SDK would emit Bearer <placeholder>
+            # (#93890). Replace, do not merge: this method assigns the route's
+            # header set, same as the host-specific branches above.
+            if oc_keyless:
+                self._client_kwargs["default_headers"] = opencode_zen_free_headers()
+            else:
+                self._client_kwargs.pop("default_headers", None)
+                with suppress(Exception):
+                    from providers import get_provider_profile
+                    profile = get_provider_profile(self.provider)
+                    if profile and profile.default_headers and (profile_headers := dict(profile.default_headers)):
+                        self._client_kwargs["default_headers"] = profile_headers
         # User overrides win over URL/profile defaults for the same route; a swap to another endpoint must not
         # inherit them.
         if apply_user_headers:
@@ -911,6 +923,11 @@ class ClientLifecycleMixin:
                 apply_custom_provider_extra_headers_to_client_kwargs(self._client_kwargs, base_url)
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)
+        # Pin after user/extra overlays — same last-write as `_to_async_client`.
+        if oc_keyless:
+            headers = dict(self._client_kwargs.get("default_headers") or {})
+            headers["Authorization"] = ""
+            self._client_kwargs["default_headers"] = headers
 
     def _apply_user_default_headers(self) -> None:
         """Merge config ``model.default_headers`` onto the OpenAI client (user wins; WAFs rejecting SDK headers).

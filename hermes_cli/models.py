@@ -2132,6 +2132,24 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
 _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
+
+def is_opencode_keyless(provider: Optional[str], api_key: Optional[str]) -> bool:
+    """True when the OpenAI client must send anonymous OpenCode free-tier headers.
+
+    The dedicated ``opencode-free`` provider (and public aliases ``free``,
+    ``opencode_free``) is always keyless. After ``ALIASES`` maps
+    ``opencode-zen → opencode``, a healed ``*-free`` session still carries
+    ``OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER`` even though ``provider`` is no
+    longer ``opencode-free``. This predicate normalizes the provider itself so
+    callers cannot drift by passing a raw alias (#93890).
+    """
+    # Empty must not ride ``normalize_provider``'s openrouter default.
+    raw = (provider or "").strip()
+    return (
+        (normalize_provider(raw) if raw else "") == "opencode-free"
+        or (api_key or "") == OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER
+    )
+
 # ``-free``-suffixed slugs that are KEYED (Go-subscription) models, NOT anonymous-servable —
 # excluded from the keyless catalog despite the suffix (ox-alpha-free is Ox Alpha's Go twin).
 # The Go relay delisted ox-alpha-free (2026-09-09; GET /zen/go/v1/models omits it, POST → 401),

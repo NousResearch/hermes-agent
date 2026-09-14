@@ -157,6 +157,79 @@ def test_opencode_zen_applies_attribution_via_profile_fallback(mock_openai):
 
 
 @patch("agent.process_bootstrap.OpenAI")
+def test_opencode_zen_keyless_placeholder_keeps_empty_authorization(mock_openai):
+    """A healed *-free session under aliased provider=opencode must not
+    lose the empty Authorization header on rebuild (#93890)."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="opencode-zen-free-keyless",
+        base_url="https://opencode.ai/zen/v1",
+        model="x-preview-f-free",
+        provider="opencode",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    # Simulate a rebuild that previously popped/replaced these headers.
+    agent._client_kwargs["default_headers"] = {"X-Title": "stale"}
+    agent._apply_client_headers_for_base_url("https://opencode.ai/zen/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers.get("Authorization") == ""
+    assert headers["X-Title"] == "Hermes Agent"
+
+
+@patch("agent.process_bootstrap.OpenAI")
+def test_opencode_zen_keyed_client_does_not_blank_authorization(mock_openai):
+    """A real Zen key must not pick up Authorization: \"\" on rebuild.
+    The keyless placeholder gate must not fire for a paid session; missing
+    Authorization is fine (the SDK injects Bearer from api_key)."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="sk-real-opencode",
+        base_url="https://opencode.ai/zen/v1",
+        model="claude-sonnet-4-5",
+        provider="opencode-zen",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._client_kwargs["default_headers"] = {"Authorization": "Bearer sk-real-opencode"}
+    agent._apply_client_headers_for_base_url("https://opencode.ai/zen/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert "Authorization" not in headers or headers["Authorization"] != ""
+    assert headers["X-Title"] == "Hermes Agent"
+
+
+@patch("agent.process_bootstrap.OpenAI")
+def test_opencode_zen_keyless_survives_user_header_override(mock_openai):
+    """User model.default_headers must not restore a bearer on a keyless
+    rebuild — empty Authorization is pinned last (#93890)."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="opencode-zen-free-keyless",
+        base_url="https://opencode.ai/zen/v1",
+        model="x-preview-f-free",
+        provider="opencode",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    def _inject_user_auth():
+        headers = dict(agent._client_kwargs.get("default_headers") or {})
+        headers["Authorization"] = "Bearer from-user-config"
+        agent._client_kwargs["default_headers"] = headers
+
+    agent._apply_user_default_headers = _inject_user_auth
+    agent._apply_client_headers_for_base_url("https://opencode.ai/zen/v1")
+
+    headers = agent._client_kwargs["default_headers"]
+    assert headers.get("Authorization") == ""
+
+
+@patch("agent.process_bootstrap.OpenAI")
 def test_routed_client_preserves_openai_sdk_custom_headers(mock_openai):
     mock_openai.return_value = MagicMock()
     routed_client = SimpleNamespace(

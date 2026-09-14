@@ -8,9 +8,13 @@ than an await + refresh round-trip."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+import random
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -40,6 +44,17 @@ class _ProviderEntry:
     pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
 
 
+# Processes sharing one tokens file (gateway, dashboard, desktop app backend) all reached expiry
+# in the same second, each POSTed a refresh, and the losers sent a rotated-out refresh token
+# (400, then 429) and parked the server. Each process now refreshes early by its own random
+# margin, refreshes under a per-server file lock after re-reading the tokens file, and adopts
+# tokens another process wrote when its refresh fails.
+_REFRESH_SKEW_FRACTION = (0.05, 0.15)  # of the token's remaining lifetime
+_REFRESH_SKEW_CAP_S = 600.0
+_REFRESH_LOCK_WAIT_S = 15.0
+_REFRESH_RETRY_STATUSES = (400, 401, 429)
+
+
 class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
     """OAuthClientProvider with pre-flow disk-mtime reload (external refreshes become visible to
     a running session), expiry seeding on cold load, pre-flight metadata discovery, dead-client
@@ -62,6 +77,10 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
+        self._hermes_refresh_skew = random.uniform(*_REFRESH_SKEW_FRACTION)
+        self._hermes_protocol_version: Optional[str] = None
+        self._hermes_prm_attempted = False
+        self._hermes_true_expiry: Optional[float] = None
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
@@ -82,6 +101,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         tokens = self.context.current_tokens
         if tokens is not None and tokens.expires_in is not None:
             self.context.update_token_expiry(tokens)
+            self._hermes_apply_refresh_skew(tokens)
         if tokens is not None and self.context.oauth_metadata is None:
             try:
                 await self._prefetch_oauth_metadata()
@@ -90,6 +110,165 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             else:
                 from tools.mcp_oauth_provider import enforce_refresh_token_issuer
                 enforce_refresh_token_issuer(self.context)  # metadata (issuer) only just became known
+
+    def _hermes_apply_refresh_skew(self, tokens: Any) -> None:
+        """Treat the token as due a per-process random margin before it really expires, so the
+        processes sharing its file stop refreshing in the same second."""
+        lifetime = getattr(tokens, "expires_in", None)
+        self._hermes_true_expiry = self.context.token_expiry_time
+        if self.context.token_expiry_time and lifetime:
+            margin = min(_REFRESH_SKEW_CAP_S, self._hermes_refresh_skew * float(lifetime))
+            self.context.token_expiry_time -= margin
+
+    async def _store_tokens(self, token_response) -> None:
+        await super()._store_tokens(token_response)
+        self._hermes_apply_refresh_skew(token_response)
+
+    async def _refresh_token(self):
+        """The SDK sends RFC 8707 ``resource`` on a refresh only when the triggering request carries
+        MCP-Protocol-Version, and a new session's ``initialize`` carries none: that refresh left
+        ``resource`` out and Cloudflare answered 400 while the same token refreshed from any other
+        request. Use this provider's last negotiated version (else the SDK's latest) so every
+        refresh of a grant is built the same way."""
+        if not self.context.protocol_version:
+            from mcp.types import LATEST_PROTOCOL_VERSION
+            self.context.protocol_version = self._hermes_protocol_version or LATEST_PROTOCOL_VERSION
+        await self._hermes_ensure_protected_resource_metadata()
+        return await super()._refresh_token()
+
+    async def _hermes_ensure_protected_resource_metadata(self) -> None:
+        """A refresh must name the resource the grant was issued for (PRM ``resource``). Without PRM
+        the SDK derives it from the server URL, query string included, so Cloudflare's
+        ``/mcp?codemode=false`` refreshed as that and got 400 against a grant for ``/mcp``, until the
+        401 branch discovered PRM. Cold-loaded providers restore ASM but not PRM: fetch PRM once
+        before the first refresh."""
+        if self.context.protected_resource_metadata is not None or self._hermes_prm_attempted:
+            return
+        self._hermes_prm_attempted = True
+        from tools.mcp_tool import sdk_httpx
+        httpx = sdk_httpx()
+        if httpx is None:  # pragma: no cover — SDK import would have failed
+            return
+        from mcp.client.auth.utils import (
+            build_protected_resource_metadata_discovery_urls, create_oauth_metadata_request,
+            handle_protected_resource_response)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for url in build_protected_resource_metadata_discovery_urls(None, self.context.server_url):
+                try:
+                    response = await client.send(create_oauth_metadata_request(url))
+                except httpx.HTTPError as exc:
+                    logger.debug("MCP OAuth '%s': PRM discovery to %s failed: %s", self._hermes_server_name, url, exc)
+                    continue
+                prm = await handle_protected_resource_response(response)
+                if prm:
+                    self.context.protected_resource_metadata = prm
+                    return
+
+    async def _hermes_adopt_disk_tokens(self) -> bool:
+        """Load tokens another process wrote; True when they differ from ours and are valid."""
+        storage = self._hermes_storage()
+        disk = await storage.get_tokens() if storage is not None else None
+        current = self.context.current_tokens
+        if disk is None or not disk.access_token or disk.access_token == getattr(current, "access_token", None):
+            return False
+        self.context.current_tokens = disk
+        self.context.update_token_expiry(disk)
+        self._hermes_apply_refresh_skew(disk)
+        return self.context.is_token_valid()
+
+    async def _handle_refresh_response(self, response) -> bool:
+        """A failed refresh usually means another process rotated the refresh token first: adopt
+        what it wrote (re-reading once after a short wait) before clearing and re-authorizing."""
+        if 200 <= response.status_code < 300:
+            return await super()._handle_refresh_response(response)
+        for attempt in range(2):
+            if await self._hermes_adopt_disk_tokens():
+                logger.info("MCP OAuth '%s': refresh returned %s after another process refreshed; using its tokens",
+                            self._hermes_server_name, response.status_code)
+                return True
+            if attempt or response.status_code not in _REFRESH_RETRY_STATUSES:
+                break
+            import anyio
+            await anyio.sleep(random.uniform(1.0, 3.0))
+        error = await self._hermes_refresh_error_code(response)
+        true_expiry = self._hermes_true_expiry
+        tokens = self.context.current_tokens
+        if (response.status_code == 400 and true_expiry and time.time() < true_expiry
+                and tokens is not None and tokens.access_token):
+            # Some servers (Cloudflare) refuse a refresh while the access token is still valid, which
+            # turned the early-refresh margin into an hourly 400 from every process. Keep the valid
+            # token and refresh at its real expiry from now on; the refresh lock still serializes it.
+            self._hermes_refresh_skew = 0.0
+            self.context.token_expiry_time = true_expiry
+            logger.info("MCP OAuth '%s': early refresh refused (400 %s) while the token is valid for %ds more; "
+                        "keeping it and refreshing at expiry from now on", self._hermes_server_name, error or "?",
+                        int(true_expiry - time.time()))
+            return True
+        if error:
+            logger.warning("MCP OAuth '%s': token refresh refused: %s %s", self._hermes_server_name,
+                           response.status_code, error)
+        return await super()._handle_refresh_response(response)
+
+    @staticmethod
+    async def _hermes_refresh_error_code(response) -> Optional[str]:
+        """The OAuth ``error`` code of a refused refresh (RFC 6749 §5.2), e.g. invalid_grant; never
+        the body or description, which a provider could fill with anything."""
+        try:
+            body = json.loads(await response.aread())
+            code = str(body.get("error") or "")
+        except Exception:
+            return None
+        return code if re.fullmatch(r"[A-Za-z0-9_.-]{1,40}", code) else None
+
+    async def _hermes_refresh_lock_if_due(self):
+        """When a refresh is due, take the server's cross-process refresh lock and re-read the
+        tokens file; return the held lock file, or None when no refresh is needed (another process
+        refreshed while we waited) or the lock could not be had in time."""
+        storage = self._hermes_storage()
+        if storage is None:
+            return None
+        async with self.context.lock:
+            if not self._initialized:
+                await self._initialize()
+            if self.context.is_token_valid() or not self.context.can_refresh_token():
+                return None
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - no advisory file locks on Windows; skew and adoption still apply
+            return None
+        import anyio
+        path = storage._tokens_path().with_name(storage._tokens_path().name + ".refresh.lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = open(path, "a+")
+        deadline = time.monotonic() + _REFRESH_LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > deadline:
+                    lock_file.close()
+                    logger.warning("MCP OAuth '%s': refresh lock busy for %.0fs; refreshing without it",
+                                   self._hermes_server_name, _REFRESH_LOCK_WAIT_S)
+                    return None
+                await anyio.sleep(0.1)
+        async with self.context.lock:
+            if await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home):
+                await self._initialize()
+            if self.context.is_token_valid():
+                self._hermes_release_refresh_lock(lock_file)
+                return None
+        return lock_file
+
+    @staticmethod
+    def _hermes_release_refresh_lock(lock_file) -> None:
+        if lock_file is None:
+            return
+        with contextlib.suppress(ImportError, OSError, ValueError):
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        with contextlib.suppress(OSError):
+            lock_file.close()
 
     async def _prefetch_oauth_metadata(self) -> None:
         """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL
@@ -203,6 +382,15 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
         except Exception as exc:  # pragma: no cover — defensive
             self._log_nonfatal("pre-flow disk-watch", exc)
+        headers = getattr(request, "headers", None)
+        negotiated = headers.get("mcp-protocol-version") if headers is not None else None
+        if negotiated:
+            self._hermes_protocol_version = negotiated
+        refresh_lock = None
+        try:
+            refresh_lock = await self._hermes_refresh_lock_if_due()
+        except Exception as exc:  # pragma: no cover — the SDK's own refresh path still runs
+            self._log_nonfatal("refresh lock", exc)
         # Bridge the bidirectional generator by hand: a naive ``async for item in inner: yield
         # item`` DISCARDS the responses httpx sends back via ``asend``, and the SDK crashes on None.
         # Manually bridge the bidirectional generator protocol. httpx's auth_flow driver
@@ -222,6 +410,9 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                 # The SDK holds context.lock for its whole generator, even while HTTPX waits on
                 # the MCP request. Release it for that request only; OAuth transitions stay serialized.
                 if outgoing is request:
+                    # Any refresh is done and saved by now: let the other processes read it.
+                    self._hermes_release_refresh_lock(refresh_lock)
+                    refresh_lock = None
                     tokens = self.context.current_tokens
                     sent_access_token = tokens.access_token if tokens is not None else None
                     self.context.lock.release()
@@ -246,6 +437,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         except StopAsyncIteration:
             self._persist_oauth_metadata_if_changed()  # metadata discovered lazily in the 401 branch
         finally:
+            self._hermes_release_refresh_lock(refresh_lock)
             if resource_lock_released:
                 # Balance the SDK's surrounding ``async with`` even when HTTPX cancels/closes the
                 # flow mid-request; shield only this local bookkeeping.

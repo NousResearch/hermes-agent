@@ -1000,6 +1000,26 @@ def test_clean_update_preserves_marker_when_runtime_inventory_is_incomplete(
     assert "runtime inventory was incomplete" in capsys.readouterr().out
 
 
+def test_completion_write_failure_finalizes_partial_receipt(monkeypatch, tmp_path):
+    args = _update_args()
+    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
+    monkeypatch.setattr(
+        update_cmd_fleet, "_record_fleet_restart_completion", lambda *_args: False
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        hermes_main.cmd_update(args)
+
+    assert excinfo.value.code == 1
+    assert update_cmd._fleet_restart_pending_marker_path().is_file()
+    receipt = json.loads(
+        (get_hermes_home() / "logs" / "update_receipts" / "latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert receipt["outcome"] == "partial"
+
+
 def test_clean_update_escalates_surviving_serve_as_unaccounted(
     monkeypatch, tmp_path, capsys
 ):

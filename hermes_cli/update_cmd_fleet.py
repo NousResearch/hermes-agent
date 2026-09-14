@@ -1735,6 +1735,21 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         print("\n⚠ Pre-update runtime inventory was incomplete — verification incomplete.")
         restart.incomplete = True
 
+    # Persist completion before finalizing the receipt. Finalization clears the active receipt,
+    # so a later completion-write failure could otherwise leave a durable "success" receipt and
+    # no marker-backed obligation for the command boundary to correct.
+    if not restart.incomplete:
+        marker = (
+            _parse_fleet_restart_marker(successful_marker_body)
+            if successful_marker_body is not None
+            else None
+        )
+        if (
+            marker is None
+            or not _record_fleet_restart_completion(successful_marker_body, marker, None)
+        ):
+            restart.incomplete = True
+
     _receipt_path = None
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
@@ -1748,15 +1763,6 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     if restart.incomplete:
         # Code updated but a gateway may still run stale modules: fail so automation
         # doesn't treat the fleet as healthy; leave the pending marker for catch-up.
-        sys.exit(1)
-    # Bind completion to the marker observed before verification. The recorder compares those
-    # exact bytes before and after its atomic write, so a newer updater's marker cannot inherit
-    # this run's verification or be deleted by it.
-    marker = _parse_fleet_restart_marker(successful_marker_body) if successful_marker_body is not None else None
-    if (
-        marker is None
-        or not _record_fleet_restart_completion(successful_marker_body, marker, _receipt_path)
-    ):
         sys.exit(1)
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.

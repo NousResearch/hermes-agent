@@ -355,6 +355,29 @@ def _append_file_mutation_footer(agent, final_response, logger):
     return final_response
 
 
+def _append_unverified_claim_footer(agent, final_response, logger):
+    """Append a verification-claim footer when tests/checks are asserted without ledger proof.
+
+    P0 of the verify_on_stop extension (#89182): same pattern as the file-mutation
+    footer. Idempotent with the stop-gate interim qualify path. Default remains off.
+    """
+    try:
+        from agent.verification_stop import (
+            qualify_unverified_claim,
+            verify_on_stop_enabled,
+        )
+
+        if verify_on_stop_enabled():
+            final_response = qualify_unverified_claim(
+                final_response,
+                session_id=getattr(agent, "session_id", None),
+                changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
+            )
+    except Exception as _claim_err:
+        logger.debug("verification claim footer failed: %s", _claim_err)
+    return final_response
+
+
 def _explain_abnormal_exit(agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger):
     """Turn-completion explainer: on abnormal exits, surface one explanation from
     ``_turn_exit_reason``. Only acts when no usable reply exists (empty, "(empty)",
@@ -497,6 +520,7 @@ def finalize_turn(
     # Response transforms apply only to real, uninterrupted responses.
     if final_response and not interrupted:
         final_response = _append_file_mutation_footer(agent, final_response, logger)
+        final_response = _append_unverified_claim_footer(agent, final_response, logger)
     if not interrupted:
         final_response = _explain_abnormal_exit(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,

@@ -82,6 +82,45 @@ class TurnFacadeMixin:
                 conversation_history=conversation_history,
             )
             if admission.early_result is not None:
+                hard_interrupted = bool(
+                    admission.early_result.pop("_hard_interrupted", False)
+                )
+                if (
+                    admission.early_result.get("interrupted")
+                    and not hard_interrupted
+                    and user_message is not None
+                    and user_message != ""
+                ):
+                    from agent.message_metadata import append_message
+                    from agent.session_persistence import _PERSIST_AFTER_ADMISSION_INTERRUPT
+
+                    durable_content = user_message
+                    if persist_user_message is not None and (
+                        not isinstance(user_message, list)
+                        or isinstance(persist_user_message, list)
+                    ):
+                        durable_content = persist_user_message
+                    deferred_user = {
+                        "role": "user",
+                        "content": durable_content,
+                        _PERSIST_AFTER_ADMISSION_INTERRUPT: True,
+                    }
+                    if (
+                        isinstance(user_message, str)
+                        and user_message != durable_content
+                    ):
+                        deferred_user["api_content"] = user_message
+                    if persist_user_display_kind:
+                        deferred_user["display_kind"] = persist_user_display_kind
+                    if persist_user_display_metadata:
+                        deferred_user["display_metadata"] = persist_user_display_metadata
+                    if persist_user_platform_id is not None:
+                        deferred_user["platform_message_id"] = persist_user_platform_id
+                    append_message(
+                        admission.early_result["messages"],
+                        deferred_user,
+                        timestamp=persist_user_timestamp,
+                    )
                 relay_outcome = (
                     "cancelled" if admission.early_result.get("interrupted") else "timed_out"
                 )

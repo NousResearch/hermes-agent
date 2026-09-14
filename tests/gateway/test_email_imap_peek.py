@@ -45,16 +45,30 @@ def _make_adapter(extra: dict) -> EmailAdapter:
         return EmailAdapter(config)
 
 
-def _fetched_uids(adapter: EmailAdapter, *, unseen: bytes = b"5 2501", fetch_status: str = "OK"):
+def _fetched_uids(
+    adapter: EmailAdapter,
+    *,
+    unseen: bytes = b"5 2501",
+    uidvalidity: int | None = None,
+    all_uids: bytes = b"",
+    fetch_status: str = "OK",
+    fetch_fail_uids: set[bytes] | None = None,
+):
     """Run _fetch_new_messages against a mocked IMAP server; return the list
     of UIDs that actually reached the imap.uid('fetch', ...) call."""
     mock_imap = MagicMock()
+    mock_imap.response.return_value = (
+        ("UIDVALIDITY", [str(uidvalidity).encode()])
+        if uidvalidity is not None
+        else None
+    )
 
     def _uid(cmd, *args):
         if cmd == "search":
-            return ("OK", [unseen])
+            return ("OK", [all_uids if args[-1] == "ALL" else unseen])
         if cmd == "fetch":
-            if fetch_status != "OK":
+            uid = args[0]
+            if fetch_status != "OK" or (fetch_fail_uids and uid in fetch_fail_uids):
                 return ("NO", [])
             return ("OK", [(b"1 (BODY.PEEK[])", _SAMPLE_RAW)])
         return ("OK", [b""])
@@ -271,3 +285,175 @@ def test_failed_fetch_does_not_advance_consumed_watermark():
     assert attempted == [b"3"]
     assert adapter._uid_watermark == 2
     assert b"3" not in adapter._seen_uids
+
+
+# --- UIDVALIDITY epoch tracking ----------------------------------------------
+
+def test_uidvalidity_change_resets_and_reseeds_uid_state():
+    """A new UIDVALIDITY epoch may restart UIDs below the old watermark; the
+    adapter must reseed from the new epoch and process only later arrivals."""
+    adapter = _make_adapter({})
+    adapter._uidvalidity = 10
+    adapter._seed_seen_uids(str(i).encode() for i in range(1, 2501))
+    assert adapter._uid_watermark == 2500
+
+    fetched = _fetched_uids(
+        adapter,
+        unseen=b"1 2 3",
+        uidvalidity=11,
+        all_uids=b"1 2",
+    )
+
+    assert adapter._uidvalidity == 11
+    assert fetched == [b"3"]
+    assert adapter._uid_watermark == 3
+
+
+def test_uidvalidity_unknown_to_known_reseeds_existing_replay_state():
+    """A newly visible epoch cannot inherit a watermark from an unknown epoch."""
+    adapter = _make_adapter({})
+    adapter._seed_seen_uids([b"100", b"101"])
+    assert adapter._uidvalidity is None
+
+    fetched = _fetched_uids(
+        adapter,
+        unseen=b"1 2 3",
+        uidvalidity=11,
+        all_uids=b"1 2",
+    )
+
+    assert adapter._uidvalidity == 11
+    assert fetched == [b"3"]
+    assert adapter._uid_watermark == 3
+
+
+def test_uidvalidity_reseed_snapshot_survives_empty_inbox_early_return():
+    adapter = _make_adapter({})
+    adapter._uidvalidity = 10
+    adapter._seed_seen_uids([b"100", b"101"])
+    adapter._save_uid_snapshot()
+
+    fetched = _fetched_uids(
+        adapter,
+        unseen=b"",
+        uidvalidity=11,
+        all_uids=b"1 2",
+    )
+
+    assert fetched == []
+    snapshot = adapter._seen_uids_snapshot[adapter._address]
+    assert snapshot["uidvalidity"] == 11
+    assert snapshot["uid_watermark"] == 2
+    assert snapshot["seen_uids"] == {b"1", b"2"}
+
+
+def test_persistent_fetch_failure_does_not_starve_later_uids():
+    """A failed UID remains retryable without blocking newer messages."""
+    adapter = _make_adapter({})
+    adapter._seed_seen_uids([b"1", b"2"])
+
+    first_attempt = _fetched_uids(
+        adapter,
+        unseen=b"3 4 5",
+        fetch_fail_uids={b"4"},
+    )
+
+    assert first_attempt == [b"3", b"4", b"5"]
+    assert adapter._uid_watermark == 5
+    assert adapter._pending_fetch_uids == {b"4"}
+    assert adapter._last_fetch_failed is True
+
+    # A persistent refusal retries only the gap; already-consumed UID 5 does
+    # not replay even though BODY.PEEK[] leaves it UNSEEN.
+    second_attempt = _fetched_uids(
+        adapter,
+        unseen=b"4 5",
+        fetch_fail_uids={b"4"},
+    )
+    assert second_attempt == [b"4"]
+    assert adapter._pending_fetch_uids == {b"4"}
+
+    # Once the server accepts the UID, the exception is cleared while the
+    # watermark remains at the highest consumed UID.
+    recovered = _fetched_uids(adapter, unseen=b"4 5")
+    assert recovered == [b"4"]
+    assert adapter._pending_fetch_uids == set()
+    assert adapter._uid_watermark == 5
+
+
+# --- reconnect snapshot (dict payload + epoch verification) -------------------
+
+def test_reconnect_snapshot_preserves_full_uid_state():
+    first = _make_adapter({})
+    first._uidvalidity = 10
+    first._seed_seen_uids([b"1", b"2"])
+    first._record_consumed_uid(b"3")
+    first._pending_fetch_uids.add(b"4")
+    first._save_uid_snapshot()
+
+    second = _make_adapter({})
+    snapshot = second._seen_uids_snapshot[second._address]
+
+    assert second._restore_uid_snapshot(snapshot, current_uidvalidity=10) is True
+    assert second._seen_uids == {b"1", b"2", b"3"}
+    assert second._uid_watermark == 3
+    assert second._uidvalidity == 10
+    assert second._pending_fetch_uids == {b"4"}
+
+
+def test_reconnect_snapshot_rejects_unknown_current_uidvalidity():
+    first = _make_adapter({})
+    first._uidvalidity = 10
+    first._seed_seen_uids([b"100", b"101"])
+    first._save_uid_snapshot()
+
+    second = _make_adapter({})
+    snapshot = second._seen_uids_snapshot[second._address]
+
+    assert second._restore_uid_snapshot(snapshot, current_uidvalidity=None) is False
+    assert second._seen_uids == set()
+    assert second._uid_watermark is None
+
+
+def test_reconnect_snapshot_rejects_changed_uidvalidity():
+    first = _make_adapter({})
+    first._uidvalidity = 10
+    first._seed_seen_uids([b"100", b"101"])
+    first._save_uid_snapshot()
+
+    second = _make_adapter({})
+    snapshot = second._seen_uids_snapshot[second._address]
+
+    assert second._restore_uid_snapshot(snapshot, current_uidvalidity=11) is False
+    assert second._seen_uids == set()
+    assert second._uid_watermark is None
+
+
+def test_reconnect_fails_closed_when_current_uidvalidity_is_unavailable():
+    """Do not restore a stale watermark when the mailbox epoch is unknown."""
+    EmailAdapter._seen_uids_snapshot.clear()
+    first = _make_adapter({})
+    first._uidvalidity = 10
+    first._seed_seen_uids([b"100", b"101"])
+    first._save_uid_snapshot()
+
+    second = _make_adapter({})
+    mock_imap = MagicMock()
+    mock_imap.response.return_value = None
+    mock_imap.uid.return_value = ("OK", [b"1 2"])
+
+    with patch(
+        "plugins.platforms.email.adapter.imaplib.IMAP4_SSL",
+        return_value=mock_imap,
+    ), patch("plugins.platforms.email.adapter._send_imap_id"), patch.object(
+        second, "_connect_smtp", return_value=MagicMock()
+    ):
+        connected = asyncio.run(second.connect(is_reconnect=True))
+
+    assert connected is False
+    assert second.fatal_error_code == "email_imap_connect_error"
+    assert second._seen_uids == set()
+    assert second._uid_watermark is None
+    mock_imap.uid.assert_not_called()
+    mock_imap.logout.assert_called_once()
+    EmailAdapter._seen_uids_snapshot.clear()

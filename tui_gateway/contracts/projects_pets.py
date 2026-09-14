@@ -258,7 +258,7 @@ class ProjectTreeRepo(Result):
 
 
 class ProjectTreeNode(Result):
-    """``project_tree._project_node`` — explicit, auto (git root) or the synthetic Home bucket."""
+    """``project_tree._project_node`` — closed project → repo → lane → session graph."""
 
     id: str
     label: str

@@ -3692,9 +3692,48 @@ def _fallback_request_kwargs(
     return fb_kwargs
 
 
+def _resolve_fallback_timeout(
+    *,
+    task: Optional[str],
+    fb_label: str,
+    destination: _FallbackDestination,
+    effective_timeout: float,
+    timeout_override: Optional[float],
+) -> float:
+    """Resolve a fallback deadline without leaking the primary route policy."""
+    entry_timeout = _fallback_entry_timeout(task, fb_label)
+    if entry_timeout is not None:
+        if entry_timeout != effective_timeout:
+            logger.info(
+                "Auxiliary %s: %s using its configured timeout %.0fs "
+                "(task-level was %.0fs)",
+                task or "call", fb_label, entry_timeout, effective_timeout,
+            )
+        return entry_timeout
+
+    if task != "compression" or timeout_override is not None:
+        return effective_timeout
+
+    destination_timeout = _effective_aux_timeout(
+        task,
+        None,
+        base_url=destination.base_url,
+    )
+    if destination_timeout != effective_timeout:
+        logger.info(
+            "Auxiliary %s: %s resolved endpoint timeout %.0fs "
+            "(primary was %.0fs)",
+            task,
+            fb_label,
+            destination_timeout,
+            effective_timeout,
+        )
+    return destination_timeout
+
+
 def _plan_fallback_candidate(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str],
-    effective_timeout: float, apply_fast_lane: bool, **request,
+    effective_timeout: float, apply_fast_lane: bool, timeout_override: Optional[float] = None, **request,
 ) -> Tuple[_FallbackDestination, Dict[str, Any], Callable[[str, Any, Optional[str]], Dict[str, Any]]]:
     """Resolve the destination + first-attempt kwargs for a fallback candidate.
 
@@ -3702,15 +3741,11 @@ def _plan_fallback_candidate(
     kwargs for the credential-refreshed retry destination. A configured-chain entry's own
     ``timeout`` overrides ``effective_timeout``.
     """
-    fb_timeout = _fallback_entry_timeout(task, fb_label)
-    if fb_timeout is not None and fb_timeout != effective_timeout:
-        logger.info(
-            "Auxiliary %s: %s using its configured timeout %.0fs "
-            "(task-level was %.0fs)",
-            task or "call", fb_label, fb_timeout, effective_timeout,
-        )
-        effective_timeout = fb_timeout
     destination = _fallback_destination(task, fb_client, fb_model, fb_label)
+    effective_timeout = _resolve_fallback_timeout(
+        task=task, fb_label=fb_label, destination=destination,
+        effective_timeout=effective_timeout, timeout_override=timeout_override,
+    )
     task_config = _get_auxiliary_task_config(task) if task == "compression" else {}
     fallback_entry = _fallback_chain_entry(task, fb_label) or {}
     common = dict(
@@ -3762,7 +3797,7 @@ def _plan_fallback_auth_retry(
 def _call_fallback_candidate_sync(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
-    effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    effective_timeout: float, timeout_override: Optional[float] = None, effective_extra_body: dict, reasoning_config: Optional[dict],
 ) -> Optional[Any]:
     """Call one fallback candidate with stale-credential recovery: on an auth error refresh its
     credentials and retry once with a rebuilt client; if that also auth-fails, quarantine the
@@ -3774,7 +3809,7 @@ def _call_fallback_candidate_sync(
     """
     destination, fb_kwargs, rebuild = _plan_fallback_candidate(
         fb_client, fb_model, fb_label, task=task, effective_timeout=effective_timeout,
-        apply_fast_lane=True, messages=messages, tools=tools, temperature=temperature,
+        timeout_override=timeout_override, apply_fast_lane=True, messages=messages, tools=tools, temperature=temperature,
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
     )
@@ -3814,12 +3849,12 @@ def _call_fallback_candidate_sync(
 async def _call_fallback_candidate_async(
     fb_client: Any, fb_model: Optional[str], fb_label: str, *, task: Optional[str], messages: list,
     temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
-    effective_timeout: float, effective_extra_body: dict, reasoning_config: Optional[dict],
+    effective_timeout: float, timeout_override: Optional[float] = None, effective_extra_body: dict, reasoning_config: Optional[dict],
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync` (no fast-lane cap on this wire)."""
     destination, fb_kwargs, rebuild = _plan_fallback_candidate(
         fb_client, fb_model, fb_label, task=task, effective_timeout=effective_timeout,
-        apply_fast_lane=False, messages=messages, tools=tools, temperature=temperature,
+        timeout_override=timeout_override, apply_fast_lane=False, messages=messages, tools=tools, temperature=temperature,
         max_tokens=max_tokens, effective_extra_body=effective_extra_body,
         reasoning_config=reasoning_config,
     )
@@ -5833,13 +5868,44 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
-def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
-    """Explicit ``timeout`` wins, else config; compression gets a floor so a reasoning model
-    summarising a large context isn't cut off."""
-    if timeout is not None:
-        return timeout
-    effective = _get_task_timeout(task)
-    return max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS) if task == "compression" else effective
+def _is_local_aux_base_url(base_url: Optional[str]) -> bool:
+    """Return whether an auxiliary endpoint is bound to the local machine."""
+    try:
+        host = base_url_hostname(str(base_url or ""))
+    except Exception:
+        return False
+    return (host or "").strip().lower().strip("[]") in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "0.0.0.0",
+    }
+
+
+def _effective_aux_timeout(
+    task: str,
+    timeout: Optional[float],
+    *,
+    base_url: Optional[str] = None,
+) -> float:
+    """Resolve the effective timeout for an auxiliary LLM call.
+
+    Uses the caller-provided ``timeout`` when given; otherwise reads
+    ``auxiliary.{task}.timeout`` from config via :func:`_get_task_timeout`.
+    For the ``compression`` task only, applies a bounded floor so a reasoning
+    model summarising a large context is not cut off by the default timeout
+    (#54915). The floor is skipped for local endpoints and when the caller
+    passes an explicit ``timeout=``; a configured value above the floor is
+    kept unchanged.
+    """
+    effective = timeout if timeout is not None else _get_task_timeout(task)
+    if (
+        timeout is None
+        and task == "compression"
+        and not _is_local_aux_base_url(base_url)
+    ):
+        effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
+    return effective
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:
@@ -6797,7 +6863,6 @@ def _prepare_aux_request(
         resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
         resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
     )
-    effective_timeout = _effective_aux_timeout(task, timeout)
     request_provider = effective_provider or resolved_provider
     if not async_mode:
         compression_config = _get_auxiliary_task_config("compression") if task == "compression" else {}
@@ -6817,6 +6882,9 @@ def _prepare_aux_request(
             logger.info("Auxiliary %s: using %s (%s)%s",
                          task, request_provider or "auto", final_model or "default",
                          f" at {base_info}" if base_info and "openrouter" not in base_info else "")
+    effective_timeout = _effective_aux_timeout(
+        task, timeout, base_url=base_info or resolved_base_url,
+    )
     # Client's actual base_url so endpoint-specific temperature overrides work on
     # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
     kwargs = _build_call_kwargs(
@@ -7312,6 +7380,7 @@ def _plan_aux_call(
         resolved_api_key=req.resolved_api_key, resolved_api_mode=req.resolved_api_mode,
         main_runtime=main_runtime, final_model=req.final_model, extra_headers=extra_headers,
     )
+    candidate_kwargs["timeout_override"] = timeout
     return req, retry_kwargs, candidate_kwargs
 
 

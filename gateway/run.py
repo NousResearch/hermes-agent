@@ -2815,6 +2815,16 @@ def _checkpoint_agent_kwargs(config: dict | None) -> dict:
         "checkpoint_max_file_size_mb": cp_cfg.get("max_file_size_mb", defaults["max_file_size_mb"])}
 
 
+def _resolve_gateway_isolation_skip_flags(
+    platform_skip_context: bool = False,
+) -> tuple[bool, bool]:
+    """Compose the platform context opt-out with process-wide isolation."""
+    from agent.isolation import resolve_agent_isolation
+
+    isolated = resolve_agent_isolation()
+    return bool(platform_skip_context or isolated), isolated
+
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml (single source of truth), else temporary AIAgents (e.g. /compress)
     use the hardcoded default, which fails under openai-codex."""

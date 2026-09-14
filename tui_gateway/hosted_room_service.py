@@ -78,7 +78,7 @@ class HostedRoomService:
         self.attachments = HostedRoomAttachmentStore(self.db_path)
         self._pending_actions: dict[tuple[str, str], dict[str, Any]] = {}
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(self.db_path)
-        self.rpc = HostedRoomServerRPC(server)
+        self.rpc = self._make_rpc(server)
         self._link_load_error = None
         self._peer_route_status: dict[tuple[str, str], str] = {}
         self.peer_routes: dict[tuple[str, str], PeerMemberRoute] = {}
@@ -102,6 +102,9 @@ class HostedRoomService:
             poll_interval_seconds=_HOSTED_ROOM_IDLE_FALLBACK_SECONDS,
             active_poll_interval_seconds=_HOSTED_ROOM_ACTIVE_POLL_SECONDS,
             turn_timeout_seconds=_hosted_room_turn_timeout_seconds())
+
+    def _make_rpc(self, server):
+        return HostedRoomServerRPC(server)
 
     def _load_stored_links(self) -> None:
         """Rehydrate persisted peer routes; collect per-link errors into one string."""
@@ -130,9 +133,15 @@ class HostedRoomService:
         return self.db_path.parent
 
     def local_profiles(self) -> tuple[str, ...]:
+        from hermes_constants import named_profile_is_deleted
+
         profiles, profiles_dir = {"default"}, self.root / "profiles"
         if profiles_dir.is_dir():
-            profiles.update(path.name for path in profiles_dir.iterdir() if path.is_dir())
+            # ``profiles/.deleted/`` is the tombstone dir `hermes profile delete` leaves behind, not a
+            # profile: feeding it to validate_roster failed plan_next_task on every cycle (#106847).
+            profiles.update(
+                path.name for path in profiles_dir.iterdir()
+                if path.is_dir() and not path.name.startswith(".") and not named_profile_is_deleted(path))
         return tuple(sorted(profiles))
 
     def bindings(self) -> tuple[HostedRoomBinding, ...]:
@@ -153,6 +162,9 @@ class HostedRoomService:
             raise hosted_rooms.AuthorityConflictError(
                 "This Group Chat is managed by another gateway.")
         return room
+
+    def _owned_authority(self, room_id: str) -> tuple[str, int]:
+        return _authority(self._owned_room(room_id))
 
     def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Path]:
         from tools.bot_relay import acquire_turn_lock
@@ -402,6 +414,7 @@ class HostedRoomService:
 
     def _publish_terminal_tasks(self, room: Mapping[str, Any]) -> bool:
         changed, room_id, local_profiles = False, str(room["room_id"]), self.local_profiles()
+        cursor = int(room["latest_seq"])
         for task in self._list_tasks(room_id, _TERMINAL_STATUSES):
             status, execution_generation = task["status"], int(task["execution_generation"])
             if self.policy_checkpoint.publication_exists(
@@ -423,14 +436,10 @@ class HostedRoomService:
                 room, task_events, plan, status=status, result=task.get("result"),
                 execution_generation=execution_generation if status == "deferred" else None,
                 local_profiles=local_profiles)
-            try:
-                for event in publication.events:
-                    appended = hosted_rooms.append_event(self.db_path, **event.append_kwargs(room_id),
-                                                         expected_latest_seq=publication_cursor)
-                    publication_cursor = max(publication_cursor, int(appended["seq"]))
-            except hosted_rooms.EventCursorConflictError:
-                # Retry publication on an ordinary prepare poll, never rerun the model.
-                continue
+            for event in publication.events:
+                appended = hosted_rooms.append_event(
+                    self.db_path, **event.append_kwargs(room_id), expected_latest_seq=cursor)
+                cursor = max(cursor, int(appended["seq"]))
             changed = True
         return changed
 
@@ -453,7 +462,12 @@ class HostedRoomService:
         with self._policy_lock:
             room = self._room(binding.room_id)
             snapshot = self._policy_snapshot(room)  # sync() side effect feeds the publish below
-            if self._publish_terminal_tasks(room):
+            try:
+                changed = self._publish_terminal_tasks(room)
+            except hosted_rooms.EventCursorConflictError:
+                # Rebuild publication next poll; the settled task is never readmitted.
+                return
+            if changed:
                 room = self._room(binding.room_id)
                 snapshot = self._policy_snapshot(room)
             self.policy_checkpoint.compact_completed(room_id=binding.room_id)
@@ -509,66 +523,18 @@ class HostedRoomService:
         self.runtime.wakeup()
         return room
 
-
-    def send(
-        self,
-        *,
-        room_id: str,
-        event_id: str,
-        payload: Any,
-    ) -> dict[str, Any]:
+    def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
         room = self._owned_room(room_id)
-        member_ids = tuple(
-            str(member.get("member_id") or member.get("profile") or "")
-            for member in room["members"]
-        )
         if isinstance(payload, Mapping) and "thread_id" not in payload:
             payload = {**payload, "thread_id": event_id}
         normalized = discussion.validate_user_payload(
-            payload,
-            member_ids=member_ids,
-        )
-        transitioned_attachment_ids: tuple[str, ...] = ()
-        if normalized.get("attachments"):
-            normalized["attachments"], transitioned_attachment_ids = (
-                self.attachments.commit_message_with_receipt(
-                    room_id=room_id,
-                    event_id=event_id,
-                    manifest=normalized["attachments"],
-                    recipient_member_ids=member_ids,
-                    viewer_access=True,
-                    hold_until_event=True,
-                )
-            )
-        try:
-            event = hosted_rooms.append_event(
-                self.db_path,
-                room_id=room_id,
-                event_id=event_id,
-                kind="message.user",
-                actor={"kind": "user", "id": "desktop"},
-                payload=normalized,
-                authority_gateway_id=str(room["authority_gateway_id"]),
-                authority_epoch=int(room["authority_epoch"]),
-            )
-        except Exception:
-            if transitioned_attachment_ids:
-                self.attachments.abort_message_commit(
-                    room_id=room_id,
-                    event_id=event_id,
-                    attachment_ids=transitioned_attachment_ids,
-                )
-            raise
-        if normalized.get("attachments"):
-            self.attachments.retain_event(room_id=room_id, event_id=event_id)
-        binding = next(
-            (
-                candidate
-                for candidate in self.bindings()
-                if candidate.room_id == room_id
-            ),
-            None,
-        )
+            payload, member_ids=(member["member_id"] for member in room["members"]))
+        gateway_id, epoch = self._owned_authority(room_id)
+        from gateway.session_hosted_attachments import append_user_event
+        event = append_user_event(
+            self, room_id=room_id, event_id=event_id, payload=normalized,
+            gateway_id=gateway_id, epoch=epoch)
+        binding = next((b for b in self.bindings() if b.room_id == room_id), None)
         if binding is None:
             raise hosted_rooms.RoomNotFoundError("hosted room not found")
         self.prepare_room(binding)

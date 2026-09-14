@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict
 
+from hermes_cli.sqlite_util import add_column_if_missing
+
 
 # Keep the extracted store's log records on the API server logger.
 logger = logging.getLogger("gateway.platforms.api_server")
@@ -101,7 +103,7 @@ class RunIdempotencyStore:
         columns = {str(row[1]) for row in self._conn.execute("PRAGMA table_info(run_idempotency)")}
         for column, ddl in _MIGRATIONS.items():
             if column not in columns:
-                self._conn.execute(f"ALTER TABLE run_idempotency ADD COLUMN {column} {ddl}")
+                add_column_if_missing(self._conn, "run_idempotency", column, f"{column} {ddl}")
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS run_idempotency_run_id ON run_idempotency(run_id)")
         self._conn.commit()
@@ -220,6 +222,12 @@ class RunIdempotencyStore:
             self._conn.execute(
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))
+            self._conn.commit()
+
+    def forget(self, scope: str, key: str) -> None:
+        """Release a reservation whose run was refused before it existed."""
+        with self._lock:
+            self._conn.execute("DELETE FROM run_idempotency WHERE scope=? AND idempotency_key=?", (scope, key))
             self._conn.commit()
 
     def close(self) -> None:

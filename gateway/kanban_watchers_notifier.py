@@ -7,6 +7,7 @@ per-subscription delivery (``_KanbanNotification``) live here.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from functools import partial
 from pathlib import Path
@@ -486,6 +487,16 @@ class _KanbanNotification:
         logger.info("kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                     self.task_id, self.platform_str, self.sub["chat_id"], self.sub_profile or "default", self.wake_kinds)
 
+    def _owner_scope(self):
+        """Runtime scope of the subscription's profile under multiplex, else a no-op context."""
+        runner = self.runner
+        if not (self.sub_profile and getattr(getattr(runner, "config", None), "multiplex_profiles", False)):
+            return contextlib.nullcontext()
+        from gateway.run import _async_profile_runtime_scope
+        from gateway.session import SessionSource
+        source = SessionSource(platform=self.plat, chat_id=self.sub["chat_id"], profile=self.sub_profile)
+        return _async_profile_runtime_scope(runner._resolve_profile_home_for_source(source))
+
     async def wake(self) -> None:
         """Wake the creator session (raises on failure): push adapters get a full SessionSource, non-push a raw self-post."""
         from gateway.wake import deliver_wake
@@ -537,9 +548,12 @@ class _KanbanNotification:
             raise RuntimeError(f"adapter send() reported failure: {getattr(_send_res, 'error', None) or 'unknown error'}")
         logger.debug("kanban notifier: delivered %s event for %s to %s/%s on board %s",
                      ev.kind, self.task_id, self.platform_str, sub["chat_id"], self.board_slug)
-        # Upload artifact paths from the completion payload / legacy result as
-        # native files. Only on ``completed`` so retries never spam attachments.
-        if ev.kind == "completed":
+        # Upload artifact paths from the handoff payload / legacy result as
+        # native files. Both handoff kinds stage files for exactly this: a
+        # review-bound card's files exist precisely so the human sees them at
+        # handoff time. Retry exposure matches ``completed`` (the sub cursor is
+        # rewound only when a send failed).
+        if ev.kind in ("completed", "review_requested"):
             try:
                 await self.runner._deliver_kanban_artifacts(
                     adapter=adapter, chat_id=sub["chat_id"], metadata=metadata,
@@ -601,10 +615,13 @@ class _KanbanNotification:
         from gateway.wake import adapter_supports_push
         self.is_push_adapter = adapter_supports_push(adapter)
 
-        if not await self._send_pings():
-            return
-        # All text pings delivered (or skipped for non-push / wake-only).
-        self.build_wake_text()
+        # Pings, artifact uploads (media policy) and the wake text (display.language) all read the
+        # SUBSCRIBER profile's config; the notifier thread itself runs in the launch profile's scope.
+        async with self._owner_scope():
+            if not await self._send_pings():
+                return
+            # All text pings delivered (or skipped for non-push / wake-only).
+            self.build_wake_text()
         wake_kinds, is_push = self.wake_kinds, self.is_push_adapter
         from gateway.wake import WakeNotAccepted
 

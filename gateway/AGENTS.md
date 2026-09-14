@@ -75,9 +75,49 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
-Cron deliveries are NOT mirrored into the target gateway session — they land in their own cron
-session with a header/footer frame so the main conversation's role alternation stays intact
+Canonical local CLI/TUI/Desktop sessions admit completion and watch events into the same durable
+FIFO as human input, retaining the private local launch policy and `internal_notification` display
+kind. Observers neither own nor consume those turns. Accepted local automation survives owner
+restart; an interrupted started turn remains unknown and pauses its followers. Watch hits carry
+separate event IDs even for identical text, but their pre-admission process queue is not durable.
+
+Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
+reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
+or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
+briefs are labelled user turns appended at a turn boundary, preserving role alternation
 (`cron/AGENTS.md`).
+
+## `/login` (off-turn, paired DM only)
+
+`/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and
+`desktop="settings"`, listed in `run_busy.py::_PLAIN_COMMANDS`, and handled by
+`GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
+`chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
+conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
+an agent peer, so posting a consent link there would publish it.
+
+**It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
+approves the code owns this gateway's inference and connectors for every chat it serves. Slash
+gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, every user allowed to
+DM the bot can run it. Operators of shared gateways must set it.
+
+The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
+executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
+the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
+close/checkpoint. One attempt per process, stamped with the identity that started it: the same
+identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
+chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
+worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
+`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
+task is dying and its adapters may already be gone — but if the server had already completed the
+transfer it still persists, because that transfer is irreversible.
+
+On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
+session model override pinned to it. It does not switch agents in place and does not write a model
+override: `settle_after_upgrade` already moved `model.default`/`model.base_url` in the config, every
+turn re-resolves the config and the credentials, and `_agent_config_signature` already forces a
+rebuild when the route changes — so an in-place swap buys no cache warmth and an override would pin
+an expiring access token that nothing refreshes.
 
 ## Gateway lifecycle vs. the Desktop app
 
@@ -102,14 +142,16 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   installed per turn by `_profile_runtime_scope`. All profile-level env config — credentials
   (`app_secret`, tokens) AND authorization (`FEISHU_ALLOWED_USERS`, `{PLATFORM}_ALLOW_ALL_USERS`,
   `GATEWAY_ALLOW_ALL_USERS`, `group_policy`, `allow_bots`) — is read scope-aware: adapters via
-  `_get_scoped_secret()` (canonical fail-closed copy: `plugins/platforms/feishu/adapter.py`),
-  gateway authz via `_auth_env()` / `_platform_gate_env()` (`authz_mixin.py`). Scope installed +
+  `gateway.platforms._shared.get_scoped_secret` (the ONE implementation; adapters import it as
+  `_get_scoped_secret`; `extra_or_secret` / `seed_extra_from_env` / `env_is_connected` build on it),
+  gateway authz via `_shared.platform_gate_env` (imported by `authz_mixin.py` as `_auth_env`). Scope installed +
   multiplex active → a scoped miss returns the **default**, NEVER `os.environ` (a leaked allowlist
   skips the allow-all check and silently rejects every secondary-profile sender, #86905). The
   unscoped default-profile path (`UnscopedSecretError`) and single-profile deployments keep the
-  `os.environ` read — there it IS the profile's own value. `_get_scoped_secret` is copy-pasted
-  across ~15 adapters: when touching one, verify fail-closed semantics and never reintroduce the
-  `except _UnscopedSecretError: val = os.getenv(...)` fallback-after-miss shape.
+  `os.environ` read — there it IS the profile's own value. Never re-implement the reader in an
+  adapter (the `try get_secret / except UnscopedSecretError: os.getenv` shape drifts into a
+  fallback-after-miss leak); import the shared one. `tests/gateway/test_shared_platform_boilerplate.py`
+  asserts every plugin's `_env_enablement` reads only through it.
 
 ## Tests
 

@@ -53,8 +53,8 @@ class SessionRecoveryMixin:
         parts = str(session_key).split(":")
         if len(parts) < 2 or parts[0] != "agent":
             return None
-        namespace = parts[1] or "main"
-        return "default" if namespace == "main" else namespace
+        from gateway.session import profile_from_session_key_namespace
+        return profile_from_session_key_namespace(parts[1] or "main")
 
     @staticmethod
     def _active_profile_name() -> str:
@@ -277,8 +277,10 @@ class SessionRecoveryMixin:
         recorder = getattr(db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
+        from gateway.session_api import api_storage_source
+        from gateway.session_a2a import storage_source
         peer = dict(
-            source=source.platform.value, user_id=source.user_id, session_key=session_key,
+            source=storage_source(db, source, session_id, api_storage_source(db, session_id, source.platform.value)), user_id=source.user_id, session_key=session_key,
             chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
         try:
             recorder(

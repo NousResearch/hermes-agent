@@ -133,7 +133,18 @@ def install_exit_flush_signal_handlers() -> bool:
 def _transport_is_dead(transport) -> bool:
     # _detached_ws_transport is the post-disconnect drop sentinel. _stdio_transport is the REAL transport for
     # standalone `hermes --tui` and must NOT count as dead.
-    return transport is _detached_ws_transport or getattr(transport, "_closed", None) is True
+    if transport is _detached_ws_transport:
+        return True
+    if isinstance(transport, FanoutTransport):
+        # A fan-out is never the sentinel and has no ``_closed`` of its own, so without this arm every
+        # multi-client session reads as alive forever — the TTL reaper, the LRU cap and the #77129 disconnect
+        # revalidation all gate on this predicate. A fan-out can legitimately end up empty, or holding nothing
+        # but closed sockets, with no disconnect passing through _close_sessions_for_transport: a failed write
+        # prunes the peer that failed. It is dead exactly when no peer of its own is alive, and an empty one is
+        # dead. Peers are always leaf transports (attach flattens a fan-out argument instead of nesting it), so
+        # this recurses one level at most.
+        return all(_transport_is_dead(peer) for peer in transport.transports())
+    return getattr(transport, "_closed", None) is True
 
 
 def _session_is_lru_evictable(sid: str, session: dict) -> bool:

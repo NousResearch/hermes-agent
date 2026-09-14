@@ -679,6 +679,7 @@ class HostedRoomRuntime:
                 transport.submit(
                     **_session_kw(profile, session_id), prompt=prompt,
                     task=attempt.identity, execution_generation=attempt.execution_generation,
+                    **({"attachments": task["payload"]["attachments"]} if task["payload"].get("attachments") else {}),
                     on_terminal=lambda receipt: self._on_terminal(binding, attempt, receipt))
                 if attachment_staging_active:
                     transport.commit_attachment_staging(

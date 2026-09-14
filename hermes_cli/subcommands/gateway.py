@@ -8,6 +8,33 @@ from typing import Callable
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
 
 
+# `start`/`restart` on a named profile refuse while the default multiplexer serves it (a second gateway
+# would double-bind its platforms); `gateway run` carries its own broader --force text.
+_FORCE_SERVED_PROFILE_HELP = (
+    "Start a separate gateway for this profile even when the default multiplexer already serves it "
+    "(not recommended: two pollers on one bot token, port conflicts)")
+
+
+class _GatewayCommandParser(argparse.ArgumentParser):
+    """Ensure's parser errors share its machine-readable command boundary."""
+
+    def __init__(self, *args, ensure_json=False, **kwargs):
+        self.ensure_json = ensure_json
+        super().__init__(*args, **kwargs)
+
+    def parse_known_args(self, args=None, namespace=None):
+        parsed, unknown = super().parse_known_args(args, namespace)
+        if self.ensure_json and unknown:
+            self.error("unknown arguments")
+        return parsed, unknown
+
+    def error(self, message):
+        if not self.ensure_json:
+            return super().error(message)
+        print('{"endpoint":null,"reason_code":"invalid_invocation","state":"inaccessible"}')
+        self.exit(2, "gateway ensure: invalid invocation\n")
+
+
 def _flag(parser, *names, help, **kw):
     parser.add_argument(*names, action="store_true", help=help, **kw)
 
@@ -31,7 +58,8 @@ def build_gateway_parser(
     """Attach the ``gateway`` and ``proxy`` subcommands to ``subparsers``."""
     gateway_parser = subparsers.add_parser("gateway", help="Messaging gateway management",
         description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)")
-    gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
+    gateway_subparsers = gateway_parser.add_subparsers(
+        dest="gateway_command", parser_class=_GatewayCommandParser)
 
     gateway_run = gateway_subparsers.add_parser(
         "run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
@@ -61,11 +89,24 @@ def build_gateway_parser(
     add_accept_hooks_flag(gateway_run)
     add_accept_hooks_flag(gateway_parser)
 
+    from hermes_cli.gateway_runtime_cli import cmd_gateway_ensure
+    gateway_ensure = gateway_subparsers.add_parser(
+        "ensure", ensure_json=True,
+        help="Ensure a local runtime without installing or replacing a service",
+        epilog="Exit codes: 0 ready; 2 invalid invocation; 3 incompatible; "
+               "4 authorization/profile mismatch; 5 deadline; 6 draining/update-paused; "
+               "7 inaccessible/conflicting supervisor. Pending startup is not readiness.")
+    _flag(gateway_ensure, "--json", help="Emit one credential-free JSON result (default)")
+    gateway_ensure.add_argument("--timeout", default="30",
+                                help="Total startup deadline in seconds (default: 30)")
+    gateway_ensure.set_defaults(func=cmd_gateway_ensure)
+
     gateway_start = gateway_subparsers.add_parser(
         "start", help="Start the installed systemd/launchd background service")
     _add_system_flag(gateway_start)
     _flag(gateway_start, "--all",
         help="Kill ALL stale gateway processes across all profiles before starting")
+    _flag(gateway_start, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _add_compat_platform_flag(gateway_start)
 
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
@@ -76,6 +117,7 @@ def build_gateway_parser(
     _add_system_flag(gateway_restart)
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
+    _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)
     _add_compat_platform_flag(gateway_restart)
 
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
@@ -87,7 +129,8 @@ def build_gateway_parser(
 
     gateway_install = gateway_subparsers.add_parser(
         "install", help="Install gateway as a systemd/launchd background service")
-    _flag(gateway_install, "--force", help="Force reinstall")
+    _flag(gateway_install, "--force",
+        help="Force reinstall, and install even when the default multiplexer already serves this profile")
     _flag(gateway_install, "--system",
         help="Install as a Linux system-level service (starts at boot)")
     gateway_install.add_argument("--run-as-user", dest="run_as_user",
@@ -119,8 +162,21 @@ def build_gateway_parser(
         help="List what would be removed without doing it")
     _flag(gateway_migrate_legacy, "-y", "--yes", dest="yes", help="Skip the confirmation prompt")
 
+    gateway_migrate = gateway_subparsers.add_parser(
+        "migrate", help="Move per-profile gateways onto one multiplexed default gateway (or back)",
+        description="Stop and uninstall each secondary profile's standalone gateway, turn on "
+            "gateway.multiplex_profiles on the default profile and restart its gateway so it serves "
+            "every profile. Runs a preflight first (duplicate bot tokens, port-binding platforms "
+            "without a /p/<profile>/ ingress) and changes nothing when blocked. "
+            "--standalone rolls the recorded migration back.")
+    mode = gateway_migrate.add_mutually_exclusive_group()
+    _flag(mode, "--multiplex", dest="multiplex", help="Migrate to one multiplexed gateway (default)")
+    _flag(mode, "--standalone", dest="standalone", help="Roll back to per-profile gateways from the recorded manifest")
+    _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
+    _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
+
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
-    # delivery key, written to .env. See docs/relay-connector-contract.md. EXPERIMENTAL.
+    # delivery key, written to .env. See website/docs/developer-guide/relay-connector-contract.md. EXPERIMENTAL.
     gateway_enroll = gateway_subparsers.add_parser("enroll",
         help="Enroll this gateway with a relay connector (writes relay auth creds to .env)",
         description="Redeem a single-use enrollment token with a relay connector. "

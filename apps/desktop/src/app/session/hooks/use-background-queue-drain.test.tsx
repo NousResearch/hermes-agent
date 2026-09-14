@@ -10,7 +10,7 @@ import {
   getQueuedPrompts,
   parkQueuedPrompts
 } from '@/store/composer-queue'
-import { $sessions, setSessions } from '@/store/session'
+import { $sessions, setSessions, setSessionsLoading } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -62,6 +62,9 @@ describe('useBackgroundQueueDrain', () => {
   beforeEach(() => {
     vi.useRealTimers()
     clearAllSessionStates()
+    // Production drain waits for the sidebar list. Tests that assert drain
+    // behavior are post-load unless they opt into the loading gate.
+    setSessionsLoading(false)
   })
 
   afterEach(() => {
@@ -71,6 +74,7 @@ describe('useBackgroundQueueDrain', () => {
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
     $sessions.set([])
+    setSessionsLoading(true)
     clearAllSessionStates()
   })
 
@@ -78,13 +82,14 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'continue in the background', attachments: [] })!
     clearAllSessionStates()
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('continue in the background', {
+        submission_id: entry.id,
         attachments: [],
         fromQueue: true,
         sessionId: 'rt-session-a',
@@ -183,12 +188,13 @@ describe('useBackgroundQueueDrain', () => {
     const runtimeMap = { current: new Map<string, string>() }
     const submitText = vi.fn(async () => true)
 
-    enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })
+    const entry = enqueueQueuedPrompt('stored-session-a', { text: 'resume then send', attachments: [] })!
 
     render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
 
     await waitFor(() => {
       expect(submitText).toHaveBeenCalledWith('resume then send', {
+        submission_id: entry.id,
         attachments: [],
         fromQueue: true,
         sessionId: null,
@@ -221,5 +227,56 @@ describe('useBackgroundQueueDrain', () => {
 
     expect(submitText).toHaveBeenCalledTimes(2)
     expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
+  })
+
+  it('does not drain restored queues while the session list is still loading', async () => {
+    vi.useFakeTimers()
+    setSessionsLoading(true)
+
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'wait for session list', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    // Four 750ms retries is what used to burn the drain budget and toast on boot.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750 * 4)
+      await Promise.resolve()
+    })
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+  })
+
+  it('drains a restored background queue once the session list finishes loading', async () => {
+    setSessionsLoading(true)
+
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'send after load', attachments: [] })
+
+    const queuedId = getQueuedPrompts('stored-session-a')[0].id
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    expect(submitText).not.toHaveBeenCalled()
+
+    act(() => setSessionsLoading(false))
+
+    await waitFor(() => {
+      expect(submitText).toHaveBeenCalledWith('send after load', {
+        attachments: [],
+        fromQueue: true,
+        sessionId: 'rt-session-a',
+        storedSessionId: 'stored-session-a',
+        submission_id: queuedId
+      })
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
   })
 })

@@ -500,15 +500,23 @@ def get_custom_provider_context_length(
             raw = config.get("custom_providers")
             custom_providers = raw if isinstance(raw, list) else []
 
-    for model_cfg in _route_model_cfgs(model, base_url, custom_providers, config):
-        raw_ctx = model_cfg.get("context_length")
-        if raw_ctx is None:
-            continue
+    def _positive_int(raw: Any) -> Optional[int]:
         try:
-            ctx = int(raw_ctx)
+            ctx = int(raw)
         except (TypeError, ValueError):
-            continue
-        if ctx > 0:
+            return None
+        return ctx if ctx > 0 else None
+
+    for model_cfg in _route_model_cfgs(model, base_url, custom_providers, config):
+        ctx = _positive_int(model_cfg.get("context_length"))
+        if ctx is not None:
+            return ctx
+    # Entry-level ``context_length`` (a documented key) backs every model the entry serves when no
+    # per-model override exists; without it the /model switch re-derivation fell to the hardcoded
+    # catalog while a cold start honoured the same setting via model.context_length (#98387).
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        ctx = _positive_int(entry.get("context_length"))
+        if ctx is not None:
             return ctx
     return None
 

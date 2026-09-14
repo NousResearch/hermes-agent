@@ -374,21 +374,9 @@ def _build_hermes_tools_mcp_entry() -> dict:
 
 
 def _write_atomic(target: Path, text: str) -> None:
-    """Write via a same-directory temp file + rename (atomic on POSIX, ReplaceFile on Windows) so a
-    crash mid-write never leaves a half-written config.toml that codex would refuse to load."""
-    import tempfile
-    tmp_fd, tmp_path_str = tempfile.mkstemp(prefix=".config.toml.", dir=str(target.parent))
-    tmp_path = Path(tmp_path_str)
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        tmp_path.replace(target)
-    except Exception:
-        try:
-            tmp_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise
+    """Atomic rewrite so a crash mid-write never leaves a half-written config.toml codex refuses to load."""
+    from utils import atomic_write_text
+    atomic_write_text(target, text, tmp_prefix=".config.toml.", preserve_mode=True)
 
 
 def migrate(

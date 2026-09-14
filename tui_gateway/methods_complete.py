@@ -14,12 +14,6 @@ _BUILTIN_AT_PREFIXES = frozenset({"file", "folder", "url", "git", "diff", "stage
 _AT_DIRECTIVE_HINTS = [
     ("@diff", "git diff"), ("@staged", "staged diff"), ("@file:", "attach file"),
     ("@folder:", "attach folder"), ("@url:", "fetch url"), ("@git:", "git log")]
-_SLASH_EXTRAS = [
-    ("/density", "Toggle compact display mode"), ("/details", "Control agent detail visibility"),
-    ("/logs", "Show recent gateway log lines"),
-    ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]
-
-
 def _item(text: str, meta: str, display: str | None = None) -> dict:
     return {"text": text, "display": display if display is not None else text, "meta": meta}
 
@@ -223,51 +217,8 @@ def _(rid, params: dict) -> dict:
 @method("complete.slash")
 @_catch(5020)
 def _(rid, params: dict) -> dict:
-    text = params.get("text", "")
-    if not text.startswith("/"):
-        return _ok(rid, {"items": []})
-    from hermes_cli.commands_completion import SlashCommandCompleter
-    from prompt_toolkit.document import Document
-    from prompt_toolkit.formatted_text import to_plain_text
-    from agent.skill_commands import get_skill_commands
-    from agent.skill_bundles import get_skill_bundles
-    completer = SlashCommandCompleter(
-        skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles())
-    # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
-    # skills/bundles are the only completions for an inline `/skill` typed mid-message.
-    skill_names = {key.lstrip("/").lower() for key in (*get_skill_commands(), *get_skill_bundles())}
-
-    def to_items(doc: Document) -> list[dict]:
-        # display/display_meta are FormattedText; the TUI contract is a plain string
-        # (the raw list trips Ink's row layout into 1-char truncation).
-        return [
-            {
-                "text": c.text, "display": to_plain_text(c.display) if c.display else c.text,
-                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
-                "kind": "skill" if c.text.strip().lstrip("/").lower() in skill_names else "command"}
-            for c in completer.get_completions(doc, None)]
-    items = to_items(Document(text, len(text)))
-    # Rank + bound while a `/token` is under the cursor (the one stage skills are
-    # offered at); an argument stage (`/personality `) keeps its command's order.
-    if text.rsplit(" ", 1)[-1].startswith("/"):
-        score_of = None
-        # Command-token stage: the completer only emits name-prefix matches, so merge in
-        # catalog entries whose name SUBSTRING or DESCRIPTION words match (name outranks description).
-        if " " not in text and len(text) > 1:
-            from tui_gateway.slash_fuzzy import fuzzy_rank_slash_items, normalize_slash_search_query
-            items, score_of = fuzzy_rank_slash_items(
-                items, to_items(Document("/", 1)), normalize_slash_search_query(text))
-        usage, origin_of = _skill_usage_lookup()
-        items = _rank_slash_completions(items, usage, origin_of, browsing=text == "/", score_of=score_of)
-    else:
-        items = items[:_SLASH_COMPLETION_LIMIT]
-    text_lower = text.lower()
-    for extra_text, extra_meta in _SLASH_EXTRAS:
-        if extra_text.startswith(text_lower) and not any(item["text"] == extra_text for item in items):
-            items.append({**_item(extra_text, extra_meta), "kind": "command"})
-    if (details_items := _details_completions(text)) is not None:
-        return _ok(rid, {"items": details_items, "replace_from": text.rfind(" ") + 1 if " " in text else len(text)})
-    return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})
+    from tui_gateway.command_discovery import slash_completions
+    return _ok(rid, slash_completions(params.get("text", "")))
 
 
 def _session_agent(params: dict):

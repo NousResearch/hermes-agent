@@ -214,6 +214,16 @@ def validate_user_payload(value: Any, *, member_ids: Iterable[str] | None = None
     return normalized
 
 
+def _message_manifest(value: Any) -> list[dict[str, Any]]:
+    from gateway.hosted_room_attachments import validate_manifest
+
+    try:
+        return validate_manifest(value)
+    except ValueError as exc:
+        raise DiscussionValidationError(str(exc)) from exc
+
+
+
 def _validate_member_target(value: Any, *, profile: str, known_profiles: set[str], index: int) -> dict[str, Any]:
     if value is None:
         if profile not in known_profiles:
@@ -377,7 +387,19 @@ def _validate_user_event(kind: str, payload: Payload, actor: Payload, room: Disc
 
 
 def _validate_member_message(kind: str, payload: Payload, actor: Payload, room: DiscussionRoom) -> Payload:
-    _exact_fields(payload, label="message.member payload", required=_MEMBER_MESSAGE_FIELDS)
+    _exact_fields(payload, label="message.member payload", required=_MEMBER_MESSAGE_FIELDS,
+                  optional={"attachments", "recipient_member_ids"})
+    payload = dict(payload)
+    if "attachments" in payload:
+        payload["attachments"] = _message_manifest(payload["attachments"])
+    if "recipient_member_ids" in payload:
+        recipients = payload["recipient_member_ids"]
+        if not isinstance(recipients, list) or not recipients:
+            raise DiscussionValidationError("recipient_member_ids must be a non-empty list")
+        recipients = [_member_by_id(room, recipient).member_id for recipient in recipients]
+        if len(set(recipients)) != len(recipients):
+            raise DiscussionValidationError("recipient_member_ids must be unique")
+        payload["recipient_member_ids"] = recipients
     _validate_turn_coordinates(payload, room)
     if not isinstance(text := payload.get("text"), str) or not text.strip() or is_pass_text(text):
         raise DiscussionValidationError("message.member text must be a non-pass string")
@@ -583,32 +605,20 @@ def _build_prompt(
 
 
 def _make_task_plan(
-    *,
-    room: DiscussionRoom,
-    discussion_event: _ValidatedEvent,
-    member: DiscussionMember,
-    member_index: int,
-    round_index: int,
-    seen_through_seq: int,
-    prompt: str,
-    attachments: Sequence[Mapping[str, Any]] = (),
+    *, room: DiscussionRoom, discussion_event: _ValidatedEvent, member: DiscussionMember, member_index: int,
+    round_index: int, seen_through_seq: int, prompt: str,
     input_context: Mapping[str, Any] | None = None,
-) -> DiscussionTaskPlan:
+    attachments: Sequence[Mapping[str, Any]] = ()) -> DiscussionTaskPlan:
     turn_id = f"d{discussion_event.seq}.r{round_index}.p{member_index}.s{seen_through_seq}.m{_member_digest(member)}"
-    seed = compact_json(
-        {
-            "discussion_event_id": discussion_event.event_id,
-            "member_id": member.member_id,
-            "member_index": member_index,
-            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
-            "room_id": room.room_id,
-            "round_index": round_index,
-            "seen_through_seq": seen_through_seq,
-            "source_event_seq": discussion_event.seq,
-            "thread_id": discussion_event.payload["thread_id"],
-            **({"input_context": input_context} if input_context is not None else {}),
-        }
-    )
+    if attachments:
+        attachments = driver.validate_bound_task_manifest(list(attachments))
+    seed = compact_json({
+        "discussion_event_id": discussion_event.event_id, "member_id": member.member_id, "member_index": member_index,
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(), "room_id": room.room_id,
+        "round_index": round_index, "seen_through_seq": seen_through_seq, "source_event_seq": discussion_event.seq,
+        "thread_id": discussion_event.payload["thread_id"],
+        **({"input_context": input_context} if input_context is not None else {}),
+        **({"attachments": attachments} if attachments else {})})
     identity = driver.TaskIdentity(
         room_id=room.room_id,
         task_id=f"dtask:{hashlib.sha256(seed.encode('utf-8')).hexdigest()[:48]}",
@@ -616,13 +626,10 @@ def _make_task_plan(
         turn_id=turn_id,
     )
     payload = {
-        "target_member_id": member.member_id,
-        "target_profile": member.profile,
-        "prompt": prompt,
-        "source_event_seq": discussion_event.seq,
-    }
+        "target_member_id": member.member_id, "target_profile": member.profile, "prompt": prompt,
+        "source_event_seq": discussion_event.seq}
     if attachments:
-        payload["attachments"] = [dict(attachment) for attachment in attachments]
+        payload["attachments"] = list(attachments)
     if input_context is not None:
         payload["input_context"] = dict(input_context)
     return DiscussionTaskPlan(
@@ -682,6 +689,36 @@ def _effective_watermarks(
     return watermarks
 
 
+def _event_attachments(event: _ValidatedEvent, member: DiscussionMember) -> list[dict[str, Any]]:
+    if event.kind == "message.member":
+        if event.payload["member_id"] == member.member_id:
+            return []
+        recipients = event.payload.get("recipient_member_ids")
+        if recipients is not None and member.member_id not in recipients:
+            return []
+    return [{**attachment, "event_id": event.event_id} for attachment in event.payload.get("attachments", [])]
+
+
+def _bounded_task_delta(messages: Sequence[_ValidatedEvent], *, watermark: int,
+                        member: DiscussionMember) -> tuple[list[_ValidatedEvent], list[dict[str, Any]]]:
+    from gateway.hosted_room_attachments import MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES
+
+    selected: list[_ValidatedEvent] = []
+    attachments: list[dict[str, Any]] = []
+    size = 0
+    for event in messages:
+        if event.seq <= watermark:
+            continue
+        entries = _event_attachments(event, member)
+        next_size = size + sum(item["size"] for item in entries)
+        if len(attachments) + len(entries) > MAX_TASK_ATTACHMENTS or next_size > MAX_TASK_ATTACHMENT_BYTES:
+            break  # Each validated message fits; consume only whole event prefixes.
+        selected.append(event)
+        attachments.extend(entries)
+        size = next_size
+    return selected, attachments
+
+
 def plan_next_task(
     room_value: Any, events: Sequence[Mapping[str, Any]], *, local_profiles: Iterable[str],
     initial_watermarks: Mapping[tuple[str, str], int] | None = None,
@@ -702,7 +739,6 @@ def plan_next_task(
         (int(event.payload["round_index"]), str(event.payload["member_id"])) for event in validated
         if event.kind in _TERMINAL_EVENT_KINDS and event.payload.get("discussion_event_id") == discussion.event_id}
     watermarks = _effective_watermarks(validated, initial_watermarks)
-    maximum_seen_seq = max(event.seq for event in thread_messages)
     for round_index in range(MAX_DISCUSSION_ROUNDS):
         # The user's message selects the first round, with no mention meaning
         # everyone. Later rounds are opt-in: only a peer explicitly cited by a
@@ -714,15 +750,10 @@ def plan_next_task(
             else _unaddressed_member_mentions(discussion_messages, room))
         for member_index, member in enumerate(_rotate(responders, round_index)):
             watermark = watermarks.get((thread_id, member.member_id), 0)
-            pending_attachments = any(
-                event.kind == "message.user" and watermark < event.seq <= maximum_seen_seq
-                and event.payload.get("attachments") for event in thread_messages)
-            if (round_index, member.member_id) in terminals and not pending_attachments:
+            delta, attachments = _bounded_task_delta(thread_messages, watermark=watermark, member=member)
+            if not delta or ((round_index, member.member_id) in terminals and not attachments):
                 continue
-            seen_through_seq, delta, attachments = _bounded_task_delta(
-                thread_messages, watermark=watermark, maximum_seq=maximum_seen_seq)
-            if not delta:
-                continue
+            seen_through_seq = delta[-1].seq
             prompt = _build_prompt(
                 room=room, member=member, messages=thread_messages, watermark=watermark,
                 seen_through_seq=seen_through_seq)
@@ -730,7 +761,7 @@ def plan_next_task(
                 room=room, discussion_event=discussion, member=member, member_index=member_index,
                 round_index=round_index, seen_through_seq=seen_through_seq, prompt=prompt, attachments=attachments,
                 input_context=(validate_task_input({"watermark": watermark, "event_seqs": [event.seq for event in delta]})
-                               if freeze_input_context else None)))
+                    if freeze_input_context or attachments else None)))
         if not any(int(event.payload["round_index"]) == round_index for event in member_messages):
             return decide("settled", "silent_round")
         if round_index == MAX_DISCUSSION_ROUNDS - 1:
@@ -771,36 +802,30 @@ def reconstruct_task_plan(
         raise DiscussionReconstructionError("task prompt is missing")
     if len(prompt.encode("utf-8")) > driver.MAX_PROMPT_BYTES:
         raise DiscussionReconstructionError("task prompt exceeds the driver limit")
-    # Use the watermark before this task's own publication, not the current one.
-    terminal = next((event for event in validated if event.kind in _TERMINAL_EVENT_KINDS
-                     and event.payload.get("task_id") == identity.task_id), None)
-    watermark_events = validated if terminal is None else tuple(event for event in validated if event.seq < terminal.seq)
-    seen_through_seq = int(match.group("seen"))
     input_context = None
     if "input_context" in payload:
         try:
             input_context = validate_task_input(payload["input_context"])
         except ValueError as exc:
             raise DiscussionReconstructionError(str(exc)) from exc
-        if input_context["event_seqs"][-1] != seen_through_seq:
+        if input_context["event_seqs"][-1] != int(match.group("seen")):
             raise DiscussionReconstructionError("task input does not match turn_id")
-        watermark = input_context["watermark"]
-    else:
-        watermark = _derive_member_watermarks(watermark_events).get((identity.thread_id, member.member_id), 0)
-    task_messages = tuple(event for event in validated if event.kind in {"message.user", "message.member"}
-                          and event.payload.get("thread_id") == identity.thread_id and event.seq <= seen_through_seq)
-    if input_context is not None:
-        by_seq = {event.seq: event for event in task_messages}
-        if any(seq not in by_seq for seq in input_context["event_seqs"]):
+        message_seqs = {event.seq for event in validated
+                        if event.kind in {"message.user", "message.member"}
+                        and event.payload.get("thread_id") == identity.thread_id}
+        if any(seq not in message_seqs for seq in input_context["event_seqs"]):
             raise DiscussionReconstructionError("task input message is missing")
-        task_messages = tuple(by_seq[seq] for seq in input_context["event_seqs"])
-    attachments = [dict(attachment) for event in task_messages
-                   if watermark < event.seq <= seen_through_seq and event.kind == "message.user"
-                   for attachment in event.payload.get("attachments", [])]
+    attachments: list[dict[str, Any]] = []
+    if "attachments" in payload:
+        if input_context is None:
+            raise DiscussionReconstructionError("attachment task requires frozen input_context")
+        by_seq = {event.seq: event for event in validated}
+        attachments = [item for seq in input_context["event_seqs"]
+                       for item in _event_attachments(by_seq[seq], member)]
     reconstructed = _make_task_plan(
         room=room, discussion_event=discussion, member=member, member_index=int(match.group("position")),
-        round_index=int(match.group("round")), seen_through_seq=seen_through_seq, prompt=prompt,
-        attachments=attachments, input_context=input_context)
+        round_index=int(match.group("round")), seen_through_seq=int(match.group("seen")), prompt=prompt,
+        input_context=input_context, attachments=attachments)
     if reconstructed.identity != identity or dict(reconstructed.payload) != dict(payload):
         raise DiscussionReconstructionError("driver task failed deterministic reconstruction")
     return reconstructed
@@ -883,7 +908,7 @@ def plan_publication(
         _bounded_int(execution_generation, message="deferred publication requires an execution generation", low=1)
     source_event_seq = int(task.payload["source_event_seq"])
     newer_same_thread = any(
-        event.kind == "message.user" and event.seq > source_event_seq
+        event.kind == "message.user" and event.seq > int(task.payload["source_event_seq"])
         and event.payload.get("thread_id") == task.identity.thread_id for event in validated)
     effective_status: TerminalKind = ("cancelled" if newer_same_thread and status != "deferred" else status)
     digest = task.identity.task_id.removeprefix("dtask:")
@@ -908,50 +933,6 @@ import json  # noqa: F401,E402
 # ---- END PLUGIN-COMPAT ----
 
 
-def _bounded_task_delta(
-    messages: Sequence[_ValidatedEvent],
-    *,
-    watermark: int,
-    maximum_seq: int,
-) -> tuple[int, list[_ValidatedEvent], list[dict[str, Any]]]:
-    """Return the oldest complete input prefix that fits one model turn.
-
-    Every accepted user message already fits the per-message attachment limits,
-    so the first event can always make progress. Stopping only between events
-    preserves each message and lets the terminal watermark resume at the next
-    unconsumed event instead of poisoning the room backlog.
-    """
-
-    selected: list[_ValidatedEvent] = []
-    attachments: list[dict[str, Any]] = []
-    attachment_bytes = 0
-    seen_through_seq = watermark
-    for event in messages:
-        if not watermark < event.seq <= maximum_seq:
-            continue
-        event_attachments = (
-            list(event.payload.get("attachments", []))
-            if event.kind == "message.user"
-            else []
-        )
-        next_count = len(attachments) + len(event_attachments)
-        next_bytes = attachment_bytes + sum(
-            int(attachment["size"]) for attachment in event_attachments
-        )
-        if event_attachments and (
-            next_count > MAX_TASK_ATTACHMENTS
-            or next_bytes > MAX_TASK_ATTACHMENT_BYTES
-        ):
-            if selected:
-                break
-            raise DiscussionValidationError(
-                "one user message exceeds the per-task attachment budget"
-            )
-        selected.append(event)
-        attachments.extend(dict(attachment) for attachment in event_attachments)
-        attachment_bytes = next_bytes
-        seen_through_seq = event.seq
-    return seen_through_seq, selected, attachments
 
 
 def _attachment_prompt_lines(

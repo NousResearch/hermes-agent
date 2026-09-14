@@ -1,12 +1,21 @@
-import { type ChildProcess, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { existsSync } from 'node:fs'
-import { delimiter, resolve } from 'node:path'
-import { createInterface } from 'node:readline'
+import { resolve } from 'node:path'
+import { promisify } from 'node:util'
 
+import type { GatewayEvent } from '@hermes/shared/gateway-events'
+import {
+  DEFAULT_HEARTBEAT_DEADLINE_MS,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  JsonRpcRequestChannel,
+  wireFrameText
+} from '@hermes/shared/json-rpc-channel'
+import { reconnectBackoffDelayMs } from '@hermes/shared/reconnect-backoff'
 import { WebSocket as UndiciWebSocket } from 'undici'
 
-import type { GatewayEvent } from './gatewayTypes.js'
+import { canonicalEvent, canonicalRequest, canonicalResult, type CreationContract } from './canonicalGateway.js'
+import type { AnyGatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
 
@@ -21,15 +30,14 @@ const WS_OPEN = 1
 const WS_CLOSING = 2
 const WS_CLOSED = 3
 
-// Keepalive + dead-connection detection. A silent drop (macOS sleep, proxy
-// idle timeout, VPN reconnect) kills the TCP socket without a `close` event,
-// so the client hangs forever (issue #32997). Browser/undici WebSocket does
-// not expose an acknowledged ping/pong API, so this uses a small JSON-RPC
-// heartbeat that the TUI gateway explicitly answers. Healthy idle sockets stay
-// open; only a missing heartbeat ack forces close -> reconnect.
-export const WS_HEARTBEAT_INTERVAL_MS = 15_000
-export const WS_HEARTBEAT_DEAD_MS = 45_000
-// Exponential backoff for reconnect attempts after a transport drop.
+// Keepalive + dead-connection detection (issue #32997) lives in
+// @hermes/shared's JsonRpcRequestChannel; these re-exports keep the TUI's
+// timing constants readable at their call sites and in tests.
+export const WS_HEARTBEAT_INTERVAL_MS = DEFAULT_HEARTBEAT_INTERVAL_MS
+export const WS_HEARTBEAT_DEAD_MS = DEFAULT_HEARTBEAT_DEADLINE_MS
+// Exponential backoff for reconnect attempts after a transport drop. No
+// jitter: a single TUI process has nobody to desynchronize from, and the
+// deterministic ladder is what the activity feed reports.
 export const RECONNECT_BASE_MS = 1_000
 export const RECONNECT_MAX_MS = 30_000
 
@@ -38,14 +46,6 @@ const getWebSocketCtor = (): typeof WebSocket =>
 
 const truncateLine = (line: string) =>
   line.length > MAX_LOG_LINE_BYTES ? `${line.slice(0, MAX_LOG_LINE_BYTES)}… [truncated ${line.length} bytes]` : line
-
-const describeChild = (proc: ChildProcess | null) => {
-  if (!proc) {
-    return 'pid=none'
-  }
-
-  return `pid=${proc.pid ?? 'unknown'} killed=${proc.killed} exitCode=${proc.exitCode ?? 'null'} signal=${proc.signalCode ?? 'null'}`
-}
 
 const resolveGatewayAttachUrl = () => {
   const raw = process.env.HERMES_TUI_GATEWAY_URL?.trim()
@@ -80,29 +80,6 @@ const resolvePython = (root: string) => {
   return hit || (process.platform === 'win32' ? 'python' : 'python3')
 }
 
-const asGatewayEvent = (value: unknown): GatewayEvent | null =>
-  value && typeof value === 'object' && !Array.isArray(value) && typeof (value as { type?: unknown }).type === 'string'
-    ? (value as GatewayEvent)
-    : null
-
-// Hoisted decoder: attach mode can drive high-frequency binary frames
-// (tool deltas, reasoning streams) and constructing a fresh TextDecoder
-// per message creates avoidable GC pressure. One module-level instance
-// is fine because UTF-8 is stateless and we always pass entire frames.
-const _wireDecoder = new TextDecoder()
-
-const asWireText = (raw: unknown): string | null => {
-  if (typeof raw === 'string') {
-    return raw
-  }
-
-  if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
-    return _wireDecoder.decode(raw as any as ArrayBuffer)
-  }
-
-  return null
-}
-
 // Matches `<scheme>://user:pass@host…` style user-info segments in
 // otherwise-malformed URLs that the WHATWG `URL` parser can't accept.
 // Used by the `redactUrl` fallback so embedded credentials are
@@ -135,50 +112,84 @@ const redactUrl = (raw: string): string => {
   }
 }
 
-interface Pending {
-  id: string
-  method: string
-  reject: (e: Error) => void
-  resolve: (v: unknown) => void
-  timeout: ReturnType<typeof setTimeout>
+export interface LocalGatewayGrant { url: string; protocols: string[]; profile_id: string; instance_id: string }
+
+const bootstrapLocalGateway = async (start: boolean): Promise<LocalGatewayGrant> => {
+  const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
+
+  const { stdout } = await promisify(execFile)(resolvePython(root),
+    [resolve(root, 'ui-tui/scripts/gateway_bootstrap.py'), ...(start ? ['--start'] : [])],
+    { cwd: root, env: { ...process.env, PYTHONPATH: root }, timeout: 40_000, maxBuffer: 1024 * 1024 })
+
+  return JSON.parse(stdout) as LocalGatewayGrant
 }
 
 export class GatewayClient extends EventEmitter {
-  private proc: ChildProcess | null = null
   private ws: WebSocket | null = null
   private wsConnectPromise: Promise<void> | null = null
   private sidecarWs: WebSocket | null = null
   private attachUrl: null | string = null
   private sidecarUrl: null | string = null
-  private reqId = 0
   private logs = new CircularBuffer<string>(MAX_GATEWAY_LOG_LINES)
-  private pending = new Map<string, Pending>()
-  private bufferedEvents = new CircularBuffer<GatewayEvent>(MAX_BUFFERED_EVENTS)
+  // Request ids, pending map, timeouts, error mapping and the gateway.ping
+  // heartbeat are shared with the desktop/web WebSocket client; this class
+  // only owns the two transports (child stdio, attached socket) and the
+  // buffered-event replay that Ink's mount order needs.
+  private readonly channel = new JsonRpcRequestChannel({
+    onEvent: ev => this.publishWire(ev as AnyGatewayEvent),
+    onHeartbeatFailure: () => this.onHeartbeatFailure(),
+    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    unrefTimers: true
+  })
+  private bufferedEvents = new CircularBuffer<AnyGatewayEvent>(MAX_BUFFERED_EVENTS)
   private pendingExit: number | null | undefined
   private ready = false
   private readyTimer: ReturnType<typeof setTimeout> | null = null
   private subscribed = false
   private drainGeneration = 0
-  private stdoutRl: ReturnType<typeof createInterface> | null = null
-  private stderrRl: ReturnType<typeof createInterface> | null = null
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectAttempts = 0
-  private lastActivityAt = 0
-  private heartbeatSeq = 0
-  private heartbeatPendingId: string | null = null
-  private heartbeatSentAt = 0
   // Set on kill() so we never auto-reconnect after an intentional shutdown.
   private disposed = false
 
-  constructor() {
+  private bootstrapFlight: Promise<void> | null = null
+  private bootstrapError: Error | null = null
+  private localStarted = false
+  private localGeneration = 0
+  isCanonical = false
+  private creationContract?: CreationContract
+
+  constructor(private bootstrap: (start: boolean) => Promise<LocalGatewayGrant> = bootstrapLocalGateway) {
     super()
     // useInput / createGatewayEventHandler can legitimately attach many
     // listeners. Default 10-cap triggers spurious warnings.
     this.setMaxListeners(0)
   }
 
-  private publish(ev: GatewayEvent) {
+  /** Frames off the socket. On a canonical gateway the owner's execution stamp rides on
+   * the params (`authority_epoch`/`execution_generation`); fold it into the payload the
+   * pre-cutover handlers read, and let this client own readiness (it publishes
+   * `gateway.ready` itself after `runtime.describe`, so the listener's ready would be a
+   * second one) while still negotiating the transport's heartbeat capability. */
+  private publishWire(ev: AnyGatewayEvent) {
+    if (this.isCanonical && ev.type === 'gateway.ready') {
+      if ((ev as GatewayEvent<'gateway.ready'>).payload?.heartbeat && this.ws?.readyState === WS_OPEN) {
+        this.channel.startHeartbeat()
+      }
+
+      return
+    }
+
+    if (this.isCanonical) {
+      const shared = ev as AnyGatewayEvent & { authority_epoch?: number; execution_generation?: number }
+      ev.payload = { ...canonicalEvent(ev).payload, execution_epoch: String(shared.authority_epoch),
+        execution_generation: shared.execution_generation } as never
+    }
+
+    this.publish(ev)
+  }
+
+  private publish(ev: AnyGatewayEvent) {
     if (ev.type === 'gateway.ready') {
       this.ready = true
 
@@ -187,8 +198,8 @@ export class GatewayClient extends EventEmitter {
         this.readyTimer = null
       }
 
-      if (ev.payload?.heartbeat && this.ws?.readyState === WS_OPEN) {
-        this.startHeartbeat(this.ws)
+      if ((ev as GatewayEvent<'gateway.ready'>).payload?.heartbeat === true && this.ws?.readyState === WS_OPEN) {
+        this.channel.startHeartbeat()
       }
     }
 
@@ -235,71 +246,22 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
-  private startHeartbeat(ws: WebSocket) {
-    this.stopHeartbeat()
-    this.lastActivityAt = Date.now()
-    this.heartbeatPendingId = null
-    this.heartbeatSentAt = 0
-    this.heartbeatTimer = setInterval(() => {
-      if (this.ws !== ws || ws.readyState !== WS_OPEN) {
-        return
-      }
+  // The shared heartbeat found no inbound frame for a full deadline: force the
+  // socket closed so the ordinary close path reconnects (issue #32997).
+  private onHeartbeatFailure() {
+    const ws = this.ws
 
-      const now = Date.now()
-
-      if (this.heartbeatPendingId && now - this.heartbeatSentAt > WS_HEARTBEAT_DEAD_MS) {
-        this.lifecycle('[lifecycle] websocket silent drop detected (heartbeat ack timeout); forcing reconnect')
-        this.stopHeartbeat()
-
-        try {
-          ws.close()
-        } catch {
-          // ignore
-        }
-
-        return
-      }
-
-      if (this.heartbeatPendingId) {
-        return
-      }
-
-      const id = `h${++this.heartbeatSeq}`
-
-      this.heartbeatPendingId = id
-      this.heartbeatSentAt = now
-
-      try {
-        ws.send(
-          JSON.stringify({
-            id,
-            jsonrpc: '2.0',
-            method: 'gateway.ping',
-            params: { last_activity_ms: this.lastActivityAt }
-          })
-        )
-      } catch {
-        this.lifecycle('[lifecycle] websocket heartbeat send failed; forcing reconnect')
-        this.stopHeartbeat()
-
-        try {
-          ws.close()
-        } catch {
-          // ignore
-        }
-      }
-    }, WS_HEARTBEAT_INTERVAL_MS)
-    this.heartbeatTimer.unref?.()
-  }
-
-  private stopHeartbeat() {
-    if (this.heartbeatTimer !== null) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
+    if (!ws) {
+      return
     }
 
-    this.heartbeatPendingId = null
-    this.heartbeatSentAt = 0
+    this.lifecycle('[lifecycle] websocket silent drop detected (heartbeat ack timeout); forcing reconnect')
+
+    try {
+      ws.close()
+    } catch {
+      // ignore
+    }
   }
 
   private scheduleReconnect() {
@@ -307,7 +269,12 @@ export class GatewayClient extends EventEmitter {
       return
     }
 
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS)
+    const delay = reconnectBackoffDelayMs(this.reconnectAttempts, {
+      baseDelayMs: RECONNECT_BASE_MS,
+      capMs: RECONNECT_MAX_MS,
+      jitter: false
+    })
+
     this.reconnectAttempts += 1
     this.lifecycle(`[lifecycle] scheduling gateway reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`)
     this.publish({ type: 'gateway.reconnecting', payload: { attempt: this.reconnectAttempts, delay_ms: delay } })
@@ -319,6 +286,7 @@ export class GatewayClient extends EventEmitter {
       }
 
       this.start()
+      this.drain()
     }, delay)
     this.reconnectTimer.unref?.()
   }
@@ -336,9 +304,9 @@ export class GatewayClient extends EventEmitter {
     // Reject any in-flight RPCs left over from the previous transport
     // before we swap. Otherwise the old transport's stale exit/close
     // handlers (now identity-gated to ignore unrelated transports)
-    // never fire `rejectPending`, leaving callers hanging on promises
+    // never settle the channel's pending RPCs, leaving callers hanging on promises
     // attached to a discarded child / socket.
-    this.rejectPending(new Error('gateway restarting'))
+    this.channel.detach(new Error('gateway restarting'))
     this.ready = false
     this.subscribed = false
     // Invalidate any pending deferred drain() flush from a prior transport so
@@ -346,10 +314,6 @@ export class GatewayClient extends EventEmitter {
     this.drainGeneration += 1
     this.bufferedEvents.clear()
     this.pendingExit = undefined
-    this.stdoutRl?.close()
-    this.stderrRl?.close()
-    this.stdoutRl = null
-    this.stderrRl = null
     this.clearReadyTimer()
   }
 
@@ -378,7 +342,7 @@ export class GatewayClient extends EventEmitter {
     this.clearReadyTimer()
     this.closeSidecarSocket()
     this.lifecycle(`[lifecycle] transport exit code=${code ?? 'null'} reason=${reason ?? 'none'}`)
-    this.rejectPending(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
+    this.channel.detach(new Error(reason || `gateway exited${code === null ? '' : ` (${code})`}`))
 
     // Self-heal: a dropped transport (real close OR silent drop caught by the
     // heartbeat) should reconnect instead of stranding the UI on a dead socket
@@ -442,7 +406,17 @@ export class GatewayClient extends EventEmitter {
     }
   }
 
-  publishLocalEvent(ev: GatewayEvent) {
+  hydrateSharedPrompts(snapshot: unknown) {
+    if (!this.isCanonical) { return }
+    const result = snapshot as { session_id: string; authority_epoch: number; prompts?: Array<Record<string, unknown>> }
+
+    for (const prompt of result.prompts ?? []) {
+      this.publishLocalEvent({ type: `${prompt.kind}.request`, session_id: result.session_id,
+        payload: { ...prompt, execution_epoch: String(result.authority_epoch) } } as unknown as AnyGatewayEvent)
+    }
+  }
+
+  publishLocalEvent(ev: AnyGatewayEvent) {
     const frame = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: ev })
 
     this.mirrorEventToSidecar(frame)
@@ -450,110 +424,55 @@ export class GatewayClient extends EventEmitter {
   }
 
   private handleWebSocketFrame(raw: unknown) {
-    this.lastActivityAt = Date.now()
-    const text = asWireText(raw)
+    const text = wireFrameText(raw)
 
     if (!text) {
       return
     }
 
-    try {
-      const frame = JSON.parse(text) as Record<string, unknown>
+    const frame = this.channel.handleFrame(text)
 
-      if (frame.method === 'event') {
-        this.mirrorEventToSidecar(text)
-      }
+    if (!frame) {
+      this.protocolError('malformed websocket frame', text, '(empty frame)')
 
-      this.dispatch(frame)
-    } catch {
-      const preview = text.trim().slice(0, MAX_LOG_PREVIEW) || '(empty frame)'
+      return
+    }
 
-      this.pushLog(`[protocol] malformed websocket frame: ${preview}`)
-      this.publish({ type: 'gateway.protocol_error', payload: { preview } })
+    if (frame.method === 'event') {
+      this.mirrorEventToSidecar(text)
     }
   }
 
-  private startSpawnedGateway(root: string) {
-    const python = resolvePython(root)
-    const cwd = process.env.HERMES_CWD || root
-    const env = { ...process.env }
-    const pyPath = env.PYTHONPATH?.trim()
+  private protocolError(what: string, text: string, emptyLabel: string) {
+    const preview = text.trim().slice(0, MAX_LOG_PREVIEW) || emptyLabel
 
-    env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
-    // Tell the gateway child where the Hermes source root is so its import
-    // guard can force it ahead of any same-named package in the launch cwd.
-    env.HERMES_PYTHON_SRC_ROOT = root
-    this.startReadyTimer(python, cwd)
-    this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
-    this.lifecycle(`[lifecycle] spawned gateway child ${describeChild(this.proc)} python=${python} cwd=${cwd}`)
+    this.pushLog(`[protocol] ${what}: ${preview}`)
+    this.publish({ type: 'gateway.protocol_error', payload: { preview } })
+  }
 
-    this.stdoutRl = createInterface({ input: this.proc.stdout! })
-    this.stdoutRl.on('line', raw => {
-      try {
-        this.dispatch(JSON.parse(raw))
-      } catch {
-        const preview = raw.trim().slice(0, MAX_LOG_PREVIEW) || '(empty line)'
-
-        this.pushLog(`[protocol] malformed stdout: ${preview}`)
-        this.publish({ type: 'gateway.protocol_error', payload: { preview } })
-      }
-    })
-
-    this.stderrRl = createInterface({ input: this.proc.stderr! })
-    this.stderrRl.on('line', raw => {
-      const line = truncateLine(raw.trim())
-
-      if (!line) {
-        return
-      }
-
-      this.pushLog(line)
-      this.publish({ type: 'gateway.stderr', payload: { line } })
-    })
-
-    const ownedProc = this.proc
-    this.proc.on('error', err => {
-      // Skip stale errors on an already-replaced child.
-      if (this.proc !== ownedProc) {
-        this.pushLog(`[lifecycle] stale child error ignored ${describeChild(ownedProc)} message=${err.message}`)
-
-        return
-      }
-
-      const line = `[spawn] ${err.message}`
-
-      this.lifecycle(`[lifecycle] child error ${describeChild(ownedProc)} message=${err.message}`)
-      this.pushLog(line)
-      this.publish({ type: 'gateway.stderr', payload: { line } })
-      // Detach the reference up front so the late `exit` event for
-      // this same child is identity-skipped (we don't want to emit
-      // 'exit' twice). Then run the full teardown — clears the
-      // startup timer so we don't fire a misleading
-      // `gateway.start_timeout`, rejects pending RPCs, and emits or
-      // queues a single `exit`.
-      this.proc = null
-      this.handleTransportExit(1, `gateway error: ${err.message}`)
-    })
-    this.proc.on('exit', (code, signal) => {
-      // start() can replace `this.proc` while an old child is still
-      // tearing down. Skip stale exits so we don't clear the new
-      // startup timer or reject newly-issued pending requests.
-      if (this.proc !== ownedProc) {
-        this.pushLog(
-          `[lifecycle] stale child exit ignored ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`
-        )
-
-        return
-      }
-
-      this.lifecycle(
-        `[lifecycle] child exit ${describeChild(ownedProc)} code=${code ?? 'null'} signal=${signal ?? 'null'}`
-      )
-      this.handleTransportExit(code)
+  private startLocalGateway() {
+    const generation = ++this.localGeneration
+    const start = !this.localStarted
+    this.localStarted = true
+    this.bootstrapError = null
+    this.bootstrapFlight = this.bootstrap(start).then(grant => {
+      if (this.disposed || generation !== this.localGeneration) { return }
+      this.attachUrl = grant.url
+      this.isCanonical = true
+      this.startAttachedGateway(grant.url, grant.protocols)
+    }).catch(error => {
+      if (this.disposed || generation !== this.localGeneration) { return }
+      this.bootstrapError = error instanceof Error ? error : new Error(String(error))
+      this.clearReadyTimer()
+      this.publish({ type: 'gateway.start_timeout', payload: {
+        python: 'gateway ensure', cwd: '', stderr_tail: this.bootstrapError.message
+      } })
+      this.channel.detach(this.bootstrapError)
+      this.scheduleReconnect()
     })
   }
 
-  private startAttachedGateway(attachUrl: string) {
+  private startAttachedGateway(attachUrl: string, protocols?: string[]) {
     const safeAttachUrl = redactUrl(attachUrl)
     this.startReadyTimer('websocket', safeAttachUrl)
 
@@ -570,10 +489,15 @@ export class GatewayClient extends EventEmitter {
     }
 
     try {
-      const ws = new WebSocketCtor(attachUrl)
+      const ws = new WebSocketCtor(attachUrl, protocols)
       let settled = false
 
       this.ws = ws
+      // Bind the channel to the socket as soon as it exists (not on open):
+      // RPCs issued while CONNECTING await wsConnectPromise and then must
+      // reach *this* generation; a stale generation's late frames are
+      // already filtered by the `this.ws !== ws` guards below.
+      this.channel.attach({ send: text => ws.send(text) })
 
       const connectPromise = new Promise<void>((resolve, reject) => {
         ws.addEventListener(
@@ -584,9 +508,20 @@ export class GatewayClient extends EventEmitter {
               resolve()
             }
 
-            this.lastActivityAt = Date.now()
             this.clearReconnect()
             this.connectSidecarMirror()
+
+            if (this.isCanonical) {
+              void this.requestOverWebSocket<{session_create: CreationContract}>('runtime.describe').then(description => {
+                this.creationContract = description.session_create
+
+                if (this.ws === ws) { this.publish({ type: 'gateway.ready', payload: {} }) }
+              }).catch(error => {
+                this.publish({ type: 'gateway.start_timeout', payload: {
+                  python: 'runtime.describe', cwd: '', stderr_tail: String(error)
+                } })
+              })
+            }
           },
           { once: true }
         )
@@ -637,7 +572,6 @@ export class GatewayClient extends EventEmitter {
         }
 
         this.pushLog(`[lifecycle] websocket close code=${ev.code}`)
-        this.stopHeartbeat()
         this.ws = null
         this.wsConnectPromise = null
         this.handleTransportExit(ev.code, `gateway websocket closed${ev.code ? ` (${ev.code})` : ''}`)
@@ -658,7 +592,6 @@ export class GatewayClient extends EventEmitter {
     this.disposed = false
     this.clearReconnect()
 
-    const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
     const attachUrl = resolveGatewayAttachUrl()
     const sidecarUrl = resolveSidecarUrl()
 
@@ -666,14 +599,7 @@ export class GatewayClient extends EventEmitter {
     this.sidecarUrl = sidecarUrl
     this.resetStartupState()
     this.clearReconnect()
-    this.stopHeartbeat()
 
-    if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-      this.lifecycle(`[lifecycle] replacing live gateway child ${describeChild(this.proc)}`)
-      this.proc.kill()
-    }
-
-    this.proc = null
     this.closeGatewaySocket()
     this.closeSidecarSocket()
 
@@ -683,51 +609,7 @@ export class GatewayClient extends EventEmitter {
       return
     }
 
-    this.startSpawnedGateway(root)
-  }
-
-  private dispatch(msg: Record<string, unknown>) {
-    const id = msg.id as string | undefined
-
-    if (id && id === this.heartbeatPendingId) {
-      this.heartbeatPendingId = null
-      this.heartbeatSentAt = 0
-
-      return
-    }
-
-    const p = id ? this.pending.get(id) : undefined
-
-    if (p) {
-      this.settle(p, msg.error ? this.toError(msg.error) : null, msg.result)
-
-      return
-    }
-
-    if (msg.method === 'event') {
-      const ev = asGatewayEvent(msg.params)
-
-      if (ev) {
-        this.publish(ev)
-      }
-    }
-  }
-
-  private toError(raw: unknown): Error {
-    const err = raw as { message?: unknown } | null | undefined
-
-    return new Error(typeof err?.message === 'string' ? err.message : 'request failed')
-  }
-
-  private settle(p: Pending, err: Error | null, result: unknown) {
-    clearTimeout(p.timeout)
-    this.pending.delete(p.id)
-
-    if (err) {
-      p.reject(err)
-    } else {
-      p.resolve(result)
-    }
+    this.startLocalGateway()
   }
 
   private pushLog(line: string) {
@@ -740,26 +622,6 @@ export class GatewayClient extends EventEmitter {
   private lifecycle(line: string) {
     this.pushLog(line)
     recordParentLifecycle(line)
-  }
-
-  private rejectPending(err: Error) {
-    for (const p of this.pending.values()) {
-      clearTimeout(p.timeout)
-      p.reject(err)
-    }
-
-    this.pending.clear()
-  }
-
-  // Arrow class-field — stable identity, so `setTimeout(this.onTimeout, …, id)`
-  // doesn't allocate a bound function per request.
-  private onTimeout = (id: string) => {
-    const p = this.pending.get(id)
-
-    if (p) {
-      this.pending.delete(id)
-      p.reject(new Error(`timeout: ${p.method}`))
-    }
   }
 
   drain() {
@@ -819,6 +681,8 @@ export class GatewayClient extends EventEmitter {
 
     if (!this.ws || this.ws.readyState === WS_CLOSED || this.ws.readyState === WS_CLOSING) {
       this.start()
+
+      if (!resolveGatewayAttachUrl()) { await this.bootstrapFlight }
     }
 
     if (this.ws?.readyState === WS_CONNECTING) {
@@ -836,39 +700,14 @@ export class GatewayClient extends EventEmitter {
     return this.ws
   }
 
-  private requestOverWebSocket<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-    return this.ensureAttachedWebSocket(method).then(
-      ws =>
-        new Promise<T>((resolve, reject) => {
-          const id = `r${++this.reqId}`
-          const timeout = setTimeout(this.onTimeout, REQUEST_TIMEOUT_MS, id)
+  private notConnected = (method: string) => new Error(`gateway not connected: ${method}`)
 
-          timeout.unref?.()
-          this.pending.set(id, {
-            id,
-            method,
-            reject,
-            resolve: v => resolve(v as T),
-            timeout
-          })
-
-          try {
-            ws.send(JSON.stringify({ id, jsonrpc: '2.0', method, params }))
-          } catch (e) {
-            const pending = this.pending.get(id)
-
-            if (pending) {
-              clearTimeout(pending.timeout)
-              this.pending.delete(id)
-            }
-
-            reject(e instanceof Error ? e : new Error(String(e)))
-          }
-        })
-    )
+  private requestOverWebSocket<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
+    return this.ensureAttachedWebSocket(method).then(() =>
+      this.channel.request<T>(method, params, timeoutMs, undefined, () => this.notConnected(method)))
   }
 
-  request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  request<T = unknown>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> {
     const attachUrl = resolveGatewayAttachUrl()
 
     if (attachUrl) {
@@ -877,61 +716,30 @@ export class GatewayClient extends EventEmitter {
         // switching from spawned-gateway mode to attach mode also
         // tears down the old Python child. Merely closing `this.ws`
         // would leave a previously spawned gateway process alive.
-        this.rejectPending(new Error('gateway attach url changed'))
+        this.channel.detach(new Error('gateway attach url changed'))
         this.start()
       }
 
-      return this.requestOverWebSocket<T>(method, params)
+      return this.requestOverWebSocket<T>(method, params, timeoutMs)
     }
 
-    if (!this.proc?.stdin || this.proc.killed || this.proc.exitCode !== null) {
-      this.start()
-    }
+    if (!this.bootstrapFlight) { this.start() }
 
-    if (!this.proc?.stdin) {
-      return Promise.reject(new Error('gateway not running'))
-    }
+    return this.bootstrapFlight!.then(() => {
+      if (this.bootstrapError) { throw this.bootstrapError }
+      const request = canonicalRequest(method, params, this.creationContract)
 
-    const id = `r${++this.reqId}`
-
-    return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(this.onTimeout, REQUEST_TIMEOUT_MS, id)
-
-      timeout.unref?.()
-
-      this.pending.set(id, {
-        id,
-        method,
-        reject,
-        resolve: v => resolve(v as T),
-        timeout
-      })
-
-      try {
-        this.proc!.stdin!.write(JSON.stringify({ id, jsonrpc: '2.0', method, params }) + '\n')
-      } catch (e) {
-        const pending = this.pending.get(id)
-
-        if (pending) {
-          clearTimeout(pending.timeout)
-          this.pending.delete(id)
-        }
-
-        reject(e instanceof Error ? e : new Error(String(e)))
-      }
+      return this.requestOverWebSocket<T>(request.method, request.params, timeoutMs)
+        .then(value => canonicalResult(method, value, request.params))
     })
   }
 
   kill(reason = 'requested') {
     this.disposed = true
+    this.localGeneration++
     this.clearReconnect()
-    this.stopHeartbeat()
-    const proc = this.proc
-    const killed = proc?.kill()
-
-    this.lifecycle(
-      `[lifecycle] GatewayClient.kill reason=${reason} ${describeChild(proc)} killResult=${killed ?? 'none'}`
-    )
+    this.channel.stopHeartbeat()
+    this.lifecycle(`[lifecycle] GatewayClient.kill reason=${reason} (detach only)`)
     this.closeGatewaySocket()
     this.closeSidecarSocket()
     this.clearReadyTimer()
@@ -939,6 +747,6 @@ export class GatewayClient extends EventEmitter {
     // and we just nulled `this.ws`, so it will short-circuit and
     // skip handleTransportExit. Reject pending RPCs explicitly so
     // attach-mode promises do not hang after an intentional kill.
-    this.rejectPending(new Error('gateway closed'))
+    this.channel.detach(new Error('gateway closed'))
   }
 }

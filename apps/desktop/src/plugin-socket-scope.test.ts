@@ -63,8 +63,7 @@ beforeEach(() => {
       getConnection,
       getConnectionFor,
       getGatewayWsUrl: vi.fn(async () => 'wss://pool.invalid/api/ws?ticket=fake'),
-      getGatewayWsUrlFor: vi.fn(async () => 'wss://homelab.invalid/api/ws?ticket=fake'),
-      touchBackend: vi.fn(async () => ({ ok: true }))
+      getGatewayWsUrlFor: vi.fn(async () => 'wss://homelab.invalid/api/ws?ticket=fake')
     }
   })
   configureGatewayRegistry({ onEvent: vi.fn() })

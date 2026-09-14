@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.hosted_rooms import default_db_path as hosted_rooms_default_db_path
 import tui_gateway.server as srv
 from tui_gateway import methods_groups
 
@@ -359,7 +360,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
             }
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
         def register_peer_route(self, **kwargs):
             captured["registered"] = kwargs
@@ -389,7 +390,7 @@ def test_register_peer_route_probes_scope_and_persists_via_service(home, monkeyp
 
 def test_register_rejects_plaintext_non_loopback(home, monkeypatch):
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     response = srv._methods["groups.peer.register"](
@@ -411,7 +412,7 @@ def test_register_requires_roomlink_protocol_v2(home, monkeypatch):
     from gateway.hosted_room_peer import catalog_mapping
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
     monkeypatch.setattr(srv, "get_hosted_room_service", lambda: FakeService())
     response = srv._methods["groups.peer.register"](
@@ -927,7 +928,7 @@ def test_disband_stops_and_revokes_before_tombstoning(home, monkeypatch):
     calls = []
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
         attachments = SimpleNamespace(
             mark_room_disbanded=lambda room_id: calls.append(("files", room_id)),
             prune=lambda: calls.append(("prune", "room-1")),
@@ -955,7 +956,7 @@ def test_failed_remote_revocation_keeps_room_recoverable(home, monkeypatch):
     _create_room()
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
         def stop_room(self, _room_id, **_kwargs):
             return 1
@@ -980,7 +981,7 @@ def test_disband_does_not_revoke_routes_while_stop_is_unacknowledged(
     calls = []
 
     class FakeService:
-        db_path = home / "state.db"
+        db_path = hosted_rooms_default_db_path()
 
         def stop_room(self, _room_id, **kwargs):
             calls.append(("stop", kwargs["require_acknowledged"]))

@@ -183,6 +183,64 @@ def _live_fleet_covers_receipt(expected_sha: str | None) -> bool:
         return False
 
 
+def _read_fleet_marker_expected_sha() -> str:
+    """``expected_sha`` recorded in the pending marker ("" when absent/unreadable)."""
+    with suppress(OSError):
+        for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8").splitlines():
+            if line.startswith("expected_sha="):
+                return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _marker_only_restart_obsolete() -> bool:
+    """True when the pending marker is a leftover: the fleet already runs the expected code.
+
+    A supervisor-level restart (``systemctl --user restart``, launchctl, ops scripts) never
+    goes through this module's clear path, so the marker survives a restart that DID bring
+    every live gateway to the pulled code — and every later CLI call then prints the
+    interrupted-update warning forever (false positive).
+
+    The marker is not an *unknown* obligation: it records its own ``expected_sha``, so it can
+    be checked against the live fleet directly — no receipt required. Hold it to the same
+    evidence bar ``_live_fleet_covers_receipt`` applies to one: at least one row, and every
+    row a ``current`` gateway under a known profile whose ``code_sha`` equals that
+    ``expected_sha``, with the checkout HEAD not moved past the marker.
+
+    Keep the marker on stale/down rows, on an all-``unknown`` fleet (pre-code-identity
+    gateways cannot prove currency — same conservatism as the silent-failure class
+    #88848/#74973), on a marker with no ``expected_sha``, when a newer pull moved the
+    checkout, and when the probe fails or answers empty.
+    """
+    expected_sha = _read_fleet_marker_expected_sha()
+    if not expected_sha:
+        return False  # pre-expected_sha marker: nothing to verify against
+    checkout_sha = _current_checkout_sha()
+    if checkout_sha and checkout_sha != expected_sha:
+        return False  # a newer pull moved HEAD; it owns a fresh obligation
+    try:
+        from hermes_cli.update_receipt import collect_fleet_versions
+        fleet = collect_fleet_versions()
+    except Exception as exc:
+        logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
+        return False
+    if not fleet:
+        return False  # probe answered empty: no proof either way
+    for row in fleet:
+        if not isinstance(row, dict):
+            return False
+        profile = row.get("profile")
+        if not profile or profile == "unknown":
+            return False  # unidentified runtime: the matrix cannot vouch for it
+        if row.get("state") != "current" or str(row.get("code_sha")) != expected_sha:
+            return False  # stale / down / unknown-identity row still owes the restart
+    _clear_fleet_restart_pending_marker()
+    logger.debug(
+        "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",
+        len(fleet), expected_sha[:10],
+    )
+    return True
+
+
 def _pending_fleet_restart_needed() -> bool:
     """Reconcile old restart obligations against current, identity-matched gateways."""
     from hermes_cli.update_cmd import _current_checkout_sha
@@ -191,6 +249,8 @@ def _pending_fleet_restart_needed() -> bool:
     # than latest.json. An older receipt cannot discharge that unknown obligation.
     with suppress(OSError):
         if _fleet_restart_pending_marker_path().is_file():
+            if _marker_only_restart_obsolete():
+                return False
             return True
     if not _receipt_reports_stale_runtime():
         return False

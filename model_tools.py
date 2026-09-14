@@ -331,6 +331,22 @@ def _select_tool_names(enabled_toolsets: Optional[List[str]], disabled_toolsets:
     # disabled toolset are strictly stripped out. See issue #17309.
     if disabled_toolsets:
         _apply_toolset_selection(tools, disabled_toolsets, quiet_mode, disable=True)
+
+    # Dispatcher-owned Kanban workers default to the auditable file/terminal
+    # surface.  ``execute_code`` runs a nested in-process tool loop and is
+    # deliberately opt-in for a task that names the narrow ``code_execution``
+    # toolset.  Keeping the tool out of the model schema avoids turning an
+    # ordinary implementation choice into a late owner-approval request.
+    dispatcher_worker = (
+        bool(os.environ.get("HERMES_KANBAN_TASK"))
+        and not _is_delegated_child_context()
+        and _is_dispatcher_owned_worker()
+    )
+    code_execution_explicit = (
+        enabled_toolsets is not None and "code_execution" in enabled_toolsets
+    )
+    if dispatcher_worker and not code_execution_explicit:
+        tools.discard("execute_code")
     return tools
 
 

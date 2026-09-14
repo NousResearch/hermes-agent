@@ -84,6 +84,7 @@ def test_show_defaults_to_env_task_id(worker_env):
 def test_show_returns_persisted_completion_proof(worker_env, tmp_path):
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
+    import tools.kanban_tools  # noqa: F401
     from tools.registry import registry
 
     artifact = tmp_path / "workspace" / "report.txt"

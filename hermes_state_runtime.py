@@ -84,7 +84,14 @@ def begin_runtime_epoch(db, *, instance_id: str) -> int:
 
 
 def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
-                        request_id: str, payload: dict, intent: str = 'queue') -> dict:
+                        request_id: str, payload: dict, intent: str = 'queue',
+                        _authorize_write=None) -> dict:
+    """Admit input; the trusted private guard raises to refuse a NEW write.
+
+    The guard receives the owning transaction connection, must not commit it or
+    perform external effects, and may run again on SQLite retry. Exact existing
+    and terminal replays bypass it: they cannot create or change accepted work.
+    """
     for value in (principal_id, session_id, request_id):
         _text(value)
     if intent not in ('queue', 'steer', 'redirect'):
@@ -105,6 +112,8 @@ def admit_session_input(db, *, epoch: int, principal_id: str, session_id: str,
             if old['payload_digest'] != digest:
                 raise RuntimeStoreError('admission_conflict')
             return _row(old)
+        if _authorize_write is not None:
+            _authorize_write(conn)
         admission_id = uuid.uuid4().hex
         conn.execute('''INSERT INTO session_admissions(admission_id,request_id,principal_id,
             target_session_id,lineage_json,payload_json,payload_digest,intent,status,owner_epoch)

@@ -157,3 +157,24 @@ def test_ledger_migration_and_completion_identity(tmp_path, monkeypatch):
         jobs.save_jobs(rows)
         due = next(item for item in jobs.get_due_jobs() if item['id'] == naive['id'])
         assert due['_scheduled_instant'] is None
+
+
+def test_completion_before_occurrence_does_not_prove_slot_completed(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from cron import executions
+    from cron.occurrences import completed_occurrence
+
+    monkeypatch.setattr(executions, 'EXECUTIONS_FILE', tmp_path / 'executions.db')
+    slot = '2026-01-05T00:00:00+00:00'
+    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 1, tzinfo=timezone.utc))
+    poisoned = executions.create_execution('job', source='control', scheduled_instant=slot)
+    executions.finish_execution(poisoned['id'], success=True)
+
+    assert not completed_occurrence({'id': 'job'}, slot)
+
+    monkeypatch.setattr(executions, '_hermes_now', lambda: datetime(2026, 1, 5, tzinfo=timezone.utc))
+    legitimate = executions.create_execution('job', source='builtin', scheduled_instant=slot)
+    executions.finish_execution(legitimate['id'], success=True)
+
+    assert completed_occurrence({'id': 'job'}, slot)

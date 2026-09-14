@@ -28,7 +28,8 @@ from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, 
 from acp_adapter.commands import HERMES_VERSION, SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
-    _build_plan_update_from_todo_result, make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
+    AssistantMessageIdAllocator, _build_plan_update_from_todo_result, make_message_cb, make_step_cb,
+    make_thinking_cb, make_tool_progress_cb,
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
@@ -849,9 +850,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             cbs.tool_progress_cb = make_tool_progress_cb(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter
             )
-            cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop)
+            # Per-session allocator: a new turn must never reuse a previous turn's
+            # assistant messageId (ACP clients replace the bubble with that id).
+            if state.message_ids is None:
+                state.message_ids = AssistantMessageIdAllocator()
+            state.message_ids.close()  # new turn -> next chunk opens a fresh id
+            cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop, state.message_ids)
             cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            message_cb = make_message_cb(conn, session_id, loop)
+            message_cb = make_message_cb(conn, session_id, loop, state.message_ids)
 
             def stream_delta_cb(text: str) -> None:
                 cbs.streamed = cbs.streamed or bool(text)
@@ -908,7 +914,16 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         # Send the final text unless already streamed — or if a plugin hook transformed it after.
         delivery_outcome = "suppressed" if suppress else "failed"
         if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
-            await conn.session_update(session_id, acp.update_agent_message_text(final_response))
+            update = acp.update_agent_message_text(final_response)
+            if state.message_ids is not None:
+                # A plugin-rewritten reply replaces the streamed bubble (same id); an
+                # unstreamed final response opens its own.
+                if streamed_message and result.get("response_transformed"):
+                    update.message_id = state.message_ids.last() or state.message_ids.current()
+                else:
+                    update.message_id = state.message_ids.current()
+                state.message_ids.close()
+            await conn.session_update(session_id, update)
             delivery_outcome = "delivered"
         elif final_response and streamed_message and not suppress:
             delivery_outcome = "delivered"

@@ -21,7 +21,7 @@ from contextlib import nullcontext, suppress
 from contextvars import copy_context
 from gateway.config import Platform
 from gateway.media_repair import repair_explicit_computer_use_media_paths
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
@@ -2092,6 +2092,20 @@ class GatewayTurnMixin:
             return _profile_runtime_scope(self._resolve_profile_home_for_source(source))
         return nullcontext()
 
+    def _media_delivery_scope_for_source(self, source: SessionSource):
+        """Home + terminal-policy scope for validating a turn's MEDIA / local-file paths on the
+        adapter's delivery side, which runs after the routed turn scope was reset.
+
+        Docker path translation (``platforms/base.py::_translate_docker_container_media_path``)
+        infers the producing container from the ACTIVE profile (``get_active_profile_name``) and the
+        scope-aware ``TERMINAL_DOCKER_VOLUMES``; without this a secondary's ``MEDIA:/output/x.png``
+        resolves against the default profile's sandbox and mounts (#109024). No secret hydration:
+        path validation reads no credentials and this runs on the event loop."""
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return nullcontext()
+        from gateway.run import _profile_runtime_scope
+        return _profile_runtime_scope(self._resolve_profile_home_for_source(source), {})
+
     def _reset_notice_session_info(self, source: SessionSource) -> str:
         """Session-info block for the auto-reset notice, resolved inside the profile serving ``source``.
 
@@ -3609,15 +3623,35 @@ class GatewayTurnMixin:
         # whole _run_agent chain unwinds — too late for the in-band follow-up. Use the same (session_key,
         # session_id) the recursive call runs under so the snapshot matches exactly what the follow-up's
         # guard will consult. Fail-safe in helper.
-        await self._refresh_agent_cache_message_count(session_key, session_id)
+        # Acknowledge the follow-up the way an idle-session message is: this in-band drain is the only
+        # place a queued/interrupting message ever runs, so base.py's hook site is never entered for it.
+        # Resolve the adapter from the follow-up's OWN source — a multiplexed gateway can route it to a
+        # different profile's adapter, and only that instance holds the per-message reaction state.
+        from gateway.run_turn_followup_ack import _followup_cancel_outcome, _run_followup_processing_hook
+        _hook_adapter = self._adapter_for_source(next_source) if pending_event is not None else None
+        await _run_followup_processing_hook(_hook_adapter, pending_event, "on_processing_start")
+        # The re-baseline sits inside the try: a /stop landing on its DB await must still close the marker
+        # (the helper's own ``except Exception`` does not catch cancellation).
+        try:
+            await self._refresh_agent_cache_message_count(session_key, session_id)
 
-        followup_result = await self._run_agent(
-            message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
-            source=next_source, session_id=session_id, session_key=next_session_key,
-            run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
-            event_message_id=next_message_id, inbound_message_id=next_inbound_id,
-            channel_prompt=next_channel_prompt, message_type=next_message_type,
-        )
+            followup_result = await self._run_agent(
+                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                source=next_source, session_id=session_id, session_key=next_session_key,
+                run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
+                event_message_id=next_message_id, inbound_message_id=next_inbound_id,
+                channel_prompt=next_channel_prompt, message_type=next_message_type,
+            )
+        except asyncio.CancelledError:
+            await _run_followup_processing_hook(
+                _hook_adapter, pending_event, "on_processing_complete", _followup_cancel_outcome(_hook_adapter))
+            raise
+        except BaseException:
+            await _run_followup_processing_hook(
+                _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.FAILURE)
+            raise
+        await _run_followup_processing_hook(
+            _hook_adapter, pending_event, "on_processing_complete", ProcessingOutcome.SUCCESS)
         merged = _preserve_queued_followup_history_offset(result, followup_result)
         # The TERMINAL turn of the chain owns the ledger identity for the outer final send, which
         # the adapter brackets against the event that OPENED the chain. Without this the terminal

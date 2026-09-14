@@ -1410,6 +1410,9 @@ export interface AuxiliaryTaskAssignment {
   local_endpoint?: boolean
   model: string
   provider: string
+  /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
+   *  means the task inherits the main agent's effort. */
+  reasoning_effort?: null | string
   task: string
 }
 
@@ -1467,6 +1470,9 @@ export interface ModelAssignmentRequest {
   confirm_expensive_model?: boolean
   model: string
   provider: string
+  /** Auxiliary only. Omitted → leave the task's override alone; null → clear it
+   *  (inherit); a level → set it. */
+  reasoning_effort?: null | string
   scope: 'main' | 'auxiliary'
   task?: string
 }

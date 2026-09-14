@@ -885,7 +885,10 @@ def _run_approval_gate(
     an explicit ``*_deny_message`` (the file-tool write gates word their own).
     """
     # Hardline blocks are the caller's job BEFORE this gate, so yolo here only skips the recoverable approval layer.
-    if _yolo_active():
+    # ``approvals.mode: off`` is the third bypass source (the Desktop "Approvals: off" toggle writes it); the shell
+    # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,
+    # dangerous-pattern prompts) must too, or "off" still prompts on those surfaces.
+    if _yolo_active() or approval_context._get_approval_mode() == "off":
         return _approved()
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):

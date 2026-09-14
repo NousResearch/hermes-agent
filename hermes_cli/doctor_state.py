@@ -294,9 +294,14 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
 
 
 def _gh_authenticated() -> bool:
-    """Check if gh CLI is authenticated via token file or device flow."""
+    """Check if gh CLI is authenticated via token file or device flow.
+
+    Plain ``gh auth status`` (exit code only): gh 2.98+ dropped the
+    ``authenticated`` JSON field, so ``--json authenticated`` exits 1 even
+    when logged in, and the doctor falsely reported "No GITHUB_TOKEN".
+    """
     try:
-        result = subprocess.run(["gh", "auth", "status", "--json", "authenticated"], capture_output=True, timeout=10)
+        result = subprocess.run(["gh", "auth", "status"], capture_output=True, timeout=10)
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False

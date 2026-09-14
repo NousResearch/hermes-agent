@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -505,8 +506,34 @@ def _daemon(name: Optional[str], target) -> None:
     threading.Thread(target=lambda: _quiet(target), name=name, daemon=True).start()
 
 
+def _skip_background_prefetch() -> bool:
+    """True when the banner's background prefetch threads must not start.
+
+    Under pytest the prefetch daemon threads shell out to git (``rev-parse``,
+    ``remote get-url``, the banner's git state) at an arbitrary point after
+    import, and any test that patches the process-wide ``subprocess`` singleton
+    (``patch("subprocess.run")`` / ``patch("subprocess.Popen")``) can record
+    that stray spawn in place of the call it meant to pin.  Importing
+    ``tui_gateway.server`` starts this prefetch, which is what flaked
+    tests/tui_gateway/test_subprocess_encoding.py and test_bot_relay_methods.py.
+    Nothing under pytest needs a live update check; tests that exercise the
+    prefetch itself monkeypatch this predicate to False.
+
+    ``PYTEST_CURRENT_TEST`` is only set while a test runs, not during
+    collection-time imports, hence the ``sys.modules`` check as well.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
 def prefetch_update_check():
-    """Kick off update check in a background daemon thread."""
+    """Kick off update check in a background daemon thread.
+
+    No-op under pytest — see ``_skip_background_prefetch``.
+    """
+    if _skip_background_prefetch():
+        _update_check_done.set()
+        return
+
     def _run():
         global _update_result
         _update_result = check_for_updates(passive=True)
@@ -526,6 +553,13 @@ def prefetch_banner_data():
     """
     global _banner_data_prefetch_started
     if _banner_data_prefetch_started:
+        return
+    if _skip_background_prefetch():
+        # Same stray-git-spawn cross-talk class as prefetch_update_check:
+        # get_git_banner_state() shells out via the shared subprocess
+        # singleton from a daemon thread, poisoning process-wide subprocess
+        # mocks in unrelated tests.
+        _banner_data_prefetch_started = True
         return
     _banner_data_prefetch_started = True
     _daemon("banner-data-prefetch", lambda: [_quiet(warm) for warm in (

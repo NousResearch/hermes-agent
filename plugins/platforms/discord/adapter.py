@@ -3157,8 +3157,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids),
         )
 
-
-
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         """Play auto-TTS audio: in the guild's VC if joined, else as a file attachment."""
         for gid, text_ch_id in self._voice_text_channels.items():

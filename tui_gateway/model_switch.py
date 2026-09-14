@@ -153,13 +153,16 @@ def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) ->
         logger.debug("preflight-compression switch warning failed: %s", exc)
 
 
-def _expensive_model_confirm(result, current_base_url: str, current_api_key) -> dict | None:
-    """Deferred-confirm response when the selection guards flag the target model, else None."""
+def _expensive_model_confirm(result, current_base_url: str, current_api_key, agent=None) -> dict | None:
+    """Deferred-confirm response when the selection guards flag the target model (or, with a live
+    ``agent``, the switch itself — large cached context), else None."""
     try:
-        from hermes_cli.model_selection_guards import combined_selection_warning
+        from hermes_cli.model_selection_guards import (
+            combined_selection_warning, selection_context_for_agent)
         warning = combined_selection_warning(
             result.new_model, provider=result.target_provider, base_url=result.base_url or current_base_url,
-            api_key=result.api_key or current_api_key, model_info=result.model_info)
+            api_key=result.api_key or current_api_key, model_info=result.model_info,
+            selection_context=selection_context_for_agent(agent))
     except Exception:
         warning = None
     if warning is None:
@@ -228,7 +231,7 @@ def _apply_model_switch(
     if agent:
         _merge_preflight_warning(result, agent, session, cfg, custom_provs)
     if not confirm_expensive_model:
-        confirm = _expensive_model_confirm(result, current_base_url, current_api_key)
+        confirm = _expensive_model_confirm(result, current_base_url, current_api_key, agent)
         if confirm is not None:
             return confirm
     if agent:

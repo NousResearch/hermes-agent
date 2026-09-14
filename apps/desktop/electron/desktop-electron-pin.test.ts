@@ -15,11 +15,14 @@
  * (``ERR_DLOPEN_FAILED loading index.win32-x64-msvc.node``).
  *
  * These tests lock the contract that prevents that drift, without hard-coding the
- * specific version (which is allowed to move):
+ * exact release (which is allowed to move):
  *
- * 1. the Electron dependency is an *exact* version (Electron Builder needs the
+ * 1. the Electron dependency is an *exact* version at or above the security
+ *    floor,
+ * 2. the root install-script approval is keyed to that exact dependency, and
+ * 3. the Electron dependency is an *exact* version (Electron Builder needs the
  *    installed binary to match ``electronVersion`` / ``electronDist``), and
- * 2. the dependency, ``build.electronVersion``, and the resolved lockfile entry
+ * 4. the dependency, ``build.electronVersion``, and the resolved lockfile entry
  *    all agree — so ``npm ci`` installs exactly what the build packages.
  */
 
@@ -31,7 +34,9 @@ import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 const DESKTOP_PKG = path.join(REPO_ROOT, 'apps', 'desktop', 'package.json')
+const ROOT_PKG = path.join(REPO_ROOT, 'package.json')
 const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
+const MINIMUM_ELECTRON_VERSION = [41, 10, 3] as const
 
 // An exact semver: digits.digits.digits with an optional prerelease/build tag,
 // but NO range operators (^ ~ > < = * x || spaces || -range).
@@ -41,6 +46,12 @@ function desktopPkg(): Record<string, unknown> {
   assert.ok(fs.existsSync(DESKTOP_PKG), `missing ${DESKTOP_PKG}`)
 
   return JSON.parse(fs.readFileSync(DESKTOP_PKG, 'utf-8'))
+}
+
+function rootPkg(): Record<string, unknown> {
+  assert.ok(fs.existsSync(ROOT_PKG), `missing ${ROOT_PKG}`)
+
+  return JSON.parse(fs.readFileSync(ROOT_PKG, 'utf-8'))
 }
 
 function electronSpec(pkg: Record<string, unknown>): string {
@@ -64,6 +75,35 @@ test('electron dependency is exactly pinned', () => {
     `electron must be pinned to an exact version, got "${spec}". ` +
       'A range (^/~) lets npm ci resolve a newer Electron whose postinstall ' +
       'may differ from the one the build was validated against.'
+  )
+})
+
+test('electron dependency meets the supported security floor', () => {
+  const spec = electronSpec(desktopPkg())
+  const version = spec.match(/^(\d+)\.(\d+)\.(\d+)/)
+  assert.ok(version, `electron must be a numeric release, got "${spec}"`)
+
+  const [major, minor, patch] = version.slice(1).map(Number)
+  const [minimumMajor, minimumMinor, minimumPatch] = MINIMUM_ELECTRON_VERSION
+  const meetsFloor =
+    major > minimumMajor ||
+    (major === minimumMajor &&
+      (minor > minimumMinor || (minor === minimumMinor && patch >= minimumPatch)))
+
+  assert.ok(
+    meetsFloor,
+    `electron ${spec} must be at least ${MINIMUM_ELECTRON_VERSION.join('.')}`
+  )
+})
+
+test('root allowScripts approval matches the pinned electron dependency', () => {
+  const spec = electronSpec(desktopPkg())
+  const allowScripts = (rootPkg().allowScripts ?? {}) as Record<string, unknown>
+
+  assert.equal(
+    allowScripts[`electron@${spec}`],
+    true,
+    `package.json must approve electron@${spec} so npm runs its install script.`
   )
 })
 

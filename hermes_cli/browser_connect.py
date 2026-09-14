@@ -390,18 +390,23 @@ def _secure_snapshot(path: str, *, contents: bool = False) -> None:
 # exclusive lock, so a raw copy raises WinError 32 and a best-effort skip leaves the copy
 # signed-out. They are copied via SQLite's online-backup API instead. Matched by basename.
 _SQLITE_AUTH_DBS = frozenset({"Cookies", "Login Data", "Login Data For Account", "Web Data"})
+# Session cookies keep the copy signed in. Login Data / Web Data are passwords and
+# autofill — a live Chrome often holds those DBs in a backup that exceeds the 5s bound
+# even when Cookies copy in milliseconds. Failing the whole snapshot for those would force
+# the user to quit Chrome for every browser tool call (POSIX copy-while-running).
+_SESSION_AUTH_DBS = frozenset({"Cookies"})
 
 
-def _copy_auth_file(src_file: str, dst_file: str) -> bool:
-    """Copy auth state; refuse a DB that cannot be snapshotted consistently within five seconds."""
+def _copy_auth_file(src_file: str, dst_file: str, *, deadline_s: float = 5.0) -> bool:
+    """Copy auth state; refuse a DB that cannot be snapshotted consistently within ``deadline_s``."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
     try:
         if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + deadline_s
 
             def check_deadline(_status: int, _remaining: int, _total: int) -> None:
                 if _status != sqlite3.SQLITE_DONE and time.monotonic() >= deadline:
-                    raise TimeoutError("auth database backup exceeded five seconds")
+                    raise TimeoutError("auth database backup exceeded deadline")
 
             # SQLite must coordinate both ends: immutable ignores committed source WAL,
             # while replacing only the destination file can replay its abandoned WAL.
@@ -413,21 +418,35 @@ def _copy_auth_file(src_file: str, dst_file: str) -> bool:
         else:
             shutil.copy2(src_file, dst_file)
         return True
-    except (OSError, sqlite3.Error) as e:
+    except (OSError, sqlite3.Error, TimeoutError) as e:
         # A raw DB copy can lose committed WAL or overwrite a locked destination.
+        # TimeoutError: the backup progress callback's five-second bound (Chrome mid-write).
         logger.debug("real-profile: could not copy %s: %s", src_file, e)
         return False
 
 
 def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> int:
     """Mirror ``source_profile``'s auth files into the copy's ``Default`` (agent-browser opens it);
-    returns the number of DB auth files that could NOT be copied (0 = clean)."""
-    failed_dbs = 0
+    returns how many *session* cookie DBs could NOT be copied (0 = signed-in state is usable).
+    Login Data / Web Data failures are logged and skipped so a running Chrome does not block launch."""
+    failed_session = 0
     for rel in _AUTH_REFRESH_PROFILE_FILES:
         s = os.path.join(src, source_profile, rel)
-        if os.path.isfile(s) and not _copy_auth_file(s, os.path.join(dst, "Default", rel)):
-            failed_dbs += os.path.basename(rel) in _SQLITE_AUTH_DBS
-    return failed_dbs
+        if not os.path.isfile(s):
+            continue
+        basename = os.path.basename(rel)
+        copied = _copy_auth_file(
+            s,
+            os.path.join(dst, "Default", rel),
+            deadline_s=5.0 if basename in _SESSION_AUTH_DBS else 0.5,
+        )
+        if copied or basename not in _SQLITE_AUTH_DBS:
+            continue
+        if basename in _SESSION_AUTH_DBS:
+            failed_session += 1
+        else:
+            logger.info("real-profile snapshot: skipped locked %s (session cookies still usable)", rel)
+    return failed_session
 
 
 _SNAPSHOT_DONE_MARKER = ".hermes-snapshot-complete"
@@ -659,10 +678,8 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             _copy_profile_tree(src, dst, source_profile)
         # Both paths: lock-aware auth DB copy into Default — also the per-launch re-sync.
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
-        if failed_dbs:  # even online-backup failed: never launch a silently signed-out session
-            return None, (f"could not read the '{browser}' profile's login data ({failed_dbs} "
-                          f"database(s) unavailable). Close {browser} and retry, or turn "
-                          "browser.use_real_profile off.")
+        if failed_dbs:  # cookie DBs unavailable: never launch a silently signed-out session
+            return None, _locked_profile_error(browser)
         # Never carry live-instance leftovers into the copy.
         for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
             with contextlib.suppress(OSError):

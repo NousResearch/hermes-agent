@@ -105,9 +105,15 @@ def test_an_admin_may(write_api):
 
 def test_an_undeclared_write_route_is_a_404_not_a_403(write_api):
     """Forgetting to declare a read exposes data; forgetting to declare a write hands out
-    an action. So an undeclared write is unroutable rather than admin-only."""
-    response = write_api.write("/platform/v1/agents/x/delete", ADMIN, {})
-    assert response.status == 404
+    an action. So an undeclared write is unroutable rather than admin-only.
+
+    ``/agents/x/delete`` used to be the example and is now a real route, so the example
+    moved to one that is still undeclared. Both halves are checked: an unknown collection,
+    and a known collection with an action nobody declared — the second is the one a typo
+    actually produces.
+    """
+    assert write_api.write("/platform/v1/knowledge/x/delete", ADMIN, {}).status == 404
+    assert write_api.write("/platform/v1/agents/x/unpublish", ADMIN, {}).status == 404
 
 
 def test_every_declared_write_route_names_a_real_role():

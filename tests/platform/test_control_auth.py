@@ -256,13 +256,19 @@ def test_a_role_refusal_is_403_not_404(api, tmp_path):
 
 def test_a_read_route_is_not_writable_by_any_principal(api, tmp_path):
     """Phase 8 opened POST, but only onto declared write routes. An admin posting to a
-    read route gets nowhere — which is the point of keeping the two tables apart."""
+    read route gets nowhere — which is the point of keeping the two tables apart.
+
+    The example used to be ``/agents``, which is now a declared write route (creating an
+    agent, the way ``POST /automations`` declares one). ``/policy`` replaces it: the
+    compiled policy is readable by an admin and is not writable by anyone, because it is
+    compiled from the bundle rather than edited in place.
+    """
     store = PrincipalStore.load(principals_file(tmp_path, ("ops", "admin", new_token())))
     server = build_server(api, host="127.0.0.1", port=0, principals=store)
     try:
         port = serve_in_thread(server)
         request = urllib.request.Request(
-            f"http://127.0.0.1:{port}/platform/v1/agents",
+            f"http://127.0.0.1:{port}/platform/v1/policy",
             method="POST",
             data=b"{}",
             headers={"Content-Type": "application/json"},

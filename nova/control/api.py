@@ -68,7 +68,26 @@ def _write_route(tail: str) -> Optional[str]:
     # act on the collection, not on a member that does not exist yet.
     if parts == ["automations"]:
         return "/automations/create"
+    if parts == ["agents"]:
+        return "/agents/create"
+    # /agents/<id>/<action>. Kept item-level and enumerated rather than matched by prefix,
+    # so a new action has to be added here before it can be called.
+    if len(parts) == 3 and parts[0] == "agents" and parts[2] in AGENT_ACTIONS:
+        return f"/agents/{parts[2]}"
     return None
+
+
+#: What an administrator may do to a declared agent.
+#:
+#: ``soul`` rewrites the persona. ``archive`` and ``restore`` flip ``enabled`` and are
+#: reversible; ``delete`` removes the declaration and is not. They are separate routes
+#: rather than one "update" taking a field name, so the audit log records which act
+#: happened rather than which key changed.
+#: Ceiling on a persona. Matches the automation objective cap: both are text the model
+#: sees on every turn, and an unbounded one is a per-turn cost nobody reviewed.
+MAX_INSTRUCTIONS_CHARS = 20000
+
+AGENT_ACTIONS = ("update", "soul", "duplicate", "archive", "restore", "delete")
 
 
 #: What an administrator may do to an automation the runtime already holds.
@@ -142,6 +161,10 @@ class ControlAPI:
             return self._decide_automation(tail, principal, payload)
         if route == "/channels/apply":
             return self._apply_channels(principal, payload)
+        if route == "/agents/create":
+            return self._create_agent(principal, payload)
+        if route.startswith("/agents/"):
+            return self._agent_action(tail, route.rsplit("/", 1)[1], principal, payload)
         return self._submit_objective(tail, principal, payload)
 
     def _decide_work(self, tail: str, principal, payload: Mapping[str, Any]) -> Response:
@@ -517,6 +540,199 @@ class ControlAPI:
             registry.forget(self.runtime.state_location, job_id)
         except Exception:  # noqa: BLE001 — provenance is a record, not the act
             pass
+
+    # -- agents ---------------------------------------------------------------
+
+    def _reload_bundle(self):
+        """Re-read the bundle from disk after an edit, so later reads see the new state.
+
+        The API holds a bundle it was constructed with. An edit that changed the files but
+        not that object would leave the Control Centre showing the old configuration until
+        the process restarted — the "did my change apply?" failure this whole feature
+        exists to remove.
+        """
+        from nova.spec import load_bundle
+
+        self.bundle = load_bundle(self.bundle.root)
+        return self.bundle
+
+    def _apply_to_runtime(self, correlation_id: str, actor: str) -> dict[str, Any]:
+        """Push the edited bundle into the runtime and report what actually happened.
+
+        A bundle edit changes a declaration. Until it is applied, the running agent still
+        has the old persona, so reporting success on the write alone would be reporting
+        that a file changed — which is not what anybody asked.
+
+        A failure here is **not** rolled back, and the response says so. The declaration is
+        valid and saved; what failed is materialising it. Silently reverting a saved edit
+        because a later step failed would lose the operator's work.
+        """
+        from nova.apply import apply_bundle
+
+        try:
+            result = apply_bundle(
+                self.bundle,
+                self.runtime,
+                audit=self.audit.with_actor(actor),
+                dry_run=False,
+                # Same id as the edit, so the audit log shows one act rather than an edit
+                # and an unrelated apply that happened to follow it.
+                correlation_id=correlation_id,
+            )
+        except NovaError as exc:
+            return {"applied": False, "error": str(exc)}
+        summary = {
+            "applied": True,
+            "created": list(getattr(result, "created", ()) or ()),
+            "changed": list(getattr(result, "changed", ()) or ()),
+            "unchanged": list(getattr(result, "unchanged", ()) or ()),
+            "warnings": list(getattr(result, "warnings", ()) or ()),
+        }
+        return summary
+
+    def _agent_write(
+        self,
+        principal,
+        *,
+        kind: str,
+        subject: str,
+        detail: dict[str, Any],
+        operation,
+    ) -> Response:
+        """One agent mutation: intent, edit the bundle, apply, committed.
+
+        Every agent route funnels through here so the audit shape cannot vary between them,
+        and so every one of them reloads and applies rather than leaving that to be
+        remembered per route.
+        """
+        correlation_id = new_correlation_id()
+        audit = self.audit.with_actor(principal.name)
+        audit.record(
+            kind=kind, phase="intent", subject=subject,
+            correlation_id=correlation_id, detail={**detail, "actor": principal.name},
+        )
+        try:
+            _bundle, changed = operation()
+        except NovaError as exc:
+            audit.record(
+                kind=kind, phase="failed", subject=subject,
+                correlation_id=correlation_id, detail={"error": str(exc)},
+            )
+            # 400: the edit was refused by validation, which names the field.
+            return _error(400, str(exc))
+        except Exception as exc:  # noqa: BLE001 — an intent must always reach a terminal phase
+            audit.record(
+                kind=kind, phase="failed", subject=subject,
+                correlation_id=correlation_id, detail={"error": repr(exc)},
+            )
+            raise
+
+        self._reload_bundle()
+        applied = self._apply_to_runtime(correlation_id, principal.name)
+        audit.record(
+            kind=kind,
+            phase="committed" if applied.get("applied") else "failed",
+            subject=subject,
+            correlation_id=correlation_id,
+            detail={"files": changed, "applied": applied.get("applied", False)},
+        )
+        return Response(
+            200,
+            {
+                "ok": True,
+                "actor": principal.name,
+                "agent_id": subject,
+                "files_changed": changed,
+                # Separate keys on purpose: the declaration is saved either way, and the
+                # screen must be able to say "saved, but not yet running" rather than
+                # collapsing both into one tick.
+                "saved": True,
+                "runtime": applied,
+                "correlation_id": correlation_id,
+            },
+        )
+
+    def _create_agent(self, principal, payload: Mapping[str, Any]) -> Response:
+        from nova import agents as agent_ops
+
+        agent_id = str(payload.get("id") or "").strip()
+        fields = payload.get("fields")
+        if not isinstance(fields, Mapping):
+            fields = {k: v for k, v in payload.items() if k not in ("id", "instructions")}
+        instructions = str(payload.get("instructions") or "")
+
+        return self._agent_write(
+            principal,
+            kind="agent.created",
+            subject=agent_id,
+            detail={"fields": sorted(fields), "has_instructions": bool(instructions.strip())},
+            operation=lambda: agent_ops.create_agent(
+                self.bundle.root, agent_id=agent_id, fields=fields, instructions=instructions
+            ),
+        )
+
+    def _agent_action(
+        self, tail: str, action: str, principal, payload: Mapping[str, Any]
+    ) -> Response:
+        from nova import agents as agent_ops
+
+        parts = [part for part in tail.split("/") if part]
+        agent_id = parts[1] if len(parts) > 2 else ""
+        root = self.bundle.root
+
+        if action == "update":
+            fields = payload.get("fields")
+            if not isinstance(fields, Mapping):
+                return _error(400, "send the changes as an object under 'fields'")
+            return self._agent_write(
+                principal, kind="agent.updated", subject=agent_id,
+                detail={"fields": sorted(fields)},
+                operation=lambda: agent_ops.update_agent(root, agent_id, fields),
+            )
+
+        if action == "soul":
+            if "instructions" not in payload:
+                return _error(400, "send the persona as 'instructions'")
+            text = str(payload.get("instructions") or "")
+            if len(text) > MAX_INSTRUCTIONS_CHARS:
+                return _error(
+                    400,
+                    f"a persona may not exceed {MAX_INSTRUCTIONS_CHARS} characters; this "
+                    f"one is {len(text)}. It is prepended to every turn this agent takes",
+                )
+            return self._agent_write(
+                principal, kind="agent.soul_changed", subject=agent_id,
+                # The persona itself is NOT recorded: the audit log says who changed the
+                # instructions and when, and the bundle holds what they changed them to.
+                # Copying the text into a second store doubles what a leak would expose.
+                detail={"characters": len(text)},
+                operation=lambda: agent_ops.set_instructions(root, agent_id, text),
+            )
+
+        if action == "duplicate":
+            new_id = str(payload.get("new_id") or "").strip()
+            name = str(payload.get("name") or "")
+            return self._agent_write(
+                principal, kind="agent.duplicated", subject=agent_id,
+                detail={"new_id": new_id},
+                operation=lambda: agent_ops.duplicate_agent(root, agent_id, new_id, name=name),
+            )
+
+        if action in ("archive", "restore"):
+            enabled = action == "restore"
+            return self._agent_write(
+                principal, kind=f"agent.{action}d", subject=agent_id,
+                detail={"enabled": enabled},
+                operation=lambda: agent_ops.archive_agent(root, agent_id, enabled=enabled),
+            )
+
+        if action == "delete":
+            return self._agent_write(
+                principal, kind="agent.deleted", subject=agent_id, detail={},
+                operation=lambda: agent_ops.delete_agent(root, agent_id),
+            )
+
+        return _error(404, f"no such agent action: {action!r}")
 
     def _create_automation(self, principal, payload: Mapping[str, Any]) -> Response:
         """Declare a new automation: compile it, then let the runtime schedule it.

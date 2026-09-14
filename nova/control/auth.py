@@ -77,6 +77,16 @@ WRITE_ROUTES: Mapping[str, str] = {
     # Acting on work already on the board: release it, send it back for changes, resume it,
     # or leave a note a worker will read.
     "/work/decide": "admin",
+    # Agent lifecycle. Every one is admin: an agent's persona is its standing instruction
+    # on every turn, and its permissions are what it may do — neither is operational state
+    # a viewer should be able to change.
+    "/agents/create": "admin",
+    "/agents/update": "admin",
+    "/agents/soul": "admin",
+    "/agents/duplicate": "admin",
+    "/agents/archive": "admin",
+    "/agents/restore": "admin",
+    "/agents/delete": "admin",
     # Putting a declared objective's steps on the board.
     "/objectives/submit": "admin",
     # Making the runtime deliver declared conversations to granted agents.

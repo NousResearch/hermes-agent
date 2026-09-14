@@ -132,6 +132,158 @@ _HARDLINE_BLOCK = [
     "{ poweroff; }",
     "true && (reboot)",
     "echo hi; { reboot; }",
+    # In-place edits of the Hermes security policy / credential files.
+    # ~/.hermes/config.yaml holds approvals.mode, yolo, and the permanent
+    # allowlist; .env holds credentials — both are write-protected on the
+    # file_tools side. The smart-approval adjudicator has approved a
+    # `sed -i` on config.yaml even while describing it correctly, letting
+    # the agent rewrite its own approval policy, so these must sit on the
+    # unconditional floor rather than in yolo-bypassable DANGEROUS_PATTERNS.
+    "sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "sed -i.bak 's/mode: smart/mode: off/' ~/.hermes/config.yaml",
+    "sed -ri 's/a/b/' ~/.hermes/config.yaml",
+    "sed --in-place 's/a/b/' $HOME/.hermes/config.yaml",
+    "sed -i 's/KEY=old/KEY=new/' ~/.hermes/.env",
+    "sed -i '' 's/a/b/' ${HOME}/.hermes/.env",
+    "perl -pi -e 's/a/b/' ~/.hermes/config.yaml",
+    "perl -i -pe 's/smart/off/' $HERMES_HOME/config.yaml",
+    "ruby -i -pe 'gsub(/a/, \"b\")' ~/.hermes/.env",
+    # The editor at every real command position: chained, subshell/command
+    # substitution, wrapped, piped, and inside a shell -c payload (the
+    # payload is surfaced as its own detection variant).
+    "true && sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "echo hi; sed -i 's/a/b/' ~/.hermes/.env",
+    "cat $(sed -i 's/a/b/' ~/.hermes/config.yaml)",
+    "(sed -i 's/a/b/' ~/.hermes/config.yaml)",
+    "sudo sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "env FOO=bar sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "true | sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "bash -c \"sed -i 's/mode: smart/mode: off/' ~/.hermes/config.yaml\"",
+    "sh -c 'perl -pi -e s/a/b/ ~/.hermes/.env'",
+    # Equivalent spellings of the same mutation. An earlier revision keyed on
+    # literal `sed` with an `i` in its FIRST option token, so all four of
+    # these reached approved=true under HERMES_YOLO_MODE=1. Detection now
+    # resolves the real command word and walks the option sequence.
+    "sed -e 's/a/b/' -i ~/.hermes/config.yaml",
+    "command sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "env -i sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "/usr/bin/sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # Option-grammar coverage: in-place flag after other options, long form
+    # with an attached suffix, wrapper options that take their own argument,
+    # an explicit end-of-options marker, and a script supplied via -f (which
+    # makes the first operand a FILE rather than the program text).
+    "sed -n -e 's/a/b/' --in-place ~/.hermes/config.yaml",
+    "/bin/sed --in-place=.bak 's/a/b/' ~/.hermes/.env",
+    "nohup sudo -u root sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "env -u PATH sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "sed -i -- 's/a/b/' ~/.hermes/config.yaml",
+    "sed -f script.sed -i ~/.hermes/config.yaml",
+    "perl -i.bak -pe 's/a/b/' ~/.hermes/.env",
+    # The protected file as a later operand, and spelled as an absolute path
+    # rather than via ~ / $HOME — the same file either way.
+    "sed -i 's/a/b/' other.txt ~/.hermes/config.yaml",
+    "sed -i 's/a/b/' /home/qni/.hermes/config.yaml",
+    # Finding 1(a): wrapper options that take a SEPARATE argument must be
+    # consumed so the resolver still lands on the editor. The `=` and attached
+    # forms are already covered; these are the separate-argument spellings that
+    # previously left the argument in place, so the argument (not the editor)
+    # was returned and the guard never fired.
+    "sudo --user root sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "sudo --group wheel sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "ionice --class 2 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # -n's real long form is --classdata (not --nice, which is not an ionice
+    # option); -u/--uid takes the uid argument.
+    "ionice --classdata 7 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "ionice -u 1000 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "doas -u wheel sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "timeout --signal KILL 5 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "timeout -k 3 5 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "timeout -s KILL 5 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # flock argument-taking options must be consumed before the FILE positional.
+    "flock -w 5 /tmp/lock sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "flock --timeout 5 /tmp/lock sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "flock -E 9 /tmp/lock sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # Finding 1(b): command-position wrappers whose first operand is a
+    # POSITIONAL (duration/lock-file/mask/priority), not an option. Previously
+    # the resolver stopped at that positional and never reached the editor.
+    "timeout 5 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "timeout --signal=KILL 5 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "flock /tmp/lock sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "flock -x /tmp/lock sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "taskset 0x1 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "taskset --cpu-list 0 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "chrt -f 10 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "chrt -b 80 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "chrt -b sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "chrt -r 80 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "taskset -c 0 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # ionice: --uid and --pgid are arg-taking options; their arguments must be
+    # consumed so the resolver lands on the editor, not the number.
+    "ionice --uid 1000 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "flock --wait 5 /tmp/lock sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "flock --conflict-exit-code 9 /tmp/lock sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "sudo -D /tmp sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "sudo -T 60 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "sudo -R / sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "doas -a pam sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "time -o /dev/null sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "taskset -c 0 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # Finding 3 (R3): a shell -c payload behind a wrapper. The payload stepper
+    # and the floor resolver used to keep SEPARATE wrapper lists that had
+    # drifted (the stepper knew only 8 of the 16 floor wrappers and had no
+    # positional model), so `timeout 5 bash -c "…"` resolved its command word
+    # to the duration and the `-c` payload was never surfaced. They now share
+    # one model (_leading_wrapper_indexes/_wrapper_operand_span). Cover every
+    # drifted wrapper crossed with each shell-invocation form, plus flock's
+    # OWN -c (it runs the payload through a shell itself).
+    "timeout 5 bash -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "timeout 5 sh -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "timeout 5 bash -lc \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "taskset 0x1 bash -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "taskset --cpu-list 0 sh -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "chrt -f 10 bash -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "flock /tmp/lock bash -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "flock -w 5 /tmp/lock sh -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    # flock's OWN -c runs the payload through a shell (sh -c) itself.
+    "flock /tmp/lock -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "flock /tmp/lock --command \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    # The other four wrappers the two lists disagreed on — same class.
+    "doas -u wheel bash -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "nice -n 10 sh -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "stdbuf -oL bash -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    "ionice -c 2 bash -c \"sed -i 's/a/b/' ~/.hermes/config.yaml\"",
+    # Finding 2: path aliases that name the very same policy file. The dot
+    # and repeated-separator segments resolve to the protected file, so they
+    # must hit the floor; the `..` that lands OUTSIDE ~/.hermes does not.
+    "sed -i 's/a/b/' ~/.hermes/./config.yaml",
+    "sed -i 's/a/b/' ~/.hermes//config.yaml",
+    "sed -i 's/a/b/' ~/.hermes/sub/../config.yaml",
+    "sed -i 's/a/b/' ~/.hermes/config.yaml/",
+    "sed -i 's/a/b/' ~/.hermes/../.hermes/config.yaml",
+    "sed -i 's/a/b/' $HOME/.hermes/../.hermes/config.yaml",
+    "sed -i 's/a/b/' /home/qni/.hermes/sub/../config.yaml",
+    # A wrapper and a path alias together — both bypass classes at once.
+    "timeout 5 sed -i 's/a/b/' ~/.hermes/./config.yaml",
+    "flock /tmp/lock sed -i 's/a/b/' ~/.hermes//.env",
+    # Regression guards found during the module-split re-port (2026-09):
+    # a redirect glued to the operand with no space split into one token
+    # that matched neither the protected path nor anything else.
+    "sed -i 's/a/b/' ~/.hermes/config.yaml>/tmp/out",
+    "sed -i 's/a/b/' ~/.hermes/config.yaml<foo",
+    # taskset's attached short form (`-c0,1`) never marked the mandatory
+    # mask positional as supplied (compared the option LETTER against a set
+    # of full option spellings), so the resolver ate the editor name as the
+    # bogus mask and returned a flag as the "command word".
+    "taskset -c0,1 sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # chroot(1) is a wrapper too (NEWROOT is a mandatory positional before
+    # the command word), missing from the initial port of this guard even
+    # though the file's other, softer wrapper table already had it.
+    "chroot / sed -i 's/a/b/' ~/.hermes/config.yaml",
+    "chroot --userspec 0:0 / sed -i 's/a/b/' ~/.hermes/config.yaml",
+    # chrt's mandatory (no-policy-flag) priority positional was never
+    # digit-checked, only the policy-flag optional-priority form was; a bare
+    # `chrt sed -i …` ate the editor name as the "priority".
+    "chrt sed -i 's/a/b/' ~/.hermes/config.yaml",
 ]
 
 
@@ -200,6 +352,48 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    # Hermes config/env: only *in-place* edits are hardline. Reading, and
+    # sed without -i (prints to stdout), stay at normal approval levels.
+    "sed 's/a/b/' ~/.hermes/config.yaml",
+    "grep 'approvals' ~/.hermes/config.yaml",
+    "cat ~/.hermes/config.yaml",
+    # sed -i on files that merely share the basename is not hardline
+    # (project-local config.yaml/.env stay in DANGEROUS_PATTERNS).
+    "sed -i 's/a/b/' ./config.yaml",
+    "sed -i 's/a/b/' /tmp/notes.txt",
+    # In-place-edit spellings as quoted DATA are not commands: committing
+    # docs/tests that mention them must not trip the unconditional floor.
+    'git commit -m "sed -i s/a/b/ ~/.hermes/config.yaml"',
+    "echo \"perl -pi -e 's/a/b/' ~/.hermes/.env\"",
+    'gh pr create --title "block sed -i on ~/.hermes/config.yaml"',
+    "grep 'sed -i.*hermes/config.yaml' tools/approval.py",
+    'printf "%s" "ruby -i -pe gsub ~/.hermes/.env"',
+    # The protected path inside the sed PROGRAM is not the target. An earlier
+    # revision searched for the path anywhere after the options, so both of
+    # these hardline-blocked although neither mutates the policy file.
+    "sed -i 's|~/.hermes/config.yaml|config.yml|' README.md",
+    "sed -e 's|~/.hermes/.env|x|' -i notes.md",
+    # Backup/derived copies carry no approval policy — same filename-boundary
+    # reasoning that keeps `.env#backup` out of the redirection deny.
+    "sed -i 's/a/b/' ~/.hermes/config.yaml.bak",
+    "sed -i 's/a/b/' ~/.hermes/config.yaml.orig",
+    "sed -i 's/a/b/' ~/.hermes/other.yaml",
+    # ruby/perl -I is an include DIRECTORY that takes an argument, not the
+    # in-place flag: case must survive option parsing.
+    "ruby -I ~/.hermes/config.yaml -e 'puts 1'",
+    "perl -I ~/.hermes -e 'print 1'",
+    # Reading the protected file is not editing it.
+    "diff ~/.hermes/config.yaml ~/.hermes/config.yaml.bak",
+    # `..` that resolves OUTSIDE ~/.hermes names a different config.yaml — the
+    # same file is the invariant, and this is not it (over-reach guard for the
+    # alias canonicalization).
+    "sed -i 's/a/b/' ~/.hermes/../other/config.yaml",
+    # Command-position wrappers must keep working for their legitimate targets
+    # (not false-block an unrelated editor target just because a wrapper
+    # consumed a positional).
+    "timeout 5 sed -i 's/a/b/' /tmp/notes.txt",
+    "flock /tmp/lock sed -i 's/a/b/' ./config.yaml",
+    "taskset 0x1 grep -q approvals ~/.hermes/config.yaml",
 ]
 
 

@@ -12,9 +12,8 @@ import { $sessionStates } from './session-states'
  * (the inline transcript panel is gone). Fed from two places:
  *
  * - live `todo` tool events (use-message-stream)
- * - stored-session hydration (desktop-controller) — but only when the list is
- *   still in flight, so reopening an old chat doesn't pin its finished plan
- *   above the composer forever.
+ * - stored-session hydration (desktop-controller) — only while a session is
+ *   still running, so reopening an old chat never re-pins its historic plan.
  */
 export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 export const $todoRevisionsBySession = atom<Record<string, number>>({})
@@ -53,15 +52,12 @@ export const $todoProgressBySession = computed(
   }
 )
 
-// Decide which todo list to restore when rehydrating a session from stored
-// history. Rehydration runs *after* a turn completes, so an active list (last
-// item still pending/in_progress) is stale — the turn ended without a final
-// `todo` update — and must NOT be re-pinned (that would undo the turn-end
-// clear and, because it's read back from history, resurrect on restart). Only
-// a finished list is restored, so its short linger shows the last checkmark.
-// Returns null when there's nothing to restore (caller should clear).
-export function todosForHydration(todos: readonly TodoItem[] | null): TodoItem[] | null {
-  return todos && !todoListActive(todos) ? [...todos] : null
+// Stored todo snapshots are transcript history, not a new progress event. The
+// live event already shows the final checkmark, so restoring either an active
+// or completed list after the turn ends would make the composer pop back open.
+// Returns null so the caller clears the stale presentation state.
+export function todosForHydration(_todos: readonly TodoItem[] | null): TodoItem[] | null {
+  return null
 }
 
 // Once a list finishes (every item completed/cancelled), the final state
@@ -93,6 +89,22 @@ function acceptRevision(sid: string, revision?: null | number): boolean {
 
 export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null | number) {
   if (!sid) {
+    return
+  }
+
+  const currentRevision = $todoRevisionsBySession.get()[sid]
+  const previous = $todosBySession.get()[sid]
+
+  // A completed list remains in the backend snapshot after its short UI linger.
+  // Reading it again must not reopen the composer status group or reset its timer.
+  // Keep a same-revision completion only when it replaces a still-visible active
+  // list, which is the final checkmark transition for that live plan.
+  if (
+    !todoListActive(todos) &&
+    revision != null &&
+    currentRevision === revision &&
+    !todoListActive(previous ?? [])
+  ) {
     return
   }
 

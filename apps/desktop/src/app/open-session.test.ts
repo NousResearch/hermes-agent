@@ -106,8 +106,18 @@ describe('openSession', () => {
 
   it('in-place focuses main when already selected and not on a page', () => {
     focusOpenSession.mockReturnValue('main')
+    $selectedStoredSessionId.set('s1')
     openSession('s1', navigate)
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('routes a newly clicked compression tip when main still names an ancestor', () => {
+    focusOpenSession.mockReturnValue('main')
+    $selectedStoredSessionId.set('compression-parent')
+
+    openSession('active-tip', navigate)
+
+    expect(navigate).toHaveBeenCalledWith('/c/active-tip')
   })
 
   it('in-place routes when the main session is covered by a page', () => {

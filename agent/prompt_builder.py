@@ -5,6 +5,7 @@ with memory and ephemeral prompts.
 """
 
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -1120,14 +1121,19 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
-    """The disk snapshot if it exists, is current-version, and its manifest still matches."""
+def _load_skills_snapshot(skills_dir: Path, manifest: "dict[str, list[int]] | None" = None) -> Optional[dict]:
+    """The disk snapshot if it exists, is current-version, and its manifest still matches.
+
+    ``manifest`` accepts a pre-computed manifest to skip a redundant os.stat walk
+    (the caller already fingerprinted it for the LRU key).
+    """
     try:
         snapshot = json.loads(_skills_prompt_snapshot_path().read_text(encoding="utf-8"))
     except Exception:  # missing, unreadable or corrupt -> rebuild
         return None
     if (isinstance(snapshot, dict) and snapshot.get("version") == _SKILLS_SNAPSHOT_VERSION
-            and snapshot.get("manifest") == _build_skills_manifest(skills_dir)):
+            and snapshot.get("manifest") == (manifest if manifest is not None
+                                             else _build_skills_manifest(skills_dir))):
         return snapshot
     return None
 
@@ -1350,11 +1356,21 @@ def _build_skills_system_prompt_inner(
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
     project_dirs = project_dirs or []
+    # The skills-dir manifest fingerprint is part of the key: skills installed,
+    # deleted, or edited outside the skill manager (which clears the LRU) must
+    # invalidate the in-process cache instead of being served as phantom entries
+    # for the rest of the process (#8845). The manifest is an os.stat walk —
+    # cheap next to parsing every SKILL.md frontmatter — and is reused below by
+    # the snapshot validation and snapshot write paths so a cache miss walks
+    # the disk only once.
+    manifest = _build_skills_manifest(skills_dir)
+    manifest_fingerprint = hashlib.md5(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
     cache_key = (
         str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
+        manifest_fingerprint,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1370,7 +1386,7 @@ def _build_skills_system_prompt_inner(
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
     # Disk snapshot (fast path) vs. full scan: both yield (entry, is_compatible) pairs so labeling runs identically.
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, manifest=manifest)
     if snapshot is not None:
         candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or []))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
@@ -1398,7 +1414,7 @@ def _build_skills_system_prompt_inner(
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
             atomic_json_write(_skills_prompt_snapshot_path(), {
-                "version": _SKILLS_SNAPSHOT_VERSION, "manifest": _build_skills_manifest(skills_dir),
+                "version": _SKILLS_SNAPSHOT_VERSION, "manifest": manifest,
                 "skills": [entry for entry, _ in candidates], "category_descriptions": category_descriptions,
             })
         except Exception as e:

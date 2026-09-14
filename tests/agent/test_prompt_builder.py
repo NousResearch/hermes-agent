@@ -394,6 +394,39 @@ class TestBuildSkillsSystemPrompt:
         second = build_skills_system_prompt()
         assert "cached-skill" not in second
 
+    def test_deleted_skill_not_in_subsequent_calls(self, monkeypatch, tmp_path):
+        """A skill deleted from disk must vanish from the prompt on the next build (#8845).
+
+        The in-process LRU was keyed without any filesystem fingerprint, so a
+        skill deleted after the first build (e.g. manual pruning outside the
+        skill manager) kept being advertised to the model until the process
+        died — a phantom entry that then failed to load.
+        """
+        import shutil
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        keeper = skills_dir / "keeper"
+        keeper.mkdir(parents=True)
+        (keeper / "SKILL.md").write_text(
+            "---\nname: keeper\ndescription: Stays around\n---\n"
+        )
+        phantom = skills_dir / "phantom"
+        phantom.mkdir()
+        (phantom / "SKILL.md").write_text(
+            "---\nname: phantom\ndescription: Will be deleted\n---\n"
+        )
+
+        first = build_skills_system_prompt()
+        assert "keeper" in first
+        assert "phantom" in first
+
+        shutil.rmtree(phantom)
+
+        second = build_skills_system_prompt()
+        assert "keeper" in second
+        assert "phantom" not in second
+
 
 # =========================================================================
 # Context files prompt builder

@@ -15932,9 +15932,22 @@ const registryGatewayWsUrlHandler = createRegistryGatewayWsUrlHandler({
   buildTicketUrl: buildGatewayWsUrlWithTicket,
   rememberHeaders: (wsUrl, _headers, connection, consumer) => rememberGatewayWsAuth(wsUrl, connection, consumer),
   // Mirrors ensureRegistryBackend()'s own rule, so every spelling that selects
-  // one backend produces one cookie-consumer key.
-  resolveConnectionId: connectionId =>
-    String(connectionId || '').trim() || String(readDesktopConnectionsRegistry().primary || '').trim()
+  // one backend produces one cookie-consumer key. Defensive like
+  // resolveOauthPartitionForUrl: a broken registry read must never take the
+  // ws url down with it, and an empty answer just falls back to a coarser key.
+  resolveConnectionId: connectionId => {
+    const requested = String(connectionId || '').trim()
+
+    if (requested) {
+      return requested
+    }
+
+    try {
+      return String(readDesktopConnectionsRegistry().primary || '').trim()
+    } catch {
+      return ''
+    }
+  }
 })
 
 ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {

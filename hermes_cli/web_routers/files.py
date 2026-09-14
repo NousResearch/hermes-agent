@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from utils import atomic_write_bytes, atomic_write_text
+
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
@@ -496,7 +498,7 @@ async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     data, _mime_type = _decode_data_url(payload.data_url)
     with _io_errors("File is not writable", "Could not write file"):
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        atomic_write_bytes(target, data)
     return _managed_write_result(policy, target, display_path)
 
 
@@ -677,16 +679,8 @@ async def fs_write_text(payload: FsWriteText):
     if not target.parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent directory does not exist")
 
-    tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, target)
-    except PermissionError:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=403, detail="File is not writable")
-    except OSError as exc:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+    with _io_errors("File is not writable", "Could not write file"):
+        atomic_write_text(target, text, preserve_mode=True)
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 

@@ -1182,6 +1182,69 @@ class TestForceReloadSymmetry:
         assert elapsed < 5.0
         hold.set()
 
+    def test_concurrent_same_tool_calls_with_distinct_ids_both_run(self, monkeypatch):
+        """Two concurrent calls of one tool are different work, not a duplicate (#98382)."""
+        import time
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 5.0
+        )
+
+        hold = threading.Event()
+        starts = []
+
+        def recorder(**_kwargs):
+            starts.append(1)
+            hold.wait(timeout=10.0)
+            return "ok"
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [recorder]
+
+        def fire(call_id):
+            mgr.invoke_hook(
+                "pre_tool_call",
+                tool_name="read_file",
+                tool_input={},
+                session_id="s1",
+                tool_call_id=call_id,
+            )
+
+        first = threading.Thread(target=fire, args=("call-a",), daemon=True)
+        first.start()
+        time.sleep(0.1)  # let the first invocation occupy the gate
+        second = threading.Thread(target=fire, args=("call-b",), daemon=True)
+        second.start()
+        time.sleep(0.4)
+        hold.set()
+        first.join(5.0)
+        second.join(5.0)
+
+        assert len(starts) == 2
+
+    def test_repeated_same_call_identity_still_deduplicated(self, monkeypatch):
+        """Negative control: the same call identity stays a duplicate, so a hung
+        worker is never restarted by a repeat of the very same call."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.1
+        )
+
+        hold = threading.Event()
+        starts = []
+
+        def blocker(**_kwargs):
+            starts.append(1)
+            hold.wait(timeout=10.0)
+            return "late"
+
+        mgr = PluginManager()
+        mgr._hooks["post_tool_call"] = [blocker]
+
+        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="same-call") == []
+        assert mgr.invoke_hook("post_tool_call", tool_name="read_file", tool_call_id="same-call") == []
+
+        assert len(starts) == 1
+        hold.set()
+
     def test_pre_tool_call_timeout_fail_closed(self, monkeypatch):
         """Timed-out pre_tool_call must return a block directive, not allow."""
         import time

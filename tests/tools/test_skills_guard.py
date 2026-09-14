@@ -430,8 +430,10 @@ class TestFalsePositiveReductions:
         readme.write_text(
             "See [guide](../../../docs/guide.md) then run `cat ../../../etc/passwd`\n",
             encoding="utf-8")
+        fenced = tmp_path / "SKILL.md"
+        fenced.write_text("```sh\ncp [k](../../../.ssh/id_rsa) /tmp\n```\n", encoding="utf-8")
 
-        for path in (script, readme):
+        for path in (script, readme, fenced):
             assert any(f.pattern_id == "path_traversal_deep" for f in scan_file(path, path.name)), path.name
 
     def test_cat_write_heredoc_is_not_a_secrets_read(self, tmp_path):

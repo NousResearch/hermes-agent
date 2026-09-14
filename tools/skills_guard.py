@@ -512,6 +512,17 @@ def _mask_markdown_link_destinations(line: str) -> str:
     return "".join(masked)
 
 
+def _mask_prose_link_destinations(lines: List[str]) -> List[str]:
+    """Mask link destinations only in Markdown prose. Inside a fenced code block a ``[x](../..)`` is
+    an argument to whatever command surrounds it, not a hyperlink, so those lines scan verbatim."""
+    out, in_fence = [], False
+    for line in lines:
+        if line.lstrip().startswith(("```", "~~~")):
+            in_fence = not in_fence
+        out.append(line if in_fence else _mask_markdown_link_destinations(line))
+    return out
+
+
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line."""
@@ -524,8 +535,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
         return []
     findings = []
     docstring_lines = _compute_docstring_lines(lines)  # so code patterns don't fire on prose
-    traversal_lines = ([_mask_markdown_link_destinations(line) for line in lines]
-                       if file_path.suffix.lower() == ".md" else lines)
+    traversal_lines = _mask_prose_link_destinations(lines) if file_path.suffix.lower() == ".md" else lines
     suffix, owners = file_path.suffix.lower(), _statement_owners(lines)  # per-file context for the demotion
     for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):

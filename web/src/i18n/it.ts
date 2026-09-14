@@ -767,7 +767,7 @@ export const it: Translations = {
     assigneePlaceholder: "assegnatario",
     priority: "Priorità",
     skillsPlaceholder:
-      "competenze (facoltative, separate da virgole): translation, github-code-review",
+      "competenze (facoltative, separate da virgole): translation, github",
     noParent: "— nessun padre —",
     workspacePathDir: "percorso del workspace (richiesto, ad es. ~/projects/my-app)",
     workspacePathOptional:

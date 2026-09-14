@@ -59,7 +59,7 @@ TIPS = [
     "hermes -w creates an isolated git worktree — perfect for parallel agent workflows.",
     "hermes -w -q \"Fix issue #42\" combines worktree isolation with a one-shot query.",
     "hermes chat -t web,terminal enables only specific toolsets for a focused session.",
-    "hermes chat -s github-pr-workflow preloads a skill at launch.",
+    "hermes chat -s github preloads a skill at launch.",
     "hermes chat -q \"query\" runs a single non-interactive query and exits.",
     "hermes chat --max-turns 1000 overrides the default 500-iteration limit per turn.",
     "hermes chat --checkpoints enables filesystem snapshots before every destructive file change.",

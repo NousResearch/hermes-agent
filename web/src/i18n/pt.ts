@@ -769,7 +769,7 @@ export const pt: Translations = {
     assigneePlaceholder: "responsável",
     priority: "Prioridade",
     skillsPlaceholder:
-      "competências (opcional, separadas por vírgulas): translation, github-code-review",
+      "competências (opcional, separadas por vírgulas): translation, github",
     noParent: "— sem pai —",
     workspacePathDir: "caminho do espaço de trabalho (obrigatório, p. ex. ~/projects/my-app)",
     workspacePathOptional:

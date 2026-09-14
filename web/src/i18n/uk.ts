@@ -769,7 +769,7 @@ export const uk: Translations = {
     assigneePlaceholder: "виконавець",
     priority: "Пріоритет",
     skillsPlaceholder:
-      "навички (необов'язково, через кому): translation, github-code-review",
+      "навички (необов'язково, через кому): translation, github",
     noParent: "— без батька —",
     workspacePathDir: "шлях робочої області (обов'язково, напр. ~/projects/my-app)",
     workspacePathOptional:

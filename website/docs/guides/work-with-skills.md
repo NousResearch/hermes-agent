@@ -29,7 +29,7 @@ This shows a compact list with names and descriptions:
 ```
 ascii-art         Generate ASCII art using pyfiglet, cowsay, boxes...
 arxiv             Search and retrieve academic papers from arXiv...
-github-pr-workflow Full PR lifecycle — create branches, commit...
+github            GitHub auth, PRs, issues, reviews, and repo management.
 plan              Plan mode — inspect context, write a markdown...
 excalidraw        Create hand-drawn style diagrams using Excalidraw...
 ```
@@ -64,7 +64,7 @@ Every installed skill is automatically a slash command. Just type its name:
 # Load a skill and give it a task
 /ascii-art Make a banner that says "HELLO WORLD"
 /plan Design a REST API for a todo app
-/github-pr-workflow Create a PR for the auth refactor
+/github Create a PR for the auth refactor
 
 # Just the skill name (no task) loads it and lets you describe what you need
 /excalidraw

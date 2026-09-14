@@ -767,7 +767,7 @@ export const ja: Translations = {
     assigneePlaceholder: "担当者",
     priority: "優先度",
     skillsPlaceholder:
-      "スキル（任意、カンマ区切り）: translation, github-code-review",
+      "スキル（任意、カンマ区切り）: translation, github",
     noParent: "— 親タスクなし —",
     workspacePathDir: "ワークスペースのパス（必須、例: ~/projects/my-app）",
     workspacePathOptional:

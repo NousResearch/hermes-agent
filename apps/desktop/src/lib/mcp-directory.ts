@@ -15,9 +15,10 @@
  *
  * GitHub is intentionally absent (here AND in the catalog): its hosted MCP
  * requires each MCP host to provide its own OAuth app (generic Dynamic
- * Client Registration 404s at /register), and the bundled github/* skills
- * via the gh CLI are the more capable integration. The composer's github
- * suggestion provider offers the `github-auth` skill instead.
+ * Client Registration 404s at /register), and the bundled consolidated
+ * `github` skill via the gh CLI is the more capable integration. The
+ * composer's github suggestion provider offers the `github` skill
+ * (auth workflow) instead.
  */
 export interface McpDirectoryEntry {
   /** Server name as it will appear in mcp_servers config. */

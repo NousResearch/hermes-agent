@@ -111,7 +111,7 @@ platforms:
             URL: {pull_request.html_url}
             Diff URL: {pull_request.diff_url}
             Action: {action}
-          skills: ["github-code-review"]
+          skills: ["github"]
           deliver: "github_comment"
           deliver_extra:
             repo: "{repository.full_name}"

@@ -768,7 +768,7 @@ export const es: Translations = {
     assigneePlaceholder: "asignado",
     priority: "Prioridad",
     skillsPlaceholder:
-      "habilidades (opcional, separadas por comas): translation, github-code-review",
+      "habilidades (opcional, separadas por comas): translation, github",
     noParent: "— sin padre —",
     workspacePathDir: "ruta del workspace (obligatoria, p. ej. ~/projects/my-app)",
     workspacePathOptional:

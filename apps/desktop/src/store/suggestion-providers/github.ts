@@ -9,17 +9,18 @@ import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer
  * GitHub has no entry in the MCP catalog and never gets a connect pill: its
  * hosted MCP requires a per-host OAuth app (generic Dynamic Client
  * Registration 404s at /register), and more importantly the bundled
- * github/* skills driving the `gh` CLI are a strictly more capable
+ * consolidated `github` skill driving the `gh` CLI is a strictly more capable
  * integration (PRs, reviews, issues, releases, workflows) than the remote
  * MCP's tool surface. So when the draft signals GitHub intent, the right
- * offer is onboarding onto the skills:
+ * offer is onboarding onto the skill:
  *
- * - `gh` already authenticated → no pill. The skills just work; suggesting
+ * - `gh` already authenticated → no pill. The skill just works; suggesting
  *   setup at an already-set-up user is noise.
- * - not authenticated (or gh missing) → offer the `github-auth` skill. The
- *   invoke prefixes the draft with `/github-auth` (same reversible,
- *   never-sends-on-your-behalf contract as the skill provider) and the
- *   agent walks the user through `gh auth login` / install.
+ * - not authenticated (or gh missing) → offer the `github` skill (auth
+ *   workflow in references/auth.md). The invoke prefixes the draft with
+ *   `/github` (same reversible, never-sends-on-your-behalf contract as the
+ *   skill provider) and the agent walks the user through `gh auth login` /
+ *   install.
  *
  * The auth probe is served by `GET /api/git/gh-auth` (cached backend-side);
  * a probe failure (older backend, transient error) suggests nothing rather
@@ -27,7 +28,7 @@ import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer
  */
 
 const AUTH_TTL_MS = 5 * 60_000
-const SKILL_NAME = 'github-auth'
+const SKILL_NAME = 'github'
 
 let needsSetup: boolean | null = null
 let checkedAt = 0
@@ -83,8 +84,8 @@ function toSuggestion(): ComposerSuggestion {
     id: SKILL_NAME,
     invoke: async () => {
       // Prefix, don't replace — and never send. The agent takes over when
-      // the user sends: the github-auth skill installs gh if needed and
-      // runs the device-code OAuth flow.
+      // the user sends: the github skill (auth reference) installs gh if
+      // needed and runs the device-code OAuth flow.
       requestComposerInsert(`/${SKILL_NAME} `, { mode: 'prefix' })
       requestComposerFocus()
     },

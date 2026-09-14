@@ -34,7 +34,7 @@ Don't try to hand-hold every step. Say "find and fix the failing test" rather th
 
 ### Use Skills for Complex Workflows
 
-Before writing a long prompt explaining how to do something, check if there's already a skill for it. Type `/skills` to browse available skills, or just invoke one directly like `/axolotl` or `/github-pr-workflow`.
+Before writing a long prompt explaining how to do something, check if there's already a skill for it. Type `/skills` to browse available skills, or just invoke one directly like `/axolotl` or `/github`.
 
 ## CLI Power User Tips
 

@@ -702,7 +702,7 @@ export const ar = defineLocale({
     assigneePlaceholder: "المكلَّف",
     priority: "الأولوية",
     skillsPlaceholder:
-      "مهارات (اختياري، مفصولة بفواصل): translation, github-code-review",
+      "مهارات (اختياري، مفصولة بفواصل): translation, github",
     noParent: "— لا يوجد أب —",
     workspacePathDir: "مسار مساحة العمل (مطلوب، مثال ~/projects/my-app)",
     workspacePathOptional:

@@ -14,8 +14,9 @@ import { botRosterKey, botSelectionKey } from './data'
 import { getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
-// last_active watermark per source-qualified bot, seeded on first poll so a
-// fresh mount doesn't mark ancient history unread.
+// last_active watermark per source-qualified bot. Each key seeds on its first
+// sighting, and entries intentionally survive a temporary roster absence so a
+// returning bot only badges activity newer than its own last-seen watermark.
 export const rosterWatermarks = new Map<string, number>()
 
 // Bot Mode sessions are ALWAYS hidden from the global Sessions sidebar:

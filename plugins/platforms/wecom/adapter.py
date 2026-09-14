@@ -443,25 +443,26 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
         text, reply_text = self._extract_text(body)
         if is_group and text:
             text = re.sub(r"^@\S+\s*", "", text).strip()  # "@Bot /approve" -> "/approve"
-        media_urls, media_types = await self._extract_media(body)
+        media_urls, media_types, media_errors = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
         has_reply_context = bool(reply_text and (text or media_urls))
         if reply_text and not has_reply_context:  # quote-only message: the quote becomes the text
             text = reply_text
-        if not text and not media_urls:
+        if not text and not media_urls and not media_errors:
             logger.info("[%s] Empty WeCom message skipped: is_group=%s chat=%s msgtype=%r", self.name, is_group, chat_id, body.get("msgtype"))
             return
         source = self.build_source(chat_id=chat_id, chat_type="group" if is_group else "dm", user_id=sender_id or None, user_name=sender_id or None,
                                    message_id=msg_id)
         event = MessageEvent(
             text=text, message_type=message_type, source=source, raw_message=payload, message_id=msg_id, media_urls=media_urls, media_types=media_types,
+            metadata={"inbound_media_errors": media_errors} if media_errors else {},
             reply_to_message_id=f"quote:{msg_id}" if has_reply_context else None, reply_to_text=reply_text if has_reply_context else None, timestamp=datetime.now(tz=timezone.utc),
         )
         # Only plain text is batched, EXCEPT attachment-only messages, which are held so the
         # trailing text callback merges instead of "interrupting" a run the attachment spawned.
         has_pending_batch = self._text_batch_key(event) in self._pending_text_batches
         is_attachment_only = bool(media_urls) and not (text or "").strip()
-        if (message_type == MessageType.TEXT and (self._text_batch_delay_seconds > 0 or has_pending_batch)) or (is_attachment_only and self._attachment_text_merge_delay_seconds > 0):
+        if not media_errors and ((message_type == MessageType.TEXT and (self._text_batch_delay_seconds > 0 or has_pending_batch)) or (is_attachment_only and self._attachment_text_merge_delay_seconds > 0)):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)

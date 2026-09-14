@@ -678,6 +678,8 @@ class GatewayBusySessionMixin:
         if not self._admit_bot_message_for_source(event.source):
             return True
         event._bot_loop_admitted = True
+        if await self._hm_report_media_errors(event):
+            return True  # A failed attachment alone must not interrupt/steer the active turn.
 
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping

@@ -1,9 +1,10 @@
 # Hermes Agent - Development Guide
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
-This root file holds only what applies everywhere. Each area has its own `AGENTS.md` (aim for
-~8k chars; `agent/subdirectory_hints.py` delivers up to 32k and truncates head/tail with a warning
-past that); see the **routing table** at the end and read the area file before editing in that area.
+This root file holds only what applies everywhere, so it is deliberately larger than the area
+files: each area `AGENTS.md` aims for ~8k chars, while the root must merely stay comfortably
+under the 32k subdirectory-hint ceiling (`agent/subdirectory_hints.py` truncates head/tail with
+a warning past it); see the **routing table** at the end and read the area file before editing.
 
 **Never give up on the right solution.**
 
@@ -153,25 +154,13 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
 ### Surface capability is a property of the SESSION, never of the process env
 
 A tool that works only because of *who is on the other end* (desktop panes, in-app browser,
-message reactions, Projects) must resolve availability from the **session's own source**, not
-from an env var on the backend. Client and backend are separate machines: the desktop app may
-drive a locally spawned backend, one over SSH, one behind URL + token, or Hermes Cloud, and
-only the first two carry `HERMES_DESKTOP=1`. An env-keyed gate is a silent no-op on the other
-topologies — the tool is stripped from the schema while the platform hint tells the model it
-is "inside the Hermes desktop app". The pattern:
-
-- **The toolset is the surface gate.** Keep such tools off `_HERMES_CORE_TOOLS` and in a named
-  toolset (`desktop_ui`, `project`); the GUI gateway's `_load_enabled_toolsets(platform)`
-  folds it in when the session's platform says GUI. One resolver, every topology.
-- **`check_fn` answers reachability or opt-in, not surface.** "Is the bridge wired?" — fine.
-  "Was I spawned by Electron?" — not. `check_fn` results are TTL-cached process-wide
-  (`tools/registry.py`); a per-session answer does not belong there.
-- **Ask which identity you mean.** `HERMES_DESKTOP=1` legitimately means "this backend was
-  spawned by the app" (cron ticker, web-dist handling). It does NOT mean "a GUI is watching";
-  the embedded terminal pane (`hermes --tui` against that backend) is the counterexample.
-
-Test: if the capability still makes sense with the client on another machine, it is
-session-scoped. Assert the GUI session gets the tool **with the env var absent**.
+message reactions, Projects) resolves availability from the **session's own source**, never
+from an env var on the backend: the app may drive a locally spawned backend, one over SSH,
+one behind URL + token, or Hermes Cloud, and an env-keyed gate is a silent no-op on every
+topology but the first two. The toolset is the surface gate (`_load_enabled_toolsets(platform)`
+folds a named toolset in when the session's platform says GUI); `check_fn` answers
+reachability or opt-in, never surface. The full pattern — the `HERMES_DESKTOP=1` identity
+distinction, the counterexamples, the test — lives in `tools/AGENTS.md`.
 
 ## Development Environment
 
@@ -417,7 +406,7 @@ extract, not to regex around it.
 | `run_agent.py`, `agent/` | `agent/AGENTS.md` | AIAgent + mixins, turn phases, caching integrity, message-flow invariants, compression, model/aux resolution |
 | `cli.py`, `hermes_cli/`, `main.py` | `hermes_cli/AGENTS.md` | CLI mixins, `_SLASH_DISPATCH`, slash registry, config system + loaders, skins, `hermes update` pipeline, profiles / multiplex |
 | `gateway/` | `gateway/AGENTS.md` | Adapters, two message guards, streaming contract, background notifications, gateway vs desktop lifecycle, token locks, scoped secrets |
-| `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | Adding tools, registry, toolsets, delegation, cross-tool references, backends |
+| `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | Adding tools, registry, toolsets, delegation, cross-tool references, backends, session-scoped surface gating |
 | `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | Plugin kinds, native compat contract, in-tree policy, Sep-2026 compat window |
 | `tui_gateway/`, `ui-tui/` | `tui_gateway/AGENTS.md` | Process model, JSON-RPC transport, key surfaces, slash flow, dev commands |
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | Dashboard embeds the real TUI; what React may and may not rebuild |

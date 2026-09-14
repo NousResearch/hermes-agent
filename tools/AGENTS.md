@@ -49,7 +49,7 @@ Rules for tool code:
   and skip the rest (root rubric).
 - **`check_fn` answers reachability/opt-in, never surface.** It is TTL-cached process-wide, and one
   process serves many sessions; GUI-only tools go in a named toolset (`desktop_ui`, `project`)
-  folded in by `_load_enabled_toolsets(platform)` (root: capability is a property of the SESSION).
+  folded in by `_load_enabled_toolsets(platform)` (see "Surface capability" below).
 - **Agent-level tools** (`todo`, `memory`) are intercepted before `handle_function_call()` via the
   `INLINE_TOOL_EXECUTORS` table (`agent/inline_tool_executors.py`; `agent/AGENTS.md`).
 - **`_last_resolved_tool_names`** is a process-global in `model_tools.py`; `_run_single_child()` in
@@ -65,6 +65,29 @@ kanban, memory, messaging, moa, rl, safe, search, session_search, skills, spotif
 tts, video, vision, web, yuanbao` (don't assert the list in tests). Per-platform enable/disable via
 `hermes tools` (curses) or `tools.<platform>.enabled/disabled` in config.yaml. `browser_exec`
 replaces the other browser tools when `browser.backend` is `browser-use`.
+
+## Surface capability is a property of the SESSION, never of the process env
+
+A tool that works only because of *who is on the other end* (desktop panes, in-app browser,
+message reactions, Projects) must resolve availability from the **session's own source**, not
+from an env var on the backend. Client and backend are separate machines: the desktop app may
+drive a locally spawned backend, one over SSH, one behind URL + token, or Hermes Cloud, and
+only the first two carry `HERMES_DESKTOP=1`. An env-keyed gate is a silent no-op on the other
+topologies — the tool is stripped from the schema while the platform hint tells the model it
+is "inside the Hermes desktop app". The pattern:
+
+- **The toolset is the surface gate.** Keep such tools off `_HERMES_CORE_TOOLS` and in a named
+  toolset (`desktop_ui`, `project`); the GUI gateway's `_load_enabled_toolsets(platform)`
+  folds it in when the session's platform says GUI. One resolver, every topology.
+- **`check_fn` answers reachability or opt-in, not surface.** "Is the bridge wired?" — fine.
+  "Was I spawned by Electron?" — not. `check_fn` results are TTL-cached process-wide
+  (`tools/registry.py`); a per-session answer does not belong there.
+- **Ask which identity you mean.** `HERMES_DESKTOP=1` legitimately means "this backend was
+  spawned by the app" (cron ticker, web-dist handling). It does NOT mean "a GUI is watching";
+  the embedded terminal pane (`hermes --tui` against that backend) is the counterexample.
+
+Test: if the capability still makes sense with the client on another machine, it is
+session-scoped. Assert the GUI session gets the tool **with the env var absent**.
 
 ## Backends and providers inside tools/
 

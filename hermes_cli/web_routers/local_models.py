@@ -191,7 +191,8 @@ def _router_request(endpoint: Dict[str, Any], path: str, *, timeout: float, payl
 
 
 def _load_config() -> dict:
-    return _quiet(config_mod.load_config, {})
+    """Read-only config for status/garnish paths that must render degraded, never 500."""
+    return _quiet(config_mod.load_config_readonly, {})
 
 
 def _runtime_section() -> dict:
@@ -268,9 +269,9 @@ def _ensure_server(job: Dict[str, Any], config: dict, model_id: str, *, fail_det
 
 
 def _assign_default(job: Dict[str, Any], model_id: str) -> None:
-    """Make ``model_id`` the main model via the same machinery as /api/model/set (late-bound: tests stub web_deps.late)."""
+    """Make ``model_id`` the main model via the same machinery as /api/model/set."""
     _step(job, "setting-default", "Making it your default")
-    web_deps.late("_apply_model_assignment_sync")("main", "llamacpp", model_id, "", "", "")
+    web_deps.late("_apply_model_assignment_sync", "hermes_cli.web_server_config")("main", "llamacpp", model_id, "", "", "")
 
 
 # ── downloads: ranged parallel streams ───────────────────────
@@ -552,12 +553,7 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
         return row
 
     variant = choice.variant
-    # Same overhead the launch decision prices (runtime buffers + vision projector + microbatch/MTP
-    # logits): the row must advertise the window the model will actually get, not a paper number.
-    overhead = (context_policy.RUNTIME_OVERHEAD_BYTES
-                + (entry.mmproj.size_bytes if entry.mmproj else 0)
-                + context_policy.ub_logits_bytes(entry.n_vocab, mtp_capable=entry.mtp))
-    decision = context_policy.initial_window(entry.profile(variant), budget, overhead_bytes=overhead)
+    decision = entry.launch_plan(variant, budget).decision
     download_total = entry.download_bytes(variant)
     row.update({
         "fits": True, "model_id": variant.model_id, "quant": variant.quant,
@@ -713,12 +709,20 @@ async def local_models_delete(model_id: str):
 
 # ── quickstart: one click from nothing to a working default ──
 def _quickstart_target(body: QuickstartBody, budget):
-    """(entry, variant) to set up: explicit id, else this machine's recommendation, else the first servable entry."""
+    """Resolve an explicit model, or start with the machine's automatic recommendation.
+
+    With no recommendation, require an explicit choice before starting setup.
+    """
     if body.model_id:
         candidates = [_entry_or_404(body.model_id)]
     else:
         picked = catalog.recommended_entry(budget, _eligible_entries())
-        candidates = ([picked[0]] if picked else []) + [e for e in catalog.CATALOG if not picked or e.id != picked[0].id]
+        if picked is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No automatic recommendation for this machine — open Local Models to browse or choose a model explicitly",
+            )
+        candidates = [picked[0]] + [e for e in catalog.CATALOG if e.id != picked[0].id]
     for candidate in candidates:
         choice = catalog.select_variant(candidate, budget)
         if choice is not None and not _engine_too_old(candidate.min_engine):
@@ -730,8 +734,8 @@ def _quickstart_target(body: QuickstartBody, budget):
 @router.post("/api/local-models/quickstart")
 async def local_models_quickstart(body: QuickstartBody):
     """One job: install the runtime (if missing), download this machine's build of the recommended model (if
-    missing), make it the default. Each leg is the same code the individual routes run, so 'Configure' and
-    quickstart can never disagree. Preflight rejects (no servable entry, engine too old) fail the POST
+    missing), make it the default. Each leg uses the same code as the individual setup routes.
+    Preflight rejects (no automatic recommendation or no servable choice) fail the POST
     synchronously so the button can explain itself; everything slow runs in the job with phase/byte progress."""
     entry, variant = _quickstart_target(body, hardware.probe_budget(planning=True))
     tag, backend = _runtime_target()
@@ -769,21 +773,19 @@ async def local_models_quickstart(body: QuickstartBody):
 
 # ── server lifecycle: turn the engine on/off ─────────────────
 def _terminate_state_pid() -> None:
-    """Server owned by another process (or an orphan): terminate via the state file's pid, then clear the state."""
-    import psutil  # type: ignore
+    """Explicit recovery, never raw-PID termination of another live owner."""
+    from hermes_cli.local_runtime.recovery import stop_recorded_orphan
 
-    state = json.loads(supervisor.state_path().read_text(encoding="utf-8"))
-    pid = int(state.get("pid") or 0)
-    if pid > 0 and psutil.pid_exists(pid):
-        psutil.Process(pid).terminate()
-    supervisor.state_path().unlink(missing_ok=True)
+    if not stop_recorded_orphan():
+        raise HTTPException(status_code=409, detail=(
+            "Another Hermes process owns this server, or its ownership could not be verified"))
 
 
 def _stop_server() -> None:
     if bootstrap.get_supervisor() is not None:
         bootstrap.shutdown_local_runtime()
-    elif _state_endpoint() is not None:
-        _quiet(_terminate_state_pid, None)  # best-effort
+    else:
+        _terminate_state_pid()
     _set_runtime_enabled(False)
 
 
@@ -801,8 +803,12 @@ async def local_models_server(body: ServerActionBody):
     action = (body.action or "").strip().lower()
     if action not in _SERVER_ACTIONS:
         raise HTTPException(status_code=400, detail="action must be 'stop' or 'start'")
-    with _http_error(502):
+    try:
         await asyncio.to_thread(_SERVER_ACTIONS[action])
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "action": action}
 
 

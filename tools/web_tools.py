@@ -113,7 +113,8 @@ def _get_backend() -> str:
     # token's tier may not grant web access; the gateway then fails at runtime with no fallback).
     # Free tiers trail paid.
     backend_candidates = (
-        ("tavily", _has_env("TAVILY_API_KEY")), ("exa", _has_env("EXA_API_KEY")),
+        ("tavily", _has_env("TAVILY_API_KEY")), ("perplexity", _has_env("PERPLEXITY_API_KEY")),
+        ("exa", _has_env("EXA_API_KEY")),
         ("parallel", _has_env("PARALLEL_API_KEY")), ("keenable", _has_env("KEENABLE_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()), ("searxng", _has_env("SEARXNG_URL")),
@@ -183,6 +184,7 @@ _BUILTIN_AVAILABILITY = {
     "firecrawl": lambda: check_firecrawl_api_key(),
     "tavily": lambda: _has_env("TAVILY_API_KEY")
     or any(_configured_backend(k) == "tavily" for k in ("backend", "search_backend", "extract_backend")),
+    "perplexity": lambda: _has_env("PERPLEXITY_API_KEY"),
     "searxng": lambda: _has_env("SEARXNG_URL"),
     "brave-free": lambda: _has_env("BRAVE_SEARCH_API_KEY"),
     "ddgs": lambda: _ddgs_package_importable(),
@@ -217,7 +219,7 @@ def _web_requires_env() -> list[str]:
     on ``managed_nous_tools_enabled()`` cost a synchronous portal HTTP refresh at every CLI startup.
     Contract: set var -> tool sees it; extras are harmless for the not-logged-in."""
     return [
-        "EXA_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY", "KEENABLE_API_KEY", "FIRECRAWL_API_KEY",
+        "EXA_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "KEENABLE_API_KEY", "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL", "TOOL_GATEWAY_DOMAIN", "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
     ]

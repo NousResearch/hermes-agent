@@ -14,8 +14,9 @@ from typing import Any
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session_transcript import TranscriptReadError
+from hermes_cli.status_report import build_status_fields
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")
@@ -79,11 +80,13 @@ def _quiet_sync(call, default=None):
         return default
 
 
-def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
+def _status_model_route(
+    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
+):
     """``(model, provider, context_used, context_total)`` for /status.
 
-    Order: live/cached agent route -> persisted dominant route -> SessionDB row -> gateway config
-    (only loaded when something is still missing).
+    Order: live/cached agent route -> active session override -> persisted recent route ->
+    SessionDB row -> gateway config (only loaded when something is still missing).
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
@@ -93,8 +96,10 @@ def _status_model_route(status_agent, persisted_route: dict, session_row: dict, 
                        _clean_str(getattr(status_agent, "provider", ""))))
         ctx = getattr(status_agent, "context_compressor", None)
         if ctx is not None:
-            context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
+            context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
+    routes.append((_clean_str(active_override.get("model")),
+                   _clean_str(active_override.get("provider"))))
     routes.append((_clean_str(persisted_route.get("model")),
                    _clean_str(persisted_route.get("billing_provider"))))
     row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
@@ -118,6 +123,8 @@ def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
     """/context full view: auto-compression threshold/headroom, compression count + last savings,
     and cumulative throughput (labelled as throughput, NOT context size)."""
     lines: list[str] = []
+    from agent.context_breakdown import context_display_source
+    mark = "~" if context_display_source(ctx) != "provider_usage" else ""
     threshold = _n(ctx, "threshold_tokens")
     threshold_pct = f"{_n(ctx, 'threshold_percent') * 100:.0f}"
     if threshold > 0:
@@ -126,7 +133,7 @@ def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
                            threshold_pct=threshold_pct))
         else:
             lines.append(t("gateway.context.threshold", threshold=_fmt(threshold),
-                           threshold_pct=threshold_pct, to_go=_fmt(threshold - used)))
+                           threshold_pct=threshold_pct, to_go=mark + _fmt(threshold - used)))
     compressions = _n(ctx, "compression_count")
     lines.append(t("gateway.context.compressions", count=compressions))
     savings = getattr(ctx, "_last_compression_savings_pct", None) if compressions else None
@@ -189,8 +196,10 @@ def _usage_agent_stats_lines(agent) -> list[str]:
     ctx = agent.context_compressor
     if ctx.last_prompt_tokens > 0:
         pct = _pct(ctx.last_prompt_tokens, ctx.context_length)
-        lines.append(t("gateway.usage.label_context", used=_fmt(ctx.last_prompt_tokens),
-                       total=_fmt(ctx.context_length), pct=f"{pct:.0f}"))
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(ctx) != "provider_usage" else ""
+        lines.append(t("gateway.usage.label_context", used=mark + _fmt(ctx.last_prompt_tokens),
+                       total=_fmt(ctx.context_length), pct=f"{mark}{pct:.0f}"))
     if ctx.compression_count:
         lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
     return lines
@@ -226,31 +235,51 @@ class GatewayStatusCommandsMixin:
             session_entry.session_id
         )
         # Prefer the live or cached agent (actual runtime route + context compressor); fall back
-        # to SessionDB metadata + last_prompt_tokens so /status stays useful between turns.
+        # to an active /model override, then SessionDB metadata + last_prompt_tokens so /status
+        # stays useful between turns. Rehydrate first so this precedence survives gateway restarts.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
+        self._rehydrate_session_model_override(session_key)
+        active_override = self._session_model_override(session_key) or {}
         model_name, provider_name, context_used, context_total = _status_model_route(
-            status_agent, persisted_route, session_row, session_entry
+            status_agent, active_override, persisted_route, session_row, session_entry
         )
 
-        stamp = "%Y-%m-%d %H:%M"
+        fields = build_status_fields(
+            session_entry.session_id, None, session_row, title=title, model=model_name, provider=provider_name,
+            created=session_entry.created_at, last_activity=session_entry.updated_at,
+            tokens=db_total_tokens, agent_running=is_running,
+        )
         lines = [t("gateway.status.header"), "",
-                 t("gateway.status.session_id", session_id=session_entry.session_id)]
-        if title:
-            lines.append(t("gateway.status.title", title=title))
-        lines += [t("gateway.status.created", timestamp=session_entry.created_at.strftime(stamp)),
-                  t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime(stamp))]
-        if model_name and provider_name:
-            lines.append(t("gateway.status.model_provider", model=model_name, provider=provider_name))
-        elif model_name:
-            lines.append(t("gateway.status.model", model=model_name))
+                 t("gateway.status.session_id", session_id=fields["session_id"])]
+        if fields["title"]:
+            lines.append(t("gateway.status.title", title=fields["title"]))
+        lines += [t("gateway.status.created", timestamp=fields["created"]),
+                  t("gateway.status.last_activity", timestamp=fields["last_activity"])]
+        if fields["model"] and fields["provider"]:
+            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
+        elif fields["model"]:
+            lines.append(t("gateway.status.model", model=fields["model"]))
+        try:
+            from hermes_cli.auth import resolve_provider
+            from hermes_cli.anon_auth import guest_carries_inference
+
+            free_tier_active = await self._run_in_executor_with_context(
+                lambda: resolve_provider("auto") == "nous" and guest_carries_inference()
+            )
+            if free_tier_active:
+                lines.append(t("gateway.status.free_tier"))
+        except Exception:
+            pass
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(getattr(status_agent, "context_compressor", None)) != "provider_usage" else ""
         if context_total:
             pct = min(100, round((context_used / context_total) * 100))
-            lines.append(t("gateway.status.context", used=_fmt(context_used), total=_fmt(context_total),
-                           pct=f"{pct}"))
+            lines.append(t("gateway.status.context", used=mark + _fmt(context_used), total=_fmt(context_total),
+                           pct=f"{mark}{pct}"))
         elif context_used:
-            lines.append(t("gateway.status.context_used", used=_fmt(context_used)))
-        state = t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")
-        lines += [t("gateway.status.tokens", tokens=_fmt(db_total_tokens)),
+            lines.append(t("gateway.status.context_used", used=mark + _fmt(context_used)))
+        state = t("gateway.status.state_yes") if fields["agent_running"] else t("gateway.status.state_no")
+        lines += [t("gateway.status.tokens", tokens=fields["tokens"]),
                   t("gateway.status.agent_running", state=state)]
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
@@ -286,7 +315,7 @@ class GatewayStatusCommandsMixin:
             _int_value(session_row.get(k))
             for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
         )
-        route = await _quiet(lambda: db.get_dominant_session_model_route(session_id))
+        route = await _quiet(lambda: db.get_recent_session_model_route(session_id))
         return title, session_row, db_total_tokens, route if isinstance(route, dict) else {}
 
     @staticmethod
@@ -311,7 +340,9 @@ class GatewayStatusCommandsMixin:
         used, context_length, model_name = await self._resolve_context_figures(
             agent, ctx, session_entry, source
         )
-        # Gauge path: real current-context figure
+        from agent.context_breakdown import context_display_source
+        mark = "~" if context_display_source(ctx) != "provider_usage" else ""
+        # Gauge path: preserve the provenance of the selected occupancy figure.
         if used > 0 and context_length > 0:
             pct = _pct(used, context_length)
             filled = int(round(pct / 100 * 24))
@@ -319,9 +350,9 @@ class GatewayStatusCommandsMixin:
                 t("gateway.context.header"), "",
                 t("gateway.context.model", model=model_name or "?"),
                 t("gateway.context.window", total=_fmt(context_length)),
-                t("gateway.context.in_use", used=_fmt(used), total=_fmt(context_length), pct=f"{pct:.0f}"),
+                t("gateway.context.in_use", used=mark + _fmt(used), total=_fmt(context_length), pct=f"{mark}{pct:.0f}"),
                 t("gateway.context.bar", bar="█" * max(0, filled) + "░" * max(0, 24 - filled)),
-                t("gateway.context.headroom", headroom=_fmt(max(0, context_length - used))),
+                t("gateway.context.headroom", headroom=mark + _fmt(max(0, context_length - used))),
                 "",
             ]
             # Full view — compression / throughput need the live agent.
@@ -349,7 +380,7 @@ class GatewayStatusCommandsMixin:
     async def _resolve_context_figures(self, agent, ctx, session_entry, source):
         """``(used, context_length, model_name)`` for /context: used = compressor -> SessionStore;
         model = agent -> SessionDB row; window = compressor -> gateway model route -> model metadata."""
-        used = _n(ctx, "last_prompt_tokens") or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
+        used = max(0, _n(ctx, "last_prompt_tokens")) or max(0, _int_value(getattr(session_entry, "last_prompt_tokens", 0)))
         context_length = _n(ctx, "context_length")
         model_name = _clean_str(getattr(agent, "model", "")) if agent is not None else ""
         if not model_name and self._session_db:
@@ -495,7 +526,7 @@ class GatewayStatusCommandsMixin:
                 if label.endswith(f"breakdown_cat_{cat_id}"):  # missing key: t() echoes it back
                     label = str(cat.get("label") or cat_id)
                 pct = round(tokens / total * 100) if total else 0
-                out.append(t("gateway.usage.breakdown_line", label=label, count=_fmt(tokens), pct=pct))
+                out.append(t("gateway.usage.breakdown_line", label=label, count=_fmt(tokens), pct=f"~{pct}"))
             return out if len(out) > 1 else []
         except Exception:
             return []
@@ -581,14 +612,14 @@ class GatewayStatusCommandsMixin:
         return t("gateway.usage.no_data")
 
     async def _persisted_billing_route(self, source):
-        """``(provider, base_url)`` from the SessionDB row / dominant route when no agent is resident."""
+        """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""
         async def _rows():
             entry = await self.async_session_store.get_or_create_session(source)
             persisted = await self._session_db.get_session(entry.session_id) or {}
-            route = await self._session_db.get_dominant_session_model_route(entry.session_id)
+            route = await self._session_db.get_recent_session_model_route(entry.session_id)
             return persisted, route if isinstance(route, dict) else {}
-        persisted, dominant = await _quiet(_rows, ({}, {}))
-        row = dominant if dominant.get("billing_provider") else persisted
+        persisted, recent = await _quiet(_rows, ({}, {}))
+        row = recent if recent.get("billing_provider") else persisted
         return row.get("billing_provider"), row.get("billing_base_url")
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

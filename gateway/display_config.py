@@ -84,20 +84,42 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     ``platform_key`` is the platform config key (``"telegram"``; see ``_platform_config_key`` in
     gateway/run.py). Returns *fallback* when nothing is configured.
     """
-    display_cfg = user_config.get("display") or {}
-    plat_overrides = (display_cfg.get("platforms") or {}).get(platform_key)
-    if isinstance(plat_overrides, dict) and plat_overrides.get(setting) is not None:
-        return _normalise(setting, plat_overrides[setting])
-    if setting == "tool_progress":  # legacy display.tool_progress_overrides.<platform>
-        legacy = display_cfg.get("tool_progress_overrides")
-        if isinstance(legacy, dict) and legacy.get(platform_key) is not None:
-            return _normalise(setting, legacy[platform_key])
-    if setting != "streaming" and display_cfg.get(setting) is not None:  # display.streaming is CLI-only
-        return _normalise(setting, display_cfg[setting])
+    configured = _configured_display_value(user_config, platform_key, setting)
+    if configured is not None:
+        return _normalise(setting, configured)
     val = _PLATFORM_DEFAULTS.get(platform_key, {}).get(setting)
     if val is None:
         val = _GLOBAL_DEFAULTS.get(setting)
     return fallback if val is None else val
+
+
+def _configured_display_value(user_config: dict, platform_key: str, setting: str) -> Any:
+    """First non-None operator value, without introducing tier defaults."""
+    display_cfg = user_config.get("display") or {}
+    plat_overrides = (display_cfg.get("platforms") or {}).get(platform_key)
+    if isinstance(plat_overrides, dict) and plat_overrides.get(setting) is not None:
+        return plat_overrides[setting]
+    if setting == "tool_progress":
+        legacy = display_cfg.get("tool_progress_overrides")
+        if isinstance(legacy, dict) and legacy.get(platform_key) is not None:
+            return legacy[platform_key]
+    if setting != "streaming":  # display.streaming is CLI-only
+        return display_cfg.get(setting)
+    return None
+
+
+def resolve_tool_progress(user_config: dict, platform_key: str, env_mode: str | None = None) -> tuple[str, bool]:
+    """Return (mode, explicit intent) from the same winning source.
+
+    Non-None YAML wins over the legacy env bridge. Null inherits through to env,
+    then tier defaults. A tier's off is not an operator request to disable cards.
+    """
+    configured = _configured_display_value(user_config, platform_key, "tool_progress")
+    if configured is not None:
+        return _normalise("tool_progress", configured), True
+    if env_mode:
+        return _normalise("tool_progress", env_mode), True
+    return resolve_display_setting(user_config, platform_key, "tool_progress"), False
 
 
 # --- Normalisation of YAML quirks (bare ``off`` → False in YAML 1.1, etc.) ---

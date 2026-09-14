@@ -41,6 +41,16 @@ _EXIT_REASON_EXPLANATIONS: Dict[str, str] = {
         "the request was interrupted mid-call before a reply was "
         "received. Send `continue` to retry."
     ),
+    "redirect_restart_limit_exceeded": (
+        "the request was cancelled by a new correction on every attempt, "
+        "so the turn stopped instead of retrying forever. Your last "
+        "correction is queued as the next message."
+    ),
+    "rebuilt_restart_limit_exceeded": (
+        "every provider in the fallback chain kept failing over, so the "
+        "turn stopped instead of retrying forever. Send `continue` or "
+        "switch provider."
+    ),
     "budget_exhausted": (
         "the per-turn iteration/cost budget was exhausted before a "
         "final answer. Send `continue` to keep going."
@@ -109,22 +119,47 @@ _PERSISTENCE_CAUSE_EXPLANATIONS: Dict[str, str] = {
         "sessions/<session_id>.jsonl and, on the gateway, "
         "pending_messages/pending-*.json."
     ),
+    "deleted_wal": (
+        "the turn was stopped because a live Hermes process held a retired "
+        "state.db-wal generation after its pathname was deleted or "
+        "replaced. Stop the gateway, dashboard, and cron writers; "
+        "do not overwrite the current state.db or delete its sidecars. "
+        "Check the logs for whether Hermes captured the retired generation, "
+        "then read the adjacent state.db.retired-wal-*/manifest.json. If "
+        "manifest.main.mode is `copied`, inspect that artifact with `hermes "
+        "sessions recover --source <state.db.retired-wal-*/state.db> "
+        "--inspect-only` before deciding whether its committed frames belong "
+        "on the current database. A `header_only` artifact is forensic and "
+        "does not contain a copied state.db to inspect. Unwritten messages "
+        "were diverted to sessions/<session_id>.jsonl and, on the gateway, "
+        "pending_messages/pending-*.json."
+    ),
     "corrupt": (
         "the turn was stopped because the state database "
         "reported structural corruption (the transcript would "
         "have been lost on restart). Freeing disk space will "
         "not help. Recovery options:\n"
-        "1. Run `hermes doctor --fix`\n"
+        "1. Run `hermes {profile_arg}doctor --fix`\n"
         "2. Stop the gateway, then recover with:\n"
-        "   hermes sessions recover --source {db_path} --inspect-only\n"
-        "   (if it reports recoverable) hermes sessions recover "
+        "   hermes {profile_arg}sessions recover --source {db_path} --inspect-only\n"
+        "   (if it reports recoverable) hermes {profile_arg}sessions recover "
         "--source {db_path} --output recovered-state.db\n"
         "   — recovery snapshots the damaged file first; do NOT "
         "run `sqlite3 ... \".recover\"` against the live "
         "state.db, a vulnerable sqlite3 CLI can corrupt it "
         "further\n"
-        "3. Restore from a backup in ~/.hermes/backups/\n"
+        "3. Restore from a backup in {backups_dir}/\n"
         "Then send your message again."
+    ),
+    # SQLite scoped the corruption to the FTS index and the derived indexes could not be
+    # detached, so this write did not land; the message store itself is intact (#97794).
+    "fts_index": (
+        "the turn was stopped because the session search index (FTS5) "
+        "is corrupt and could not be detached, so this message was not "
+        "saved. The message store itself is not damaged: do not run "
+        "recovery tools or restore a backup. Run `hermes {profile_arg}doctor --fix` "
+        "(or restart Hermes, which repairs the index on open), then "
+        "send your message again."
     ),
     "disk": (
         "the turn was stopped because session storage could not "
@@ -271,7 +306,7 @@ class TurnExplainersMixin:
 
     @staticmethod
     def _format_turn_completion_explanation(
-        turn_exit_reason: str, persistence_cause: Optional[str] = None
+        turn_exit_reason: str, persistence_cause: Optional[str] = None, db_path=None
     ) -> str:
         """User-facing explanation for an abnormal turn ending, or "" for normal / unknown reasons.
 
@@ -293,9 +328,16 @@ class TurnExplainersMixin:
             body = _PERSISTENCE_CAUSE_EXPLANATIONS.get(
                 persistence_cause or "unknown", _PERSISTENCE_DEFAULT_EXPLANATION
             )
-            if persistence_cause == "corrupt":
-                # Copy-pasteable, so name the real store (profiles / HERMES_HOME do not live under ~/.hermes).
+            if persistence_cause in ("corrupt", "fts_index"):
+                # Copy-pasteable, so name the store that actually failed and pin the profile:
+                # a multi-profile backend (Desktop serve) hosts sessions whose state.db is NOT
+                # the process default, and a bare `hermes` follows active_profile (#105887).
+                from hermes_constants import get_default_hermes_root, profile_cli_selector
                 from hermes_state import _default_db_path
 
-                body = body.replace("{db_path}", str(_default_db_path()))
+                body = body.replace("{profile_arg}", profile_cli_selector())
+                body = body.replace("{db_path}", str(db_path or _default_db_path()))
+                body = body.replace(
+                    "{backups_dir}", str(get_default_hermes_root() / "backups")
+                )
         return _NO_REPLY + body if body else ""

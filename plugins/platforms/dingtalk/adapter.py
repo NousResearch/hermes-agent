@@ -6,7 +6,6 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 import asyncio
 import json
 import logging
-import os
 import re
 import traceback
 import uuid
@@ -48,8 +47,12 @@ except Exception:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret,
+    get_scoped_secret as _get_scoped_secret, send_error
+)
 from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
 
 
@@ -115,7 +118,10 @@ def ensure_dingtalk_deps() -> bool:
 def _credentials(extra: Optional[dict]) -> tuple:
     """(client_id, client_secret) from PlatformConfig.extra first, then env / scoped secret."""
     extra = extra or {}
-    return (extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID", ""), extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET", ""))
+    # client_id goes through the same scoped reader as the secret: os.environ holds the DEFAULT
+    # profile's app id under multiplex, and pairing it with a secondary's secret authenticates as the wrong app.
+    return (extra.get("client_id") or _get_scoped_secret("DINGTALK_CLIENT_ID", ""),
+            extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET", ""))
 
 
 def check_dingtalk_requirements() -> bool:
@@ -246,18 +252,13 @@ class DingTalkAdapter(BasePlatformAdapter):
             store.clear()
         logger.info("[%s] Disconnected", self.name)
 
-    def _extra_get(self, key: str, env_name: str = "", env_default: str = ""):
-        """config.extra[key]; when *env_name* is given, absent keys fall back to the env var."""
-        value = self.config.extra.get(key) if self.config.extra else None
-        return os.getenv(env_name, env_default) if value is None and env_name else value
-
     def _csv_setting(self, key: str, env_name: str) -> Set[str]:
         """List/CSV setting from config.extra[key], falling back to the env var."""
-        return _csv_set(self._extra_get(key, env_name))
+        return _csv_set(_extra_or_secret(self.config.extra, key, env_name, blank_is_unset=False))
 
     def _dingtalk_require_mention(self) -> bool:
         """Whether group chats require an explicit bot trigger."""
-        configured = self._extra_get("require_mention", "DINGTALK_REQUIRE_MENTION", "false")
+        configured = _extra_or_secret(self.config.extra, "require_mention", "DINGTALK_REQUIRE_MENTION", "false", blank_is_unset=False)
         return configured.lower() in _TRUTHY if isinstance(configured, str) else bool(configured)
 
     def _dingtalk_allowed_chats(self) -> Set[str]:
@@ -266,8 +267,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns (config list, or env as JSON / lines / CSV)."""
-        patterns = self._extra_get("mention_patterns")
-        if patterns is None and (raw := os.getenv("DINGTALK_MENTION_PATTERNS", "").strip()):
+        patterns = (self.config.extra or {}).get("mention_patterns")
+        if patterns is None and (raw := str(_get_scoped_secret("DINGTALK_MENTION_PATTERNS", "") or "").strip()):
             try:
                 patterns = json.loads(raw)
             except Exception:
@@ -359,7 +360,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             return logger.debug("[%s] Empty message, skipping", self.name)
         source = self.build_source(chat_id=chat_id, chat_name=getattr(message, "conversation_title", None), chat_type="group" if is_group else "dm",
-                                   user_id=sender_id, user_name=sender_nick, user_id_alt=sender_staff_id if sender_staff_id else None)
+                                   user_id=sender_id, user_name=sender_nick, user_id_alt=sender_staff_id if sender_staff_id else None,
+                                   message_id=msg_id)
         create_at = getattr(message, "create_at", None)
         try:
             timestamp = datetime.fromtimestamp(int(create_at) / 1000, tz=timezone.utc) if create_at else datetime.now(tz=timezone.utc)
@@ -625,36 +627,37 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         import httpx
     except ImportError:
-        return {"error": "httpx not installed"}
-    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
+        return send_error("httpx not installed")
+    # Scoped: the webhook URL carries the robot's access_token and IS the delivery target — a raw
+    # environ read would post a secondary profile's cron output to the default profile's robot.
+    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or _get_scoped_secret("DINGTALK_WEBHOOK_URL", "")
     if not webhook_url:
-        return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
+        return send_error("DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config.")
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(webhook_url, json={"msgtype": "text", "text": {"content": message}})
             resp.raise_for_status()
             data = resp.json()
         if data.get("errcode", 0) != 0:
-            return {"error": f"DingTalk API error: {data.get('errmsg', 'unknown')}"}
+            return send_error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
         return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:
         try:  # send_message_tool._error redacts access_token from webhook URLs (lazy import avoids a circular)
             from tools.send_message_tool import _error as _redact_error
             return _redact_error(f"DingTalk send failed: {e}")
         except Exception:
-            return {"error": f"DingTalk send failed: {e}"}
+            return send_error(f"DingTalk send failed: {e}")
 
 
 def interactive_setup() -> None:
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import save_env_value
     from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_success, print_warning
+    from hermes_cli.cli_output import prompt, print_header, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("DingTalk")
-    if existing := get_env_value("DINGTALK_CLIENT_ID"):
-        print_success(f"DingTalk is already configured (Client ID: {existing}).")
-        if not prompt_yes_no("Reconfigure DingTalk?", False):
-            return
+    if declines_reconfigure("DingTalk", "Reconfigure DingTalk?", "DINGTALK_CLIENT_ID"):
+        return
     choices = ["QR Code Scan (Recommended, auto-obtain Client ID and Client Secret)", "Manual Input (Client ID and Client Secret)"]
     result = None
     if prompt_choice("Choose setup method", choices, default=0) == 0:
@@ -682,12 +685,6 @@ def _manual_credential_entry(prompt, save_env_value, print_success) -> None:
     print_success("DingTalk credentials saved")
 
 
-def _bridge_list_env(env_name: str, value) -> None:
-    """Export a YAML list/scalar as a comma-joined env var unless the env var is already set."""
-    if value is not None and not os.getenv(env_name):
-        os.environ[env_name] = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
-
-
 def _nested_allowed_users(yaml_cfg: dict, dingtalk_cfg: dict):
     """Allowlist from ``extra.allowed_users``: this block's own extra first, then ``gateway.platforms.dingtalk.extra`` and ``platforms.dingtalk.extra``."""
     _gw = yaml_cfg.get("gateway")
@@ -699,22 +696,23 @@ def _nested_allowed_users(yaml_cfg: dict, dingtalk_cfg: dict):
     return None
 
 
-def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
-    """Translate config.yaml dingtalk: keys into DINGTALK_* env vars (apply_yaml_config_fn); env wins, returns None. The docs put the allowlist at
-    ``gateway.platforms.dingtalk.extra.allowed_users`` but gateway authz only consults DINGTALK_ALLOWED_USERS, so nested-only allowlists are bridged too.
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
+    ("require_mention", "DINGTALK_REQUIRE_MENTION", "lower"), ("mention_patterns", "DINGTALK_MENTION_PATTERNS", "json"),
+    ("free_response_chats", "DINGTALK_FREE_RESPONSE_CHATS", "csv"), ("allowed_chats", "DINGTALK_ALLOWED_CHATS", "csv"),
+    ("allowed_users", "DINGTALK_ALLOWED_USERS", "csv"),
+)
 
-    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy dingtalk_cfg block from
-    gateway/config.py::load_gateway_config(). Env vars take precedence over YAML (each assignment guarded by
-    not os.getenv(...)). Returns None — everything flows through env.
-    """
-    for key, env, encode in (("require_mention", "DINGTALK_REQUIRE_MENTION", lambda v: str(v).lower()), ("mention_patterns", "DINGTALK_MENTION_PATTERNS", json.dumps)):
-        if key in dingtalk_cfg and not os.getenv(env):
-            os.environ[env] = encode(dingtalk_cfg[key])
-    allowed = dingtalk_cfg.get("allowed_users")
-    for env, value in (("DINGTALK_FREE_RESPONSE_CHATS", dingtalk_cfg.get("free_response_chats")), ("DINGTALK_ALLOWED_CHATS", dingtalk_cfg.get("allowed_chats")),
-                       ("DINGTALK_ALLOWED_USERS", _nested_allowed_users(yaml_cfg, dingtalk_cfg) if allowed is None else allowed)):
-        _bridge_list_env(env, value)
-    return None
+
+def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
+    """``apply_yaml_config_fn`` (#24849): config.yaml dingtalk: keys → DINGTALK_* env (env wins; skipped under a
+    multiplexed secondary profile's scope) + ``PlatformConfig.extra``. The docs put the allowlist at
+    ``gateway.platforms.dingtalk.extra.allowed_users`` but gateway authz only consults DINGTALK_ALLOWED_USERS,
+    so nested-only allowlists are bridged too."""
+    cfg = dict(dingtalk_cfg)
+    if cfg.get("allowed_users") is None:
+        cfg["allowed_users"] = _nested_allowed_users(yaml_cfg, dingtalk_cfg)
+    return _apply_yaml_bridge(cfg, _YAML_BRIDGE)
+
 
 
 def _is_connected(config) -> bool:
@@ -722,14 +720,11 @@ def _is_connected(config) -> bool:
     return all(_credentials(getattr(config, "extra", {})))
 
 
-def _build_adapter(config):
-    return DingTalkAdapter(config)
-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="dingtalk", label="DingTalk", adapter_factory=_build_adapter, check_fn=dingtalk_deps_present,
+        name="dingtalk", label="DingTalk", adapter_factory=DingTalkAdapter, check_fn=dingtalk_deps_present,
         ensure_deps_fn=ensure_dingtalk_deps, is_connected=_is_connected, validate_config=_is_connected,
         required_env=["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"], install_hint="pip install 'dingtalk-stream>=0.20' httpx",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="DINGTALK_ALLOWED_USERS",
@@ -764,7 +759,7 @@ EXT_MAP = {
 
 _PLUGIN_COMPAT_LAZY = {
     'DINGTALK_TYPE_MAPPING': ('plugins.platforms.dingtalk.inbound', 'DINGTALK_TYPE_MAPPING'),
-    'MessageType': ('gateway.platforms.base', 'MessageType'),
+    'MessageType': ('gateway.platforms.event', 'MessageType'),
 }
 
 

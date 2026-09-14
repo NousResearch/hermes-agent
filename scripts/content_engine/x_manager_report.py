@@ -53,7 +53,7 @@ def render_report(artifacts, *, lane, title):
             'additional_references': context.get('blog_refs', []),
         }
         detail = '<details><summary>Conversation, collection and source details</summary><pre>' + esc(json.dumps(diagnostics, indent=2, ensure_ascii=False, default=str)) + '</pre></details>'
-        argument = '' if not artifact.pack.is_complete() else '<details><summary>Argument and evidence</summary><pre>' + esc(json.dumps({k: getattr(artifact.pack, k) for k in xm.REQUIRED_PACK_FIELDS}, indent=2)) + '</pre></details>'
+        argument = '' if not artifact.pack.is_complete() else '<details data-section="argument"><summary>Argument and evidence</summary><pre>' + esc(json.dumps({k: getattr(artifact.pack, k) for k in xm.REQUIRED_PACK_FIELDS}, indent=2)) + '</pre></details>'
         cards.append(
             f'<article class="card"><h2>{esc(context.get("recommended_action", artifact.lane))} · pending approval</h2>'
             f'<ul>{rows}</ul><h3>Original</h3><pre>{esc(context.get("source_text", "Source text unavailable"))}</pre>'

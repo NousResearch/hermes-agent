@@ -52,7 +52,7 @@ def test_rendered_review_has_source_bound_expiry_and_correct_argument(tmp_path, 
     Path(str(corpus)+'.approval.json').write_text(json.dumps({
         'approved': True, 'sha256': hashlib.sha256(corpus.read_bytes()).hexdigest()}))
     fields = ('claim', 'evidence', 'mechanism', 'position') if complete else ('', '', '', '')
-    # Only the verifiable source-pointer form may omit the argument pack.
+    # Short replies can omit the argument pack; expiry applies to both shapes.
     body = 'The queue limit is documented in the config.' if complete else 'Source: ' + source['url']
     item = xm.XArtifact('isolated', xm.LANE_REPLY, 'sahil_twitter', body,
                         xm.ArgumentPack(*fields, {'sources': [source]}))
@@ -61,7 +61,7 @@ def test_rendered_review_has_source_bound_expiry_and_correct_argument(tmp_path, 
     report = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(report)
     path = report.render_report([item], lane='reply', title='Synthetic approval test')
-    assert ('<h3>Argument</h3>' in path.read_text()) is complete
+    assert ('<details data-section="argument">' in path.read_text()) is complete
     assert path.name.endswith('.expiry.html')
     assert attachment_deadline([(str(path), False)]) == created + timedelta(hours=6)
     from types import SimpleNamespace

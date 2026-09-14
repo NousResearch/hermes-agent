@@ -581,6 +581,13 @@ export const ru = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF или CSS-стек шрифтов',
       terminalFontPreview: 'Предпросмотр глифов',
       terminalFontReset: 'Использовать по умолчанию',
+      chatFontTitle: 'Шрифт чата',
+      chatFontDesc:
+        'Выберите установленный шрифт для чата и всего интерфейса. Удобно для шрифтов повышенной читаемости, например OpenDyslexic; оставьте пустым, чтобы использовать шрифт темы.',
+      chatFontPlaceholder: 'OpenDyslexic или CSS-стек шрифтов',
+      chatFontPreview: 'Предпросмотр',
+      chatFontSample: 'Съешь же ещё этих мягких французских булок. 0123456789',
+      chatFontReset: 'Шрифт темы',
       translucencyTitle: 'Полупрозрачность окна',
       translucencyDesc:
         'Рабочий стол виден сквозь всё окно, включая текст. Отдельная настройка для светлой и тёмной тем.',

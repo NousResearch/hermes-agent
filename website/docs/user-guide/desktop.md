@@ -69,6 +69,13 @@ The bar along the bottom of the chat shows live session state and exposes quick 
 
 Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
+#### Fonts
+
+Two independent font settings live in **Settings → Appearance**, both stored per profile in `config.yaml`:
+
+- **Chat Font** (`desktop.font_family`) — chat and the rest of the app's UI. Readability faces such as OpenDyslexic or Atkinson Hyperlegible work as soon as they are installed on the system; the active theme's stack stays behind your pick so missing glyphs still render. Blank means the theme's font.
+- **Terminal Font** (`terminal.font_family`) — the embedded terminal pane; Nerd Fonts render shell icons here. Blank means the bundled JetBrains Mono.
+
 #### Repository discovery
 
 Hermes Desktop discovers local Git repositories for the Projects sidebar by scanning your home directory to a bounded depth. You can change this per profile in **Settings → Workspace**, or in `config.yaml`:

@@ -2331,6 +2331,10 @@ DEFAULT_CONFIG = {
         "extra_allowed_hosts": [],
     },
     "desktop": {  # Hermes Desktop (Electron) launch options; only affect `hermes desktop`.
+        # CSS font-family for the app's chat and UI text (e.g. "OpenDyslexic"). Layered in front
+        # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
+        # theme's face. The terminal pane is terminal.font_family.
+        "font_family": "",
         # Git repo discovery for the Projects sidebar; empty roots = bounded scan of $HOME.
         "repo_scan_enabled": True,
         "repo_scan_roots": [],

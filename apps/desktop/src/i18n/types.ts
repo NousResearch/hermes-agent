@@ -607,6 +607,12 @@ export interface Translations {
       terminalFontPlaceholder: string
       terminalFontPreview: string
       terminalFontReset: string
+      chatFontTitle: string
+      chatFontDesc: string
+      chatFontPlaceholder: string
+      chatFontPreview: string
+      chatFontSample: string
+      chatFontReset: string
       translucencyTitle: string
       translucencyDesc: string
       translucencyGlassDesc: string

@@ -120,7 +120,12 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     # Same unset semantics for the per-model absolute caps: a removed key restores {} through
     # the same parser the construction path uses, so stale caps stop steering next turn.
     from agent.context_compressor import parse_model_threshold_tokens
-    cc.model_threshold_tokens = parse_model_threshold_tokens(compression.get("threshold_tokens_by_model"))
+    _token_rules = parse_model_threshold_tokens(compression.get("threshold_tokens_by_model"))
+    cc.model_threshold_tokens = _token_rules.caps
+    cc.model_threshold_warn_tokens = _token_rules.warns
+    # A re-keyed warn map must not inherit the old latch (removed-then-readded
+    # lines would otherwise stay suppressed on their first crossing).
+    cc._warn_line_latch = None
     # threshold: present value wins; absence derives via the agent_init resolution (default + autoraise).
     # resolve_model_threshold returns ``pct`` unchanged when model_thresholds is empty.
     from agent.context_compressor import resolve_model_threshold

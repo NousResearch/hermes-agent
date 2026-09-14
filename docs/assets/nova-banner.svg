@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" role="img" aria-label="NOVA — the AI workforce platform, governed.">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0B1020"/>
+      <stop offset="45%" stop-color="#151B3B"/>
+      <stop offset="100%" stop-color="#0E2A3A"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="38%" stop-color="#A78BFA"/>
+      <stop offset="72%" stop-color="#F0ABFC"/>
+      <stop offset="100%" stop-color="#5EEAD4"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5EEAD4" stop-opacity="0"/>
+      <stop offset="20%" stop-color="#5EEAD4" stop-opacity=".9"/>
+      <stop offset="55%" stop-color="#A78BFA" stop-opacity=".9"/>
+      <stop offset="100%" stop-color="#F0ABFC" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#A78BFA" stop-opacity=".55"/>
+      <stop offset="100%" stop-color="#A78BFA" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#5EEAD4" stop-opacity=".40"/>
+      <stop offset="100%" stop-color="#5EEAD4" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#7DD3FC" stroke-opacity=".07" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="320" rx="20" fill="url(#sky)"/>
+  <rect width="1200" height="320" rx="20" fill="url(#grid)"/>
+  <circle cx="1010" cy="120" r="230" fill="url(#glow)"/>
+  <circle cx="190" cy="250" r="200" fill="url(#glow2)"/>
+
+  <!-- orbit motif: one governed core, four agents on a ring -->
+  <g transform="translate(1010,160)" fill="none" stroke-linecap="round">
+    <ellipse rx="128" ry="128" stroke="#7DD3FC" stroke-opacity=".28" stroke-width="1.5"/>
+    <ellipse rx="92" ry="92" stroke="#A78BFA" stroke-opacity=".30" stroke-width="1.5"/>
+    <ellipse rx="128" ry="46" stroke="#5EEAD4" stroke-opacity=".35" stroke-width="1.5" transform="rotate(-22)"/>
+    <circle r="26" fill="#0B1020" stroke="url(#word)" stroke-width="2.5"/>
+    <circle r="9" fill="#F0ABFC"/>
+    <g fill="#7DD3FC">
+      <circle cx="128" cy="0" r="7"/>
+      <circle cx="-128" cy="0" r="7" fill="#5EEAD4"/>
+      <circle cx="0" cy="-92" r="6" fill="#A78BFA"/>
+      <circle cx="0" cy="92" r="6" fill="#F0ABFC"/>
+    </g>
+  </g>
+
+  <g transform="translate(80,0)">
+    <text x="0" y="146" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif" font-size="98" font-weight="800" letter-spacing="10" fill="url(#word)">NOVA</text>
+    <rect x="4" y="168" width="470" height="3" rx="1.5" fill="url(#rule)"/>
+    <text x="4" y="212" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif" font-size="25" font-weight="600" fill="#E2E8F0">The AI workforce platform — governed.</text>
+    <text x="4" y="250" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif" font-size="17" fill="#94A3B8">Multi-tenant · policy-enforced · audited · built on the Hermes Agent runtime</text>
+    <g font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="600">
+      <g transform="translate(4,272)">
+        <rect width="128" height="28" rx="14" fill="#7DD3FC" fill-opacity=".12" stroke="#7DD3FC" stroke-opacity=".45"/>
+        <text x="64" y="19" fill="#7DD3FC" text-anchor="middle">Tenant isolation</text>
+      </g>
+      <g transform="translate(142,272)">
+        <rect width="150" height="28" rx="14" fill="#A78BFA" fill-opacity=".12" stroke="#A78BFA" stroke-opacity=".45"/>
+        <text x="75" y="19" fill="#A78BFA" text-anchor="middle">Fail-closed policy</text>
+      </g>
+      <g transform="translate(302,272)">
+        <rect width="132" height="28" rx="14" fill="#5EEAD4" fill-opacity=".12" stroke="#5EEAD4" stroke-opacity=".45"/>
+        <text x="66" y="19" fill="#5EEAD4" text-anchor="middle">Write-ahead audit</text>
+      </g>
+    </g>
+  </g>
+</svg>

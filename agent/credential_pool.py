@@ -1184,7 +1184,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         return entry
 
     def _sync_entry_from_pool_store(self, entry: PooledCredential) -> PooledCredential:
-        """Adopt a token pair rotated by another pool instance (anthropic, xai-oauth).
+        """Adopt a token pair rotated by another pool instance.
 
         Re-reads the exact persisted row from the credential-pool store while
         the shared cross-process auth-store lock is held. Direct integrations
@@ -1198,7 +1198,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         the pool store, is token authority for those sources; a row with no
         token material at all is refused for the same reason.
         """
-        if self.provider not in ("anthropic", "xai-oauth"):
+        if self.provider not in ("anthropic", "xai-oauth", "openai-codex"):
             return entry
         is_anthropic = self.provider == "anthropic"
         if is_anthropic and is_borrowed_credential_source(entry.source, self.provider):
@@ -1216,18 +1216,24 @@ class CredentialPool(CredentialPoolAdminMixin):
             if stored.access_token != entry.access_token or stored.refresh_token != entry.refresh_token:
                 logger.debug(
                     "Pool entry %s: adopting %s OAuth tokens rotated by another pool instance",
-                    entry.id, "Anthropic" if is_anthropic else "xAI",
+                    entry.id, self.provider,
                 )
                 self._replace_entry(entry, stored)
                 return stored
         except Exception as exc:
             logger.debug(
                 "Failed to sync %s OAuth entry from credential pool: %s",
-                "Anthropic" if is_anthropic else "xAI", exc,
+                self.provider, exc,
             )
         return entry
 
     _sync_anthropic_entry_from_pool_store = _sync_entry_from_pool_store
+
+    def _sync_codex_entry_for_refresh(self, entry: PooledCredential) -> PooledCredential:
+        """Sync a Codex row from the store that owns that grant."""
+        if entry.source == "device_code":
+            return self._sync_entry_from_auth_store(entry)
+        return self._sync_entry_from_pool_store(entry)
 
     def _sync_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
         """Sync a Codex / xAI device_code entry from auth.json ``providers.<id>.tokens``.
@@ -1411,11 +1417,7 @@ class CredentialPool(CredentialPoolAdminMixin):
         # the winner's rotated token and skips the POST.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
-                synced = (
-                    self._sync_entry_from_auth_store(entry)
-                    if entry.source == "device_code"
-                    else self._sync_entry_from_pool_store(entry)
-                )
+                synced = self._sync_codex_entry_for_refresh(entry)
                 if synced is not entry:
                     if entry.source != "device_code" or not force:
                         return synced
@@ -1597,7 +1599,11 @@ class CredentialPool(CredentialPoolAdminMixin):
             if self.provider == "anthropic":
                 updated = self._refresh_anthropic(entry)
             elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
-                entry = self._sync_entry_from_auth_store(entry)
+                entry = (
+                    self._sync_codex_entry_for_refresh(entry)
+                    if self.provider == "openai-codex"
+                    else self._sync_entry_from_auth_store(entry)
+                )
                 updated = self._post_tokens_refresh(entry)
             elif self.provider == "nous":
                 stale_key = entry.runtime_api_key or entry.agent_key or entry.access_token
@@ -1676,15 +1682,19 @@ class CredentialPool(CredentialPoolAdminMixin):
                     return self._adopt(synced, **_MARK_OK)
         elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
             _, display, _, terminal_fn_name = _TOKENS_SINGLETON_PROVIDERS[self.provider]
-            synced = self._sync_entry_from_auth_store(entry)
+            synced = (
+                self._sync_codex_entry_for_refresh(entry)
+                if self.provider == "openai-codex"
+                else self._sync_entry_from_auth_store(entry)
+            )
             if synced.refresh_token != entry.refresh_token:
-                logger.debug("%s OAuth refresh failed but auth.json has newer tokens — adopting", display)
+                logger.debug("%s OAuth refresh failed but its credential store has newer tokens — adopting", display)
                 return self._adopt(synced, **_MARK_OK)
             # Terminal error with no newer tokens: the stored refresh_token is
             # dead. Clear it from auth.json so the next session does not
             # re-seed the revoked credentials, and drop singleton-seeded
             # entries from the pool (mirrors the Nous quarantine path).
-            if getattr(auth_mod, terminal_fn_name)(exc):
+            if entry.source == "device_code" and getattr(auth_mod, terminal_fn_name)(exc):
                 logger.debug("%s OAuth refresh token is terminally invalid; clearing local token state", display)
                 self._clear_terminal_tokens_state(entry, exc)
                 self._quarantine_sources(entry, {"device_code"})

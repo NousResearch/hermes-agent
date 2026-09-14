@@ -24,6 +24,48 @@ def _jwt_with_claims(claims: dict) -> str:
     return f"{_part({'alg': 'none', 'typ': 'JWT'})}.{_part(claims)}.sig"
 
 
+def test_codex_forced_refresh_keeps_manual_grant_isolated(tmp_path, monkeypatch):
+    """A rejected manual grant refreshes its pool row, never the singleton account."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("hermes_cli.auth._import_codex_cli_tokens", lambda: None)
+    account_claim = "https://api.openai.com/auth"
+    stale = _jwt_with_claims({account_claim: {"chatgpt_account_id": "account-a"}, "jti": "stale"})
+    fresh = _jwt_with_claims({account_claim: {"chatgpt_account_id": "account-a"}, "jti": "fresh"})
+    singleton = _jwt_with_claims({account_claim: {"chatgpt_account_id": "account-b"}})
+    _write_auth_store(tmp_path, {
+        "version": 1,
+        "providers": {"openai-codex": {"tokens": {
+            "access_token": singleton, "refresh_token": "refresh-b",
+        }}},
+        "credential_pool": {"openai-codex": [{
+            "id": "account-a", "label": "account-a", "auth_type": "oauth",
+            "priority": 0, "source": "manual:device_code",
+            "access_token": stale, "refresh_token": "refresh-a",
+        }]},
+    })
+
+    from agent import credential_pool
+    refresh_calls = []
+
+    def refresh(access_token, refresh_token):
+        refresh_calls.append((access_token, refresh_token))
+        return {"access_token": fresh, "refresh_token": "refresh-a-rotated"}
+
+    monkeypatch.setattr(credential_pool.auth_mod, "refresh_codex_oauth_pure", refresh)
+    first = credential_pool.load_pool("openai-codex")
+    waiter = credential_pool.load_pool("openai-codex")
+
+    refreshed = first.refresh_matching_api_key(stale)
+    adopted = waiter.refresh_matching_api_key(stale)
+
+    assert refreshed is not None and refreshed.runtime_api_key == fresh
+    assert adopted is not None and adopted.runtime_api_key == fresh
+    assert refresh_calls == [(stale, "refresh-a")]
+    stored = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    assert stored["providers"]["openai-codex"]["tokens"]["access_token"] == singleton
+    assert stored["credential_pool"]["openai-codex"][0]["access_token"] == fresh
+
+
 
 
 

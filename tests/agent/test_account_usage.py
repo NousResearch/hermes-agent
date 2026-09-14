@@ -170,9 +170,13 @@ def test_codex_usage_token_without_account_claim_keeps_singleton_token(monkeypat
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
-def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_payload):
+@pytest.mark.parametrize("retry_status", [200, 401])
+def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_payload, retry_status):
     request_calls = []
-    responses = [_FakeResponse({}, status_code=401), _FakeResponse(codex_usage_payload)]
+    responses = [
+        _FakeResponse({}, status_code=401),
+        _FakeResponse(codex_usage_payload, status_code=retry_status),
+    ]
     stale_token = _codex_jwt("account-a", "stale")
     fresh_token = _codex_jwt("account-a", "fresh")
     refreshed = SimpleNamespace(
@@ -210,13 +214,51 @@ def test_codex_usage_retries_401_with_forced_refresh(monkeypatch, codex_usage_pa
         api_key=stale_token,
     )
 
-    assert snapshot is not None
-    assert snapshot.windows[0].label == "Session"
+    assert (snapshot is not None) is (retry_status == 200)
+    if snapshot is not None:
+        assert snapshot.windows[0].label == "Session"
     assert refresh_calls == [stale_token]
     assert request_calls == [
         (f"Bearer {stale_token}", "account-a"),
         (f"Bearer {fresh_token}", "account-a"),
     ]
+
+
+def test_codex_usage_explicit_api_key_401_does_not_switch_accounts(monkeypatch):
+    requests = []
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get(self, url, headers):
+            requests.append(headers["Authorization"])
+            return _FakeResponse({}, status_code=401)
+
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: Client())
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("another account must not be selected")),
+    )
+    import agent.credential_pool as credential_pool
+    monkeypatch.setattr(
+        credential_pool,
+        "load_pool",
+        lambda provider: SimpleNamespace(refresh_matching_api_key=lambda token: None),
+    )
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="explicit-api-key",
+    )
+
+    assert snapshot is None
+    assert requests == ["Bearer explicit-api-key"]
 
 
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────

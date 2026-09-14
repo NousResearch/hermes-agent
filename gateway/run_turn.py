@@ -3717,6 +3717,13 @@ class GatewayTurnMixin:
             return
         _final = response.get("final_response") or ""
         _is_empty_sentinel = not _final or _final == "(empty)"
+        # Source-aware uncertain receipts own only their frozen attempted spans.
+        # Reconcile before stale/split/transformed paths can replay the full body.
+        if (not _is_empty_sentinel and _sc is not None
+                and getattr(_sc, "source_delivery_pending", False) is True
+                and await _sc.reconcile_source_final(_final)):
+            response["already_sent"] = True
+            return
         # response_previewed: only suppress if that EXACT text was delivered, not unrelated commentary.
         # Unrelated commentary/progress must not be mistaken for the final response (#14238).
         _previewed = bool(response.get("response_previewed"))

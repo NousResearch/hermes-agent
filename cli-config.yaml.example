@@ -1,4 +1,10 @@
 # Hermes Agent CLI Configuration
+# Mattermost gateway, streaming, direct and cron post length (active profile only).
+# Invalid values or values below 500 use 4000; values above 16383 are clamped.
+# This setting has no environment-variable override.
+mattermost:
+  max_post_length: 4000
+
 # Copy settings from this example into ~/.hermes/config.yaml, or use
 # `hermes config set <section.key> <value>` to update the active profile.
 # This file configures CLI behavior; only documented secret environment

@@ -64,6 +64,59 @@ class TestMattermostDisplayHygiene:
 # ---------------------------------------------------------------------------
 
 class TestMattermostConfigLoading:
+    @pytest.mark.parametrize("route", ["direct", "cron"])
+    def test_yaml_limit_is_profile_local_across_delivery(self, tmp_path, monkeypatch, route):
+        import asyncio
+        from types import SimpleNamespace
+        from gateway.config import load_gateway_config
+        from gateway.platform_registry import platform_registry
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        from tools.send_message_tool import _send_to_platform, prepare_send_message_platforms
+        from cron.scheduler_delivery import _standalone_send
+
+        monkeypatch.setenv("MATTERMOST_TOKEN", "test-mattermost-token")
+        monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
+        monkeypatch.setenv("MATTERMOST_MAX_POST_LENGTH", "9000")
+        prepare_send_message_platforms()
+        registry_limit = platform_registry.get("mattermost").max_message_length
+        adapters = []
+        for name, limit in [("small", 500), ("large", 8000), ("default", 4000)]:
+            home = tmp_path / name
+            home.mkdir()
+            (home / "config.yaml").write_text(
+                f"mattermost:\n  max_post_length: {limit}\n" if name != "default" else "{}\n"
+            )
+            monkeypatch.setenv("HERMES_HOME", str(home))
+            config = load_gateway_config().platforms[Platform.MATTERMOST]
+            adapter = MattermostAdapter(config)
+            adapters.append(adapter)
+            session = MagicMock()
+            response = AsyncMock()
+            response.status = 201
+            response.json.return_value = {"id": "ack"}
+            response.__aenter__.return_value = response
+            session.post.return_value = response
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=False)
+            with patch("aiohttp.ClientSession", return_value=session), patch(
+                "tools.send_message_tool._live_adapter", return_value=(None, None)
+            ):
+                if route == "direct":
+                    result = asyncio.run(_send_to_platform(Platform.MATTERMOST, config, "channel", "x" * 6000))
+                else:
+                    target = SimpleNamespace(job={"id": "job"}, where="mattermost:channel",
+                                             platform=Platform.MATTERMOST, pconfig=config,
+                                             chat_id="channel", thread_id=None)
+                    result, error = _standalone_send(target, "x" * 6000, [])
+                    assert error is None
+            assert result["success"]
+            posts = [call.kwargs["json"]["message"] for call in session.post.call_args_list]
+            assert all(len(post) <= limit for post in posts)
+            assert (len(posts) == 1) == (limit > 6000)
+            assert adapter.MAX_MESSAGE_LENGTH == limit
+        assert [adapter.MAX_MESSAGE_LENGTH for adapter in adapters] == [500, 8000, 4000]
+        assert platform_registry.get("mattermost").max_message_length == registry_limit
+
 
 
     def test_mattermost_home_channel(self, monkeypatch):
@@ -115,6 +168,23 @@ class TestMattermostFormatMessage:
 
 
 class TestMattermostTruncateMessage:
+    @pytest.mark.parametrize("raw, expected", [
+        (None, 4000), ("bad", 4000), (True, 4000), (499, 4000),
+        (500, 500), (8000, 8000), (16383, 16383), (20000, 16383),
+        (500.5, 4000), ("8000", 8000),
+    ])
+    @pytest.mark.asyncio
+    async def test_configured_limit_bounds_gateway_posts(self, raw, expected):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": raw}))
+        adapter._api_post = AsyncMock(return_value={"id": "post"})
+        text = "a" * (expected + 20)
+        await adapter.send("channel", text)
+        posts = [call.args[1]["message"] for call in adapter._api_post.await_args_list]
+        assert adapter.MAX_MESSAGE_LENGTH == expected
+        assert len(posts) >= 2
+        assert all(len(post) <= expected for post in posts)
+
     def setup_method(self):
         self.adapter = _make_adapter()
 
@@ -215,33 +285,196 @@ class TestMattermostSend:
         payload = self.adapter._api_post.call_args_list[0][0][1]
         assert payload["root_id"] == "bad_root"
 
+    @pytest.mark.parametrize("limit, body", [
+        (4000, "Final answer body"), (500, "x" * 500), (16383, "x" * 16383),
+    ], ids=["short", "minimum", "maximum"])
     @pytest.mark.asyncio
-    async def test_notify_send_with_invalid_thread_root_falls_back_flat_with_warning(self):
-        """Notify-worthy replies may fall back flat so the answer is not lost."""
+    async def test_notify_send_with_invalid_thread_root_falls_back_flat_with_warning(self, limit, body):
+        """Fallback decoration fits the limit without consuming answer text."""
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        self.adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": limit}))
         self.adapter._reply_mode = "thread"
         self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
         self.adapter._last_post_status = 400
         self.adapter._last_post_error = "api.context.invalid_param.app_error: invalid root_id"
-        self.adapter._api_post = AsyncMock(side_effect=[{}, {"id": "flat_final"}])
+        self.adapter._api_post = AsyncMock(
+            side_effect=lambda path, payload: {} if "root_id" in payload else {"id": "flat_final"})
 
         result = await self.adapter.send(
-            "channel_1",
-            "Final answer body",
-            reply_to="bad_root",
-            metadata={"notify": True},
-        )
+            "channel_1", body, reply_to="bad_root", metadata={"notify": True})
 
         assert result.success is True
         assert result.message_id == "flat_final"
-        assert self.adapter._api_post.call_count == 2
-        threaded_payload = self.adapter._api_post.call_args_list[0][0][1]
-        flat_payload = self.adapter._api_post.call_args_list[1][0][1]
-        assert threaded_payload["root_id"] == "bad_root"
-        assert "root_id" not in flat_payload
-        assert flat_payload["channel_id"] == "channel_1"
-        assert "Mattermost thread delivery failed" in flat_payload["message"]
-        assert "Final answer body" in flat_payload["message"]
+        payloads = [call.args[1] for call in self.adapter._api_post.await_args_list]
+        assert payloads[0]["root_id"] == "bad_root"
+        flat = [p for p in payloads if "root_id" not in p]
+        assert all(p["channel_id"] == "channel_1" for p in flat)
+        assert all(len(p["message"]) <= limit for p in payloads)
+        warning = "⚠️ Mattermost thread delivery failed; posting final reply in channel.\n\n"
+        assert "Mattermost thread delivery failed" in flat[0]["message"]
+        assert "".join(p["message"].removeprefix(warning).removeprefix(warning.rstrip()) for p in flat) == body
 
+
+    @pytest.mark.parametrize("outcome", ["ok", "unacknowledged", "timeout", "notice_unacknowledged", "cancelled"])
+    @pytest.mark.asyncio
+    async def test_separate_warning_keeps_acknowledgements(self, tmp_path, outcome):
+        import asyncio
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        self.adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
+        self.adapter._last_post_status = 400
+        self.adapter._last_post_error = "invalid root_id"
+        self.adapter._upload_file = AsyncMock(return_value="file")
+        final = {"ok": {"id": "content"}, "unacknowledged": {}, "timeout": TimeoutError(),
+                 "notice_unacknowledged": {}, "cancelled": asyncio.CancelledError()}[outcome]
+        notice = {} if outcome == "notice_unacknowledged" else {"id": "notice"}
+        self.adapter._api_post = AsyncMock(side_effect=[{}, notice, final])
+        path = tmp_path / "image.png"
+        path.write_bytes(b"image")
+        call = self.adapter.send_image_file(
+            "channel", str(path), caption="x" * 500,
+            metadata={"notify": True, "thread_id": "bad_root"})
+        if outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await call
+            assert self.adapter._api_post.await_count == 3
+            return
+        result = await call
+        expected = ["notice", "content"] if outcome == "ok" else ([] if outcome == "notice_unacknowledged" else ["notice"])
+        assert result.success is (outcome == "ok")
+        assert result.message_id == (expected[-1] if expected else None)
+        assert result.continuation_message_ids == tuple(expected[:-1])
+        assert bool(result.error) is (outcome != "ok")
+        payloads = [c.args[1] for c in self.adapter._api_post.await_args_list]
+        assert len(payloads) == (2 if outcome == "notice_unacknowledged" else 3)
+        assert "file_ids" not in payloads[1]
+        assert all(len(p["message"]) <= 500 for p in payloads)
+        if len(payloads) == 3:
+            assert payloads[2]["message"] == "x" * 500
+            assert payloads[2]["file_ids"] == ["file"]
+
+    @pytest.mark.parametrize("outcome", ["disconnect", "timeout", "cancelled", "ok", "rejected"])
+    @pytest.mark.asyncio
+    async def test_gateway_does_not_replay_after_split_warning(self, outcome):
+        import asyncio
+        import aiohttp
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        self.adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
+        payloads = []
+
+        def post(url, **kwargs):
+            payloads.append(kwargs["json"])
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 201
+            response.json.return_value = {"id": "content"}
+            if len(payloads) == 1:
+                response.status = 400
+                response.text.return_value = "invalid root_id"
+            elif len(payloads) == 2:
+                response.json.return_value = {"id": "notice"}
+            elif len(payloads) == 3:
+                if outcome == "rejected":
+                    response.status = 400
+                    response.text.return_value = "invalid message"
+                elif outcome != "ok":
+                    response.json.side_effect = {
+                        "disconnect": aiohttp.ServerDisconnectedError("connection reset by peer"),
+                        "timeout": TimeoutError(), "cancelled": asyncio.CancelledError(),
+                    }[outcome]
+            return response
+
+        self.adapter._session = MagicMock()
+        self.adapter._session.post.side_effect = post
+        body = "x" * 500
+        call = self.adapter._send_with_retry(
+            "channel", body, reply_to="bad_root", metadata={"notify": True})
+        if outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await call
+        else:
+            result = await call
+            # An acknowledged warning is part of the logical receipt too: a
+            # rejected content POST must not replay it via formatting fallback.
+            assert result.success is (outcome == "ok")
+            assert result.message_id == ("content" if outcome == "ok" else "notice")
+            assert result.continuation_message_ids == (("notice",) if outcome == "ok" else ())
+            if outcome != "ok":
+                assert self.adapter._is_timeout_error(result.error)
+                assert not result.retryable
+        assert len(payloads) == 3
+        assert payloads[0]["root_id"] == "bad_root"
+        assert "root_id" not in payloads[1] and "root_id" not in payloads[2]
+        assert payloads[2]["message"] == body
+        assert all(len(payload["message"]) <= 500 for payload in payloads)
+
+    @pytest.mark.asyncio
+    async def test_gateway_retries_connector_failure_before_send(self):
+        import aiohttp
+        from types import SimpleNamespace
+
+        payloads = []
+        def post(url, **kwargs):
+            payloads.append(kwargs["json"])
+            if len(payloads) == 1:
+                key = SimpleNamespace(host="mattermost.example", port=443, ssl=True)
+                raise aiohttp.ClientConnectorError(key, OSError("connection refused"))
+            response = AsyncMock()
+            response.status = 201
+            response.json.return_value = {"id": "delivered"}
+            response.__aenter__.return_value = response
+            return response
+        self.adapter._session = MagicMock()
+        self.adapter._session.post.side_effect = post
+        result = await self.adapter._send_with_retry("channel", "hello", base_delay=0)
+        assert result.success and result.message_id == "delivered"
+        assert len(payloads) == 2 and "hello" in payloads[-1]["message"]
+
+    @pytest.mark.parametrize("batch", [False, True])
+    @pytest.mark.parametrize("outcome", ["ok", "timeout", "disconnect", "rejected_body_timeout"])
+    @pytest.mark.asyncio
+    async def test_media_caption_budget_preserves_text_files_and_receipts(self, tmp_path, batch, outcome):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
+        adapter._reply_mode = "thread"
+        adapter._api_get = AsyncMock(return_value={"root_id": "root"})
+        payloads = []
+        def post(url, **kwargs):
+            payloads.append(kwargs["json"])
+            response = AsyncMock()
+            response.status = 201
+            response.json.return_value = {"id": f"post-{len(payloads)}"}
+            if len(payloads) == 2 and outcome == "rejected_body_timeout":
+                response.status = 400
+                response.text.side_effect = TimeoutError()
+            if len(payloads) == 2 and outcome != "ok":
+                import aiohttp
+                response.json.side_effect = TimeoutError() if outcome == "timeout" else aiohttp.ServerDisconnectedError()
+            response.__aenter__.return_value = response
+            return response
+        adapter._session = MagicMock()
+        adapter._session.post.side_effect = post
+        caption = "  @here\n![keep](https://example.com/image)\t" + "x" * 700 + "  "
+        path = tmp_path / "image.png"
+        path.write_bytes(b"image")
+        adapter._upload_file = AsyncMock(side_effect=["file-a", "file-b"])
+        if batch:
+            result = await adapter.send_multiple_images(
+                "channel", [(path.as_uri(), caption), (path.as_uri(), "")], metadata={"thread_id": "root"})
+        else:
+            result = await adapter.send_image_file("channel", str(path), caption=caption, reply_to="root")
+        assert result.success is (outcome == "ok")
+        assert len(payloads) == 2
+        assert all(len(p["message"]) <= adapter.MAX_MESSAGE_LENGTH for p in payloads)
+        assert "".join(p["message"] for p in payloads) == caption
+        assert [fid for p in payloads for fid in p.get("file_ids", [])] == (["file-a", "file-b"] if batch else ["file-a"])
+        assert all(p["root_id"] == "root" for p in payloads)
+        expected_ids = ("post-1", "post-2") if outcome == "ok" else ("post-1",)
+        assert (*result.continuation_message_ids, result.message_id) == expected_ids
 
     @pytest.mark.asyncio
     async def test_progress_send_with_broken_thread_and_no_recorded_error_stays_quiet(self):
@@ -260,6 +493,296 @@ class TestMattermostSend:
         assert self.adapter._api_post.call_count == 1
         payload = self.adapter._api_post.call_args_list[0][0][1]
         assert payload["root_id"] == "bad_root"
+
+
+class TestMattermostTextReceipts:
+    @staticmethod
+    def transport(adapter, outcome):
+        import asyncio
+        import aiohttp
+        calls = []
+
+        def request(method, url, **kwargs):
+            calls.append((method, kwargs["json"]))
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 201
+            response.json.return_value = {"id": f"post-{len(calls)}"}
+            if len(calls) == 3 and outcome != "ok":
+                if outcome == "rejected":
+                    response.status = 400
+                    response.text.return_value = "invalid message"
+                elif outcome == "rejected_body_timeout":
+                    response.status = 400
+                    response.text.side_effect = TimeoutError()
+                else:
+                    response.json.side_effect = {
+                        "timeout": TimeoutError(),
+                        "disconnect": aiohttp.ServerDisconnectedError(),
+                        "exception": ValueError("malformed acknowledgement"),
+                        "cancelled": asyncio.CancelledError(),
+                    }[outcome]
+            return response
+
+        adapter._session = MagicMock()
+        adapter._session.post.side_effect = lambda url, **kw: request("POST", url, **kw)
+        adapter._session.put.side_effect = lambda url, **kw: request("PUT", url, **kw)
+        adapter._api_get = AsyncMock(return_value={"root_id": "root"})
+        return calls
+
+    @pytest.mark.parametrize("limit", [500, 731])
+    @pytest.mark.parametrize("route", ["send", "edit"])
+    @pytest.mark.parametrize("outcome", ["ok", "timeout", "rejected"])
+    @pytest.mark.asyncio
+    async def test_source_receipt_spans_precede_rendering(self, limit, route, outcome):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": limit, "reply_mode": "thread"}))
+        calls = self.transport(adapter, outcome)
+        head = "  ```python\n![image](https://example.com/image) (1/2) \t\n"
+        block = head + "x" * (limit - len(head) - 3) + " \n\t"
+        source = block * 3 + "guaranteed unattempted tail ▉"
+        if route == "send":
+            result = await adapter.send("channel", source, metadata={"thread_id": "root"})
+        else:
+            result = await adapter.edit_message("channel", "original", source)
+        confirmed = source if outcome == "ok" else source[:2 * limit]
+        attempted = source if outcome == "ok" else source[:(3 if outcome == "timeout" else 2) * limit]
+        assert result.raw_response["source_confirmed_prefix"] == confirmed
+        assert result.raw_response["source_attempted_prefix"] == attempted
+        assert source.startswith(confirmed) and source.startswith(attempted)
+        assert result.success is (outcome == "ok")
+        assert len(calls) == (4 if outcome == "ok" else 3)
+        assert [p["message"] for _, p in calls] == [
+            adapter.format_message(source[i * limit:(i + 1) * limit]) for i in range(len(calls))]
+        assert all(len(p["message"]) <= limit and p["props"]["disable_mentions"] for _, p in calls)
+        assert all(p["root_id"] == "root" for method, p in calls if method == "POST")
+        assert (*result.continuation_message_ids, result.message_id) == tuple(
+            f"post-{i}" for i in range(1, (len(calls) if outcome == "ok" else 2) + 1))
+
+    @pytest.mark.parametrize("lost_notice", [False, True])
+    @pytest.mark.asyncio
+    async def test_source_receipt_warning_does_not_confirm_content(self, lost_notice):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500, "reply_mode": "thread"}))
+        posts = []
+        def post(url, **kwargs):
+            posts.append(kwargs["json"])
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 400 if len(posts) == 1 else 201
+            response.text.return_value = "invalid root_id"
+            response.json.return_value = {"id": "notice"}
+            if len(posts) == (2 if lost_notice else 3):
+                response.json.side_effect = TimeoutError()
+            return response
+        adapter._session = MagicMock()
+        adapter._session.post.side_effect = post
+        adapter._api_get = AsyncMock(return_value={"root_id": "root"})
+        source = "a" * 500 + "later unattempted tail"
+        result = await adapter.send("channel", source, metadata={"thread_id": "root", "notify": True})
+        assert not result.success and result.raw_response["_delivery_uncertain"]
+        assert result.raw_response["source_confirmed_prefix"] == ""
+        assert result.raw_response["source_attempted_prefix"] == ("" if lost_notice else source[:500])
+        assert result.raw_response["content_attempted"] is (not lost_notice)
+        assert result.raw_response["content_uncertain"] is (not lost_notice)
+        assert result.message_id == (None if lost_notice else "notice")
+        assert len(posts) == (2 if lost_notice else 3)
+
+    @pytest.mark.parametrize("outcome", ["ok", "rejected", "timeout", "disconnect", "exception", "cancelled"])
+    @pytest.mark.asyncio
+    async def test_text_retains_all_acknowledgements_without_replay(self, outcome):
+        import asyncio
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
+        calls = self.transport(adapter, outcome)
+        send = adapter._send_with_retry("channel", "x" * 1300, base_delay=0)
+        if outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await send
+        else:
+            result = await send
+            assert result.success is (outcome == "ok")
+            expected = ("post-1", "post-2", "post-3") if outcome == "ok" else ("post-1", "post-2")
+            assert (*result.continuation_message_ids, result.message_id) == expected
+        assert len(calls) == 3
+        assert all(len(p["message"]) <= 500 for _, p in calls)
+
+    @pytest.mark.parametrize("outcome", ["ok", "rejected", "rejected_body_timeout", "timeout", "exception", "cancelled"])
+    @pytest.mark.asyncio
+    async def test_edit_chunks_losslessly_and_surfaces_every_continuation(self, outcome):
+        import asyncio
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500, "reply_mode": "thread"}))
+        calls = self.transport(adapter, outcome)
+        content = "  ```python\n" + "print('x (1/2)'); \t\n" * 70 + "```  "
+        edit = adapter.edit_message("channel", "original", content)
+        if outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await edit
+            return
+        result = await edit
+        assert all(len(p["message"]) <= 500 for _, p in calls)
+        assert calls[0][0] == "PUT" and all(method == "POST" for method, _ in calls[1:])
+        assert all(p["props"]["disable_mentions"] for _, p in calls)
+        assert all(p["root_id"] == "root" for _, p in calls[1:])
+        assert result.success is (outcome == "ok")
+        acked = len(calls) if outcome == "ok" else 2
+        assert (*result.continuation_message_ids, result.message_id) == tuple(f"post-{i}" for i in range(1, acked + 1))
+        prefix = "".join(p["message"] for _, p in calls[:acked])
+        assert content.startswith(prefix)
+        if outcome == "ok":
+            assert prefix == content
+        else:
+            assert result.raw_response["partial_overflow"]
+            assert result.raw_response["delivered_prefix"] == content[:len(prefix)]
+            assert result.raw_response.get("_delivery_uncertain", False) is (outcome in {"timeout", "exception"})
+
+    @pytest.mark.parametrize("outcome", ["rejected", "timeout"])
+    @pytest.mark.asyncio
+    async def test_stream_first_send_retains_failed_receipts(self, outcome):
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, _Tick
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500}))
+        calls = self.transport(adapter, outcome)
+        consumer = GatewayStreamConsumer(adapter=adapter, chat_id="channel", config=StreamConsumerConfig(cursor=""))
+        consumer._accumulated = "x" * 1300
+        assert not await consumer._send_or_edit(consumer._accumulated, finalize=True)
+        assert consumer._preview_message_ids == {"post-1", "post-2"}
+        assert consumer._message_id == "post-2"
+        await consumer._finalize_edit_path(_Tick(got_done=True))
+        assert len(calls) == 3
+
+    @pytest.mark.parametrize("outcome", ["rejected", "timeout"])
+    @pytest.mark.asyncio
+    async def test_stream_partial_edit_only_retries_known_unsent_tail(self, outcome):
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, _Tick
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500, "reply_mode": "thread"}))
+        calls = self.transport(adapter, outcome)
+        consumer = GatewayStreamConsumer(adapter=adapter, chat_id="channel", metadata={"thread_id": "root"},
+                                         config=StreamConsumerConfig(cursor=""))
+        content = "a" * 490 + " (1/2)  \n" + "b" * 490 + " (2/2)  \n" + "remaining tail"
+        consumer._message_id = "original"
+        consumer._last_sent_text = "preview"
+        consumer._accumulated = content
+        assert not await consumer._send_or_edit(content, finalize=True)
+        assert consumer._preview_message_ids.issuperset({"post-1", "post-2"})
+        await consumer._finalize_edit_path(_Tick(got_done=True))
+        if outcome == "timeout":
+            assert len(calls) == 3
+            assert consumer._delivery_ambiguous
+        else:
+            assert len(calls) == 4
+            assert calls[-1][1]["message"] == content[1000:].lstrip()
+            assert consumer.final_content_delivered
+
+
+class TestMattermostFinalizePostAcknowledgements:
+    @pytest.mark.parametrize("outcome", [
+        "empty", "null", "array", "string", "missing_id", "null_id", "empty_id",
+        "blank_id", "numeric_id", "bool_id", "array_id", "object_id", "invalid_json",
+        "500", "502", "503", "504", "503_body_timeout", "503_body_disconnect",
+        "ok", "rejected", "rejected_body_timeout", "connector", "cancelled",
+    ])
+    @pytest.mark.asyncio
+    async def test_native_finalize_stops_after_unacknowledged_continuation(self, outcome):
+        """An acknowledged preview edit + continuation must never replay an unknown POST."""
+        import asyncio
+        import aiohttp
+        from aiohttp.client_reqrep import ConnectionKey
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig, _Tick
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        adapter = MattermostAdapter(PlatformConfig(extra={"max_post_length": 500, "reply_mode": "thread"}))
+        posts, edits = [], []
+        bodies = {
+            "empty": {}, "null": None, "array": [], "string": "accepted",
+            "missing_id": {"message": "accepted", "_post_rejection_status": 400},
+            "null_id": {"id": None}, "empty_id": {"id": ""}, "blank_id": {"id": " \t"},
+            "numeric_id": {"id": 7}, "bool_id": {"id": True},
+            "array_id": {"id": ["unknown"]}, "object_id": {"id": {"unknown": True}},
+        }
+
+        def post(url, **kwargs):
+            assert url.endswith("/api/v4/posts")
+            posts.append(kwargs["json"])
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 201
+            response.json.return_value = {"id": f"post-{len(posts)}"}
+            if len(posts) == 3:
+                if outcome in bodies:
+                    response.json.return_value = bodies[outcome]
+                elif outcome == "invalid_json":
+                    response.json.side_effect = json.JSONDecodeError("invalid", "{", 1)
+                elif outcome in {"500", "502", "503", "504", "503_body_timeout", "503_body_disconnect"}:
+                    response.status = int(outcome[:3])
+                    response.text.return_value = "server failed after accepting the request"
+                    if outcome == "503_body_timeout":
+                        response.text.side_effect = TimeoutError()
+                    elif outcome == "503_body_disconnect":
+                        response.text.side_effect = aiohttp.ServerDisconnectedError()
+                elif outcome.startswith("rejected"):
+                    response.status = 400
+                    response.text.return_value = "invalid message"
+                    if outcome == "rejected_body_timeout":
+                        response.text.side_effect = TimeoutError()
+                elif outcome == "connector":
+                    key = ConnectionKey("example.invalid", 443, True, True, None, None, None)
+                    response.__aenter__.side_effect = aiohttp.ClientConnectorError(key, OSError("connection refused"))
+                elif outcome == "cancelled":
+                    response.json.side_effect = asyncio.CancelledError()
+            return response
+
+        def put(url, **kwargs):
+            assert url.endswith("/api/v4/posts/post-1/patch")
+            edits.append(kwargs["json"])
+            response = AsyncMock()
+            response.__aenter__.return_value = response
+            response.status = 200
+            response.json.return_value = {"id": "post-1"}
+            return response
+
+        adapter._session = MagicMock()
+        adapter._session.post.side_effect = post
+        adapter._session.put.side_effect = put
+        adapter._api_get = AsyncMock(return_value={"root_id": "root"})
+        consumer = GatewayStreamConsumer(adapter, "channel", metadata={"thread_id": "root"},
+                                         config=StreamConsumerConfig(cursor=""))
+        assert await consumer._send_or_edit("preview")
+        content = "a" * 490 + " (1/2)  \n" + "b" * 490 + " (2/2)  \n" + "remaining tail"
+        consumer._accumulated = content
+        finalize = consumer._finalize_edit_path(_Tick(got_done=True))
+        if outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                await finalize
+            assert len(posts) == 3
+            return
+        await finalize
+
+        assert len(edits) == 1
+        assert edits[0]["message"] + posts[1]["message"] == content[:1000]
+        assert all(len(payload["message"]) <= 500 and payload["props"]["disable_mentions"]
+                   for payload in posts + edits)
+        assert all(payload["root_id"] == "root" for payload in posts)
+        if outcome in {"rejected", "rejected_body_timeout", "connector"}:
+            assert len(posts) == 4  # authoritative rejection / before-send failure permits known-tail recovery
+            assert posts[-1]["message"] == content[1000:].lstrip()
+            assert consumer._preview_message_ids | {consumer._message_id} == {"post-1", "post-2", "post-4"}
+            assert consumer.final_content_delivered
+        elif outcome == "ok":
+            assert len(posts) == 3
+            assert consumer._message_id == "post-3"
+            assert consumer._preview_message_ids == {"post-1", "post-2", "post-3"}
+            assert consumer.final_content_delivered
+        else:
+            assert len(posts) == 3, "native finalize replayed an unacknowledged continuation"
+            assert consumer._preview_message_ids == {"post-1", "post-2"}
+            assert consumer._message_id == "post-2"
+            assert consumer._delivery_ambiguous
+            await consumer._finalize_edit_path(_Tick(got_done=True))
+            assert not await consumer._send_or_edit(content, finalize=True)
+            assert len(posts) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +1011,130 @@ class TestMattermostDedup:
 # ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
+
+class TestMattermostStandaloneAcknowledgements:
+    @staticmethod
+    def response(status, data):
+        response = AsyncMock()
+        response.__aenter__.return_value = response
+        response.__aexit__.return_value = False
+        response.status = status
+        response.json.return_value = data
+        return response
+
+    @pytest.fixture
+    def public_sender(self, tmp_path, monkeypatch):
+        import aiohttp
+        from tools import send_message_tool as tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MATTERMOST_TOKEN", "fixture-token")
+        monkeypatch.setenv("MATTERMOST_URL", "https://mattermost.example")
+        (tmp_path / "config.yaml").write_text("mattermost:\n  max_post_length: 500\n")
+        monkeypatch.setattr(tool, "_live_adapter", lambda platform: (None, None))
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(aiohttp, "ClientSession", lambda **kwargs: session)
+        message = "first " * 100 + "second " * 100
+
+        def send(second):
+            session.post.side_effect = [
+                self.response(201, {"id": "prefix"}), second,
+                self.response(201, {"id": "tail"}),
+            ]
+            return json.loads(tool.send_message_tool({
+                "action": "send", "target": "mattermost:123456", "message": message,
+            }))
+
+        return send, session, message
+
+    @pytest.mark.parametrize("status, data, failure", [
+        pytest.param(500, {}, None, id="server-error"),
+        pytest.param(503, {"id": "unconfirmed"}, None, id="proxy-error-with-id"),
+        pytest.param(200, {}, None, id="missing-id"),
+        pytest.param(201, [], None, id="array-body"),
+        pytest.param(201, "unconfirmed", None, id="string-body"),
+        pytest.param(202, {}, None, id="accepted-without-id"),
+        pytest.param(204, None, None, id="empty-body"),
+        pytest.param(299, {}, None, id="other-2xx-without-id"),
+        *[pytest.param(201, {"id": value}, None, id=f"invalid-id-{label}")
+          for label, value in [("null", None), ("empty", ""), ("blank", " \t\n"),
+                               ("number", 42), ("bool", True), ("object", {"post": "x"}),
+                               ("array", ["x"])]],
+        pytest.param(None, None, "timeout", id="unknown-timeout"),
+        pytest.param(None, None, "disconnect", id="unknown-disconnect"),
+        pytest.param(201, None, "json", id="malformed-json"),
+        pytest.param(201, None, "timeout", id="body-timeout"),
+        pytest.param(503, None, "exit", id="server-error-exit-timeout"),
+    ])
+    def test_uncertain_ack_stops_at_confirmed_prefix(self, public_sender, status, data, failure):
+        import aiohttp
+        from plugins.platforms.mattermost.adapter import _POST_DELIVERY_UNCERTAIN
+
+        send, session, message = public_sender
+        response = self.response(status, data)
+        if failure:
+            error = {"timeout": TimeoutError(), "disconnect": aiohttp.ServerDisconnectedError(),
+                     "json": ValueError("invalid JSON"), "exit": TimeoutError()}[failure]
+            boundary = (response.__aenter__ if status is None else
+                        response.__aexit__ if failure == "exit" else response.json)
+            boundary.side_effect = error
+        result = send(response)
+
+        assert result["success"] is False
+        assert result["error"] == _POST_DELIVERY_UNCERTAIN
+        assert result["_delivery_uncertain"] is True
+        assert result["message_ids"] == ["prefix"] and result["message_id"] == "prefix"
+        assert result["platform"] == "mattermost" and result["chat_id"] == "123456"
+        assert [call.kwargs["json"]["message"] for call in session.post.call_args_list] == [
+            message[:500], message[500:1000]]
+        assert all(call.args[0] == "https://mattermost.example/api/v4/posts"
+                   for call in session.post.call_args_list)
+
+    @pytest.mark.parametrize("status, outcome", [
+        (200, "ok"), (201, "ok"), (202, "ok"), (299, "ok"),
+        (400, "rejected"), (401, "rejected"), (429, "rejected"),
+        (400, "body-timeout"), (429, "exit-timeout"),
+        (None, "connector"), (None, "cancelled"), (201, "cancelled"),
+    ])
+    def test_definitive_ack_preserves_order_and_classification(self, public_sender, status, outcome):
+        import asyncio
+        import aiohttp
+        from types import SimpleNamespace
+
+        send, session, message = public_sender
+        response = self.response(status, {"id": "  second  "})
+        if outcome == "connector":
+            key = SimpleNamespace(host="mattermost.example", port=443, ssl=True)
+            response.__aenter__.side_effect = aiohttp.ClientConnectorError(key, OSError("refused"))
+        elif outcome == "body-timeout":
+            response.text.side_effect = response.json.side_effect = TimeoutError()
+        elif outcome == "exit-timeout":
+            response.__aexit__.side_effect = TimeoutError()
+        elif outcome == "cancelled":
+            boundary = response.__aenter__ if status is None else response.json
+            boundary.side_effect = asyncio.CancelledError()
+
+        if outcome == "cancelled":
+            with pytest.raises(asyncio.CancelledError):
+                send(response)
+        else:
+            result = send(response)
+            expected_ids = ["prefix", "  second  ", "tail"] if outcome == "ok" else ["prefix"]
+            assert result["success"] is (outcome == "ok")
+            assert result["message_ids"] == expected_ids and result["message_id"] == expected_ids[-1]
+            assert result.get("_delivery_uncertain", False) is False
+            if outcome != "ok":
+                expected_error = ("Mattermost connection failed before sending" if outcome == "connector"
+                                  else f"Mattermost API error ({status})")
+                assert result["error"] == expected_error
+        expected_posts = [message[:500], message[500:1000]]
+        if outcome == "ok":
+            expected_posts.append(message[1000:])
+        assert [call.kwargs["json"]["message"] for call in session.post.call_args_list] == expected_posts
+        assert all(call.kwargs["json"]["props"]["disable_mentions"] for call in session.post.call_args_list)
+
 
 class TestMattermostRequirements:
     def test_check_requirements_with_token_and_url(self, monkeypatch):
